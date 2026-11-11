@@ -10192,6 +10192,17 @@ class MergedDuplicateClaimTests(_Base):
         self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
         self.assertFalse(any('merged_into:' in m for m in res['messages']), res['messages'])
 
+    def test_a_broken_chain_warning_names_the_record_whose_line_is_broken(self):
+        # Lars -> Lorne -> a person not in the index: the line to fix is in
+        # Lorne's record, so Lars's warning names Lorne's file, not his own.
+        self._seed_person('p-eeeeeeeeee', 'Lorne Quistold', living='false', surname='Quistold')
+        self._merge(self.DUP, 'p-eeeeeeeeee')
+        self._merge('p-eeeeeeeeee', 'p-zzzzzzzzzz')
+        res = self._run(linked=False)
+        lars = [m for m in res['messages'] if '(P-dddddddddd)' in m]
+        self.assertTrue(lars, res['messages'])
+        self.assertIn('quistold__test_p-eeeeeeeeee.md', lars[0])
+
     def test_an_id_the_index_does_not_hold_is_treated_as_before(self):
         # A claim naming an id that is in no record is a dangling reference
         # (lint's job), not a merge: no crash, and nothing new withheld.
@@ -10201,6 +10212,75 @@ class MergedDuplicateClaimTests(_Base):
         self.assertEqual(res['status'], 'ok', res['messages'])
         grandpa = self._read(f'persons/{self.GRANDPA}.html')
         self.assertIn(self.SECRET, grandpa, res['messages'])
+
+
+class MergedDuplicateNameTests(_Base):
+    """An old merged id shows the person it was merged into (#237 audit).
+
+    `fha confirm merge` leaves the duplicate's `name:` on the tombstone, and
+    leaves prose `[[P-old]]` mentions for gradual cleanup. When the duplicate
+    came from an old tree recorded under a former name the survivor has since
+    marked restricted (SPEC §18), showing the tombstone's name publishes that
+    name. The survivor's name, page and restricted names govern instead."""
+
+    WREN = 'p-aaaaaaaaaa'      # survivor, deceased
+    OLD = 'p-dddddddddd'       # tombstone, recorded under the former name
+    OSRIC = 'p-bbbbbbbbbb'     # deceased relative whose page mentions the old id
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._seed_person(self.WREN, 'Wren Talbot', surname='Talbot',
+                          frontmatter_extra='name_variants:\n'
+                                            '  - {value: Quenby Talbot, restricted: true}')
+        self._seed_person(self.OLD, 'Quenby Talbot', surname='Talbotold', tier='stub')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = ? WHERE id = ?",
+                          (self.WREN, self.OLD))
+
+    def _osric(self, prose):
+        self._seed_person(self.OSRIC, 'Osric Brindle', surname='Brindle',
+                          body=f'# Osric Brindle\n\n## Biography\n\n{prose}\n')
+
+    def _assert_no_former_name(self, res):
+        for p in self.out_dir.rglob('*'):
+            if p.is_file() and p.suffix in ('.html', '.json', '.js'):
+                self.assertNotIn('Quenby', p.read_text(encoding='utf-8', errors='replace'),
+                                 (p.name, res['messages']))
+
+    def test_an_old_id_in_prose_shows_the_survivors_name_and_links_their_page(self):
+        self._osric('Farmed with his sibling [[P-dddddddddd]].')
+        res = self._run(linked=False)
+        page = self._read(f'persons/{self.OSRIC}.html')
+        self.assertIn('Wren Talbot', page, res['messages'])
+        self.assertIn(f'href="{self.WREN}.html"', page)
+        self._assert_no_former_name(res)
+
+    def test_an_old_id_with_the_former_name_as_its_display_is_not_shown(self):
+        self._osric('Farmed with [[P-dddddddddd|Quenby Talbot]].')
+        res = self._run(linked=False)
+        self.assertIn('Wren Talbot', self._read(f'persons/{self.OSRIC}.html'), res['messages'])
+        self._assert_no_former_name(res)
+
+    def test_a_family_tie_recorded_with_the_old_id_shows_the_survivor(self):
+        self._osric('Farmed near Wexcombe.')
+        self._seed_source('s-1111111111', 'Family register')
+        self._seed_claim('c-rrrrrrrrrr', 's-1111111111', 'relationship', 'Parent of Wren',
+                         persons=(self.OSRIC, self.OLD),
+                         roles={self.OSRIC: 'parent', self.OLD: 'child'})
+        self._seed_rel(self.OSRIC, 'child', self.OLD)
+        self._seed_rel(self.OLD, 'parent', self.OSRIC)
+        res = self._run(linked=False)
+        self.assertIn('Wren Talbot', self._read(f'persons/{self.OSRIC}.html'), res['messages'])
+        self._assert_no_former_name(res)
+
+    def test_a_merged_duplicate_gets_no_page_of_its_own(self):
+        # A hand-made tombstone that kept `tier: curated` is a redirect, not a
+        # life: its old name must not get a page or a homepage entry.
+        self.conn.execute("UPDATE persons SET tier = 'curated' WHERE id = ?", (self.OLD,))
+        self._osric('Farmed near Wexcombe.')
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / f'{self.OLD}.html').exists())
+        self.assertTrue((self.out_dir / 'persons' / f'{self.WREN}.html').exists())
+        self._assert_no_former_name(res)
 
 
 @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')

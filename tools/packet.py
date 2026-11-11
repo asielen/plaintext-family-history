@@ -139,7 +139,8 @@ CODE MAP
                                      the privacy rules
     _other_named_persons          - living/unknown persons named by included sources, for the
                                      README caution
-    _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
+    _living_caution_people        - those rows, merges followed, named by the survivor (#237)
+    _resolve_source_files        - source_files rows → resolved paths + missing/unresolvable notes
     _is_image_path                - extension sniff for photo-type asset files
 
   Privacy redaction of copied records
@@ -227,10 +228,12 @@ from _lib import (
     is_placeholder_name,
     is_working_copy,
     load_fha_yaml,
+    merge_survivor,
     normalize_id,
     open_index_db,
     path_to_alias,
     person_is_living,
+    person_merge_chain,
     photoindex_status,
     read_record,
     read_text_exact,
@@ -1344,7 +1347,29 @@ def _other_named_persons(
         """,
         [pid] + included_source_ids + included_source_ids,
     ).fetchall()
-    return [r for r in rows if person_is_living(conn, r['id'])]
+    return _living_caution_people(conn, rows, pid)
+
+
+def _living_caution_people(conn: sqlite3.Connection, rows, pid: str) -> list[dict]:
+    """The living people a README caution names, from index rows (id, name).
+
+    Merges are followed (#237): an old merged id counts as living when anyone
+    on its chain does, and the caution names the survivor at the end of the
+    chain - by the survivor's name and id, since the tombstone's own `name:`
+    may be a former name the survivor marked restricted (SPEC §18). A
+    duplicate that was merged into the packet's own subject is the subject,
+    not another person, so it is not listed. A broken chain has no survivor;
+    the old record is named as it stands."""
+    out: list[dict] = []
+    for r in rows:
+        if not person_is_living(conn, r['id']):
+            continue
+        chain = person_merge_chain(conn, r['id'])
+        shown = merge_survivor(chain) or (chain[0] if chain else r)
+        if shown['id'] == pid:
+            continue
+        out.append({'id': shown['id'], 'name': shown['name'] or r['name']})
+    return out
 
 
 def _citation_named_persons(
@@ -1372,7 +1397,7 @@ def _citation_named_persons(
         """,
         [pid] + list(copied_paths),
     ).fetchall()
-    return [r for r in rows if person_is_living(conn, r['id'])]
+    return _living_caution_people(conn, rows, pid)
 
 
 def _is_under_root(path: Path, root: Path) -> bool:
@@ -3050,14 +3075,13 @@ def _packet_payload(
                         }
                         if photo_person_ids:
                             pplaceholders = ','.join('?' * len(photo_person_ids))
-                            for row in conn.execute(
+                            # Merges followed (#237): a photo tagged with a
+                            # merged duplicate's old id shows the survivor.
+                            for row in _living_caution_people(conn, conn.execute(
                                 f"SELECT id, name FROM persons WHERE id IN ({pplaceholders})",
                                 list(photo_person_ids),
-                            ).fetchall():
-                                # Merges followed (#237): a photo tagged with
-                                # a merged duplicate's old id shows the survivor.
-                                if person_is_living(conn, row['id']):
-                                    other_named_by_id.setdefault(row['id'], row)
+                            ).fetchall(), pid):
+                                other_named_by_id.setdefault(row['id'], row)
                 finally:
                     pconn.close()
 

@@ -813,6 +813,122 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIn('Possibly moved to Topeka', r['text'])
         self.assertNotIn('Brackenwold', r['text'])
 
+    # ── An old merged id is the survivor: their restriction binds it (#237 audit)
+
+    def _seed_merged_duplicate_of(self, conn, *, survivor_extra='restricted: by-request',
+                                  old_name='Pell Marrowby'):
+        """Pellam Marrowby (P-0000000005, deceased) and a duplicate record of
+        him from an old tree (P-0000000006), merged into him. The duplicate's
+        file carries no marker of its own."""
+        (self.root / 'people' / 'pellam.md').write_text(
+            '---\nid: P-0000000005\nname: Pellam Marrowby\ntier: stub\nliving: false\n'
+            f'{survivor_extra}\n---\n', encoding='utf-8')
+        (self.root / 'people' / 'pell.md').write_text(
+            f'---\nid: P-0000000006\nname: {old_name}\ntier: stub\nliving: false\n'
+            'status: merged\nmerged_into: P-0000000005\n---\n', encoding='utf-8')
+        _add_person(conn, 'p-0000000005', 'Pellam Marrowby', tier='stub',
+                    path='people/pellam.md', surname='Marrowby')
+        _add_person(conn, 'p-0000000006', old_name, tier='stub',
+                    path='people/pell.md', surname='Marrowby')
+        conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-0000000005' "
+                     "WHERE id = 'p-0000000006'")
+
+    def test_a_link_to_an_old_id_of_a_restricted_person_is_refused(self):
+        conn = self._reopen()
+        self._seed_merged_duplicate_of(conn)
+        conn.commit(); conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(profile.read_text(encoding='utf-8')
+                           + '\nHe farmed with his cousin [[P-0000000006]].\n', encoding='utf-8')
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'restricted-people', r['messages'])
+        self.assertIsNone(r['text'])
+        self.assertIn('P-0000000006', r['messages'][0])   # the link as written
+
+    def test_a_parked_claim_naming_an_old_id_of_a_restricted_person_is_withheld(self):
+        conn = self._reopen()
+        self._seed_merged_duplicate_of(conn)
+        _add_claim(conn, 'c-0000000009', 'residence', ['p-0000000001', 'p-0000000006'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly lodged with Pell at Gorsemoor Cottage')
+        conn.commit(); conn.close()
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok', r['messages'])
+        self.assertNotIn('Gorsemoor', r['text'])
+
+    def test_an_infobox_from_a_claim_naming_an_old_id_of_a_restricted_person_is_withheld(self):
+        conn = self._reopen()
+        self._seed_merged_duplicate_of(conn)
+        _add_claim(conn, 'c-0000000010', 'residence', ['p-0000000001', 'p-0000000006'],
+                   place_text='Gorsemoor', source_id='s-0000000001',
+                   status='accepted', value='lodged together')
+        _add_claim(conn, 'c-0000000011', 'residence', ['p-0000000001'],
+                   place_text='Boston', source_id='s-0000000001',
+                   status='accepted', value='resident')
+        conn.commit()
+        templates = {'residence': {'template': 'Residence', 'fields': {'location': 'place'}}}
+        out = wikitree._render_templates(conn, self.root, 'p-0000000001', templates)
+        conn.close()
+        self.assertIn('{{Residence|location=Boston}}', out)
+        self.assertNotIn('{{Residence|location=Gorsemoor}}', out)
+
+    def test_an_old_id_shows_the_survivors_name_not_a_restricted_former_name(self):
+        # The duplicate came from an old tree under a former name the survivor
+        # has since marked restricted (SPEC §18).
+        conn = self._reopen()
+        self._seed_merged_duplicate_of(
+            conn, survivor_extra='name_variants:\n  - {value: Quenby Marrowby, restricted: true}',
+            old_name='Quenby Marrowby')
+        conn.commit(); conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(profile.read_text(encoding='utf-8')
+                           + '\nHe farmed with his cousin [[P-0000000006]].\n', encoding='utf-8')
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok', r['messages'])
+        self.assertIn('Pellam Marrowby', r['text'])
+        self.assertNotIn('Quenby', r['text'])
+
+    def test_an_old_id_with_a_restricted_former_name_as_display_is_refused(self):
+        conn = self._reopen()
+        self._seed_merged_duplicate_of(
+            conn, survivor_extra='name_variants:\n  - {value: Quenby Marrowby, restricted: true}')
+        conn.commit(); conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(profile.read_text(encoding='utf-8')
+                           + '\nHe farmed with [[P-0000000006|Quenby Marrowby]].\n',
+                           encoding='utf-8')
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'restricted-names', r['messages'])
+        self.assertIsNone(r['text'])
+
+    def test_a_broken_merge_chain_says_which_line_to_fix(self):
+        # A dead uncle whose merged_into: names a person not in the index is
+        # shown as [living person] (fail closed); the export says why.
+        conn = self._reopen()
+        (self.root / 'people' / 'pell.md').write_text(
+            '---\nid: P-0000000006\nname: Pell Marrowby\nliving: false\n'
+            'status: merged\nmerged_into: P-0000000099\n---\n', encoding='utf-8')
+        _add_person(conn, 'p-0000000006', 'Pell Marrowby', tier='stub',
+                    path='people/pell.md', surname='Marrowby')
+        conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-0000000099' "
+                     "WHERE id = 'p-0000000006'")
+        conn.commit(); conn.close()
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(profile.read_text(encoding='utf-8')
+                           + '\nHe farmed with his uncle [[P-0000000006]].\n', encoding='utf-8')
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok', r['messages'])
+        self.assertIn('[living person]', r['text'])
+        notes = [m for m in r['messages'] if 'merged_into:' in m]
+        self.assertTrue(notes, r['messages'])
+        self.assertIn('pell.md', notes[0])
+        self.assertIn('P-0000000099', notes[0])
+
     def test_living_unknown_name_wikilink_refused(self):
         # living: unknown IS living (SPEC §19) - the name-link gate must treat
         # it the same as an explicit true.

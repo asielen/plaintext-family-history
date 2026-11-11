@@ -266,6 +266,7 @@ from _lib import (
     is_working_copy,
     load_fha_yaml,
     merge_chain,
+    merge_survivor,
     normalize_id,
     open_index_db,
     parse_filename,
@@ -4070,6 +4071,9 @@ class _SiteBuilder:
                                   # stub is viewable and editable in the editing interface
                                   # (owner decision, live review 2026-07-16) - published
                                   # and plain --linked output stay curated-only.
+            if row['merged_into'] and not self.workbench:
+                continue          # a merged duplicate is a redirect, not a life: its
+                                  # old id shows the survivor (#237, `_shown_row`)
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
@@ -4843,6 +4847,17 @@ class _SiteBuilder:
         so the snapshot keeps them out rather than guessing (#237)."""
         return merge_chain(row, self.person_meta.get)
 
+    def _shown_row(self, row: sqlite3.Row) -> sqlite3.Row:
+        """The record whose name, page and restricted names an id shows.
+
+        For a merged duplicate's old id that is the survivor at the end of
+        its chain (`_lib.merge_survivor`): the tombstone's own `name:` may be
+        a former name the survivor marked restricted (SPEC §18), and its page,
+        if it has one, is a redirect, not a life (#237). A broken chain has no
+        survivor; the row itself is returned, and redaction has already kept
+        that person out of a shared build."""
+        return merge_survivor(self._merge_chain(row)) or row
+
     def _warn_broken_merge_chains(self) -> None:
         """Say which people this build kept out because their merge record is
         broken, and how to fix it.
@@ -4850,12 +4865,16 @@ class _SiteBuilder:
         A deceased ancestor shown as "Living Person" for no visible reason is
         a dead end for the owner. A `merged_into:` line that loops back or
         names a person who is not in the index is why; the warning names the
-        record to fix."""
+        record to fix: the last real record on the chain, whose own
+        `merged_into:` is the broken one (not always the person's own file,
+        when the break is further along)."""
         for pid, row in sorted(self.person_meta.items()):
-            end = self._merge_chain(row)[-1]
+            chain = self._merge_chain(row)
+            end = chain[-1]
             broken = end.get('broken') if isinstance(end, dict) else None
             if not broken:
                 continue
+            culprit = chain[-2]
             why = ('its chain of merges loops back on itself' if broken == 'loop'
                    else f'no person {fmt_id_display(end["id"])} is in the index')
             self.messages.append(
@@ -4863,7 +4882,7 @@ class _SiteBuilder:
                 f'is recorded as merged into another person, but {why}, so there is '
                 f'no way to tell who they really are. They are kept out of this site '
                 f'the way a living person is. Fix the `merged_into:` line in '
-                f'{row["path"] or "their record"}, then run `fha index` and '
+                f'{culprit["path"] or "their record"}, then run `fha index` and '
                 f'`fha site` again.'
             )
 
@@ -4928,16 +4947,22 @@ class _SiteBuilder:
             row = self.person_meta[pid]
             if not self.linked and self._person_is_redacted(row):
                 return f'<span class="redacted">{_LIVING_LABEL}</span>'
+            # An old merged id shows the person it was merged into: their
+            # name, their page, their restricted names (#237).
+            shown = self._shown_row(row)
+            shown_id = shown['id']
             # A restricted name (a deadname) resolves to the person internally
             # but must never be displayed: drop an in-token display that is one of
             # this person's restricted variants, so the unrestricted display name
             # is shown instead (SPEC §18).
+            restricted = (self.restricted_names.get(pid, set())
+                          | self.restricted_names.get(shown_id, set()))
             if (not self.linked and in_display
-                    and in_display.strip().lower() in self.restricted_names.get(pid, set())):
+                    and in_display.strip().lower() in restricted):
                 in_display = None
-            name = _escape(in_display or row['name'] or display)
-            if pid in self.person_pages:
-                href = html.escape(_rel_href(self.persons_dir / _page_filename(pid), page_dir), quote=True)
+            name = _escape(in_display or shown['name'] or display)
+            if shown_id in self.person_pages:
+                href = html.escape(_rel_href(self.persons_dir / _page_filename(shown_id), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
             # A person without a page (a stub): show the name but mark it a stub
             # with a dotted underline, mirroring the tree's stub-node convention.
@@ -7961,12 +7986,15 @@ class _SiteBuilder:
         if not self.linked and self._person_is_redacted(meta):
             return {'p_id': display, 'name': _LIVING_LABEL, 'sex': None,
                     'vitals': {'birth': None, 'death': None}, 'url': None}
+        # A tie recorded with an old merged id shows the survivor (#237).
+        meta = self._shown_row(meta)
+        shown = meta['id']
         url = None
-        if pid in self.person_pages:
-            url = _rel_href(self.persons_dir / _page_filename(pid), page_dir)
+        if shown in self.person_pages:
+            url = _rel_href(self.persons_dir / _page_filename(shown), page_dir)
         return {'p_id': display, 'name': meta['name'] or display, 'sex': meta['sex'],
-                'vitals': self._person_vitals(pid), 'url': url,
-                'photo': self._profile_photo_href(pid, page_dir)}
+                'vitals': self._person_vitals(shown), 'url': url,
+                'photo': self._profile_photo_href(shown, page_dir)}
 
     def _tree_relationship_rows(self, pid: str, rel: str) -> list:
         """One person's `relationships` rows for direction `rel`, memoized for
@@ -8071,6 +8099,9 @@ class _SiteBuilder:
             return {'name': fmt_id_display(pid), 'url': None, 'redacted': False, 'dates': no_dates}
         if not self.linked and self._person_is_redacted(meta):
             return {'name': '', 'url': None, 'redacted': True, 'dates': no_dates}
+        # A tie recorded with an old merged id shows the survivor (#237).
+        meta = self._shown_row(meta)
+        pid = meta['id']
         url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
                if pid in self.person_pages else None)
         # Dates ride along for the pedigree card; the radial fan ignores them.
@@ -8732,8 +8763,8 @@ class _SiteBuilder:
         hub_meta = self.person_meta.get(hub)
         if not self.linked and hub_meta and self._person_is_redacted(hub_meta):
             hub_name = _LIVING_LABEL
-        elif hub_meta and hub_meta['name']:
-            hub_name = hub_meta['name']
+        elif hub_meta and self._shown_row(hub_meta)['name']:
+            hub_name = self._shown_row(hub_meta)['name']
         else:
             hub_name = fmt_id_display(hub)
 
