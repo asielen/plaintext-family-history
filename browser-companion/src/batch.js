@@ -2,11 +2,24 @@
 //
 // What it is for: a researcher with hundreds of records already found - every
 // Newspapers.com clipping she made, every Ancestry record cited in her tree,
+// the photos, clippings and documents in a tree person's Ancestry gallery,
 // a tree person's FamilySearch sources, a family's Find a Grave memorials -
 // can have them saved one at a time, slowly, while she does something else,
 // and never the same one twice. Each record is saved by this panel's own
 // Capture (panel.js runCapture), so each bundle is the bundle a Capture of
 // that record makes: the same files, the same checks, the same words.
+//
+// A person's gallery ("Add the photos and documents in this person's
+// gallery", on the person's Gallery tab) queues each tile's item in the
+// Ancestry batch, beside the records, keyed as Seen It knows a shared item
+// (med:{mediaId}); one page of the gallery at a time - she opens the next
+// page and presses again. Each is opened at its own media viewer address and
+// saved as Capture saves a shared item by hand (panel.js
+// captureAncestryPhoto): a photo as a photo, a document as a document. Its
+// details not drawn yet, or not yet caught up with the picture, is a page
+// not finished: tried again, never saved without them. A photo she uploaded to Ancestry herself
+// is downloaded too, as a copy: Seen It knows a gallery item as held only
+// once it was saved from its Ancestry address, never as the file she had.
 //
 // ── SWITCHED OFF unless this browser is told otherwise ──────────────────────
 // Batch downloads are a power tool. Nothing about them is shown in the panel
@@ -72,7 +85,8 @@
 //   run / one              the run loop above, and one record of it
 //   countFail / setAside   one record set aside; several in a row stop the run
 //   readClippingsList      Newspapers.com: queue the member's own clippings
-//   queueFrom*             fill a queue from a file or a page she has open
+//   queueFrom*             fill a queue from a file or a page she has open (a person's
+//                          sources, an Ancestry person's gallery)
 //   recordManual           a record saved by hand joins its ledger
 //   install                build the box and wire it (switch on only)
 
@@ -109,14 +123,18 @@
     },
     ancestry: {
       short: 'anc',
-      title: 'Ancestry: records cited in your tree',
+      title: 'Ancestry: records cited in your tree, and a person’s gallery',
       hostRe: /^https:\/\/(www\.)?ancestry\.com\//i,
       prefillFlag: 'ancestryRecord',
+      // A gallery item's page is the media viewer's.
+      mediaPrefillFlag: 'ancestryPhoto',
       personAction: 'ancestryPersonSources',
       fileLabel: 'Add the records cited in a GEDCOM file from your Ancestry tree',
       parseFile: (text) => CB().parseGedcom(text),
       personLabel: 'Add the sources of the person in front of you',
-      empty: 'Load a GEDCOM file, or add a person’s sources, first.',
+      galleryAction: 'ancestryPersonGallery',
+      galleryLabel: 'Add the photos and documents in this person’s gallery',
+      empty: 'Load a GEDCOM file, or add a person’s sources or gallery, first.',
     },
     familysearch: {
       short: 'fs',
@@ -716,8 +734,11 @@
       // The site served this record's page: what follows is its answer.
       active.answered = true;
       let out;
-      if (!page.prefill[SITE_UI[siteName].prefillFlag]) {
-        out = { ok: false, error: 'the page it opened is not a record page (it may have moved or been removed)' };
+      const flag = item.mediaId ? SITE_UI[siteName].mediaPrefillFlag : SITE_UI[siteName].prefillFlag;
+      if (!flag || !page.prefill[flag]) {
+        out = { ok: false, error: item.mediaId
+          ? 'the page it opened is not a photo or document page (it may have been removed, or made private)'
+          : 'the page it opened is not a record page (it may have moved or been removed)' };
       } else {
         if (active.onCapture) active.onCapture();
         out = await hooks.capture(lib.captureKey(item));
@@ -873,11 +894,12 @@
       }
     };
 
-    async function queueRecords(siteName, records, from, what) {
+    // `more`: a line said after the counts (a gallery with another page).
+    async function queueRecords(siteName, records, from, what, more) {
       const L = {};
       const [added] = await apply(siteName, L, [['addRecords', records, from, what]], true);
       say(siteName, what + ': ' + records.length + ' found, ' + added + ' new to the queue. ' + countsLine(L) +
-        (added ? ' Press Start to download them.' : ''), added ? 'ok' : '');
+        (added ? ' Press Start to download them.' : '') + (more ? ' ' + more : ''), added ? 'ok' : '');
     }
 
     async function queueFromFile(siteName, input) {
@@ -889,8 +911,9 @@
     }
 
     // Read the page she is looking at (any tab, not the batch's own while it
-    // runs) for what to queue.
-    async function queueFromPage(siteName) {
+    // runs) for what to queue. `gallery`: the items on a person's Ancestry
+    // Gallery page, one page of it at a time - she opens the next page.
+    async function queueFromPage(siteName, gallery) {
       const site = SITE_UI[siteName];
       const tab = await hooks.queryActiveTab();
       if (!tab || !tab.id || !(site.linkHostRe || site.hostRe).test(tab.url || '')) {
@@ -904,7 +927,7 @@
         return;
       }
       await hooks.injectContent(tab.id);
-      const r = await hooks.sendToTab(tab.id, { action: site.personAction });
+      const r = await hooks.sendToTab(tab.id, { action: gallery ? site.galleryAction : site.personAction });
       // The site said slow down while the page was read: the batch of the
       // site that said it asks nothing more before its break is over.
       if (r && (r.slowDown || (!r.ok && CB().classifyError(r.error) === 'slowdown'))) {
@@ -920,6 +943,19 @@
         return;
       }
       const who = r.person || 'This page';
+      if (gallery) {
+        const whose = r.person ? r.person + '’s gallery' : 'This gallery';
+        const next = r.more ? 'This gallery has another page: open it, then press “' + site.galleryLabel + '” again.' : '';
+        if (!r.sources.length) {
+          say(siteName, r.sectionFound === false
+            ? 'This is not a person’s Gallery page. Open the person in your tree, choose Gallery, then press again.'
+            : whose + ' shows no photos or documents on this page.' + (next ? ' ' + next : ''), 'warn');
+          return;
+        }
+        await queueRecords(siteName, r.sources.map((s) => Object.assign({ persons: r.person ? [r.person] : [] }, s)),
+          'gallery: ' + (r.person || tab.url), whose + ', page ' + (r.page || 1), next);
+        return;
+      }
       if (!r.sources.length) {
         say(siteName, r.sectionFound === false
           ? (siteName === 'findagrave'
@@ -986,6 +1022,10 @@
       if (site.personAction) {
         u.person = tagged(el('button', { type: 'button', textContent: site.personLabel }, sec), site.short + '-page');
         u.person.addEventListener('click', guarded(siteName, 'Reading the page', () => queueFromPage(siteName)));
+      }
+      if (site.galleryAction) {
+        u.gallery = tagged(el('button', { type: 'button', textContent: site.galleryLabel }, sec), site.short + '-gallery');
+        u.gallery.addEventListener('click', guarded(siteName, 'Reading the gallery', () => queueFromPage(siteName, true)));
       }
       if (siteName === 'newspapers') {
         u.relist = tagged(el('button', { type: 'button', textContent: 'Read my clippings list again' }, sec), 'np-relist');

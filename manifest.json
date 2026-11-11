@@ -203,7 +203,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "94d4dc359c5a286e933943e868097374c7ab6e4ad6a7b028d37451b98554a7ed",
+      "sha256": "606ec06110f803e46dc56d65a4773b75970c6c271b9391810f608143612b6702",
       "spec_version": "1.2",
       "src": "browser-companion/manifest.json"
     },
@@ -217,14 +217,14 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "c160ce2c7bcb71ebeae98c2679e1ab9eac48bf99400206253faeae28b0e4ed96",
+      "sha256": "4ed8a13fb21a6fb4c793194b014f7358d9fb89115a4c04f0d8c65d22460e15ac",
       "spec_version": "1.2",
       "src": "browser-companion/src/batch.js"
     },
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "342522a1c391122cd98dab7978dea0ac23c2476760e56d5813013c9043d97a87",
+      "sha256": "60aed4674d61d61b41d0e587d7c765ca35554abeb9089c5d2796ae8576fabd42",
       "spec_version": "1.2",
       "src": "browser-companion/src/content.js"
     },
@@ -238,7 +238,7 @@
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
       "category": "operating",
-      "sha256": "37e385d1a2f615b37e3128c52a48f738f050e79091e8570c29efd6d135266ec4",
+      "sha256": "be8dbe38afee94a30496a61a494b1caed6f590c3ff8912cd206cc6e563045bda",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/batch-sources.js"
     },
@@ -259,7 +259,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "a203b81a814e231c4aad331571f57b5b26bf3a974f46f9492b14bef441e01df8",
+      "sha256": "8f936503f8e441841a5a7396bda299428465b1a66fa4327e1e932dda3cd2b25f",
       "spec_version": "1.2",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
@@ -364,7 +364,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "c101c59b89bd9931314d4e1df1b2d49e528fe906883c047290a2f1e52a639589",
+      "sha256": "fa358244ac86618dab950800e39c8e20b4a76cfe6baeecda9c60e4e720db8b02",
       "spec_version": "1.2",
       "src": "browser-companion/src/panel.js"
     },

@@ -1610,8 +1610,9 @@
   // would collide with. The name comes from the media id alone - checked to be
   // one - never from the title, so nothing the page writes reaches a filename.
 
-  // `opts` (a batch download only): see captureNewspapers. Returns what was
-  // staged: { key, bundle, where, note }.
+  // `opts` (a batch download only): see captureNewspapers. A batch of her
+  // gallery (src/batch.js) names the item queued as Seen It does,
+  // med:{mediaId}. Returns what was staged: { key, record, bundle, where, note }.
   async function captureAncestryPhoto(pageHtml, form, recordUrl, opts = {}) {
     const info = await autoFetch('Ancestry photo details', { action: 'ancestryPhotoInfo' }, { recordUrl });
     // Ancestry's Details still describe the item shown before (#261 audit
@@ -1620,8 +1621,11 @@
     // with her own file dropped in - saves the picture and its address
     // WITHOUT the page's details (when the layout is unclear, text is left
     // out; it can still be read on Ancestry from the saved address, #258).
-    // A batch download never takes that way: it waits.
-    const behind = !!(info && !info.ok && info.behind && info.media && !opts.batch);
+    // A batch download never takes that way: it tries the item again later.
+    // A batch is known here by the item it names (`opts.expectKey`): these
+    // are its site options, which carry no `batch` flag, so asking for one
+    // let a batch's second try save an item without its details.
+    const behind = !!(info && !info.ok && info.behind && info.media && !opts.expectKey);
     if (!info || (!info.ok && !behind)) throw new Error((info && info.error) || 'could not read the photo on Ancestry');
     const media = info.media;
     if (!media.fileStem) throw new Error('the page does not name the photo it shows, so nothing was saved');
@@ -1639,6 +1643,16 @@
     const details = behind ? {} : info.details || {};
     const hints = behind ? {} : info.hints || {};
     notQueued(opts, 'med:' + media.mediaId, 'Ancestry photo ' + media.mediaId);
+    // Nobody watches a batch: a page whose picture is drawn but whose
+    // Details are not yet (no title read from them) would file an obituary
+    // as an undated, unlabelled photo, with no one to see the empty form. A
+    // batch tries the item again later instead (lib/capture-batch.js
+    // RETRY_RE), and sets it aside after its tries. Capture by hand is
+    // unchanged: she sees what the form holds.
+    if (opts.expectKey && !details.title) {
+      throw new Error('the item’s details have not appeared on the page yet (Ancestry had not drawn its Details ' +
+        'panel), so nothing was saved');
+    }
     // The photo was read from the tab: it must still be on this photo.
     await checkTabStillOn(recordUrl, [media.mediaId]);
 
@@ -1801,7 +1815,8 @@
     const cap = captureJson.build(fields);
     const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
     reportStaged(st.where, st.viaHost, null, st.hostWarning || null);
-    return { key: 'med:' + media.mediaId, bundle: st.bundle, where: st.where, note: null };
+    return { key: 'med:' + media.mediaId, record: { mediaId: media.mediaId, url: media.url, name: title },
+      bundle: st.bundle, where: st.where, note: null };
   }
 
   // ── FamilySearch records and images ───────────────────────────────────────────
@@ -2887,7 +2902,9 @@
           return outcome;
         }
         resetForNext();
-        outcome = Object.assign({ ok: true, site: null }, got);
+        // The Ancestry batch's: an item saved by hand joins its queue as
+        // done, as a record does, so a batch of her gallery never saves it again.
+        outcome = Object.assign({ ok: true, site: 'ancestry' }, got);
         return outcome;
       }
 

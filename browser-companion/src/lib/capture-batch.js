@@ -42,7 +42,9 @@
 //
 // Code map:
 //   PACING, between           the rhythm, and one random draw from a range
+//   ancMediaUrl               an Ancestry gallery item's viewer address, checked
 //   SITES                     each site's ledger name, keys and record address
+//                             (Ancestry's: records, and a person's gallery items)
 //   newLedger                 an empty ledger (the archive copy's shape)
 //   addRecords                queue records; a done one stays done
 //   addClippings              queue the member's own Newspapers.com clippings
@@ -121,6 +123,30 @@
     return 'https://www.newspapers.com' + u.pathname;
   }
 
+  // A photo, clipping or document in a tree person's Ancestry gallery is
+  // queued in the Ancestry batch beside her cited records, as the media
+  // viewer's address the gallery's tile opens
+  // (/mediaui-viewer/[collection/{n}/]tree/{t}/person/{p}/media/{mediaId}).
+  // That address, rebuilt on Ancestry from its checked parts, is the only
+  // one the batch sends the tab to for it; one naming another item (`mediaId`)
+  // or any other place is none.
+  const ANC_GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const ANC_VIEWER_RE = /^\/mediaui-viewer\/((?:collection\/\d+\/)?tree\/\d+\/person\/\d+\/)media\/([0-9a-f-]{36})\/?$/i;
+
+  function ancMediaUrl(raw, mediaId) {
+    let u;
+    try {
+      u = new URL(String(raw || ''));
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' || !/^(www\.)?ancestry\.com$/i.test(u.hostname) || u.port ||
+        u.username || u.password) return null;
+    const m = ANC_VIEWER_RE.exec(u.pathname);
+    if (!m || !ANC_GUID_RE.test(m[2]) || m[2].toLowerCase() !== String(mediaId || '').toLowerCase()) return null;
+    return 'https://www.ancestry.com/mediaui-viewer/' + m[1].toLowerCase() + 'media/' + m[2].toLowerCase();
+  }
+
   const SITES = {
     newspapers: {
       name: 'Newspapers.com',
@@ -131,16 +157,21 @@
       captureKey: (it) => 'clip:' + it.id,
       urlOf: (it) => npClipUrl(it.url),
     },
+    // A record ({ dbId, recordId }, keyed "{dbId}:{recordId}") or an item
+    // from a person's gallery ({ mediaId, url }, keyed as Seen It knows it,
+    // "med:{mediaId}"): the two kinds of key never meet.
     ancestry: {
       name: 'Ancestry',
       storageKey: 'ancBatchLedger',
       ledgerFile: '_ancestry-batch-ledger.json',
-      keyOf: (r) => (r && ANC_ID.test(String(r.dbId)) && ANC_ID.test(String(r.recordId))
-        ? r.dbId + ':' + r.recordId : null),
-      seenIt: (it) => 'rec:' + it.dbId + ':' + it.recordId,
-      captureKey: (it) => 'rec:' + it.dbId + ':' + it.recordId,
-      urlOf: (it) => 'https://www.ancestry.com/search/collections/' + it.dbId + '/records/' + it.recordId,
-      fields: ['dbId', 'recordId'],
+      keyOf: (r) => (r && r.mediaId
+        ? (ancMediaUrl(r.url, r.mediaId) ? 'med:' + String(r.mediaId).toLowerCase() : null)
+        : r && ANC_ID.test(String(r.dbId)) && ANC_ID.test(String(r.recordId)) ? r.dbId + ':' + r.recordId : null),
+      seenIt: (it) => (it.mediaId ? 'med:' + String(it.mediaId).toLowerCase() : 'rec:' + it.dbId + ':' + it.recordId),
+      captureKey: (it) => (it.mediaId ? 'med:' + String(it.mediaId).toLowerCase() : 'rec:' + it.dbId + ':' + it.recordId),
+      urlOf: (it) => (it.mediaId ? ancMediaUrl(it.url, it.mediaId)
+        : 'https://www.ancestry.com/search/collections/' + it.dbId + '/records/' + it.recordId),
+      fields: ['dbId', 'recordId', 'mediaId', 'url'],
     },
     familysearch: {
       name: 'FamilySearch',
@@ -226,6 +257,7 @@
       const entry = { key };
       for (const f of site.fields) if (r[f] != null && r[f] !== '') entry[f] = String(r[f]);
       if (siteName === 'familysearch') entry.fsId = key;
+      if (entry.mediaId) entry.mediaId = entry.mediaId.toLowerCase();
       if (entry.slug && !SLUG.test(entry.slug)) delete entry.slug;
       entry.url = site.urlOf(entry);
       L.items[key] = Object.assign(entry, {
@@ -513,8 +545,8 @@
   const SLOWDOWN_RE = /slow down|HTTP 429|HTTP 503|too many requests/i;
   const RECORD_RE = new RegExp([
     'HTTP 404', 'HTTP 410', 'no memorial at this address', 'no record at this address', 'not the one queued',
-    'is not a record page', 'not one the batch can save', 'marks no area', 'tick at least one of your clippings',
-    'none of the clippings on this page are yours', 'restricted to a FamilySearch center',
+    'is not a record page', 'is not a photo or document page', 'not one the batch can save', 'marks no area',
+    'tick at least one of your clippings', 'none of the clippings on this page are yours', 'restricted to a FamilySearch center',
   ].join('|'), 'i');
   const RUN_RE = new RegExp([
     'sign in', 'signed in', 'security check', 'HTTP 401', 'could not reach', 'internet connection', 'broke off',
@@ -524,7 +556,15 @@
     // The browser's own words for a request that did not come through.
     'failed to fetch', 'networkerror', 'network error', 'load failed', 'connection'
   ].join('|'), 'i');
-  const RETRY_RE = /shows no memorial|could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)/i;
+  // A gallery item's page that had not finished showing it: Ancestry's
+  // Details still on the item shown before (never saved without them - the
+  // batch has no "press again to save it without its details"), more of its
+  // Details appearing after the panel read the page, its Details not drawn
+  // yet (never saved as a bare photo), or its picture not there yet.
+  const RETRY_RE = new RegExp(['shows no memorial',
+    'could not read the (Ancestry record|FamilySearch record|Find a Grave memorial)',
+    'have not caught up', 'more details on the page', 'details have not appeared', 'has not appeared on the page',
+  ].join('|'), 'i');
   // The cause in a message, without the advice the panel or a site puts after
   // it ("Reload the page and open the panel again", "- sign in and reload the
   // page", "Wait a few minutes, then press Capture again"). Advice names the
@@ -671,7 +711,7 @@
 
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
-    between, npClipUrl, newLedger, repair, logEvent, addRecords, addClippings,
+    between, npClipUrl, ancMediaUrl, newLedger, repair, logEvent, addRecords, addClippings,
     isDone, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
     isCooldown, nextPending, counts, stopRule, causeOf,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,
