@@ -888,7 +888,7 @@ test('#261 audit C1: if Ancestry never catches up, the second press saves the ph
   assert.strictEqual(cap.source_type, 'photo');
   assert.ok(!cap.people || cap.people.length === 0, 'no people');
   assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
-  assert.strictEqual(cap.notes, 'From cousin Ruth.\n\nA photo shared on Ancestry by another member. Its details on Ancestry ' +
+  assert.strictEqual(cap.notes, 'From cousin Ruth.\n\nA photo on Ancestry. Its details on Ancestry ' +
     'were left out: the page had not caught up with the picture when it was saved. They can be read on Ancestry from the ' +
     'saved address.');
   const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
@@ -958,7 +958,7 @@ test('#261: an obituary Ancestry files under "Document / Certificate" is capture
   const picture = cap.assets.find((a) => a.mode === 'ancestry-media');
   assert.strictEqual(picture.role, 'record');
   assert.strictEqual(picture.file, 'ancestry-' + CLIP_ID + '-photo.jpg');
-  assert.match(cap.notes, /^An item shared on Ancestry by another member\. Its details on Ancestry:\nDate: 4 Feb 1958\n/);
+  assert.match(cap.notes, /^An item on Ancestry\. Its details on Ancestry:\nDate: 4 Feb 1958\n/);
   const data = JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text());
   assert.strictEqual(data.details.category, 'Document / Certificate');
   const kept = JSON.stringify(cap) + JSON.stringify(data);
@@ -974,7 +974,7 @@ test('#261: the Kind she chooses decides - a document she calls a photo goes to 
   let cap = p.capJson(p.written[0]);
   assert.strictEqual(cap.source_type, 'photo');
   assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'front');
-  assert.match(cap.notes, /^A photo shared on Ancestry by another member/);
+  assert.match(cap.notes, /^A photo on Ancestry\./);
   // A photo she calls a letter is a record.
   const q = await openPhoto(PHOTO_OPEN);
   assert.strictEqual(q.$('btn-capture').textContent, 'Capture this photo');
@@ -985,6 +985,32 @@ test('#261: the Kind she chooses decides - a document she calls a photo goes to 
   cap = q.capJson(q.written[0]);
   assert.strictEqual(cap.source_type, 'letter');
   assert.strictEqual(cap.assets.find((a) => a.mode === 'ancestry-media').role, 'record');
+});
+
+// She may have shared it herself: the add-on cannot tell which member she is,
+// so nothing it saves says "another member" shared it.
+test('a shared photo\'s notes say "A photo on Ancestry", a document\'s "An item on Ancestry" - never "another member"', async () => {
+  const p = await openPhoto(PHOTO_OPEN);
+  await p.capture();
+  const photo = p.capJson(p.written[0]).notes;
+  assert.match(photo, /^A photo on Ancestry\. Its details on Ancestry:\nDate: abt 1925\n/);
+  const q = await openPhoto(CLIP_PAGE, { edit: clipHtml });
+  await q.capture();
+  const item = q.capJson(q.written[0]).notes;
+  assert.match(item, /^An item on Ancestry\. Its details on Ancestry:\nDate: 4 Feb 1958\n/);
+  for (const notes of [photo, item]) assert.doesNotMatch(notes, /another member/);
+});
+
+test('photo-data.json\'s note says "item" for a shared item filed as a record, and never "another member"', async () => {
+  const noteOf = async (p) => {
+    await p.capture();
+    return JSON.parse(await p.written[0].assets.find((a) => a.filename === 'photo-data.json').blob.text()).note;
+  };
+  const photo = await noteOf(await openPhoto(PHOTO_OPEN));
+  assert.match(photo, /^Captured from Ancestry by the archive capture extension: a photo shared to an Ancestry tree\. "details" is what its Details panel showed - written by whoever shared it, not checked\. "photoSaved" is false/);
+  const item = await noteOf(await openPhoto(CLIP_PAGE, { edit: clipHtml }));
+  assert.match(item, /^Captured from Ancestry by the archive capture extension: an item shared to an Ancestry tree\. "details" is what its Details panel showed/);
+  for (const note of [photo, item]) assert.doesNotMatch(note, /another member/);
 });
 
 test('Capture saves the shared photo as a photo source: the photo as served, its details, the address to keep', async () => {
@@ -1021,7 +1047,7 @@ test('Capture saves the shared photo as a photo source: the photo as served, its
   assert.strictEqual(data.details.place, 'Fairview, Breton, Kansas, USA');
   // Who first added it is kept with Ancestry's data, not in the record's notes.
   assert.strictEqual(data.details.originallyAddedBy, 'hartley_family_tree on 3 Mar 2015');
-  assert.strictEqual(cap.notes, 'A photo shared on Ancestry by another member. Its details on Ancestry:\n' +
+  assert.strictEqual(cap.notes, 'A photo on Ancestry. Its details on Ancestry:\n' +
     'Date: abt 1925\nPlace: Fairview, Breton, Kansas, USA\nLinked to: Thomas Hartley; Margaret Hartley\n\n' +
     'Description on Ancestry:\nThomas and Margaret on the porch of the farmhouse.\nThe dog is Shep.');
   // Other members who saved it are in nothing that is filed (page.html is
