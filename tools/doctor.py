@@ -12,6 +12,7 @@ Checks (in order):
   1. Archive root present, fha.yaml parses              [fatal exit 2 if bad]
   2. Mapped roots (photos/, documents/, …) reachable
   3. exiftool on PATH; ffprobe on PATH (`fha media probe`'s primary backend, #44)
+     pdftotext on PATH (optional third reader for `fha source extract`, #281)
   4. Python deps (PyYAML; Jinja2/Pillow for `fha site`; pypdf for `fha source extract`;
                   PyAV as ffprobe's fallback for `fha media probe`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
@@ -2163,6 +2164,23 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         )
         checks.append({'id': 'pypdf', 'status': 'info', 'detail': 'not installed (optional)',
                        'next_step': pip_command('pypdf')})
+    # pdftotext (poppler) is `fha source extract`'s optional third reader for
+    # a page whose words run together (#281) - an external binary like
+    # ffprobe, but optional like pypdf: absence is informational only.
+    pdftotext_path = shutil.which('pdftotext')
+    if pdftotext_path:
+        lines.append(f'pdftotext (fha source extract): {_OK} {pdftotext_path}  '
+                     'next: no action needed')
+        checks.append({'id': 'pdftotext', 'status': 'ok', 'detail': pdftotext_path,
+                       'next_step': None})
+    else:
+        lines.append(
+            'pdftotext (fha source extract): not found on PATH (optional)  '
+            'next: install poppler (it includes pdftotext) to give '
+            '`fha source extract` one more reader for pages whose words run together'
+        )
+        checks.append({'id': 'pdftotext', 'status': 'info', 'detail': 'not found on PATH (optional)',
+                       'next_step': 'install poppler'})
     # PyAV mirrors Pillow/pypdf's posture: purely optional, since ffprobe
     # (checked above) is `fha media probe`'s primary backend and PyAV is only
     # the fallback - absence is informational, never a warning, on its own.

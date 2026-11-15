@@ -386,6 +386,22 @@ class MediaOptionalDependencyTests(unittest.TestCase):
         check = self._check(result, 'pyav')
         self.assertIn(check['status'], ('ok', 'info'))   # 'ok' when PyAV is actually installed here
 
+    def test_pdftotext_absent_is_info_not_warning(self) -> None:
+        # #281: pdftotext is `fha source extract`'s optional third reader.
+        with unittest.mock.patch(
+                'doctor.shutil.which',
+                side_effect=lambda name: None if name == 'pdftotext' else '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'pdftotext')
+        self.assertEqual(check['status'], 'info')
+        self.assertIn('poppler', check['next_step'])
+
+    def test_pdftotext_present_is_ok(self) -> None:
+        with unittest.mock.patch('doctor.shutil.which',
+                                 side_effect=lambda name: '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        self.assertEqual(self._check(result, 'pdftotext')['status'], 'ok')
+
 
 class BackupStampTests(unittest.TestCase):
     """The backup reminder reads real state from `.cache/last_backup.json`
