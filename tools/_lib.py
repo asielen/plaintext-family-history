@@ -155,6 +155,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 required-table probe every index-reading tool needs
 #    read_cache_meta / write_cache_meta - one meta(key, value) row of a cache
 #    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
+#    inbox_triage_dirs         - fha.yaml inbox_triage_dirs: names, + a warning if malformed (#290)
+#    inbox_park_relpath        - an inbox file's place under inbox/processed/, triage folder dropped
 #    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
@@ -2817,6 +2819,70 @@ def photos_ignore_patterns(fha_config: dict) -> list[str]:
         if text:
             out.append(text)
     return out
+
+
+INBOX_PROCESSED_DIRNAME = 'processed'
+
+
+def inbox_triage_dirs(fha_config: dict) -> tuple[list[str], str | None]:
+    """The `inbox_triage_dirs:` folder names from fha.yaml, and a warning.
+
+    Some archives sort the inbox before filing: items waiting on an answer
+    go to `inbox/review/`, suspected duplicates to `inbox/already-existing/`.
+    Those folders are holding stages, not part of where an item belongs, so
+    `fha process` drops one from the front of the path it parks the original
+    under (`inbox/review/A/x.png` parks at `inbox/processed/A/x.png`) and
+    `processed/` keeps one tree instead of growing a copy per stage (#290).
+
+    Returns `(names, warning)`. Names are plain single folder names, compared
+    case-insensitively (the inbox may live on a Windows or Mac disk). A value
+    that is not a list, and any entry that is not a plain folder name (a
+    path, `..`, `processed` itself), is left out with a plain warning rather
+    than a crash - a mistyped setting must not stop filing, it only means
+    that folder is parked as it was before. Read by `fha process` (every
+    park path) and `fha doctor` (the warning).
+    """
+    raw = fha_config.get('inbox_triage_dirs')
+    example = 'e.g.\n  inbox_triage_dirs: [review, already-existing]'
+    if raw is None:
+        return [], None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return [], (f'inbox_triage_dirs in fha.yaml must be a list of inbox folder names '
+                    f'({example}); it is ignored until fixed, so items are parked under '
+                    'their full inbox path.')
+    names: list[str] = []
+    bad: list[str] = []
+    for entry in raw:
+        text = str(entry).strip() if isinstance(entry, (str, int)) and not isinstance(entry, bool) else None
+        if (not text or '/' in text or '\\' in text or text in ('.', '..')
+                or text.casefold() == INBOX_PROCESSED_DIRNAME):
+            bad.append(repr(entry))
+            continue
+        names.append(text)
+    warning = None
+    if bad:
+        warning = (f'inbox_triage_dirs in fha.yaml lists {", ".join(bad)}, which is not a plain '
+                   f'inbox folder name (no paths, no "..", not "processed"; {example}); it is '
+                   'ignored, and the other names still apply.')
+    return names, warning
+
+
+def inbox_park_relpath(rel: Path, triage_dirs: list[str]) -> Path:
+    """Where an inbox file's original is parked, relative to `inbox/processed/`.
+
+    `rel` is the file's path inside the inbox. It is kept whole (#109: the
+    park mirrors the subfolders the item was staged under), except that a
+    leading folder named in `inbox_triage_dirs:` is dropped (#290). Only the
+    first folder, and only when something follows it: a triage folder is
+    one stage deep, and the file name itself is never dropped.
+    """
+    parts = rel.parts
+    folded = {name.casefold() for name in triage_dirs}
+    if len(parts) > 1 and parts[0].casefold() in folded:
+        return Path(*parts[1:])
+    return rel
 
 
 def photos_ignore_matcher(patterns: list[str]):

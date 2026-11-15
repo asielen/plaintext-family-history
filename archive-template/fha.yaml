@@ -65,6 +65,17 @@
 #   - Phone Backups/*
 #   - '*.tif'
 #
+# ── Inbox sorting folders (optional) ──
+#   When you file something out of the inbox, fha keeps the original in
+#   inbox/processed/, in the same subfolders it had in the inbox. If you sort
+#   the inbox first - items waiting on an answer in inbox/review/, suspected
+#   duplicates in inbox/already-existing/ - list those sorting folders here.
+#   They are left out of the kept copy's path, so inbox/review/Letters/a.pdf
+#   is kept at inbox/processed/Letters/a.pdf, beside everything else.
+#   Plain folder names only (no paths).
+#
+# inbox_triage_dirs: [review, already-existing]
+#
 # ── A safety copy of every photo fha writes into (optional, recommended) ──
 #   To keep your photo tool (Lightroom and the like) from losing track of a
 #   photo, fha writes its keywords and captions INTO the original file rather

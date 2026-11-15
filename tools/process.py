@@ -225,6 +225,9 @@ from _lib import (
     frontmatter_fence_span,
     grouping_stem,
     id_type_of,
+    INBOX_PROCESSED_DIRNAME,
+    inbox_park_relpath,
+    inbox_triage_dirs,
     is_back_scan_candidate,
     is_valid_id,
     keyword_values_from_row,
@@ -275,7 +278,7 @@ _PHOTO_SOURCE_TYPE = 'photo'
 # (`_INGESTED_DIRNAME` in capture.py), just without the dot-prefix: this one
 # sits inside `inbox/` itself (SPEC-visible, not a tool-internal holding pen)
 # and the issue's own acceptance test names it literally, `inbox/processed/`.
-_INBOX_PROCESSED_DIRNAME = 'processed'
+_INBOX_PROCESSED_DIRNAME = INBOX_PROCESSED_DIRNAME
 
 # A filename already carrying an S-id (e.g. a re-run of a processed document).
 _FILENAME_SOURCE_ID_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
@@ -1320,7 +1323,8 @@ def _relocate_from_inbox(
     mints its own `{slug}_{S-id}` rename afterward; photos are never renamed
     at all) - and the ORIGINAL is then MOVED, never copied again, to
     `inbox/processed/<the relative path it had inside inbox/>`, preserving
-    whatever subfolder structure it was staged under. This mirrors `fha
+    whatever subfolder structure it was staged under - less a leading
+    `inbox_triage_dirs:` folder, a holding stage rather than a place (#290). This mirrors `fha
     capture --ingest`'s own park-don't-delete precedent for `.ingested/`:
     deletion is the human's call, made after a look, not a side effect of
     processing. The copy step reads `file_path`/`sidecar` exactly once; the
@@ -1394,11 +1398,18 @@ def _relocate_from_inbox(
     # file_path is already confirmed under inbox_root above, so this relative
     # path always resolves - it is what lets inbox/processed/ mirror whatever
     # subfolder structure the human (or a recipe) staged the file under.
+    # A leading `inbox_triage_dirs:` folder (`review/`) is a holding stage,
+    # not part of the item's place, so it is left out of the park path (#290);
+    # the sidecar follows the same rule, so it still parks beside its asset.
+    # Every later use - the collision checks, the dry-run line, the move and
+    # the undo - reads these two paths, so the rule reaches all of them.
     processed_root = inbox_root / _INBOX_PROCESSED_DIRNAME
+    triage_dirs, _ = inbox_triage_dirs(fha_config)
     inbox_rel = file_path.resolve().relative_to(inbox_root.resolve())
-    parked_path = processed_root / inbox_rel
+    parked_path = processed_root / inbox_park_relpath(inbox_rel, triage_dirs)
     parked_sidecar = (
-        processed_root / sidecar.resolve().relative_to(inbox_root.resolve())
+        processed_root / inbox_park_relpath(
+            sidecar.resolve().relative_to(inbox_root.resolve()), triage_dirs)
         if sidecar is not None else None
     )
     if parked_path.exists() and new_path.name != file_path.name:
@@ -6282,6 +6293,12 @@ def _run_process(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    # A malformed `inbox_triage_dirs:` is said once, plainly, and filing goes
+    # on: the bad entries are simply not applied (#290).
+    _, triage_warning = inbox_triage_dirs(fha_config)
+    if triage_warning:
+        print(f'WARNING: {triage_warning}', file=sys.stderr)
 
     if is_working_copy(archive_root):
         print(

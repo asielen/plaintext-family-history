@@ -96,6 +96,7 @@ from _lib import (
     grouping_stem,
     id_type_of,
     INDEX_SCHEMA_VERSION,
+    inbox_triage_dirs,
     is_back_scan_candidate,
     is_fixture_path,
     is_valid_id,
@@ -2305,6 +2306,17 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         else:
             lines.append(f'inbox: {_OK} no items older than 14 days  next: no action needed')
             checks.append({'id': 'inbox', 'status': 'ok', 'detail': 'no aged items', 'next_step': None})
+        lines.append('')
+
+    # `inbox_triage_dirs:` (#290) - only reported when it needs fixing: a
+    # malformed value does not stop `fha process` (it parks as before), so
+    # this is where the human hears about it while it is still cheap.
+    _triage_names, triage_warning = inbox_triage_dirs(fha_config)
+    if triage_warning:
+        lines.append(f'inbox_triage_dirs: {triage_warning}  next: fix the line in fha.yaml')
+        checks.append({'id': 'inbox_triage_dirs', 'status': 'warn', 'detail': triage_warning,
+                       'next_step': 'edit inbox_triage_dirs in fha.yaml'})
+        worst = max(worst, EXIT_WARNINGS)
         lines.append('')
 
     # ── Staged captures waiting to be ingested ───────────────────────────────

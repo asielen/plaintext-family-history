@@ -673,5 +673,106 @@ class ReviewFollowupTests(InboxFilingTestCase):
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
 
+class InboxTriageDirsTests(InboxFilingTestCase):
+    """#290: a triage folder of the inbox (`inbox_triage_dirs:`) is a holding
+    stage, not part of the item's place, so it is dropped from the park path."""
+
+    def _set_triage(self, value: str) -> None:
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + f'inbox_triage_dirs: {value}\n',
+                       encoding='utf-8')
+
+    def test_a_listed_triage_folder_is_dropped_from_the_park_path(self) -> None:
+        self._set_triage('[review, already-existing]')
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        rc, out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((self.inbox / 'processed' / 'A' / 'x.txt').is_file())
+        self.assertFalse((self.inbox / 'processed' / 'review').exists())
+        self.assertIn('processed/A/x.txt', out.replace('\\', '/'))
+
+    def test_case_and_a_file_straight_in_the_triage_folder(self) -> None:
+        self._set_triage('[Review]')
+        letter = self._put(self.inbox / 'review' / 'y.txt', b'a letter')
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((self.inbox / 'processed' / 'y.txt').is_file())
+
+    def test_nothing_listed_keeps_the_full_path(self) -> None:
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((self.inbox / 'processed' / 'review' / 'A' / 'x.txt').is_file())
+
+    def test_a_collision_at_the_shortened_park_path_refuses(self) -> None:
+        self._set_triage('[review]')
+        self._put(self.inbox / 'processed' / 'A' / 'x.txt', b'parked earlier')
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('destination already exists', err)
+        self.assertIn('processed/A/x.txt', err.replace('\\', '/'))
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_more_parks_by_the_same_rule(self) -> None:
+        self._set_triage('[review]')
+        primary, _record, _sid = self._file_letter()
+        page = self._put(self.inbox / 'review' / 'Letters' / 'p2.jpg', JPEG)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((self.inbox / 'processed' / 'Letters' / 'p2.jpg').is_file())
+        self.assertFalse((self.inbox / 'processed' / 'review').exists())
+
+    def test_dry_run_names_the_shortened_park_path(self) -> None:
+        self._set_triage('[review]')
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        before = self._snapshot(self.tmp)
+        rc, out, err = self._run(str(letter), '--type', 'letter', '--dry-run')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        text = out.replace('\\', '/')
+        self.assertIn('processed/A/x.txt', text)
+        self.assertNotIn('processed/review', text)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_a_refusal_puts_it_back_and_leaves_no_park_folder(self) -> None:
+        self._set_triage('[review]')
+        box = self.inbox / 'review' / 'Box'
+        front = self._put(box / 'box-001.tif', TIFF)
+        self._put(box / 'box-001-back.tif', TIFF)
+        self._put(box / 'box-001_back.pdf', PDF)
+        rc, _out, _err = self._run(str(front), '--type', 'letter')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(front.is_file())
+        self.assertFalse((self.inbox / 'processed').exists())
+
+    def test_a_malformed_value_warns_and_files_as_before(self) -> None:
+        self._set_triage('{review: yes}')
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('inbox_triage_dirs', err)
+        self.assertNotIn('Traceback', err)
+        self.assertTrue((self.inbox / 'processed' / 'review' / 'A' / 'x.txt').is_file())
+
+    def test_an_unusable_entry_is_dropped_with_a_warning(self) -> None:
+        self._set_triage('[review, ../outside, processed]')
+        letter = self._put(self.inbox / 'review' / 'A' / 'x.txt', b'a letter')
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('inbox_triage_dirs', err)
+        self.assertTrue((self.inbox / 'processed' / 'A' / 'x.txt').is_file())
+
+    def test_doctor_names_a_malformed_value(self) -> None:
+        import doctor
+        from _lib import load_fha_yaml
+        self._set_triage('7')
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        check = next((c for c in result.data['checks'] if c['id'] == 'inbox_triage_dirs'), None)
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+        self.assertIn('inbox_triage_dirs', '\n'.join(result.data['lines']))
+
+
 if __name__ == '__main__':
     unittest.main()
