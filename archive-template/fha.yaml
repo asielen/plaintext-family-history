@@ -76,6 +76,22 @@
 #
 # inbox_triage_dirs: [review, already-existing]
 #
+# ── Standing photo-or-record rules for inbox folders (optional) ──
+#   A .jpg or .tif is filed into the photo library unless you say it is a
+#   record. If you have decided once where a kind of item lives - say every
+#   postcard is a record - write it down here, and anything filed from that
+#   inbox folder is typed and filed that way without remembering --type.
+#   The first matching rule wins; --type, or a note's source_type:, still
+#   overrides it. Patterns are relative to the inbox; * matches any name,
+#   including folders below. An inbox sorting folder above (review/) is
+#   left out before matching.
+#
+# intake_defaults:
+#   - match: "Postcards/**"
+#     source_type: letter
+#   - match: "Scans/Records/**"
+#     source_type: other
+#
 # ── A safety copy of every photo fha writes into (optional, recommended) ──
 #   To keep your photo tool (Lightroom and the like) from losing track of a
 #   photo, fha writes its keywords and captions INTO the original file rather

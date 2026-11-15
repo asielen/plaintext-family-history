@@ -891,5 +891,133 @@ class SecondReviewTests(InboxFilingTestCase):
         self.assertIn('stale-letter.pdf', '\n'.join(result.data['lines']))
 
 
+class IntakeDefaultsTests(InboxFilingTestCase):
+    """#294: `intake_defaults:` gives an inbox folder a standing source type,
+    so "every postcard is a record" is applied without remembering --type."""
+
+    RULE = ('intake_defaults:\n'
+            '  - match: "Postcards/**"\n'
+            '    source_type: letter\n')
+
+    def _set_yaml(self, text: str) -> None:
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + text, encoding='utf-8')
+
+    def test_a_matching_inbox_file_is_filed_as_the_rules_type(self) -> None:
+        self._set_yaml(self.RULE)
+        card = self._put(self.inbox / 'Postcards' / 'card-01.tif', TIFF)
+        before = self._snapshot(self.tmp)
+        rc, out, err = self._run(str(card), '--dry-run')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+        rc, out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
+        self.assertEqual(self._files(self.photos), [])
+        filed = list((self.docs / 'letter').glob('card-01_S-*.tif'))
+        self.assertEqual(len(filed), 1)
+        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        self.assertEqual(read_record(record)['meta']['source_type'], 'letter')
+
+    def test_an_explicit_type_beats_the_default(self) -> None:
+        self._set_yaml(self.RULE)
+        card = self._put(self.inbox / 'Postcards' / 'card-02.tif', TIFF)
+        rc, out, err = self._run(str(card), '--type', 'photo')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._files(self.photos), ['card-02.tif'])
+        self.assertNotIn('intake_defaults', out)
+
+    def test_no_rules_keeps_todays_behaviour(self) -> None:
+        card = self._put(self.inbox / 'Postcards' / 'card-03.tif', TIFF)
+        rc, _out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._files(self.photos), ['card-03.tif'])
+
+    def test_a_stub_hint_beats_the_default(self) -> None:
+        self._set_yaml(self.RULE)
+        card = self._put(self.inbox / 'Postcards' / 'card-04.tif', TIFF)
+        (self.inbox / 'Postcards' / 'card-04.notes.md').write_text(
+            '---\nsource_type: census\n---\n', encoding='utf-8')
+        rc, _out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(len(list((self.docs / 'census').glob('card-04_S-*.tif'))), 1)
+
+    def test_a_triage_folder_is_left_out_before_matching(self) -> None:
+        self._set_yaml(self.RULE + 'inbox_triage_dirs: [review]\n')
+        card = self._put(self.inbox / 'review' / 'Postcards' / 'card-05.tif', TIFF)
+        rc, out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-05_S-*.tif'))), 1)
+
+    def test_more_attachment_takes_the_default(self) -> None:
+        self._set_yaml(self.RULE)
+        front = self._put(self.inbox / 'card.jpg', JPEG)
+        rc, _out, err = self._run(str(front))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        back = self._put(self.inbox / 'Postcards' / 'card-back-scan.tif', TIFF)
+        rc, out, err = self._run(str(self.photos / 'card.jpg'), '--more', str(back), 'back')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
+        self.assertNotIn('card-back-scan.tif', self._files(self.photos))
+        self.assertEqual(len(list(self.docs.rglob('*-back_S-*.tif'))), 1)
+
+    def test_a_bundle_takes_the_default(self) -> None:
+        self._set_yaml(self.RULE)
+        folder = self.inbox / 'Postcards' / 'aunt-1908'
+        self._put(folder / 'front.tif', TIFF)
+        (folder / 'notes.md').write_text('---\ntitle: Card from aunt\n---\n', encoding='utf-8')
+        rc, out, err = self._run(str(folder))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
+        self.assertEqual(self._files(self.photos), [])
+        self.assertEqual(len(list((self.archive / 'sources' / 'letter').glob('*_S-*.md'))), 1)
+
+    def test_an_inbox_folder_of_records_is_not_told_type_photo(self) -> None:
+        self._set_yaml(self.RULE)
+        self._put(self.inbox / 'Postcards' / 'card-06.tif', TIFF)
+        rc, _out, err = self._run(str(self.inbox / 'Postcards'))
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('inbox/Postcards/card-06.tif', err)
+        self.assertNotIn('--type photo', err)
+        self.assertIn('intake_defaults', err)
+
+    def test_the_workbench_verb_takes_the_default(self) -> None:
+        import argparse
+        self._set_yaml(self.RULE)
+        card = self._put(self.inbox / 'Postcards' / 'card-07.tif', TIFF)
+        ns = argparse.Namespace(
+            file=str(card), source_type=None, title=None, slug=None, source_date=None,
+            more=None, people=None, dry_run=False, root=str(self.archive), source_id=None,
+            offer_dest=False)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            res = process.run_process(ns)
+        self.assertTrue(res.ok)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-07_S-*.tif'))), 1)
+
+    def test_a_malformed_rule_warns_and_files_as_before(self) -> None:
+        self._set_yaml('intake_defaults:\n'
+                       '  - match: "Postcards/**"\n'
+                       '    source_type: postcrd\n'
+                       '  - just a string\n')
+        card = self._put(self.inbox / 'Postcards' / 'card-08.tif', TIFF)
+        rc, _out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('intake_defaults', err)
+        self.assertIn('postcrd', err)
+        self.assertNotIn('Traceback', err)
+        self.assertEqual(self._files(self.photos), ['card-08.tif'])
+
+    def test_doctor_names_a_malformed_rule(self) -> None:
+        import doctor
+        from _lib import load_fha_yaml
+        self._set_yaml('intake_defaults: 7\n')
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        check = next((c for c in result.data['checks'] if c['id'] == 'intake_defaults'), None)
+        self.assertIsNotNone(check)
+        self.assertEqual(check['status'], 'warn')
+
+
 if __name__ == '__main__':
     unittest.main()

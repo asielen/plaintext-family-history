@@ -52,12 +52,16 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    **Photo or document?** The root is a management fact, not a content judgment: if it lives (or belongs)
    in the human's photo library, it goes to the photos root; everything else — scans, clippings, a
    photograph *of* a record — goes to the documents root. A stub note's `source_type:` hint (e.g.
-   `source_type: census` on a `.jpg` scan) routes it to the documents root at intake; **without a hint the
-   file extension decides**, so set the hint when filing a scanned record saved as an image, or a scanned
-   letter will land in the photo library. When genuinely unsure, ask the human one plain question ("is
-   this one for the photo albums, or the records drawer?"). Note that many border cases need no choice at
-   all: a photos-root postcard and its documents-root transcription can share one source record (bundle or
-   `--more`). A file the human pre-filed into any documents subfolder keeps its place — `fha process`
+   `source_type: census` on a `.jpg` scan) routes it to the documents root at intake, and so does an
+   `intake_defaults:` rule in `fha.yaml` for the inbox folder it sits in (`fha process` names the rule it
+   used); **without a hint, a `--type` or a rule, the file extension decides**, so set one when filing a
+   scanned record saved as an image, or a scanned letter will land in the photo library. When genuinely
+   unsure, ask the human one plain question ("is this one for the photo albums, or the records drawer?").
+   Many border cases need no choice at all: a postcard and its transcription can share one source record,
+   whichever root the owner keeps postcards in; some owners keep every postcard with the records, others
+   keep real-photo cards in the photo library. Ask once, then record the answer as a standing rule - an
+   `intake_defaults:` entry such as `- match: "Postcards/**"` / `source_type: letter` - so the next batch
+   is filed the same way without anyone remembering `--type`. A file the human pre-filed into any documents subfolder keeps its place — `fha process`
    renames in place, and folder organization inside the documents root is his to choose (SPEC §12.1:
    folders are projection); an inbox single with no chosen spot files into `documents/{type}/`. If he
    reorganizes filed documents later, `fha reconcile --dry-run` then `fha reconcile` re-ties every

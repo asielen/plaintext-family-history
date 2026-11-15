@@ -97,6 +97,7 @@ from _lib import (
     id_type_of,
     INDEX_SCHEMA_VERSION,
     inbox_triage_dirs,
+    intake_default_rules,
     is_back_scan_candidate,
     is_fixture_path,
     is_valid_id,
@@ -2329,6 +2330,18 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         lines.append(f'inbox_triage_dirs: {triage_warning}  next: fix the line in fha.yaml')
         checks.append({'id': 'inbox_triage_dirs', 'status': 'warn', 'detail': triage_warning,
                        'next_step': 'edit inbox_triage_dirs in fha.yaml'})
+        worst = max(worst, EXIT_WARNINGS)
+        lines.append('')
+
+    # `intake_defaults:` (#294) - a bad rule is skipped by `fha process`, so
+    # items it was meant for are filed by extension; say so while it is cheap.
+    intake_warnings = intake_default_rules(fha_config)[1]
+    if intake_warnings:
+        for warning in intake_warnings:
+            lines.append(f'intake_defaults: {warning}  next: fix the rule in fha.yaml')
+        checks.append({'id': 'intake_defaults', 'status': 'warn',
+                       'detail': f'{len(intake_warnings)} rule(s) ignored',
+                       'next_step': 'edit intake_defaults in fha.yaml'})
         worst = max(worst, EXIT_WARNINGS)
         lines.append('')
 

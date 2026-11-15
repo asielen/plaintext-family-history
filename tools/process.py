@@ -228,6 +228,8 @@ from _lib import (
     INBOX_PROCESSED_DIRNAME,
     inbox_park_relpath,
     inbox_triage_dirs,
+    intake_default_for,
+    intake_default_rules,
     is_back_scan_candidate,
     photos_ignore_matcher,
     photos_ignore_patterns,
@@ -530,6 +532,10 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
     `--type photo` therefore falls through to the extension test below and is
     filed as a document, with its record still typed as the human asked.
 
+    **Then the archive's standing rule** for an inbox file the human said
+    nothing about: an `intake_defaults:` rule matching its inbox folder is
+    read as its stated type (#294, `_intake_default`).
+
     **Then the file itself:** a known photo extension is a photo, everything
     else a document.
 
@@ -547,11 +553,57 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
     if _is_under_strict(file_path, photos_root, root_label='photos root'):
         return 'photo'
     stated = str(source_type).strip().lower() if source_type else ''
+    if not stated:
+        # The archive's standing answer for this inbox folder (#294), read as
+        # a stated type when nothing more specific was said.
+        hit = _intake_default(file_path, fha_config, archive_root)
+        stated = hit[0] if hit else ''
     if stated and stated != _PHOTO_SOURCE_TYPE:
         return 'document'
     if file_path.suffix.lower() in PHOTO_EXTENSIONS:
         return 'photo'
     return 'document'
+
+
+def _intake_default(file_path: Path, fha_config: dict, archive_root: Path) -> tuple[str, str] | None:
+    """`(source_type, pattern)` of the `intake_defaults:` rule for an inbox
+    file, or None (#294).
+
+    Matched against the file's path inside the inbox with a leading
+    `inbox_triage_dirs:` folder left out first, the same rule the park path
+    follows (#290): sorting `Postcards/card.tif` into `review/` while it
+    waits on an answer does not change what kind of item it is, so
+    `review/Postcards/card.tif` still matches `Postcards/**`. A file outside
+    the inbox has no rule - its root already says what it is.
+    """
+    rules, _ = intake_default_rules(fha_config)
+    if not rules:
+        return None
+    inbox_root = resolve_path('inbox', fha_config, archive_root)
+    try:
+        rel = Path(file_path).resolve().relative_to(inbox_root.resolve())
+    except (ValueError, OSError, RuntimeError):
+        return None
+    rel = inbox_park_relpath(rel, inbox_triage_dirs(fha_config)[0])
+    return intake_default_for(rel.as_posix(), rules)
+
+
+def _intake_default_type(file_path: Path, fha_config: dict, archive_root: Path,
+                         *, dry_run: bool) -> str | None:
+    """The `intake_defaults:` type for an inbox file, said out loud, or None.
+
+    The caller uses it exactly as if it were `--type`, and only when no
+    `--type` and no stub hint was given - both of those still win. A
+    default never acts silently: the line names the rule that supplied it,
+    on the dry run and the live run alike.
+    """
+    hit = _intake_default(file_path, fha_config, archive_root)
+    if hit is None:
+        return None
+    stype, pattern = hit
+    print(f'{"[dry-run] " if dry_run else ""}{file_path.name}: type {stype} from '
+          f"intake_defaults '{pattern}' (pass --type to choose otherwise)")
+    return stype
 
 
 def _filename_has_source_id(file_path: Path) -> str | None:
@@ -3262,6 +3314,10 @@ def process_bundle(
                     'Fix the notes before dissolving the bundle.'
                 )
             stated_type = hinted_type
+    if stated_type is None:
+        # The bundle folder's standing type in the inbox (#294).
+        stated_type = _intake_default_type(notes_path, fha_config, archive_root,
+                                           dry_run=dry_run)
     asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
                    for a in assets}
 
@@ -3993,6 +4049,11 @@ def attach_more(
     docstring for why "moved then undone" is not equivalent to "never
     moved" here.
     """
+    if source_type is None:
+        # An inbox attachment gets its folder's standing type (#294), used
+        # exactly as --type would be - including the DNA preflight below.
+        source_type = _intake_default_type(more_file, fha_config, archive_root,
+                                           dry_run=dry_run)
     _preflight_dna_restriction_before_relocation(
         archive_root, fha_config, primary_path, real_path,
         dry_run=dry_run, source_type=source_type)
@@ -6130,6 +6191,12 @@ def _triage_folder_refusal(
         if p.is_file() and _is_photo_ext(p)
         and not _is_sidecar_path(p) and not _filename_has_source_id(p))
     if photos and _is_under(folder, inbox_root):
+        hit = _intake_default(photos[0], fha_config, archive_root)
+        if hit is not None and hit[0] != _PHOTO_SOURCE_TYPE:
+            return (f'{folder.name} is a folder in your inbox. Its files are filed one at a '
+                    f'time - e.g. `fha process "{_inbox_shown(photos[0], fha_config, archive_root)}"`, '
+                    f"which intake_defaults '{hit[1]}' files as type {hit[0]}. (A folder holding "
+                    'a notes.md is filed whole, as one source.) Nothing was changed.')
         return (f'{folder.name} is a folder in your inbox. Photos are filed out of the inbox '
                 'one at a time, each into the folder of your photo library you choose - '
                 f'e.g. `fha process "{_inbox_shown(photos[0], fha_config, archive_root)}" '
@@ -6364,6 +6431,9 @@ def _run_process(args: argparse.Namespace) -> int:
     _, triage_warning = inbox_triage_dirs(fha_config)
     if triage_warning:
         print(f'WARNING: {triage_warning}', file=sys.stderr)
+    # The same for `intake_defaults:` (#294): a bad rule is skipped, said once.
+    for intake_warning in intake_default_rules(fha_config)[1]:
+        print(f'WARNING: {intake_warning}', file=sys.stderr)
 
     if is_working_copy(archive_root):
         print(
@@ -6555,6 +6625,12 @@ def _run_process(args: argparse.Namespace) -> int:
         # saying `source_type: census`) could route to documents/ while its
         # `-back` sibling, seeing no hint, routed to photos/ instead - two
         # different roots for one physical item (#113 follow-up).
+        if (source_type is None and not args.more
+                and _sidecar_hinted_source_type(sidecar_path) is None):
+            # The archive's standing rule for this inbox folder (#294),
+            # treated exactly as --type from here on.
+            source_type = _intake_default_type(file_path, fha_config, archive_root,
+                                               dry_run=dry_run)
         relocate_type = source_type or _sidecar_hinted_source_type(sidecar_path)
         if dest is not None:
             _refuse_dest_for(archive_root, fha_config, file_path, relocate_type, dest)

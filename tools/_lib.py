@@ -157,6 +157,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
 #    inbox_triage_dirs         - fha.yaml inbox_triage_dirs: names, + a warning if malformed (#290)
 #    inbox_park_relpath        - an inbox file's place under inbox/processed/, triage folder dropped
+#    intake_default_rules      - fha.yaml intake_defaults: (pattern, type) rules + warnings (#294)
+#    intake_default_for        - the first rule matching an inbox-relative path, or None
 #    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
@@ -2883,6 +2885,62 @@ def inbox_park_relpath(rel: Path, triage_dirs: list[str]) -> Path:
     if len(parts) > 1 and parts[0].casefold() in folded:
         return Path(*parts[1:])
     return rel
+
+
+def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """The `intake_defaults:` rules from fha.yaml, and a warning per bad entry.
+
+    A standing decision about where a kind of item lives - "every postcard
+    is a record" - needs somewhere to live too, or it holds only as long as
+    whoever runs `fha process` remembers `--type` (#294). Each rule names an
+    inbox folder pattern and the source type an item found there is filed
+    as, when nothing more specific was said:
+
+        intake_defaults:
+          - match: "Postcards/**"
+            source_type: letter
+
+    Returns `([(pattern, source_type), ...], warnings)`, in file order (the
+    first matching rule wins). An entry that is not a `match:` +
+    `source_type:` pair, or whose type is not in the SPEC §14 vocabulary, is
+    left out with a plain warning rather than a crash: a mistyped rule must
+    not stop filing, it only means those items are classified as before.
+    """
+    raw = fha_config.get('intake_defaults')
+    example = ('e.g.\n  intake_defaults:\n    - match: "Postcards/**"\n'
+               '      source_type: letter')
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], [f'intake_defaults in fha.yaml must be a list of rules ({example}); '
+                    'it is ignored until fixed.']
+    rules: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    for i, entry in enumerate(raw, 1):
+        match = entry.get('match') if isinstance(entry, dict) else None
+        stype = entry.get('source_type') if isinstance(entry, dict) else None
+        if not isinstance(match, str) or not match.strip() or not isinstance(stype, str):
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({entry!r}) needs a match: '
+                            f'folder pattern and a source_type: ({example}); it is ignored.')
+            continue
+        stype = stype.strip().lower()
+        if stype not in SOURCE_TYPES:
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({match!r}) names '
+                            f'{format_source_type_error(stype)} The rule is ignored until fixed.')
+            continue
+        rules.append((match.replace('\\', '/').strip().strip('/'), stype))
+    return rules, warnings
+
+
+def intake_default_for(rel_posix: str, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """`(source_type, pattern)` of the first rule matching an inbox-relative
+    path, or None. Patterns follow `photos_ignore:` (the same matcher):
+    fnmatch-style, case-insensitive, and `*` crosses folders, so
+    `Postcards/**` and `Postcards/*` both match `Postcards/1908/card.tif`."""
+    for pattern, stype in rules:
+        if photos_ignore_matcher([pattern])(rel_posix):
+            return stype, pattern
+    return None
 
 
 def photos_ignore_matcher(patterns: list[str]):
