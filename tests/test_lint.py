@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
-from _lib import CLAIMS_RE, EXIT_WARNINGS, normalize_date, read_record
+from _lib import CLAIMS_RE, EXIT_WARNINGS, format_edtf_error, normalize_date, read_record
 
 
 _PERSON_MD = '''---
@@ -119,6 +119,30 @@ class NormalizeDateTests(unittest.TestCase):
     def test_genuinely_unparseable_returns_none(self) -> None:
         for raw in ('the day after never', 'garbage', '', '   ', None):
             self.assertIsNone(normalize_date(raw), repr(raw))
+
+    def test_a_hedge_on_a_range_lands_on_both_endpoints(self) -> None:
+        # #293 review: the hedge used to be dropped, writing a valid but
+        # wrong date ('about 1891-1893' -> '1891/1893').
+        self.assertEqual(normalize_date('about 1891-1893'), '1891~/1893~')
+        self.assertEqual(normalize_date('circa 1850 to 1855'), '1850~/1855~')
+        self.assertEqual(normalize_date('~1880-1885'), '1880~/1885~')
+        self.assertEqual(normalize_date('possibly 1880-1885'), '1880?/1885?')
+
+    def test_a_hedge_on_a_decade_is_refused_not_dropped(self) -> None:
+        # '188X~' is not a stored form, so the human is asked.
+        for raw in ('about 1850s', 'perhaps 1880s', 'circa 188x'):
+            self.assertIsNone(normalize_date(raw), raw)
+            self.assertIn('whole decade', format_edtf_error(raw))
+
+    def test_a_hedged_backwards_range_is_still_refused(self) -> None:
+        # Widened by the hedge, 1941~/1940~ overlaps and would validate.
+        self.assertIsNone(normalize_date('about 1941-1940'))
+        self.assertIsNone(normalize_date('maybe 1950 to 1940'))
+
+    def test_trailing_dots_are_not_an_open_end_silently_dropped(self) -> None:
+        for raw in ('1850..', '1850...', 'about 1850..'):
+            self.assertIsNone(normalize_date(raw), raw)
+        self.assertEqual(normalize_date('circa 1870.'), '1870~')
 
 
 class LintForgivingDateTests(unittest.TestCase):

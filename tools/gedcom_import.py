@@ -62,6 +62,7 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _map_individual           - one INDI → stub fields + claims
 #    _map_family               - one FAM → marriage/divorce/relationship claims
 #    _scan_existing_persons    - dedupe candidates from people/**/*.md
+#    _birth_window             - (earliest, latest) birth year for the dedupe overlap test
 #
 #  Rendering
 #    _person_stub_text / _person_filename
@@ -101,6 +102,7 @@ from _lib import (
     FhaConfigError,
     Result,
     configure_utf8_stdout,
+    edtf_bounds,
     fmt_id_display,
     is_template_file,
     is_valid_edtf,
@@ -408,11 +410,10 @@ def _translate_gedcom_date(raw: str) -> tuple[str | None, bool]:
     return loose, loose is not None
 
 
-# `YYYY-NN` (hyphen or en dash): the short way to write a year range ("1914-18").
-_SHORT_YEAR_RANGE_RE = re.compile(r'(\d{4})\s*[-\u2013]\s*(\d{2})')
-# The same shape anywhere inside a longer value ("about 1908-10"), but not the
+# `YYYY-NN` (hyphen or en dash), the short way to write a year range
+# ("1914-18"), alone or inside a hedged value ("about 1908-10") - but not the
 # start of a full ISO day ("1908-10-12") or of a four-digit range ("1998-2002").
-_SHORT_SUFFIX_INSIDE_RE = re.compile(r'(?<!\d)\d{4}\s*[-\u2013]\s*\d{2}(?![\d\-\u2013])')
+_SHORT_YEAR_RANGE_RE = re.compile(r'(?<!\d)(\d{4})\s*[-\u2013]\s*(\d{2})(?![\d\-\u2013])')
 # `D/M/YYYY` or `M/D/YYYY` - read only when the order is not in doubt.
 _SLASH_DATE_RE = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4})')
 
@@ -435,10 +436,15 @@ def _loose_date_to_edtf(s: str) -> str | None:
       range ("1914-18"). It is read as a range only when NN is a later year
       in the same century as YYYY (`1908-10` → `1908/1910`), the one reading
       that is a real span; `1908-05`, `1908-08` and `1998-02` (which would
-      cross a century, and reads as well as February 1998) are left out. A
-      hedged form ("about 1908-10", "Bef. 1908-10") is left out too:
-      `normalize_date` would read it as a month, and the hedge cannot be put
-      on a range. A full ISO day (`1908-10-12`) is not ambiguous and passes.
+      cross a century, and reads as well as February 1998) are left out. The
+      rule is deliberate for values like `1905-11`, which could also be read
+      as November 1905: a typed `YYYY-NN` with NN later than YY is a range
+      (owner decision, #293). The short form is rewritten to the four-digit
+      range and handed to `normalize_date`, so a hedge is kept on both
+      endpoints ("about 1908-10" → `1908~/1910~`) and "before 1908-10",
+      which has no stored form, is left out - the same rules as a typed
+      "about 1908-1910". A full ISO day (`1908-10-12`) is not ambiguous and
+      passes.
     * `D/M/YYYY` vs `M/D/YYYY`. Read only when exactly one of the first two
       parts is over 12, so it can only be the day (`19/05/1987`,
       `5/19/1987` → `1987-05-19`). `05/06/1950` could be either and is left
@@ -449,15 +455,15 @@ def _loose_date_to_edtf(s: str) -> str | None:
     (`31/02/1950`) is left out rather than written.
     """
     text = s.strip()
-    m = _SHORT_YEAR_RANGE_RE.fullmatch(text)
-    if m:
+    shorts = list(_SHORT_YEAR_RANGE_RE.finditer(text))
+    if len(shorts) > 1:
+        return None
+    if shorts:
+        m = shorts[0]
         year, suffix = m.group(1), int(m.group(2))
         if suffix <= int(year[2:]):
             return None
-        edtf = f'{year}/{year[:2]}{suffix:02d}'
-        return edtf if is_valid_edtf(edtf) else None
-    if _SHORT_SUFFIX_INSIDE_RE.search(text):
-        return None
+        text = f'{text[:m.start()]}{year}-{year[:2]}{suffix:02d}{text[m.end():]}'
     m = _SLASH_DATE_RE.fullmatch(text)
     if m:
         first, second, year = int(m.group(1)), int(m.group(2)), m.group(3)
@@ -747,7 +753,7 @@ class ImportPlan:
     unread_lines: int
     unread_top: list[tuple[str, int]]      # (tag, line count), most common first
     loose_dates: int = 0                   # dates read by the free-form fallback (#293)
-    loose_date_examples: list[str] = field(default_factory=list)
+    loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -1042,6 +1048,31 @@ def _year_of(value) -> int | None:
     return int(m.group(0)) if m else None
 
 
+_DEDUPE_YEAR_SLACK = 2     # birth windows match within this many years
+
+
+def _birth_window(value) -> tuple[int, int] | None:
+    """(earliest, latest) birth year a `birth:` value allows, or None if undated.
+
+    Dedupe compares windows, not first-four-digit years: since #293 an
+    imported birth can be `[..1900]`, `1840/1860` or `[1840..]`, and reading
+    each as 1900/1840/1840 dropped true duplicates of an existing `1849~`.
+    `edtf_bounds` gives the real span (open ends reach its 0001/9999
+    sentinels, so "before 1900" overlaps anything earlier). A hand-written
+    value that is not EDTF is read with `normalize_date`, and failing that by
+    its first year, so an existing record is never compared more strictly
+    than before."""
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    edtf = raw if is_valid_edtf(raw) else normalize_date(raw)
+    if edtf:
+        lo, hi = edtf_bounds(edtf)
+        return int(lo[:4]), int(hi[:4])
+    year = _year_of(raw)
+    return (year, year) if year is not None else None
+
+
 def _scan_existing_persons(archive_root: Path) -> list[dict]:
     """Existing persons' names + variants + provisional birth year, from the tree.
 
@@ -1081,7 +1112,7 @@ def _scan_existing_persons(archive_root: Path) -> list[dict]:
         pid = str(meta.get('id') or '').strip()
         out.append({
             'pid': pid, 'name': name, 'variants': variants,
-            'birth_year': _year_of(meta.get('birth')),
+            'birth_window': _birth_window(meta.get('birth')),
             'birth_raw': str(meta.get('birth') or ''),
             'path': path,
         })
@@ -1091,8 +1122,10 @@ def _scan_existing_persons(archive_root: Path) -> list[dict]:
 def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
     """Report lines for incoming people who look like someone already filed.
 
-    Match rule (plan §dedupe): normalized name tokens equal AND birth years
-    within ±2 - or either year absent and the names match exactly. Import
+    Match rule (plan §dedupe): normalized name tokens equal AND birth windows
+    (`_birth_window`) overlapping once widened by ±2 years - or either birth
+    absent and the names match exactly. Two plain years therefore still match
+    within ±2, as before. Import
     proceeds regardless; merging identities is a human decision (the
     merge-identities skill, and plan 16's confirmed write-back)."""
     existing = _scan_existing_persons(archive_root)
@@ -1109,11 +1142,13 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
         for name in ([stub.name] if stub.name else []) + stub.variants:
             key = _norm_name_key(name)
             for person in by_key.get(key, []):
-                in_year = _year_of(stub.birth)
-                ex_year = person['birth_year']
-                if in_year is not None and ex_year is not None and abs(in_year - ex_year) > 2:
+                in_win = _birth_window(stub.birth)
+                ex_win = person['birth_window']
+                if (in_win is not None and ex_win is not None
+                        and (in_win[0] - _DEDUPE_YEAR_SLACK > ex_win[1]
+                             or ex_win[0] > in_win[1] + _DEDUPE_YEAR_SLACK)):
                     continue
-                in_b = f' b.{in_year}' if in_year else ''
+                in_b = f' b.{stub.birth}' if stub.birth else ''
                 ex_b = f' b.{person["birth_raw"]}' if person['birth_raw'] else ''
                 try:
                     where = person['path'].relative_to(archive_root)
@@ -1241,7 +1276,9 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         if date_node is not None:
             consumed.add(id(date_node))
             export_date_raw = _oneline(date_node.value)
-            source_date = gedcom_date_to_edtf(export_date_raw)
+            # Strict grammar only: HEAD DATE is written by the exporting
+            # program, never typed, and is not counted as a free-form read.
+            source_date = _strict_gedcom_date_to_edtf(export_date_raw)
         gedc = head.child('GEDC')
         if gedc is not None:
             consumed.add(id(gedc))
@@ -1391,7 +1428,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         cited_sources=cited_sources,
         duplicates=_find_duplicates(archive_root, stubs),
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
-        loose_dates=len(date_loose), loose_date_examples=date_loose[:3],
+        loose_dates=len(date_loose), loose_date_reads=list(date_loose),
     )
 
 
@@ -1608,8 +1645,10 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         lines.append('  After import, ask "are these the same person?" '
                      '(the merge-identities skill).')
     if plan.loose_dates:
-        shown = '; '.join(plan.loose_date_examples)
-        more = ', ...' if plan.loose_dates > len(plan.loose_date_examples) else ''
+        # Three examples on screen; --plan-out (capped=False) lists every one.
+        reads = plan.loose_date_reads if not capped else plan.loose_date_reads[:3]
+        shown = '; '.join(reads)
+        more = ', ...' if plan.loose_dates > len(reads) else ''
         lines.append('')
         lines.append(f'  {plan.loose_dates:,} date(s) were typed as free-form wording '
                      f'rather than GEDCOM\'s date form ({shown}{more}) and were read '

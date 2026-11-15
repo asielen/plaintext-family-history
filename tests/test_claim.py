@@ -3162,6 +3162,14 @@ class BackwardsIntervalTests(unittest.TestCase):
         self.assertIn('runs backwards', ' '.join(m.text for m in result.messages))
         self.assertEqual(self.source.read_bytes(), before)
 
+    def test_fha_claim_date_keeps_the_hedge_on_a_range(self) -> None:
+        # #293 review: 'about 1891-1893' used to be written as 1891/1893.
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                 date='about 1891-1893')
+        self.assertEqual(result.exit_code, EXIT_CLEAN,
+                         [m.text for m in result.messages])
+        self.assertEqual(str(self._date_of('C-aa11bb22cc')), '1891~/1893~')
+
     def test_fha_claim_new_date_refuses(self) -> None:
         before = self.source.read_bytes()
         result = claim.run_claim_new(

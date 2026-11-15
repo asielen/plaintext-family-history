@@ -1077,9 +1077,44 @@ class LooseDateFallbackTestCase(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
 
-    def test_hedged_two_digit_suffix_stays_unread(self) -> None:
-        # 'about 1908-10' would read as about October 1908; refused instead.
-        for raw in ('about 1908-10', 'Bef. 1908-10', 'ABT 1908-10'):
+    def test_hedged_two_digit_suffix_is_a_hedged_range_never_a_month(self) -> None:
+        # 'about 1908-10' must never read as about October 1908. The hedge
+        # goes on both endpoints, the same as 'about 1908-1910'.
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('about 1908-10'), '1908~/1910~')
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('ABT 1908-10'), '1908~/1910~')
+        # 'before' has no stored form on a range, and a non-later suffix is
+        # not a range: both stay unread rather than becoming a month.
+        for raw in ('Bef. 1908-10', 'about 1908-05', 'after 1998-02'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
+
+    def test_hedged_four_digit_range_and_decade_never_lose_the_hedge(self) -> None:
+        # A hedge dropped off a range writes a valid but wrong date: a real
+        # apply wrote 'birth: 1891/1893' for 'Abt. 1891-1893'. A hedged range
+        # carries the hedge on both endpoints; a hedged decade has no stored
+        # form ('188X~' is not valid), so it is left out.
+        cases = [
+            ('Abt. 1891-1893', '1891~/1893~'),
+            ('ABT 1850-1855', '1850~/1855~'),
+            ('circa 1850-1855', '1850~/1855~'),
+            ('~1880-1885', '1880~/1885~'),
+            ('Abt 1880 to 1885', '1880~/1885~'),
+            ('Possibly 1880-1885', '1880?/1885?'),
+            ('about 1908-10', '1908~/1910~'),
+            ('About 1850s', None),
+            ('perhaps 1880s', None),
+        ]
+        for raw, want in cases:
+            with self.subTest(raw=raw):
+                got = gedcom_import.gedcom_date_to_edtf(raw)
+                self.assertEqual(got, want)
+                if got is not None:
+                    self.assertTrue(is_valid_edtf(got))
+
+    def test_placeholder_words_never_become_dates(self) -> None:
+        for raw in ('?', 'unknown', 'Deceased', 'Y', 'Private', 'living',
+                    '1850..', '1850...', 'Spring 1850', 'Januar 1850',
+                    'janvier 1850', '1 Jan', 'Sept 31 1873'):
             with self.subTest(raw=raw):
                 self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
 
@@ -1156,6 +1191,50 @@ class LooseDateImportTestCase(_ArchiveCase):
         self.assertIn("'05/06/1850'", warning)
         self.assertNotIn('3 December 1810', warning)
         self.assertIn('2 other date(s)', warning)
+
+    def test_plan_out_lists_every_free_form_read_uncapped(self) -> None:
+        body = ''.join(
+            f'0 @I{n}@ INDI\n1 NAME P{n} /Example/\n1 BIRT\n2 DATE {n} December 1810\n'
+            for n in range(1, 6))
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                          name='many.ged')
+        self.assertEqual(plan.loose_dates, 5)
+        full = '\n'.join(gedcom_import._plan_lines(plan, applied=False, capped=False))
+        for n in range(1, 6):
+            self.assertIn(f"@I{n}@ BIRT: '{n} December 1810'", full)
+        screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertNotIn("@I5@ BIRT: '5 December 1810'", screen)
+        self.assertIn('...', screen)
+
+    def test_head_date_uses_the_strict_grammar_only(self) -> None:
+        # HEAD DATE is written by the exporting program, never typed; it feeds
+        # the source record's source_date and is not a free-form read.
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n1 DATE 15 November 2026\n'
+                          '0 @I1@ INDI\n1 NAME Pat /Example/\n0 TRLR\n', name='head.ged')
+        self.assertIsNone(plan.source_date)
+        self.assertEqual(plan.loose_dates, 0)
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n1 DATE 15 NOV 2026\n'
+                          '0 @I1@ INDI\n1 NAME Pat /Example/\n0 TRLR\n', name='head2.ged')
+        self.assertEqual(plan.source_date, '2026-11-15')
+
+    def test_open_or_range_birth_still_matches_existing_person(self) -> None:
+        # A free-form birth that is now read ('Before 1900', '1840-1860',
+        # 'after 1840') must still be reported against an existing
+        # 'birth: 1849~' with the same name: the windows overlap. A first-four-
+        # digits comparison (1900 vs 1849) used to drop these duplicates.
+        people = self.archive / 'people'
+        people.mkdir(exist_ok=True)
+        (people / 'hartley__rose_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\naliases: [P-aaaaaaaaaa]\nname: Rose Hartley\n'
+            'living: false\nbirth: 1849~\ntier: stub\n---\n', encoding='utf-8')
+        dated = {'@I1@': 'Before 1900', '@I2@': '1840-1860', '@I3@': 'after 1840',
+                 '@I4@': '1900-1910', '@I5@': '1847'}
+        body = ''.join(f'0 {x} INDI\n1 NAME Rose /Hartley/\n1 BIRT\n2 DATE {d}\n'
+                       for x, d in dated.items())
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                          name='dupes.ged')
+        flagged = {line.split(' ', 1)[0] for line in plan.duplicates}
+        self.assertEqual(flagged, {'@I1@', '@I2@', '@I3@', '@I5@'}, plan.duplicates)
 
 
 if __name__ == '__main__':
