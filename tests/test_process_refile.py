@@ -142,6 +142,18 @@ class ProcessRefileTestCase(unittest.TestCase):
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(['refile'] + argv + ['--root', str(self.archive)])
 
+    def test_refile_dest_whose_files_photos_ignore_skips_is_refused(self) -> None:
+        self._install_photo_store()
+        self._write_doc_source()
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + "photos_ignore:\n  - 'Phone Backups/*'\n",
+                       encoding='utf-8')
+        before = self._snapshot_tree(self.archive)
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', 'Phone Backups'])
+        self.assertNotEqual(rc, 0)
+        self.assertIn('photos_ignore', err)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+
     def test_refile_dest_into_photos_ignore_folder_is_refused(self) -> None:
         # PR #287 second review: a photo refiled into a `photos_ignore:` folder
         # would never be seen by the catalog, so the move is refused up front.

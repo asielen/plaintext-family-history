@@ -1344,6 +1344,38 @@ class FourthReviewTests(InboxFilingTestCase):
                 self.assertEqual(len(list((self.docs / 'letter').glob(f'*_S-*.jpg'))),
                                  1 if folder.name == 'b1' else 2)
 
+    def test_dest_whose_files_photos_ignore_skips_is_refused(self) -> None:
+        # Codex on PR #287: `Phone Backups/*` skips the files inside the folder,
+        # so `--dest "Phone Backups"` would file a photo the catalog never sees.
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + "photos_ignore:\n  - 'Phone Backups/*'\n",
+                       encoding='utf-8')
+        photo = self._put(self.inbox / 'card.jpg', JPEG)
+        folder = self.inbox / 'Reunion'
+        self._put(folder / 'group.jpg', JPEG)
+        (folder / 'notes.md').write_text('---\ntitle: Reunion\n---\n', encoding='utf-8')
+        before = self._snapshot(self.tmp)
+        for target in (photo, folder):
+            with self.subTest(target=target.name):
+                rc, _out, err = self._run(str(target), '--dest', 'Phone Backups')
+                self.assertEqual(rc, EXIT_ERRORS, err)
+                self.assertIn("photos_ignore: 'Phone Backups/*'", err)
+                self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_folder_refusal_keeps_the_requested_type(self) -> None:
+        folder = self.inbox / 'Scans'
+        self._put(folder / 'sheet-1.jpg', JPEG)
+        rc, _out, err = self._run(str(folder), '--type', 'census')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--type census', err)
+        self.assertNotIn('--type photo', err)
+        # A stub's type hint is not overridden either.
+        (folder / 'sheet-1.notes.md').write_text('---\nsource_type: letter\n---\n',
+                                                 encoding='utf-8')
+        rc, _out, err = self._run(str(folder))
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertNotIn('--type photo', err)
+
     def test_bundle_dest_refusal_names_the_rule(self) -> None:
         cfg = self.archive / 'fha.yaml'
         cfg.write_text(cfg.read_text(encoding='utf-8')

@@ -5055,7 +5055,8 @@ def _file_line_count(text: str) -> int:
 
 def _validate_dest_subpath(root: Path, dest: str, root_label: str,
                            fha_config: dict | None = None,
-                           inbox_root: Path | None = None) -> Path:
+                           inbox_root: Path | None = None,
+                           file_names: list[str] | None = None) -> Path:
     """Validate a `--dest SUBPATH` and return the directory it names under `root`.
 
     Mirrors person.py's `_validate_into_folder` containment discipline: no
@@ -5115,8 +5116,12 @@ def _validate_dest_subpath(root: Path, dest: str, root_label: str,
             patterns = []  # a malformed photos_ignore is photoindex's to report
         if patterns:
             is_ignored = photos_ignore_matcher(patterns)
-            for i in range(1, len(parts) + 1):
-                folder = '/'.join(parts[:i])
+            # Every folder down to --dest, then each file as it would be
+            # filed there (`file_names`): `Phone Backups/*` skips the files
+            # inside the folder, not the folder, and photoindex tests both.
+            planned = ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]
+            planned += ['/'.join(parts + [name]) for name in (file_names or [])]
+            for folder in planned:
                 if is_ignored(folder):
                     match = next((pat for pat in patterns
                                   if photos_ignore_matcher([pat])(folder)), folder)
@@ -5577,10 +5582,11 @@ def process_refile(
                 'never invents photo-library organization - the folder choice is '
                 'yours. Name the subfolder the photo belongs in, e.g. '
                 '--dest 1880s or --dest "Family/Hartley".')
+        new_name = _photo_library_name(src, entry)
         dest_dir = _validate_dest_subpath(
             photos_root, dest, _PHOTO_DIR, fha_config,
-            inbox_root=resolve_path('inbox', fha_config, archive_root))
-        new_name = _photo_library_name(src, entry)
+            inbox_root=resolve_path('inbox', fha_config, archive_root),
+            file_names=[new_name])
     else:
         documents_root = resolve_path('documents', fha_config, archive_root)
         if not documents_root.is_dir():
@@ -6245,8 +6251,21 @@ one transaction. Reorganizing WITHIN a root is not this command - move files
 freely and run `fha reconcile`. Preview with --dry-run first."""
 
 
+def _dest_file_names(target: Path) -> list[str]:
+    """The photo names `--dest` would file, for the `photos_ignore:` check:
+    a bundle folder's pictures, a stub's companion files, or the file itself."""
+    if target.is_dir():
+        return sorted(p.name for p in target.iterdir() if p.is_file() and _is_photo_ext(p))
+    if _is_sidecar_path(target):
+        stem = target.name[:-len('.notes.md')]
+        return sorted(p.name for p in target.parent.iterdir()
+                      if p.is_file() and p.stem == stem and p != target)
+    return [target.name]
+
+
 def _triage_folder_refusal(
     archive_root: Path, fha_config: dict, folder: Path, *, dest: str | None,
+    source_type: str | None = None,
 ) -> str | None:
     """Why a triage folder (no notes.md) cannot be processed as asked, or None.
 
@@ -6265,7 +6284,19 @@ def _triage_folder_refusal(
         if p.is_file() and _is_photo_ext(p)
         and not _is_sidecar_path(p) and not _filename_has_source_id(p))
     if photos and _is_under(folder, inbox_root):
-        hit = _intake_default(photos[0], fha_config, archive_root)
+        shown = _inbox_shown(photos[0], fha_config, archive_root)
+        # The suggested command keeps what was said: an explicit --type, or a
+        # stub's own type hint, is never replaced with `--type photo`.
+        if source_type and source_type != _PHOTO_SOURCE_TYPE:
+            return (f'{folder.name} is a folder in your inbox. Its files are filed one at a '
+                    f'time - e.g. `fha process "{shown}" --type {source_type}`. (A folder '
+                    'holding a notes.md is filed whole, as one source.) Nothing was changed.')
+        if not source_type and _sidecar_hinted_source_type(_find_sidecar(photos[0])):
+            return (f'{folder.name} is a folder in your inbox. Its files are filed one at a '
+                    f'time - e.g. `fha process "{shown}"`, which its notes file types. (A '
+                    'folder holding a notes.md is filed whole, as one source.) Nothing was '
+                    'changed.')
+        hit = None if source_type else _intake_default(photos[0], fha_config, archive_root)
         if hit is not None and hit[0] != _PHOTO_SOURCE_TYPE:
             return (f'{folder.name} is a folder in your inbox. Its files are filed one at a '
                     f'time - e.g. `fha process "{_inbox_shown(photos[0], fha_config, archive_root)}"`, '
@@ -6620,7 +6651,8 @@ def _run_process(args: argparse.Namespace) -> int:
         try:
             photo_dest_dir = _validate_dest_subpath(
                 resolve_path(_PHOTO_DIR, fha_config, archive_root), dest, _PHOTO_DIR,
-                fha_config, inbox_root=resolve_path('inbox', fha_config, archive_root))
+                fha_config, inbox_root=resolve_path('inbox', fha_config, archive_root),
+                file_names=_dest_file_names(file_path))
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_ERRORS
@@ -6647,7 +6679,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     offer_dest=offer_dest,
                 )
             refusal = _triage_folder_refusal(
-                archive_root, fha_config, file_path, dest=dest)
+                archive_root, fha_config, file_path, dest=dest, source_type=source_type)
             if refusal is not None:
                 print(f'ERROR: {refusal}', file=sys.stderr)
                 return EXIT_ERRORS
