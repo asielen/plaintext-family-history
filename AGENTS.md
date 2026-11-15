@@ -297,8 +297,9 @@ fha source extract <S-id> [--pages A-B] [--copy LABEL]   dump a source PDF's emb
                             layer into a derived [Page N] companion to mine like a transcript
                             (original untouched; anchor claims to the PDF's own page numbers;
                             --copy reads a second digitization attached as primary:LABEL; a
-                            "Words run together" warning names pages search will miss - read
-                            those with vision)
+                            "Words run together" or "Words broken in the middle" warning names
+                            pages search will miss - install poppler's pdftotext and re-run,
+                            or read those pages by eye)
 fha source edit-note <S-id> --old-text … --text …  rewrite ONE existing ## Notes paragraph
 fha source clear-keyword <S-id> --keyword … [--replace-with …]   clear or correct one
                             embedded keyword on a documents-root file

@@ -104,6 +104,11 @@ misses phrases there; the dump lists them at the top too. Those pages still need
 them from the images with the steps below (or read them with vision while mining), page by page. The rest
 of the dump stands.
 
+**And the pages a "Words broken in the middle" warning names.** There the spaces between words came back,
+but some words are still split where the PDF kerns (`Hart ley`), so a name search can miss them. If
+poppler's `pdftotext` is not installed, installing it and re-running `fha source extract` (after deleting
+the dump and its `files:` entry) may read them cleanly; otherwise read those pages by eye, as above.
+
 If it refuses, or covers only some pages, the rest is yours to read.
 
 ### 3. Read the images, in the original's pagination
