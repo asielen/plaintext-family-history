@@ -3507,8 +3507,10 @@ loose wording is translated for you. A generational suffix (Jr, Sr, II, III,
 IV, V) in the name is recognised automatically and never taken as the
 surname. --surname overrides the filename's surname split outright, for
 names no automatic split can be expected to get right (Spanish double
-surnames, particles like "van der", surname-first conventions) - name: is
-written exactly as given either way. A name that already has a record
+surnames, particles like "van der", surname-first conventions), and
+--surname "" files the person with no surname at all (__henry_tudor_...).
+A regnal number in capitals ("Henry VII", "Louis XIV") is read as a suffix
+too, not a surname. name: is written exactly as given either way. A name that already has a record
 (same spelling, ignoring case and accents) is refused so the same person is
 never filed twice; add --force when it really is someone else who shares
 the name. Use `fha person relate` next to tie the new person to family, and
@@ -3539,7 +3541,9 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                     help='Override the filename\'s surname split - for names no '
                          'automatic split can be expected to get right (Spanish '
                          'double surnames, particles like "van der", surname-first '
-                         'conventions). name: is written exactly as given either way.')
+                         'conventions). --surname "" means no surname at all (the file '
+                         'name leads with __, e.g. __henry_tudor_P-....md). name: is '
+                         'written exactly as given either way.')
     # No choices= here (unlike set-living's `value`): an unrecognised sex
     # should refuse with run_new's plain, gender-glossed message
     # (_lib.format_person_sex_error), not argparse's bare "invalid choice" text.
@@ -3712,7 +3716,8 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
     rn.add_argument('--surname', metavar='TEXT',
                     help='Override the renamed filename\'s surname split - for names no '
                          'automatic split can be expected to get right (Spanish double '
-                         'surnames, particles like "van der", surname-first conventions).')
+                         'surnames, particles like "van der", surname-first conventions). '
+                         '--surname "" means no surname at all.')
     rn.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     rn.add_argument('--dry-run', action='store_true', dest='dry_run',

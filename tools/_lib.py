@@ -584,8 +584,6 @@ def _title_key(word: str) -> str:
     return word.lower().strip('.,')
 
 
-# Words that trail a surname without being it ("Mrs. John Smith Jr.").
-_NAME_SUFFIXES = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'esq'})
 # Words that lead a surname and belong to it ("van der Berg", "De Witt").
 _SURNAME_PARTICLES = frozenset({
     'van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da', 'du', 'la',
@@ -597,7 +595,9 @@ def _surname_of(words: list[str]) -> str:
     """The surname at the end of `words`: trailing suffixes dropped, leading
     particles kept ("Smith Jr." -> "Smith", "van der Berg" -> "van der Berg")."""
     end = len(words)
-    while end > 1 and _title_key(words[end - 1]) in _NAME_SUFFIXES:
+    # The one suffix rule the filename split uses too (issue #292 folded
+    # this function's own drifted list into it).
+    while end > 1 and is_name_suffix(words[end - 1].rstrip(','), words[:end - 1]):
         end -= 1
     start = end - 1
     while start > 0 and _title_key(words[start - 1]) in _SURNAME_PARTICLES:
@@ -9616,8 +9616,42 @@ def fold_accents(text: str, table: dict | None = None) -> str:
 # surname (issue #53: "Roy Eugene Dodson Jr" filed as `jr__roy_eugene_dodson`,
 # sorting the son under a different letter than his father). Matched
 # case-insensitively with a trailing period tolerated ("Jr." and "Jr" are the
-# same token) - see `strip_generational_suffix`.
-PERSON_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v'})
+# same token) - see `strip_generational_suffix`. `esq` joined when the second
+# list `_surname_of` used to keep was folded in (issue #292).
+PERSON_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v', 'esq'})
+
+
+def _roman_numeral(n: int) -> str:
+    out = ''
+    for value, letters in ((10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')):
+        while n >= value:
+            out += letters
+            n -= value
+    return out
+
+
+# Regnal numbers beyond V (issue #292: "Henry VII" filed as `vii__henry`).
+# Unlike the list above they are read as a suffix only when typed in
+# capitals in a name that is not itself all capitals - see `is_name_suffix`
+# - because some real surnames are spelled like numerals: Xi (11), and a
+# record typed all in capitals ("JIN XI") says nothing by its case.
+REGNAL_NUMERALS: frozenset[str] = frozenset(_roman_numeral(n) for n in range(6, 31))
+
+
+def is_name_suffix(token: str, rest: list[str]) -> bool:
+    """Whether `token`, the last word of a name, is a suffix and not the
+    surname; `rest` is the words before it.
+
+    Jr, Sr, II-V and Esq always are (case-insensitive, a trailing period
+    tolerated). VI to XXX are when typed in capitals ("Henry VII", "Louis
+    XIV") and `rest` holds a lower-case letter, so "Jin Xi" and "JIN XI"
+    keep Xi as their surname. `--surname` is the escape hatch either way.
+    """
+    bare = token.rstrip('.')
+    if bare.lower() in PERSON_NAME_SUFFIXES:
+        return True
+    return (bare in REGNAL_NUMERALS
+            and any(c.islower() for word in rest for c in word))
 
 
 def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
@@ -9635,7 +9669,8 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
 
     Returns `(core_parts, suffix)`: `core_parts` is `parts` with the trailing
     suffix token removed and `suffix` is its lowercased, period-stripped form
-    ('jr', 'sr', 'ii', 'iii', 'iv', 'v') - or `(parts, None)` unchanged when
+    ('jr', 'sr', 'ii', 'iii', 'iv', 'v', 'esq', or a regnal number such as
+    'vii' - see `is_name_suffix`) - or `(parts, None)` unchanged when
     the last token is not a recognised suffix.
 
     Deliberately does nothing when `parts` has fewer than two tokens: a bare
@@ -9650,9 +9685,8 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     """
     if len(parts) < 2:
         return parts, None
-    candidate = parts[-1].rstrip('.').lower()
-    if candidate in PERSON_NAME_SUFFIXES:
-        return parts[:-1], candidate
+    if is_name_suffix(parts[-1], parts[:-1]):
+        return parts[:-1], parts[-1].rstrip('.').lower()
     return parts, None
 
 
@@ -9708,7 +9742,10 @@ def stub_slug_name(
     suffix is set aside (so `--surname Dodson` on "Roy Eugene Dodson Jr"
     still finds "Dodson" at the end of what is left and the suffix still
     rides in the given slug, exactly as the automatic path would place it).
-    When the surname text is neither a prefix nor a suffix of `name` (an
+    An EMPTY or blank `surname` (`--surname ""`, issue #292) is the override
+    to "no surname": the sort slot is left empty and the whole name is the
+    given slug (`__henry_tudor`), SPEC §13's surname-less form. Only `None`
+    means "no override". When the surname text is neither a prefix nor a suffix of `name` (an
     unrelated override), the full name is kept as the given slug rather than
     silently dropping part of it - a redundant sort handle is honest; a
     guessed-wrong deletion is not.
@@ -9734,6 +9771,12 @@ def stub_slug_name(
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
+    if surname is not None and not surname.strip():
+        # `--surname ""` is "this person has no surname" (issue #292): SPEC
+        # §13's empty sort slot, with the whole name, suffix and all, as the
+        # given slug (`__henry_tudor_P-….md`).
+        given = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in parts))
+        return ('', given or 'unknown')
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
         n = len(surname_tokens)
