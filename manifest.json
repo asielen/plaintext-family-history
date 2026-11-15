@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-10",
+  "generated": "2026-11-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9e974eba015a8e15bf5ff4ed7f013f30fb5652585fc6db3e1e927b70e870c260",
+      "sha256": "7c31fc965e577e26256d71bc6e9f722415a32470fa30ba61fd5c49dc83a27a78",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "111cc85ae901d142ec45ab7612f11b588d56adf094e43c1a6029e899fd1ce236",
+      "sha256": "28d3c6b6f29fdaa05db27d4780c1e2728b48f32ae2a3e43a7ff2ae1b26a3e729",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ab286c8c81feec3ae0bd958813ca0d96ac19b62ade2e7a15734ba30ae17a07ae",
+      "sha256": "ac6dd9f10666497fc445190f8399a1fb3c82369821c1a950a459cd61518cf72b",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "671ea3070ea3759c59d31309c097f0e99f7771447444c511a170bb487ca08d3c",
+      "sha256": "f1c1813d54c03bb5636dde02e6acc81ab1cf03f10244cae36dc3406e39436051",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "f64f2ae08c753017c2ac335d3db9c0a60cca6be9f6f1da0331992580a65752e7",
+      "sha256": "62f22eac6dba19fedd85756e761fb509bc8467bf23a5f3532bec4031f220bfe0",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3b617fec69dd73ff41c66de1580822ad478afb5181147cc5d7e78e83827fa695",
+      "sha256": "bd30c24af8e51a858227ef8cfe8af8d96e1da6b8ad5f032dc9cf6fed4685455f",
       "spec_version": "1.2"
     },
     {

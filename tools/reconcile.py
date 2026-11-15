@@ -29,12 +29,41 @@ photo side's embedded SOURCE: keyword re-match):
 
 A reverse pass reports on-disk files whose filename carries an S-id that no
 record inventory lists (TOOLING §9 "log as new"), grouped by source, naming
-`fha process --more` as the attach path. The photos side of the same drift is
-`fha photoindex reconcile`'s machinery; when a photo catalog exists this tool
-runs it too (pass-through of --dry-run/--with-exif), so one command reconciles
-every file type - the §9 contract. Importing photoindex here follows
-report.py's orchestrator precedent (a tool whose whole job is running other
-tools' engines does import them; ordinary tools still never do).
+`fha process --more` as the attach path.
+
+Photos filed on source records (#289) heal from the records' side too. A photo
+is never renamed (SPEC §12.1/§13), so its name is not its identity; the
+`SOURCE:` keyword `fha process` embedded in it is. For every photos-alias
+`files:` entry whose path no longer resolves, the photos root is searched for
+a file carrying the record's own S-id as that keyword. The keyword comes from
+the photo catalog's `source_id` column, trusted only for a row whose stored
+mtime and size still match the file, or is read with exiftool under
+--with-exif. Which files carry it decides the outcome:
+
+  - one carrier with the entry's own name    -> heal (the name is the extra
+    guard that tells a front from its back when both carry one keyword);
+  - two or more carriers with that name      -> ambiguous, reported;
+  - none with that name, but exactly one carrier left for exactly one stale
+    entry of the record                       -> heal (another program renamed
+    the photo on the way; the keyword still says whose it is);
+  - several carriers, or several stale entries -> ambiguous, reported;
+  - a carrier another record already lists   -> never taken;
+  - nothing carries it                        -> reported missing.
+
+A photo whose keyword this run could not learn (not catalogued, changed since
+the scan, or unreadable) might be a second carrier, so it blocks any heal it
+could contradict and the entry is reported with the command that would let
+reconcile look (`--with-exif`), or, with no exiftool, the exact `file:` line to
+edit. This pass does not depend on the catalog's history: it heals whether or
+not `fha photoindex` ran after the move (the rescan drops the old row and
+catalogues the new path, which is exactly what this pass reads).
+
+The photo catalog itself is `fha photoindex reconcile`'s machinery; when a
+catalog exists this tool runs it too (pass-through of --dry-run/--with-exif),
+so one command reconciles every file type - the §9 contract. Importing
+photoindex here follows report.py's orchestrator precedent (a tool whose whole
+job is running other tools' engines does import them; ordinary tools still
+never do).
 
 A folder inside the documents root that will not open stops the documents
 pass entirely (warning, exit 1, the folder named - the photo pass still runs).
@@ -58,10 +87,18 @@ CODE MAP
   _display_dir           - a folder's name as the human filed it
   _disk_index            - basename -> [paths] map of every documents-root file
   _plan                  - compute healed/ambiguous/missing/unlisted, no writes
+  _record_source_ids     - the S-ids a record answers to (id, S-id aliases)
+  _stale_photo_entries   - photos-alias files: entries not on disk, per record
+  _catalog_source_ids    - alias -> (mtime, size, source_id) from photos.sqlite
+  _read_source_keywords  - exiftool SOURCE: read: per-file S-id, unreadable files
+  _photo_keyword_map     - what SOURCE: each on-disk photo carries, and which
+                           photos this run could not learn it for
+  _plan_photos           - the photo-record plan: heals/ambiguous/missing/unverified
   _split_file_value      - split a file: line into (unquoted path, comment)
   _rewrite_entry         - line-surgical file: path rewrite inside one record text
   _apply                 - group heals per record, rewrite, refuse on any drift
-  run_reconcile          - engine: plan + (unless dry-run) apply + photos side
+  run_reconcile          - engine: both record plans + (unless dry-run) apply
+                           + the photo catalog pass
   _cmd_reconcile         - CLI rendering of the Result
   register / _standalone_main - fha subcommand + python tools/reconcile.py entry
 """
@@ -69,6 +106,8 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import shutil
+import sqlite3
 import sys
 from pathlib import Path, PurePosixPath
 
@@ -82,6 +121,8 @@ from _lib import (
     EXIT_WARNINGS,
     FhaConfigError,
     Result,
+    id_type_of,
+    is_catalogued_photo_name,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -208,9 +249,14 @@ def _disk_index(documents_root: Path, unreadable: list[Path]) -> dict[str, list[
 
 
 def _plan(
-    archive_root: Path, fha_config: dict, documents_root: Path, result: Result,
+    archive_root: Path, fha_config: dict, documents_root: Path,
+    records: list, malformed_sids: 'set[str]',
 ) -> dict:
-    """Compute the reconcile plan without writing anything.
+    """Compute the documents reconcile plan without writing anything.
+
+    `records` and `malformed_sids` come from one `_iter_source_records` pass
+    that the caller shares with the photo-record plan, so a malformed record
+    is warned about once, not once per pass.
 
     Returns {'heals': {record_path: [(old_alias, new_alias), ...]},
     'ambiguous': [...], 'missing': [...], 'unlisted': {sid: [alias, ...]},
@@ -243,13 +289,11 @@ def _plan(
     ambiguous: list[str] = []
     missing: list[str] = []
 
-    # Pass 1 - collect every record and every listed alias FIRST. The heal
-    # logic below excludes already-listed files from S-id fallback matches and
-    # the reverse pass keys off this set, so it must be complete before any
+    # Pass 1 - collect every listed alias FIRST. The heal logic below
+    # excludes already-listed files from S-id fallback matches and the
+    # reverse pass keys off this set, so it must be complete before any
     # record is judged (a streaming build would let an early record match a
     # file a later record legitimately lists).
-    malformed_sids: set[str] = set()
-    records = list(_iter_source_records(archive_root, result, malformed_sids))
     listed_aliases: set[str] = set()
     for _rec_path, meta in records:
         for entry in (meta.get('files') or []):
@@ -373,6 +417,368 @@ def _plan(
 
     return {'heals': heals, 'ambiguous': ambiguous, 'missing': missing,
             'unlisted': unlisted, 'unreadable_dirs': []}
+
+
+# -- Photos filed on source records (#289) -------------------------------------
+
+
+def _record_source_ids(rec_path: Path, meta: dict) -> set[str]:
+    """The S-ids a source record answers to, normalized.
+
+    Its `id:`, plus any S-id in `aliases:` - a merged source keeps its retired
+    id there, and photos filed under that id still carry it as their
+    `SOURCE:` keyword, so they are still this record's own photos. The
+    filename S-id stands in when `id:` is absent (a hand-written record).
+    """
+    values = [meta.get('id')]
+    aliases = meta.get('aliases')
+    if isinstance(aliases, str):
+        values.append(aliases)
+    elif isinstance(aliases, list):
+        values.extend(aliases)
+    sids = set()
+    for value in values:
+        if value is None:
+            continue
+        sid = normalize_id(str(value))
+        if id_type_of(sid) == 'S':
+            sids.add(sid)
+    if not sids:
+        sid = _record_filename_sid(rec_path)
+        if sid:
+            sids.add(sid)
+    return sids
+
+
+def _stale_photo_entries(
+    archive_root: Path, fha_config: dict, records: list,
+) -> list[tuple[Path, dict, list[str]]]:
+    """Every record's photos-alias `files:` entries whose path is not on disk.
+
+    Returns [(record_path, meta, [stored alias, ...]), ...] for the records
+    that have any. An entry marked `status: missing-fixture` is a deliberate
+    fixture state and is left out, as the documents pass leaves it out.
+    The stored spelling is kept (backslashes and all), because it is what
+    `_rewrite_entry` has to match on the record's own line.
+    """
+    stale: list[tuple[Path, dict, list[str]]] = []
+    for rec_path, meta in records:
+        gone: list[str] = []
+        for entry in (meta.get('files') or []):
+            if not isinstance(entry, dict):
+                continue
+            alias = str(entry.get('file', '') or '')
+            if not alias or alias.replace('\\', '/').split('/', 1)[0] != 'photos':
+                continue
+            if str(entry.get('status', '')) == 'missing-fixture':
+                continue
+            if resolve_path(alias, fha_config, archive_root).exists():
+                continue
+            gone.append(alias)
+        if gone:
+            stale.append((rec_path, meta, gone))
+    return stale
+
+
+def _catalog_source_ids(archive_root: Path) -> 'dict[str, tuple] | None':
+    """alias -> (mtime, size, source_id) for every live row of the photo catalog.
+
+    Read-only (`mode=ro`), so a reconcile preview can never create or change
+    the cache. Returns None when there is no catalog or it cannot be read -
+    the catalog pass reports that itself, and this pass then simply knows
+    fewer keywords. Rows under the `MISSING:` key are skipped: they name a
+    path that is not on disk, which is the question, not an answer.
+    """
+    db_path = archive_root / '.cache' / 'photos.sqlite'
+    if not db_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f'{db_path.resolve().as_uri()}?mode=ro', uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        rows = conn.execute('SELECT path, mtime, size, source_id FROM photos').fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return {
+        str(path): (mtime, size, normalize_id(str(sid)) if sid else None)
+        for path, mtime, size, sid in rows
+        if path and not photoindex._is_missing_key(str(path))
+    }
+
+
+def _read_source_keywords(paths: list[Path]) -> tuple[dict[Path, 'str | None'], list[Path]]:
+    """Read the SOURCE: keyword of each file with exiftool.
+
+    Returns ({path: S-id or None}, [paths that could not be read]). Unlike
+    photoindex's `_scrape_source_ids`, a file exiftool returned no row for,
+    or a row carrying its own `Error` field, is reported as unread rather than
+    as "carries no keyword": here an unread file might be a second copy of the
+    photo, and a heal that ignored it could re-tie the record to the wrong
+    one. Goes through photoindex's `_run_exiftool`, the one exiftool seam,
+    which raises RuntimeError when exiftool is missing or broken.
+    """
+    found: dict[Path, 'str | None'] = {}
+    unread: list[Path] = []
+    batch_size = photoindex._EXIFTOOL_BATCH_SIZE
+    for start in range(0, len(paths), batch_size):
+        batch = paths[start:start + batch_size]
+        rows = {
+            Path(row['SourceFile']).resolve(): row
+            for row in photoindex._run_exiftool(batch) if row.get('SourceFile')
+        }
+        for p in batch:
+            row = rows.get(p.resolve())
+            if row is None or row.get('Error'):
+                unread.append(p)
+                continue
+            found[p] = None
+            for kw in photoindex._extract_keywords(row):
+                m = photoindex._SOURCE_KEYWORD_RE.match(kw.strip())
+                if m:
+                    found[p] = normalize_id(m.group(1))
+                    break
+    return found, unread
+
+
+def _photo_keyword_map(
+    archive_root: Path, on_disk: dict[str, Path], with_exif: bool,
+) -> dict:
+    """Learn which SOURCE: keyword each on-disk photo carries.
+
+    The catalog answers for a photo whose row still matches the file's mtime
+    and size - the same test the incremental scan uses to decide a file has
+    not changed. Every other photo is unknown; under --with-exif the unknown
+    ones are read with exiftool, and only the ones that cannot be read stay
+    unknown. Returns {'known': {alias: S-id or None}, 'unknown': [alias],
+    'exif_error': str or None, 'unread': [alias]}.
+    """
+    catalog = _catalog_source_ids(archive_root) or {}
+    known: dict[str, 'str | None'] = {}
+    unknown: list[str] = []
+    for alias, p in on_disk.items():
+        row = catalog.get(alias)
+        if row is not None:
+            try:
+                st = p.stat()
+            except OSError:
+                unknown.append(alias)
+                continue
+            if row[0] == st.st_mtime and row[1] == st.st_size:
+                known[alias] = row[2]
+                continue
+        unknown.append(alias)
+
+    exif_error = None
+    unread: list[str] = []
+    if with_exif and unknown:
+        try:
+            found, unread_paths = _read_source_keywords([on_disk[a] for a in unknown])
+        except RuntimeError as e:
+            exif_error = str(e)
+        else:
+            alias_of = {on_disk[a]: a for a in unknown}
+            for p, sid in found.items():
+                known[alias_of[p]] = sid
+            unread = sorted(alias_of[p] for p in unread_paths)
+            unknown = unread
+    return {'known': known, 'unknown': sorted(unknown),
+            'exif_error': exif_error, 'unread': unread}
+
+
+def _plan_photos(
+    archive_root: Path, fha_config: dict, records: list, with_exif: bool,
+) -> dict:
+    """Plan the photo-record heals (#289) without writing anything.
+
+    Returns {'heals': {record_path: [(old, new), ...]}, 'ambiguous': [...],
+    'missing': [...], 'unverified': [...], 'notices': [(level, text), ...],
+    'stale': int}. `notices` are run-wide lines (an unreachable photos folder,
+    a folder that would not open, exiftool failing); the lists are one line
+    per entry, in the documents pass's shape.
+
+    Does nothing - not even a walk of the photos root - when no record lists a
+    photo that has gone, so a run with nothing to heal costs one stat per
+    filed photo. The rules are in the module docstring. Two of them carry the
+    weight. A keyword this run could not learn blocks any heal it could
+    contradict: an unread same-named file blocks a name match, and any unread
+    photo blocks a keyword-only match, because either might be a second
+    carrier. And a candidate another record already lists is never taken, so
+    two records are never pointed at one photo. Like the documents pass, a
+    folder that will not list ends the pass with nothing healed: its contents
+    are exactly what would make a confident match ambiguous.
+
+    Raises RuntimeError for a malformed `photos_ignore:` (from the shared
+    walker); the caller reports it once for both photo passes.
+    """
+    plan = {'heals': {}, 'ambiguous': [], 'missing': [], 'unverified': [],
+            'notices': [], 'stale': 0}
+    stale = _stale_photo_entries(archive_root, fha_config, records)
+    plan['stale'] = sum(len(aliases) for _rec, _meta, aliases in stale)
+    if not stale:
+        return plan
+
+    photos_root = resolve_path('photos', fha_config, archive_root)
+    if not photos_root.is_dir():
+        plan['notices'].append((
+            'warning',
+            f'The photos folder is not reachable at {photos_root} - '
+            f'{plan["stale"]} filed photo(s) no longer at their listed path '
+            'were not looked for. If it lives on an external drive, plug it '
+            'in; if the location changed, update roots: in fha.yaml.'))
+        return plan
+
+    unreadable: list = []
+    on_disk = photoindex._on_disk_aliases(photos_root, fha_config, archive_root, unreadable)
+    if unreadable:
+        shown = ', '.join(sorted(alias for alias, _p in unreadable)[:5])
+        plan['notices'].append((
+            'warning',
+            f'{len(unreadable)} folder(s) inside the photos folder could not be '
+            f'opened, so no filed photo was re-tied: {shown}. A copy of a photo '
+            'sitting in one of them could make a match that looks certain '
+            'wrong. Reconnect the drive (or restore your access to the folder), '
+            'then run `fha reconcile` again.'))
+        return plan
+
+    keywords = _photo_keyword_map(archive_root, on_disk, with_exif)
+    known, unknown = keywords['known'], keywords['unknown']
+    if keywords['exif_error']:
+        if shutil.which('exiftool') is None:
+            cause, fix = 'exiftool is not installed', 'Install exiftool'
+        else:
+            cause, fix = keywords['exif_error'], 'Run `fha doctor` to check exiftool'
+        plan['notices'].append((
+            'warning',
+            f'Could not read the keywords inside the photos ({cause}), so only '
+            'photos already in an up-to-date photo catalog could be matched. '
+            f'{fix}, then run `fha reconcile --with-exif` again.'))
+
+    carriers_by_sid: dict[str, list[str]] = {}
+    for alias, sid in known.items():
+        if sid:
+            carriers_by_sid.setdefault(sid, []).append(alias)
+    unknown_by_name: dict[str, list[str]] = {}
+    for alias in unknown:
+        unknown_by_name.setdefault(PurePosixPath(alias).name, []).append(alias)
+
+    # Who lists what, across every record: a candidate listed anywhere is
+    # never taken, and the message has to say whether the lister is this
+    # record (its own back scan) or another one (a duplicate entry).
+    listed_by: dict[str, set] = {}
+    for rec_path, meta in records:
+        for entry in (meta.get('files') or []):
+            if isinstance(entry, dict) and entry.get('file'):
+                listed_by.setdefault(
+                    str(entry['file']).replace('\\', '/'), set()).add(rec_path)
+    taken: set[str] = set()
+
+    def free(aliases):
+        return sorted(a for a in aliases if a not in listed_by and a not in taken)
+
+    def edit_hint(rec_path, alias):
+        return (f'Edit the `file: {alias}` line in {rec_path.name} to the right '
+                'one, then run `fha lint`.')
+
+    def why_unknown(rec_path, alias, same_named):
+        if keywords['exif_error']:
+            return (f'{rec_path.name}: {alias!r} is not on disk, and the keywords '
+                    'that would say where it went could not be read. Edit the '
+                    f'`file: {alias}` line in {rec_path.name} by hand to the '
+                    "photo's new path under photos/, or, once exiftool works "
+                    '(`fha doctor` checks it), run `fha reconcile --with-exif`.')
+        if with_exif:
+            shown = ', '.join((same_named or unknown)[:5])
+            return (f'{rec_path.name}: {alias!r} is not on disk, and '
+                    f'{len(same_named or unknown)} photo(s) that may be it could '
+                    f'not be read just now ({shown}). Close any program using '
+                    'them, then run `fha reconcile --with-exif` again.')
+        if same_named:
+            what = (f'{", ".join(same_named)} has the same name, but its keywords '
+                    'have not been read')
+        else:
+            what = (f'{len(unknown)} photo(s) are not in the photo catalog or '
+                    'changed since it was built, and one of them may be it')
+        return (f'{rec_path.name}: {alias!r} is not on disk, and {what}. Run '
+                '`fha reconcile --with-exif` so it can read the SOURCE: keyword '
+                'inside each photo.')
+
+    ignore_note = ''
+    if photoindex._photos_ignore_patterns(fha_config):
+        ignore_note = (' (folders photos_ignore: skips were not searched - if you '
+                       'moved it into one, move it back out or edit the record by hand)')
+
+    for rec_path, meta, aliases in stale:
+        sids = _record_source_ids(rec_path, meta)
+        sid_label = ', '.join(sorted(s.upper() for s in sids)) or 'its source ID'
+        carriers = sorted({a for sid in sids for a in carriers_by_sid.get(sid, [])})
+        unresolved: list[str] = []
+        for alias in aliases:
+            name = PurePosixPath(alias.replace('\\', '/')).name
+            if not is_catalogued_photo_name(name):
+                plan['missing'].append(
+                    f'{rec_path.name}: {alias!r} is not on disk, and it is not a '
+                    'photo, so there is no keyword to find it by. If you moved it '
+                    f'within the photos folder, edit the `file: {alias}` line in '
+                    f'{rec_path.name} to its new path by hand.')
+                continue
+            same = [a for a in free(carriers) if PurePosixPath(a).name == name]
+            unknown_same = free(unknown_by_name.get(name, []))
+            if len(same) >= 2:
+                plan['ambiguous'].append(
+                    f'{rec_path.name}: more than one photo named {name!r} carries '
+                    f'{sid_label} ({", ".join(same)}) - reconcile will not guess '
+                    f'which one the record means. {edit_hint(rec_path, alias)}')
+            elif same and not unknown_same:
+                # on_disk's keys are already path_to_alias spellings.
+                plan['heals'].setdefault(rec_path, []).append((alias, same[0]))
+                taken.add(same[0])
+            elif unknown_same:
+                plan['unverified'].append(why_unknown(rec_path, alias, unknown_same))
+            else:
+                unresolved.append(alias)
+
+        # Nothing kept the listed name: the keyword alone decides, and only
+        # when it can - one entry, one carrier left, no photo left unread.
+        remaining = free(carriers)
+        for alias in unresolved:
+            name = PurePosixPath(alias.replace('\\', '/')).name
+            lone = len(unresolved) == 1 and len(remaining) == 1
+            if lone and not unknown:
+                plan['heals'].setdefault(rec_path, []).append((alias, remaining[0]))
+                taken.add(remaining[0])
+            elif lone:
+                # The one known carrier would do, but an unread photo might
+                # be a second one.
+                plan['unverified'].append(why_unknown(rec_path, alias, []))
+            elif remaining:
+                plan['ambiguous'].append(
+                    f'{rec_path.name}: nothing is named {name!r} any more, and '
+                    f'{len(remaining)} unlisted photo(s) carry {sid_label} '
+                    f'({", ".join(remaining)}) - reconcile will not guess which '
+                    f'one this entry means. {edit_hint(rec_path, alias)}')
+            elif unknown:
+                plan['unverified'].append(why_unknown(rec_path, alias, []))
+            else:
+                others = sorted(
+                    a for a in carriers
+                    if a in listed_by and listed_by[a] - {rec_path})
+                if others:
+                    plan['ambiguous'].append(
+                        f'{rec_path.name}: the photo(s) carrying {sid_label} '
+                        f'({", ".join(others)}) are already listed by another '
+                        'record - reconcile will not point two records at one '
+                        'photo. Fix the duplicate files: entry by hand, then run '
+                        '`fha lint`.')
+                else:
+                    plan['missing'].append(
+                        f'{rec_path.name}: {alias!r} is gone - no photo in the '
+                        f'photos folder carries {sid_label}{ignore_note}. If it '
+                        'moved outside the photos folder, bring it back; if it is '
+                        "truly gone, note that in the record's ## Notes.")
+    return plan
 
 
 def _split_file_value(raw: str) -> tuple[str, str]:
@@ -585,16 +991,27 @@ def run_reconcile(
     archive_root: Path, fha_config: dict, *,
     dry_run: bool = False, with_exif: bool = False,
 ) -> Result:
-    """Engine: heal documents-side inventory drift, then the photo catalog.
+    """Engine: heal moved documents and filed photos on their records, then
+    the photo catalog.
 
     Returns a Result whose data carries {'status', 'healed', 'ambiguous',
-    'missing', 'unlisted'} counts. Exit code follows the messages: clean run
-    or clean heal is 0; anything left needing a human (ambiguous names,
-    genuinely missing files, unlisted S-id files) is a warning, exit 1.
-    Working-copy mode no-ops cleanly - the assets live on the main machine.
+    'missing', 'unlisted'} counts for the documents pass and {'photos_healed',
+    'photos_ambiguous', 'photos_missing', 'photos_unverified'} for the
+    photo-record pass (#289). Exit code follows the messages: clean run or
+    clean heal is 0; anything left needing a human (ambiguous names, genuinely
+    missing files, unlisted S-id files, a photo whose keyword could not be
+    read) is a warning, exit 1. Working-copy mode no-ops cleanly - the assets
+    live on the main machine.
+
+    Both record plans are computed before anything is written, and the
+    photo-record plan reads the catalog before the catalog pass moves any of
+    its rows, so a --dry-run preview names exactly the rewrites a real run
+    makes.
     """
     result = Result(data={'status': 'ok', 'healed': 0, 'ambiguous': 0,
-                          'missing': 0, 'unlisted': 0})
+                          'missing': 0, 'unlisted': 0, 'photos_healed': 0,
+                          'photos_ambiguous': 0, 'photos_missing': 0,
+                          'photos_unverified': 0})
 
     if is_working_copy(archive_root):
         result.data['status'] = 'working-copy'
@@ -603,6 +1020,20 @@ def run_reconcile(
                    'machine, so there is nothing to reconcile here. Run '
                    '`fha reconcile` on the main archive.')
         return _finalize(result)
+
+    malformed_sids: set[str] = set()
+    records = list(_iter_source_records(archive_root, result, malformed_sids))
+    records_healed = 0
+    photo_records_healed = 0
+
+    try:
+        photo_plan = _plan_photos(archive_root, fha_config, records, with_exif)
+    except RuntimeError as e:
+        # A malformed photos_ignore: (the shared walker refuses it) stops
+        # both photo passes, which walk the same root by the same rule; say it
+        # once, as a plain error, beside whatever the documents pass found.
+        photo_plan = None
+        result.add('error', f'photos: {e}')
 
     documents_root = resolve_path('documents', fha_config, archive_root)
     if not documents_root.is_dir():
@@ -617,7 +1048,7 @@ def run_reconcile(
                    'it in; if the location changed, update roots: in fha.yaml. '
                    '(The photo pass below still ran.)')
     else:
-        plan = _plan(archive_root, fha_config, documents_root, result)
+        plan = _plan(archive_root, fha_config, documents_root, records, malformed_sids)
         if plan['unreadable_dirs']:
             # Same posture as the unreachable-documents-root arm above: say so,
             # heal nothing, and let the photo pass run. Healing from a file map
@@ -652,6 +1083,7 @@ def run_reconcile(
                 # Report what actually landed, not what was planned - a refused
                 # rewrite must not inflate the healed count.
                 result.data['healed'] = _apply(archive_root, heals, result)
+                records_healed += result.data['healed']
 
             for line in ambiguous:
                 result.add('warning', line)
@@ -664,15 +1096,54 @@ def run_reconcile(
                            'attach it with `fha process <primary-file> --more FILE role`, '
                            'or add a files: entry to the record.')
 
-            if heal_count and not dry_run:
-                result.add('info',
-                           'Run `fha index` so searches see the new locations, and '
-                           '`fha lint` to confirm everything is tied down.')
-            elif not (heal_count or ambiguous or missing or unlisted):
+            if not (heal_count or ambiguous or missing or unlisted):
                 result.add('info', 'Documents all tied to their records - nothing to heal.')
 
-    # Photos side (TOOLING §9: one command reconciles every file type). Only
-    # when a catalog exists - an archive that never built one should not fail.
+    # Photos filed on source records (#289). Planned in full before any of
+    # its rewrites land, from the catalog as it stood before the catalog pass
+    # below moves rows, so the preview and the real run agree.
+    if photo_plan is not None:
+        photo_heals = photo_plan['heals']
+        photo_heal_count = sum(len(v) for v in photo_heals.values())
+        result.data.update({
+            'photos_healed': photo_heal_count,
+            'photos_ambiguous': len(photo_plan['ambiguous']),
+            'photos_missing': len(photo_plan['missing']),
+            'photos_unverified': len(photo_plan['unverified']),
+        })
+        for level, text in photo_plan['notices']:
+            result.add(level, text)
+        if dry_run:
+            for rec_path, pairs in sorted(photo_heals.items()):
+                for old_alias, new_alias in pairs:
+                    result.add('info',
+                               f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
+                               f'({rec_path.name})')
+        else:
+            photo_records_healed = _apply(archive_root, photo_heals, result)
+            result.data['photos_healed'] = photo_records_healed
+            records_healed += photo_records_healed
+        for line in (*photo_plan['ambiguous'], *photo_plan['missing'],
+                     *photo_plan['unverified']):
+            result.add('warning', line)
+        if not (photo_plan['stale'] or photo_plan['notices']):
+            result.add('info', 'Filed photos all tied to their records - nothing to heal.')
+
+    if records_healed:
+        # Next-step order follows what each command reads: `fha index` and
+        # `fha photoindex` read the records just rewritten; lint reads disk.
+        refresh = ('`fha index` and `fha photoindex`' if photo_records_healed
+                   else '`fha index`')
+        result.add('info',
+                   f'Run {refresh} so searches see the new locations, and '
+                   '`fha lint` to confirm everything is tied down.')
+
+    # Photo catalog side (TOOLING §9: one command reconciles every file type).
+    # Only when a catalog exists - an archive that never built one should not
+    # fail. Skipped after a malformed photos_ignore:, already reported above
+    # (the catalog pass would only refuse it a second time).
+    if photo_plan is None:
+        return _finalize(result)
     if (archive_root / '.cache' / 'photos.sqlite').exists():
         try:
             photo_result = photoindex.run_reconcile(
@@ -761,8 +1232,10 @@ def run_reconcile(
 _CLI_DESCRIPTION = (
     'Re-tie moved files to their records. Rearrange the documents folder any '
     'way you like, then run this: every filed document is found again by the '
-    'ID in its name and its record updated. Photos are reconciled too when a '
-    'photo catalog exists. Preview with --dry-run first.'
+    'ID in its name and its record updated. A filed photo moved within the '
+    'photos folder is found again by the SOURCE: keyword inside it (from the '
+    'photo catalog, or read with --with-exif), and the photo catalog is '
+    'reconciled too when one exists. Preview with --dry-run first.'
 )
 
 
@@ -807,8 +1280,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview every re-tie without writing anything')
     p.add_argument('--with-exif', action='store_true', dest='with_exif',
-                   help='Photos side: also read embedded keywords to re-match '
-                        'moved photos (needs exiftool; see fha photoindex reconcile)')
+                   help='Photos: read the SOURCE: keyword inside photos the '
+                        'catalog does not cover, to find moved photos (needs '
+                        'exiftool; see fha photoindex reconcile)')
     p.set_defaults(func=_cmd_reconcile)
 
 
@@ -822,8 +1296,9 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--dry-run', action='store_true', dest='dry_run',
                         help='Preview every re-tie without writing anything')
     parser.add_argument('--with-exif', action='store_true', dest='with_exif',
-                        help='Photos side: also read embedded keywords to re-match '
-                             'moved photos (needs exiftool)')
+                        help='Photos: read the SOURCE: keyword inside photos the '
+                             'catalog does not cover, to find moved photos '
+                             '(needs exiftool)')
     args = parser.parse_args(argv)
     return _cmd_reconcile(args)
 

@@ -680,8 +680,9 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     naming a vanished primary there would hand back a command that fails the
     moment it is run. That case routes to the missing-file recovery path
     instead, mirroring lint.py's own E011 guidance for a missing inventory
-    file (`fha reconcile` re-ties a MOVED file by name; it cannot help a
-    truly deleted file or a changed `roots:` mapping). The missing-primary
+    file (`fha reconcile` re-ties a MOVED photo by the SOURCE: keyword
+    inside it; it cannot help a truly deleted file or a changed `roots:`
+    mapping). The missing-primary
     check runs BEFORE the ambiguous-candidate branch below and covers BOTH
     the one-candidate and 2+-candidate shapes (issue #169 followup review,
     finding 6): a missing primary with multiple unlisted back candidates is
@@ -913,9 +914,10 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 # would be exactly as broken for the same reason. Route to
                 # the missing-file recovery path instead, mirroring lint.py's
                 # own E011 guidance for a missing inventory file: `fha
-                # reconcile` re-ties a MOVED file automatically by matching
-                # name; it cannot help if the file is simply gone, or if
-                # roots: changed instead.
+                # reconcile` re-ties a MOVED photo by the SOURCE: keyword
+                # inside it (#289; --with-exif reads that keyword when the
+                # catalog has not caught up with the move); it cannot help if
+                # the file is simply gone, or if roots: changed instead.
                 names = ', '.join(candidate_aliases)
                 what = (f'{names} sits' if len(candidate_aliases) == 1 else
                         f'{len(candidate_aliases)} unlisted back-shaped files ({names}) sit')
@@ -923,7 +925,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                     f'orphaned back scan: {what} on disk, but its listed '
                     f"primary {primary_alias} is missing from disk, so {record_path.name}'s "
                     'own entry needs fixing first - next: if the primary was moved within '
-                    f'the photos root, run `{_LAUNCHER} reconcile --root "{archive_root}"` '
+                    f'the photos root, run `{_LAUNCHER} reconcile --with-exif --root "{archive_root}"` '
                     '(preview with --dry-run) to re-tie it, then re-run `fha doctor`; if it '
                     'was deleted or the roots: mapping changed, fix the record by hand.'
                 )

@@ -4840,10 +4840,14 @@ def process_refile(
             'moved.')
 
     if not src.is_file():
+        # A moved photo is found by the SOURCE: keyword inside it (#289);
+        # --with-exif reads it when the photo catalog has not seen the move.
+        heal = ('`fha reconcile --with-exif`' if alias_root == _PHOTO_DIR
+                else '`fha reconcile`')
         raise ProcessError(
             f'{stored_alias} is not on disk. If the {alias_root} folder lives on '
-            'an external drive, plug it in; if the file was moved, run '
-            '`fha reconcile` first so the record points at its real location, '
+            f'an external drive, plug it in; if the file was moved, run '
+            f'{heal} first so the record points at its real location, '
             'then re-run.')
 
     # P1 (audit finding, same source as above): confirm the file this would
@@ -4931,13 +4935,12 @@ def process_refile(
         conflicting = sorted({s for s in embedded_sids if s != sid.lower()})
         if conflicting:
             # Same dead-end shape as the documents-root branch above (issue
-            # #170 finding 3, round-3 audit): `fha reconcile`'s document pass
-            # only considers documents-alias entries (its own docstring:
-            # "the photos side has its own [machinery]"), and its photo pass
-            # only re-ties `fha photoindex`'s own catalog to files on disk -
-            # neither one touches THIS record's `files:` entry. Suggesting it
-            # here would run clean and change nothing, leaving the human to
-            # retry forever. Name the exact entry to fix by hand instead.
+            # #170 finding 3, round-3 audit): `fha reconcile` re-ties a
+            # photos-alias entry only when its photo is MISSING from disk
+            # (#289), and this one is on disk - it just carries another
+            # source's keyword. Suggesting reconcile here would run clean and
+            # change nothing, leaving the human to retry forever. Name the
+            # exact entry to fix by hand instead.
             carried = ', '.join(fmt_id_display(s) for s in conflicting)
             raise ProcessError(
                 f"{stored_alias}'s own embedded SOURCE keyword(s) carry "
@@ -4945,9 +4948,10 @@ def process_refile(
                 f"{record_path.name}'s files: entry looks like inventory "
                 f'drift (it names a file that belongs to a different '
                 f'source), and moving it would relocate the WRONG photo. '
-                '`fha reconcile` cannot fix this: its document pass ignores '
-                'photos/ aliases, and its photo pass only re-ties the photo '
-                f'catalog, not this record. Fix it by hand: open '
+                '`fha reconcile` cannot fix this: it only re-ties a files: '
+                f'entry whose photo is missing from disk, and {stored_alias} '
+                'is still there - it is simply the wrong photo for this '
+                f'record. Fix it by hand: open '
                 f'{record_path.name}, find the `files:` entry `file: '
                 f'{stored_alias}`, and either point it at the correct '
                 f'on-disk photo for this source (untagged, or whose '
