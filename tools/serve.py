@@ -1125,6 +1125,17 @@ def _verb_claim_review(state, kw, dry_run):
             confidence=kw.get('confidence'), information=kw.get('information'),
             evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
             dry_run=dry_run, keep_living=bool(kw.get('keep_living', False)))
+    if 'persons' in kw and not kw['persons']:
+        # The engine's own refusal names the CLI flag (`--persons was
+        # empty`); an /api/run caller sent a field, not a flag, so it gets
+        # the same rule in its own words (PR #284 re-review).
+        refused = Result(ok=False, exit_code=EXIT_FAILURE,
+                         data={'status': 'failed', 'claim_id': kw.get('claim_id', '')})
+        refused.add('error', 'The persons list was empty, but a claim must name at '
+                             'least one person. Choose who this claim is about, or leave '
+                             'the persons field out to keep the list as it is. Nothing '
+                             'was changed.')
+        return refused
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),

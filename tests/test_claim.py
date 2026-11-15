@@ -4331,6 +4331,18 @@ class ClearFieldReviewTests(unittest.TestCase):
                     self.assertIn('cannot safely change', result.messages[-1].text)
                     self.assertEqual(self.path.read_bytes(), before)
 
+    def test_a_key_listed_twice_is_refused_untouched(self) -> None:
+        # PR #284 re-review: YAML keeps the last copy, so rewriting the first
+        # `notes:` reported success while the claim still read the same.
+        for kw in ({'notes': 'NEW'}, {'clear': ['notes']}):
+            with self.subTest(kw=kw):
+                before = self._write(self.HEAD + '  notes: first\n  anchor: p. 1\n'
+                                     '  notes: second\n' + self.NEXT)
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', **kw)
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('lists notes: 2 times', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
     def test_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
         for line in ('  "notes": hi\n', '  notes : foo\n'):
             with self.subTest(line=line):

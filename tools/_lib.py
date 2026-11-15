@@ -5762,8 +5762,10 @@ def match_log_entry(
     trailing spaces) - still unique, still position-free. The misses:
       - ambiguous: the text is two or more entries (exactly, or with
         whitespace collapsed when no exact match exists);
-      - spans: the text is two or more WHOLE entries, blank-line separated -
-        one edit rewrites one entry, so the caller is asked for one;
+      - spans: the text is two or more blank-line separated paragraphs that
+        are each a whole entry, or each part of one - one edit rewrites one
+        entry, so the caller is asked for one. Checked BEFORE the
+        whitespace-collapsed match, which would erase the paragraph breaks;
       - partial: no entry equals it, but one or more CONTAIN it - the common
         command-line slip of quoting one sentence of a paragraph. Containment
         compares with whitespace collapsed, so a sentence that wraps across a
@@ -5777,25 +5779,42 @@ def match_log_entry(
     exact = [i for i, e in enumerate(normed) if e == target]
     if len(exact) == 1:
         return exact[0], None, None
-    squeezed = ' '.join(target.split())
-    squeezed_entries = [' '.join(e.split()) for e in normed]
-    loose = [i for i, e in enumerate(squeezed_entries) if squeezed and e == squeezed]
-    if not exact and len(loose) == 1:
-        return loose[0], None, None
-    if exact or loose:
-        count = len(exact) or len(loose)
+    if exact:
         return None, LOG_ENTRY_AMBIGUOUS, (
-            f'that exact {noun} appears {count} times in {where}, so this '
+            f'that exact {noun} appears {len(exact)} times in {where}, so this '
             'edit cannot tell which one you meant. Edit the record file '
             f'directly for this one ({file_hint}). Nothing was written.')
+    squeezed = ' '.join(target.split())
+    squeezed_entries = [' '.join(e.split()) for e in normed]
     plural = noun[:-1] + 'ies' if noun.endswith('y') else noun + 's'
+    # Paragraph breaks first: collapsing whitespace erases them, so a text of
+    # two whole entries ("A.\n\nB.") would otherwise loosely equal a third
+    # entry "A. B." and rewrite it (PR #284 re-review). Several paragraphs
+    # are never one entry - they are a request to edit several.
     parts = [' '.join(p.split()) for p in split_log_entries(target)]
-    if len(parts) > 1 and all(p in squeezed_entries for p in parts):
-        return None, LOG_ENTRY_SPANS, (
-            f'--old-text covers {len(parts)} {plural} in {where}, and one edit '
-            f'rewrites one {noun}. Give one {noun} at a time - its whole '
-            'paragraph, word for word - and run the edit once for each. '
-            'Nothing was written.')
+    if len(parts) > 1:
+        if all(p in squeezed_entries for p in parts):
+            return None, LOG_ENTRY_SPANS, (
+                f'--old-text covers {len(parts)} {plural} in {where}, and one edit '
+                f'rewrites one {noun}. Give one {noun} at a time - its whole '
+                'paragraph, word for word - and run the edit once for each. '
+                'Nothing was written.')
+        if all(any(p in e for e in squeezed_entries) for p in parts):
+            return None, LOG_ENTRY_SPANS, (
+                f'--old-text reaches across {len(parts)} {plural} in {where} (it '
+                f'has {len(parts)} paragraphs, each part of a {noun}), and one '
+                f'edit rewrites one {noun}. Give one {noun} at a time - its whole '
+                'paragraph, word for word - and run the edit once for each. '
+                'Nothing was written.')
+    loose = [i for i, e in enumerate(squeezed_entries)
+             if len(parts) == 1 and squeezed and e == squeezed]
+    if len(loose) == 1:
+        return loose[0], None, None
+    if loose:
+        return None, LOG_ENTRY_AMBIGUOUS, (
+            f'that exact {noun} appears {len(loose)} times in {where}, so this '
+            'edit cannot tell which one you meant. Edit the record file '
+            f'directly for this one ({file_hint}). Nothing was written.')
     containing = [i for i, e in enumerate(normed)
                   if squeezed and squeezed in ' '.join(e.split())]
     if len(containing) == 1:

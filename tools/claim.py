@@ -1002,11 +1002,19 @@ def _apply_claim_review(
     corruption guard is needed for it.
 
     `clear` (#273) names optional keys to REMOVE: the key line and its whole
-    value span go, every other line of the claim stays byte for byte. The
-    caller (`run_claim`) has already limited it to CLEARABLE_CLAIM_FIELDS and
-    refused a key that is both set and cleared; a named key the claim does
-    not carry is simply skipped. Removal runs before any key is set, so no
-    line index this function computes afterwards can go stale.
+    value (read the way YAML reads it - see `remove_key`) go, and every line
+    outside that value stays as written. The caller (`run_claim`) has
+    already limited it to CLEARABLE_CLAIM_FIELDS, refused a key that is both
+    set and cleared, and passes only keys the parsed claim actually carries
+    (a field the claim lacks is reported there, not here). So every key in
+    `clear` must be found: one that is not (a quoted key, a space before the
+    colon) raises `_ClaimEditRefused` rather than being skipped. Removal
+    runs before any key is set, so no line index this function computes
+    afterwards can go stale.
+
+    A key this call sets or clears that the claim lists TWICE is refused
+    too (`_ClaimEditRefused`): YAML keeps the last copy, so editing the
+    first line would report success while the claim still reads the same.
     """
     target = normalize_id(claim_id)
     lines = text.splitlines()
@@ -1244,6 +1252,28 @@ def _apply_claim_review(
     # The only deletion is `clear` below, and it runs FIRST, before any line
     # index is computed (the 2026-07 stale-anchor corruption came from
     # deleting AFTER anchors were fixed).
+    touched = {k for k, v in (
+        ('status', status), ('reviewed', reviewed), ('value', value), ('date', date),
+        ('type', type_), ('place', place), ('place_text', place_text),
+        ('persons', persons), ('confidence', confidence), ('information', information),
+        ('evidence', evidence), ('anchor', anchor), ('notes', notes),
+    ) if v is not None} | set(clear)
+    own_key_re = re.compile(r'^(?:' + re.escape(base_indent) + r'-\s+|'
+                            + re.escape(key_indent) + r')([A-Za-z_][\w-]*):')
+    seen_keys: list[str] = []
+    for ln in item:
+        m = own_key_re.match(ln)
+        if m:
+            seen_keys.append(m.group(1))
+    for key in sorted(touched):
+        if seen_keys.count(key) > 1:
+            raise _ClaimEditRefused(
+                f'{fmt_id_display(target)} lists {key}: {seen_keys.count(key)} times, '
+                'and YAML reads only the last one - so this edit cannot tell which '
+                'line holds the value. Open the record file, keep one '
+                f'{key}: line under ## Claims, then run `fha lint` and retry. '
+                'Nothing was written.')
+
     for key in clear:
         remove_key(key)
 

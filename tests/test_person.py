@@ -2023,6 +2023,28 @@ class EditNoteTests(unittest.TestCase):
         self.assertIn('covers 2 entries', result.messages[0].text)
         self.assertEqual(self.stub.read_bytes(), before)
 
+    def test_two_whole_paragraphs_never_loosely_match_a_third_entry(self) -> None:
+        for note in ('Checked the census. Nothing found.', 'Checked the census.',
+                     'Nothing found.'):
+            person.run_note(self.root, PID, 'research', note)
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Checked the census.\n\nNothing found.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_pieces_of_two_entries_say_it_reaches_across_them(self) -> None:
+        person.run_note(self.root, PID, 'research', 'Alpha one. Alpha two.')
+        person.run_note(self.root, PID, 'research', 'Beta one. Beta two.')
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Alpha two.\n\nBeta one.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('reaches across 2 entries', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
     def test_true_miss_is_a_cli_not_found_message(self) -> None:
         result = person.run_edit_note(
             self.root, PID, 'research', 'Never written anywhere.', 'x')

@@ -2224,6 +2224,22 @@ class PlaceVerbTests(_ServeCase):
                 self.assertNotIn('--old-text', text)
                 self.assertEqual(_tree_hash(self.root), before)
 
+    def test_claim_review_empty_persons_is_worded_for_the_api(self):
+        before = _tree_hash(self.root)
+        for empty in ('', []):
+            with self.subTest(persons=empty):
+                s, d, _h = self.post_run('claim.review',
+                                         {'claim_id': 'C-1b9d4e7a30', 'persons': empty},
+                                         False)
+                self.assertEqual(s, 200)
+                payload = json.loads(d)
+                self.assertFalse(payload['ok'])
+                self.assertEqual(payload['exit_code'], 3)
+                text = payload['messages'][0]['text']
+                self.assertIn('at least one person', text)
+                self.assertNotIn('--persons', text)
+        self.assertEqual(_tree_hash(self.root), before)
+
     def test_place_set_unknown_id_is_a_plain_refusal(self):
         s, d, _h = self.post_run('place.set',
                                  {'place_id': 'L-bbbbbbbbbb', 'lat': '1', 'lon': '2'}, True)

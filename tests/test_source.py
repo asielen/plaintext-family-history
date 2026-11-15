@@ -381,6 +381,31 @@ class SourceEditNoteTests(unittest.TestCase):
         self.assertIn('covers 2 notes', result.messages[0].text)
         self.assertEqual(self.record.read_bytes(), before)
 
+    def test_two_whole_paragraphs_never_loosely_match_a_third_entry(self) -> None:
+        # PR #284 re-review: collapsing whitespace erased the paragraph break,
+        # so "A.\n\nB." equalled the entry "A. B." and rewrote it.
+        for note in ('Checked the census. Nothing found.', 'Checked the census.',
+                     'Nothing found.'):
+            source.run_source_note(self.root, SID, text=note)
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Checked the census.\n\nNothing found.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_pieces_of_two_notes_say_it_reaches_across_them(self) -> None:
+        source.run_source_note(self.root, SID, text='Alpha one. Alpha two.')
+        source.run_source_note(self.root, SID, text='Beta one. Beta two.')
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Alpha two.\n\nBeta one.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('reaches across 2 notes', result.messages[0].text)
+        self.assertNotIn('not even in part', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
     def test_true_miss_is_a_cli_not_found_message(self) -> None:
         result = source.run_source_edit_note(
             self.root, SID, old_text='Never written anywhere.', text='x')

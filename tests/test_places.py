@@ -953,6 +953,20 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertIn('covers 2 notes', result.messages[0].text)
         self.assertEqual(self.registry.read_bytes(), before)
 
+    def test_edit_note_two_whole_paragraphs_never_loosely_match_a_third(self) -> None:
+        self.registry.write_text(
+            _SET_REGISTRY.replace(
+                '  notes: fictional town\n',
+                '  notes: |\n    Checked the census. Nothing found.\n\n'
+                '    Checked the census.\n\n    Nothing found.\n'),
+            encoding='utf-8', newline='')
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'Checked the census.\n\nNothing found.', 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.registry.read_bytes(), before)
+
     def test_edit_note_true_miss_is_a_cli_not_found_message(self) -> None:
         result = places.run_place_edit_note(
             self.root, 'L-7c1a9f4e22', 'Never written anywhere.', 'x')
