@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "58010507c3d7ae68165a4f21f66b74a49df91bc0f8d47a60718f5b8ed7cc88d9",
+      "sha256": "025c9ff6fbf7c997d70db6bf4058609b5d84181d40d962c159f2324f3d267361",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "06d336df1415e3e6c56dedd21dd623ae30b4ecf5f162a60830f0db40d425939e",
+      "sha256": "94458a66a78ae753f24c85161323ec6dd5dc68e7b56034161147049f7d4564d0",
       "spec_version": "1.2"
     },
     {

@@ -4593,8 +4593,13 @@ def _attach_more_engine(
     # so a file named or keyworded with it belongs HERE: it is renamed into
     # this source's grammar and re-keyworded, the old name kept as
     # `original_filename:`.
-    retired_sids = _retired_source_ids(meta_for_check, sid)
-    if existing_doc_sid in retired_sids:
+    # Only an id with no record of its own counts: while the other record
+    # still exists, its files are its own (#300 review).
+    retired_sids = frozenset(
+        r for r in _retired_source_ids(meta_for_check, sid)
+        if _find_record_for_sid(archive_root, r) is None)
+    named_for_retired = existing_doc_sid in retired_sids
+    if named_for_retired:
         existing_doc_sid = None
     # The name is one carrier; the keyword inside the file is another (#252).
     # A scan another program renamed still says which source it belongs to,
@@ -4682,6 +4687,20 @@ def _attach_more_engine(
          if str(e['file']).replace('\\', '/') == new_alias_norm),
         None,
     )
+    if named_for_retired:
+        # A file the record already lists under its old name (the usual state
+        # right after a hand merge) is attached already; renaming it here
+        # would leave that entry pointing at a file that is gone.
+        try:
+            current_alias = path_to_alias(more_file, 'documents', fha_config,
+                                          archive_root).replace('\\', '/')
+        except Exception:
+            current_alias = None
+        if current_alias and any(str(e['file']).replace('\\', '/') == current_alias
+                                 for e in existing_entries):
+            raise ProcessError(
+                f'{more_file.name} is already listed in this record\'s files: under '
+                'its old name, so it is attached already. Nothing was changed.')
     if existing_match is not None:
         existing_role = str(existing_match.get('role') or '').strip() or 'attachment'
         existing_copy = str(existing_match.get('copy') or '').strip() or None

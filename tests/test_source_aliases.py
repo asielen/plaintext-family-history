@@ -27,7 +27,7 @@ import index
 import lint
 import process
 from _lib import EXIT_CLEAN, EXIT_ERRORS, load_fha_yaml
-from test_process_inbox_filing import JPEG, InboxFilingTestCase
+from test_process_inbox_filing import JPEG, PDF, InboxFilingTestCase
 
 EXAMPLE = ROOT / 'example-archive'
 CENSUS = 'sources/census/1880-census-fairview-hartley-household_S-4f5f215e60.md'
@@ -129,6 +129,43 @@ class MoreAcceptsARetiredIdTests(InboxFilingTestCase):
         filed = self.docs / 'letter' / f'postcard-from-aunt-1908-page-2_{sid}.jpg'
         self.assertTrue(filed.is_file(), self._files(self.docs))
         self.assertEqual(self.store.keywords[str(filed)], [f'SOURCE: {sid}'])
+
+    def test_an_alias_whose_record_still_exists_is_refused(self) -> None:
+        # Part-way through a hand merge: the other letter still has its record,
+        # so its file is still its own.
+        primary, record, sid = self._file_letter()
+        other = self._put(self.inbox / 'Letters' / 'tax-receipt.pdf', b'%PDF-1.4 other')
+        rc, _out, err = self._run(str(other), '--type', 'letter', '--slug', 'tax-receipt')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        other_filed = next((self.docs / 'letter').glob('tax-receipt_S-*.pdf'))
+        other_sid = other_filed.stem.split('_')[-1]
+        text = record.read_text(encoding='utf-8')
+        record.write_text(text.replace(f'aliases: [{sid}, ', f'aliases: [{sid}, {other_sid}, ', 1),
+                          encoding='utf-8')
+
+        rc, _out, err = self._run(str(primary), '--more', str(other_filed), 'page-2')
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('Nothing was changed', err)
+        self.assertTrue(other_filed.is_file())
+
+    def test_a_file_already_listed_under_its_old_name_is_left_alone(self) -> None:
+        primary, record, sid = self._letter_with_alias()
+        old_page = self._put(self.docs / 'letter' / f'old-page_{OLD}.pdf', PDF)
+        text = record.read_text(encoding='utf-8')
+        record.write_text(text.replace(
+            '    original_filename: scan-0412.pdf\n',
+            '    original_filename: scan-0412.pdf\n'
+            f'  - file: documents/letter/{old_page.name}\n    role: page-2\n', 1),
+            encoding='utf-8')
+        before = record.read_text(encoding='utf-8')
+
+        rc, _out, err = self._run(str(primary), '--more', str(old_page), 'page-2')
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already listed', err)
+        self.assertTrue(old_page.is_file())
+        self.assertEqual(record.read_text(encoding='utf-8'), before)
 
     def test_an_id_that_is_not_an_alias_is_still_refused(self) -> None:
         primary, _record, _sid = self._file_letter()
