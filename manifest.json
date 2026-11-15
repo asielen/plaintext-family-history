@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "a7ed498f6f43759d2d296b98bc79c92c51b6287d7033af0f6a6068b8a36e223d",
+      "sha256": "616f42f150fcd864ab74d36e2309e35cc398fa4c7b0975b2056cfe81e54cbcfb",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "ce3bda5d921e048f631a98c7e80be7889b2fb23d0309856c385c05f2be0d3340",
+      "sha256": "9664711a723a2a4480d093eb7db6c98e8f82f88e5076d0805e0c13050b735d21",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "ddaa406cd759eff39203282b0d9a4c2e5260f2b458d253426b7ba67488ee07fb",
+      "sha256": "5b8562c2dba0645d90d006e100c4d5927e3c769da9eba7bf3209fdf2147d1837",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -854,7 +854,7 @@
     {
       "path": ".fha/tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "f003c75c00b7ab31562227a3dcfcad750232c08ec3fc8227fe20f2a5ce938e1c",
+      "sha256": "21b7ff87fc38dbe2c3ef3d514e2d96dced7b93173f9884644d93e8a57c557435",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/_modals.html"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "b84d126ba806933e1b47dc76b0f0287ac0bfff42eecc57e61231550051f9a2d8",
+      "sha256": "8f2b29a1a70a32d282571a721a36b06ecd60974d181749bff7e3490950130f51",
       "spec_version": "1.2"
     },
     {

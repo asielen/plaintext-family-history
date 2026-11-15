@@ -1323,6 +1323,16 @@ class ProcessVerbIntakeDefaultTests(_ServeCase):
         value = re.search(r'value="([^"]*)"', m.group(0))
         return value.group(1) if value else re.search(r'>([^<]*)', select[m.start():]).group(1)
 
+    def test_inbox_folder_refusal_carries_the_per_file_command(self):
+        folder = self.root / 'inbox' / 'Trip'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'IMG_0001.jpg').write_bytes(b'\xff\xd8\xff')
+        result = serve._verb_process(self.state, {'file': 'inbox/Trip'}, dry_run=True)
+        self.assertFalse(result.ok)
+        steps = [m.next_step for m in result.messages if getattr(m, 'next_step', None)]
+        self.assertTrue(any(step.startswith('fha process') and 'IMG_0001.jpg' in step
+                            for step in steps), [m.text for m in result.messages])
+
     def test_modals_default_to_no_type(self):
         self.assertEqual(self._default_source_type('tpl-process'), '')
         self.assertEqual(self._default_source_type('tpl-process-bundle'), '')

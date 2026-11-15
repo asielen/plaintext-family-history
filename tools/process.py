@@ -1435,6 +1435,14 @@ def _relocate_from_inbox(
     inbox_root = resolve_path('inbox', fha_config, archive_root)
     if not _is_under(file_path, inbox_root):
         return file_path, sidecar, None
+    if _is_under(file_path, inbox_root / _INBOX_PROCESSED_DIRNAME):
+        # inbox/processed/ holds the originals of items already filed (#109);
+        # filing one again would make a second source for the same item.
+        raise ProcessError(
+            f'{file_path.name} is in {_rel(inbox_root / _INBOX_PROCESSED_DIRNAME, archive_root)}/ - '
+            'this is the kept original of something already filed, not a new item. Run '
+            f'`fha find "{file_path.stem}"` to see its source. To file it as a new item, copy '
+            'it into the inbox under a new name first. Nothing was changed.')
 
     # A stated source_type overrides the extension heuristic: a record image
     # like `census.jpg` has a photo *extension* but is a document-typed source,
@@ -1695,6 +1703,8 @@ def _dest_example(file_path: Path, inbox_root: Path, fha_config: dict | None = N
         rel = None
     if rel is not None:
         rel = inbox_park_relpath(rel, inbox_triage_dirs(fha_config or {})[0])
+    if rel is not None and rel.parts and rel.parts[0] == _INBOX_PROCESSED_DIRNAME:
+        rel = None  # the kept originals' folder is never a suggestion
     if rel is not None and len(rel.parts) > 1:
         folder = rel.parent.as_posix()
         return f'"{folder}"' if re.search(r'[^A-Za-z0-9._/-]', folder) else folder
@@ -1879,7 +1889,7 @@ def _is_photo_ext(file_path: Path) -> bool:
 # format this list does not know is still processed as a photo.
 _NOT_A_PICTURE_SUFFIXES: frozenset[str] = frozenset({
     '.md', '.txt', '.pdf', '.doc', '.docx', '.odt', '.rtf', '.html', '.htm',
-    '.json', '.xml', '.csv', '.xmp',
+    '.json', '.xml', '.csv', '.xmp', '.ini', '.db', '.aae', '.zip', '.svg',
 })
 
 
@@ -3350,10 +3360,13 @@ def process_bundle(
                     'Fix the notes before dissolving the bundle.'
                 )
             stated_type = hinted_type
+    bundle_rule = None
     if stated_type is None:
         # The bundle folder's standing type in the inbox (#294).
         stated_type = _intake_default_type(folder, fha_config, archive_root,
                                            dry_run=dry_run)
+        if stated_type is not None:
+            bundle_rule = _intake_default(folder, fha_config, archive_root)[1]
     asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
                    for a in assets}
 
@@ -3361,6 +3374,14 @@ def process_bundle(
         # A flag accepted and then ignored is the confident-wrong-answer
         # class (#59): --dest names a photo-library folder, and this bundle
         # files nothing there.
+        if bundle_rule is not None:
+            dest_shown = photo_dest_dir.name
+            raise ProcessError(
+                f'--dest chooses the photo-library folder for a bundle\'s photos, and '
+                f"{folder.name} is being filed as a document - type {stated_type} from "
+                f"intake_defaults '{bundle_rule}'. Drop --dest to file it that way, or pass "
+                f'--type photo --dest {dest_shown} to file its photos as photos. Nothing was '
+                'changed.')
         raise ProcessError(
             f'--dest chooses the photo-library folder for a bundle\'s photos, and '
             f'{folder.name} holds no photos - its files are filed with your documents - '
@@ -5030,7 +5051,8 @@ def _file_line_count(text: str) -> int:
 
 
 def _validate_dest_subpath(root: Path, dest: str, root_label: str,
-                           fha_config: dict | None = None) -> Path:
+                           fha_config: dict | None = None,
+                           inbox_root: Path | None = None) -> Path:
     """Validate a `--dest SUBPATH` and return the directory it names under `root`.
 
     Mirrors person.py's `_validate_into_folder` containment discipline: no
@@ -5075,6 +5097,12 @@ def _validate_dest_subpath(root: Path, dest: str, root_label: str,
         raise ProcessError(
             f'--dest {dest!r} does not resolve to a folder inside the '
             f'{root_label} root - name a plain subfolder, e.g. {example}.')
+    if inbox_root is not None and _is_under(dest_dir, inbox_root):
+        # SPEC §12.4's example nests the inbox inside the photos root; a
+        # folder of it (processed/ included) is not a library folder.
+        raise ProcessError(
+            f'--dest {dest!r} is your inbox, not part of your photo library - name a '
+            f'library folder instead, e.g. {example}. Nothing was moved.')
     if root_label == _PHOTO_DIR and fha_config is not None:
         # A photo filed under a `photos_ignore:` folder is one the catalog
         # never sees - not searchable, not taggable, not on the site.
@@ -5546,7 +5574,9 @@ def process_refile(
                 'never invents photo-library organization - the folder choice is '
                 'yours. Name the subfolder the photo belongs in, e.g. '
                 '--dest 1880s or --dest "Family/Hartley".')
-        dest_dir = _validate_dest_subpath(photos_root, dest, _PHOTO_DIR, fha_config)
+        dest_dir = _validate_dest_subpath(
+            photos_root, dest, _PHOTO_DIR, fha_config,
+            inbox_root=resolve_path('inbox', fha_config, archive_root))
         new_name = _photo_library_name(src, entry)
     else:
         documents_root = resolve_path('documents', fha_config, archive_root)
@@ -6587,7 +6617,7 @@ def _run_process(args: argparse.Namespace) -> int:
         try:
             photo_dest_dir = _validate_dest_subpath(
                 resolve_path(_PHOTO_DIR, fha_config, archive_root), dest, _PHOTO_DIR,
-                fha_config)
+                fha_config, inbox_root=resolve_path('inbox', fha_config, archive_root))
         except ProcessError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_ERRORS

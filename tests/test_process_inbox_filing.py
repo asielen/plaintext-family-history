@@ -1080,6 +1080,44 @@ class NestedInboxTests(unittest.TestCase):
         self.assertEqual(len(list((self.docs / 'letter').glob('note_S-*.txt'))), 1)
         self.assertEqual(self._library_outside_inbox(), [])
 
+    def test_dest_inside_nested_inbox_is_refused(self) -> None:
+        # Fourth review P2-A: with the inbox inside the photos root, --dest
+        # must not name the inbox (or its processed/ folder) as a library folder.
+        for dest in ('_inbox', '_inbox/processed', '_inbox/Postcards'):
+            with self.subTest(first_filing=dest):
+                photo = self.inbox / 'x.jpg'
+                photo.write_bytes(JPEG)
+                rc, _out, err = self._run(str(photo), '--type', 'photo', '--dest', dest)
+                self.assertEqual(rc, EXIT_ERRORS, err)
+                self.assertIn('your inbox, not part of your photo library', err)
+                self.assertTrue(photo.is_file())
+                self.assertEqual(self._library_outside_inbox(), [])
+        scan = self.inbox / 'scan.jpg'
+        scan.write_bytes(JPEG)
+        rc, _out, err = self._run(str(scan), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        sid = next((self.docs / 'letter').glob('scan_S-*.jpg')).stem.split('_')[-1]
+        for dest in ('_inbox', '_inbox/processed'):
+            with self.subTest(refile=dest):
+                out, err_io = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err_io):
+                    rc = process._standalone_main(
+                        ['refile', sid, '--to', 'photos', '--dest', dest, '--yes',
+                         '--root', str(self.archive)])
+                self.assertNotEqual(rc, EXIT_CLEAN)
+                self.assertIn('your inbox, not part of your photo library',
+                              out.getvalue() + err_io.getvalue())
+                self.assertEqual(len(list((self.docs / 'letter').glob('scan_S-*.jpg'))), 1)
+
+    def test_parked_original_under_processed_is_refused_nested(self) -> None:
+        kept = self.inbox / 'processed' / 'A' / 'x.txt'
+        kept.parent.mkdir(parents=True)
+        kept.write_bytes(b'kept')
+        rc, _out, err = self._run(str(kept), '--type', 'letter')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('kept original of something already filed', err)
+        self.assertTrue(kept.is_file())
+
     def test_more_page_from_a_nested_inbox_joins_its_document(self) -> None:
         letter = self.inbox / 'letter.pdf'
         letter.write_bytes(PDF)
@@ -1266,6 +1304,45 @@ class ThirdReviewTests(InboxFilingTestCase):
         result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
         check = next(c for c in result.data['checks'] if c['id'] == 'inbox')
         self.assertEqual(check['status'], 'ok', '\n'.join(result.data['lines']))
+
+
+class FourthReviewTests(InboxFilingTestCase):
+    """PR #287 fourth review: kept originals, bundle --dest wording, and the
+    not-a-picture list."""
+
+    def test_parked_original_under_processed_is_refused(self) -> None:
+        kept = self._put(self.inbox / 'processed' / 'A' / 'x.txt', b'kept')
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(kept), '--type', 'letter')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('kept original of something already filed', err)
+        self.assertEqual(self._snapshot(self.tmp), before)
+        # As a --more file too.
+        primary, _record, _sid = self._file_letter()
+        page = self._put(self.inbox / 'processed' / 'p.jpg', JPEG)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('kept original of something already filed', err)
+        self.assertTrue(page.is_file())
+
+    def test_bundle_dest_refusal_names_the_rule(self) -> None:
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8')
+                       + 'intake_defaults:\n  - match: "Postcards/**"\n    source_type: letter\n',
+                       encoding='utf-8')
+        folder = self.inbox / 'Postcards' / 'aunt'
+        self._put(folder / 'front.tif', TIFF)
+        (folder / 'notes.md').write_text('---\ntitle: Card\n---\n', encoding='utf-8')
+        rc, _out, err = self._run(str(folder), '--dest', 'C')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn("type letter from intake_defaults 'Postcards/**'", err)
+        self.assertIn('--type photo --dest C', err)
+
+    def test_more_non_picture_formats(self) -> None:
+        for suffix in ('.ini', '.db', '.aae', '.zip', '.svg', '.md', '.pdf'):
+            self.assertTrue(process._is_known_non_image(Path('x' + suffix)), suffix)
+        for suffix in ('.jpg', '.webp', '.mp4'):
+            self.assertFalse(process._is_known_non_image(Path('x' + suffix)), suffix)
 
 
 if __name__ == '__main__':
