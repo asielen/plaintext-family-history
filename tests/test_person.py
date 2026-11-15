@@ -2071,9 +2071,12 @@ class PersonNewVerbsCliTests(unittest.TestCase):
         import fha
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            with self.assertRaises(SystemExit) as cm:
-                fha.main(['person', 'new', '--root', str(self.root)])
-        self.assertEqual(cm.exception.code, 2)
+            # NAME became optional when --from-file arrived (issue #291), so
+            # the usage error is the command's own, still exit 2 and naming
+            # both ways to call it.
+            code = fha.main(['person', 'new', '--root', str(self.root)])
+        self.assertEqual(code, 2)
+        self.assertIn('--from-file', err.getvalue())
 
     def test_new_dry_run_cli_writes_nothing(self) -> None:
         stubs_dir = self.root / 'people' / 'stubs'

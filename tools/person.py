@@ -260,6 +260,7 @@ import yaml
 
 from _lib import (
     LIVING_VALUES as _LIB_LIVING_VALUES,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
@@ -297,7 +298,9 @@ from _lib import (
     lines_end_with_newline,
     living_edit_problem,
     load_fha_yaml,
+    is_placeholder_name,
     mint_ids,
+    person_name_key,
     normalize_date,
     normalize_id,
     normalize_living,
@@ -1161,6 +1164,166 @@ def run_new(
                f'Created {fmt_id_display(pid)} ({clean_name}) - people/stubs/{filename}.',
                path=path)
     _add_new_messages()
+    return result
+
+
+# The `--from-file` columns, in order. A first row whose first cell is
+# literally "name" is a header and is skipped.
+_FROM_FILE_COLUMNS = ('name', 'sex', 'surname')
+
+
+def _read_people_file(path: Path) -> tuple[list[dict], list[str]]:
+    """Parse a `--from-file` list into rows, or the plain reasons it cannot be.
+
+    One person per line, tab-separated: name, then sex (optional: M, F,
+    intersex, unknown, case-insensitive for M/F), then a surname override
+    (optional; `-` means "no surname", the same as `--surname ""`). Blank
+    lines and lines starting with `#` are skipped, so a list can carry notes.
+    Every row is checked before any is accepted, so the human sees every bad
+    row at once rather than fixing them one run at a time.
+    """
+    rows: list[dict] = []
+    problems: list[str] = []
+    try:
+        text = path.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeDecodeError) as e:
+        return [], [f'cannot read {path}: {e}. Check the path, and save the file as '
+                    'UTF-8 text (one person per line: name, sex, surname, separated by tabs).']
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        cells = [c.strip() for c in line.split('\t')]
+        if not rows and not problems and cells[0].lower() == 'name':
+            continue   # header row
+        while len(cells) > 1 and cells[-1] == '':
+            cells.pop()
+        if len(cells) > len(_FROM_FILE_COLUMNS):
+            problems.append(
+                f'row {number} has {len(cells)} columns; a row is at most name, sex, '
+                'surname, separated by tabs (e.g. "Ann Smith<TAB>F<TAB>Smith").')
+            continue
+        cells += [''] * (len(_FROM_FILE_COLUMNS) - len(cells))
+        name, sex, surname = cells
+        if not name:
+            problems.append(f'row {number} has no name - the first column is the '
+                            'person\'s full name, e.g. "Ann Smith".')
+            continue
+        sex_clean = _normalize_sex_input(sex) if sex else None
+        if sex_clean is not None and sex_clean not in PERSON_SEX_VALUES:
+            problems.append(f'row {number} ({name}): {format_person_sex_error(sex)}')
+            continue
+        rows.append({'row': number, 'name': name, 'sex': sex_clean,
+                     'surname': '' if surname == '-' else (surname or None)})
+    if not rows and not problems:
+        problems.append(f'{path} lists nobody - put one person per line: name, sex, '
+                        'surname, separated by tabs.')
+    return rows, problems
+
+
+def run_new_from_file(
+    archive_root: Path, file_path: str | Path, *, force: bool = False,
+    dry_run: bool = False,
+) -> Result:
+    """Mint one stub per row of a tab-separated list; return a Result.
+
+    The batch form of `run_new` (issue #291): `fha stubs --from-names` mints
+    a list in one go but carries no sex, and `fha person new` one at a time
+    paid the archive-wide ID scan per person. Here every row is validated
+    first (`_read_people_file`) and a bad row refuses the WHOLE file with
+    nothing minted; then the #282 duplicate check runs ONCE over all names
+    (one walk of people/, not one per row), with names repeated inside the
+    file caught too; then `mint_ids` draws every ID in one call - one scan.
+
+    Writes are all-or-nothing: if one stub cannot be written, the ones
+    already written in this run are removed again, so a failed run leaves
+    the archive as it was. `--dry-run` previews each file. `data` is
+    {'status': 'ok'|'dry-run'|'refused'|'duplicate-name', 'people':
+    [{'person_id', 'name', 'path'}], 'duplicates': {name: [...]}}.
+    """
+    result = Result(data={'status': None, 'people': [], 'duplicates': {}})
+    path = Path(file_path)
+    rows, problems = _read_people_file(path)
+    if problems:
+        return _refuse_result(
+            result, 'refused',
+            f'Nothing was minted - {path.name} has {len(problems)} problem(s):\n  '
+            + '\n  '.join(problems)
+            + '\nFix those rows and run the same command again.')
+
+    unreadable: list[str] = []
+    if not force:
+        names = [r['name'] for r in rows]
+        existing = find_people_by_name(archive_root, names, unreadable=unreadable)
+        lines: list[str] = []
+        first_seen: dict[str, str] = {}
+        for r in rows:
+            name = r['name']
+            if name in existing:
+                result.data['duplicates'][name] = existing[name]
+                lines.append(f"row {r['row']}: "
+                             + duplicate_person_name_message(name, existing[name]))
+                continue
+            key = person_name_key(name)
+            if key in first_seen and not is_placeholder_name(name):
+                lines.append(f"row {r['row']}: {name} is in this file twice (also as "
+                             f'{first_seen[key]!r}), so it would be minted as two records. '
+                             'If you have confirmed these are two different people who '
+                             'share the name, run again with `--force`.')
+            else:
+                first_seen.setdefault(key, name)
+        if lines:
+            return _refuse_result(result, 'duplicate-name',
+                                  'Nothing was minted:\n  ' + '\n  '.join(lines))
+
+    ids = [i.lower() for i in mint_ids('P', len(rows), archive_root)]
+    stubs_dir = archive_root / 'people' / 'stubs'
+    planned = []
+    for r, pid in zip(rows, ids):
+        target = stubs_dir / stub_filename(r['name'], pid, surname=r['surname'])
+        content = (render_stub_content(pid, r['name'], sex=r['sex'])
+                   + '\n' + render_person_body_scaffold(r['name']))
+        planned.append((r, pid, target, content))
+        result.data['people'].append(
+            {'person_id': fmt_id_display(pid), 'name': r['name'], 'path': str(target)})
+    if unreadable:
+        result.add('warning', unreadable_people_note(unreadable))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        for r, pid, target, _content in planned:
+            result.add('info', f"[dry-run] Would create {fmt_id_display(pid)} ({r['name']}"
+                       + (f", sex {r['sex']}" if r['sex'] else '')
+                       + f') - people/stubs/{target.name}.')
+        result.add('info', f'[dry-run] No file written. Re-run without --dry-run to '
+                           f'create these {len(planned)} record(s).')
+        return result
+
+    written: list[Path] = []
+    try:
+        stubs_dir.mkdir(parents=True, exist_ok=True)
+        for _r, _pid, target, content in planned:
+            if target.exists():
+                raise OSError(f'{target.name} already exists')
+            write_text_exact_atomic(target, content)
+            written.append(target)
+    except OSError as e:
+        for done in written:
+            with contextlib.suppress(OSError):
+                done.unlink()
+        return _refuse_result(
+            result, 'refused',
+            f'cannot write the new records ({e}). Nothing was kept - the '
+            f'{len(written)} written before the failure were removed. Check that '
+            'people/stubs/ is writable, then run the same command again.')
+
+    result.data['status'] = 'ok'
+    for (r, pid, target, _content) in planned:
+        result.note_changed(target)
+        result.add('info', f"Created {fmt_id_display(pid)} ({r['name']}) - "
+                           f'people/stubs/{target.name}.', path=target)
+    result.add('info', f'Next: `fha index`, then `fha person relate <P-id> '
+                       '--parent|--child|--sibling|--spouse <P-id2>` to tie them to family.',
+               next_step='fha index')
     return result
 
 
@@ -3337,6 +3500,24 @@ def _cmd_new(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person new')
     if archive_root is None:
         return EXIT_FAILURE
+    from_file = getattr(args, 'from_file', None)
+    if from_file:
+        per_person = [f'--{f.replace("_", "-")}' for f in
+                      ('sex', 'gender', 'birth', 'death', 'birth_place', 'death_place', 'surname')
+                      if getattr(args, f, None) is not None]
+        if args.name or per_person:
+            print('ERROR: --from-file takes everyone from the file - give either a '
+                  'NAME or --from-file, not both, and put sex and surname in the '
+                  "file's columns (name, sex, surname, separated by tabs) instead of "
+                  f'{" ".join(per_person) or "a NAME"}.', file=sys.stderr)
+            return EXIT_ERRORS
+        return _emit(run_new_from_file(
+            archive_root, from_file, force=bool(getattr(args, 'force', False)),
+            dry_run=bool(getattr(args, 'dry_run', False))))
+    if not args.name:
+        print('ERROR: a name is required - e.g. `fha person new "Jane Doe"`, or '
+              '`fha person new --from-file people.tsv` for a list.', file=sys.stderr)
+        return EXIT_ERRORS
     return _emit(run_new(
         archive_root, name=args.name, sex=args.sex, gender=args.gender,
         birth=args.birth, death=args.death,
@@ -3514,7 +3695,14 @@ too, not a surname. name: is written exactly as given either way. A name that al
 (same spelling, ignoring case and accents) is refused so the same person is
 never filed twice; add --force when it really is someone else who shares
 the name. Use `fha person relate` next to tie the new person to family, and
-`fha find` to confirm the record."""
+`fha find` to confirm the record.
+
+  fha person new --from-file people.tsv
+
+mints a whole list at once: one person per line, tab-separated columns name,
+sex (optional) and surname override (optional; - for no surname), a header
+row "name sex surname" allowed. Every row is checked first - one bad row and
+nothing is minted - and the duplicate-name check covers the whole list."""
 
 _SET_LIVING_DESCRIPTION = """\
 Mark one person as living, passed away, or unknown - the privacy switch.
@@ -3535,8 +3723,12 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
         description=_NEW_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    nw.add_argument('name', metavar='NAME',
-                    help='The person\'s full name, e.g. "Jane Doe".')
+    nw.add_argument('name', metavar='NAME', nargs='?',
+                    help='The person\'s full name, e.g. "Jane Doe". Omit with --from-file.')
+    nw.add_argument('--from-file', metavar='PATH', dest='from_file',
+                    help='Mint everyone in a tab-separated list instead: one person per '
+                         'line, columns name, sex (optional), surname override (optional; '
+                         '- for no surname). A bad row refuses the whole file.')
     nw.add_argument('--surname', metavar='TEXT',
                     help='Override the filename\'s surname split - for names no '
                          'automatic split can be expected to get right (Spanish '

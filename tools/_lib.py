@@ -7562,17 +7562,41 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
     """
     Scan the archive tree for all ID strings (case-normalized).
     Used by id mint to verify non-existence without a built index.
+
+    Every mint pays for this scan, so it reads only where a record's own ID
+    can live (issue #291: in a large archive it took 8-10 s a person). It
+    never enters a dot-folder at any depth (`.git` objects, `.cache`, the
+    installed `.fha/` tools, an editor's `.obsidian`) or the top-level
+    `generated/` site: none of them holds an ID that is not also in a
+    record, and `.git` alone can be tens of thousands of files. `os.walk`
+    with pruning means those trees are not even listed, and a file is
+    opened only when its extension is one of the text kinds.
+
+    The index is deliberately NOT used as a shortcut, although its ID
+    tables are faster to read. "Fresh" there means the database file is
+    newer than every record and the path set has not changed - but
+    `fha index --source` moves the database's mtime forward without
+    re-reading the people or the other sources, so an ID typed into a
+    record before that upsert would read as absent. A collision guard has
+    to be right, not usually right; the pruned walk is.
     """
     root = Path(archive_root)
     found: set[str] = set()
-    for path in root.rglob('*'):
-        if path.is_file() and path.suffix in ('.md', '.yaml', '.yml', '.txt'):
+    for dirpath, dirnames, filenames in os.walk(root):
+        top = Path(dirpath) == root
+        dirnames[:] = [d for d in dirnames
+                       if not d.startswith('.') and not (top and d == 'generated')]
+        for filename in filenames:
+            if os.path.splitext(filename)[1] not in ('.md', '.yaml', '.yml', '.txt'):
+                continue
             try:
-                text = path.read_text(encoding='utf-8', errors='ignore')
-                for m in ID_RE.finditer(text):
-                    found.add(m.group(0).lower())
+                with open(os.path.join(dirpath, filename), encoding='utf-8',
+                          errors='ignore') as fh:
+                    text = fh.read()
             except OSError:
-                pass
+                continue
+            for m in ID_RE.finditer(text):
+                found.add(m.group(0).lower())
     return found
 
 
