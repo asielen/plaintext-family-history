@@ -286,6 +286,7 @@ from _lib import (
     frontmatter_key_line_indexes,
     frontmatter_edit_problem,
     frontmatter_fence_span,
+    humanize_edtf,
     id_type_of,
     is_generated_file,
     is_merged_meta,
@@ -2557,8 +2558,10 @@ def _edtf_gloss(edtf: str) -> str:
     rather than being hoisted to the one shared home it would otherwise earn).
     """
     if '/' in edtf:
-        a, b = edtf.split('/', 1)
-        return f'between {a} and {b}'
+        # A range reads through the shared reader, so a hedge on its
+        # endpoints is said in words ('1891~/1893~' -> 'about 1891 to
+        # about 1893'), never echoed as 'between 1891~ and 1893~' (#293).
+        return humanize_edtf(edtf)
     before_m = re.match(r'^\[\.{2}(.+)\]$', edtf)
     if before_m:
         return f'on or before {before_m.group(1)}'

@@ -1808,6 +1808,15 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
             f'can only keep "{word}" with a single date. Say which one you mean - '
             f'{choices} - or drop "{word}" and keep {rest!r} as it is.'
         )
+    decade = _hedge_on_a_decade(value)
+    if decade:
+        first, last = decade
+        return (
+            f'{field} {value!r} puts a hedge ("about", "maybe") on a whole decade, '
+            f'and the archive has no way to keep that. Write "the {first}s" '
+            f'(stored as {first[:3]}X), a hedged year such as "about {int(first) + 5}", '
+            f'or a hedged range such as "about {first}-{last}".'
+        )
     backwards = backwards_interval_halves(value)
     if backwards:
         start, end = backwards
@@ -6571,6 +6580,19 @@ def _open_bound_on_a_span(value: object) -> tuple[str, str, str, str] | None:
     return None
 
 
+def _hedge_on_a_decade(value: object) -> tuple[str, str] | None:
+    """(first year, last year) when `value` puts "about"/"maybe" on a decade
+    ("about 1850s", "maybe 187x") - the shape normalize_date refuses, so the
+    refusal can say why (#293 review)."""
+    text, approx, _before, _after, uncertain = _loose_date_parts(str(value or ''))
+    if not (approx or uncertain):
+        return None
+    decade = re.match(r"^(\d{3})0(?:'s|s)$", text) or re.match(r'^(\d{3})x$', text)
+    if decade:
+        return f'{decade.group(1)}0', f'{decade.group(1)}9'
+    return None
+
+
 def format_date_spread(date_min: str | None, date_max: str | None) -> str:
     """A plain date spread for a report line: "1880-09-30/1882-05-01".
 
@@ -6698,6 +6720,12 @@ def normalize_date(s: str | None) -> str | None:
       between 1870 and 1875, 1870 to 1875, 1870-1875       → 1870/1875 (interval)
       ("1875 to 1870" runs backwards → None, never silently swapped: either
       year may be the typo, so the human is asked - format_edtf_error)
+      about/circa 1870-1875, maybe 1870-1875               → 1870~/1875~, 1870?/1875?
+      (the hedge goes on both endpoints; a hedge is never dropped)
+      about 1870s, maybe 187x                              → None (no stored form)
+      1870.., 1870...                                      → None (an open end
+      that is neither [..X] nor [X..]; never read as plain 1870 - with a
+      before/after word the dots are noise: "after 1870..." → [1870..])
       a bare year/month/day already shaped like EDTF       → itself
 
     Month names such as "June 1923", "June 14 1923", and "14 June 1923"
@@ -6712,8 +6740,13 @@ def normalize_date(s: str | None) -> str | None:
         return None
     if is_valid_edtf(raw):
         return raw
-
     text, approx, before, after, uncertain = _loose_date_parts(raw)
+    # `_loose_date_parts` strips trailing dots as sentence noise, which would
+    # turn "1850.." (an open end, half of an EDTF open form) into plain 1850.
+    # With a before/after word the open end is already said in words
+    # ("after 1850..." is [1850..]), so only a bare one is refused.
+    if raw.endswith('..') and not (before or after):
+        return None
 
     candidate: str | None = None
 
@@ -6732,7 +6765,14 @@ def normalize_date(s: str | None) -> str | None:
     )
 
     if range_m:
-        candidate = f'{range_m.group(1)}/{range_m.group(2)}'
+        # A hedge on a range qualifies both endpoints ("about 1891-1893" →
+        # 1891~/1893~). Dropping it would write a valid but wrong date.
+        # The years are compared bare first: widened by the hedge, a reversed
+        # "about 1941-1940" would overlap and pass is_valid_edtf.
+        if range_m.group(1) > range_m.group(2):
+            return None
+        mark = '~' if approx else '?' if uncertain else ''
+        candidate = f'{range_m.group(1)}{mark}/{range_m.group(2)}{mark}'
     elif decade_word_m:
         candidate = f'{decade_word_m.group(1)}X'
     elif decade_x_m:
@@ -6762,6 +6802,11 @@ def normalize_date(s: str | None) -> str | None:
     # silently dropped as "the 1880s" (#218 audit). format_edtf_error says
     # why in plain words.
     if (before or after) and (range_m or decade_word_m or decade_x_m):
+        return None
+    # "about the 1880s" / "maybe 188x": a decade has no approximate or
+    # uncertain stored form ('188X~' is not valid), so refuse rather than
+    # silently store the bare decade with the hedge dropped.
+    if (approx or uncertain) and (decade_word_m or decade_x_m):
         return None
 
     if candidate and (date_m or month_year_m or month_day_year_m or day_month_year_m):
