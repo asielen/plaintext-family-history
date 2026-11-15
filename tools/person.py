@@ -325,6 +325,8 @@ from _lib import (
     sqlite_cache_schema_status,
     stub_filename,
     stub_filename_is_lossy,
+    recorded_surname,
+    surname_frontmatter_line,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -2066,8 +2068,11 @@ def _name_carries_words(name: str, words: str) -> bool:
 
 
 def _set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | None]:
-    """Set (`value` non-empty) or remove (`value` empty) the frontmatter's
-    `surname:` line, the record of a hand-set surname slot (SPEC §13).
+    """Set the frontmatter's `surname:` line, the record of a hand-set
+    surname slot (SPEC §13): the surname, or `surname: ""` when `value` is
+    empty ("no surname"). There is no flag that removes the line - it is
+    optional, so deleting it by hand returns the record to the automatic
+    split.
     Returns the new lines, or a problem sentence when the header cannot be
     edited safely (no fences, or more than one `surname:` line)."""
     bounds = frontmatter_fence_span(lines)
@@ -2079,12 +2084,7 @@ def _set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | No
         return lines, 'has more than one top-level surname: line'
     out = list(lines)
     cr = '\r' if lines[start].endswith('\r') else ''
-    if not value:
-        if found:
-            del out[found[0]]
-        return out, None
-    line = (f'surname: {yaml_inline(value)}   '
-            f'# set by hand: the file name sorts under this surname{cr}')
+    line = surname_frontmatter_line(value, cr)
     if found:
         out[found[0]] = line
         return out, None
@@ -2199,15 +2199,21 @@ def run_rename(
     # rename of "Jinping XI" (filed `xi__jinping` on purpose) is not taken
     # for a pre-#292 slug and "repaired". A new --surname replaces it, and
     # --surname "" removes it, which is itself a change worth writing.
-    recorded_surname = str(before_meta.get('surname') or '').strip() or None
+    recorded = recorded_surname(before_meta)
     same_name = bool(old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new))
-    if surname is None and recorded_surname and _name_carries_words(clean_new, recorded_surname):
-        effective_surname: str | None = recorded_surname
+    if surname is None and recorded is not None and (
+            recorded == '' or _name_carries_words(clean_new, recorded)):
+        effective_surname: str | None = recorded
     else:
         effective_surname = surname
-    surname_changes = surname is not None and (surname.strip() or None) != recorded_surname
+    surname_changes = surname is not None and surname.strip() != recorded
+    # An explicit --surname is a request about the FILE name, so a same-name
+    # rename is not a no-op while the name it gives differs from the one on
+    # disk (`Henry Tudor` with --surname "" -> `__henry_tudor_P-…`).
+    explicit_refile = surname is not None and (
+        stub_filename(clean_new, pid, surname=surname).lower() != path.name.lower())
     refile_only = same_name and (
-        surname_changes
+        surname_changes or explicit_refile
         or stub_filename_is_lossy(path.name, clean_new, pid, surname=effective_surname))
     if same_name and not refile_only:
         result.data['status'] = 'already'
@@ -2328,7 +2334,7 @@ def run_rename(
              if refile_only else [f'set name: {old_name or "(none)"} -> {clean_new}'])
     if surname is not None:
         steps.append(f'record surname: {surname.strip()}' if surname.strip()
-                     else 'record no surname (remove any surname: line)')
+                     else 'record no surname (surname: "")')
     if keep_variant:
         if 'name_variants' in changed_keys:
             steps.append(f'add {old_name!r} to name_variants:')

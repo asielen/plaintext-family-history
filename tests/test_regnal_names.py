@@ -233,5 +233,67 @@ class ExplicitNumeralSurnameTests(unittest.TestCase):
         self.assertIn('1 NAME Jinping /XI/', self._export_lines())
 
 
+
+class NoSurnameOverrideTests(unittest.TestCase):
+    """`--surname ""` is a recorded decision too: `surname: ""` in the
+    frontmatter, read by the export, and a same-name rename can apply it
+    (Codex, PR #285)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _export_lines(self) -> list[str]:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        time.sleep(0.02)
+        return gedcom.run_gedcom(self.root, None, all_persons=True,
+                                 include_living=True)['text'].splitlines()
+
+    def test_person_new_empty_surname_exports_no_surname(self) -> None:
+        made = person.run_new(self.root, 'Jon Thorsson', surname='')
+        path = Path(made.data['path'])
+        self.assertTrue(path.name.startswith('__jon_thorsson_p-'))
+        self.assertIn('surname: ""', path.read_text(encoding='utf-8'))
+        self.assertIn('1 NAME Jon Thorsson //', self._export_lines())
+
+    def test_from_file_dash_exports_no_surname(self) -> None:
+        tsv = self.root / 'p.tsv'
+        tsv.write_text('Jon Thorsson\tM\t-\n', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(person.run_new_from_file(self.root, tsv).ok)
+        self.assertIn('1 NAME Jon Thorsson //', self._export_lines())
+
+    def test_same_name_rename_removes_an_inferred_surname(self) -> None:
+        made = person.run_new(self.root, 'Henry Tudor')
+        old = Path(made.data['path'])
+        self.assertTrue(old.name.startswith('tudor__henry_p-'))
+        out = person.run_rename(self.root, made.data['person_id'], 'Henry Tudor', surname='')
+        self.assertEqual(out.data['status'], 'ok', [m.text for m in out.messages])
+        self.assertFalse(old.exists())
+        [new] = list((self.root / 'people' / 'stubs').glob('__henry_tudor_p-*.md'))
+        text = new.read_text(encoding='utf-8')
+        self.assertIn('name: Henry Tudor', text)
+        self.assertIn('surname: ""', text)
+        self.assertIn('1 NAME Henry Tudor //', self._export_lines())
+        # The recorded no-surname decision holds on a later same-name rename.
+        again = person.run_rename(self.root, made.data['person_id'], 'Henry Tudor')
+        self.assertEqual(again.data['status'], 'already')
+
+    def test_rename_with_a_surname_replaces_the_empty_one(self) -> None:
+        made = person.run_new(self.root, 'Henry Tudor', surname='')
+        out = person.run_rename(self.root, made.data['person_id'], 'Henry Tudor',
+                                surname='Tudor')
+        self.assertEqual(out.data['status'], 'ok', [m.text for m in out.messages])
+        [new] = list((self.root / 'people' / 'stubs').glob('tudor__henry_p-*.md'))
+        self.assertIn('surname: Tudor', new.read_text(encoding='utf-8'))
+
+
 if __name__ == '__main__':
     unittest.main()

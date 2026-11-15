@@ -10365,6 +10365,26 @@ def unreadable_people_note(paths: list[str]) -> str:
             'another encoding, or a frontmatter line that will not parse).')
 
 
+def surname_frontmatter_line(value: str, cr: str = '') -> str:
+    """The `surname:` line recording a hand-set sort name (SPEC §13): the
+    surname, or `surname: ""` for "no surname" (`--surname ""`), with a
+    comment saying what it is for."""
+    value = str(value or '').strip()
+    if value:
+        return (f'surname: {yaml_inline(value)}   '
+                f'# set by hand: the file name sorts under this surname{cr}')
+    return f'surname: ""   # set by hand: no surname, the file name leads with __{cr}'
+
+
+def recorded_surname(meta: dict) -> str | None:
+    """The hand-set sort name a person record carries in `surname:`
+    (SPEC §13): the surname, '' for a recorded "no surname" (an empty or
+    blank value), or None when the record has no `surname:` line at all."""
+    if not isinstance(meta, dict) or 'surname' not in meta:
+        return None
+    return str(meta.get('surname') or '').strip()
+
+
 def render_stub_content(
     pid: str,
     name: str | None,
@@ -10379,9 +10399,10 @@ def render_stub_content(
 ) -> str:
     """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
 
-    `surname`, when given (non-blank), is written as `surname:` right after
-    `name:` - the record that a human set the file name's surname slot by
-    hand (`fha person new --surname`, SPEC §13). Later tools read it where
+    `surname`, when given, is written as `surname:` right after `name:` -
+    the record that a human set the file name's surname slot by hand (`fha
+    person new --surname`, SPEC §13); an empty one is written `surname: ""`,
+    the decision "this person has no surname". Later tools read it where
     the file name alone is ambiguous: "Jinping XI" filed as `xi__jinping`
     on purpose and "Henry VII" filed as `vii__henry` by the old slugger look
     alike, and only the first carries the line.
@@ -10429,9 +10450,8 @@ def render_stub_content(
         f'aliases: [{pid}]',
         f'name: {yaml_inline(display_name)}',
     ]
-    if surname is not None and str(surname).strip():
-        lines.append(f'surname: {yaml_inline(str(surname).strip())}   '
-                     '# set by hand: the file name sorts under this surname')
+    if surname is not None:
+        lines.append(surname_frontmatter_line(surname))
     if sex is not None:
         lines.append(f'sex: {sex}')
     if gender is not None:

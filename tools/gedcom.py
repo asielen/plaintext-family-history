@@ -81,6 +81,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    recorded_surname as recorded_surname_of,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -278,7 +279,7 @@ def _surname_token_matches(name_token: str, slug_token: str) -> bool:
 
 
 def _gedcom_name(
-    name: str, surname: str | None, *, surname_is_explicit: bool = False,
+    name: str, surname: str | None, *, recorded_surname: str | None = None,
 ) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
@@ -343,9 +344,15 @@ def _gedcom_name(
         field = f'{given} /{sn_field}/'.strip()
         return f'{field} {raw_suffix}' if raw_suffix else field
 
+    if recorded_surname == '':
+        # `surname: ""`: a human said this person has no surname (SPEC §13,
+        # `--surname ""`), so the whole suffix-stripped name is the given part.
+        return compose(' '.join(core), ''), raw_suffix
+
     sn = _name_text(_escape(surname)) if surname else ''
     if is_placeholder_name(sn):
         sn = ''
+    surname_is_explicit = bool(recorded_surname)
     if sn and raw_suffix and len(sn.split()) == 1 and _surname_token_matches(raw_suffix, sn):
         if surname_is_explicit:
             # The human set that word as the surname (`--surname XI` on
@@ -515,17 +522,19 @@ def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row]) 
 
 def _person_record_flags(
     archive_root: Path, persons: dict[str, sqlite3.Row],
-) -> tuple[set[str], set[str]]:
-    """`(restricted ids, explicit-surname ids)`, from ONE read of each person
-    `.md` - neither fact is an index column.
+) -> tuple[set[str], dict[str, str]]:
+    """`(restricted ids, {id: recorded surname})`, from ONE read of each
+    person `.md` - neither fact is an index column.
 
-    An explicit surname is a `surname:` line, which `fha person new
-    --surname` writes to record that a human set the file name's surname slot
-    by hand. `_gedcom_name` needs to know it: "Jinping XI" filed under `xi__`
-    on purpose must export `/XI/`, while a `vii__henry` file the old slugger
-    wrote, with no such line, exports `Henry // VII`."""
+    A recorded surname is a `surname:` line (`_lib.recorded_surname`), which
+    `fha person new --surname` writes to record that a human set the file
+    name's surname slot by hand - '' for "no surname". `_gedcom_name` needs
+    it: "Jinping XI" filed under `xi__` on purpose must export `/XI/`, "Jon
+    Thorsson" filed `__jon_thorsson` must export no surname, while a
+    `vii__henry` file the old slugger wrote, with no line, exports `Henry //
+    VII`."""
     restricted: set[str] = set()
-    explicit: set[str] = set()
+    explicit: dict[str, str] = {}
     for pid, row in persons.items():
         path = row['path']
         if not path:
@@ -536,8 +545,9 @@ def _person_record_flags(
             continue
         if _is_restricted_value(meta.get('restricted')):
             restricted.add(pid)
-        if str(meta.get('surname') or '').strip():
-            explicit.add(pid)
+        recorded = recorded_surname_of(meta)
+        if recorded is not None:
+            explicit[pid] = recorded
     return restricted, explicit
 
 
@@ -809,7 +819,7 @@ def _emit_individual(
     fam_xref: dict[frozenset[str], str],
     src_xref: dict[str, str], place_cache: dict[str, str],
     include_living: bool, restricted_persons: set[str] = frozenset(),
-    explicit_surname_persons: set[str] = frozenset(),
+    explicit_surname_persons: dict[str, str] | None = None,
 ) -> list[str]:
     pid = person['id']
     redacted = _is_redacted(person, include_living, restricted_persons)
@@ -820,7 +830,7 @@ def _emit_individual(
     else:
         name_field, suffix = _gedcom_name(
             person['name'], person['surname'],
-            surname_is_explicit=pid in explicit_surname_persons)
+            recorded_surname=(explicit_surname_persons or {}).get(pid))
         lines.append(f'1 NAME {name_field}')
         if suffix:
             lines.append(f'2 NSFX {suffix}')
