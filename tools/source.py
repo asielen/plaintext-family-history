@@ -145,13 +145,18 @@ CODE MAP
   _choose_extract_pdf         - #280: which PDF to read (primary, the uncopied
                                 primary, or the --copy one); never a guess
   _measured_pieces            - #281: a page's pieces, minus leaders/URLs/scripts
-  _words_run_together         - #281: does a page's text look run together?
+  _is_suspect                 - #281: a piece that may hold several words
+  _words_run_together         - #281: the trigger - worth a second reading?
+  _suspect_chars / _hopeless_share - #281: suspicious text; 40+ letter pieces
+  _split_suspects             - #281: suspicious pieces a second reader splits
   _collapse_layout_text       - #281: second-reader text with its padding removed
+  _orphan_fragments           - #281: new non-word fragments ("Hart ley")
   _reading_problem / _same_reading - #281: a second reading changes only
                                 spacing ('changed' / 'split' when it does more)
-  _similar_piece_count        - #281: two readers agree on the word breaks
+  _clears_suspects            - #281: a second reading clears half the suspects
   _layout_reading             - #281: pypdf layout mode, rotated text kept
-  _pdftotext_reading          - #281: poppler pdftotext, when on PATH
+  _pdftotext_path / _PdftotextPages / _pdftotext_reading - #281: poppler
+                                pdftotext, once per run, when on PATH
   _extract_page_text          - #281: one page: default, layout, pdftotext
   run_source_extract         - PDF text layer -> derived extracted-text companion
                                 (pypdf optional; original never touched; M11.5)
@@ -2049,36 +2054,46 @@ def _dump_source_pdf(dump_path: Path) -> str | None:
             head = fh.read(4000)
     except OSError:
         return None
-    m = re.search(r'embedded text layer of (\S+?\.pdf)\b', head, re.I)
+    # Parsed up to the fixed text that follows the name, so a name with
+    # spaces, or with `.pdf` inside it, comes back whole.
+    m = re.search(r'embedded text layer of (.+?\.pdf)(?: \(copy: [^)\n]*\))? by '
+                  r'`fha source extract`', head, re.I)
     return m.group(1) if m else None
 
 
-# #281: the words-run-together check, the TRIGGER for a second reading. Two
-# signs that spaces went missing, either of which flags a page:
+# #281: pages whose words run together. Deciding about a page takes two
+# separate questions, and they get separate rules:
 #
-# - Long pieces. Run-together words make pieces of a whole line, or of two or
-#   three words, with nothing between them. Ordinary prose keeps nearly all
-#   its characters in pieces of fifteen or fewer, so a page is flagged when
-#   more than a fifth of its characters sit in longer pieces. A share, not an
-#   average, so a page squeezed only in part (a few run-together lines amid
-#   good prose, a squeeze that loses only some gaps) is still caught.
-# - Glued pieces. A text layer can also gain spaces in the wrong places while
-#   losing the right ones ("Tho masHart ley,sonofEdw ard" - kerning inside a
-#   word read as a gap). Its pieces are short but glued: a capital straight
-#   after a small letter, or a comma, semicolon or colon with a letter right
-#   after it. Prose has a few (McDonald, DeWitt); a page is flagged when more
-#   than a tenth of its pieces are glued.
+# 1. Is the default reading worth a second look? (`_words_run_together`,
+#    the TRIGGER.) Cheap and deliberately eager - a false alarm costs only a
+#    second reading. Two signs, either of which fires it:
+#    - Long pieces: more than a fifth of the page's characters in pieces
+#      longer than 15. Run-together words make pieces of two words or a whole
+#      line; ordinary prose keeps nearly all its characters in shorter ones.
+#    - Glued pieces: more than a tenth of the pieces carry a capital straight
+#      after a small letter or `,;:` with a letter right after it
+#      ("masHart", "ley,son" - kerning inside a word read as a gap while the
+#      real gaps were lost). Names do this too (McDonald, FamilySearch), which
+#      is fine for a trigger and why it never decides anything on its own.
+# 2. What does the page really say? (`_extract_page_text`.) Decided by
+#    COMPARING readers, never by an absolute count on one reading: a
+#    suspicious piece that a second reader leaves whole is a real word, one
+#    it splits was run together (`_split_suspects`), and a second reading is
+#    accepted only when it clears at least half the default reading's
+#    suspicious text (`_suspect_chars`) and changes nothing but spacing
+#    (`_reading_problem`).
 #
-# A flag only costs a second reading: `_extract_page_text` then decides what
-# the page is by comparing readers, so a long-word page (German compounds, a
-# table) that both readers break the same way is still left as it is. The
-# floor keeps short pages - a heading, a page number, "INDEX" - out of it:
-# there is too little text on them to tell.
+# One absolute rule stays, because no comparison can supply it: a piece of
+# more than 40 letters and digits is not a word in any language this
+# archive keeps (`_hopeless_share`) - it is a line with its spaces gone, and
+# two readers agreeing on it only means neither can find the spaces.
 _RUN_TOGETHER_MIN_CHARS = 100
 _RUN_TOGETHER_LONG_PIECE = 15
 _RUN_TOGETHER_SHARE = 0.20
 _GLUED_PIECE_RE = re.compile(r'[a-z][A-Z]|[A-Za-z][,;:][A-Za-z]')
 _GLUED_SHARE = 0.10
+_HOPELESS_PIECE = 40
+_HOPELESS_SHARE = 0.10
 # Pieces that are long without any missing space, left out before measuring:
 # dot leaders and rules (`(.)\1{4,}` - a contents page's "Preface.......iii"),
 # web addresses and email addresses.
@@ -2121,12 +2136,16 @@ def _measured_pieces(text: str) -> list[str]:
     return kept
 
 
-def _words_run_together(text: str) -> bool:
-    """True when a page's text looks as if it lost the spaces between words.
+def _is_suspect(piece: str) -> bool:
+    """A piece that might hold more than one word: long, or glued."""
+    return len(piece) > _RUN_TOGETHER_LONG_PIECE or bool(_GLUED_PIECE_RE.search(piece))
 
-    See the constants above for the measure and why. This is only the
-    trigger for a second reading: `_extract_page_text` decides what the
-    page really is by comparing readers.
+
+def _words_run_together(text: str) -> bool:
+    """The trigger: True when a page's text is worth a second reading.
+
+    See the comment block above for the measure and why it only triggers.
+    Short pages (under 100 measured characters) are never flagged.
     """
     pieces = _measured_pieces(text)
     total = sum(len(p) for p in pieces)
@@ -2137,6 +2156,39 @@ def _words_run_together(text: str) -> bool:
         return True
     glued = sum(1 for p in pieces if _GLUED_PIECE_RE.search(p))
     return glued > len(pieces) * _GLUED_SHARE
+
+
+def _suspect_chars(text: str) -> int:
+    """How many measured characters sit in suspicious (long or glued) pieces."""
+    return sum(len(p) for p in _measured_pieces(text) if _is_suspect(p))
+
+
+def _hopeless_share(text: str) -> float:
+    """Share of measured characters in pieces of more than 40 letters and digits."""
+    pieces = _measured_pieces(text)
+    total = sum(len(p) for p in pieces)
+    if not total:
+        return 0.0
+    long_lines = sum(len(p) for p in pieces
+                     if sum(1 for ch in p if ch.isalnum()) > _HOPELESS_PIECE)
+    return long_lines / total
+
+
+def _split_suspects(default: str, other: str) -> tuple[int, int]:
+    """(suspicious pieces in `default`, how many of them `other` splits).
+
+    A suspicious piece found whole inside one of the other reading's pieces
+    is a real word both readers see (McDonald stays McDonald, even when a
+    footnote figure lands against it as "McDonald12"); one found in none of
+    them was broken up by the second reader, which means it held a missing
+    space.
+    """
+    # A piece holds no spaces, so a hit in the space-joined text lies
+    # inside one piece: one substring test per suspect, not a scan of pieces.
+    joined = ' '.join(other.split())
+    suspects = [p for p in _measured_pieces(default) if _is_suspect(p)]
+    split = sum(1 for piece in suspects if piece not in joined)
+    return len(suspects), split
 
 
 def _collapse_layout_text(text: str) -> str:
@@ -2155,11 +2207,36 @@ def _collapse_layout_text(text: str) -> str:
 
 # A second reading must keep the default reading's order this closely.
 _SAME_ORDER_RATIO = 0.995
-# ... and must not break words up. Ordinary text averages four to six
-# characters a piece, punctuation included (an index page of "Hartley, T.,
-# 212" entries a little under four); a reading averaging under 3.5 is a
-# reader splitting words at glyph gaps ("Tho mas Hart ley"), not finding them.
-_MIN_AVG_PIECE = 3.5
+# Short lowercase pieces that are words (English, German, the common
+# genealogy abbreviations once their period is stripped). A second reading
+# that leaves many OTHER 1-3 letter lowercase fragments the default reading
+# never had ("mas", "ley", "ard") is splitting words at glyph gaps.
+_SHORT_WORDS = frozenset('''
+    a i o an as at be by do go he if in is it me my no of oh on or ox so to up
+    us we ye ah am eh
+    the and for but not you all any are can had her was one our out day get
+    has him his how man new now old see two way who boy did its let put say
+    she too use son yes yet ago far few own set ten six lay sat ran saw got
+    may per via age aunt big bom end eve sir off nor law lot war buy die dad
+    mom sis bro kin non pro sum tax due lad
+    der die das und von zu ist er es sie aus bei mit dem den des ein im au
+    ort so wie hat war nun ob um vor wo zum zur ja nie bis als
+    b d m ch bur bap chr dau wid wf res yrs abt bef aft jr sr st mr mrs dr rev
+    co twp cem esq ux et al ibid op cit vol pp p no gen md ms mss nd
+'''.split())
+_ORPHAN_SHARE = 0.04
+
+
+def _orphan_fragments(default: str, other: str) -> int:
+    """Lowercase 1-3 letter fragments in `other` that are neither words nor in `default`."""
+    default_pieces = {p.strip('.,;:()[]"\'!?') for p in default.split()}
+    count = 0
+    for piece in other.split():
+        core = piece.strip('.,;:()[]"\'!?')
+        if (core and len(core) <= 3 and core.isalpha() and core.islower()
+                and core not in _SHORT_WORDS and core not in default_pieces):
+            count += 1
+    return count
 
 
 def _reading_problem(default: str, other: str) -> str | None:
@@ -2182,8 +2259,11 @@ def _reading_problem(default: str, other: str) -> str | None:
       sequences pass at once; otherwise difflib's similarity of the two
       letter sequences must reach 0.995, which a moved block of lines or an
       interleaved column fails.
-    - The second reading's pieces average at least 3.5 characters (see
-      _MIN_AVG_PIECE).
+    - Splits, judged against the default reading rather than any absolute
+      word length (a register genealogy, an index or a number table is
+      short-pieced and fine): the second reading may not leave more than
+      4% (and more than 3) lowercase 1-3 letter fragments that are not words
+      and that the default reading never had ("Tho mas Hart ley").
     """
     def _fold(text: str) -> str:
         return ''.join(unicodedata.normalize('NFKC', text).split())
@@ -2205,8 +2285,8 @@ def _reading_problem(default: str, other: str) -> str | None:
                                             autojunk=False).ratio()
             if ratio < _SAME_ORDER_RATIO:
                 return 'changed'
-    pieces = other.split()
-    if pieces and len(o) / len(pieces) < _MIN_AVG_PIECE:
+    orphans = _orphan_fragments(default, other)
+    if orphans > 3 and orphans > len(other.split()) * _ORPHAN_SHARE:
         return 'split'
     return None
 
@@ -2216,14 +2296,18 @@ def _same_reading(default: str, other: str) -> bool:
     return _reading_problem(default, other) is None
 
 
-def _similar_piece_count(a: str, b: str) -> bool:
-    """True when two readings break a page into about as many pieces.
+def _clears_suspects(default: str, other: str) -> bool:
+    """True when `other` leaves at most half the default reading's suspicious text.
 
-    Within 5% (never fewer than 2): two readers that agree on where the
-    word breaks are say the long pieces are really on the page that way.
+    Relative on purpose: a page of McDonalds keeps its glued-looking names in
+    every reading, so an absolute "still glued" test would refuse a reading
+    that spaced the page perfectly. What matters is that the second reading
+    split what the default ran together - and that what is left is not a
+    line with no spaces at all.
     """
-    na, nb = len(a.split()), len(b.split())
-    return abs(na - nb) <= max(2, na // 20)
+    if _hopeless_share(other) > _HOPELESS_SHARE:
+        return False
+    return _suspect_chars(other) * 2 <= _suspect_chars(default)
 
 
 # pypdf logs "Rotated text discovered..." from layout mode through its
@@ -2256,29 +2340,62 @@ def _pdftotext_path() -> str | None:
     return shutil.which('pdftotext')
 
 
-def _pdftotext_reading(pdf_path: Path, page_no: int) -> str | None:
-    """Poppler's pdftotext reading of one page, or None.
+class _PdftotextPages:
+    """Poppler's pdftotext reading of the selected pages, run once and cached.
 
     An OPTIONAL external binary (AGENTS_TOOLING guardrails), used only when
-    it is on PATH; absent, slow, or failing, this returns None and the page
-    keeps what pypdf gave. Plain mode, not `-layout`: plain mode follows the
-    text's reading order (a two-column page comes back column by column),
-    which is exactly what layout mode gets wrong on a squeezed two-column
-    page. The path is passed as an argument, never through a shell.
+    it is on PATH; absent, slow or failing, every page reads as None and
+    keeps what pypdf gave. Run once, over the span of selected pages, the
+    first time a page needs it - one process and one time budget for the
+    whole extraction, not one per page - and split on the form feed
+    pdftotext ends each page with. Plain mode, not `-layout`: plain mode
+    follows the text's reading order (a two-column page comes back column by
+    column), which is exactly what layout mode gets wrong on a squeezed
+    two-column page. The path is passed as an argument, never through a shell.
     """
-    exe = _pdftotext_path()
-    if exe is None:
+
+    _SECONDS_BASE = 60
+    _SECONDS_PER_PAGE = 2
+
+    def __init__(self, pdf_path: Path, first: int, last: int) -> None:
+        self.pdf_path, self.first, self.last = pdf_path, first, last
+        self._pages: list[str] | None = None
+        self._tried = False
+
+    def page(self, page_no: int) -> str | None:
+        if not self._tried:
+            self._tried = True
+            self._pages = self._run()
+        if self._pages is None or not self.first <= page_no <= self.last:
+            return None
+        return _collapse_layout_text(self._pages[page_no - self.first])
+
+    def _run(self) -> list[str] | None:
+        exe = _pdftotext_path()
+        if exe is None:
+            return None
+        span = self.last - self.first + 1
+        try:
+            done = subprocess.run(
+                [exe, '-q', '-enc', 'UTF-8', '-f', str(self.first), '-l', str(self.last),
+                 str(self.pdf_path), '-'],
+                capture_output=True, check=False,
+                timeout=self._SECONDS_BASE + self._SECONDS_PER_PAGE * span)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if done.returncode != 0:
+            return None
+        pages = done.stdout.decode('utf-8', errors='replace').split('\f')
+        # One form feed per page, so one more part than pages (the last
+        # empty). Any other count means the pages cannot be told apart.
+        if len(pages) == span + 1 and not pages[-1].strip():
+            return pages[:-1]
         return None
-    try:
-        done = subprocess.run(
-            [exe, '-q', '-enc', 'UTF-8', '-f', str(page_no), '-l', str(page_no),
-             str(pdf_path), '-'],
-            capture_output=True, timeout=60, check=False)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if done.returncode != 0:
-        return None
-    return _collapse_layout_text(done.stdout.decode('utf-8', errors='replace'))
+
+
+def _pdftotext_reading(pdf_path: Path, page_no: int) -> str | None:
+    """Poppler's pdftotext reading of one page, or None (see _PdftotextPages)."""
+    return _PdftotextPages(pdf_path, page_no, page_no).page(page_no)
 
 
 def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
@@ -2290,38 +2407,53 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
     their order or dropped text, so it was not used) or 'squashed' (words
     run together and no reader could space them).
 
-    pypdf's default mode first. When its words look run together, layout
-    mode positions each word by where it sits on the page rather than by
-    font widths, which recovers the spaces on OCR layers that squeeze each
-    word to its box with horizontal scaling (`Tz` - pypdf's default mode
+    pypdf's default mode first. When the trigger fires, layout mode reads
+    the page again, placing each word by where it sits on the page rather
+    than by font widths - which recovers the spaces on OCR layers that
+    squeeze each word with horizontal scaling (`Tz`: pypdf's default mode
     measures the word without that scaling, so the real gap looks like an
-    overlap and no space goes in). If layout mode breaks the page into about
-    as many pieces as the default did, the two readers agree the long pieces
-    are on the page that way (a contents page, a table) and the page is
-    plain. A second reading replaces the default only when it no longer runs
-    words together AND passes `_same_reading`. `second_reader()` (pdftotext
-    when the caller has it) is the last try. An error from the default read
-    propagates: that is the caller's "extraction FAILED" case.
+    overlap and no space goes in) or split it with kerning. Then, as the
+    comment block above sets out:
+
+    - A second reading replaces the default when it clears at least half
+      the suspicious text (`_clears_suspects`) and changes nothing but
+      spacing (`_reading_problem`). Layout mode first, then
+      `second_reader()` (pdftotext when the caller has it).
+    - If none does, and layout mode left (nearly) every suspicious piece
+      whole, the readers agree the pieces are real - a page of McDonalds, a
+      table of long codes - and the page is plain. Never when pieces of more
+      than 40 letters and digits remain: that is a text layer with no
+      spaces, which no reader agreeing can make right.
+    - Otherwise the default text is kept and marked 'reordered' or
+      'squashed', for the caller to warn about.
+
+    An error from the default read propagates: that is the caller's
+    "extraction FAILED" case.
     """
     text = (page.extract_text() or '').strip()
     if not _words_run_together(text):
         return text, 'plain'
     reordered = False
     layout = _layout_reading(page)
-    if layout is not None:
-        if _similar_piece_count(text, layout):
-            return text, 'plain'
-        if not _words_run_together(layout):
-            problem = _reading_problem(text, layout)
-            if problem is None:
-                return layout, 'layout'
-            reordered = reordered or problem == 'changed'
+    if layout is not None and _clears_suspects(text, layout):
+        problem = _reading_problem(text, layout)
+        if problem is None:
+            return layout, 'layout'
+        reordered = problem == 'changed'
+    agrees = False
+    if layout is not None and _hopeless_share(text) <= _HOPELESS_SHARE:
+        suspects, split = _split_suspects(text, layout)
+        agrees = split <= max(1, suspects // 10)
+    if agrees and not reordered:
+        return text, 'plain'
     other = second_reader() if second_reader is not None else None
-    if other and not _words_run_together(other):
+    if other and _clears_suspects(text, other):
         problem = _reading_problem(text, other)
         if problem is None:
             return other, 'pdftotext'
         reordered = reordered or problem == 'changed'
+    if agrees:
+        return text, 'plain'
     return text, 'reordered' if reordered else 'squashed'
 
 
@@ -2529,6 +2661,10 @@ def run_source_extract(
     if str(pdf_entry.get('role', '')) == 'primary' and base.lower().endswith('-primary'):
         base = base[:-len('-primary')]
     used_label = _copy_label(pdf_entry)
+    if used_label:
+        label_part = re.sub(r'[^a-z0-9]+', '-', used_label.lower()).strip('-')
+        if label_part and not base.lower().endswith(f'-{label_part}'):
+            base = f'{base}-{label_part}'
     extract_name = f'{base}-{_EXTRACT_ROLE}_{fmt_id_display(sid)}.md'
     extract_path = pdf_path.parent / extract_name
     result.data['extract_path'] = str(extract_path)
@@ -2547,9 +2683,10 @@ def run_source_extract(
     layout_pages: list[int] = []
     pdftotext_pages: list[int] = []
     have_pdftotext = _pdftotext_path() is not None
+    pdftotext_reader = _PdftotextPages(pdf_path, selected[0], selected[-1])
     for page_no in selected:
         parts.append(f'[Page {page_no}]')
-        second_reader = ((lambda n=page_no: _pdftotext_reading(pdf_path, n))
+        second_reader = ((lambda n=page_no: pdftotext_reader.page(n))
                          if have_pdftotext else None)
         try:
             text, how = _extract_page_text(reader.pages[page_no - 1], second_reader)
@@ -2692,7 +2829,8 @@ def run_source_extract(
             'them in the PDF itself, or with vision'
             + ('' if have_pdftotext else
                ". Installing poppler's pdftotext gives a re-run one more reader "
-               'to try (delete the dump and its files: entry first)')
+               'to try' + ('' if dry_run else
+                           ' (delete the dump and its files: entry first)'))
             + '.')
 
     coverage = (f'{pages_with_text} of {len(selected)} selected page(s) carry text'

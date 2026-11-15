@@ -105,13 +105,16 @@ SQUASHED_LINE = 'ThomasHartley,sonofEdward,b.May9,1854,camealsofromMarshCreek'
 # Times-Roman advance widths (Adobe's standard metrics, per 1000 em) for the
 # characters the fixtures below set, so each word can be placed where a real
 # OCR layer would put it.
-_TIMES_WIDTHS = dict(
-    zip('abcdefghijklmnopqrstuvwxyz',
-        [444, 500, 444, 500, 444, 333, 500, 500, 278, 278, 500, 278, 778,
-         500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444]),
-    **{',': 250, '.': 250, 'A': 722, 'B': 667, 'C': 667, 'E': 611, 'H': 722,
-       'I': 333, 'J': 389, 'M': 889, 'T': 611, 'W': 944, '0': 500, '1': 500,
-       '4': 500, '5': 500, '6': 500, '7': 500, '8': 500, '9': 500})
+_TIMES_WIDTHS = {
+    **dict(zip('abcdefghijklmnopqrstuvwxyz',
+               [444, 500, 444, 500, 444, 333, 500, 500, 278, 278, 500, 278, 778,
+                500, 500, 500, 500, 333, 389, 278, 500, 500, 722, 500, 500, 444])),
+    **dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+               [722, 667, 667, 722, 611, 556, 722, 722, 333, 389, 722, 611, 889,
+                722, 722, 556, 722, 667, 556, 611, 722, 722, 944, 722, 722, 611])),
+    **{d: 500 for d in '0123456789'},
+    ' ': 250, ',': 250, '.': 250, ';': 278, ':': 278, "'": 333,
+}
 
 
 def _times_width(word: str, size: float) -> float:
@@ -147,6 +150,12 @@ SPRING_WORDS = ('In the spring of eighteen hundred fifty four Thomas Hartley rem
 LEFT_WORDS = ('Thomas Hartley, son of Edward, b. May 9, 1854, came also from Marsh '
               'Creek with his brothers in the spring and settled on section twelve '
               'near the old mill').split()
+MC_TEXT = ("Angus McDonald married Mary MacArthur at St. Andrew's in 1842. Their son "
+           "John McDonald, b. 1845, and daughter Flora McDonald, b. 1847, emigrated with "
+           "the DeWitt and VanBuren families. Rev. McLeod officiated; witnesses were Ewan "
+           "MacKenzie and Catriona McKay. The DeLancey and LaFontaine households were "
+           "neighbours. McIntyre, McNab, MacGregor, McPherson and O'Neill also appear in "
+           "the parish.")
 RIGHT_WORDS = ('Mary Ann Brown, daughter of Josiah, married Thomas in 1876 at the '
                'Methodist church in Marsh Creek and had nine children of whom seven '
                'survived to adulthood').split()
@@ -865,6 +874,141 @@ class SourceExtractTests(unittest.TestCase):
                                return_value=str(self.root / 'no-such-binary')):
             self.assertIsNone(source_mod._pdftotext_reading(self.pdf, 1))
 
+    # -- #281 re-review: readers compared, not absolute counts ------------------
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_no_space_text_layer_both_readers_agree_still_warns(self) -> None:
+        # P2-A: a text layer with no spaces at all reads the same in layout
+        # mode. The readers agreeing must not turn that into "plain".
+        squashed = (SQUASHED_LINE + '\n') * 3
+        reader, _ = self._fake_reader(squashed, squashed)
+        result = self._run_with_reader(reader)
+        self.assertEqual(result.data['squashed_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_squeezed_mc_surname_page_takes_layout_reading(self) -> None:
+        # P2-B: McDonald and DeWitt look glued in every reading. Layout mode
+        # spaces the page correctly and must be accepted for it.
+        body = _squeezed_block(MC_TEXT.split(), left=72, width=468, tz=60, gap=3)
+        self.pdf.write_bytes(_minimal_pdf(
+            [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(result.data['layout_pages'], [1])
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('Angus McDonald married Mary MacArthur', text)
+        self.assertIn('DeWitt and VanBuren families', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_clean_mc_page_with_superscripts_is_plain(self) -> None:
+        # P2-B: an ordinary page of Mc names with footnote figures set after
+        # its lines, and a library stamp printed up the margin, trips the
+        # eager trigger; layout mode leaves every name whole (the figures
+        # land against the line ends, the stamp in among the lines), so the
+        # page is plain - no warning.
+        words, lines, line = MC_TEXT.split() * 2, [], ''
+        for word in words:
+            if line and _times_width(line + ' ' + word, 11) > 300:
+                lines.append(line)
+                line = word
+            else:
+                line = f'{line} {word}'.strip()
+        lines.append(line)
+        body, y = '', 720
+        for text in lines:
+            x_sup = 72 + _times_width(text, 11)
+            body += (f'/F1 11 Tf 1 0 0 1 72 {y} Tm ({text}) Tj\n'
+                     f'/F1 6 Tf 1 0 0 1 {x_sup:.2f} {y + 5} Tm (12) Tj\n')
+            y -= 15
+        body += ('/F1 8 Tf 0 1 -1 0 40 300 Tm '
+                 '(Scanned from the library of the University of Michigan) Tj\n')
+        self.pdf.write_bytes(_minimal_pdf([_raw('BT\n' + body + 'ET')],
+                                          base_font='Times-Roman'))
+        self._assert_plain_dump(self._run())
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_squeezed_register_and_index_pages_are_recovered(self) -> None:
+        # P2-C: short-pieced pages, spaced correctly by layout mode, must not
+        # be refused for their short pieces.
+        register = ' '.join(f'{i}. John Hartley, b. {d} May 18{20 + i}; d. 4 Jun 18{60 + i}; '
+                            f'm. 3 Oct 18{45 + i} Mary Day; ch.: Ann, b. {d}; Eli, b. 18{50 + i}.'
+                            for i, d in zip(range(1, 6), (3, 9, 12, 1, 5)))
+        index = ' '.join(f'{n}, {i}., {p}, {p + 3},' for n, i, p in
+                         [('Abbott', 'J', 12), ('Ames', 'R', 45), ('Bell', 'T', 67),
+                          ('Cox', 'A', 8), ('Day', 'M', 19), ('Fox', 'E', 23),
+                          ('Gay', 'W', 31), ('Hart', 'T', 4), ('Hay', 'J', 55),
+                          ('Ives', 'S', 61), ('Kay', 'B', 72), ('Lee', 'C', 88)])
+        pages = [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n'
+                      + _squeezed_block(text.split(), left=72, width=468, tz=60, gap=3)
+                      + 'ET') for text in (register, index)]
+        self.pdf.write_bytes(_minimal_pdf(pages, base_font='Times-Roman'))
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(sorted(result.data['layout_pages']
+                                + result.data['pdftotext_pages']), [1, 2])
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('1. John Hartley, b. 3 May 1821; d. 4 Jun 1861;', text)
+        self.assertIn('Abbott, J., 12, 15, Ames, R., 45, 48,', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_dry_run_pdftotext_hint_has_no_delete_advice(self) -> None:
+        # L-a: a dry run writes no dump, so it must not say to delete one.
+        squashed = (SQUASHED_LINE + '\n') * 3
+        reader, _ = self._fake_reader(squashed, squashed)
+        dry = self._run_with_reader(reader, dry_run=True)
+        dry_warnings = ' '.join(m.text for m in dry.messages if m.level == 'warning')
+        self.assertIn('pdftotext', dry_warnings)
+        self.assertNotIn('delete the dump', dry_warnings)
+        live = self._run_with_reader(reader)
+        live_warnings = ' '.join(m.text for m in live.messages if m.level == 'warning')
+        self.assertIn('delete the dump', live_warnings)
+
+    def test_dump_source_pdf_reads_names_with_spaces_and_dots(self) -> None:
+        # L-b: the name is read up to the fixed text that follows it.
+        dump = self.root / 'dump.md'
+        for name, tail in (('my scan 2.pdf', ''), ('a.pdf.backup.pdf', ' (copy: b)')):
+            dump.write_text(f'# Extracted text - X [{SID}]\n\nMachine-extracted from the '
+                            f'embedded text layer of {name}{tail} by `fha source extract`. '
+                            'A derived working copy.\n', encoding='utf-8')
+            self.assertEqual(source_mod._dump_source_pdf(dump), name)
+        self.assertIsNone(source_mod._dump_source_pdf(self.root / 'missing.md'))
+
+    def test_pdftotext_runs_once_over_the_selected_span(self) -> None:
+        # L-d: one process for the run, split into pages on the form feed.
+        done = mock.Mock(returncode=0, stdout=b'page three\fpage four\f')
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod.subprocess, 'run', return_value=done) as run:
+            pages = source_mod._PdftotextPages(self.pdf, 3, 4)
+            self.assertEqual(pages.page(3), 'page three')
+            self.assertEqual(pages.page(4), 'page four')
+            self.assertIsNone(pages.page(5))
+        self.assertEqual(run.call_count, 1)
+        args = run.call_args[0][0]
+        self.assertEqual(args[args.index('-f') + 1], '3')
+        self.assertEqual(args[args.index('-l') + 1], '4')
+        # A page count that does not match cannot be split safely.
+        done = mock.Mock(returncode=0, stdout=b'only one page\f')
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod.subprocess, 'run', return_value=done):
+            self.assertIsNone(source_mod._PdftotextPages(self.pdf, 3, 4).page(3))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_copy_label_is_added_to_a_dump_name_that_lacks_it(self) -> None:
+        # Drift 1: `{slug}[-{copy}]-extracted-text`, even when the PDF's own
+        # name does not carry the label.
+        second = f'scan2_{SID.lower()}.pdf'
+        self._write_record(
+            f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
+            '    role: primary\n'
+            f'  - file: documents/book/{second}\n    role: primary\n    copy: b\n')
+        self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
+        (self.pdf.parent / second).write_bytes(_minimal_pdf(['Copy b text']))
+        self.assertEqual(self._run(copy_label='b').exit_code, EXIT_CLEAN)
+        self.assertTrue((self.pdf.parent / f'scan2-b-extracted-text_{SID}.md').exists())
+
     # -- #281 review: what a second reading may change ---------------------------
 
     def test_same_reading_accepts_only_a_change_of_spacing(self) -> None:
@@ -887,6 +1031,22 @@ class SourceExtractTests(unittest.TestCase):
         split = '\n'.join(' '.join(word[i:i + 2] for i in range(0, len(word), 2))
                           for line in lines for word in [line.replace(' ', '')])
         self.assertFalse(same(default, split))
+
+    def test_same_reading_accepts_short_pieced_pages_and_itself(self) -> None:
+        # #281 re-review P2-C: correct pages of short pieces must pass.
+        register = ' '.join(f'{i}. John Hartley, b. 3 May 18{20 + i}; d. 4 Jun 18{60 + i}; '
+                            f'm. 3 Oct 18{45 + i} Mary Day; ch.: Ann, b. 3; Eli, b. 18{50 + i}.'
+                            for i in range(1, 6))
+        index = ' '.join(f'{n}, {i}., {p}, {p + 3},' for n, i, p in
+                         [('Abbott', 'J', 12), ('Ames', 'R', 45), ('Bell', 'T', 67),
+                          ('Cox', 'A', 8), ('Day', 'M', 19), ('Fox', 'E', 23)] * 3)
+        german = ('Johann an der Weide und Maria von der Au, beide aus dem Ort an der '
+                  'Oder, sind am 3. Mai 1801 in der Kirche zu St. Marien getraut. ') * 3
+        table = '\n'.join(' '.join(str(x) for x in (1850 + i, 12 + i, 3, 4, i % 10, 5, 6))
+                          for i in range(20))
+        for text in (register, index, german, table):
+            self.assertTrue(source_mod._same_reading(text, text), text[:40])
+            self.assertTrue(source_mod._same_reading(text.replace(' ', ''), text), text[:40])
 
     def test_same_reading_rejects_mid_word_spaces(self) -> None:
         default = (SQUASHED_LINE + '\n') * 3
