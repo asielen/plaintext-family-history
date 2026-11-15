@@ -134,6 +134,7 @@ from _lib import (
     reapply_newline,
     resolve_root_arg,
     result_fail,
+    match_log_entry,
     split_log_entries,
     write_text_exact_atomic,
     yaml_inline,
@@ -1368,23 +1369,16 @@ def run_place_edit_note(
             old_notes = str(entry.get('notes') or '').strip()
             break
 
-    def norm(t: str) -> str:
-        return '\n'.join(ln.rstrip('\r') for ln in t.strip('\n').split('\n'))
-
     notes_entries = split_log_entries(old_notes)
-    target = norm(old_text)
-    matches = [i for i, e in enumerate(notes_entries) if norm(e) == target]
-    if not matches:
-        return result_fail(result, 'refused',
-                           'that note was not found on this place - it may have '
-                           'been edited since the page was loaded. Reload the '
-                           'page and try again.')
-    if len(matches) > 1:
-        return result_fail(result, 'refused',
-                           f'that exact note appears {len(matches)} times on this '
-                           'place, so this edit cannot tell which one you meant. '
-                           'Edit places/places.yaml directly for this one.')
-    notes_entries[matches[0]] = norm(text)
+    found, reason, message = match_log_entry(
+        notes_entries, old_text, noun='note',
+        where=f'the notes on {result.data["place_id"]}',
+        file_hint='places/places.yaml')
+    if found is None:
+        result.data['reason'] = reason
+        return result_fail(result, 'refused', message)
+    notes_entries[found] = '\n'.join(
+        ln.rstrip('\r') for ln in text.strip('\n').split('\n'))
     new_value = '\n\n'.join(notes_entries)
 
     lines = registry_text.splitlines()
@@ -1630,6 +1624,7 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
   fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note L-id --text "..."  Append a dated research note to the place
   fha places edit-note L-id --old-text "..." --text "..."  Rewrite one existing note
+                                     (--old-text is the note's whole paragraph)
 
 "Am I spelling this town three different ways?", "which place should become a
 real entry?", "fill in the coordinates for these towns", "move the pin",
@@ -1701,10 +1696,16 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     note_p.set_defaults(func=_cmd_places_note)
 
     edit_note_p = deferred.add_parser(
-        'edit-note', help="Rewrite one existing research note on a place (named by its exact text)")
+        'edit-note',
+        help="Rewrite one existing research note on a place (named by its whole current paragraph)",
+        description=("Rewrite ONE existing research note on a place - the other notes are "
+                     "untouched. --old-text names the note by its exact current text: give the "
+                     "whole paragraph, word for word, not one sentence of it. If it is only part "
+                     "of a note, is not found, or appears more than once, nothing is written and "
+                     "the message says which."))
     edit_note_p.add_argument('place_id', metavar='L-id', help='The place whose note is being corrected.')
     edit_note_p.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                             help="The note's current text, exactly as it stands.")
+                             help="The note's current text - the whole paragraph, exactly as it stands.")
     edit_note_p.add_argument('--text', metavar='TEXT', required=True,
                              help='The corrected note text.')
     edit_note_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,

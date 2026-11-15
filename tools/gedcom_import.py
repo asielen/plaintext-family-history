@@ -47,6 +47,9 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #
 #  Field derivation
 #    gedcom_date_to_edtf       - GEDCOM date phrase → valid EDTF, or None
+#    _translate_gedcom_date    - strict grammar first, then the free-form fallback
+#    _loose_date_to_edtf       - typed date (#293) via normalize_date, YYYY-NN + D/M guards
+#    _strict_gedcom_date_to_edtf - the GEDCOM 5.5.1 grammar (ABT/BEF/AFT/BET/FROM)
 #    _edtf_ymd                 - numeric ordering key for range sanity checks
 #    _parse_gedcom_name        - `Given /Surname/ Suffix` (+ `2 NSFX`) → (display, given, surname)
 #    _with_nsfx                - fold a `2 NSFX` value into a parsed name, once
@@ -59,6 +62,7 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _map_individual           - one INDI → stub fields + claims
 #    _map_family               - one FAM → marriage/divorce/relationship claims
 #    _scan_existing_persons    - dedupe candidates from people/**/*.md
+#    _birth_window             - (earliest, latest) birth year for the dedupe overlap test
 #
 #  Rendering
 #    _person_stub_text / _person_filename
@@ -98,12 +102,15 @@ from _lib import (
     FhaConfigError,
     Result,
     configure_utf8_stdout,
+    edtf_bounds,
     fmt_id_display,
+    humanize_edtf,
     is_template_file,
     is_valid_edtf,
     is_working_copy,
     load_fha_yaml,
     mint_ids,
+    normalize_date,
     parse_filename,
     path_to_alias,
     read_record,
@@ -377,7 +384,104 @@ def _edtf_ymd(edtf: str) -> tuple[int, ...]:
 
 
 def gedcom_date_to_edtf(raw: str) -> str | None:
-    """GEDCOM date phrase → a valid EDTF string, or None to omit `date:`.
+    """GEDCOM date phrase (or a free-form typed date) → valid EDTF, or None.
+
+    The public answer of `_translate_gedcom_date`, without the flag saying
+    which reader produced it: the strict GEDCOM grammar first, then the
+    archive's loose-date reader (#293). See those two for the rules."""
+    return _translate_gedcom_date(raw)[0]
+
+
+def _translate_gedcom_date(raw: str) -> tuple[str | None, bool]:
+    """(EDTF or None, read_loosely) for one GEDCOM DATE value.
+
+    The strict GEDCOM grammar (`_strict_gedcom_date_to_edtf`) is tried first,
+    so every date a genealogy program wrote reads exactly as it always has.
+    Only when it returns None is the value treated as free text a person
+    typed and handed to `_loose_date_to_edtf` (#293). `read_loosely` is True
+    when that fallback produced the date, so the plan can count those apart
+    from the dates no reader understood."""
+    s = (raw or '').strip()
+    if not s:
+        return None, False
+    strict = _strict_gedcom_date_to_edtf(s)
+    if strict:
+        return strict, False
+    loose = _loose_date_to_edtf(s)
+    return loose, loose is not None
+
+
+# `YYYY-NN` (hyphen or en dash), the short way to write a year range
+# ("1914-18"), alone or inside a hedged value ("about 1908-10") - but not the
+# start of a full ISO day ("1908-10-12") or of a four-digit range ("1998-2002").
+_SHORT_YEAR_RANGE_RE = re.compile(r'(?<!\d)(\d{4})\s*[-\u2013]\s*(\d{2})(?![\d\-\u2013])')
+# `D/M/YYYY` or `M/D/YYYY` - read only when the order is not in doubt.
+_SLASH_DATE_RE = re.compile(r'(\d{1,2})/(\d{1,2})/(\d{4})')
+
+
+def _loose_date_to_edtf(s: str) -> str | None:
+    """A date a person typed into their tree program → valid EDTF, or None.
+
+    Ancestry and others let people type dates freely and export them exactly
+    as typed ("3 December 1810", "after 1888", "Jul 7 1879", "1998-2002",
+    "Bef. 1900"). The archive already has one reader for typed dates,
+    `_lib.normalize_date` (behind `fha claim --date` and `fha person new
+    --birth`), so the importer uses it rather than growing a second grammar
+    that could drift from it. Two cases are settled here first:
+
+    * `YYYY-NN`. `normalize_date` returns any value that is already valid
+      EDTF unchanged, so `1908-10` would come back as October 1908. GEDCOM
+      5.5.1 has no numeric date form at all: a program holding "October
+      1908" writes `OCT 1908`. A `YYYY-NN` in a DATE line was therefore typed
+      by a person, and written that way it is the common short form of a year
+      range ("1914-18"). It is read as a range only when NN is a later year
+      in the same century as YYYY (`1908-10` → `1908/1910`), the one reading
+      that is a real span; `1908-05`, `1908-08` and `1998-02` (which would
+      cross a century, and reads as well as February 1998) are left out. The
+      rule is deliberate for values like `1905-11`, which could also be read
+      as November 1905: a typed `YYYY-NN` with NN later than YY is a range
+      (owner decision, #293). The short form is rewritten to the four-digit
+      range and handed to `normalize_date`, so a hedge is kept on both
+      endpoints ("about 1908-10" → `1908~/1910~`) and "before 1908-10",
+      which has no stored form, is left out - the same rules as a typed
+      "about 1908-1910". A full ISO day (`1908-10-12`) is not ambiguous and
+      passes.
+    * `D/M/YYYY` vs `M/D/YYYY`. Read only when exactly one of the first two
+      parts is over 12, so it can only be the day (`19/05/1987`,
+      `5/19/1987` → `1987-05-19`). `05/06/1950` could be either and is left
+      out: a wrong month silently misplaces an event, while a missing one
+      costs nothing - the wording stays in the claim value.
+
+    The result is validated with `is_valid_edtf`, so an impossible day
+    (`31/02/1950`) is left out rather than written.
+    """
+    text = s.strip()
+    shorts = list(_SHORT_YEAR_RANGE_RE.finditer(text))
+    if len(shorts) > 1:
+        return None
+    if shorts:
+        m = shorts[0]
+        year, suffix = m.group(1), int(m.group(2))
+        if suffix <= int(year[2:]):
+            return None
+        text = f'{text[:m.start()]}{year}-{year[:2]}{suffix:02d}{text[m.end():]}'
+    m = _SLASH_DATE_RE.fullmatch(text)
+    if m:
+        first, second, year = int(m.group(1)), int(m.group(2)), m.group(3)
+        if first > 12 and 1 <= second <= 12:
+            day, month = first, second
+        elif second > 12 and 1 <= first <= 12:
+            day, month = second, first
+        else:
+            return None
+        edtf = f'{year}-{month:02d}-{day:02d}'
+        return edtf if is_valid_edtf(edtf) else None
+    edtf = normalize_date(text)
+    return edtf if edtf and is_valid_edtf(edtf) else None
+
+
+def _strict_gedcom_date_to_edtf(raw: str) -> str | None:
+    """GEDCOM date phrase in the standard's own grammar → valid EDTF, or None.
 
     The translation table (inverting the exporter's `_edtf_to_gedcom`):
 
@@ -546,21 +650,17 @@ def _birth_year_upper(edtf: str | None) -> int | None:
     The living heuristic needs "born more than 110 years ago" to be TRUE only
     when the latest possible reading of the date is that old, so the error
     direction stays safe: an interval uses its upper bound, a decade its final
-    year, a before-form its cutoff. An after-form or phrase date yields None
-    (unbounded - the person could be young), which keeps them `unknown`."""
-    if not edtf:
+    year, a before-form its cutoff, and an approximate or uncertain year its
+    widened end (`1915~` can be 1916). That is `edtf_bounds`' upper bound,
+    the one reading every other tool uses. An after-form (open ceiling) or a
+    phrase date yields None (unbounded - the person could be young), which
+    keeps them `unknown`."""
+    if not edtf or not is_valid_edtf(edtf.strip()):
         return None
-    s = edtf.strip()
-    if s.startswith('[..') and s.endswith(']'):
-        s = s[3:-1]
-    if '/' in s:
-        s = s.split('/', 1)[1]
-    s = s.replace('~', '').replace('?', '')
-    m = re.match(r'^(\d{3})X', s)
-    if m:
-        return int(m.group(1)) * 10 + 9
-    m = re.match(r'^(\d{4})', s)
-    return int(m.group(1)) if m else None
+    upper = edtf_bounds(edtf.strip())[1]
+    if upper == '9999-12-31':      # the open ceiling of an after-form
+        return None
+    return int(upper[:4])
 
 
 def living_flag_for_import(has_death: bool, birth_edtf: str | None,
@@ -649,6 +749,9 @@ class ImportPlan:
     warnings: list[str]
     unread_lines: int
     unread_top: list[tuple[str, int]]      # (tag, line count), most common first
+    loose_dates: int = 0                   # dates read by the free-form fallback (#293)
+    loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
+    date_downgrades: list[str] = field(default_factory=list)    # unreadable, uncapped
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -698,7 +801,7 @@ def _source_citation_bits(node: _Node, sour_titles: dict[str, str],
 def _map_individual(
     indi: _Node, pid: str, cid_pool: list[str],
     sour_titles: dict[str, str], sour_use: Counter,
-    consumed: set[int], date_downgrades: list[str],
+    consumed: set[int], date_downgrades: list[str], date_loose: list[str],
 ) -> tuple[_PersonStub, list[_Claim], dict[str, str]]:
     """One INDI record → its person stub, its claims, and its FAMC pedigree map.
 
@@ -752,9 +855,11 @@ def _map_individual(
         consumed.add(id(node))
         _consume_event_children(node)
         date_raw = node.child_value('DATE')
-        edtf = gedcom_date_to_edtf(date_raw)
+        edtf, loose = _translate_gedcom_date(date_raw)
         if date_raw and not edtf:
             date_downgrades.append(f'{indi.xref} {node.tag}: {date_raw!r}')
+        elif loose:
+            date_loose.append(f'{indi.xref} {node.tag}: {date_raw!r}')
         cites = _source_citation_bits(node, sour_titles, sour_use)
         notes = f'GEDCOM cites: {"; ".join(cites)}' if cites else None
         return _Claim(
@@ -834,7 +939,7 @@ def _map_family(
     fam: _Node, xref_pid: dict[str, str], names: dict[str, str],
     cid_pool: list[str], sour_titles: dict[str, str], sour_use: Counter,
     pedi: dict[tuple[str, str], str], consumed: set[int],
-    date_downgrades: list[str], warnings: list[str],
+    date_downgrades: list[str], date_loose: list[str], warnings: list[str],
 ) -> list[_Claim]:
     """One FAM record → marriage/divorce claims + one relationship claim per child.
 
@@ -876,9 +981,11 @@ def _map_family(
                 'spouses; the event was skipped (the filed copy keeps it).')
             return
         date_raw = node.child_value('DATE')
-        edtf = gedcom_date_to_edtf(date_raw)
+        edtf, loose = _translate_gedcom_date(date_raw)
         if date_raw and not edtf:
             date_downgrades.append(f'{fam.xref} {node.tag}: {date_raw!r}')
+        elif loose:
+            date_loose.append(f'{fam.xref} {node.tag}: {date_raw!r}')
         cites = _source_citation_bits(node, sour_titles, sour_use)
         a, b = (names.get(x) or xref_pid[x] for x in spouses[:2])
         head = f'{a} {phrase} {b}'
@@ -939,6 +1046,31 @@ def _year_of(value) -> int | None:
     return int(m.group(0)) if m else None
 
 
+_DEDUPE_YEAR_SLACK = 2     # birth windows match within this many years
+
+
+def _birth_window(value) -> tuple[int, int] | None:
+    """(earliest, latest) birth year a `birth:` value allows, or None if undated.
+
+    Dedupe compares windows, not first-four-digit years: since #293 an
+    imported birth can be `[..1900]`, `1840/1860` or `[1840..]`, and reading
+    each as 1900/1840/1840 dropped true duplicates of an existing `1849~`.
+    `edtf_bounds` gives the real span (open ends reach its 0001/9999
+    sentinels, so "before 1900" overlaps anything earlier). A hand-written
+    value that is not EDTF is read with `normalize_date`, and failing that by
+    its first year, so an existing record is never compared more strictly
+    than before."""
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    edtf = raw if is_valid_edtf(raw) else normalize_date(raw)
+    if edtf:
+        lo, hi = edtf_bounds(edtf)
+        return int(lo[:4]), int(hi[:4])
+    year = _year_of(raw)
+    return (year, year) if year is not None else None
+
+
 def _scan_existing_persons(archive_root: Path) -> list[dict]:
     """Existing persons' names + variants + provisional birth year, from the tree.
 
@@ -978,7 +1110,7 @@ def _scan_existing_persons(archive_root: Path) -> list[dict]:
         pid = str(meta.get('id') or '').strip()
         out.append({
             'pid': pid, 'name': name, 'variants': variants,
-            'birth_year': _year_of(meta.get('birth')),
+            'birth_window': _birth_window(meta.get('birth')),
             'birth_raw': str(meta.get('birth') or ''),
             'path': path,
         })
@@ -988,8 +1120,10 @@ def _scan_existing_persons(archive_root: Path) -> list[dict]:
 def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
     """Report lines for incoming people who look like someone already filed.
 
-    Match rule (plan §dedupe): normalized name tokens equal AND birth years
-    within ±2 - or either year absent and the names match exactly. Import
+    Match rule (plan §dedupe): normalized name tokens equal AND birth windows
+    (`_birth_window`) overlapping once widened by ±2 years - or either birth
+    absent and the names match exactly. Two plain years therefore still match
+    within ±2, as before. Import
     proceeds regardless; merging identities is a human decision (the
     merge-identities skill, and plan 16's confirmed write-back)."""
     existing = _scan_existing_persons(archive_root)
@@ -1006,12 +1140,18 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
         for name in ([stub.name] if stub.name else []) + stub.variants:
             key = _norm_name_key(name)
             for person in by_key.get(key, []):
-                in_year = _year_of(stub.birth)
-                ex_year = person['birth_year']
-                if in_year is not None and ex_year is not None and abs(in_year - ex_year) > 2:
+                in_win = _birth_window(stub.birth)
+                ex_win = person['birth_window']
+                if (in_win is not None and ex_win is not None
+                        and (in_win[0] - _DEDUPE_YEAR_SLACK > ex_win[1]
+                             or ex_win[0] > in_win[1] + _DEDUPE_YEAR_SLACK)):
                     continue
-                in_b = f' b.{in_year}' if in_year else ''
-                ex_b = f' b.{person["birth_raw"]}' if person['birth_raw'] else ''
+                # Plain wording ("after 1700", "about 1849"), not EDTF codes;
+                # a hand-written non-EDTF birth is shown as typed.
+                in_b = f' b.{humanize_edtf(stub.birth)}' if stub.birth else ''
+                ex_raw = person['birth_raw']
+                ex_b = (f' b.{humanize_edtf(ex_raw) if is_valid_edtf(ex_raw) else ex_raw}'
+                        if ex_raw else '')
                 try:
                     where = person['path'].relative_to(archive_root)
                 except ValueError:
@@ -1138,7 +1278,9 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         if date_node is not None:
             consumed.add(id(date_node))
             export_date_raw = _oneline(date_node.value)
-            source_date = gedcom_date_to_edtf(export_date_raw)
+            # Strict grammar only: HEAD DATE is written by the exporting
+            # program, never typed, and is not counted as a free-form read.
+            source_date = _strict_gedcom_date_to_edtf(export_date_raw)
         gedc = head.child('GEDC')
         if gedc is not None:
             consumed.add(id(gedc))
@@ -1222,6 +1364,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
 
     cid_pool = _DeferredPool()
     date_downgrades: list[str] = []
+    date_loose: list[str] = []      # read by the free-form fallback (#293)
     sour_use: Counter = Counter()
 
     stubs: list[_PersonStub] = []
@@ -1230,7 +1373,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     for indi in indis:
         stub, indi_claims, pedi_map = _map_individual(
             indi, xref_pid[indi.xref], cid_pool, sour_titles, sour_use,
-            consumed, date_downgrades)
+            consumed, date_downgrades, date_loose)
         stubs.append(stub)
         claims.extend(indi_claims)
         for fam_xref, pedi_value in pedi_map.items():
@@ -1240,7 +1383,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     for fam in fams:
         claims.extend(_map_family(
             fam, xref_pid, display_names, cid_pool, sour_titles, sour_use,
-            pedi, consumed, date_downgrades, warnings))
+            pedi, consumed, date_downgrades, date_loose, warnings))
 
     if cid_pool.count:
         real_cids = mint_ids('C', cid_pool.count, archive_root)
@@ -1249,11 +1392,17 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
 
     if date_downgrades:
         shown = '; '.join(date_downgrades[:3])
+        # Count the free-form dates that WERE read here too, so this number
+        # reads as "truly unreadable", not "everything not in GEDCOM form".
+        also_read = (f' {len(date_loose)} other date(s) were typed as free-form '
+                     'wording and were read anyway (see the plan).'
+                     if date_loose else '')
         warnings.append(
             f'{len(date_downgrades)} date(s) could not be translated to the '
             f'archive\'s date form and were left out of the date field '
             f'({shown}{", ..." if len(date_downgrades) > 3 else ""}). The original '
-            'wording is kept in each claim\'s text, so nothing is lost.')
+            'wording is kept in each claim\'s text, so nothing is lost.'
+            f'{also_read}')
 
     cited_sources = sorted(
         ((sour_titles.get(ref, ref.removeprefix('(inline) ')), n)
@@ -1281,6 +1430,8 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         cited_sources=cited_sources,
         duplicates=_find_duplicates(archive_root, stubs),
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
+        loose_dates=len(date_loose), loose_date_reads=list(date_loose),
+        date_downgrades=list(date_downgrades),
     )
 
 
@@ -1496,6 +1647,22 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      'identities is a human decision.')
         lines.append('  After import, ask "are these the same person?" '
                      '(the merge-identities skill).')
+    if plan.loose_dates:
+        # Three examples on screen; --plan-out (capped=False) lists every one.
+        reads = plan.loose_date_reads if not capped else plan.loose_date_reads[:3]
+        shown = '; '.join(reads)
+        more = ', ...' if plan.loose_dates > len(reads) else ''
+        lines.append('')
+        lines.append(f'  {plan.loose_dates:,} date(s) were typed as free-form wording '
+                     f'rather than GEDCOM\'s date form ({shown}{more}) and were read '
+                     'the way `fha claim --date` reads a typed date. The wording '
+                     'stays in each claim\'s text, to check when you review it.')
+    if plan.date_downgrades and not capped:
+        # The warning names three; the full plan names every date left out.
+        lines.append('')
+        lines.append(f'  Dates left out of the date field ({len(plan.date_downgrades):,}; '
+                     'the wording is kept in each claim\'s text):')
+        lines.extend(f'    {d}' for d in plan.date_downgrades)
     if plan.unread_lines:
         top = ', '.join(f'{tag} x{n}' for tag, n in plan.unread_top)
         lines.append('')
