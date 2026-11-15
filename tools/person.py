@@ -988,8 +988,8 @@ def run_new(
 
     A name the archive already carries is refused with status
     'duplicate-name' (exit 3, nothing minted) unless `force` is set (issue
-    #282): `_lib.find_people_by_name` asks both the index and the files on
-    disk, so a stub minted since the last `fha index` still counts, and the
+    #282): `_lib.find_people_by_name` reads the person files on disk (not
+    the index), so a stub minted since the last `fha index` still counts, and the
     refusal names each existing record (`data['duplicates']`, a list of
     {'id', 'path', 'name'}) so the workbench can offer "create a separate
     record anyway" instead of failing opaquely. Two people really can share

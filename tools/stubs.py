@@ -217,7 +217,7 @@ def mint_named_stubs(
 
     Before anything is minted, every name is checked against the people the
     archive already has (`_lib.find_people_by_name`: `name:` and alternate
-    names, case- and accent-insensitive, from the index AND the files on
+    names, case- and accent-insensitive, read from the person files on
     disk, so a stub minted since the last `fha index` still counts) and
     against the other names in this same batch. Any hit refuses the WHOLE
     batch with nothing written (exit 3, the refusal code every write verb

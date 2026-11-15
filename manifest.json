@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b55fbb351c12442b3829bd44a0003335fee1660fa67a7d8086e3cf9dd6f7f862",
+      "sha256": "141002061a0a93bfd365eb0eb211043d223111e1b624516914d6e02b5fc43646",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "53a47a3f773711cf74b6a410083c767a70537cbf3a1b0d7b83f9fccad886753d",
+      "sha256": "e4998cb5b64843c9efc3b17f8ad3d8f65ce53ba710dbfb75f6f0a4646e2058b9",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "e152621c418aa538ddb4375eefbda228296f2c6793f888fe7a9799e919adcfa4",
+      "sha256": "0c2cc1b91487053c9e696dee2aa9ce57650d72ac2857988dc84c97e46b3d68bf",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -749,7 +749,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "728268697ac5e2bd220104df999b8891d44c700326759b6fdeead2dc78e35d37",
+      "sha256": "1614e09c5bd41c1ba4a727b9b331884363bd3483ff736ef25e629238a277cb6e",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },

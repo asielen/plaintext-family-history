@@ -9814,50 +9814,6 @@ def _person_meta_names(meta: dict) -> list[str]:
     return names
 
 
-def _index_person_names(archive_root: Path) -> tuple[dict[str, list[tuple[str, str]]], float | None]:
-    """`{posix path: [(P-id, name), ...]}` from the index, and the index's mtime.
-
-    Reads `persons` (the display name) and `aliases` (kinds 'name', 'stem'
-    and 'variant': the record's `aliases:` and alternate names) for every
-    record not merged away. Returns `({},
-    None)` when the index is absent, unreadable or on another schema: the
-    disk scan in `find_people_by_name` then reads every file instead, so a
-    missing index costs speed, never a missed duplicate.
-    """
-    db_path = archive_root / '.cache' / 'index.sqlite'
-    status, _detail = sqlite_cache_schema_status(
-        db_path, INDEX_SCHEMA_VERSION, ('persons', 'aliases'))
-    if status != 'fresh':
-        return {}, None
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    conn = None
-    try:
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
-            "SELECT id, name, path FROM persons "
-            "WHERE merged_into IS NULL AND COALESCE(status, 'active') != 'merged'"
-        ).fetchall()
-        path_of: dict[str, str] = {}
-        for pid, name, path in rows:
-            if not path:
-                continue
-            key = Path(str(path)).as_posix()
-            path_of[pid] = key
-            by_path.setdefault(key, []).append((pid, str(name or '')))
-        for alias, pid in conn.execute(
-            "SELECT alias, canonical_id FROM aliases "
-            "WHERE kind IN ('name', 'stem', 'variant')"
-        ).fetchall():
-            if pid in path_of and alias:
-                by_path[path_of[pid]].append((pid, str(alias)))
-    except sqlite3.Error:
-        return {}, None
-    finally:
-        if conn is not None:
-            conn.close()
-    return by_path, db_mtime(db_path)
-
-
 def find_people_by_name(
     archive_root: str | Path, names: list[str],
 ) -> dict[str, list[dict]]:
@@ -9866,21 +9822,30 @@ def find_people_by_name(
     Returns `{name: [{'id': 'P-…', 'path': 'people/…', 'name': as written}]}`
     for every input name with at least one match; a name nobody carries is
     absent. Matching is by `person_name_key` (case-, accent- and
-    punctuation-insensitive) against `name:` and the alternate-name fields.
-    Placeholder names ("unknown", blank) never match anything: they are not
-    names, and every unnamed stub shares them.
+    punctuation-insensitive) against `name:`, `aliases:` and the
+    alternate-name fields. Placeholder names ("unknown", blank) never match
+    anything: they are not names, and every unnamed stub shares them.
 
-    Both the index and the files are asked, because neither alone is
-    enough. The index is fast and knows every alias, but a record minted
-    since the last `fha index` is only on disk - which is exactly how three
-    duplicates were minted in one unindexed overnight run (issue #282). So
-    the disk is the authority: every person record under `people/` is
-    walked, and a file the index already holds, unchanged since the index
-    was built, is answered from the index; any other file (new, edited, or
-    with no usable index at all) has its frontmatter read. A record the
-    index lists but the disk no longer has is not reported. Merged
-    tombstones (`merged_into:`) are skipped - their name lives on in the
-    record they were merged into.
+    Every person file under `people/` is read from disk, every time. The
+    index cannot answer this on its own: a record minted since the last
+    `fha index` is only on disk (how three duplicates were minted in one
+    unindexed overnight run, issue #282), and the index keeps no per-person
+    "indexed at" time to tell a current row from a stale one. The database
+    file's own mtime is not that time: `fha index --source` (`upsert_source`)
+    moves it forward without re-reading any person, so a profile renamed
+    from Ada Smith to Ada Jones before that upsert looks older than the index
+    while its indexed row still says Ada Smith. Reading the files costs one
+    frontmatter parse per person, small beside the whole-tree id scan
+    `mint_ids` runs on the same call.
+
+    A file is identified the way `index._index_person` identifies it, so
+    the two never disagree about who is on file: the frontmatter `id:` when
+    it is a valid P-id, else the filename's P-id. A hand-named profile
+    (`people/stubs/Mary Smith.md`, valid `id:`, no `__` or P-id in the name -
+    SPEC §10's legal pre-rename state) therefore counts. Generated
+    companions are left out by content first (`person_file_kind`), merged
+    tombstones by `merged_into:`/`status: merged` - their name lives on in
+    the record they were merged into.
 
     A file that cannot be read is skipped rather than blocking the mint:
     this is a courtesy check in front of a write that is always allowed
@@ -9901,36 +9866,10 @@ def find_people_by_name(
     people_dir = archive_root / 'people'
     if not people_dir.is_dir():
         return {}
-    indexed, index_mtime = _index_person_names(archive_root)
 
     found: dict[str, dict[str, dict]] = {}
-
-    def note(key: str, pid: str, rel: str, as_written: str) -> None:
-        display = fmt_id_display(normalize_id(pid))
-        found.setdefault(key, {}).setdefault(
-            display, {'id': display, 'path': rel, 'name': as_written})
-
     for path in sorted(walk_files(people_dir, suffix='.md')):
         if is_template_file(path):
-            continue
-        parsed = parse_filename(path)
-        if not parsed or parsed.get('id_type') != 'P':
-            continue
-        if parsed.get('is_companion') and not parsed.get('kind_ambiguous'):
-            continue
-        try:
-            rel = path.relative_to(archive_root).as_posix()
-        except ValueError:
-            rel = path.as_posix()
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        if rel in indexed and index_mtime is not None and mtime <= index_mtime:
-            for pid, text in indexed[rel]:
-                key = person_name_key(text)
-                if key in wanted:
-                    note(key, pid, rel, text)
             continue
         try:
             rec = read_record(path, on_decode_error=lambda _p: None)
@@ -9939,17 +9878,24 @@ def find_people_by_name(
         meta = rec.get('meta') or {}
         if rec.get('undecodable') or not isinstance(meta, dict):
             continue
-        if parsed.get('is_companion') and person_file_kind(path, meta) != 'profile':
+        parsed = parse_filename(path) or {}
+        pid = normalize_id(str(meta.get('id') or ''))
+        if not is_valid_id(pid) or id_type_of(pid) != 'P':
+            pid = parsed.get('id_str') if parsed.get('id_type') == 'P' else ''
+        if not pid or person_file_kind(path, meta) != 'profile':
             continue
         if meta.get('merged_into') or is_merged_meta(meta):
             continue
-        pid = normalize_id(str(meta.get('id') or '')) or parsed.get('id_str') or ''
-        if id_type_of(pid) != 'P':
-            continue
+        try:
+            rel = path.relative_to(archive_root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        display = fmt_id_display(pid)
         for text in _person_meta_names(meta):
             key = person_name_key(text)
             if key in wanted:
-                note(key, pid, rel, text)
+                found.setdefault(key, {}).setdefault(
+                    display, {'id': display, 'path': rel, 'name': text})
 
     return {
         name: sorted(found[key].values(), key=lambda m: m['id'])

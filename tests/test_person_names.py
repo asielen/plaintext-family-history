@@ -12,7 +12,7 @@ Two issues, one surface (the minting verbs `fha stubs --from-names` and
          person-filename slugger shares it.
   #282 - minting a name the archive already had made a second record without
          a word. Both verbs now refuse (exit 3, nothing written) and name the
-         existing record, checking the index AND the files on disk (a stub
+         existing record, reading the person files on disk (a stub
          minted since the last `fha index` is only on disk), with `--force`
          for two people who really share a name.
 
@@ -195,8 +195,8 @@ class DuplicateNameTests(unittest.TestCase):
         self.assertIn(f'(people/stubs/{first})', err)
         self.assertEqual(_stub_files(self.root), [first])
 
-    def test_index_alias_is_matched_for_an_unchanged_file(self) -> None:
-        # An alternate name the index registered (name_variants) counts too.
+    def test_alternate_name_is_matched(self) -> None:
+        # An alternate name (name_variants) counts too, index or not.
         path = self.root / 'people' / 'stubs' / 'quillfeather__ada_p-0000000001.md'
         path.write_text('---\nid: p-0000000001\nname: Ada Quillfeather\n'
                         'name_variants: [Addie Quillfeather]\nliving: unknown\n'
@@ -236,6 +236,53 @@ class DuplicateNameTests(unittest.TestCase):
         code, _out, err = _mint_from_names(self.root, ['Halina Wisniewska'])
         self.assertEqual(code, EXIT_FAILURE)
         self.assertIn('Halina Wisniewska already has a record', err)
+
+    def _hand_named_profile(self) -> Path:
+        # A hand-authored profile (SPEC §10's pre-rename state): a valid id
+        # in the frontmatter, but a filename with no `__` and no P-id. The
+        # indexer identifies it from its frontmatter, so this check must too.
+        path = self.root / 'people' / 'stubs' / 'Mary Smith.md'
+        path.write_text('---\nid: p-0000000011\nname: Mary Smith\nliving: unknown\n---\n',
+                        encoding='utf-8')
+        return path
+
+    def test_hand_named_profile_counts_without_an_index(self) -> None:
+        self._hand_named_profile()
+        result = person.run_new(self.root, 'Mary Smith')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        self.assertEqual([m['id'] for m in result.data['duplicates']], ['P-0000000011'])
+        self.assertEqual(len(_stub_files(self.root)), 1)
+
+    def test_hand_named_profile_counts_with_an_index(self) -> None:
+        self._hand_named_profile()
+        _reindex(self.root)
+        result = person.run_new(self.root, 'Mary Smith')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        self.assertEqual([m['path'] for m in result.data['duplicates']],
+                         ['people/stubs/Mary Smith.md'])
+
+    def test_name_edited_then_source_upsert_still_reads_the_new_name(self) -> None:
+        # Edit a profile after `fha index`, then let an incremental source
+        # upsert bump the database's mtime without refreshing `persons`: the
+        # profile now looks older than the index, but its indexed row is
+        # stale. The check must still see the new name.
+        path = self.root / 'people' / 'stubs' / 'smith__ada_p-0000000021.md'
+        path.write_text('---\nid: p-0000000021\nname: Ada Smith\nliving: unknown\n'
+                        'tier: stub\n---\n', encoding='utf-8')
+        source = self.root / 'sources' / 'note_S-0000000031.md'
+        source.write_text('---\nid: S-0000000031\ntitle: Note\nsource_type: letter\n---\n',
+                          encoding='utf-8')
+        _reindex(self.root)
+        path.write_text('---\nid: p-0000000021\nname: Ada Jones\nliving: unknown\n'
+                        'tier: stub\n---\n', encoding='utf-8')
+        time.sleep(0.02)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(index.upsert_source(self.root, {}, 'S-0000000031'), 'indexed')
+        self.assertGreater((self.root / '.cache' / 'index.sqlite').stat().st_mtime,
+                           path.stat().st_mtime)
+        found = find_people_by_name(self.root, ['Ada Jones', 'Ada Smith'])
+        self.assertEqual([m['id'] for m in found.get('Ada Jones', [])], ['P-0000000021'])
+        self.assertNotIn('Ada Smith', found)
 
     def test_merged_tombstone_does_not_count(self) -> None:
         path = self.root / 'people' / 'stubs' / 'quillfeather__ada_p-0000000001.md'
