@@ -230,6 +230,7 @@ from _lib import (
     inbox_triage_dirs,
     intake_default_for,
     intake_default_rules,
+    SESSION_MEDIA_SUFFIXES,
     is_back_scan_candidate,
     photos_ignore_matcher,
     photos_ignore_patterns,
@@ -532,9 +533,16 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
     `--type photo` therefore falls through to the extension test below and is
     filed as a document, with its record still typed as the human asked.
 
-    **Then the archive's standing rule** for an inbox file the human said
-    nothing about: an `intake_defaults:` rule matching its inbox folder is
-    read as its stated type (#294, `_intake_default`).
+    An `intake_defaults:` rule (#294) reaches this function only as a
+    stated type: each caller resolves it once, says so out loud
+    (`_intake_default_type`), and passes it in as `source_type`. Looking the
+    rules up here as well would apply them to files no caller announced - a
+    bundle's assets, say - silently.
+
+    "Where it lives" means filed there, not merely sitting under the root's
+    folder: SPEC §12.4's own example nests the inbox inside the photos root
+    (`C:/Photos/_inbox`), and a file in that inbox is new material, not part
+    of the library (`_filed_under`).
 
     **Then the file itself:** a known photo extension is a photo, everything
     else a document.
@@ -547,22 +555,34 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path,
     #170 finding 2, extended - Codex review round-8 audit).
     """
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if _is_under_strict(file_path, documents_root, root_label='documents root'):
+    if _filed_under(file_path, documents_root, fha_config, archive_root,
+                    root_label='documents root'):
         return 'document'
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if _is_under_strict(file_path, photos_root, root_label='photos root'):
+    if _filed_under(file_path, photos_root, fha_config, archive_root,
+                    root_label='photos root'):
         return 'photo'
     stated = str(source_type).strip().lower() if source_type else ''
-    if not stated:
-        # The archive's standing answer for this inbox folder (#294), read as
-        # a stated type when nothing more specific was said.
-        hit = _intake_default(file_path, fha_config, archive_root)
-        stated = hit[0] if hit else ''
     if stated and stated != _PHOTO_SOURCE_TYPE:
         return 'document'
     if file_path.suffix.lower() in PHOTO_EXTENSIONS:
         return 'photo'
     return 'document'
+
+
+def _filed_under(path: Path, root: Path, fha_config: dict, archive_root: Path,
+                 *, root_label: str) -> bool:
+    """True when `path` is filed in the asset root `root`: under it, and not
+    in an inbox that happens to sit inside it (SPEC §12.4's example puts the
+    inbox at `C:/Photos/_inbox`). Raises on a symlink loop, as
+    `_is_under_strict` does, rather than guessing."""
+    if not _is_under_strict(path, root, root_label=root_label):
+        return False
+    inbox_root = resolve_path('inbox', fha_config, archive_root)
+    # An asset root inside the inbox (an odd layout) is still that root.
+    if _is_under(root, inbox_root):
+        return True
+    return not _is_under(path, inbox_root)
 
 
 def _intake_default(file_path: Path, fha_config: dict, archive_root: Path) -> tuple[str, str] | None:
@@ -3316,7 +3336,7 @@ def process_bundle(
             stated_type = hinted_type
     if stated_type is None:
         # The bundle folder's standing type in the inbox (#294).
-        stated_type = _intake_default_type(notes_path, fha_config, archive_root,
+        stated_type = _intake_default_type(folder, fha_config, archive_root,
                                            dry_run=dry_run)
     asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
                    for a in assets}
@@ -4110,7 +4130,8 @@ def _photo_primary_folder(
     if more_kind != 'photo':
         return None
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if not _is_under(primary_path, photos_root):
+    if not _filed_under(primary_path, photos_root, fha_config, archive_root,
+                        root_label='photos root'):
         return None
     folder = primary_path.parent
     try:
@@ -4154,7 +4175,7 @@ def _more_file_kind(
     if kind == 'document':
         return kind
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if _is_under_strict(more_file, photos_root, root_label='photos root'):
+    if _filed_under(more_file, photos_root, fha_config, archive_root, root_label='photos root'):
         # A note or a PDF saved into the photo library is not a photo, and
         # exiftool cannot keyword it as one: it is attached as a document,
         # which refuses plainly because it is not in the documents root.
@@ -4162,7 +4183,8 @@ def _more_file_kind(
     if (source_type or '').strip().lower() == _PHOTO_SOURCE_TYPE:
         return kind
     documents_root = resolve_path('documents', fha_config, archive_root)
-    if _is_under_strict(primary_path, documents_root, root_label='documents root'):
+    if _filed_under(primary_path, documents_root, fha_config, archive_root,
+                    root_label='documents root'):
         return 'document'
     return kind
 
@@ -4185,7 +4207,8 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
         `{slug}-farm.m4a` attached as `audio` files as
         `{slug}-farm-audio_...` (one session, one prefix, the topic in the
         name).
-      * on a recording source whose slug is `{session}-audio` (the
+      * on a recording source whose slug is `{session}-audio` (or
+        `-video`, `-recording`: `_lib.SESSION_MEDIA_SUFFIXES`, the
         whisper-pass convention), a file named `{session}` or starting
         with `{session}-` - so `{session}-farm.m4a` keeps its topic too,
         and every recording of the session gets a name of its own.
@@ -4208,8 +4231,9 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
         slug = _strip_sid_suffix(record_path.stem, sid)
     own = _slugify(more_file.stem)
     prefixes = [slug]
-    if slug.endswith('-audio') and len(slug) > len('-audio'):
-        prefixes.append(slug[:-len('-audio')])
+    for media_suffix in SESSION_MEDIA_SUFFIXES:
+        if slug.endswith(media_suffix) and len(slug) > len(media_suffix):
+            prefixes.append(slug[:-len(media_suffix)])
     for prefix in prefixes:
         if own == prefix:
             return own
@@ -4261,7 +4285,8 @@ def _outside_roots_message(
     """
     inbox_root = resolve_path('inbox', fha_config, archive_root)
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
-    if root_label == 'documents root' and _is_under(file_path, photos_root):
+    if root_label == 'documents root' and _filed_under(
+            file_path, photos_root, fha_config, archive_root, root_label='photos root'):
         return (f'{file_path.name} is in your photo library, but it is not a photo, so it '
                 'belongs with your documents - and fha does not move files out of the photo '
                 f'library itself. Move it into the inbox ({_rel(inbox_root, archive_root)}) '
@@ -6212,7 +6237,7 @@ def _triage_folder_refusal(
 
 def _refuse_dest_for(
     archive_root: Path, fha_config: dict, file_path: Path,
-    source_type: str | None, dest: str,
+    source_type: str | None, dest: str, *, rule: str | None = None,
 ) -> None:
     """Refuse `--dest` on a single file it cannot apply to (#275).
 
@@ -6236,6 +6261,12 @@ def _refuse_dest_for(
             'move a photo within your photo library, move it yourself, then run '
             '`fha reconcile`.')
     if classify_asset(file_path, fha_config, archive_root, source_type=source_type) != 'photo':
+        if rule is not None:
+            raise ProcessError(
+                f'--dest chooses a folder of your photo library, and {file_path.name} is being '
+                f"filed as a document - type {source_type} from intake_defaults '{rule}'. Drop "
+                f'--dest to file it that way, or pass --type photo --dest {dest} to file it '
+                'as a photo.')
         raise ProcessError(
             f'--dest chooses a folder of your photo library, and {file_path.name} is being '
             'filed as a document (into the documents folder for its type), so drop --dest.')
@@ -6625,15 +6656,19 @@ def _run_process(args: argparse.Namespace) -> int:
         # saying `source_type: census`) could route to documents/ while its
         # `-back` sibling, seeing no hint, routed to photos/ instead - two
         # different roots for one physical item (#113 follow-up).
+        rule_used = None
         if (source_type is None and not args.more
                 and _sidecar_hinted_source_type(sidecar_path) is None):
             # The archive's standing rule for this inbox folder (#294),
             # treated exactly as --type from here on.
             source_type = _intake_default_type(file_path, fha_config, archive_root,
                                                dry_run=dry_run)
+            if source_type is not None:
+                rule_used = _intake_default(file_path, fha_config, archive_root)[1]
         relocate_type = source_type or _sidecar_hinted_source_type(sidecar_path)
         if dest is not None:
-            _refuse_dest_for(archive_root, fha_config, file_path, relocate_type, dest)
+            _refuse_dest_for(archive_root, fha_config, file_path, relocate_type, dest,
+                             rule=rule_used)
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path,
             source_type=relocate_type, dry_run=dry_run,
@@ -6687,6 +6722,15 @@ def _run_process(args: argparse.Namespace) -> int:
         else:
             kind = classify_asset(file_path, fha_config, archive_root,
                                   source_type=source_type)
+            if kind == 'photo' and not _is_photo_ext(file_path):
+                # A note or a PDF saved into the photo library: classify
+                # calls it a photo because of where it sits, but it cannot
+                # take a photo keyword, and fha never moves a file out of
+                # the library itself.
+                raise ProcessError(_outside_roots_message(
+                    file_path, archive_root, fha_config,
+                    root=resolve_path('documents', fha_config, archive_root),
+                    root_label='documents root', doing='processing'))
             if kind == 'photo':
                 # Tier-1 variation detection (M7.3): a single photo may have
                 # front/back/crop/copy siblings sitting beside it.

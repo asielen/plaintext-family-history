@@ -1019,5 +1019,243 @@ class IntakeDefaultsTests(InboxFilingTestCase):
         self.assertEqual(check['status'], 'warn')
 
 
+class NestedInboxTests(unittest.TestCase):
+    """PR #287 third review, P1: SPEC §12.4's own example puts the inbox
+    INSIDE the photos root (`C:/Photos/_inbox`). A file in that inbox is not
+    "already in the photo library": the rules, --type and #274 all apply."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.archive = self.tmp / 'archive'
+        for sub in ('sources', 'people', 'notes'):
+            (self.archive / sub).mkdir(parents=True)
+        self.photos = self.tmp / 'lib-photos'
+        self.docs = self.tmp / 'lib-docs'
+        self.inbox = self.photos / '_inbox'
+        for d in (self.photos, self.docs, self.inbox):
+            d.mkdir(parents=True, exist_ok=True)
+        (self.archive / 'fha.yaml').write_text(
+            f'roots:\n  photos: {self.photos.as_posix()}\n'
+            f'  documents: {self.docs.as_posix()}\n  inbox: {self.inbox.as_posix()}\n'
+            'intake_defaults:\n  - match: "Postcards/**"\n    source_type: letter\n',
+            encoding='utf-8')
+        self.store = FakePhotoStore()
+        self._saved = (process._run_exiftool_read_keywords,
+                       process._run_exiftool_embed_source,
+                       process._run_exiftool_remove_source)
+        process._run_exiftool_read_keywords = self.store.read
+        process._run_exiftool_embed_source = self.store.embed
+        process._run_exiftool_remove_source = self.store.remove
+
+    def tearDown(self) -> None:
+        (process._run_exiftool_read_keywords, process._run_exiftool_embed_source,
+         process._run_exiftool_remove_source) = self._saved
+        self._tmp.cleanup()
+
+    def _run(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = process._standalone_main(list(argv) + ['--root', str(self.archive)])
+        return rc, out.getvalue(), err.getvalue()
+
+    def _library_outside_inbox(self) -> list[str]:
+        return sorted(p.relative_to(self.photos).as_posix() for p in self.photos.rglob('*')
+                      if p.is_file() and self.inbox not in p.parents)
+
+    def test_inbox_nested_in_photos_root_honours_rule_and_type(self) -> None:
+        card = self.inbox / 'Postcards' / 'card-01.tif'
+        card.parent.mkdir(parents=True)
+        card.write_bytes(TIFF)
+        rc, out, err = self._run(str(card))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("type letter from intake_defaults", out)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-01_S-*.tif'))), 1)
+
+        note = self.inbox / 'note.txt'
+        note.write_bytes(b'a typed note')
+        rc, _out, err = self._run(str(note), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertNotIn('exiftool', err.lower())
+        self.assertEqual(len(list((self.docs / 'letter').glob('note_S-*.txt'))), 1)
+        self.assertEqual(self._library_outside_inbox(), [])
+
+    def test_more_page_from_a_nested_inbox_joins_its_document(self) -> None:
+        letter = self.inbox / 'letter.pdf'
+        letter.write_bytes(PDF)
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next((self.docs / 'letter').glob('letter_S-*.pdf'))
+        page = self.inbox / 'p2.tif'
+        page.write_bytes(TIFF)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._library_outside_inbox(), [])
+        self.assertEqual(len(list((self.docs / 'letter').glob('letter-page-2_S-*.tif'))), 1)
+
+
+class ThirdReviewTests(InboxFilingTestCase):
+    """PR #287 third review: intake rule patterns, photo rules, bundles,
+    session suffixes, and plain refusals."""
+
+    def _set_yaml(self, text: str) -> None:
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + text, encoding='utf-8')
+
+    def _rule(self, pattern: str, stype: str = 'letter') -> None:
+        self._set_yaml(f'intake_defaults:\n  - match: "{pattern}"\n    source_type: {stype}\n')
+
+    def test_folder_pattern_forms_all_match(self) -> None:
+        for i, pattern in enumerate(('Postcards', 'Postcards/', 'Postcards/**', 'Postcards/*')):
+            with self.subTest(pattern=pattern):
+                cfg = self.archive / 'fha.yaml'
+                base = cfg.read_text(encoding='utf-8').split('intake_defaults:')[0]
+                cfg.write_text(base, encoding='utf-8')
+                self._rule(pattern)
+                card = self._put(self.inbox / 'Postcards' / '1908' / f'card-{i}.tif', TIFF)
+                rc, out, err = self._run(str(card))
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                self.assertIn('intake_defaults', out)
+                self.assertEqual(len(list((self.docs / 'letter').glob(f'card-{i}_S-*.tif'))), 1)
+
+    def test_nested_double_star_matches_below_the_top_only(self) -> None:
+        self._rule('**/Postcards/**')
+        deep = self._put(self.inbox / 'Box' / 'Postcards' / 'a.tif', TIFF)
+        top = self._put(self.inbox / 'Postcards' / 'b.tif', TIFF)
+        rc, _out, err = self._run(str(deep))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(len(list((self.docs / 'letter').glob('a_S-*.tif'))), 1)
+        rc, _out, err = self._run(str(top))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('b.tif', self._files(self.photos))  # documented: top-level not matched
+
+    def test_unusable_patterns_are_warned_about(self) -> None:
+        for pattern in ('inbox/Postcards/**', '/abs/Postcards', 'C:/Postcards', '../Postcards/**'):
+            with self.subTest(pattern=pattern):
+                cfg = self.archive / 'fha.yaml'
+                base = cfg.read_text(encoding='utf-8').split('intake_defaults:')[0]
+                cfg.write_text(base, encoding='utf-8')
+                self._rule(pattern)
+                card = self._put(self.inbox / f'x{len(pattern)}.txt', b'x')
+                rc, _out, err = self._run(str(card), '--dry-run')
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                self.assertIn('intake_defaults', err)
+                self.assertIn(repr(pattern), err)
+                import doctor
+                from _lib import load_fha_yaml
+                result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+                check = next((c for c in result.data['checks'] if c['id'] == 'intake_defaults'),
+                             None)
+                self.assertIsNotNone(check)
+
+    def test_bundle_asset_matching_a_file_rule_is_not_reclassified_silently(self) -> None:
+        self._rule('*.tif')
+        folder = self.inbox / 'Reunion'
+        self._put(folder / 'front.tif', TIFF)
+        (folder / 'notes.md').write_text('---\ntitle: Reunion\n---\n', encoding='utf-8')
+        rc, out, err = self._run(str(folder))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        if 'intake_defaults' in out:
+            # Applied at bundle level, said, and the record agrees.
+            record = next((self.archive / 'sources').rglob('*_S-*.md'))
+            self.assertEqual(read_record(record)['meta']['source_type'], 'letter')
+        else:
+            self.assertEqual(self._files(self.photos), ['front.tif'])
+            record = next((self.archive / 'sources').rglob('*_S-*.md'))
+            self.assertEqual(read_record(record)['meta']['source_type'], 'photo')
+
+    def test_bundle_intake_line_names_the_folder(self) -> None:
+        self._rule('Postcards/**')
+        folder = self.inbox / 'Postcards' / 'aunt-1908'
+        self._put(folder / 'front.tif', TIFF)
+        (folder / 'notes.md').write_text('---\ntitle: Card\n---\n', encoding='utf-8')
+        rc, out, err = self._run(str(folder))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn("aunt-1908: type letter from intake_defaults", out)
+        self.assertNotIn('notes.md: type', out)
+
+    def test_photo_rule_does_not_send_more_page_to_photo_library(self) -> None:
+        self._rule('Letters/**', 'photo')
+        primary, record, _sid = self._file_letter()
+        page = self._put(self.inbox / 'Letters' / 'p2.tif', TIFF)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._files(self.photos), [])
+        self.assertTrue(self._files_entries(record)[1]['file'].startswith('documents/'))
+        self.assertIn('intake_defaults', err)  # the photo rule is warned about
+
+    def test_photo_rule_does_not_stamp_photo_on_a_pdf(self) -> None:
+        self._rule('Scans/**', 'photo')
+        pdf = self._put(self.inbox / 'Scans' / 'deed.pdf', PDF)
+        rc, _out, err = self._run(str(pdf))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertNotEqual(read_record(record)['meta']['source_type'], 'photo')
+
+    def test_video_and_recording_sessions_keep_topics(self) -> None:
+        for suffix, ext in (('-video', 'mp4'), ('-recording', 'wav')):
+            with self.subTest(suffix=suffix):
+                folder = self.docs / 'interviews' / suffix.strip('-')
+                audio = self._put(folder / f's9{suffix}.{ext}', b'media')
+                rc, _out, err = self._run(str(audio), '--type', 'interview',
+                                          '--slug', f's9{suffix}')
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                primary = next(folder.glob(f's9{suffix}_S-*.{ext}'))
+                sid = primary.stem.split('_')[-1]
+                for name, role in ((f's9-farm.{ext}', suffix.strip('-')),
+                                   (f's9-school.{ext}', suffix.strip('-')),
+                                   ('s9-farm.md', 'whisper-transcript')):
+                    more = self._put(folder / name, b'x ' + name.encode())
+                    rc, _out, err = self._run(str(primary), '--more', str(more), role)
+                    self.assertEqual(rc, EXIT_CLEAN, f'{name}: {err}')
+                names = sorted(p.name for p in folder.iterdir())
+                self.assertIn(f's9-farm{suffix}_{sid}.{ext}', names)
+                self.assertIn(f's9-school{suffix}_{sid}.{ext}', names)
+                self.assertIn(f's9-farm-whisper-transcript_{sid}.md', names)
+
+    def test_session_suffixes_agree_with_the_transcribe_script(self) -> None:
+        import re
+        from _lib import SESSION_MEDIA_SUFFIXES
+        script = (ROOT / '.claude' / 'skills' / 'transcribe-audio' / 'scripts'
+                  / 'transcribe_audio.py').read_text(encoding='utf-8')
+        m = re.search(r'^_MEDIA_ROLE_SUFFIXES = (\(.*?\))$', script, re.M)
+        self.assertIsNotNone(m)
+        import ast
+        self.assertEqual(tuple(ast.literal_eval(m.group(1))), tuple(SESSION_MEDIA_SUFFIXES))
+
+    def test_non_image_primary_in_photo_library_refuses_plainly(self) -> None:
+        note = self._put(self.photos / 'Family' / 'notes.txt', b'text')
+        for dry in (True, False):
+            with self.subTest(dry_run=dry):
+                argv = [str(note)] + (['--dry-run'] if dry else [])
+                rc, out, err = self._run(*argv)
+                self.assertEqual(rc, EXIT_ERRORS, out + err)
+                self.assertIn('Move it into the inbox', err)
+                self.assertNotIn('exiftool', err.lower())
+                self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_dest_refusal_names_the_rule(self) -> None:
+        self._rule('Postcards/**')
+        card = self._put(self.inbox / 'Postcards' / 'c.tif', TIFF)
+        rc, _out, err = self._run(str(card), '--dest', 'C')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn("intake_defaults 'Postcards/**'", err)
+        self.assertIn('--type photo --dest C', err)
+
+    def test_doctor_inbox_age_skips_bookkeeping_entries(self) -> None:
+        import os
+        import time
+        import doctor
+        from _lib import load_fha_yaml
+        when = time.time() - 30 * 86400
+        for rel in ('processed/old.txt', '.DS_Store', '_TEMPLATE.notes.md'):
+            f = self._put(self.inbox / rel, b'x')
+            os.utime(f, (when, when))
+        os.utime(self.inbox / 'processed', (when, when))
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        check = next(c for c in result.data['checks'] if c['id'] == 'inbox')
+        self.assertEqual(check['status'], 'ok', '\n'.join(result.data['lines']))
+
+
 if __name__ == '__main__':
     unittest.main()

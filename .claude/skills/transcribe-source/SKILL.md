@@ -181,8 +181,12 @@ suffix**, beside the primary when the primary is a document, or in the inbox whe
 (`--more` files a text file with your documents, never in the photo library):
 
 ```
-fha process <one of the source's files> --more <documents/…/{stem}.md> transcript --dry-run
-fha process <one of the source's files> --more <documents/…/{stem}.md> transcript
+# primary is a document: write {stem}.md beside it
+fha process <the primary> --more <documents/…/{stem}.md> transcript --dry-run
+fha process <the primary> --more <documents/…/{stem}.md> transcript
+# primary is a photo: write {stem}.md into the inbox instead
+fha process <the photo> --more <inbox/{stem}.md> transcript --dry-run
+fha process <the photo> --more <inbox/{stem}.md> transcript
 fha index                    # the words only become searchable once the index has read them
 ```
 

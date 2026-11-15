@@ -1298,6 +1298,52 @@ class ProcessVerbDestAdviceTests(_ServeCase):
         self.assertIs(seen.get('offer_dest'), False)
 
 
+class ProcessVerbIntakeDefaultTests(_ServeCase):
+    """PR #287 third review: the workbench's filing modals default to "no
+    type", so an `intake_defaults:` rule applies and its line is shown."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_stdout, self._orig_stderr = sys.stdout, sys.stderr
+        sys.stdout = serve._ThreadTee(self._orig_stdout)
+        sys.stderr = serve._ThreadTee(self._orig_stderr)
+
+    def tearDown(self) -> None:
+        sys.stdout, sys.stderr = self._orig_stdout, self._orig_stderr
+        super().tearDown()
+
+    def _default_source_type(self, template_id: str) -> str:
+        import re
+        html = (Path(serve.__file__).parent / 'templates' / 'workbench'
+                / '_modals.html').read_text(encoding='utf-8')
+        block = html.split(f'id="{template_id}"', 1)[1].split('</template>', 1)[0]
+        select = block.split('<select name="source_type">', 1)[1].split('</select>', 1)[0]
+        m = re.search(r'<option([^>]*)\bselected\b[^>]*>', select)
+        self.assertIsNotNone(m, 'no preselected source_type option')
+        value = re.search(r'value="([^"]*)"', m.group(0))
+        return value.group(1) if value else re.search(r'>([^<]*)', select[m.start():]).group(1)
+
+    def test_modals_default_to_no_type(self):
+        self.assertEqual(self._default_source_type('tpl-process'), '')
+        self.assertEqual(self._default_source_type('tpl-process-bundle'), '')
+
+    def test_the_default_lets_an_intake_rule_apply(self):
+        cfg = self.root / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8')
+                       + '\nintake_defaults:\n  - match: "Postcards/**"\n    source_type: letter\n',
+                       encoding='utf-8')
+        inbox = self.root / 'inbox' / 'Postcards'
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / 'card.txt').write_text('a postcard', encoding='utf-8')
+        kw = {'file': 'inbox/Postcards/card.txt'}
+        default = self._default_source_type('tpl-process')
+        if default.strip():  # workbench.js omits a blank field
+            kw['source_type'] = default
+        result = serve._verb_process(self.state, kw, dry_run=True)
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('intake_defaults', texts)
+
+
 class CapturePathVerbTests(_ServeCase):
     """Fix 2: `capture.path` registers a file OUTSIDE the archive on purpose -
     no `_confine_asset_path` gate - but a RELATIVE path must resolve against

@@ -159,6 +159,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    inbox_park_relpath        - an inbox file's place under inbox/processed/, triage folder dropped
 #    intake_default_rules      - fha.yaml intake_defaults: (pattern, type) rules + warnings (#294)
 #    intake_default_for        - the first rule matching an inbox-relative path, or None
+#    SESSION_MEDIA_SUFFIXES    - -audio/-video/-recording: a recording source's slug tails
 #    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
@@ -2887,6 +2888,14 @@ def inbox_park_relpath(rel: Path, triage_dirs: list[str]) -> Path:
     return rel
 
 
+# The role tails a recording source's slug ends in when the session's first
+# recording is the primary (`{session}-audio`). A twin of
+# `.claude/skills/transcribe-audio/scripts/transcribe_audio.py`'s
+# `_MEDIA_ROLE_SUFFIXES` - that script runs standalone and imports nothing
+# from here - pinned equal by a test (tests/test_process_inbox_filing.py).
+SESSION_MEDIA_SUFFIXES: tuple[str, ...] = ('-audio', '-video', '-recording')
+
+
 def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[str]]:
     """The `intake_defaults:` rules from fha.yaml, and a warning per bad entry.
 
@@ -2905,6 +2914,20 @@ def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[
     `source_type:` pair, or whose type is not in the SPEC §14 vocabulary, is
     left out with a plain warning rather than a crash: a mistyped rule must
     not stop filing, it only means those items are classified as before.
+
+    Two more kinds of rule are left out, with a warning, because they could
+    only ever do nothing or do harm:
+
+      * a pattern that cannot match a path inside the inbox - one starting
+        with the inbox folder's own name (`inbox/Postcards/**`; patterns
+        are already relative to the inbox), an absolute path or a drive
+        letter, or one with a `..` step;
+      * a `source_type: photo` rule. An image already files as a photo when
+        nothing else is said, and a non-image never goes into the photo
+        library, so a photo rule could not change where anything goes; it
+        could only stamp `photo` on a PDF, or send a page that joins a
+        record into the photo library (#274). Only an explicit
+        `--type photo` says "this is a photograph".
     """
     raw = fha_config.get('intake_defaults')
     example = ('e.g.\n  intake_defaults:\n    - match: "Postcards/**"\n'
@@ -2916,6 +2939,11 @@ def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[
                     'it is ignored until fixed.']
     rules: list[tuple[str, str]] = []
     warnings: list[str] = []
+    configured_inbox = (fha_config.get('roots') or {}).get('inbox') \
+        if isinstance(fha_config.get('roots'), dict) else None
+    inbox_names = {'inbox'}
+    if isinstance(configured_inbox, str) and configured_inbox.strip():
+        inbox_names.add(Path(configured_inbox.replace('\\', '/').rstrip('/')).name.casefold())
     for i, entry in enumerate(raw, 1):
         match = entry.get('match') if isinstance(entry, dict) else None
         stype = entry.get('source_type') if isinstance(entry, dict) else None
@@ -2928,17 +2956,43 @@ def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[
             warnings.append(f'intake_defaults rule {i} in fha.yaml ({match!r}) names '
                             f'{format_source_type_error(stype)} The rule is ignored until fixed.')
             continue
-        rules.append((match.replace('\\', '/').strip().strip('/'), stype))
+        if stype == 'photo':
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({match!r}) says photo. A '
+                            'photo rule cannot change where anything goes - an image already '
+                            'files as a photo, and a non-image never goes into the photo '
+                            'library - so it is ignored. Pass --type photo when you mean '
+                            '"this one is a photograph".')
+            continue
+        raw_pattern = match.strip().replace('\\', '/')
+        parts = [part for part in raw_pattern.split('/') if part]
+        if (raw_pattern.startswith('/') or re.match(r'^[A-Za-z]:', raw_pattern)
+                or '..' in parts or (parts and parts[0].casefold() in inbox_names)):
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({raw_pattern!r}) can never '
+                            'match: patterns are folder names relative to the inbox, so leave '
+                            'out the inbox folder itself, a drive letter or a leading "/", and '
+                            '".." steps (e.g. match: "Postcards/**"). It is ignored.')
+            continue
+        rules.append((raw_pattern.strip('/'), stype))
     return rules, warnings
 
 
 def intake_default_for(rel_posix: str, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
     """`(source_type, pattern)` of the first rule matching an inbox-relative
-    path, or None. Patterns follow `photos_ignore:` (the same matcher):
-    fnmatch-style, case-insensitive, and `*` crosses folders, so
-    `Postcards/**` and `Postcards/*` both match `Postcards/1908/card.tif`."""
+    path, or None.
+
+    Patterns follow `photos_ignore:`: the same matcher (fnmatch-style,
+    case-insensitive, `*` crosses folders), tried against every folder
+    above the file as well as the whole path, the way a `photos_ignore:`
+    folder pattern prunes the walk (`photoindex._alias_is_ignored`). So
+    `Postcards`, `Postcards/`, `Postcards/*` and `Postcards/**` all match
+    `Postcards/1908/card.tif`. `**/Postcards/**` matches a `Postcards`
+    folder below the top (`Box/Postcards/x.tif`), not a top-level one.
+    """
+    parts = [part for part in rel_posix.split('/') if part]
+    candidates = ['/'.join(parts[:i]) for i in range(1, len(parts))] + ['/'.join(parts)]
     for pattern, stype in rules:
-        if photos_ignore_matcher([pattern])(rel_posix):
+        is_match = photos_ignore_matcher([pattern])
+        if any(is_match(candidate) for candidate in candidates):
             return stype, pattern
     return None
 

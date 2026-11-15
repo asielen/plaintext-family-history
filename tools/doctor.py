@@ -2290,10 +2290,20 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         aged: list[tuple[int, Path]] = []
         triage_folded = {n.casefold() for n in inbox_triage_dirs(fha_config)[0]}
         inbox_items: list[Path] = []
+        def _waiting(entry: Path) -> bool:
+            # Not material waiting on the human: the parked originals of
+            # items already filed, hidden files a system writes (.DS_Store),
+            # and the capture templates (_TEMPLATE*). Counting them gave a
+            # "process it" next step that cannot be acted on.
+            name = entry.name
+            return not (name.startswith('.') or name.startswith('_TEMPLATE')
+                        or (entry.is_dir() and name == 'processed'))
         try:
             for entry in inbox_dir.iterdir():
+                if not _waiting(entry):
+                    continue
                 if entry.is_dir() and entry.name.casefold() in triage_folded:
-                    inbox_items.extend(entry.iterdir())
+                    inbox_items.extend(e for e in entry.iterdir() if _waiting(e))
                 else:
                     inbox_items.append(entry)
         except OSError:

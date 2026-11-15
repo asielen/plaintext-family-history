@@ -82,9 +82,12 @@
 #   postcard is a record - write it down here, and anything filed from that
 #   inbox folder is typed and filed that way without remembering --type.
 #   The first matching rule wins; --type, or a note's source_type:, still
-#   overrides it. Patterns are relative to the inbox; * matches any name,
-#   including folders below. An inbox sorting folder above (review/) is
-#   left out before matching.
+#   overrides it. Patterns are folder names relative to the inbox, matched
+#   the way photos_ignore is: "Postcards" and "Postcards/**" both cover the
+#   Postcards folder and everything in it, and * matches any name. Leave the
+#   inbox folder itself out of the pattern. An inbox sorting folder above
+#   (review/) is left out before matching. A rule cannot say "photo" - use
+#   --type photo for that.
 #
 # intake_defaults:
 #   - match: "Postcards/**"

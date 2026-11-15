@@ -1636,7 +1636,9 @@ def _verb_process(state, kw, dry_run):
     if err:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
     ns = argparse.Namespace(
-        file=str(confined), source_type=kw.get('source_type'), title=kw.get('title'),
+        # A blank type ("archive default / by file") is no --type at all, so an
+        # `intake_defaults:` rule or the file itself decides (#294).
+        file=str(confined), source_type=kw.get('source_type') or None, title=kw.get('title'),
         slug=kw.get('slug'), source_date=None, more=None, people=None,
         dry_run=dry_run, root=str(state.archive_root),
         # Threaded back in by the workbench's Apply step from the id its own
@@ -1666,7 +1668,8 @@ def _verb_process(state, kw, dry_run):
         return Result(ok=False, exit_code=EXIT_FAILURE).add(
             'error', 'this item needs the command line (it has variations or a bundle '
                      'that must be chosen interactively). Run it in a terminal.',
-            next_step=f'fha process {_q(raw)} --type {kw.get("source_type", "other")}')
+            next_step=f'fha process {_q(raw)}'
+                      + (f' --type {kw["source_type"]}' if kw.get('source_type') else ''))
     except Exception as e:  # noqa: BLE001 - a filing failure becomes a plain message
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not file: {e}')
     finally:
