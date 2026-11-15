@@ -308,6 +308,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
 #    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
+#    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
+#                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
@@ -595,8 +597,6 @@ def _title_key(word: str) -> str:
     return word.lower().strip('.,')
 
 
-# Words that trail a surname without being it ("Mrs. John Smith Jr.").
-_NAME_SUFFIXES = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'esq'})
 # Words that lead a surname and belong to it ("van der Berg", "De Witt").
 _SURNAME_PARTICLES = frozenset({
     'van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da', 'du', 'la',
@@ -608,7 +608,9 @@ def _surname_of(words: list[str]) -> str:
     """The surname at the end of `words`: trailing suffixes dropped, leading
     particles kept ("Smith Jr." -> "Smith", "van der Berg" -> "van der Berg")."""
     end = len(words)
-    while end > 1 and _title_key(words[end - 1]) in _NAME_SUFFIXES:
+    # The one suffix rule the filename split uses too (issue #292 folded
+    # this function's own drifted list into it).
+    while end > 1 and is_name_suffix(words[end - 1].rstrip(','), words[:end - 1]):
         end -= 1
     start = end - 1
     while start > 0 and _title_key(words[start - 1]) in _SURNAME_PARTICLES:
@@ -2101,7 +2103,12 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # the first key only, so the mother listed as `informant:` before `parent:`
 # has no parent edge in its `relationships` rows - the same tools-only change
 # v8 describes, so bump to force the rebuild.
-INDEX_SCHEMA_VERSION = 9
+# 10: persons.surname is read from the record (`surname:`, else `name:` -
+# `_lib.person_surname`, SPEC §13), never from the file name (#279/#292,
+# PR #285). A v9 index holds slug spellings ("Winiewska", "Vii") that every
+# export and the site's A-Z read, so bump to force the rebuild (same
+# rationale as v8/v9).
+INDEX_SCHEMA_VERSION = 10
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
@@ -7939,21 +7946,52 @@ def match_place_text_to_registry(
             'registry_error': registry_error, 'ambiguous_ids': None}
 
 
+# Archive-root folders that never hold a record's own ID (see scan_ids_in_tree).
+_ID_SCAN_SKIP_DIRS = frozenset({'.git', '.cache', '.fha', '.claude', '.obsidian', 'generated'})
+
+
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
     """
     Scan the archive tree for all ID strings (case-normalized).
     Used by id mint to verify non-existence without a built index.
+
+    Every mint pays for this scan, so it skips the archive-root folders
+    that never hold a record's own ID (issue #291: in a large archive it
+    took 8-10 s a person): `.git` (its objects alone can be tens of
+    thousands of files), `.cache`, the installed `.fha/` tools, `.claude`,
+    an editor's `.obsidian`, and the `generated/` site (`_ID_SCAN_SKIP_DIRS`).
+    Only those, and only at the top: a dot-folder deeper down
+    (`people/.old/`, a `.trash/` inside a record folder) can hold a real
+    record that `fha index` and the duplicate-name check still read, so
+    its IDs must count here too, or a mint could reuse one and `fha confirm
+    discovery --refs` would call a real record's id unknown. `os.walk`
+    with pruning means the skipped trees are not even listed, and a file
+    is opened only when its extension is one of the text kinds.
+
+    The index is deliberately NOT used as a shortcut, although its ID
+    tables are faster to read. "Fresh" there means the database file is
+    newer than every record and the path set has not changed - but
+    `fha index --source` moves the database's mtime forward without
+    re-reading the people or the other sources, so an ID typed into a
+    record before that upsert would read as absent. A collision guard has
+    to be right, not usually right; the pruned walk is.
     """
     root = Path(archive_root)
     found: set[str] = set()
-    for path in root.rglob('*'):
-        if path.is_file() and path.suffix in ('.md', '.yaml', '.yml', '.txt'):
+    for dirpath, dirnames, filenames in os.walk(root):
+        if Path(dirpath) == root:
+            dirnames[:] = [d for d in dirnames if d not in _ID_SCAN_SKIP_DIRS]
+        for filename in filenames:
+            if os.path.splitext(filename)[1] not in ('.md', '.yaml', '.yml', '.txt'):
+                continue
             try:
-                text = path.read_text(encoding='utf-8', errors='ignore')
-                for m in ID_RE.finditer(text):
-                    found.add(m.group(0).lower())
+                with open(os.path.join(dirpath, filename), encoding='utf-8',
+                          errors='ignore') as fh:
+                    text = fh.read()
             except OSError:
-                pass
+                continue
+            for m in ID_RE.finditer(text):
+                found.add(m.group(0).lower())
     return found
 
 
@@ -9970,12 +10008,88 @@ def find_source_record_path(
     return None
 
 
+# Letters NFKD does not split into a base letter plus an accent, so the
+# combining-mark strip in `fold_accents` cannot reach them on its own. Lifted
+# out of xref.py (issue #279), where it folded town names first; the person
+# filename slug, lint's --fix-ids rename, the GEDCOM importer and gedcom's
+# surname match now share the same table, so a name folds the same way
+# wherever it is turned into ASCII. The second row (Icelandic, Turkish,
+# French, Maltese, Sami letters) extends xref's town fold the same way
+# (Þingvellir now matches Thingvellir), never contradicts it.
+ACCENT_FOLD = str.maketrans({
+    'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
+    'đ': 'd', 'Đ': 'D',
+    'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'TH', 'ı': 'i', 'œ': 'oe', 'Œ': 'OE',
+    'ħ': 'h', 'Ħ': 'H', 'ŧ': 't', 'Ŧ': 'T', 'ŋ': 'n', 'Ŋ': 'N',
+})
+
+
+def fold_accents(text: str) -> str:
+    """`text` with accented letters folded to their base letters.
+
+    "Wiśniewska" -> "Wisniewska", "Gołębiowska" -> "Golebiowska", "Müller"
+    -> "Muller", "Suwałki" -> "Suwalki". Case is kept; nothing else changes.
+
+    Why: every filename slug keeps only `[a-z0-9_]`, and before this fold an
+    accented letter fell outside that set and was simply deleted, so
+    "Wiśniewska" was filed as `winiewska` and "Józef Żółć" lost his surname
+    altogether (issue #279). NFKD splits most accented letters into a base
+    letter plus a combining mark, which is dropped; `ACCENT_FOLD` covers the
+    few letters NFKD leaves whole (ł, ø, æ, ß, đ, ð, þ, ı, œ, ħ, ŧ, ŋ). A letter outside both
+    (Cyrillic, Greek, CJK) passes through unchanged, and a caller's own
+    `[a-z0-9_]` filter decides what to do with it, exactly as before.
+
+    For machine handles only (filenames, comparison keys): a record's
+    `name:` always keeps the full spelling (SPEC §13 - "the filename is only
+    a sort handle").
+    """
+    folded = unicodedata.normalize('NFKD', str(text or '').translate(ACCENT_FOLD))
+    return ''.join(c for c in folded if not unicodedata.combining(c))
+
+
 # Generational suffixes SPEC §13's filename split must never mistake for a
 # surname (issue #53: "Roy Eugene Dodson Jr" filed as `jr__roy_eugene_dodson`,
 # sorting the son under a different letter than his father). Matched
 # case-insensitively with a trailing period tolerated ("Jr." and "Jr" are the
-# same token) - see `strip_generational_suffix`.
-PERSON_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v'})
+# same token) - see `strip_generational_suffix`. `esq` joined when the second
+# list `_surname_of` used to keep was folded in (issue #292).
+PERSON_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v', 'esq'})
+
+
+def _roman_numeral(n: int) -> str:
+    out = ''
+    for value, letters in ((10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')):
+        while n >= value:
+            out += letters
+            n -= value
+    return out
+
+
+# Regnal numbers beyond V (issue #292: "Henry VII" filed as `vii__henry`).
+# Unlike the list above they are read as a suffix only when typed in
+# capitals in a name that is not itself all capitals - see `is_name_suffix`
+# - because some real surnames are spelled like numerals: Xi (11), and a
+# record typed all in capitals ("JIN XI") says nothing by its case.
+REGNAL_NUMERALS: frozenset[str] = frozenset(_roman_numeral(n) for n in range(6, 31))
+
+
+def is_name_suffix(token: str, rest: list[str]) -> bool:
+    """Whether `token`, the last word of a name, is a suffix and not the
+    surname; `rest` is the words before it.
+
+    Jr, Sr, II-V and Esq always are (case-insensitive, a trailing period or
+    comma tolerated - "Henry VII,"). VI to XXX are when typed in capitals
+    ("Henry VII", "Louis XIV") and `rest` holds a lower-case letter, so
+    "Jin Xi" and "JIN XI" keep Xi as their surname. The rule cannot tell
+    "Louis XI" from "Jinping XI" (a surname written in capitals after the
+    given name): such a name needs `--surname XI`, the escape hatch for
+    anything this gets wrong.
+    """
+    bare = token.rstrip('.,')
+    if bare.lower() in PERSON_NAME_SUFFIXES:
+        return True
+    return (bare in REGNAL_NUMERALS
+            and any(c.islower() for word in rest for c in word))
 
 
 def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
@@ -9993,7 +10107,8 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
 
     Returns `(core_parts, suffix)`: `core_parts` is `parts` with the trailing
     suffix token removed and `suffix` is its lowercased, period-stripped form
-    ('jr', 'sr', 'ii', 'iii', 'iv', 'v') - or `(parts, None)` unchanged when
+    ('jr', 'sr', 'ii', 'iii', 'iv', 'v', 'esq', or a regnal number such as
+    'vii' - see `is_name_suffix`) - or `(parts, None)` unchanged when
     the last token is not a recognised suffix.
 
     Deliberately does nothing when `parts` has fewer than two tokens: a bare
@@ -10008,13 +10123,14 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     """
     if len(parts) < 2:
         return parts, None
-    candidate = parts[-1].rstrip('.').lower()
-    if candidate in PERSON_NAME_SUFFIXES:
-        return parts[:-1], candidate
+    if is_name_suffix(parts[-1], parts[:-1]):
+        return parts[:-1], parts[-1].rstrip('.,').lower()
     return parts, None
 
 
-def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
+def stub_slug_name(
+    name: str, surname: str | None = None,
+) -> tuple[str, str]:
     """Parse a display name into (surname_slug, given_slug) for a stub filename.
 
     Best effort, not a real name-parsing engine: the last word is taken as the
@@ -10064,21 +10180,43 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     suffix is set aside (so `--surname Dodson` on "Roy Eugene Dodson Jr"
     still finds "Dodson" at the end of what is left and the suffix still
     rides in the given slug, exactly as the automatic path would place it).
-    When the surname text is neither a prefix nor a suffix of `name` (an
+    An EMPTY or blank `surname` (`--surname ""`, issue #292) is the override
+    to "no surname": the sort slot is left empty and the whole name is the
+    given slug (`__henry_tudor`), SPEC §13's surname-less form. Only `None`
+    means "no override". When the surname text is neither a prefix nor a suffix of `name` (an
     unrelated override), the full name is kept as the given slug rather than
     silently dropping part of it - a redundant sort handle is honest; a
     guessed-wrong deletion is not.
+
+    Accented letters are folded to their base letters first (`fold_accents`,
+    issue #279), so "Halina Wiśniewska" files as `wisniewska__halina` rather
+    than losing the `ś` to the `[a-z0-9_]` filter and filing as `winiewska`.
+    `surname` folds the same way, so an override typed with its accents
+    still finds its own words inside the name.
     """
+    name = fold_accents(name)
+    if surname is not None:
+        surname = fold_accents(surname)
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
+    if surname is not None and not surname.strip():
+        # `--surname ""` is "this person has no surname" (issue #292): SPEC
+        # §13's empty sort slot, with the whole name, suffix and all, as the
+        # given slug (`__henry_tudor_P-….md`).
+        given = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in parts))
+        return ('', given or 'unknown')
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
         n = len(surname_tokens)
         core, suffix = strip_generational_suffix(parts)
         lowered_core = [p.lower() for p in core]
         surname_lowered = [t.lower() for t in surname_tokens]
-        if lowered_core[-n:] == surname_lowered:
+        if suffix and [p.lower().rstrip('.,') for p in parts[-n:]] == surname_lowered:
+            # The override names the word the suffix rule took: "Jinping XI"
+            # with --surname XI. The human has said it is the surname.
+            given_tokens, suffix = parts[:-n], None
+        elif lowered_core[-n:] == surname_lowered:
             given_tokens = core[:-n] if n else core
         elif lowered_core[:n] == surname_lowered:
             given_tokens = core[n:]
@@ -10111,7 +10249,9 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     return (surname_tok or 'unknown', given or 'unknown')
 
 
-def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str:
+def stub_filename(
+    name: str | None, pid: str, surname: str | None = None,
+) -> str:
     """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
 
     A blank or literal "unknown" name falls back to the surname-less
@@ -10131,6 +10271,417 @@ def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str
     return f'{surname_slug}__{given}_{pid}.md'
 
 
+# ── Is this name already taken? (issue #282) ─────────────────────────────────
+#
+# `fha stubs --from-names` and `fha person new` used to mint a second record
+# for a name the archive already had, without a word; the duplicate surfaced
+# only later as lint W112, after claims could already point at either id.
+# These helpers are the one check both minting paths (and the workbench's
+# mint button, which calls `person.run_new`) ask before they mint.
+
+# Frontmatter fields that name a person: the display name, `aliases:` and
+# the alternate names the index also registers as resolution aliases
+# (index.py's alias pass). `aliases:` also holds the P-id and filename stems
+# (`quillfeather__ada`): `_person_meta_names` drops both, because a stem's
+# key ("quillfeather ada") would otherwise match the surname-first name
+# "Quillfeather Ada", and a P-id is not a name at all.
+_PERSON_NAME_FIELDS = ('name', 'aliases', 'name_variants', 'also_known_as',
+                       'name_at_birth', 'married_name')
+
+
+def person_name_key(text: object) -> str:
+    """A comparison key under which two spellings of one name are equal.
+
+    Case, accents, punctuation and spacing are ignored: "Ada Quillfeather",
+    "ada  quillfeather" and "Ada Quillfeather." share a key, and so do
+    "Halina Wiśniewska" and "Halina Wisniewska" (the #279 fold). Word order
+    is kept, so "Quillfeather Ada" is a different key - a surname-first
+    spelling is a judgment call this check leaves to the human.
+    """
+    folded = fold_accents(str(text or '')).casefold()
+    return ' '.join(re.sub(r'[\W_]+', ' ', folded).split())
+
+
+def _person_meta_names(meta: dict) -> list[tuple[str, str]]:
+    """Every `(field, name)` a person record's frontmatter carries (see
+    `_PERSON_NAME_FIELDS`), with the `{value, restricted}` variant form
+    unwrapped the way index.py unwraps it. `aliases:` entries that are link
+    handles rather than names - a filename stem (it holds the `__` the SPEC
+    §13 grammar puts between surname and given names) or an ID - are left
+    out."""
+    names: list[tuple[str, str]] = []
+    for field in _PERSON_NAME_FIELDS:
+        raw = meta.get(field)
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        for item in items:
+            value = item.get('value') if isinstance(item, dict) else item
+            if not value:
+                continue
+            text = str(value)
+            if field == 'aliases' and ('__' in text or is_valid_id(text.strip())):
+                continue
+            names.append((field, text))
+    return names
+
+
+def _person_frontmatter(path: Path, wanted_keys) -> dict | None:
+    """The frontmatter mapping of one person file, read and parsed alone -
+    or {} when it cannot name anyone in `wanted_keys`.
+
+    Stops reading at the closing `---` and never parses the body or its
+    `## Claims` block: that full `read_record` parse is what made this check
+    cost several times `mint_ids` on a large archive, and the names live in
+    the frontmatter only. Even the frontmatter's YAML is parsed only when
+    its raw text, under `person_name_key`, holds one of the wanted keys as a
+    run of whole words - a name can only match if its words are in the
+    text, and on an 8,000-stub archive the YAML parse was most of the cost.
+    A frontmatter holding a backslash is always parsed: a YAML escape spells
+    a letter the raw text does not show.
+
+    Returns {} for a file with no frontmatter (a hand note under people/) or
+    no candidate words, and None when the file cannot be read (not UTF-8, or
+    a candidate's YAML will not parse) so the caller can say so. A broken
+    file whose text does not hold the name cannot be that person, so it is
+    not reported.
+    """
+    lines: list[str] = []
+    try:
+        with open(path, encoding='utf-8', newline='') as fh:
+            first = fh.readline()
+            if first.rstrip('\r\n') != '---':
+                return {}
+            for line in fh:
+                if line.rstrip('\r\n') == '---':
+                    break
+                lines.append(line)
+            else:
+                return {}
+    except (OSError, UnicodeDecodeError):
+        return None
+    raw = ''.join(lines)
+    # The prefilter reads the text as written, so it only rules a file out
+    # when it can see every letter: a YAML escape ("Wi\u015bniewska") spells
+    # a letter the raw text does not hold, and such a file is parsed anyway.
+    if '\\' not in raw:
+        padded = f' {person_name_key(raw)} '
+        if not any(f' {key} ' in padded for key in wanted_keys):
+            return {}
+    try:
+        meta = safe_load_yaml(raw)
+    except yaml.YAMLError:
+        return None
+    return meta if isinstance(meta, dict) else {}
+
+
+def find_people_by_name(
+    archive_root: str | Path, names: list[str], *, unreadable: list | None = None,
+) -> dict[str, list[dict]]:
+    """For each name, the person records that already carry it.
+
+    Returns `{name: [{'id': 'P-…' or None, 'path': 'people/…', 'name':
+    the record's name:, 'matched': the text that matched, 'field': where it
+    was}]}` for every input name with at least one match; a name nobody
+    carries is absent. Matching is by `person_name_key` (case-, accent- and
+    punctuation-insensitive) against `name:`, `aliases:` and the
+    alternate-name fields. Placeholder names ("unknown", blank) never match
+    anything: they are not names, and every unnamed stub shares them.
+
+    Every person file under `people/` is read from disk, every time. The
+    index cannot answer this on its own: a record minted since the last
+    `fha index` is only on disk (how three duplicates were minted in one
+    unindexed overnight run, issue #282), and the index keeps no per-person
+    "indexed at" time to tell a current row from a stale one. The database
+    file's own mtime is not that time: `fha index --source` (`upsert_source`)
+    moves it forward without re-reading any person, so a profile renamed
+    from Ada Smith to Ada Jones before that upsert looks older than the index
+    while its indexed row still says Ada Smith. Only the frontmatter is
+    read, and only a frontmatter whose text holds the name's words is parsed
+    (`_person_frontmatter`), so the cost stays close to the whole-tree text
+    scan `mint_ids` runs on the same call.
+
+    A file is identified the way `index._index_person` identifies it, so
+    the two never disagree about who is on file: the frontmatter `id:` when
+    it is a valid P-id, else the filename's P-id. A hand-named profile
+    (`people/stubs/Mary Smith.md`, valid `id:`, no `__` or P-id in the name -
+    SPEC §10's legal pre-rename state) therefore counts. So does a profile
+    with no id anywhere yet, as long as it has a `name:`: the index skips
+    it until `fha lint --fix-ids` mints one, but it is still that person,
+    and it is reported with `id: None`. Generated companions are left out by
+    content first (`person_file_kind`), merged tombstones by
+    `merged_into:`/`status: merged` - their name lives on in the record they
+    were merged into.
+
+    A file that cannot be read (not UTF-8, or frontmatter holding the
+    name's words that will not parse) is skipped rather than blocking the mint - this is a courtesy check in
+    front of a write that is always allowed with `--force` - but not in
+    silence: pass a list as `unreadable` and its archive-relative path is
+    appended, so the caller can say the check could not see everyone.
+    """
+    archive_root = Path(archive_root)
+    wanted: dict[str, list[str]] = {}
+    for name in names:
+        if is_placeholder_name(name):
+            continue
+        key = person_name_key(name)
+        if key:
+            wanted.setdefault(key, []).append(name)
+    if not wanted:
+        return {}
+
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return {}
+
+    found: dict[str, dict[str, dict]] = {}
+    unlisted: list[Path] = []
+    paths = sorted(walk_files(people_dir, suffix='.md',
+                              on_error=unreadable_dir_recorder(unlisted)))
+    if unreadable is not None:
+        # A folder that will not list hides everyone in it from this check:
+        # say so in the same warning as a file that will not read.
+        for folder in unlisted:
+            try:
+                shown = folder.relative_to(archive_root).as_posix()
+            except ValueError:
+                shown = folder.as_posix()
+            unreadable.append(f'{shown}/ (folder could not be listed)')
+    for path in paths:
+        if is_template_file(path):
+            continue
+        meta = _person_frontmatter(path, wanted)
+        if meta:
+            try:
+                rel = path.relative_to(archive_root).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+        if meta is None:
+            if unreadable is not None:
+                unreadable.append(path.relative_to(archive_root).as_posix()
+                                  if path.is_relative_to(archive_root) else path.as_posix())
+            continue
+        if not meta:
+            continue
+        parsed = parse_filename(path) or {}
+        pid = normalize_id(str(meta.get('id') or ''))
+        if not is_valid_id(pid) or id_type_of(pid) != 'P':
+            pid = parsed.get('id_str') if parsed.get('id_type') == 'P' else ''
+        if not pid and not meta.get('name'):
+            continue
+        if person_file_kind(path, meta) != 'profile':
+            continue
+        if meta.get('merged_into') or is_merged_meta(meta):
+            continue
+        display = fmt_id_display(pid) if pid else None
+        record_name = str(meta.get('name') or '')
+        for field, text in _person_meta_names(meta):
+            key = person_name_key(text)
+            if key in wanted:
+                found.setdefault(key, {}).setdefault(display or rel, {
+                    'id': display, 'path': rel, 'name': record_name,
+                    'matched': text, 'field': field})
+
+    return {
+        name: sorted(found[key].values(), key=lambda m: (m['id'] or '', m['path']))
+        for key, inputs in wanted.items() if key in found
+        for name in inputs
+    }
+
+
+def describe_person_match(match: dict) -> str:
+    """One record a duplicate-name refusal points at, in plain words:
+    `P-… (people/…)`, plus the record's own name and the alternate name it
+    matched when the match came from an alias (`P-… Edith Hartley (also
+    known as "Edith Bradford") (people/…)`), and "no ID yet" for a hand-made
+    record nobody has minted an id for."""
+    who = match['id'] or ''
+    if match.get('field') != 'name' and match.get('name'):
+        who = f"{who} {match['name']} (also known as \"{match['matched']}\")".strip()
+    where = match['path'] if match['id'] else f"{match['path']}, no ID yet"
+    return f'{who} ({where})' if who else f'({where})'
+
+
+def duplicate_person_name_message(name: str, matches: list[dict]) -> str:
+    """The one sentence both minting verbs refuse with when a name is taken.
+
+    Names the record(s) by P-id and path so the human can open them, says
+    the likely answer (it is the same person - use that record), and only
+    then the way through. Two people really can share a name (a father and
+    son), so `--force` exists; but it is worded as the human's decision,
+    never as a next step, because an agent reading this refusal would
+    otherwise just add the flag and mint the duplicate anyway.
+    """
+    listed = ', '.join(describe_person_match(m) for m in matches)
+    has = 'a record' if len(matches) == 1 else f'{len(matches)} records'
+    return (f'{name} already has {has}: {listed}. It is most likely the same '
+            'person - use that record. If you have confirmed this is a '
+            'different person who shares the name, run again with `--force`.')
+
+
+def duplicate_name_problems(
+    archive_root: str | Path, names: list[str], *, where: str = 'list',
+    unreadable: list | None = None,
+) -> tuple[list[tuple[int, str]], dict[str, list[dict]]]:
+    """Every name in a batch that is already taken, as `(index, sentence)`.
+
+    The one batch check `fha stubs --from-names` and `fha person new
+    --from-file` share (issue #282): one `find_people_by_name` walk over all
+    names (never one per name), then names repeated inside the batch - the
+    second spelling of "Ada Quillfeather" / "ada quillfeather" is flagged,
+    because the same name twice would mint two records. A name with no
+    comparison key (punctuation only) or a placeholder ("unknown") is never
+    a duplicate of anything: those are not names. `where` words the
+    in-batch sentence ("list", "file"). Also returns the existing matches.
+    """
+    existing = find_people_by_name(archive_root, names, unreadable=unreadable)
+    problems: list[tuple[int, str]] = []
+    first_seen: dict[str, str] = {}
+    for i, name in enumerate(names):
+        if name in existing:
+            problems.append((i, duplicate_person_name_message(name, existing[name])))
+            continue
+        key = person_name_key(name)
+        if not key or is_placeholder_name(name):
+            continue
+        if key in first_seen:
+            problems.append((i, (
+                f'{name} is in this {where} twice (also as {first_seen[key]!r}), so it '
+                'would be minted as two records. If you have confirmed these are two '
+                'different people who share the name, run again with `--force`.')))
+        else:
+            first_seen[key] = name
+    return problems, existing
+
+
+def unreadable_people_note(paths: list[str]) -> str:
+    """The one line both minting verbs print when the duplicate-name check
+    could not read some person files, so "no match" is not mistaken for "no
+    such person": names up to five files and the fix."""
+    shown = ', '.join(paths[:5]) + (f' and {len(paths) - 5} more' if len(paths) > 5 else '')
+    return (f'{len(paths)} person file(s) or folder(s) could not be read, so the '
+            f'check for a record with this name could not look inside them: {shown}. Run '
+            '`fha lint` to see what is wrong with each (usually a file saved in '
+            'another encoding, or a frontmatter line that will not parse).')
+
+
+def surname_frontmatter_line(value: str, cr: str = '') -> str:
+    """The `surname:` line recording a hand-set sort name (SPEC §13): the
+    surname, or `surname: ""` for "no surname" (`--surname ""`), with a
+    comment saying what it is for."""
+    value = str(value or '').strip()
+    if value:
+        return (f'surname: {yaml_inline(value)}   '
+                f'# set by hand: the file name sorts under this surname{cr}')
+    return f'surname: ""   # set by hand: no surname, the file name leads with __{cr}'
+
+
+def recorded_surname(meta: dict) -> str | None:
+    """The hand-set sort name a person record carries in `surname:`
+    (SPEC §13): the surname, '' for a recorded "no surname" (an empty or
+    blank value), or None when the record has no `surname:` line at all."""
+    if not isinstance(meta, dict) or 'surname' not in meta:
+        return None
+    return str(meta.get('surname') or '').strip()
+
+
+def person_surname(name: object, recorded: str | None = None) -> str | None:
+    """A person's surname, by the one rule every reader uses (SPEC §13).
+
+    `recorded` is the record's `surname:` line (`recorded_surname`): when
+    present it wins, and '' means the person has no surname. Otherwise the
+    surname is the last word of `name` once a trailing generational or
+    regnal suffix is set aside (`strip_generational_suffix`) - the same
+    split `stub_slug_name` files by - '' for a one-word name, and None when
+    there is no real name to read ("unknown", blank).
+
+    The file name is never read: it is only a sort handle, and an older
+    slugger's guess sits there ("winiewska", "vii") for records filed
+    before #279/#292.
+    """
+    if recorded is not None:
+        return recorded
+    if is_placeholder_name(name):
+        return None
+    core, _suffix = strip_generational_suffix(str(name).split())
+    return core[-1].rstrip(',') if len(core) >= 2 else ''
+
+
+def set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | None]:
+    """Set a person record's `surname:` frontmatter line (SPEC §13) in
+    `lines`: the surname, or `surname: ""` when `value` is empty ("no
+    surname"); inserted right after `name:` when absent. Shared by `fha
+    person rename --surname` and `fha lint --fix-surnames`. There is no
+    removal: the line is optional, and deleting it by hand returns the
+    record to the automatic split.
+
+    Returns the new lines, or the unchanged lines and a problem sentence
+    when the header cannot be edited safely (no fences, or more than one
+    `surname:` line)."""
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return lines, 'has no frontmatter fences to edit safely'
+    start, end = bounds
+    found = frontmatter_key_line_indexes(lines, start + 1, end, 'surname')
+    if len(found) > 1:
+        return lines, 'has more than one top-level surname: line'
+    out = list(lines)
+    cr = '\r' if lines[start].endswith('\r') else ''
+    line = surname_frontmatter_line(value, cr)
+    if found:
+        out[found[0]] = line
+        return out, None
+    names = frontmatter_key_line_indexes(lines, start + 1, end, 'name')
+    out.insert((names[0] + 1) if names else end, line)
+    return out, None
+
+
+def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] | None:
+    """When a person file's name sorts them under a surname the record no
+    longer reads, `(slot, suggestion)`; else None (lint W138).
+
+    Before the `surname:` line existed, `fha person new --surname` recorded
+    a hand-set sort name ONLY in the file name (`garcia_lopez__maria_jose_…`
+    for "Maria Jose Garcia Lopez"). Readers now take the surname from the
+    record (`person_surname`), so that record reads as "Lopez". `slot` is the
+    file name's surname part; `suggestion` is the words of `name:` it spells
+    ("Garcia Lopez"), '' when the file name says no surname (`__jon_thorsson`),
+    or None when the slot matches no run of the name's words (a surname the
+    human must supply by hand).
+
+    Not a mismatch, so None: a record with a `surname:` line, a merged
+    tombstone, no usable name,
+    a file name without `__`, a slot equal to what `stub_slug_name` files
+    the name under today, a slot an older slugger made of the same surname
+    by deleting its accented letters (`winiewska`), and a slot holding the
+    name's own suffix (`vii__henry` for "Henry VII", filed before regnal
+    numbers were suffixes) - none of those record a decision.
+    """
+    if recorded_surname(meta) is not None or '__' not in stem or is_merged_meta(meta):
+        return None
+    name = meta.get('name')
+    if is_placeholder_name(name):
+        return None
+    name = str(name)
+    slot = stem.split('__', 1)[0].lower()
+    if slot == stub_slug_name(name)[0]:
+        return None
+    parts = name.split()
+    core, suffix = strip_generational_suffix(parts)
+    derived = person_surname(name) or ''
+    if slot == re.sub(r'[^a-z0-9_]', '', derived.lower().replace(' ', '_')):
+        return None
+    if suffix and slot == re.sub(r'[^a-z0-9]', '', fold_accents(parts[-1]).lower()):
+        return None
+    if not slot:
+        return slot, ''
+    want = slot.split('_')
+    keys = [re.sub(r'[^a-z0-9]', '', fold_accents(p).lower()) for p in parts]
+    n = len(want)
+    for i in range(len(parts) - n + 1):
+        if keys[i:i + n] == want:
+            return slot, ' '.join(p.rstrip(',') for p in parts[i:i + n])
+    return slot, None
+
+
 def render_stub_content(
     pid: str,
     name: str | None,
@@ -10141,8 +10692,17 @@ def render_stub_content(
     death: str | None = None,
     birth_place: str | None = None,
     death_place: str | None = None,
+    surname: str | None = None,
 ) -> str:
     """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
+
+    `surname`, when given, is written as `surname:` right after `name:` -
+    the record that a human set the file name's surname slot by hand (`fha
+    person new --surname`, SPEC §13); an empty one is written `surname: ""`,
+    the decision "this person has no surname". Later tools read it where
+    the file name alone is ambiguous: "Jinping XI" filed as `xi__jinping`
+    on purpose and "Henry VII" filed as `vii__henry` by the old slugger look
+    alike, and only the first carries the line.
 
     Shared by `fha stubs` (unresolved-reference and `--from-names` minting) and
     `fha person new` (a human deliberately starting a stub with what they
@@ -10187,6 +10747,8 @@ def render_stub_content(
         f'aliases: [{pid}]',
         f'name: {yaml_inline(display_name)}',
     ]
+    if surname is not None:
+        lines.append(surname_frontmatter_line(surname))
     if sex is not None:
         lines.append(f'sex: {sex}')
     if gender is not None:

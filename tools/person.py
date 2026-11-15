@@ -248,6 +248,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import difflib
 import re
 import sqlite3
@@ -260,6 +261,7 @@ import yaml
 
 from _lib import (
     LIVING_VALUES as _LIB_LIVING_VALUES,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FRONT_RE,
@@ -273,6 +275,10 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     configure_utf8_stdout,
+    duplicate_name_problems,
+    duplicate_person_name_message,
+    find_people_by_name,
+    unreadable_people_note,
     couple_folder_dirs,
     couple_folder_for_prefix,
     couple_folder_prefix,
@@ -296,6 +302,7 @@ from _lib import (
     living_edit_problem,
     load_fha_yaml,
     mint_ids,
+    person_name_key,
     normalize_date,
     normalize_id,
     normalize_living,
@@ -317,6 +324,8 @@ from _lib import (
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
+    recorded_surname,
+    set_surname_line,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -922,7 +931,7 @@ def run_new(
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
     person_id: str | None = None,
     birth_place: str | None = None, death_place: str | None = None,
-    surname: str | None = None,
+    surname: str | None = None, force: bool = False,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
@@ -984,8 +993,24 @@ def run_new(
     fix for a suffix the built-in Jr/Sr/II/III/IV/V list gets wrong (issue
     #53). `name:` is written exactly as given either way; only the filename's
     surname slug changes.
+
+    A name the archive already carries is refused with status
+    'duplicate-name' (exit 3, nothing minted) unless `force` is set (issue
+    #282): `_lib.find_people_by_name` reads the person files on disk (not
+    the index), so a stub minted since the last `fha index` still counts, and the
+    refusal names each existing record (`data['duplicates']`, a list of
+    {'id', 'path', 'name'}) so the workbench can offer "create a separate
+    record anyway" instead of failing opaquely. Two people really can share
+    a name (a father and son), which is why this is a question with an
+    answer (`--force`) rather than a ban. The check runs whether or not
+    `person_id` is given: the workbench's claim-reference mint passes the
+    P-id its claims already name, and if a record of that name already
+    exists, the claims most likely mean that person - the human should see
+    that before a second record is filed beside the first. Dry runs refuse
+    identically, so the preview never promises a write the apply refuses.
     """
-    result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None})
+    result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None,
+                          'duplicates': []})
 
     clean_name = str(name or '').strip()
     if not clean_name:
@@ -1039,7 +1064,20 @@ def run_new(
                 f'{existing} - nothing to mint. If this came from a preview, '
                 'something else created the record since; review it with '
                 f'`fha find {fmt_id_display(pid)}`.')
-    else:
+    # After the id checks (a stale preview's "record already exists" is the
+    # more specific answer) and before `mint_ids`, so a refused name never
+    # draws an id.
+    unreadable: list[str] = []
+    if not force:
+        duplicates = find_people_by_name(
+            archive_root, [clean_name], unreadable=unreadable).get(clean_name, [])
+        if duplicates:
+            result.data['duplicates'] = duplicates
+            return _refuse_result(
+                result, 'duplicate-name',
+                duplicate_person_name_message(clean_name, duplicates)
+                + ' Nothing was minted.')
+    if not person_id:
         pid = mint_ids('P', 1, archive_root)[0].lower()
     filename = stub_filename(clean_name, pid, surname=surname)
     path = stubs_dir / filename
@@ -1060,7 +1098,10 @@ def run_new(
         # A place with no date still records (family knowledge is often
         # "born in Kansas, no idea when") - places are free text, unvalidated.
         birth_place=(str(birth_place).strip() or None) if birth_place else None,
-        death_place=(str(death_place).strip() or None) if death_place else None)
+        death_place=(str(death_place).strip() or None) if death_place else None,
+        # Recorded so later tools can tell this hand-set slot from a slug the
+        # old slugger left (SPEC §13; `gedcom._gedcom_name`).
+        surname=surname)
     # #75/#76: every record - stub or curated - gets the full SPEC §16 body
     # from the moment it is minted: the purpose block, the (not-yet-
     # generated) ## Sources placeholder, and the four hand-written sections.
@@ -1073,6 +1114,8 @@ def run_new(
     content += '\n' + render_person_body_scaffold(clean_name)
 
     def _add_new_messages() -> None:
+        if unreadable:
+            result.add('warning', unreadable_people_note(unreadable))
         for field, note in gloss.items():
             result.add('info', f'recorded {field} as {fields[field]} - {note}.')
         if fields:
@@ -1127,6 +1170,203 @@ def run_new(
                f'Created {fmt_id_display(pid)} ({clean_name}) - people/stubs/{filename}.',
                path=path)
     _add_new_messages()
+    return result
+
+
+# The `--from-file` columns, in order. A first row whose first cell is
+# literally "name" is a header and is skipped.
+_FROM_FILE_COLUMNS = ('name', 'sex', 'surname')
+
+
+def _first_unbalanced_quote_line(path: Path) -> int | None:
+    """The 1-based line of the first cell that opens a quote and does not
+    close it on the same line, or None - only to name the line in the
+    refusal `_read_people_file` gives for a csv.Error."""
+    try:
+        text = path.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeDecodeError):
+        return None
+    for number, line in enumerate(text.splitlines(), start=1):
+        for cell in line.split('\t'):
+            cell = cell.strip()
+            if cell.startswith('"') and (cell.count('"') % 2 == 1 or cell == '"'):
+                return number
+    return None
+
+
+def _read_people_file(path: Path) -> tuple[list[dict], list[str]]:
+    """Parse a `--from-file` list into rows, or the plain reasons it cannot be.
+
+    One person per line, tab-separated: name, then sex (optional: M, F,
+    intersex, unknown, case-insensitive for M/F), then a surname override
+    (optional; `-` means "no surname", the same as `--surname ""`). Blank
+    lines and lines starting with `#` are skipped, so a list can carry notes.
+    Every row is checked before any is accepted, so the human sees every bad
+    row at once rather than fixing them one run at a time.
+    """
+    rows: list[dict] = []
+    problems: list[str] = []
+    fix = 'one person per line: name, sex, surname, separated by tabs'
+    if not path.is_file():
+        return [], [f'there is no file at {path} - check the path ({fix}).']
+    try:
+        with open(path, encoding='utf-8-sig', newline='') as fh:
+            # csv, not split('\t'): a spreadsheet saving as TSV quotes a cell
+            # holding a quote ("Mary ""Polly"" Smith"), and csv unwraps it.
+            # strict: an unterminated quote is an error, not a cell that
+            # swallows the following rows (which would merge people).
+            lines = list(csv.reader(fh, delimiter='\t', strict=True))
+    except UnicodeDecodeError:
+        return [], [f'{path} is not saved as UTF-8 text. Save it again choosing '
+                    f'UTF-8 (in Excel: Save As, UTF-8), {fix}.']
+    except csv.Error:
+        # csv names the line it stopped on through the reader, not the
+        # error; re-read plainly to find the first unbalanced quote.
+        bad = _first_unbalanced_quote_line(path)
+        where = f'line {bad}' if bad else 'one line'
+        return [], [f'{path}: {where} opens a quote (") that never closes, so the '
+                    'rows after it would run together. Remove the stray quote, or '
+                    'close it, and run the same command again.']
+    except OSError as e:
+        return [], [f'{path} could not be read ({e.__class__.__name__}) - check the '
+                    f'file is not open in another program and is plain text, {fix}.']
+    for number, raw in enumerate(lines, start=1):
+        if not raw or not ''.join(raw).strip() or raw[0].lstrip().startswith('#'):
+            continue
+        if any('\n' in c or '\r' in c for c in raw):
+            # A quote closed on a later line: csv accepts it as one cell
+            # holding a line break, which would silently merge rows.
+            problems.append(f'row {number} has a quote (") that runs onto the next line, '
+                            'so the rows after it would run together. Remove the stray '
+                            'quote and run the same command again.')
+            continue
+        cells = [c.strip() for c in raw]
+        if not rows and not problems and cells[0].lower() == 'name':
+            continue   # header row
+        while len(cells) > 1 and cells[-1] == '':
+            cells.pop()
+        if len(cells) > len(_FROM_FILE_COLUMNS):
+            problems.append(
+                f'row {number} has {len(cells)} columns; a row is at most name, sex, '
+                'surname, separated by tabs (e.g. "Ann Smith<TAB>F<TAB>Smith").')
+            continue
+        cells += [''] * (len(_FROM_FILE_COLUMNS) - len(cells))
+        name, sex, surname = cells
+        if not name:
+            problems.append(f'row {number} has no name - the first column is the '
+                            'person\'s full name, e.g. "Ann Smith".')
+            continue
+        sex_clean = _normalize_sex_input(sex) if sex else None
+        if sex_clean is not None and sex_clean not in PERSON_SEX_VALUES:
+            problems.append(f'row {number} ({name}): {format_person_sex_error(sex)}')
+            continue
+        rows.append({'row': number, 'name': name, 'sex': sex_clean,
+                     'surname': '' if surname == '-' else (surname or None)})
+    if not rows and not problems:
+        problems.append(f'{path} lists nobody - put one person per line: name, sex, '
+                        'surname, separated by tabs.')
+    return rows, problems
+
+
+def run_new_from_file(
+    archive_root: Path, file_path: str | Path, *, force: bool = False,
+    dry_run: bool = False,
+) -> Result:
+    """Mint one stub per row of a tab-separated list; return a Result.
+
+    The batch form of `run_new` (issue #291): `fha stubs --from-names` mints
+    a list in one go but carries no sex, and `fha person new` one at a time
+    paid the archive-wide ID scan per person. Here every row is validated
+    first (`_read_people_file`) and a bad row refuses the WHOLE file with
+    nothing minted; then the #282 duplicate check runs ONCE over all names
+    (one walk of people/, not one per row), with names repeated inside the
+    file caught too; then `mint_ids` draws every ID in one call - one scan.
+
+    Writes are all-or-nothing: if one stub cannot be written, the ones
+    already written in this run are removed again, so a failed run leaves
+    the archive as it was. `--dry-run` previews each file. `data` is
+    {'status': 'ok'|'dry-run'|'refused'|'duplicate-name', 'people':
+    [{'person_id', 'name', 'path'}], 'duplicates': {name: [...]}}.
+    """
+    result = Result(data={'status': None, 'people': [], 'duplicates': {}})
+    path = Path(file_path)
+    rows, problems = _read_people_file(path)
+    if problems:
+        return _refuse_result(
+            result, 'refused',
+            f'Nothing was minted - {path.name} has {len(problems)} problem(s):\n  '
+            + '\n  '.join(problems)
+            + '\nFix those rows and run the same command again.')
+
+    unreadable: list[str] = []
+    if not force:
+        problems_at, existing = duplicate_name_problems(
+            archive_root, [r['name'] for r in rows], where='file', unreadable=unreadable)
+        result.data['duplicates'] = dict(existing)
+        lines = [f"row {rows[i]['row']}: {text}" for i, text in problems_at]
+        if lines:
+            return _refuse_result(result, 'duplicate-name',
+                                  'Nothing was minted:\n  ' + '\n  '.join(lines))
+
+    ids = [i.lower() for i in mint_ids('P', len(rows), archive_root)]
+    stubs_dir = archive_root / 'people' / 'stubs'
+    planned = []
+    for r, pid in zip(rows, ids):
+        target = stubs_dir / stub_filename(r['name'], pid, surname=r['surname'])
+        content = (render_stub_content(pid, r['name'], sex=r['sex'], surname=r['surname'])
+                   + '\n' + render_person_body_scaffold(r['name']))
+        planned.append((r, pid, target, content))
+        result.data['people'].append(
+            {'person_id': fmt_id_display(pid), 'name': r['name'],
+             'path': target.relative_to(archive_root).as_posix()})
+    if unreadable:
+        result.add('warning', unreadable_people_note(unreadable))
+
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        for r, pid, target, _content in planned:
+            result.add('info', f"[dry-run] Would create {fmt_id_display(pid)} ({r['name']}"
+                       + (f", sex {r['sex']}" if r['sex'] else '')
+                       + f') - people/stubs/{target.name}.')
+        result.add('info', f'[dry-run] No file written. Re-run without --dry-run to '
+                           f'create these {len(planned)} record(s).')
+        return result
+
+    written: list[Path] = []
+    try:
+        stubs_dir.mkdir(parents=True, exist_ok=True)
+        for _r, _pid, target, content in planned:
+            if target.exists():
+                raise OSError(f'{target.name} already exists')
+            write_text_exact_atomic(target, content)
+            written.append(target)
+    except OSError as e:
+        left: list[str] = []
+        for done in written:
+            try:
+                done.unlink()
+            except OSError:
+                left.append(done.relative_to(archive_root).as_posix())
+        result.data['people'] = []
+        if left:
+            kept = (f'{len(written) - len(left)} of the {len(written)} written before the '
+                    f'failure were removed, but {len(left)} could not be removed and are '
+                    f'still on disk: {", ".join(left)}. Delete those by hand before '
+                    'running the same command again, or they will be minted twice.')
+        else:
+            kept = (f'Nothing was kept - the {len(written)} written before the failure '
+                    'were removed. Check that people/stubs/ is writable, then run the '
+                    'same command again.')
+        return _refuse_result(result, 'refused', f'cannot write the new records ({e}). {kept}')
+
+    result.data['status'] = 'ok'
+    for (r, pid, target, _content) in planned:
+        result.note_changed(target)
+        result.add('info', f"Created {fmt_id_display(pid)} ({r['name']}) - "
+                           f'people/stubs/{target.name}.', path=target)
+    result.add('info', f'Next: `fha index`, then `fha person relate <P-id> '
+                       '--parent|--child|--sibling|--spouse <P-id2>` to tie them to family.',
+               next_step='fha index')
     return result
 
 
@@ -1908,6 +2148,14 @@ def run_rename(
     and regenerate identically from `fha views …` whether or not the rest of
     the rename lands, so there is nothing to lose by deleting them early.
 
+    The same name is 'already' (nothing to do) unless an explicit
+    `--surname` changes the recorded `surname:` line or the file name that
+    override gives: then the line is written and the files re-filed (steps
+    2-4), with `name:` untouched. Nothing else re-files a same-name record:
+    readers take the surname from `surname:`/`name:`, never the file name
+    (SPEC §13), so an older file name (`winiewska__halina_…`) is only a
+    sort handle and costs nothing until the human chooses to rename it.
+
     `data` is {'status': 'ok'|'ok-folder-unrenamed'|'already'|'dry-run'|
     'not-found'|'merged'|'refused', 'person_id', 'path', 'new_path',
     'old_name', 'new_name', 'folder', 'new_folder', 'deleted_companions'}.
@@ -1937,7 +2185,32 @@ def run_rename(
     result.data['old_name'] = old_name
     label = f'{old_name} ({fmt_id_display(pid)})' if old_name else fmt_id_display(pid)
 
-    if old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new):
+    # The same name normally means nothing to do - except for a record whose
+    # FILE name lost letters to the old slugger (`winiewska__halina_P-…` for
+    # "Halina Wiśniewska", issue #279): re-running rename with the same name
+    # is the repair path, so it carries on and only the file is renamed.
+    #
+    # A `surname:` line records that a human set the file name's surname slot
+    # by hand (`--surname`, SPEC §13). Without a new --surname it stays the
+    # override for the file name; a new --surname replaces it, and is itself
+    # a change worth writing.
+    recorded = recorded_surname(before_meta)
+    same_name = bool(old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new))
+    if surname is None and recorded is not None:
+        # Kept whatever the new name: it is the human's sort name until a
+        # --surname replaces it (a married name in `name:` still files
+        # under the birth surname the line records).
+        effective_surname: str | None = recorded
+    else:
+        effective_surname = surname
+    surname_changes = surname is not None and surname.strip() != recorded
+    # An explicit --surname is a request about the FILE name, so a same-name
+    # rename is not a no-op while the name it gives differs from the one on
+    # disk (`Henry Tudor` with --surname "" -> `__henry_tudor_P-…`).
+    explicit_refile = surname is not None and (
+        stub_filename(clean_new, pid, surname=surname).lower() != path.name.lower())
+    refile_only = same_name and (surname_changes or explicit_refile)
+    if same_name and not refile_only:
         result.data['status'] = 'already'
         result.add('info', f'{label} is already named {clean_new!r} - nothing to change.')
         return result
@@ -1966,11 +2239,20 @@ def run_rename(
 
     changed_keys = {'name'}
     variant_note = None
-    if keep_variant and old_name:
+    if keep_variant and old_name and not refile_only:
         new_lines, variant_added, variant_note = _append_name_variant(
             new_lines, start, end, old_name)
         if variant_added:
             changed_keys.add('name_variants')
+
+    if surname is not None:
+        new_lines, surname_problem = set_surname_line(new_lines, surname.strip())
+        if surname_problem:
+            return _refuse_result(
+                result, 'refused',
+                f'{path.name} {surname_problem}. Open {path} and fix it by hand, then '
+                'run `fha lint`. Nothing was written.')
+        changed_keys.add('surname')
 
     new_text = '\n'.join(new_lines)
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
@@ -1982,7 +2264,7 @@ def run_rename(
             '`fha lint` to check it.')
 
     # ── 2/3. Compute the new profile + research filenames, pre-flight collisions ──
-    new_filename = stub_filename(clean_new, pid, surname=surname)
+    new_filename = stub_filename(clean_new, pid, surname=effective_surname)
     new_path = path.with_name(new_filename)
     renaming_file = new_path != path
     if renaming_file and new_path.exists():
@@ -2042,7 +2324,12 @@ def run_rename(
         new_folder = None
 
     # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
-    steps = [f'set name: {old_name or "(none)"} -> {clean_new}']
+    # A re-file (a new --surname on the same name) leaves name: as it is.
+    steps = ([f're-file under its corrected file name (name: stays {clean_new})']
+             if refile_only else [f'set name: {old_name or "(none)"} -> {clean_new}'])
+    if surname is not None:
+        steps.append(f'record surname: {surname.strip()}' if surname.strip()
+                     else 'record no surname (surname: "")')
     if keep_variant:
         if 'name_variants' in changed_keys:
             steps.append(f'add {old_name!r} to name_variants:')
@@ -2142,7 +2429,10 @@ def run_rename(
                        'delete it by hand.')
 
     result.data['status'] = 'ok'
-    changed_bits = [f'name -> {clean_new}']
+    changed_bits = ([f're-filed under its corrected file name (name: unchanged, {clean_new})']
+                    if refile_only else [f'name -> {clean_new}'])
+    if surname is not None:
+        changed_bits.append(f'surname: {surname.strip()}' if surname.strip() else 'no surname')
     if renaming_file:
         changed_bits.append(f'file -> {new_filename}')
     if renaming_research:
@@ -3292,12 +3582,31 @@ def _cmd_new(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person new')
     if archive_root is None:
         return EXIT_FAILURE
+    from_file = getattr(args, 'from_file', None)
+    if from_file:
+        per_person = [f'--{f.replace("_", "-")}' for f in
+                      ('sex', 'gender', 'birth', 'death', 'birth_place', 'death_place', 'surname')
+                      if getattr(args, f, None) is not None]
+        if args.name or per_person:
+            print('ERROR: --from-file takes everyone from the file - give either a '
+                  'NAME or --from-file, not both, and put sex and surname in the '
+                  "file's columns (name, sex, surname, separated by tabs) instead of "
+                  f'{" ".join(per_person) or "a NAME"}.', file=sys.stderr)
+            return EXIT_ERRORS
+        return _emit(run_new_from_file(
+            archive_root, from_file, force=bool(getattr(args, 'force', False)),
+            dry_run=bool(getattr(args, 'dry_run', False))))
+    if not args.name:
+        print('ERROR: a name is required - e.g. `fha person new "Jane Doe"`, or '
+              '`fha person new --from-file people.tsv` for a list.', file=sys.stderr)
+        return EXIT_ERRORS
     return _emit(run_new(
         archive_root, name=args.name, sex=args.sex, gender=args.gender,
         birth=args.birth, death=args.death,
         birth_place=getattr(args, 'birth_place', None),
         death_place=getattr(args, 'death_place', None),
         surname=getattr(args, 'surname', None),
+        force=bool(getattr(args, 'force', False)),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -3458,12 +3767,26 @@ landed. --sex accepts M, F, intersex, or unknown (case-insensitive for M/F).
 --birth/--death record PROVISIONAL, unsourced estimates: the archive's exact
 date form (1870, 1870-06) or plain words ("circa 1870", "before 1940") -
 loose wording is translated for you. A generational suffix (Jr, Sr, II, III,
-IV, V) in the name is recognised automatically and never taken as the
+IV, V, Esq) in the name is recognised automatically and never taken as the
 surname. --surname overrides the filename's surname split outright, for
 names no automatic split can be expected to get right (Spanish double
-surnames, particles like "van der", surname-first conventions) - name: is
-written exactly as given either way. Use `fha person relate` next to tie
-the new person to family, and `fha find` to confirm the record."""
+surnames, particles like "van der", surname-first conventions), and
+--surname "" files the person with no surname at all (__henry_tudor_...).
+A regnal number VI-XXX in capitals ("Henry VII", "Louis XIV") is read as a
+suffix too, not a surname, unless the whole name is in capitals. A surname
+that is written in capitals and looks like one ("Jinping XI", "Thi VI")
+needs --surname XI to be filed under it. name: is written exactly as given either way. A name that already has a record
+(same spelling, ignoring case and accents) is refused so the same person is
+never filed twice; add --force when it really is someone else who shares
+the name. Use `fha person relate` next to tie the new person to family, and
+`fha find` to confirm the record.
+
+  fha person new --from-file people.tsv
+
+mints a whole list at once: one person per line, tab-separated columns name,
+sex (optional) and surname override (optional; - for no surname), a header
+row "name sex surname" allowed. Every row is checked first - one bad row and
+nothing is minted - and the duplicate-name check covers the whole list."""
 
 _SET_LIVING_DESCRIPTION = """\
 Mark one person as living, passed away, or unknown - the privacy switch.
@@ -3484,13 +3807,19 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
         description=_NEW_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    nw.add_argument('name', metavar='NAME',
-                    help='The person\'s full name, e.g. "Jane Doe".')
+    nw.add_argument('name', metavar='NAME', nargs='?',
+                    help='The person\'s full name, e.g. "Jane Doe". Omit with --from-file.')
+    nw.add_argument('--from-file', metavar='PATH', dest='from_file',
+                    help='Mint everyone in a tab-separated list instead: one person per '
+                         'line, columns name, sex (optional), surname override (optional; '
+                         '- for no surname). A bad row refuses the whole file.')
     nw.add_argument('--surname', metavar='TEXT',
                     help='Override the filename\'s surname split - for names no '
                          'automatic split can be expected to get right (Spanish '
                          'double surnames, particles like "van der", surname-first '
-                         'conventions). name: is written exactly as given either way.')
+                         'conventions). --surname "" means no surname at all (the file '
+                         'name leads with __, e.g. __henry_tudor_P-....md). name: is '
+                         'written exactly as given either way.')
     # No choices= here (unlike set-living's `value`): an unrecognised sex
     # should refuse with run_new's plain, gender-glossed message
     # (_lib.format_person_sex_error), not argparse's bare "invalid choice" text.
@@ -3506,6 +3835,9 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                     help='A provisional, unsourced death date or estimate.')
     nw.add_argument('--death-place', metavar='PLACE', dest='death_place',
                     help='A provisional, unsourced death place (free text).')
+    nw.add_argument('--force', action='store_true',
+                    help='Mint even when this name already has a record - for two '
+                         'different people who share a name (a father and son).')
     nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     nw.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -3660,7 +3992,8 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
     rn.add_argument('--surname', metavar='TEXT',
                     help='Override the renamed filename\'s surname split - for names no '
                          'automatic split can be expected to get right (Spanish double '
-                         'surnames, particles like "van der", surname-first conventions).')
+                         'surnames, particles like "van der", surname-first conventions). '
+                         '--surname "" means no surname at all.')
     rn.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     rn.add_argument('--dry-run', action='store_true', dest='dry_run',

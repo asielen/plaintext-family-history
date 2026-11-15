@@ -1311,7 +1311,7 @@ def _verb_person_new(state, kw, dry_run):
         state.archive_root, kw.get('name', ''), sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'), dry_run=dry_run,
         birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
-        surname=kw.get('surname'),
+        surname=kw.get('surname'), force=bool(kw.get('force', False)),
         # Threaded back in by the workbench's Apply step from the id its own
         # earlier dry-run preview minted and showed the human, so Apply
         # commits exactly that person instead of `run_new` minting a second,
@@ -1324,10 +1324,16 @@ def _verb_person_new(state, kw, dry_run):
 
 def _echo_person_new(kw):
     parts = ['fha person new', _q(kw.get('name', ''))]
-    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place', 'surname'):
+    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place'):
         key = flag.replace('-', '_')
         if kw.get(key):
             parts += [f'--{flag}', _q(kw[key])]
+    # An empty surname is a real value ("no surname", issue #292), so the
+    # echo keeps it: `--surname ""` is the command the button ran.
+    if kw.get('surname') is not None:
+        parts += ['--surname', _q(kw['surname'])]
+    if kw.get('force'):
+        parts.append('--force')
     return ' '.join(parts)
 
 
@@ -1354,7 +1360,7 @@ def _verb_add_family(state, kw, dry_run):
         state.archive_root, name, sex=kw.get('sex'), gender=kw.get('gender'),
         birth=kw.get('birth'), death=kw.get('death'),
         birth_place=kw.get('birth_place'), death_place=kw.get('death_place'),
-        surname=kw.get('surname'),
+        surname=kw.get('surname'), force=bool(kw.get('force', False)),
         dry_run=dry_run, person_id=kw.get('new_person_id'))
     if not minted.ok or not minted.data.get('person_id'):
         return minted
@@ -1906,7 +1912,7 @@ VERBS: dict[str, dict] = {
     'person.new': {'schema': {'name': 'str', 'sex': 'str', 'gender': 'str',
                              'birth': 'str', 'death': 'str', 'person_id': 'str',
                              'birth_place': 'str', 'death_place': 'str',
-                             'surname': 'str'},
+                             'surname': 'str', 'force': 'bool'},
                    'run': _verb_person_new, 'echo': _echo_person_new, 'reindex': 'full'},
     'person.relate': {'schema': {'person_id': 'str', 'relation_type': 'str', 'target_id': 'str',
                                 'subtype': 'str', 'reciprocal': 'bool'},
@@ -1918,7 +1924,8 @@ VERBS: dict[str, dict] = {
                                     'target_id': 'str', 'name': 'str', 'sex': 'str',
                                     'gender': 'str', 'birth': 'str', 'birth_place': 'str',
                                     'death': 'str', 'death_place': 'str',
-                                    'new_person_id': 'str', 'surname': 'str'},
+                                    'new_person_id': 'str', 'surname': 'str',
+                                    'force': 'bool'},
                           'run': _verb_add_family, 'echo': _echo_add_family, 'reindex': 'full'},
     'person.estimate': {'schema': {'person_id': 'str', 'birth': 'str', 'death': 'str',
                                   'birth_place': 'str', 'death_place': 'str'},
