@@ -214,23 +214,40 @@ prevents lost work - is [UPDATING.md](UPDATING.md).
 
 ---
 
-## I reorganized my documents folder and now the checker complains
+## I reorganized my documents or photos folder and now the checker complains
 
-**What happened.** You moved filed documents into new folders (which is fine - the drawer is
-yours to arrange), but each evidence folder remembers where its files were, so `fha lint` now
-reports files it can't find ("Inventory file not found on disk").
+**What happened.** You moved filed documents or photos into new folders (which is fine - the
+drawers are yours to arrange), but each evidence folder remembers where its files were, so
+`fha lint` now reports files it can't find ("Inventory file not found on disk").
 
-**Fix.** One command re-ties everything - each filed document carries its ID tag in its name,
-so the system finds it wherever you put it:
+**Fix.** One command re-ties them:
 
 ```
-fha reconcile --dry-run   # preview what will be re-tied
-fha reconcile             # apply, then run fha index
+fha reconcile --dry-run --with-exif   # preview what will be re-tied
+fha reconcile --with-exif             # apply, then run fha index and fha photoindex
 ```
 
-If it reports a name existing "in more than one place," you have two copies of the same file -
-move or rename the extra one and re-run. If it reports a file "gone," it left the documents
-folder entirely - bring it back, or note in the record that it's lost.
+A filed document carries its ID tag in its name, so it is found wherever you put it. A
+photo is never renamed, so it is found by the source ID the system wrote inside it when
+you processed it, plus its file name. `--with-exif` lets reconcile read that ID out of
+photos the photo catalog has not seen yet; it needs exiftool (`fha doctor` checks). If
+you ran `fha photoindex` after moving the photos, plain `fha reconcile` is enough. The
+checker's message tells you which one applies to your archive.
+
+What the other messages mean:
+
+- **"in more than one place"** (documents) or **"more than one photo named ... carries"**
+  (photos) - you have two copies. Tell the record which one it means by editing the named
+  `file:` line, or move the extra copy out of the folder, and re-run.
+- **"nothing named ... is left, but ... carries"** (photos) - the photo seems to have been
+  renamed as well as moved (some photo programs do that, and they also copy the ID onto
+  edited copies and exports, so the system will not guess). If one of the files it names is
+  your photo, edit the `file:` line it names to point at it.
+- **"is gone"** - it left the folder entirely. Bring it back, or note in the record that
+  it's lost.
+- **"is on disk but does not carry"** (photos) - a different picture now sits at the old
+  path while the record's photo is elsewhere. The message names both; fix the `file:` line
+  if the record's photo moved.
 
 ---
 

@@ -226,6 +226,7 @@ from _lib import (
     parse_media_filename,
     ASSET_ROOT_ALIASES,
     path_to_alias,
+    photo_reconcile_route,
     picture_data_hash,
     read_embedded_keywords,
     read_record,
@@ -4840,15 +4841,25 @@ def process_refile(
             'moved.')
 
     if not src.is_file():
-        # A moved photo is found by the SOURCE: keyword inside it (#289);
-        # --with-exif reads it when the photo catalog has not seen the move.
-        heal = ('`fha reconcile --with-exif`' if alias_root == _PHOTO_DIR
-                else '`fha reconcile`')
+        # A moved photo is found by the SOURCE: keyword inside it (#289),
+        # routed as lint's E011 is: the reconcile command that can work here,
+        # or the hand edit when neither a current catalog nor exiftool exists.
+        if alias_root != _PHOTO_DIR:
+            fix = ('run `fha reconcile` first so the record points at its real '
+                   'location, then re-run')
+        else:
+            route = photo_reconcile_route(archive_root, fha_config)
+            if route == 'none':
+                fix = (f'edit the `file: {stored_alias}` line in {record_path.name} '
+                       "to the photo's new path under photos/ (exiftool is not "
+                       'installed, so reconcile cannot find it), then re-run')
+            else:
+                flag = '' if route == 'catalog' else ' --with-exif'
+                fix = (f'run `fha reconcile{flag}` first so the record points at '
+                       'its real location, then re-run')
         raise ProcessError(
             f'{stored_alias} is not on disk. If the {alias_root} folder lives on '
-            f'an external drive, plug it in; if the file was moved, run '
-            f'{heal} first so the record points at its real location, '
-            'then re-run.')
+            f'an external drive, plug it in; if the file was moved, {fix}.')
 
     # P1 (audit finding, same source as above): confirm the file this would
     # move actually IS the requested source's own asset before touching it.

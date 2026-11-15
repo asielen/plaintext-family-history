@@ -106,6 +106,7 @@ from _lib import (
     parse_media_filename,
     path_to_alias,
     PHOTOINDEX_SCHEMA_VERSION,
+    photo_reconcile_route,
     photoindex_status,
     pip_command,
     probe_sqlite,
@@ -831,6 +832,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         for _item in _files:
             if isinstance(_item, dict) and str(_item.get('file') or '').startswith('photos/'):
                 listed_anywhere.add(str(_item['file']))
+    route = None   # photo_reconcile_route, worked out on first need (it walks photos/)
     for record_path, rec in records:
         if rec.get('undecodable') or rec.get('parse_errors'):
             continue                # unreadable/malformed - not this check's job
@@ -921,12 +923,25 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 names = ', '.join(candidate_aliases)
                 what = (f'{names} sits' if len(candidate_aliases) == 1 else
                         f'{len(candidate_aliases)} unlisted back-shaped files ({names}) sit')
+                # Routed the way lint's E011 is (_lib.photo_reconcile_route):
+                # name the reconcile command that can work here, or the hand
+                # edit when neither a current catalog nor exiftool exists.
+                if route is None:
+                    route = photo_reconcile_route(archive_root, fha_config)
+                if route == 'none':
+                    fix = (f'edit the `file: {primary_alias}` line in {record_path.name} '
+                           "to the photo's new path under photos/ (exiftool is not "
+                           'installed and the photo catalog is not current, so reconcile '
+                           'cannot find it)')
+                else:
+                    flag = '' if route == 'catalog' else ' --with-exif'
+                    fix = (f'run `{_LAUNCHER} reconcile{flag} --root "{archive_root}"` '
+                           '(preview with --dry-run) to re-tie it')
                 findings.append(
                     f'orphaned back scan: {what} on disk, but its listed '
                     f"primary {primary_alias} is missing from disk, so {record_path.name}'s "
                     'own entry needs fixing first - next: if the primary was moved within '
-                    f'the photos root, run `{_LAUNCHER} reconcile --with-exif --root "{archive_root}"` '
-                    '(preview with --dry-run) to re-tie it, then re-run `fha doctor`; if it '
+                    f'the photos root, {fix}, then re-run `fha doctor`; if it '
                     'was deleted or the roots: mapping changed, fix the record by hand.'
                 )
                 continue

@@ -564,7 +564,8 @@ _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 _EXIFTOOL_BATCH_SIZE = 500
 
 
-def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_error=None):
+def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_error=None,
+                      linked_dirs: list | None = None):
     """
     Yield catalogable photo files under photos_root, or nothing if it is absent.
 
@@ -589,6 +590,11 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_err
     and treat every path under a reported directory as unverified rather than
     absent. Callers that only READ the listing (a preview, a count) may pass
     None and simply see fewer files.
+
+    `linked_dirs`, when given, collects every symlinked folder the walk saw
+    and did not descend into (os.walk never follows links by default). A
+    caller that concludes "this photo is nowhere" from the listing - reconcile's
+    record-side pass (#289) - must know the listing has a hole there.
     """
     if not photos_root.is_dir():
         return
@@ -600,6 +606,9 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_err
         prefix = '' if rel_dir == '.' else f'{rel_dir}/'
         if patterns:
             dirnames[:] = [d for d in dirnames if not _ignored(f'{prefix}{d}')]
+        if linked_dirs is not None:
+            linked_dirs.extend(Path(dirpath) / d for d in dirnames
+                               if os.path.islink(os.path.join(dirpath, d)))
         for name in filenames:
             p = Path(dirpath) / name
             if not is_catalogued_photo_name(name) or _ignored(f'{prefix}{name}'):
@@ -710,10 +719,11 @@ def _record_dir_label(path: Path, archive_root: Path) -> str:
         return str(path).replace('\\', '/')
 
 
-def _run_exiftool(paths: list[Path]) -> list[dict]:
+def _run_exiftool(paths: list[Path], fields: list[str] | None = None) -> list[dict]:
     """
     Run one batched `exiftool -j -struct` call over `paths` and return the
-    parsed JSON rows.
+    parsed JSON rows. `fields` narrows the tags read (default: the catalog's
+    full `_EXIFTOOL_FIELDS`); reconcile's record pass asks for keywords only.
 
     This is the seam a test harness replaces to inject pre-cooked JSON
     without requiring exiftool on PATH (BUILD.md layer-3 fixture note) -
@@ -747,7 +757,7 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     cmd = [
         'exiftool', '-charset', 'filename=utf8', '-@', '-',
         '-j', '-struct', '-n', '-Error',
-    ] + _EXIFTOOL_FIELDS
+    ] + list(fields or _EXIFTOOL_FIELDS)
     try:
         proc = subprocess.run(
             cmd, check=False, capture_output=True, input=stdin_bytes)
@@ -3040,7 +3050,7 @@ def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
 
 def _on_disk_aliases(
     photos_root: Path, fha_config: dict, archive_root: Path,
-    unreadable_dirs: list | None = None,
+    unreadable_dirs: list | None = None, linked_dirs: list | None = None,
 ) -> dict[str, Path]:
     """Map alias-form path -> absolute Path for every photo file currently on disk.
 
@@ -3056,19 +3066,32 @@ def _on_disk_aliases(
     listed reads as "every photo in it vanished" unless the caller is told -
     which would flag a whole shelf MISSING:, blank out its groups' dates, and
     report the loss to the human as fact.
+
+    Pass a list as `linked_dirs` to collect (alias, path) for every symlinked
+    folder the walk did not follow - the same kind of hole, for a caller
+    that must not call a photo gone because it sat behind a link.
     """
     on_error = (
         _unreadable_dir_recorder(fha_config, archive_root, unreadable_dirs)
         if unreadable_dirs is not None else None
     )
+    links: list[Path] | None = [] if linked_dirs is not None else None
     out: dict[str, Path] = {}
     for p in _iter_photo_files(
         photos_root, _photos_ignore_patterns(fha_config), on_error=on_error,
+        linked_dirs=links,
     ):
         try:
             out[path_to_alias(p, 'photos', fha_config, archive_root)] = p
         except OSError:
             continue
+    if linked_dirs is not None:
+        for link in links or []:
+            try:
+                alias = path_to_alias(link, 'photos', fha_config, archive_root)
+            except OSError:
+                alias = str(link).replace('\\', '/')
+            linked_dirs.append((alias, link))
     return out
 
 

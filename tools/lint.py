@@ -51,7 +51,6 @@ import datetime
 import json
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -100,7 +99,7 @@ from _lib import (
     parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
-    photoindex_status,
+    photo_reconcile_route,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
@@ -1233,27 +1232,13 @@ def _process_person_file(path: Path, registry: Registry,
 
 
 def _photo_heal_route(registry: Registry) -> str:
-    """How `fha reconcile` could re-tie a moved photo in this archive (#289).
-
-    Reconcile finds a moved photo by the `SOURCE:` keyword inside it, and it
-    can only learn that keyword two ways: from a photo catalog that is up to
-    date with the photos folder, or by reading the photos with exiftool
-    (`--with-exif`). Returns 'catalog', 'exif' or 'none', so E011 names a
-    command that will actually work, or, when neither is available, the hand
-    edit instead. Worked out once per lint run and kept on the registry: the
-    catalog check walks the photos root, which must not happen per entry.
-    """
+    """How `fha reconcile` could re-tie a moved photo here (#289): the shared
+    `_lib.photo_reconcile_route` answer ('catalog', 'exif' or 'none'), worked
+    out once per lint run and kept on the registry, because the catalog check
+    walks the photos root and must not run once per entry."""
     if registry.photo_heal_route is None:
-        try:
-            status, _lag = photoindex_status(registry.archive_root, registry.fha_config)
-        except (OSError, RuntimeError):
-            status = 'unreadable'
-        if status == 'fresh':
-            registry.photo_heal_route = 'catalog'
-        elif shutil.which('exiftool'):
-            registry.photo_heal_route = 'exif'
-        else:
-            registry.photo_heal_route = 'none'
+        registry.photo_heal_route = photo_reconcile_route(
+            registry.archive_root, registry.fha_config)
     return registry.photo_heal_route
 
 
