@@ -473,7 +473,7 @@ class GedcomExportTests(unittest.TestCase):
 
     def test_a_bride_who_was_also_the_informant_keeps_the_marriage_event(self):
         # #266: `claim_persons.role` holds every role she carries
-        # ('informant,spouse'); read as one word, she was no spouse and the
+        # ('informant\x1fspouse'); read as one word, she was no spouse and the
         # wedding's date and place found no family to live on.
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         conn.row_factory = sqlite3.Row
@@ -484,7 +484,7 @@ class GedcomExportTests(unittest.TestCase):
         _add_claim(conn, 'c-0000000003', 'marriage',
                    ['p-0000000006', 'p-0000000007'], date_edtf='1901',
                    place_text='Role Town', source_id='s-0000000003',
-                   roles={'p-0000000006': 'informant,spouse',
+                   roles={'p-0000000006': 'informant\x1fspouse',
                           'p-0000000007': 'spouse'})
         conn.commit()
         conn.close()
@@ -954,6 +954,83 @@ class UnreadablePrivacyRecordTests(unittest.TestCase):
         self.assertNotIn('Marrowvale', r['text'])
         self.assertTrue([m for m in r['messages'] if 'birth_S-0000000001' in m])
         self.assertEqual(r.exit_code, gedcom.EXIT_WARNINGS)
+
+    # -- #267 review: the shapes `parse_errors` never reports -----------------
+
+    def _export_all(self):
+        self._index.build_index(self.root, {})
+        return gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)
+
+    def _assert_aunt_withheld(self, r):
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Quillfeather', r['text'])
+        self.assertNotIn('REFN P-0000000002', r['text'])
+        self.assertNotIn('Marrowvale', r['text'])
+        self.assertIn('1 NAME /Restricted/', r['text'])
+        self.assertTrue([m for m in r['messages'] if 'quillfeather__ada' in m])
+        self.assertEqual(r.exit_code, gedcom.EXIT_WARNINGS)
+
+    def test_a_person_file_with_no_frontmatter_block_is_withheld(self):
+        # The reviewer's repro: the opening `---` deleted. `read_record`
+        # reports nothing - the marker just reads as absent.
+        self._write('people/quillfeather__ada_P-0000000002.md',
+                    'id: P-0000000002\nname: Ada Quillfeather\ntier: curated\n'
+                    'living: true\nrestricted: by-request\n---\n# Ada\n')
+        self._assert_aunt_withheld(self._export_all())
+
+    def test_a_person_frontmatter_that_is_a_list_is_withheld(self):
+        self._write('people/quillfeather__ada_P-0000000002.md',
+                    '---\n- id: P-0000000002\n- name: Ada Quillfeather\n'
+                    '- restricted: by-request\n---\n# Ada\n')
+        self._assert_aunt_withheld(self._export_all())
+
+    def test_a_claims_block_error_alone_does_not_withhold_the_source(self):
+        # Its frontmatter marker reads fine, so the record stands; only the
+        # claims (whose own markers cannot be read) are lost, and `fha index`
+        # already says so. No "could not read" warning, no exit 1 from here.
+        self._write('people/quillfeather__ada_P-0000000002.md',
+                    '---\nid: P-0000000002\nname: Ada Quillfeather\ntier: curated\n'
+                    'living: false\n---\n# Ada\n')
+        self._write('sources/birth_S-0000000001.md',
+                    '---\nid: S-0000000001\ntitle: Kit birth\nsource_type: vital-record\n'
+                    'citation: "Birth record."\n---\n\n## Claims\n```yaml\n'
+                    '- id: C-0000000001\n  type: birth\n  value: "unclosed\n```\n')
+        self._index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            unread: list = []
+            withheld = gedcom._restricted_source_ids(conn, self.root, unread)
+        finally:
+            conn.close()
+        self.assertNotIn('s-0000000001', withheld)
+        self.assertEqual(unread, [])
+        r = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)
+        self.assertIn('Quillfeather', r['text'])
+        self.assertFalse([m for m in r['messages'] if 'could not read' in m])
+        self.assertEqual(r.exit_code, gedcom.EXIT_CLEAN)
+
+    def test_an_unreadable_source_is_named_only_when_it_touches_the_export(self):
+        # P3-2: a seeded export names a damaged source only when one of its
+        # claims names somebody in the selection. Kit and Ada are unrelated;
+        # the source's only claim names Ada.
+        kid = self.root / 'people' / 'quillfeather__ada_P-0000000002.md'
+        kid.write_text(kid.read_text(encoding='utf-8').replace('"Ada', 'Ada')
+                       .replace('restricted: by-request\n', ''), encoding='utf-8')
+        self._index.build_index(self.root, {})
+        path = self.root / 'sources' / 'birth_S-0000000001.md'
+        before = path.stat()
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'title: Kit birth', 'title: "Kit birth'), encoding='utf-8')
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+        outside = gedcom.run_gedcom(self.root, self.KID, mode='connected', include_living=True)
+        self.assertFalse([m for m in outside['messages'] if 'birth_S-0000000001' in m])
+        self.assertEqual(outside.exit_code, gedcom.EXIT_CLEAN)
+
+        inside = gedcom.run_gedcom(self.root, self.AUNT, mode='connected', include_living=True)
+        self.assertTrue([m for m in inside['messages'] if 'birth_S-0000000001' in m])
+        self.assertEqual(inside.exit_code, gedcom.EXIT_WARNINGS)
 
 
 if __name__ == '__main__':

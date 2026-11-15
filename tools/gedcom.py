@@ -40,10 +40,13 @@ so restricted and DNA sources are not eligible fact sources. Relationship edges
 backed exclusively by restricted/DNA sources are excluded alongside their vital
 and marriage event details.
 
-A person or source whose record file is present but will not read (bad YAML,
-not UTF-8) cannot say whether it is restricted, so it is withheld as if it were
-(fail closed, #267), under every flag; the export names the file, says to run
-`fha lint`, and exits 1.
+A person or source whose record file is present but whose own `restricted:`
+marker cannot be read (not UTF-8, no frontmatter block, frontmatter that is not
+valid YAML or not a block of fields - `_lib.read_restriction_marker`) is
+withheld as if it were restricted (fail closed, #267), under every flag; the
+export names each such file that touches it, says to run `fha lint`, and exits
+1. A source whose claims block alone is broken keeps its record and loses only
+its claims, whose per-claim markers cannot be read.
 
 SOURCES
 -------
@@ -66,7 +69,7 @@ CODE MAP
 
   Data gathering
     _load_persons, _load_vitals, _load_marriages
-    _record_unreadable     - read one record for its privacy marker; damaged = unreadable
+    _marker                - one record's `restricted:` value; unreadable fails closed
     _restricted_person_ids, _restricted_source_ids, _restricted_claim_ids
                            - what the marker files withhold (fail closed, #267)
 
@@ -103,6 +106,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     read_record,
+    read_restriction_marker,
     resolve_root_arg,
     spouse_parties,
     strip_generational_suffix,
@@ -470,33 +474,28 @@ def _load_persons(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     return {r['id']: r for r in rows}
 
 
-def _record_unreadable(archive_root: Path, rel_path: str) -> tuple[dict | None, bool]:
-    """Read one record for its privacy markers. Returns (record, unreadable).
+def _marker(archive_root: Path, rel_path: str) -> tuple[object, bool]:
+    """One record's own `restricted:` value, and whether it could be read.
 
-    `unreadable` is True when the file is present but cannot be trusted to say
-    whether it is private: it will not decode as UTF-8, or it decoded and then
-    would not parse (`parse_errors`). `read_record` does NOT raise for those -
-    it hands back empty frontmatter plus a `parse_errors` entry - and empty
-    frontmatter has no `restricted:` marker, so a caller that only wraps the
-    read in `except` reads a damaged private record as a public one (#267).
-    Every caller here treats `unreadable` as restricted (AGENTS.md privacy
-    rule, fail closed), the same rule `fha wikitree` (`_person_record_flagged`)
-    and `fha site` (`_load_restriction_markers`) apply.
+    Returns (value, unreadable). `_lib.read_restriction_marker` is the rule,
+    shared with `fha wikitree`, `fha site` and `fha packet` (#267 review): a
+    file that will not open or decode, has no frontmatter block, carries
+    frontmatter that is not valid YAML, or frontmatter that is not a block of
+    fields cannot say whether it is private, and every caller here treats it as
+    restricted (AGENTS.md privacy rule, fail closed). `read_record` reports
+    none of those by raising, and two of them not at all, which is how a
+    `restricted: by-request` relative used to export by surname (#267).
 
     A file that is ABSENT is index staleness, not damage, and reads as carrying
     no marker - the rule `fha wikitree` keeps too. `fha index` drops the row on
     its next run; a damaged file, by contrast, keeps its row (and its surname)
-    there indefinitely."""
-    record_path = archive_root / rel_path
-    if not record_path.exists():
-        return {'meta': {}, 'claims': []}, False
-    try:
-        rec = read_record(record_path, on_decode_error=lambda _p: None)
-    except Exception:   # noqa: BLE001 - any failure to read is the same failure here
-        return None, True
-    if rec.get('undecodable') or rec['parse_errors']:
-        return rec, True
-    return rec, False
+    there indefinitely.
+
+    A claims-block failure is not this function's business: the record's own
+    marker sits in the frontmatter, so the record is judged on that alone and
+    `_restricted_claim_ids` withholds the claims whose markers it cannot see."""
+    value, trouble = read_restriction_marker(archive_root / rel_path, missing_ok=True)
+    return value, trouble is not None
 
 
 def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row],
@@ -518,19 +517,19 @@ def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row],
         path = row['path']
         if not path:
             continue
-        rec, bad = _record_unreadable(archive_root, path)
+        value, bad = _marker(archive_root, path)
         if bad:
             out.add(pid)
             if unreadable is not None:
                 unreadable.append(path)
             continue
-        if _is_restricted_value(rec['meta'].get('restricted')):
+        if _is_restricted_value(value):
             out.add(pid)
     return out
 
 
 def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
-                           unreadable: list[str] | None = None) -> set[str]:
+                           unreadable: list[tuple[str, str]] | None = None) -> set[str]:
     """Source ids that are restricted by a free-text type the index missed, or
     whose record could not be read to check (fail closed, #267).
 
@@ -539,7 +538,8 @@ def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
     stores `restricted=0` in the index, so it is read from the record file here
     and added to the not-eligible set the caller unions into its source filter.
 
-    A source record that will not read is withheld whole. Its claims can only
+    A source record whose own marker will not read is withheld whole, and its
+    (id, path) goes into `unreadable` when given. Its claims can only
     be in the index from an earlier read (a full build drops a source whose
     frontmatter fails), so the index's `restricted=0` for it is a guess about a
     file nobody can read now."""
@@ -549,13 +549,13 @@ def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
             continue   # already caught by the SQL filter
         if not row['path']:
             continue
-        rec, bad = _record_unreadable(archive_root, row['path'])
+        value, bad = _marker(archive_root, row['path'])
         if bad:
             out.add(row['id'])
             if unreadable is not None:
-                unreadable.append(row['path'])
+                unreadable.append((row['id'], row['path']))
             continue
-        if _is_restricted_value(rec['meta'].get('restricted')):
+        if _is_restricted_value(value):
             out.add(row['id'])
     return out
 
@@ -568,16 +568,26 @@ def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[s
     source is otherwise public (index-restricted sources are already excluded by
     `_public_source_filter_sql`) to collect per-claim ids that are withheld.
 
-    A record that will not read hides which of its claims were marked, so
-    every claim the index attributes to it is withheld (the same rule as
-    `fha wikitree`'s `_restricted_claim_ids`). `_restricted_source_ids` has
-    already withheld that whole source and reported the file; this keeps the
-    claim-level filter honest on its own."""
+    A record whose claims cannot all be read hides which of them were marked,
+    so every claim the index attributes to it is withheld (the same rule as
+    `fha wikitree`'s `_restricted_claim_ids`): a claims block that will not
+    parse, a file that will not decode, or a frontmatter the marker reader
+    refuses. A broken claims block alone withholds only the claims - the
+    source's own frontmatter marker was read and stands (#267 review)."""
     out: set[str] = set()
     for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
         if row['restricted'] or not row['path']:
             continue
-        rec, bad = _record_unreadable(archive_root, row['path'])
+        record_path = archive_root / row['path']
+        if not record_path.exists():
+            continue   # index staleness, as in `_marker`
+        _value, bad = _marker(archive_root, row['path'])
+        try:
+            rec = read_record(record_path, on_decode_error=lambda _p: None)
+        except Exception:   # noqa: BLE001 - any failure to read is the same failure here
+            rec, bad = None, True
+        if rec is not None and (rec.get('undecodable') or rec['parse_errors']):
+            bad = True
         if bad:
             for crow in conn.execute(
                 'SELECT id FROM claims WHERE source_id = ?', (row['id'],)
@@ -960,7 +970,7 @@ def _gedcom_payload(
         # type as 0. The SQL `_public_source_filter_sql` already excludes index
         # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
         unreadable_persons: list[str] = []
-        unreadable_sources: list[str] = []
+        unreadable_sources: list[tuple[str, str]] = []   # (source id, path)
         restricted_persons = _restricted_person_ids(archive_root, persons, unreadable_persons)
         restricted_sources = _restricted_source_ids(conn, archive_root, unreadable_sources)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
@@ -1076,11 +1086,22 @@ def _gedcom_payload(
         # Withheld because a file could not be read (#267): say which file and
         # how to fix it, or the human reads "/Restricted/" on a relative who
         # never asked for it and has no way to learn why. Only the files that
-        # touch this export are named - a person outside the selection is
-        # scoping, not something this file lost.
+        # touch this export are named - a person outside the selection, or a
+        # source whose claims name nobody in it, is scoping, not something
+        # this file lost. A source touches the export when any of its claims
+        # names an included person: those are the facts it could have carried.
         included_paths = {persons[p]['path'] for p in included}
         unread = [path for path in unreadable_persons if path in included_paths]
-        unread += sorted(unreadable_sources)
+        if unreadable_sources:
+            ids = sorted(included)
+            touching: set[str] = set()
+            for start in range(0, len(ids), 500):   # stay under SQLite's variable cap
+                chunk = ids[start:start + 500]
+                touching.update(r[0] for r in conn.execute(
+                    'SELECT DISTINCT c.source_id FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    f'WHERE cp.person_id IN ({",".join("?" * len(chunk))})', chunk))
+            unread += sorted(path for sid, path in unreadable_sources if sid in touching)
         for path in unread:
             messages.append(
                 f'WARNING: could not read {path}, so there is no way to tell '

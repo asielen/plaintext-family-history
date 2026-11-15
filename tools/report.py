@@ -128,6 +128,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_role_pairs,
     format_date_spread,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -256,12 +257,18 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     # too -- reattaching a claim to a different person/role is a real change
     # even though every scalar claim field stays the same, so it must flow
     # into the fingerprint or section 2 ("changed since last session") misses it.
-    claim_persons_by_claim: dict[str, list[str]] = {}
+    # Each participant is a [person, position, roles] triple serialized as
+    # JSON, not `:`/`,`-joined text: the role column holds every role a
+    # person carries (#266), and a role word is free text that can itself
+    # hold a comma or colon, so a plain join could read two different
+    # participant lists as the same string.
+    claim_persons_by_claim: dict[str, list[list]] = {}
     for r in conn.execute(
         'SELECT claim_id, person_id, position, role FROM claim_persons ORDER BY claim_id, position'
     ):
         claim_persons_by_claim.setdefault(r['claim_id'], []).append(
-            f"{r['person_id']}:{r['position']}:{r['role'] or ''}"
+            [r['person_id'], r['position'],
+             [role for _pid, role in claim_role_pairs([(r['person_id'], r['role'])]) if role]]
         )
     claim_fingerprints = {
         r['id']: '|'.join(
@@ -271,7 +278,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
                 'value', 'status', 'reviewed', 'confidence', 'information', 'evidence',
                 'asset', 'anchor', 'hypothesis', 'negated', 'notes',
             )
-        ) + '|persons=' + ','.join(claim_persons_by_claim.get(r['id'], []))
+        ) + '|persons=' + json.dumps(claim_persons_by_claim.get(r['id'], []))
         for r in conn.execute(
             '''
             SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,

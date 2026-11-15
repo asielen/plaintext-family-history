@@ -198,6 +198,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Record parsing
 #    read_text_exact            - newline-exact record read (no CRLF/LF translation)
+#    read_restriction_marker    - one record's own `restricted:` value, or why it
+#                                 cannot be read (fail closed; every exporter)
 #    write_text_exact           - its non-atomic mirror; NOT for archive records
 #    _refuse_unwritable_target  - the read-only-record refusal os.replace skips
 #    _carry_ownership           - give the temp the record's owner/group before it lands
@@ -823,10 +825,14 @@ def _min_cost_max_matching(cost: list[list[int | None]], n_tokens: int) -> list[
 # stays the table's shape - dozens of queries join it to list a person's
 # claims, and a row per role would list the mother's birth certificate twice
 # wherever she is both its informant and a parent - so the extra roles ride
-# in the one column instead. A role key is a single word (SPEC §8.3's role
-# words), so a comma never occurs inside one. Read the column back only
-# through `claim_role_pairs`, never with `role = 'parent'` in SQL.
-CLAIM_ROLE_SEP = ','
+# in the one column instead. The separator is the ASCII unit separator
+# (U+001F), not a comma: SPEC §8.3 lets a role key be any word a human
+# writes, and a quoted YAML key can hold a comma (`"parent, informant"`),
+# which a comma split would read as two roles where lint reads one. YAML
+# refuses C0 control characters in a document, so U+001F can never be part
+# of a key and the encoding is lossless. Read the column back only through
+# `claim_role_pairs`, never with `role = 'parent'` in SQL.
+CLAIM_ROLE_SEP = '\x1f'
 
 
 def join_claim_roles(roles: Iterable[Any]) -> str | None:
@@ -2067,7 +2073,7 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # schema-version gate, not a file-timestamp one, so updating the TOOLS alone
 # (no record file touched) would otherwise never invalidate the stale cache.
 # 9: `claim_persons.role` holds EVERY role a person carries on a claim,
-# comma-joined in `roles:` order, not just the first (#266). A v8 index kept
+# joined by U+001F in `roles:` order, not just the first (#266). A v8 index kept
 # the first key only, so the mother listed as `informant:` before `parent:`
 # has no parent edge in its `relationships` rows - the same tools-only change
 # v8 describes, so bump to force the rebuild.
@@ -4210,6 +4216,94 @@ def read_text_exact(path: str | Path) -> str:
         return f.read()
 
 
+def read_restriction_marker(
+    path: str | Path, *, missing_ok: bool = False,
+) -> tuple[Any, str | None]:
+    """Read one record's own `restricted:` marker. Returns (value, trouble).
+
+    `trouble` is None when the marker was genuinely read (the value may still
+    be None - that is a record saying it carries no restriction). A non-None
+    `trouble` is a plain phrase saying why the marker could NOT be read, and
+    every caller must treat that as "restricted", never as "no marker": a
+    missing privacy marker is indistinguishable from a person who never asked
+    to be left out, and only one of those two readings is safe to export.
+    The one rule `fha gedcom`, `fha wikitree`, `fha site` and `fha packet`
+    all share (#267 review), so no exporter can read a damaged record as
+    public where another withholds it.
+
+    FOUR ROUTES END HERE, and knowing why matters more than the code does,
+    because guarding only the obvious one leaves the real ones open:
+
+      1. The file cannot be opened or decoded - gone, locked, not UTF-8.
+      2. The frontmatter is not valid YAML.
+      3. The record has no frontmatter block at all. Nothing raises and nothing
+         is reported: `FRONT_RE` simply does not match, so the marker reads as
+         absent. This is the shape that shipped a written packet - and a GEDCOM
+         INDI with the surname and P-id - for a `restricted: by-request` person.
+      4. The frontmatter parses to something that is not a block of fields (a
+         bare scalar, a list), so there is no key to look up.
+
+    WHY THIS PARSES THE FRONTMATTER ITSELF rather than asking `read_record` and
+    checking `parse_errors`, which is the obvious spelling and is wrong in both
+    directions. Too narrow: route 3 reports nothing, and route 4's list reads
+    back as an empty mapping with no error. Too broad: `parse_errors` also
+    carries CLAIMS-block failures, and a source whose claims YAML will not
+    parse has a perfectly readable frontmatter marker. Escalating that into a
+    record-level withhold would take the record down when only its per-claim
+    markers are unknown; the callers withhold those claims on their own. This
+    function asks one question - can the record's own `restricted:` value be
+    read - and the frontmatter is the whole of where that value can live.
+
+    Route 3 is where the line gets drawn, so draw it explicitly: a frontmatter
+    block that PARSES - even one whose only line is blank, so it parses to no
+    fields at all - is the record STATING that it carries no restriction, and
+    is honored as such. No block is a record with nowhere to put the marker,
+    which is damage rather than a statement. `FRONT_RE` decides which one this
+    is, the same reader every other tool uses.
+
+    `missing_ok=True` is for the callers whose contract reads an ABSENT file
+    as index staleness rather than damage (`fha gedcom`, `fha wikitree`): it
+    answers (None, None) for a path that does not exist. Every other read
+    failure still reports trouble.
+
+    The raw parsed value is returned uncoerced: YAML `true` arrives as `True`,
+    not `read_record`'s `'true'`, so callers' marker tests must accept both
+    (each exporter's `_is_restricted_value` / `_restricted_type` does)."""
+    path = Path(path)
+    if missing_ok and not path.exists():
+        return None, None
+    try:
+        text = read_text_exact(path)
+    except UnicodeError:
+        # Said plainly, as `fha lint`'s W128 says it: a codec name and a byte
+        # offset mean nothing to the person who has to fix the file.
+        return None, (
+            "the file isn't saved as UTF-8 text - a Windows editor's default "
+            "encoding, often cp1252, is the usual cause; open it and save it "
+            "again choosing UTF-8"
+        )
+    except OSError as e:
+        return None, f'the file could not be opened ({e.strerror or e})'
+    fm = FRONT_RE.match(text)
+    if fm is None:
+        return None, (
+            'the record has no frontmatter block, which is the only place a '
+            'privacy marker can live'
+        )
+    try:
+        _require_yaml()
+        meta = safe_load_yaml(fm.group(1))
+    except FhaConfigError as e:
+        return None, str(e)
+    except yaml.YAMLError:
+        return None, 'the frontmatter is not valid YAML'
+    if meta is None:
+        meta = {}
+    if not isinstance(meta, dict):
+        return None, 'the frontmatter did not read as a block of fields'
+    return meta.get('restricted'), None
+
+
 def write_text_exact(path: str | Path, text: str) -> None:
     """Write text with no newline translation (the mirror of read_text_exact).
 
@@ -4628,7 +4722,16 @@ def read_record(path: str | Path, on_decode_error=None) -> dict:
         try:
             _require_yaml()
             raw_meta = safe_load_yaml(fm_match.group(1)) or {}
-            meta = _coerce_yaml(raw_meta)
+            if isinstance(raw_meta, dict):
+                meta = _coerce_yaml(raw_meta)
+            else:
+                # A list or a bare value parses as YAML but holds no fields:
+                # handing it on as `meta` crashed every caller's `.get` (the
+                # #267 review's list-frontmatter repro took `fha index` down).
+                # Report it like any other unreadable frontmatter instead.
+                errors.append(('E010', 'Frontmatter is not a block of fields '
+                               '(`name: value` lines) - it reads as a list or a '
+                               'single value'))
         except FhaConfigError as e:
             errors.append(('E010', str(e)))
         except yaml.YAMLError as e:

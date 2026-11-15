@@ -756,6 +756,31 @@ class XrefTests(unittest.TestCase):
         self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0]['kind'], 'corroborates')
 
+    def test_a_parent_who_was_also_the_informant_pairs_with_a_plain_parent_claim(self) -> None:
+        # #266 review P3-3: claim_persons.role holds every role a person
+        # carries. Keyed whole, 'informant<US>parent' never met 'parent', so
+        # two records of one parent-child bond were never compared.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Child Two','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
+                       'mother of the child, and the informant', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'informant\x1fparent',
+                              'p-bbbbbbbbbb': 'child'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
+                       'mother of the child', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child'})
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        # The mother's own bucket is the one the joined role used to split.
+        mother = [g for g in result['groups'] if g['person_id'] == 'p-aaaaaaaaaa']
+        self.assertEqual(len(mother), 1, result['groups'])
+        self.assertEqual(len(mother[0]['pairs']), 1)
+        self.assertEqual(mother[0]['pairs'][0]['kind'], 'corroborates')
+
     def test_missing_required_column_returns_failed_status(self) -> None:
         # A cache built against an older claims schema has all the required
         # tables (so the table probe passes) but is missing a column xref's

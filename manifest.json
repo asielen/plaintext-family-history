@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "0782499b70dc1338c8cf285dc2bd7bce665fb075b00f00605aee850c5edf0aa6",
+      "sha256": "4bf928cd7eac71471427ef24ec4d2d8165fbbe28746ffb2f61f16803e90045e7",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "de9c56bd47b5a5e09550966a0f9a954a5658d393538112e524dec30745801df8",
+      "sha256": "895a727914fe5322e8a4a49576cdef0b5e2ef585ac815c98ddf72d5461de2471",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "3eea67b6b5cf66f06078329642e0b8174ebf0ed045c111034e3d7f90bafbd322",
+      "sha256": "1c9023838168b15ea4dc099c8f4cdc5e3bd3324762b18db041164863e7322c4d",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -623,7 +623,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "61ff0e6de9d019a99b26faaf902215dad05e8cd4b81ed4a404d145014afe6e08",
+      "sha256": "610e0f97b63021489504df42b450c9cca905686742843cf9a313eb4f815ffbb6",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
@@ -651,7 +651,7 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "e264c4cb0671b4a4187bef1a7327827d5b47b411e1853b360cd6457667ca9f90",
+      "sha256": "3e3947c9681adc2c17a2e9b7dc06951965f88233bf3cc8e5abd816d66eab865a",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
@@ -707,7 +707,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "e75d2294096ec9a15968cb59607f9caf5c1433b1876c19f1be8473fae9f81c28",
+      "sha256": "3577e74714e33d5e773dd434b02fe8e7b72916ea1a57d21048ebc1f0232ac2db",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -735,7 +735,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "89a698a878eb0a21b6f84e0fdf6d57ff91d94fe2d9edc566dcf4b9842db68e62",
+      "sha256": "364b563a494d90a2a8d3087b82adff3ffc17d6d7c05a7f76926b6d6644f85679",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -889,7 +889,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "1780d384eddfa183614594dff969c84124bbd0c7b390d163fa9116286c3633c6",
+      "sha256": "5c09abc5f781bd727c75d3723d38e2880c5482455913973f64331473fa09811f",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "39b326ec7228be26285c3c35878d943d0c29af80ec457842fff0330da698c7c1",
+      "sha256": "f35d587067fd4d5b8f72e8e6319ce0947aefec9c243294c8faa86a41561ee343",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "3a699095ba04da2f60fbbdb04205361c2552c4c671bc1719edf6e895bffed631",
+      "sha256": "785a4b068a157d5af16325c59cc9a5744fc3b2593d62e61d0fedb5ab352df70f",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3b617fec69dd73ff41c66de1580822ad478afb5181147cc5d7e78e83827fa695",
+      "sha256": "a058e36a62d1b2fe4d24c0015b8d08ac04afb689783249695d375715ceb2ef35",
       "spec_version": "1.2"
     },
     {

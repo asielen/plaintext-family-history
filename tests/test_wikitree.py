@@ -318,6 +318,59 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertEqual(r['status'], 'unreadable-subject')
         self.assertIsNone(r['text'])
 
+    # -- #267 review: the two shapes `read_record` reports nothing for -------
+
+    def test_subject_record_with_no_frontmatter_block_refused(self):
+        (self.root / 'people' / 'subject.md').write_text(
+            'id: P-0000000001\nname: John Smith\ntier: curated\nliving: false\n'
+            'restricted: by-request\n---\n\n# John Smith\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'unreadable-subject')
+        self.assertIsNone(r['text'])
+        self.assertTrue(any('fha lint' in m for m in r['messages']), r['messages'])
+
+    def test_participant_whose_frontmatter_is_a_list_is_withheld(self):
+        # The twin of the malformed-participant test above, for a frontmatter
+        # that parses as YAML but is a list, not a block of fields.
+        (self.root / 'people' / 'edith.md').write_text(
+            '---\n- id: P-0000000003\n- restricted: by-request\n---\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Edith Kowalski', r['text'])
+        self.assertNotIn('Possibly married', r['text'])
+
+    def test_participant_with_no_frontmatter_block_is_withheld(self):
+        (self.root / 'people' / 'edith.md').write_text(
+            'id: P-0000000003\nname: Edith Kowalski\nrestricted: by-request\n',
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        _add_claim(conn, 'c-0000000006', 'marriage',
+                   ['p-0000000001', 'p-0000000003'],
+                   source_id='s-0000000002', status='needs-review',
+                   value='Possibly married Edith Kowalski in Chicago')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Edith Kowalski', r['text'])
+
     def test_undecodable_subject_record_refused_not_crashed(self):
         # #68's residual gap: `read_record` raises `UnicodeDecodeError` unless
         # a caller supplies `on_decode_error`, and _wikitree_payload's subject

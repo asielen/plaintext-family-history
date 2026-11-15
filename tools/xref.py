@@ -764,11 +764,19 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 # bucketed once per individual counterpart rather than once
                 # per whole counterpart set - otherwise a claim naming {P2, P3}
                 # would never compare against one naming only {P2}.
-                role = claim_role.get((cid, person_id))
+                # Bucketed once per ROLE too (#266 review): the column holds
+                # every role this person carries, so keying on it whole would
+                # never pair the informant-and-parent claim with a plain
+                # parent one, and would split two claims that listed the same
+                # roles in a different order.
+                roles = [str(r).strip().lower() if r else None
+                         for _p, r in claim_role_pairs(
+                             [(person_id, claim_role.get((cid, person_id)))])]
                 others = [p for p in claim_persons.get(cid, []) if p != person_id]
-                for other in others:
-                    key = (claim['type'], claim['subtype'], role, other)
-                    by_group.setdefault(key, []).append(cid)
+                for role in roles:
+                    for other in others:
+                        key = (claim['type'], claim['subtype'], role, other)
+                        by_group.setdefault(key, []).append(cid)
             elif claim['type'] in _COUNTERPART_VITAL_TYPES:
                 parties = claim_parties.get(cid, [])
                 if parties and person_id not in parties:

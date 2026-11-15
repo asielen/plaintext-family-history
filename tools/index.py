@@ -289,7 +289,7 @@ CREATE TABLE IF NOT EXISTS claims(
 );
 -- claim_persons: ordered people and roles named by each claim. One row per
 -- persons: entry; `role` holds EVERY role that person carries on the claim,
--- comma-joined in roles: order (#266) - read it through _lib.claim_role_pairs.
+-- joined by U+001F in roles: order (#266) - read it through _lib.claim_role_pairs.
 CREATE TABLE IF NOT EXISTS claim_persons(
   claim_id TEXT,
   person_id TEXT,

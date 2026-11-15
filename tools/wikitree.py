@@ -122,6 +122,7 @@ from _lib import (
     person_is_living,
     person_merge_chain,
     read_record,
+    read_restriction_marker,
     resolve_root_arg,
     strip_unaccepted_drafts,
     strip_unfilled_person_sections,
@@ -511,7 +512,8 @@ def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[s
         # claim the index attributes to this source. (An ABSENT file is the
         # index-staleness case handled the same as before - its claims parse as
         # none, nothing to flag - not a malformed-record leak.)
-        if rec is None or (rec['parse_errors'] and record_path.exists()):
+        if rec is None or (rec['parse_errors'] and record_path.exists()) \
+                or _record_marker(record_path)[1]:
             for crow in conn.execute(
                 'SELECT id FROM claims WHERE source_id = ?', (row['id'],)
             ).fetchall():
@@ -575,26 +577,12 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
             or (row['publication_ok'] is not None and int(row['publication_ok']) == 0)
         )
         if not bad and row['path']:
-            record_path = archive_root / row['path']
-            try:
-                rec = read_record(record_path, on_decode_error=on_decode_error)
-            except Exception:
-                # A source record present but unreadable is non-publishable.
-                bad = True
-            else:
-                if rec['undecodable']:
-                    # Reported, not raised (see the docstring): an empty record
-                    # with no parse_errors, which the two tests below would read
-                    # as "no marker, publishable". Fail closed here instead.
-                    bad = True
-                else:
-                    # read_record reports a malformed record through parse_errors
-                    # with empty meta, not an exception; empty meta would hide a
-                    # free-text `restricted:` marker (the index stores those as 0),
-                    # so a malformed-but-present record fails closed (AGENTS.md
-                    # privacy rule). An absent file is index staleness, not a leak.
-                    malformed = bool(rec['parse_errors']) and record_path.exists()
-                    bad = malformed or _is_restricted_value(rec['meta'].get('restricted'))
+            # The source's own marker, read the one way every exporter reads
+            # it (`_record_marker`): a record that cannot say it is public is
+            # not publishable. A broken claims block alone does not count -
+            # the source-level marker lives in the frontmatter (#267 review).
+            value, unreadable = _record_marker(archive_root / row['path'], on_decode_error)
+            bad = unreadable or _is_restricted_value(value)
         if bad:
             flagged.append(row)
     return flagged
@@ -628,25 +616,38 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     return flagged
 
 
+def _record_marker(record_path: Path, on_decode_error=None) -> tuple[object, bool]:
+    """One record's own `restricted:` value, and whether it could NOT be read.
+
+    `_lib.read_restriction_marker` is the rule, shared with `fha gedcom`,
+    `fha site` and `fha packet` (#267 review): a file that will not open or
+    decode, has no frontmatter block, or whose frontmatter is not valid YAML
+    or not a block of fields cannot say whether it is private, and is assumed
+    private (AGENTS.md privacy rule, fail closed). An absent file is index
+    staleness and reads as unmarked, as it always has here.
+
+    `on_decode_error` keeps #68's reporting channel: when the marker could not
+    be read and the caller has a recorder, the file is read once more through
+    `read_record` so a not-UTF-8 file is reported by path and the refusal can
+    name the encoding as its cause."""
+    value, trouble = read_restriction_marker(record_path, missing_ok=True)
+    if trouble is None:
+        return value, False
+    if on_decode_error is not None:
+        try:
+            read_record(record_path, on_decode_error=on_decode_error)
+        except Exception:   # noqa: BLE001 - reporting only; the verdict stands
+            pass
+    return None, True
+
+
 def _person_record_flagged(archive_root: Path, rel_path: str, on_decode_error=None) -> bool:
     """True when one person record's file says `restricted:` (any value) or
-    cannot be trusted to say it.
+    cannot be trusted to say it (`_record_marker`, fail closed).
 
-    The index carries no person-level `restricted`, so the file is read. A
-    file that will not read, will not decode, or is present but malformed is
-    assumed private (AGENTS.md privacy rule, fail closed): read_record returns
-    empty meta for those rather than raising, and empty meta lacks the
-    marker. An absent file is index staleness, treated as not restricted, as
-    it always has been here."""
-    record_path = archive_root / rel_path
-    try:
-        rec = read_record(record_path, on_decode_error=on_decode_error)
-    except Exception:
-        return True
-    if rec.get('undecodable'):
-        return True
-    malformed = bool(rec['parse_errors']) and record_path.exists()
-    return malformed or _is_restricted_value(rec['meta'].get('restricted'))
+    The index carries no person-level `restricted`, so the file is read."""
+    value, unreadable = _record_marker(archive_root / rel_path, on_decode_error)
+    return unreadable or _is_restricted_value(value)
 
 
 def _chain_flagged_record(conn: sqlite3.Connection, archive_root: Path, pid: str, *,
@@ -1247,6 +1248,19 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         f'fully read ({detail}); WikiTree will not publish from a record whose '
                         'privacy markers may be unreadable. Fix the record - run '
                         '`fha lint` to pinpoint the parse error - then export again.'
+                    ]}
+        # The two shapes `parse_errors` never reports (#267 review): no
+        # frontmatter block at all, or one that is not a block of fields.
+        # Both read as "no restricted: marker", so they get the same refusal.
+        _subject_marker, subject_trouble = read_restriction_marker(
+            archive_root / person['path'])
+        if subject_trouble is not None:
+            return {'status': 'unreadable-subject', 'text': None,
+                    'messages': [
+                        f"{fmt_id_display(pid)}'s record ({person['path']}) could not be "
+                        f'read for its privacy marker ({subject_trouble}); WikiTree will not '
+                        'publish from a record that cannot say whether it is private. Fix '
+                        'the record - run `fha lint` to see what is wrong - then export again.'
                     ]}
         # Unaccepted AI-DRAFT prose is not-yet-content: exclude it BEFORE the
         # privacy scans, so a citation or link that lives only inside a draft

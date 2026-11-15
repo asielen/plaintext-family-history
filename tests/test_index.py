@@ -3439,8 +3439,36 @@ class BirthClaimParentageTests(unittest.TestCase):
         # Still one row per persons: entry - a row per role would list her
         # birth certificate twice everywhere her claims are listed.
         self.assertEqual(rows, [(_BIRTH_CHILD.lower(), 'child'),
-                                (_BIRTH_MOTHER.lower(), 'informant,parent'),
+                                (_BIRTH_MOTHER.lower(), 'informant\x1fparent'),
                                 (_BIRTH_FATHER.lower(), 'parent')])
+
+    def test_a_role_key_with_a_comma_reads_the_same_in_index_and_lint(self) -> None:
+        # #266 review P2-1: SPEC §8.3 lets a role be any word, and a quoted
+        # YAML key can hold a comma. The index must keep it whole, as lint
+        # does, so neither invents a `parent` the other does not see.
+        import lint
+        from _lib import resolve_claim_persons_with_roles
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    "parent, informant": [{_BIRTH_MOTHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_MOTHER], roles))
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            stored = conn.execute(
+                'SELECT person_id, role FROM claim_persons ORDER BY position').fetchall()
+        finally:
+            conn.close()
+        indexed = claim_role_pairs(stored)
+        self.assertIn((_BIRTH_MOTHER.lower(), 'parent, informant'), indexed)
+        self.assertEqual(self._edges(), set())
+
+        from _lib import read_record
+        claim = read_record(self._source_path())['claims'][0]
+        self.assertEqual(lint._claim_parentage_pids(claim), (set(), set()))
+        self.assertEqual(
+            [(p.lower(), r) for p, r in resolve_claim_persons_with_roles(claim)],
+            [(p.lower(), r) for p, r in indexed])
 
     def test_the_incremental_upsert_keeps_every_role_too(self) -> None:
         # The other half of the pair: an archive that only ever runs the fast
@@ -3751,19 +3779,19 @@ class MultiRoleRuleTests(unittest.TestCase):
 
     def test_claim_role_pairs_splits_the_joined_column(self) -> None:
         self.assertEqual(
-            claim_role_pairs([('p-c', 'child'), ('p-m', 'informant,parent'),
+            claim_role_pairs([('p-c', 'child'), ('p-m', 'informant\x1fparent'),
                               ('p-f', 'parent'), ('p-x', None)]),
             [('p-c', 'child'), ('p-m', 'informant'), ('p-m', 'parent'),
              ('p-f', 'parent'), ('p-x', None)])
 
     def test_claim_role_pairs_keeps_one_person_written_twice_once(self) -> None:
         self.assertEqual(
-            claim_role_pairs([('p-m', 'informant,parent'), ('p-m', 'informant,parent')]),
+            claim_role_pairs([('p-m', 'informant\x1fparent'), ('p-m', 'informant\x1fparent')]),
             [('p-m', 'informant'), ('p-m', 'parent')])
 
     def test_join_claim_roles_round_trips(self) -> None:
         self.assertEqual(join_claim_roles(['informant', 'parent', 'informant']),
-                         'informant,parent')
+                         'informant\x1fparent')
         self.assertIsNone(join_claim_roles([]))
 
     def test_parentage_reads_a_parent_listed_after_another_role(self) -> None:
@@ -3800,7 +3828,7 @@ class MultiRoleRuleTests(unittest.TestCase):
         conn.execute('CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, '
                      'position INTEGER, role TEXT)')
         conn.executemany('INSERT INTO claim_persons VALUES (?,?,?,?)', [
-            ('c-1', 'p-d', 0, 'informant,deceased'), ('c-1', 'p-w', 1, 'spouse')])
+            ('c-1', 'p-d', 0, 'informant\x1fdeceased'), ('c-1', 'p-w', 1, 'spouse')])
         self.assertTrue(claim_is_own_vital(conn, 'p-d', 'c-1', 'death'))
         self.assertFalse(claim_is_own_vital(conn, 'p-w', 'c-1', 'death'))
 
