@@ -328,7 +328,9 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
             _same_word(p, t) for p, t in zip(parts[-n:], sn_tokens)):
         # The recorded surname is the word the suffix rule took.
         return compose(' '.join(parts[:-n]), ' '.join(parts[-n:]), None), None
-    if len(core) > n and all(_same_word(p, t) for p, t in zip(core[-n:], sn_tokens)):
+    # `>=`: a name that is only its surname (`/Dodson/` imported) has an
+    # empty given part, not the surname twice.
+    if len(core) >= n and all(_same_word(p, t) for p, t in zip(core[-n:], sn_tokens)):
         return compose(' '.join(core[:-n]), ' '.join(core[-n:]), raw_suffix), raw_suffix
     return compose(' '.join(core), sn, raw_suffix), raw_suffix
 

@@ -1317,6 +1317,10 @@ class ExplicitSurnameRoundTripTestCase(_ArchiveCase):
         self.assertIn('1 NAME Jon Thorsson //', lines)
         self.assertTrue(any('surname: ""' in s for s in stubs))
 
+    def test_surname_only_name_round_trips(self) -> None:
+        lines, _stubs = self._import_and_export('0 @I1@ INDI\n1 NAME /Dodson/\n')
+        self.assertIn('1 NAME /Dodson/', lines)
+
     def test_ordinary_surname_writes_no_line(self) -> None:
         lines, stubs = self._import_and_export('0 @I1@ INDI\n1 NAME Henry /Tudor/\n')
         self.assertIn('1 NAME Henry /Tudor/', lines)

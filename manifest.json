@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "5e2f20c78cfca0537318d3104c2a9e48006e1d305c555ba79bdcdb3b117323e8",
+      "sha256": "9967b62df64fad59be75a43d9f3c498a0a7670062bd82743093b546823c01b17",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
