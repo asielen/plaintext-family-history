@@ -9,7 +9,8 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
                    [--information primary|secondary|undetermined]
                    [--evidence direct|indirect|negative] [--anchor TEXT]
-                   [--notes TEXT] [--keep-living] [--root PATH] [--dry-run]
+                   [--notes TEXT] [--clear FIELD ...] [--keep-living]
+                   [--root PATH] [--dry-run]
 
   fha claim new --source S-id --type TYPE --value TEXT [--date DATE]
                 [--place L-id] [--place-text TEXT] [--persons P-id[,P-id...]]
@@ -232,7 +233,9 @@ CODE MAP
     _own_key_indent / _own_id_key_line - which id: line is an item's OWN key
     _apply_claim_review       - surgical `## Claims` block edit (status/value/date/
                                 type/place/persons/confidence/information/
-                                evidence/anchor/notes)
+                                evidence/anchor/notes; --clear removes a key line)
+    _clear_problem            - why a --clear list (or an empty free-text flag)
+                                cannot be applied, or None (#273)
     run_claim                 - validate, locate, edit ONE claim, return a Result
     _cannot_write             - the one "cannot write" wording, single claim or batch
     _changed_meanwhile        - why a batch left a record someone else wrote mid-batch
@@ -329,6 +332,27 @@ REVIEW_STATUSES = ('accepted', 'disputed', 'rejected', 'needs-review', 'supersed
 # a claim OUT of suggested through the other statuses, so minting straight to
 # disputed/rejected/needs-review/superseded makes no sense and stays refused).
 NEW_CLAIM_STATUSES = ('suggested', 'accepted')
+
+# The claim fields `fha claim <C-id> --clear FIELD` may remove (#273). Only
+# fields SPEC §8.4/§8.5 leave optional: place, place_text, anchor, notes and the
+# Mills information/evidence pair are "present only when used", and date is
+# "omit only if truly undatable". value/id/type/persons/status/confidence are
+# required on every claim, so removing one would write a claim `fha lint`
+# rejects (E010) - those are corrected with their own flag instead.
+CLEARABLE_CLAIM_FIELDS = ('place', 'place_text', 'date', 'information', 'evidence',
+                          'anchor', 'notes')
+
+# What to say when someone asks to --clear a field that cannot be removed: the
+# flag that corrects it instead.
+_REQUIRED_FIELD_FLAG = {
+    'value': '--value', 'type': '--type', 'persons': '--persons',
+    'status': '--status', 'confidence': '--confidence', 'id': None,
+}
+
+# The free-text flags whose value lands in the claim verbatim; an empty one
+# would write `key: ''` (#273), so it is refused and pointed at --clear.
+_FREE_TEXT_FLAGS = (('place_text', '--place-text'), ('anchor', '--anchor'),
+                    ('notes', '--notes'))
 
 # run_claim's two per-call trailer lines, named so `run_claim_batch` can
 # recognise and drop the per-claim repeats (a batch of five accepts should
@@ -670,6 +694,81 @@ def _validate_field_args(
     return None, normalized_date, persons_norm
 
 
+def _clear_problem(
+    clear: list[str] | tuple[str, ...] | None,
+    *,
+    value: str | None,
+    date: str | None,
+    place: str | None,
+    place_text: str | None,
+    persons: list[str] | None,
+    information: str | None,
+    evidence: str | None,
+    anchor: str | None,
+    notes: str | None,
+) -> tuple[tuple[str, ...], str | None]:
+    """Check `--clear` and the empty-value cases of the edit verb (#273).
+
+    `fha claim <C-id>` had no way to remove a field, and an empty free-text
+    flag was written as `key: ''` - still present, just blank. `--value ""`
+    went further and wrote a claim `fha lint` rejects (E010), because value
+    is required. So "empty" and "remove" are kept apart: removing is
+    `--clear FIELD`, limited to the fields SPEC §8.4 leaves optional
+    (CLEARABLE_CLAIM_FIELDS), and an empty value for a flag is refused with
+    the right next step. The workbench never sends a blank (its form drops
+    them before sending), so this only ever speaks to a command-line caller.
+
+    Returns `(fields, problem)`: the normalized, de-duplicated field names to
+    clear (`place-text` is read as `place_text`), and None - or `()` and the
+    plain refusal message to return."""
+    if isinstance(clear, str):
+        clear = [clear]   # one field name from a non-CLI caller, not its letters
+    fields: list[str] = []
+    for raw in clear or ():
+        name = str(raw or '').strip().lower().replace('-', '_')
+        if name in CLEARABLE_CLAIM_FIELDS:
+            if name not in fields:
+                fields.append(name)
+            continue
+        if name in _REQUIRED_FIELD_FLAG:
+            flag = _REQUIRED_FIELD_FLAG[name]
+            fix = (f'correct it with {flag} instead' if flag
+                   else "it is the claim's own identity and never changes")
+            return (), (f'--clear {raw}: {name} is required on every claim, so it cannot '
+                        f'be removed - {fix}. The fields --clear can remove are: '
+                        f'{", ".join(CLEARABLE_CLAIM_FIELDS)}. Nothing was changed.')
+        return (), (f'--clear {raw!r} is not a field --clear can remove. Use one of: '
+                    f'{", ".join(CLEARABLE_CLAIM_FIELDS)} (e.g. --clear place_text). '
+                    'Nothing was changed.')
+
+    given = {'date': date, 'place': place, 'place_text': place_text,
+             'information': information, 'evidence': evidence,
+             'anchor': anchor, 'notes': notes}
+    for name in fields:
+        if given[name] is not None:
+            flag = '--' + name.replace('_', '-')
+            return (), (f'{flag} and --clear {name} were both given - one sets {name}, '
+                        'the other removes it. Keep the one you mean and retry. '
+                        'Nothing was changed.')
+
+    if value is not None and not value.strip():
+        return (), ('--value cannot be empty - every claim needs its human-readable '
+                    'summary, so value can be corrected but never removed. Pass the '
+                    'corrected text, e.g. --value "farmer". Nothing was changed.')
+    for key, flag in _FREE_TEXT_FLAGS:
+        text = given[key]
+        if text is not None and not text.strip():
+            return (), (f'{flag} was empty, which would leave a blank {key}: line in the '
+                        f'claim. To remove {key} from the claim, use --clear {key}; to '
+                        'change it, pass the new text. Nothing was changed.')
+    if persons is not None and not persons:
+        return (), ('--persons was empty, but a claim must name at least one person. '
+                    'Pass the P-ids it is about, comma-separated (e.g. --persons '
+                    'P-de957bcda1), or leave --persons off to keep the list as it is. '
+                    'Nothing was changed.')
+    return tuple(fields), None
+
+
 # Thin alias: the exception type itself lives in `_lib.ClaimEditRefused` -
 # lifted there so `fha claim new`'s call into `_lib.append_claim_to_source`
 # (which raises that shared type) can be caught with the same name this file's
@@ -787,9 +886,11 @@ def _apply_claim_review(
     evidence: str | None = None,
     anchor: str | None = None,
     notes: str | None = None,
+    clear: tuple[str, ...] = (),
 ) -> tuple[str, bool]:
     """Surgically set any of status/reviewed/value/date/type/place/persons/
-    confidence/information/evidence/anchor/notes on one claim.
+    confidence/information/evidence/anchor/notes on one claim, and remove the
+    key lines named in `clear`.
 
     Only the claim whose `id:` matches `claim_id` (case-insensitive) inside the
     `## Claims` fenced YAML block is touched; every other line - sibling claims,
@@ -834,6 +935,13 @@ def _apply_claim_review(
     generic `set_scalar`/`_value_span_end` machinery below already replaces a
     key's FULL span, block-scalar continuation included, so no separate
     corruption guard is needed for it.
+
+    `clear` (#273) names optional keys to REMOVE: the key line and its whole
+    value span go, every other line of the claim stays byte for byte. The
+    caller (`run_claim`) has already limited it to CLEARABLE_CLAIM_FIELDS and
+    refused a key that is both set and cleared; a named key the claim does
+    not carry is simply skipped. Removal runs before any key is set, so no
+    line index this function computes afterwards can go stale.
     """
     target = normalize_id(claim_id)
     lines = text.splitlines()
@@ -955,6 +1063,23 @@ def _apply_claim_review(
             j += 1
         return j
 
+    def remove_key(key: str) -> None:
+        """Delete one top-level key of the item, value span and all (#273).
+
+        Blank lines that close the span are kept: they separate this claim
+        from the next one, they are not part of the value. When the key is
+        the item's first (it sits on the `- ` dash line), the dash moves to
+        the next key, so the item still starts where it did."""
+        idx, kind, _ = find_key(key)
+        if idx is None:
+            return
+        end = _value_span_end(idx)
+        while end > idx + 1 and item[end - 1].strip() == '':
+            end -= 1
+        del item[idx:end]
+        if kind == 'dash' and idx < len(item) and item[idx].startswith(key_indent):
+            item[idx] = dash_prefix + item[idx][len(key_indent):]
+
     def set_scalar(key: str, value_text: str, insert_after: int) -> int:
         idx, kind, _ = find_key(key)
         if idx is not None:
@@ -976,9 +1101,11 @@ def _apply_claim_review(
     # switch-removes-the-other behavior, which made any `--place` edit
     # (including the workbench's untouched-fields claim edit, P2 codex
     # finding, round 4, PR #31) silently erase the source's own wording.
-    # With no up-front deletion, no line index computed below can go stale
-    # (the 2026-07 stale-anchor corruption came from deleting AFTER anchors
-    # were fixed; there is no deletion at all now).
+    # The only deletion is `clear` below, and it runs FIRST, before any line
+    # index is computed (the 2026-07 stale-anchor corruption came from
+    # deleting AFTER anchors were fixed).
+    for key in clear:
+        remove_key(key)
 
     # 3. status (required on every valid claim). status is now OPTIONAL here
     # (2026-07 compat change: a field-only edit is legal on its own) - when
@@ -1467,6 +1594,7 @@ def run_claim(
     evidence: str | None = None,
     anchor: str | None = None,
     notes: str | None = None,
+    clear: list[str] | tuple[str, ...] | None = None,
     dry_run: bool = False,
     keep_living: bool = False,
     _record_hint: Path | None = None,
@@ -1492,8 +1620,19 @@ def run_claim(
 
     `status` is OPTIONAL (2026-07 compatibility change - see the module
     docstring): at least one of status/value/date/claim_type/place/
-    place_text/persons/confidence/information/evidence/anchor/notes must be
-    given, or the call is a plain `no-op` refusal.
+    place_text/persons/confidence/information/evidence/anchor/notes/clear
+    must be given, or the call is a plain `no-op` refusal.
+
+    `clear` (#273) lists optional fields to REMOVE from the claim (one of
+    CLEARABLE_CLAIM_FIELDS; `place-text` spelling accepted). An empty or
+    whitespace-only `value` is refused - value is required, so it can never
+    be cleared - and an empty `place_text`/`anchor`/`notes` is refused with
+    a pointer to `clear`, so this verb never writes `key: ''`. An empty
+    `persons` list is refused: a claim names at least one person. Clearing
+    a field the claim does not have is not an error: the result says there
+    was nothing to clear, and if nothing else was asked for the call ends
+    `already-done` (exit 0, nothing written) like any other request the
+    record already meets.
     `already-done` is the other "nothing happens" outcome, and the opposite
     kind: the edit asked for is already what the record says (the claim is
     already `accepted` with that `reviewed:` date - a rerun of a batch that
@@ -1579,11 +1718,18 @@ def run_claim(
     if (status is None and value is None and date is None and claim_type is None
             and place is None and place_text is None and persons is None
             and confidence is None and information is None and evidence is None
-            and anchor is None and notes is None):
+            and anchor is None and notes is None and not clear):
         return _fail(result, 'no-op',
                      'Nothing to change - pass at least one of --status, --value, --date, '
                      '--type, --place, --place-text, --persons, --confidence, '
-                     '--information, --evidence, --anchor, or --notes.')
+                     '--information, --evidence, --anchor, --notes, or --clear FIELD.')
+
+    clear_fields, problem = _clear_problem(
+        clear, value=value, date=date, place=place, place_text=place_text,
+        persons=persons, information=information, evidence=evidence,
+        anchor=anchor, notes=notes)
+    if problem is not None:
+        return _fail(result, 'failed', problem)
 
     if status is not None and status not in REVIEW_STATUSES:
         result.ok = False
@@ -1704,12 +1850,19 @@ def run_claim(
     # place: - never let a place_text correction silently re-point an
     # existing, presumably human-verified link.
     place_match = None
-    if not claim.get('place'):
+    if not claim.get('place') and 'place' not in clear_fields:
         place_match = _resolve_place_text_for_write(archive_root, place, place_text)
         if place_match is not None and place_match['tier'] == 'exact':
             place = place_match['place_id']
 
     place_display = fmt_id_display(normalize_id(place)) if place is not None else None
+
+    # --clear of a field this claim does not carry: nothing to remove, which
+    # is said plainly below rather than refused (#273). Judged from the text
+    # being edited (an earlier claim in a batch may have changed it).
+    current = claim_in_text(text, cid) or claim
+    to_clear = tuple(f for f in clear_fields if f in current)
+    not_there = [f for f in clear_fields if f not in current]
 
     try:
         new_text, changed = _apply_claim_review(
@@ -1717,7 +1870,7 @@ def run_claim(
             value=value, date=normalized_date, type_=claim_type,
             place=place_display, place_text=place_text, persons=persons_norm,
             confidence=confidence, information=information, evidence=evidence,
-            anchor=anchor, notes=notes,
+            anchor=anchor, notes=notes, clear=to_clear,
         )
     except _ClaimEditRefused as e:
         result.ok = False
@@ -1793,7 +1946,13 @@ def run_claim(
         changed_bits.append('anchor updated')
     if notes is not None:
         changed_bits.append('notes updated')
+    for field in to_clear:
+        changed_bits.append(f'{field} removed')
     summary = f'{fmt_id_display(cid)}: ' + '; '.join(changed_bits)
+    if not_there:
+        result.add('info',
+                   f'{fmt_id_display(cid)} has no {" or ".join(not_there)} line, so there '
+                   'was nothing to clear there.')
     # Issue #54: every free-text field that could be silently mangled between
     # the human/agent typing it and this tool receiving it (value/place_text/
     # anchor/notes) gets its own echoed line on a live write - see
@@ -1944,6 +2103,7 @@ def run_claim_batch(
     evidence: str | None = None,
     anchor: str | None = None,
     notes: str | None = None,
+    clear: list[str] | tuple[str, ...] | None = None,
     dry_run: bool = False,
     keep_living: bool = False,
 ) -> Result:
@@ -1959,7 +2119,7 @@ def run_claim_batch(
 
     The status-only gate: with more than one distinct C-id, any field-edit
     argument (value/date/claim_type/place/place_text/persons/confidence/
-    information/evidence/anchor/notes) is a plain refusal - a field correction
+    information/evidence/anchor/notes/clear) is a plain refusal - a field correction
     states a new fact about one particular claim, so it is inherently
     per-claim and keeps the surgical single-id form. With exactly one distinct
     id this function delegates straight to
@@ -2050,7 +2210,7 @@ def run_claim_batch(
             value=value, date=date, claim_type=claim_type, place=place,
             place_text=place_text, persons=persons, confidence=confidence,
             information=information, evidence=evidence, anchor=anchor, notes=notes,
-            dry_run=dry_run, keep_living=keep_living)
+            clear=clear, dry_run=dry_run, keep_living=keep_living)
         if duplicates:
             # Surface the dedupe first, so the human sees why one id "went
             # missing" before reading the edit itself (add-then-move keeps
@@ -2066,7 +2226,8 @@ def run_claim_batch(
                   ('--place', place), ('--place-text', place_text),
                   ('--persons', persons), ('--confidence', confidence),
                   ('--information', information), ('--evidence', evidence),
-                  ('--anchor', anchor), ('--notes', notes))
+                  ('--anchor', anchor), ('--notes', notes),
+                  ('--clear', clear or None))
     given = [name for name, val in field_args if val is not None]
     if given:
         return _fail(result, 'refused',
@@ -2748,8 +2909,11 @@ def _cmd_claim(args: argparse.Namespace) -> int:
     if archive_root is None:
         return EXIT_FAILURE
 
+    # `--persons ""` is kept as an EMPTY list, not dropped: dropping it made
+    # the engine say "pass at least one of ... --persons" to someone who had
+    # just passed it (#273). run_claim refuses the empty list in plain words.
     persons = None
-    if getattr(args, 'persons', None):
+    if getattr(args, 'persons', None) is not None:
         persons = [p.strip() for p in args.persons.split(',') if p.strip()]
 
     # One front door for one id or several: run_claim_batch delegates a single
@@ -2772,6 +2936,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
         evidence=getattr(args, 'evidence', None),
         anchor=getattr(args, 'anchor', None),
         notes=getattr(args, 'notes', None),
+        clear=getattr(args, 'clear', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
         keep_living=bool(getattr(args, 'keep_living', False)),
     )
@@ -2826,7 +2991,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--status', choices=REVIEW_STATUSES,
                    help='The review status to set. At least one of --status/--value/--date/'
                         '--type/--place/--place-text/--persons/--confidence/--information/'
-                        '--evidence/--anchor/--notes is required.')
+                        '--evidence/--anchor/--notes/--clear is required.')
     p.add_argument('--reviewed', metavar='DATE',
                    help='Review date (YYYY-MM-DD); defaults to today. Only takes effect '
                         'together with --status.')
@@ -2865,6 +3030,12 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Optionally REPLACE the claim\'s notes: - the context/detail behind '
                         'it. Safe even when the existing notes: is a multi-line block '
                         '(notes: > or notes: |); the whole field is replaced, never appended.')
+    p.add_argument('--clear', metavar='FIELD', action='append',
+                   help='Remove an optional field from the claim (repeatable): one of '
+                        + ', '.join(CLEARABLE_CLAIM_FIELDS) + '. Only that line goes; the '
+                        'rest of the claim is left exactly as written. Required fields '
+                        '(value, type, persons, status, confidence) cannot be cleared - '
+                        'correct them with their own flag.')
     p.add_argument('--keep-living', action='store_true', dest='keep_living',
                    help='Accepting a death or burial claim normally marks the person who '
                         'died as no longer living (living: false), so shared exports and '
@@ -2940,13 +3111,18 @@ Record your verdict on a suggested fact - the human decision point.
   fha claim <C-id> --status disputed|rejected|needs-review|superseded
   fha claim C-a C-b C-c --status accepted   One verdict for several claims at once
   fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
+  fha claim <C-id> --clear place_text     Remove an optional field (repeatable)
 
 Only you move a claim to accepted. Nothing becomes a fact until you decide here.
 Accepting a death or burial claim also marks the person who died as no longer
 living, so shared exports and the site can include them (--keep-living to
 leave the flag alone); someone marked as living is never changed.
 At least one of --status/--value/--date/--type/--place/--place-text/--persons/
---confidence/--information/--evidence/--anchor/--notes is required. Several
+--confidence/--information/--evidence/--anchor/--notes/--clear is required.
+--clear FIELD removes an optional field (place, place_text, date, information,
+evidence, anchor, notes); an empty --place-text/--anchor/--notes is refused
+rather than written as an empty line, and --value can be corrected but never
+emptied (every claim needs one). Several
 C-ids at once move status only - every id is checked first, and one bad id
 stops the whole batch before anything is written; field corrections take
 exactly one claim. Preview any change first with --dry-run.
