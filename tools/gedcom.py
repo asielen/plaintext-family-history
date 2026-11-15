@@ -277,7 +277,9 @@ def _surname_token_matches(name_token: str, slug_token: str) -> bool:
     return re.sub(r'[^a-z0-9]', '', fold_accents(name_token).lower()) == slug
 
 
-def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
+def _gedcom_name(
+    name: str, surname: str | None, *, surname_is_explicit: bool = False,
+) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
     Uses the index's `surname` (the birth surname from the filename slug)
@@ -345,12 +347,17 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     if is_placeholder_name(sn):
         sn = ''
     if sn and raw_suffix and len(sn.split()) == 1 and _surname_token_matches(raw_suffix, sn):
-        # A record filed before issue #292 carries its suffix as its filename
-        # surname (`vii__henry_P-….md`, `esq__john_smith_P-….md`), so the
-        # index says "Vii". That is the suffix read twice, not a surname:
-        # drop it and let the name's own split decide (`Henry // VII`,
-        # `John /Smith/ Esq`), as it does for a record filed today.
-        sn = ''
+        if surname_is_explicit:
+            # The human set that word as the surname (`--surname XI` on
+            # "Jinping XI", recorded as `surname:`): it is not a suffix.
+            core, raw_suffix = parts, None
+        else:
+            # A record filed before issue #292 carries its suffix as its
+            # filename surname (`vii__henry_P-….md`, `esq__john_smith_P-….md`),
+            # so the index says "Vii". That is the suffix read twice, not a
+            # surname: drop it and let the name's own split decide
+            # (`Henry // VII`, `John /Smith/ Esq`), as for a record filed today.
+            sn = ''
     if sn:
         sn_tokens = sn.split()
         n = len(sn_tokens)
@@ -503,18 +510,35 @@ def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row]) 
     Read from the person `.md` because the index does not carry a person-level
     `restricted` column. A restricted person's name is withheld (`/Restricted/`)
     while their structural family links stay, mirroring living redaction."""
-    out: set[str] = set()
+    return _person_record_flags(archive_root, persons)[0]
+
+
+def _person_record_flags(
+    archive_root: Path, persons: dict[str, sqlite3.Row],
+) -> tuple[set[str], set[str]]:
+    """`(restricted ids, explicit-surname ids)`, from ONE read of each person
+    `.md` - neither fact is an index column.
+
+    An explicit surname is a `surname:` line, which `fha person new
+    --surname` writes to record that a human set the file name's surname slot
+    by hand. `_gedcom_name` needs to know it: "Jinping XI" filed under `xi__`
+    on purpose must export `/XI/`, while a `vii__henry` file the old slugger
+    wrote, with no such line, exports `Henry // VII`."""
+    restricted: set[str] = set()
+    explicit: set[str] = set()
     for pid, row in persons.items():
         path = row['path']
         if not path:
             continue
         try:
-            value = read_record(archive_root / path)['meta'].get('restricted')
+            meta = read_record(archive_root / path)['meta']
         except Exception:
             continue
-        if _is_restricted_value(value):
-            out.add(pid)
-    return out
+        if _is_restricted_value(meta.get('restricted')):
+            restricted.add(pid)
+        if str(meta.get('surname') or '').strip():
+            explicit.add(pid)
+    return restricted, explicit
 
 
 def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
@@ -785,6 +809,7 @@ def _emit_individual(
     fam_xref: dict[frozenset[str], str],
     src_xref: dict[str, str], place_cache: dict[str, str],
     include_living: bool, restricted_persons: set[str] = frozenset(),
+    explicit_surname_persons: set[str] = frozenset(),
 ) -> list[str]:
     pid = person['id']
     redacted = _is_redacted(person, include_living, restricted_persons)
@@ -793,7 +818,9 @@ def _emit_individual(
     if redacted:
         lines.append(f'1 NAME {_redacted_name(person, restricted_persons)}')
     else:
-        name_field, suffix = _gedcom_name(person['name'], person['surname'])
+        name_field, suffix = _gedcom_name(
+            person['name'], person['surname'],
+            surname_is_explicit=pid in explicit_surname_persons)
         lines.append(f'1 NAME {name_field}')
         if suffix:
             lines.append(f'2 NSFX {suffix}')
@@ -927,7 +954,7 @@ def _gedcom_payload(
         # carries no person-level `restricted`, and stores a free-text source
         # type as 0. The SQL `_public_source_filter_sql` already excludes index
         # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
-        restricted_persons = _restricted_person_ids(archive_root, persons)
+        restricted_persons, explicit_surname_persons = _person_record_flags(archive_root, persons)
         restricted_sources = _restricted_source_ids(conn, archive_root)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
 
@@ -1010,7 +1037,7 @@ def _gedcom_payload(
             lines += _emit_individual(
                 persons[pid_], person_xref[pid_], conn, vitals, person_fams,
                 child_fam, fam_xref, src_xref, place_cache, include_living,
-                restricted_persons,
+                restricted_persons, explicit_surname_persons,
             )
         for key, children in families:
             lines += _emit_family(

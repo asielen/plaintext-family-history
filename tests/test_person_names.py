@@ -532,5 +532,33 @@ class EchoTests(unittest.TestCase):
         self.assertNotIn('--surname', serve._echo_person_new({'name': 'Henry Tudor'}))
 
 
+
+class EscapedNameTests(unittest.TestCase):
+    """The duplicate check's raw-text prefilter must not rule out a name
+    YAML spells with escapes (Codex, PR #285)."""
+
+    def setUp(self) -> None:
+        self._tmp, self.root = _new_archive()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_escaped_unicode_name_is_matched(self) -> None:
+        (self.root / 'people' / 'stubs' / 'wisniewska__halina_p-0000000071.md').write_text(
+            '---\nid: p-0000000071\nname: "Halina Wi\\u015bniewska"\nliving: unknown\n---\n',
+            encoding='utf-8')
+        result = person.run_new(self.root, 'Halina Wiśniewska')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        self.assertEqual(len(_stub_files(self.root)), 1)
+
+    def test_escaped_unicode_alias_is_matched(self) -> None:
+        (self.root / 'people' / 'stubs' / 'cole__margaret_p-0000000072.md').write_text(
+            '---\nid: p-0000000072\nname: Margaret Cole\n'
+            'name_variants: ["Ma\\u0142gorzata Cole"]\nliving: unknown\n---\n',
+            encoding='utf-8')
+        found = find_people_by_name(self.root, ['Małgorzata Cole'])
+        self.assertEqual([m['id'] for m in found['Małgorzata Cole']], ['P-0000000072'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "1713b63b530b45195422e98ed8422b75a7b5033f232d055e2deabf0cde96cedd",
+      "sha256": "2d2356b4b8b77825f7cff348d62d8e77e25e88c4b0469bfb62fe457fdb8eff9b",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b26cbe6ce6218dc4807cff0203bfc24d3140dcce86681cf3c977a2399e5fd38e",
+      "sha256": "a44a085e2d398ddaf9690da33e7b3a36ecddd16d86a82f1e6124c360626d8e4d",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "8b807dad2a1ddc0351b5b6e3029bd5c8b55a9918edaea647ae1b0193d9a663a0",
+      "sha256": "bed1e8d49018279d8fa0169d45fc9071caf5d03360bb295e65492d38b3c7583f",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "b1841e1502471360958ae9435a029fb6cfec8fae7bf53014e1a63e7a479c268d",
+      "sha256": "6da12daedb7c8b4cd65c4502dfd728e0111c7fe9d4a4375d8ef0effb69128d46",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "3a699095ba04da2f60fbbdb04205361c2552c4c671bc1719edf6e895bffed631",
+      "sha256": "666a4318d237905d12a5b5988862e0c012816f425d897099d87ec43b4fd80034",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "cad691eb60c22444a3beb7c398de85b98bf0e7248c1e0cd74a544b17c2b2e1b9",
+      "sha256": "ee8b8227572cfe5d4a7c0edf7f42313e1c86f312780fb10572b697ee7e1d546e",
       "spec_version": "1.2"
     },
     {

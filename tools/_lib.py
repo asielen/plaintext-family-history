@@ -9958,6 +9958,8 @@ def _person_frontmatter(path: Path, wanted_keys) -> dict | None:
     its raw text, under `person_name_key`, holds one of the wanted keys as a
     run of whole words - a name can only match if its words are in the
     text, and on an 8,000-stub archive the YAML parse was most of the cost.
+    A frontmatter holding a backslash is always parsed: a YAML escape spells
+    a letter the raw text does not show.
 
     Returns {} for a file with no frontmatter (a hand note under people/) or
     no candidate words, and None when the file cannot be read (not UTF-8, or
@@ -9980,9 +9982,13 @@ def _person_frontmatter(path: Path, wanted_keys) -> dict | None:
     except (OSError, UnicodeDecodeError):
         return None
     raw = ''.join(lines)
-    padded = f' {person_name_key(raw)} '
-    if not any(f' {key} ' in padded for key in wanted_keys):
-        return {}
+    # The prefilter reads the text as written, so it only rules a file out
+    # when it can see every letter: a YAML escape ("Wi\u015bniewska") spells
+    # a letter the raw text does not hold, and such a file is parsed anyway.
+    if '\\' not in raw:
+        padded = f' {person_name_key(raw)} '
+        if not any(f' {key} ' in padded for key in wanted_keys):
+            return {}
     try:
         meta = safe_load_yaml(raw)
     except yaml.YAMLError:
@@ -10178,8 +10184,16 @@ def render_stub_content(
     death: str | None = None,
     birth_place: str | None = None,
     death_place: str | None = None,
+    surname: str | None = None,
 ) -> str:
     """Render a §9 person-stub record's frontmatter text (id/aliases/name/…/tier).
+
+    `surname`, when given (non-blank), is written as `surname:` right after
+    `name:` - the record that a human set the file name's surname slot by
+    hand (`fha person new --surname`, SPEC §13). Later tools read it where
+    the file name alone is ambiguous: "Jinping XI" filed as `xi__jinping`
+    on purpose and "Henry VII" filed as `vii__henry` by the old slugger look
+    alike, and only the first carries the line.
 
     Shared by `fha stubs` (unresolved-reference and `--from-names` minting) and
     `fha person new` (a human deliberately starting a stub with what they
@@ -10224,6 +10238,9 @@ def render_stub_content(
         f'aliases: [{pid}]',
         f'name: {yaml_inline(display_name)}',
     ]
+    if surname is not None and str(surname).strip():
+        lines.append(f'surname: {yaml_inline(str(surname).strip())}   '
+                     '# set by hand: the file name sorts under this surname')
     if sex is not None:
         lines.append(f'sex: {sex}')
     if gender is not None:

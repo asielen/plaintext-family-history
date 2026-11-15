@@ -301,6 +301,7 @@ from _lib import (
     living_edit_problem,
     load_fha_yaml,
     mint_ids,
+    person_name_key,
     normalize_date,
     normalize_id,
     normalize_living,
@@ -1095,7 +1096,10 @@ def run_new(
         # A place with no date still records (family knowledge is often
         # "born in Kansas, no idea when") - places are free text, unvalidated.
         birth_place=(str(birth_place).strip() or None) if birth_place else None,
-        death_place=(str(death_place).strip() or None) if death_place else None)
+        death_place=(str(death_place).strip() or None) if death_place else None,
+        # Recorded so later tools can tell this hand-set slot from a slug the
+        # old slugger left (SPEC §13; `gedcom._gedcom_name`).
+        surname=surname)
     # #75/#76: every record - stub or curated - gets the full SPEC §16 body
     # from the moment it is minted: the purpose block, the (not-yet-
     # generated) ## Sources placeholder, and the four hand-written sections.
@@ -1274,7 +1278,7 @@ def run_new_from_file(
     planned = []
     for r, pid in zip(rows, ids):
         target = stubs_dir / stub_filename(r['name'], pid, surname=r['surname'])
-        content = (render_stub_content(pid, r['name'], sex=r['sex'])
+        content = (render_stub_content(pid, r['name'], sex=r['sex'], surname=r['surname'])
                    + '\n' + render_person_body_scaffold(r['name']))
         planned.append((r, pid, target, content))
         result.data['people'].append(
@@ -2050,6 +2054,44 @@ def _folder_rename_blocker(folder: Path) -> str | None:
     return None
 
 
+def _name_carries_words(name: str, words: str) -> bool:
+    """Whether `words` is a run of whole words at the start or end of
+    `name`, compared under `person_name_key` - the only places a surname
+    override can sit (`_lib.stub_slug_name`)."""
+    name_key = person_name_key(name).split()
+    want = person_name_key(words).split()
+    n = len(want)
+    return bool(n) and (name_key[-n:] == want or name_key[:n] == want)
+
+
+def _set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | None]:
+    """Set (`value` non-empty) or remove (`value` empty) the frontmatter's
+    `surname:` line, the record of a hand-set surname slot (SPEC §13).
+    Returns the new lines, or a problem sentence when the header cannot be
+    edited safely (no fences, or more than one `surname:` line)."""
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return lines, 'has no frontmatter fences to edit safely'
+    start, end = bounds
+    found = _key_line_indexes(lines, start + 1, end, 'surname')
+    if len(found) > 1:
+        return lines, 'has more than one top-level surname: line'
+    out = list(lines)
+    cr = '\r' if lines[start].endswith('\r') else ''
+    if not value:
+        if found:
+            del out[found[0]]
+        return out, None
+    line = (f'surname: {yaml_inline(value)}   '
+            f'# set by hand: the file name sorts under this surname{cr}')
+    if found:
+        out[found[0]] = line
+        return out, None
+    names = _key_line_indexes(lines, start + 1, end, 'name')
+    out.insert((names[0] + 1) if names else end, line)
+    return out, None
+
+
 def run_rename(
     archive_root: Path, person_id: str, new_name: str, *,
     keep_variant: bool = False, surname: str | None = None, dry_run: bool = False,
@@ -2149,11 +2191,24 @@ def run_rename(
     # FILE name lost letters to the old slugger (`winiewska__halina_P-…` for
     # "Halina Wiśniewska", issue #279): re-running rename with the same name
     # is the repair path, so it carries on and only the file is renamed.
-    refile_only = bool(
-        old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new)
-        and stub_filename_is_lossy(path.name, clean_new, pid, surname=surname))
-    if (old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new)
-            and not refile_only):
+    #
+    # A `surname:` line records that a human set the file name's surname slot
+    # by hand (`--surname`, SPEC §13). Without a new --surname it stays the
+    # override, as long as the new name still carries it - so a same-name
+    # rename of "Jinping XI" (filed `xi__jinping` on purpose) is not taken
+    # for a pre-#292 slug and "repaired". A new --surname replaces it, and
+    # --surname "" removes it, which is itself a change worth writing.
+    recorded_surname = str(before_meta.get('surname') or '').strip() or None
+    same_name = bool(old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new))
+    if surname is None and recorded_surname and _name_carries_words(clean_new, recorded_surname):
+        effective_surname: str | None = recorded_surname
+    else:
+        effective_surname = surname
+    surname_changes = surname is not None and (surname.strip() or None) != recorded_surname
+    refile_only = same_name and (
+        surname_changes
+        or stub_filename_is_lossy(path.name, clean_new, pid, surname=effective_surname))
+    if same_name and not refile_only:
         result.data['status'] = 'already'
         result.add('info', f'{label} is already named {clean_new!r} - nothing to change.')
         return result
@@ -2188,6 +2243,15 @@ def run_rename(
         if variant_added:
             changed_keys.add('name_variants')
 
+    if surname is not None:
+        new_lines, surname_problem = _set_surname_line(new_lines, surname.strip())
+        if surname_problem:
+            return _refuse_result(
+                result, 'refused',
+                f'{path.name} {surname_problem}. Open {path} and fix it by hand, then '
+                'run `fha lint`. Nothing was written.')
+        changed_keys.add('surname')
+
     new_text = '\n'.join(new_lines)
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
     if problem is not None:
@@ -2198,7 +2262,7 @@ def run_rename(
             '`fha lint` to check it.')
 
     # ── 2/3. Compute the new profile + research filenames, pre-flight collisions ──
-    new_filename = stub_filename(clean_new, pid, surname=surname)
+    new_filename = stub_filename(clean_new, pid, surname=effective_surname)
     new_path = path.with_name(new_filename)
     renaming_file = new_path != path
     if renaming_file and new_path.exists():
@@ -2261,6 +2325,9 @@ def run_rename(
     # A re-file (#279/#292 repair) leaves name: as it is; say what it does.
     steps = ([f're-file under its corrected file name (name: stays {clean_new})']
              if refile_only else [f'set name: {old_name or "(none)"} -> {clean_new}'])
+    if surname is not None:
+        steps.append(f'record surname: {surname.strip()}' if surname.strip()
+                     else 'record no surname (remove any surname: line)')
     if keep_variant:
         if 'name_variants' in changed_keys:
             steps.append(f'add {old_name!r} to name_variants:')
@@ -2362,6 +2429,8 @@ def run_rename(
     result.data['status'] = 'ok'
     changed_bits = ([f're-filed under its corrected file name (name: unchanged, {clean_new})']
                     if refile_only else [f'name -> {clean_new}'])
+    if surname is not None:
+        changed_bits.append(f'surname: {surname.strip()}' if surname.strip() else 'no surname')
     if renaming_file:
         changed_bits.append(f'file -> {new_filename}')
     if renaming_research:

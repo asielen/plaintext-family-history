@@ -174,5 +174,64 @@ class SuffixEdgeTests(unittest.TestCase):
         self.assertEqual(_slots(stub_filename('Jinping XI', PID, surname='XI')), 'xi__jinping')
 
 
+
+class ExplicitNumeralSurnameTests(unittest.TestCase):
+    """`--surname XI` on "Jinping XI" is the human's decision that XI is the
+    surname; the export must keep it, while a pre-#292 `vii__henry` file
+    (no recorded decision) still exports one suffix (Codex, PR #285)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _export_lines(self) -> list[str]:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        time.sleep(0.02)
+        return gedcom.run_gedcom(self.root, None, all_persons=True,
+                                 include_living=True)['text'].splitlines()
+
+    def test_explicit_surname_survives_index_and_export(self) -> None:
+        made = person.run_new(self.root, 'Jinping XI', surname='XI')
+        self.assertTrue(Path(made.data['path']).name.startswith('xi__jinping_p-'))
+        (self.root / 'people' / 'stubs' / 'vii__henry_p-0000000051.md').write_text(
+            '---\nid: p-0000000051\nname: Henry VII\nliving: false\n---\n', encoding='utf-8')
+        lines = self._export_lines()
+        self.assertIn('1 NAME Jinping /XI/', lines)
+        self.assertIn('1 NAME Henry // VII', lines)
+
+    def test_same_name_rename_keeps_the_recorded_surname(self) -> None:
+        made = person.run_new(self.root, 'Jinping XI', surname='XI')
+        out = person.run_rename(self.root, made.data['person_id'], 'Jinping XI')
+        self.assertEqual(out.data['status'], 'already')
+        self.assertTrue(Path(made.data['path']).is_file())
+
+    def test_from_file_records_the_surname_too(self) -> None:
+        path = self.root / 'p.tsv'
+        path.write_text('Jinping XI\tM\tXI\n', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(person.run_new_from_file(self.root, path).ok)
+        self.assertIn('1 NAME Jinping /XI/', self._export_lines())
+
+
+    def test_rename_with_surname_records_the_decision_on_an_old_file(self) -> None:
+        # An old `xi__jinping` file has no `surname:` line, so it exports as
+        # a suffix; `rename --surname XI` with the same name records it.
+        path = self.root / 'people' / 'stubs' / 'xi__jinping_p-0000000081.md'
+        path.write_text('---\nid: p-0000000081\nname: Jinping XI\nliving: unknown\n---\n',
+                        encoding='utf-8')
+        out = person.run_rename(self.root, 'P-0000000081', 'Jinping XI', surname='XI')
+        self.assertEqual(out.data['status'], 'ok', [m.text for m in out.messages])
+        self.assertTrue(path.is_file())
+        self.assertIn('surname: XI', path.read_text(encoding='utf-8'))
+        self.assertIn('1 NAME Jinping /XI/', self._export_lines())
+
+
 if __name__ == '__main__':
     unittest.main()
