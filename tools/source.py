@@ -4,7 +4,7 @@ source.py - fha source: deterministic source-record write-backs (TOOLING §3c si
 
   fha source note S-id --text TEXT [--dry-run] [--root PATH]
   fha source edit-note S-id --old-text TEXT --text TEXT [--dry-run] [--root PATH]
-  fha source extract S-id [--pages RANGES] [--dry-run] [--root PATH]
+  fha source extract S-id [--pages RANGES] [--copy LABEL] [--dry-run] [--root PATH]
   fha source clear-keyword S-id --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
   fha source set-primary S-id --file NAME [--dry-run] [--root PATH]
 
@@ -140,7 +140,13 @@ CODE MAP
   run_source_edit_note        - rewrite ONE existing Notes paragraph (matched by
                                 exact text via _lib.replace_paragraph_in_section)
   _parse_page_ranges          - '1-60,102' -> validated 1-based page numbers
-  run_source_extract          - PDF text layer -> derived extracted-text companion
+  _copy_label                 - a files: entry's `copy:` label, '' when unlabeled
+  _choose_extract_pdf         - #280: which PDF to read (primary, the uncopied
+                                primary, or the --copy one); never a guess
+  _words_run_together         - #281: does a page's text read as words?
+  _collapse_layout_text       - #281: layout-mode text with its padding removed
+  _extract_page_text          - #281: one page, default mode then layout retry
+  run_source_extract         - PDF text layer -> derived extracted-text companion
                                 (pypdf optional; original never touched; M11.5)
   _run_exiftool_read_keyword_fields - {'keywords': […], 'subject': […]} raw read
                                 (own thin wrapper - tools never import tools)
@@ -1700,6 +1706,7 @@ def _cmd_source_extract(args: argparse.Namespace) -> int:
     return _emit(run_source_extract(
         archive_root, fha_config, source_id=args.source_id,
         pages=getattr(args, 'pages', None),
+        copy=getattr(args, 'copy', None),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -1709,7 +1716,9 @@ def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
         'extract',
         help="Dump a source PDF's embedded text layer into a derived companion file.",
         description=('Reads the source\'s PDF (its primary file, or the only PDF '
-                     'it lists) and writes '
+                     'it lists; when a second digitization is attached as '
+                     'primary:LABEL, the one without a label unless --copy '
+                     'names another) and writes '
                      'the embedded text layer, page by page, into a '
                      '[Page N]-labeled companion the assistant can mine like a '
                      'transcript - seconds instead of reading hundreds of pages '
@@ -1722,6 +1731,11 @@ def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
     x.add_argument('--pages', metavar='RANGES',
                    help='Only these pages, e.g. `1-60` or `1-60,102,200-210` '
                         '(default: every page).')
+    x.add_argument('--copy', metavar='LABEL',
+                   help='Read the PDF whose files: entry carries this copy: label '
+                        '(e.g. `familysearch`, the label given to '
+                        '`fha process --more FILE primary:familysearch`) instead '
+                        'of the unlabeled primary.')
     x.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                    help='Archive root (auto-detected if omitted).')
     x.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -1908,9 +1922,190 @@ def _parse_page_ranges(spec: str, page_count: int) -> tuple[list[int] | None, st
     return sorted(pages), None
 
 
+def _copy_label(entry: dict) -> str:
+    """A files: entry's `copy:` label as text, '' when it has none.
+
+    `fha process --more FILE primary:familysearch` writes `copy: familysearch`
+    beside `role: primary` (SPEC §13 "Copies: `b`, `c`, `negative`..."): a
+    second digitization of the same evidence. A blank or null value is no
+    label at all, and YAML may hand back a number for `copy: 2`, hence str().
+    """
+    value = entry.get('copy')
+    if value is None:
+        return ''
+    return str(value).strip()
+
+
+def _choose_extract_pdf(
+    pdf_entries: list[dict], sid_display: str, copy: str | None,
+) -> tuple[dict | None, str | None]:
+    """Pick the one PDF entry to read, or (None, plain refusal).
+
+    Never a guess: text dumped from the wrong PDF would anchor claims to the
+    wrong pages. The order (#280):
+
+    - `--copy LABEL` given: the PDF whose `copy:` label matches (ignoring
+      capitals). An unknown label refuses, listing the labels there are.
+    - Otherwise the `role: primary` PDF. Several primaries are a normal,
+      tool-written shape - `--more FILE primary:COPY` attaches a second
+      digitization that way - so the one with NO `copy:` label is the book's
+      main copy and is read. Only when that still leaves none or several is
+      it a refusal, and the refusal names `--copy`.
+    - No primary: the single PDF the inventory lists; several refuse.
+    """
+    labels = sorted({_copy_label(e) for e in pdf_entries if _copy_label(e)},
+                    key=str.casefold)
+    label_list = ', '.join(labels)
+    example = (f'`fha source extract {sid_display} --copy {labels[0]}`'
+               if labels else '')
+
+    if copy is not None:
+        want = copy.strip().casefold()
+        if not want:
+            return None, ('--copy needs a label, e.g. `--copy familysearch`'
+                          + (f' (this source\'s labelled PDFs: {label_list})'
+                             if labels else '') + '.')
+        matches = [e for e in pdf_entries if _copy_label(e).casefold() == want]
+        if len(matches) > 1:
+            primaries = [e for e in matches if str(e.get('role', '')) == 'primary']
+            if len(primaries) == 1:
+                matches = primaries
+        if len(matches) == 1:
+            return matches[0], None
+        if not matches:
+            if labels:
+                return None, (f'{sid_display} has no PDF labelled copy: {copy.strip()} - '
+                              f'its labelled PDF copies are: {label_list}. '
+                              f'Re-run with one of them, e.g. {example}.')
+            return None, (f'{sid_display} has no PDF labelled copy: {copy.strip()} - '
+                          'none of its PDFs carries a copy: label. Re-run '
+                          f'without --copy: `fha source extract {sid_display}`.')
+        shown = ', '.join(str(e.get('file')) for e in matches)
+        return None, (f'{sid_display} has more than one PDF labelled copy: '
+                      f'{copy.strip()} ({shown}), so --copy cannot tell them '
+                      'apart. Give one of them a different copy: label in the '
+                      f'record, then re-run `fha source extract {sid_display} '
+                      f'--copy LABEL`.')
+
+    primary_pdfs = [e for e in pdf_entries if str(e.get('role', '')) == 'primary']
+    if len(primary_pdfs) > 1:
+        unlabelled = [e for e in primary_pdfs if not _copy_label(e)]
+        if len(unlabelled) == 1:
+            return unlabelled[0], None
+        if not unlabelled:
+            return None, (f'{sid_display} has {len(primary_pdfs)} PDFs marked '
+                          'role: primary and every one carries a copy: label '
+                          f'({label_list}), so none is the main copy. Name the '
+                          f'one to read, e.g. {example}.')
+        shown = ', '.join(str(e.get('file')) for e in unlabelled)
+        return None, (f'{sid_display} has {len(unlabelled)} PDFs marked role: '
+                      f'primary with no copy: label ({shown}), so extraction '
+                      'cannot tell which is the main copy and will not guess. '
+                      'Add a copy: label (e.g. `copy: b`) to the files: entry '
+                      'of every one but the main copy - the shape '
+                      '`fha process --more FILE primary:LABEL` writes - then '
+                      f're-run `fha source extract {sid_display}`'
+                      + (f', or read a labelled copy now with {example}'
+                         if labels else '') + '.')
+    if primary_pdfs:
+        return primary_pdfs[0], None
+    if len(pdf_entries) == 1:
+        return pdf_entries[0], None
+    if not pdf_entries:
+        return None, (f'{sid_display} lists no PDF in its files: inventory - this '
+                      'extraction reads PDF text layers only. For an image scan, '
+                      'read it with vision (the process-source page-window '
+                      'doctrine).')
+    shown = ', '.join(str(e.get('file')) for e in pdf_entries)
+    return None, (f'{sid_display} lists more than one PDF ({shown}) and none is '
+                  'role: primary - mark the one to extract as primary in the '
+                  'record, then re-run'
+                  + (f', or pick one by its copy: label, e.g. {example}'
+                     if labels else '') + '.')
+
+
+# #281: the words-run-together check. Ordinary prose averages about five
+# letters between spaces, and even a German page of long compounds stays
+# well under fifteen; a page whose spaces all went missing averages the whole
+# line. Twenty sits far from both. The floor keeps short pages - a heading, a
+# page number, "INDEX" - out of it entirely: there is too little text on them
+# to tell, and a false alarm there would be noise.
+_RUN_TOGETHER_MIN_CHARS = 100
+_RUN_TOGETHER_AVG_WORD = 20
+# Scripts written without spaces between words (Chinese, Japanese, Thai,
+# Lao, Myanmar, Khmer): a page mostly in one of them is spaced correctly as it
+# stands, so the check leaves it alone.
+_UNSPACED_SCRIPT_RANGES = (
+    (0x0E00, 0x0EFF), (0x1000, 0x109F), (0x1780, 0x17FF),
+    (0x2E80, 0x9FFF), (0xF900, 0xFAFF), (0xFF00, 0xFFEF),
+)
+
+
+def _words_run_together(text: str) -> bool:
+    """True when a page's text has lost the spaces between its words.
+
+    Measured as the average length of the whitespace-separated pieces (line
+    breaks count as separators: a one-name-per-line index page is spaced
+    fine for search). See the constants above for why the numbers are what
+    they are; short pages and pages in scripts that use no spaces are never
+    flagged.
+    """
+    pieces = text.split()
+    letters = sum(len(p) for p in pieces)
+    if letters < _RUN_TOGETHER_MIN_CHARS:
+        return False
+    # Latin, Cyrillic, Greek and the rest all sit below the first range, so
+    # the per-range test runs only on the rare character above it.
+    unspaced = sum(1 for p in pieces for ch in p
+                   if ord(ch) >= 0x0E00
+                   and any(lo <= ord(ch) <= hi for lo, hi in _UNSPACED_SCRIPT_RANGES))
+    if unspaced * 2 > letters:
+        return False
+    return letters / len(pieces) > _RUN_TOGETHER_AVG_WORD
+
+
+def _collapse_layout_text(text: str) -> str:
+    """pypdf layout-mode text with the page geometry's padding taken out.
+
+    Layout mode reproduces the printed page with spaces and blank lines, so a
+    word gap becomes a run of spaces and a margin a run of empty lines. Each
+    run of spaces becomes one space and each line is trimmed; line breaks
+    stay (they are the page's lines), with runs of blank lines kept to one.
+    """
+    lines = [re.sub(r'[ \t]+', ' ', line).strip() for line in text.splitlines()]
+    return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+
+
+def _extract_page_text(page) -> tuple[str, str]:
+    """One page's text and how it was read: 'plain', 'layout' or 'squashed'.
+
+    pypdf's default mode first (it is the better reader for ordinary pages).
+    When its words run together, layout mode positions each word by where it
+    sits on the page rather than by font widths, which recovers the spaces
+    on OCR layers that squeeze each word to its box with horizontal scaling
+    (`Tz` - pypdf's default mode measures the word without that scaling, so
+    the real gap looks like an overlap and no space goes in). If layout mode
+    cannot do better, or fails, the default text is kept and marked
+    'squashed' so the caller can say so. An error from the default read
+    propagates: that is the caller's "extraction FAILED" case.
+    """
+    text = (page.extract_text() or '').strip()
+    if not _words_run_together(text):
+        return text, 'plain'
+    try:
+        layout = _collapse_layout_text(page.extract_text(extraction_mode='layout') or '')
+    except Exception:
+        # Layout mode is only a second try; its failure leaves the first read
+        # standing, marked so the dump and the output say the words run together.
+        return text, 'squashed'
+    if layout and not _words_run_together(layout):
+        return layout, 'layout'
+    return text, 'squashed'
+
+
 def run_source_extract(
     archive_root: Path, fha_config: dict, source_id: str,
-    pages: str | None = None, dry_run: bool = False,
+    pages: str | None = None, dry_run: bool = False, copy: str | None = None,
 ) -> Result:
     """Extract a source PDF's embedded text layer into a derived companion file.
 
@@ -1933,14 +2128,31 @@ def run_source_extract(
     OPTIONAL dependency like Pillow - absent, the verb refuses with the
     install command, nothing else degrades.
 
+    Which PDF: `_choose_extract_pdf` (#280) - the primary, the unlabelled
+    primary when a second digitization is attached as `primary:COPY`, or the
+    one `copy` names.
+
+    Words, not a run-on string (#281): some OCR text layers place every word
+    on its own and squeeze it with horizontal scaling, and pypdf's default
+    mode then drops every space ("ThomasHartley,sonofEdward"), which no
+    phrase search can match. Each page is checked (`_words_run_together`) and
+    retried in pypdf's layout mode; a page neither mode can space is still
+    written (its text is still evidence) but named at the top of the dump and
+    in a warning, because `fha find --text` will miss phrases on it.
+
     `data`: {'status': 'ok'|'already'|'dry-run'|'not-found'|'refused'|
-    'no-text'|'failed', 'source_id', 'extract_path', 'pages_selected',
-    'pages_with_text'}. Exit codes: 0 ok/already/dry-run · 1 record or asset
-    not found, working-copy, no text layer · 3 refusals (pypdf absent, bad
-    id, ambiguous PDF, destination exists, unwritable).
+    'no-text'|'extract-error'|'failed', 'source_id', 'extract_path',
+    'pages_selected', 'pages_with_text', 'error_pages', 'squashed_pages',
+    'layout_pages'}. Exit codes: 0 ok/already/dry-run · 1 record or asset
+    not found, working-copy, no text layer, and a written dump with pages
+    that failed or whose words ran together · 3 refusals (pypdf absent, bad
+    id, ambiguous PDF or unknown --copy label, destination exists,
+    unwritable).
     """
     result = Result(data={'status': None, 'source_id': None, 'extract_path': None,
-                          'pages_selected': 0, 'pages_with_text': 0})
+                          'pages_selected': 0, 'pages_with_text': 0,
+                          'error_pages': [], 'squashed_pages': [],
+                          'layout_pages': []})
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return result_fail(result, 'refused',
@@ -2004,51 +2216,34 @@ def run_source_extract(
     meta = rec.get('meta') or {}
 
     entries = [e for e in (meta.get('files') or []) if isinstance(e, dict)]
-    if any(str(e.get('role', '')) == _EXTRACT_ROLE for e in entries):
-        existing = next(e for e in entries if str(e.get('role', '')) == _EXTRACT_ROLE)
-        result.data['status'] = 'already'
-        result.add('info',
-                   f'{fmt_id_display(sid)} already has an extracted-text companion '
-                   f'({existing.get("file")}). To re-extract, delete that file and '
-                   'its files: entry first - extraction never overwrites.')
-        return result
+    # One extracted-text dump per source, whichever copy it came from.
+    existing = next((e for e in entries if str(e.get('role', '')) == _EXTRACT_ROLE),
+                    None)
 
-    # The PDF to read: the primary entry when it is a PDF, else the single
-    # non-derived PDF in the inventory. Never a derived file (extracting an
-    # extraction is meaningless), never a guess between several.
+    # The PDF to read (see _choose_extract_pdf): never a derived file
+    # (extracting an extraction is meaningless), never a guess between several.
+    # With --copy the choice is made BEFORE the "already extracted" answer, so
+    # a mistyped label is named rather than hidden behind a clean exit; without
+    # it, an already-extracted source answers "already" as it always has.
     pdf_entries = [
         e for e in entries
         if str(e.get('file', '')).lower().endswith('.pdf')
         and str(e.get('derived', '')).lower() not in ('true', '1')
     ]
-    primary_pdfs = [e for e in pdf_entries if str(e.get('role', '')) == 'primary']
-    if len(primary_pdfs) > 1:
-        # Two PDFs both marked role: primary is a hand-edit mistake, not a
-        # choice the tool may make for the user - silently taking the first
-        # could attach text dumped from the WRONG PDF, which then anchors
-        # claims to the wrong pages. Refuse and name both so the fix is obvious.
-        shown = ', '.join(str(e.get('file')) for e in primary_pdfs)
-        return result_fail(result, 'refused',
-                           f'{fmt_id_display(sid)} marks more than one PDF as '
-                           f'role: primary ({shown}) - extraction cannot tell which '
-                           'one to read. Leave exactly one PDF marked role: primary '
-                           'in the record, then re-run.')
-    if primary_pdfs:
-        pdf_entry = primary_pdfs[0]
-    elif len(pdf_entries) == 1:
-        pdf_entry = pdf_entries[0]
-    elif not pdf_entries:
-        return result_fail(result, 'refused',
-                           f'{fmt_id_display(sid)} lists no PDF in its files: '
-                           'inventory - this extraction reads PDF text layers only. '
-                           'For an image scan, read it with vision '
-                           '(the process-source page-window doctrine).')
-    else:
-        shown = ', '.join(str(e.get('file')) for e in pdf_entries)
-        return result_fail(result, 'refused',
-                           f'{fmt_id_display(sid)} lists more than one PDF ({shown}) '
-                           'and none is role: primary - mark the one to extract as '
-                           'primary in the record, then re-run.')
+    pdf_entry = None
+    if existing is None or copy is not None:
+        pdf_entry, problem = _choose_extract_pdf(pdf_entries, fmt_id_display(sid), copy)
+        if problem is not None:
+            return result_fail(result, 'refused', problem)
+
+    if existing is not None:
+        result.data['status'] = 'already'
+        result.add('info',
+                   f'{fmt_id_display(sid)} already has an extracted-text companion '
+                   f'({existing.get("file")}). A source keeps one; to re-extract, '
+                   'delete that file and its files: entry first - extraction '
+                   'never overwrites.')
+        return result
 
     alias = str(pdf_entry.get('file'))
     pdf_path = resolve_path(alias, fha_config, archive_root)
@@ -2103,23 +2298,16 @@ def run_source_extract(
                            'extraction never overwrites. Delete it first if you '
                            'want a fresh dump.')
 
-    parts: list[str] = [
-        f'# Extracted text - {meta.get("title") or fmt_id_display(sid)} '
-        f'[{fmt_id_display(sid)}]',
-        '',
-        f'Machine-extracted from the embedded text layer of {pdf_path.name} by '
-        '`fha source extract`. A derived working copy - the PDF stays the '
-        "original; page numbers are the PDF's own, so claim anchors "
-        '(`anchor: "page N"`) line up in any copy.',
-        '',
-    ]
+    parts: list[str] = []
     pages_with_text = 0
     empty_pages: list[int] = []
     error_pages: list[int] = []
+    squashed_pages: list[int] = []
+    layout_pages: list[int] = []
     for page_no in selected:
         parts.append(f'[Page {page_no}]')
         try:
-            text = (reader.pages[page_no - 1].extract_text() or '').strip()
+            text, how = _extract_page_text(reader.pages[page_no - 1])
         except Exception as page_exc:
             # A parser failure on ONE page is not "this page has no text" - it is
             # an unknown. Recording it as empty would let a pypdf error masquerade
@@ -2132,12 +2320,44 @@ def run_source_extract(
         if text:
             pages_with_text += 1
             parts.append(text)
+            if how == 'squashed':
+                squashed_pages.append(page_no)
+            elif how == 'layout':
+                layout_pages.append(page_no)
         else:
             empty_pages.append(page_no)
             parts.append(_NO_TEXT_PLACEHOLDER)
         parts.append('')
     result.data['pages_with_text'] = pages_with_text
     result.data['error_pages'] = error_pages
+    result.data['squashed_pages'] = squashed_pages
+    result.data['layout_pages'] = layout_pages
+
+    def _page_list(nums: list[int]) -> str:
+        return (', '.join(str(p) for p in nums[:10])
+                + (' …' if len(nums) > 10 else ''))
+
+    header: list[str] = [
+        f'# Extracted text - {meta.get("title") or fmt_id_display(sid)} '
+        f'[{fmt_id_display(sid)}]',
+        '',
+        f'Machine-extracted from the embedded text layer of {pdf_path.name} by '
+        '`fha source extract`. A derived working copy - the PDF stays the '
+        "original; page numbers are the PDF's own, so claim anchors "
+        '(`anchor: "page N"`) line up in any copy.',
+        '',
+    ]
+    if squashed_pages:
+        # At the top, where a reader (or the assistant mining the dump) meets
+        # it before trusting a search that came back empty.
+        header += [
+            f'Words run together on page(s) {_page_list(squashed_pages)}: the '
+            "PDF's text layer gives no spaces between words there, so "
+            '`fha find --text` will miss phrases on those pages. Read them in '
+            'the PDF itself (or with vision) rather than trusting an empty search.',
+            '',
+        ]
+    parts = header + parts
 
     if pages_with_text == 0:
         if error_pages:
@@ -2189,7 +2409,9 @@ def run_source_extract(
                    f'{" …" if len(empty_pages) > 10 else ""})' if empty_pages else '')
                 + (f' (extraction FAILED on: '
                    f'{", ".join(str(p) for p in error_pages[:10])}'
-                   f'{" …" if len(error_pages) > 10 else ""})' if error_pages else ''))
+                   f'{" …" if len(error_pages) > 10 else ""})' if error_pages else '')
+                + (f' (words run together on: {_page_list(squashed_pages)})'
+                   if squashed_pages else ''))
 
     if dry_run:
         result.data['status'] = 'dry-run'
@@ -2285,6 +2507,19 @@ def run_source_extract(
                    f'Text extraction FAILED on page(s) {shown} - marked as errors '
                    'in the dump (not "no text"). Read those pages with vision; do '
                    'not treat them as blank.')
+    if squashed_pages:
+        # The dump is still worth keeping (its text is still evidence for the
+        # assistant to mine), but a search for a phrase on these
+        # pages will come back empty with no hint why - so it is a warning exit,
+        # the same convention as a page that FAILED, and noted atop the dump.
+        result.exit_code = EXIT_WARNINGS
+        result.add('warning',
+                   f'Words run together on page(s) {_page_list(squashed_pages)} '
+                   "(the PDF's text layer gives no spaces between words there, and "
+                   'a second reading in layout mode could not recover them). The '
+                   'text is kept and the dump says so at the top, but '
+                   '`fha find --text` will miss phrases on those pages - read them '
+                   'in the PDF itself, or with vision.')
     result.add('info',
                'Next: mine the dump like a transcript, anchoring every claim '
                '`anchor: "page N"`; run `fha index` so search sees the text.',
@@ -2297,7 +2532,7 @@ Update a source record directly - the deterministic source-field write-backs.
 
   fha source note S-2b3c4d5e6f --text "..."
   fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
-  fha source extract S-2b3c4d5e6f [--pages 1-60]
+  fha source extract S-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
   fha source clear-keyword S-2b3c4d5e6f --keyword "..." [--replace-with "..."]
   fha source set-primary S-2b3c4d5e6f --file "front-scan.tif"
 

@@ -29,8 +29,18 @@ except ImportError:
 SID = 'S-2b3c4d5e6f'
 
 
-def _minimal_pdf(page_texts: list) -> bytes:
-    """Build a tiny valid PDF: one page per entry, None = no text layer."""
+def _raw(stream: str) -> dict:
+    """A _minimal_pdf page given as its raw content stream, operators and all."""
+    return {'stream': stream}
+
+
+def _minimal_pdf(page_texts: list, base_font: str = 'Helvetica') -> bytes:
+    """Build a tiny valid PDF: one page per entry, None = no text layer.
+
+    An entry is a string (one line of text), None (a page with no text
+    layer), or `_raw(stream)` - a page whose content stream is written out
+    exactly as given, for text layers built the odd ways real OCR does.
+    """
     n_pages = len(page_texts)
     page_nums, content_nums = [], []
     next_num = 4
@@ -42,13 +52,16 @@ def _minimal_pdf(page_texts: list) -> bytes:
     objs = {
         1: '<< /Type /Catalog /Pages 2 0 R >>',
         2: f'<< /Type /Pages /Kids [{kids}] /Count {n_pages} >>',
-        3: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+        3: f'<< /Type /Font /Subtype /Type1 /BaseFont /{base_font} >>',
     }
     for i, text in enumerate(page_texts):
         pn, cn = page_nums[i], content_nums[i]
         objs[pn] = ('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] '
                     f'/Resources << /Font << /F1 3 0 R >> >> /Contents {cn} 0 R >>')
-        stream = f'BT /F1 12 Tf 72 720 Td ({text}) Tj ET' if text else ''
+        if isinstance(text, dict):
+            stream = text['stream']
+        else:
+            stream = f'BT /F1 12 Tf 72 720 Td ({text}) Tj ET' if text else ''
         objs[cn] = f'<< /Length {len(stream)} >>\nstream\n{stream}\nendstream'
     out = b'%PDF-1.4\n'
     offsets = {}
@@ -64,6 +77,28 @@ def _minimal_pdf(page_texts: list) -> bytes:
     out += (f'trailer\n<< /Size {count} /Root 1 0 R >>\n'
             f'startxref\n{xref_pos}\n%%EOF\n').encode()
     return out
+
+
+# #281: an OCR-style text layer, the way some scanned books carry one. Each
+# word is placed on its own with Tm and squeezed to its word box with
+# horizontal scaling (60 Tz), in invisible render mode (3 Tr), and there is no
+# space character anywhere. Each x is the previous word's Times-Roman width
+# x 0.6, plus a 4 pt gap. pypdf's default mode reads this back as
+# "ThomasHartley,sonofEdward,...". The line is the issue's; it is set on three
+# baselines so the page is long enough to judge (one line is a "short page"
+# the check leaves alone).
+_SQUEEZED_WORDS = [
+    (72.00, 'Thomas'), (97.27, 'Hartley,'), (122.71, 'son'), (135.88, 'of'),
+    (145.37, 'Edward,'), (171.55, 'b.'), (180.50, 'May'), (196.60, '9,'),
+    (205.55, '1854,'), (224.40, 'came'), (242.32, 'also'), (256.96, 'from'),
+    (273.79, 'Marsh'), (294.65, 'Creek'),
+]
+SQUEEZED_STREAM = (
+    'BT /F1 11 Tf 3 Tr 60 Tz\n'
+    + ''.join(f'1 0 0 1 {x:.2f} {y} Tm ({word}) Tj\n'
+              for y in (720, 706, 692) for x, word in _SQUEEZED_WORDS)
+    + 'ET')
+SQUASHED_LINE = 'ThomasHartley,sonofEdward,b.May9,1854,camealsofromMarshCreek'
 
 
 class SourceExtractTests(unittest.TestCase):
@@ -296,9 +331,11 @@ class SourceExtractTests(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_two_primary_pdfs_refuse_never_guess(self) -> None:
-        # Two non-derived PDFs both marked role: primary is a hand-edit mistake.
-        # Taking the first would risk attaching text from the WRONG PDF, so the
-        # tool must refuse and name both files rather than guess.
+        # Two non-derived PDFs both marked role: primary and NEITHER labelled
+        # with copy: - nothing says which is the main copy. Taking the first
+        # would risk attaching text from the WRONG PDF, so the tool refuses,
+        # names both files, and says how to label the second (#280: without
+        # calling the record a hand-edit mistake).
         self._write_record(
             f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n    role: primary\n'
             f'  - file: documents/book/b_{SID.lower()}.pdf\n    role: primary\n')
@@ -308,12 +345,240 @@ class SourceExtractTests(unittest.TestCase):
             _minimal_pdf(['B text']))
         result = self._run()
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
-        self.assertTrue(any('more than one PDF' in m.text
-                            and 'role: primary' in m.text for m in result.messages))
-        self.assertTrue(any(f'a_{SID.lower()}.pdf' in m.text for m in result.messages))
-        self.assertTrue(any(f'b_{SID.lower()}.pdf' in m.text for m in result.messages))
+        joined = ' '.join(m.text for m in result.messages)
+        self.assertIn('role: primary', joined)
+        self.assertIn(f'a_{SID.lower()}.pdf', joined)
+        self.assertIn(f'b_{SID.lower()}.pdf', joined)
+        self.assertIn('copy:', joined)
+        self.assertNotIn('hand-edit', joined)
         # Nothing was written: no dump, no inventory growth.
+        self.assertFalse(list(self.pdf.parent.glob('*extracted-text*')))
         self.assertEqual(len(read_record(self.record)['meta']['files']), 2)
+
+    # -- #280: a second digitization attached as primary:COPY -----------------
+
+    def _two_copies(self, second_copy: str = 'familysearch') -> None:
+        """The shape `fha process --more FILE primary:familysearch` writes."""
+        second = f'hartley-familysearch-primary_{SID.lower()}.pdf'
+        self._write_record(
+            f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
+            '    role: primary\n'
+            f'  - file: documents/book/{second}\n'
+            f'    role: primary\n    copy: {second_copy}\n')
+        self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
+        (self.pdf.parent / second).write_bytes(_minimal_pdf(['FamilySearch copy text']))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_labelled_second_primary_extracts_the_unlabelled_one(self) -> None:
+        self._two_copies()
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        text = out.read_text(encoding='utf-8')
+        self.assertIn('Own scan text', text)
+        self.assertNotIn('FamilySearch copy text', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_copy_flag_extracts_the_labelled_copy(self) -> None:
+        self._two_copies()
+        result = self._run(copy='FamilySearch')     # capitals do not matter
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        out = self.pdf.parent / f'hartley-familysearch-primary-extracted-text_{SID}.md'
+        text = out.read_text(encoding='utf-8')
+        self.assertIn('FamilySearch copy text', text)
+        self.assertNotIn('Own scan text', text)
+        self.assertEqual(read_record(self.record)['meta']['files'][-1]['file'],
+                         f'documents/book/{out.name}')
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_copy_flag_unknown_label_refuses_listing_labels(self) -> None:
+        self._two_copies()
+        before = self.record.read_text(encoding='utf-8')
+        result = self._run(copy='ancestry')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        joined = ' '.join(m.text for m in result.messages)
+        self.assertIn('ancestry', joined)
+        self.assertIn(f'fha source extract {SID} --copy familysearch', joined)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertFalse(list(self.pdf.parent.glob('*extracted-text*')))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_copy_flag_unknown_label_is_named_even_after_an_extraction(self) -> None:
+        # A mistyped label must not hide behind the clean "already" exit.
+        self._two_copies()
+        self.assertEqual(self._run().exit_code, EXIT_CLEAN)
+        result = self._run(copy='ancestry')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertTrue(any('ancestry' in m.text for m in result.messages))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_copy_flag_on_a_source_with_no_labels_refuses_plainly(self) -> None:
+        self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
+        result = self._run(copy='b')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        joined = ' '.join(m.text for m in result.messages)
+        self.assertIn('none of its PDFs carries a copy: label', joined)
+        self.assertIn(f'`fha source extract {SID}`', joined)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_every_primary_labelled_refuses_naming_copy(self) -> None:
+        self._write_record(
+            f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n'
+            '    role: primary\n    copy: b\n'
+            f'  - file: documents/book/c_{SID.lower()}.pdf\n'
+            '    role: primary\n    copy: c\n')
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        joined = ' '.join(m.text for m in result.messages)
+        self.assertIn(f'fha source extract {SID} --copy b', joined)
+        self.assertIn('(b, c)', joined)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_cli_passes_copy_through(self) -> None:
+        import argparse
+        import contextlib
+        import io
+        self._two_copies()
+        parser = argparse.ArgumentParser()
+        source_mod.register(parser.add_subparsers())
+        args = parser.parse_args(['source', 'extract', SID, '--copy', 'familysearch',
+                                  '--root', str(self.root)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = args.func(args)
+        self.assertEqual(code, EXIT_CLEAN, out.getvalue())
+        self.assertTrue((self.pdf.parent /
+                         f'hartley-familysearch-primary-extracted-text_{SID}.md').exists())
+
+    # -- #281: a text layer whose words run together ---------------------------
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_squeezed_ocr_layer_keeps_its_word_spaces(self) -> None:
+        self.pdf.write_bytes(_minimal_pdf([_raw(SQUEEZED_STREAM)], base_font='Times-Roman'))
+        result = self._run()
+        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        text = out.read_text(encoding='utf-8')
+        if 'Thomas Hartley, son of Edward' in text:
+            self.assertEqual(result.exit_code, EXIT_CLEAN,
+                             [m.text for m in result.messages])
+            self.assertEqual(result.data['squashed_pages'], [])
+            self.assertNotIn('ThomasHartley,sonofEdward', text)
+            self.assertNotIn('Words run together', text)
+        else:
+            # This pypdf cannot recover the spaces: the run must say so.
+            self.assertEqual(result.exit_code, EXIT_WARNINGS)
+            self.assertEqual(result.data['squashed_pages'], [1])
+            self.assertTrue(any('page(s) 1' in m.text and 'fha find --text' in m.text
+                                for m in result.messages))
+
+    def _fake_reader(self, default_text: str, layout_text):
+        """A PdfReader stand-in whose one page reads back as given, per mode."""
+        calls: list = []
+
+        class _Page:
+            def extract_text(self, *a, **k):
+                calls.append(k.get('extraction_mode', 'plain'))
+                if k.get('extraction_mode') == 'layout':
+                    if isinstance(layout_text, Exception):
+                        raise layout_text
+                    return layout_text
+                return default_text
+
+        class _Reader:
+            def __init__(self, *a, **k):
+                self.pages = [_Page()]
+
+        return _Reader, calls
+
+    def _run_with_reader(self, reader_cls, **kw):
+        import pypdf
+        self.pdf.write_bytes(_minimal_pdf(['placeholder']))
+        real_cls = pypdf.PdfReader
+        pypdf.PdfReader = reader_cls
+        try:
+            return self._run(**kw)
+        finally:
+            pypdf.PdfReader = real_cls
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_unrecoverable_run_together_page_is_written_with_a_warning(self) -> None:
+        squashed = (SQUASHED_LINE + '\n') * 3
+        reader, calls = self._fake_reader(squashed, squashed)
+        dry = self._run_with_reader(reader, dry_run=True)
+        self.assertTrue(any('words run together on: 1' in m.text for m in dry.messages))
+        result = self._run_with_reader(reader)
+        self.assertIn('layout', calls)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['squashed_pages'], [1])
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('page(s) 1' in w and 'fha find --text' in w for w in warnings),
+                        warnings)
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        head, _, body = text.partition('[Page 1]')
+        self.assertIn('Words run together on page(s) 1', head)
+        self.assertIn('fha find --text', head)
+        self.assertIn(SQUASHED_LINE, body)          # the text is still kept
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_layout_mode_failure_keeps_the_default_text_and_warns(self) -> None:
+        squashed = (SQUASHED_LINE + '\n') * 3
+        reader, _ = self._fake_reader(squashed, ValueError('layout boom'))
+        result = self._run_with_reader(reader)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertEqual(result.data['squashed_pages'], [1])
+        self.assertEqual(result.data['error_pages'], [])
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_layout_text_is_collapsed_and_used_when_it_reads_as_words(self) -> None:
+        squashed = (SQUASHED_LINE + '\n') * 3
+        layout = ('      Thomas   Hartley,   son  of   Edward,  b. May 9, 1854,  came  '
+                  'also from  Marsh  Creek   \n\n\n\n') * 3
+        reader, _ = self._fake_reader(squashed, layout)
+        result = self._run_with_reader(reader)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(result.data['layout_pages'], [1])
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('Thomas Hartley, son of Edward, b. May 9, 1854, came also '
+                      'from Marsh Creek\n', text)
+        self.assertNotIn('  ', text)
+        self.assertNotIn('\n\n\n', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_normal_page_never_takes_the_layout_retry(self) -> None:
+        prose = ('Thomas Hartley, son of Edward, was born May 9, 1854, and came '
+                 'also from Marsh Creek with his brothers in the spring. ') * 4
+        reader, calls = self._fake_reader(prose, 'should not be read')
+        result = self._run_with_reader(reader)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(calls, ['plain'])
+
+    def test_words_run_together_check(self) -> None:
+        check = source_mod._words_run_together
+        self.assertTrue(check('\n'.join([SQUASHED_LINE] * 3)))
+        # Ordinary text, however it is laid out, never trips it.
+        prose = ('In the year 1854 Thomas Hartley, son of Edward, came also from '
+                 'Marsh Creek and took up a farm of one hundred and sixty acres '
+                 'in what is now Washington township. ') * 5
+        self.assertFalse(check(prose))
+        index_page = '\n'.join(['Hartley, Thomas 212', 'Hartley, Edward 198',
+                                'Wisniewska, Anna 44'] * 10)
+        self.assertFalse(check(index_page))
+        self.assertFalse(check('\n'.join(['Hartley'] * 40)))   # one name per line
+        german = ('Die Landwirtschaftsgenossenschaft und die Kirchengemeinde '
+                  'Unterschreibersdorf verzeichneten Geburtsurkunden. ') * 4
+        self.assertFalse(check(german))
+        contents = '\n'.join(['Chapter I. Early Settlers ........................ 1',
+                              'Chapter II. Marsh Creek ......................... 23'] * 4)
+        self.assertFalse(check(contents))
+        # A short page is left alone, even with no spaces at all.
+        self.assertFalse(check(SQUASHED_LINE))
+        self.assertFalse(check('INDEX'))
+        self.assertFalse(check(''))
+        # A page in a script written without spaces is spaced as it stands.
+        self.assertFalse(check('王大明生于一八五' * 20))
 
     def test_working_copy_refuses_before_pypdf_check(self) -> None:
         # On a working copy the PDF is not present, so "install pypdf" is a dead
