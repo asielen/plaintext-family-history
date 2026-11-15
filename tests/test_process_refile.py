@@ -142,6 +142,20 @@ class ProcessRefileTestCase(unittest.TestCase):
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(['refile'] + argv + ['--root', str(self.archive)])
 
+    def test_refile_dest_into_photos_ignore_folder_is_refused(self) -> None:
+        # PR #287 second review: a photo refiled into a `photos_ignore:` folder
+        # would never be seen by the catalog, so the move is refused up front.
+        self._install_photo_store()
+        self._write_doc_source()
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + "photos_ignore:\n  - 'Flickr Export'\n",
+                       encoding='utf-8')
+        before = self._snapshot_tree(self.archive)
+        rc, _out, err = self._run_captured([SID, '--to', 'photos', '--dest', 'Flickr Export'])
+        self.assertNotEqual(rc, 0)
+        self.assertIn('photos_ignore', err)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+
     def _run_captured(self, argv: list[str]) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

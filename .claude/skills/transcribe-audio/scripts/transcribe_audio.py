@@ -75,10 +75,13 @@ root, never a program on PATH, so it is `./fha` on macOS/Linux, `.\\fha` in
 Windows PowerShell and a bare `fha` in the Windows Command Prompt
 (CHEATSHEET.md has the table). A finished run prints all three spellings.
 
-`fha process --more` renames what it attaches to `{stem}-{role}_{S-id}.{ext}`
-and only attaches files that already live under the documents root - so pass
-the source's shared stem to `--name` WITHOUT any role suffix of your own, and
-copy the finished .md under the documents root before attaching it.
+`fha process --more` names what it attaches for its source,
+`{source slug}-{role}_{S-id}.{ext}`, except that a name starting with the
+source's shared stem keeps that stem and gains the role (a name already ending
+in the role does not get it twice). So pass the source's shared stem to
+`--name` WITHOUT any role suffix of your own, then copy the finished .md
+beside the recording (or into the inbox - `--more` files it beside the
+recording) and attach it.
 
 Setup (once):   pip install faster-whisper        # ffmpeg optional
 Usage:

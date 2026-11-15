@@ -177,7 +177,8 @@ Three structural rules the file must obey, because tools read it:
 
 Then file it and attach it. `fha process --more` names the attachment for its source and appends the
 role itself, so write the file with the **source's shared stem carrying neither the S-id nor a role
-suffix**, beside the primary (a file in the inbox works too: `--more` files it beside the primary):
+suffix**, beside the primary when the primary is a document, or in the inbox when the primary is a photo
+(`--more` files a text file with your documents, never in the photo library):
 
 ```
 fha process <one of the source's files> --more <documents/…/{stem}.md> transcript --dry-run

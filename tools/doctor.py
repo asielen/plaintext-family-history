@@ -2279,12 +2279,25 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         worst = max(worst, EXIT_WARNINGS)
     lines.append('')
 
-    inbox_dir = archive_root / 'inbox'
+    # The configured inbox, which may live outside the archive (roots: inbox:).
+    # A folder listed in `inbox_triage_dirs:` (#290) is a holding stage, not
+    # an item: what waits inside it is what ages, so it is looked into.
+    inbox_dir = resolve_path('inbox', fha_config, archive_root)
     if inbox_dir.is_dir():
         now = datetime.datetime.now().timestamp()
         cutoff = now - 14 * 86400
         aged: list[tuple[int, Path]] = []
-        for item in inbox_dir.iterdir():
+        triage_folded = {n.casefold() for n in inbox_triage_dirs(fha_config)[0]}
+        inbox_items: list[Path] = []
+        try:
+            for entry in inbox_dir.iterdir():
+                if entry.is_dir() and entry.name.casefold() in triage_folded:
+                    inbox_items.extend(entry.iterdir())
+                else:
+                    inbox_items.append(entry)
+        except OSError:
+            pass
+        for item in inbox_items:
             try:
                 mtime = item.stat().st_mtime
                 if mtime < cutoff:

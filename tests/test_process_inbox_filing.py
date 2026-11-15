@@ -774,5 +774,122 @@ class InboxTriageDirsTests(InboxFilingTestCase):
         self.assertIn('inbox_triage_dirs', '\n'.join(result.data['lines']))
 
 
+class SecondReviewTests(InboxFilingTestCase):
+    """PR #287 second review: naming edge cases, clearer refusals, and the
+    places `--dest` could still file a photo where it does not belong."""
+
+    def _set_yaml(self, text: str) -> None:
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8') + text, encoding='utf-8')
+
+    def test_copy_letter_already_in_stem_is_not_doubled(self) -> None:
+        primary, _record, sid = self._file_letter()
+        back = self._put(self.inbox / 'Letters' / 'postcard-from-aunt-1908-c-back.tif', TIFF)
+        rc, _out, err = self._run(str(primary), '--more', str(back), 'back:c')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue(
+            (self.docs / 'letter' / f'postcard-from-aunt-1908-c-back_{sid}.tif').is_file(),
+            sorted(p.name for p in (self.docs / 'letter').iterdir()))
+
+    def test_audio_session_keeps_topic_for_every_recording(self) -> None:
+        folder = self.docs / 'interviews'
+        audio = self._put(folder / 'h98-audio.m4a', b'audio')
+        rc, _out, err = self._run(str(audio), '--type', 'interview', '--slug', 'h98-audio')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('h98-audio_S-*.m4a'))
+        sid = primary.stem.split('_')[-1]
+        for name, role in (('h98-farm.m4a', 'audio'), ('h98-school.m4a', 'audio'),
+                           ('h98-farm.md', 'whisper-transcript'),
+                           ('h98-school-whisper-transcript.md', 'whisper-transcript')):
+            more = self._put(folder / name, b'x ' + name.encode())
+            rc, _out, err = self._run(str(primary), '--more', str(more), role)
+            self.assertEqual(rc, EXIT_CLEAN, f'{name}: {err}')
+        names = sorted(p.name for p in folder.iterdir())
+        self.assertEqual(names, sorted([
+            f'h98-audio_{sid}.m4a',
+            f'h98-farm-audio_{sid}.m4a',
+            f'h98-school-audio_{sid}.m4a',
+            f'h98-farm-whisper-transcript_{sid}.md',
+            f'h98-school-whisper-transcript_{sid}.md',
+        ]))
+
+    def test_dest_example_drops_triage_folder(self) -> None:
+        self._set_yaml('inbox_triage_dirs: [review]\n')
+        photo = self._put(self.inbox / 'review' / 'C' / 'p.jpg', JPEG)
+        rc, out, err = self._run(str(photo), '--type', 'photo')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('--dest C)', out)
+        self.assertNotIn('review/C', out.replace('processed/', ''))
+        # The inbox-folder refusal suggests the same folder.
+        self._put(self.inbox / 'review' / 'D' / 'q.jpg', JPEG)
+        rc, _out, err = self._run(str(self.inbox / 'review' / 'D'))
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--dest D`', err)
+
+    def test_park_collision_message_names_a_fix(self) -> None:
+        self._put(self.inbox / 'processed' / 'A' / 'x.txt', b'kept earlier')
+        letter = self._put(self.inbox / 'A' / 'x.txt', b'a letter')
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(letter), '--type', 'letter')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already kept there', err)
+        self.assertIn('rename', err)
+        self.assertIn('Nothing was moved', err)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_more_photo_name_taken_in_primary_folder_suggests_copy_letter(self) -> None:
+        front = self._put(self.inbox / 'T' / 'x.jpg', JPEG)
+        rc, _out, err = self._run(str(front), '--type', 'photo', '--dest', 'C')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        other = self._put(self.inbox / 'U' / 'x.jpg', JPEG + b'2')
+        rc, _out, err = self._run(str(self.photos / 'C' / 'x.jpg'), '--more', str(other), 'crop')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--more "inbox/U/x.jpg" crop:b', err)
+        self.assertIn('rename it in the inbox', err)
+        self.assertTrue(other.is_file())
+
+    def test_dest_into_photos_ignore_folder_is_refused(self) -> None:
+        self._set_yaml("photos_ignore:\n  - 'Flickr Export'\n")
+        photo = self._put(self.inbox / 'x.jpg', JPEG)
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(photo), '--type', 'photo', '--dest', 'Flickr Export/2019')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('photos_ignore', err)
+        self.assertIn('Flickr Export', err)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_text_file_in_photo_library_attached_to_photo_source_refuses_plainly(self) -> None:
+        front = self._put(self.inbox / 'card.jpg', JPEG)
+        rc, _out, err = self._run(str(front))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        for name in ('notes.md', 'notes.txt', 'scan.pdf'):
+            with self.subTest(name=name):
+                stray = self._put(self.photos / name, b'%PDF-1.4' if name.endswith('.pdf') else b'text')
+                rc, _out, err = self._run(str(self.photos / 'card.jpg'), '--more', str(stray),
+                                          'transcript')
+                self.assertEqual(rc, EXIT_ERRORS, err)
+                self.assertIn('inbox', err)
+                self.assertIn('Move it into the inbox', err)
+                self.assertNotIn('exiftool', err.lower())
+                self.assertTrue(stray.is_file())
+                self.assertEqual(len(self._files_entries(record)), 1)
+
+    def test_doctor_inbox_age_reads_the_configured_inbox(self) -> None:
+        import os
+        import time
+        import doctor
+        from _lib import load_fha_yaml
+        self._set_yaml('inbox_triage_dirs: [review]\n')
+        old = self._put(self.inbox / 'review' / 'stale-letter.pdf', PDF)
+        (self.inbox / 'review').mkdir(exist_ok=True)
+        when = time.time() - 30 * 86400
+        os.utime(old, (when, when))
+        result = doctor.run_doctor(self.archive, load_fha_yaml(self.archive))
+        check = next(c for c in result.data['checks'] if c['id'] == 'inbox')
+        self.assertEqual(check['status'], 'warn')
+        self.assertIn('stale-letter.pdf', '\n'.join(result.data['lines']))
+
+
 if __name__ == '__main__':
     unittest.main()

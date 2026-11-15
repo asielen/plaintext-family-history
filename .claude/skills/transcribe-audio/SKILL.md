@@ -36,9 +36,12 @@ came, rather than the bare form.
 
    **`--name` decides where the file lands in a directory listing — get it
    right the first time, and pass the *shared* stem with no role of your
-   own.** `fha process --more` renames what you attach to
-   `{stem}-{role}_{S-id}.{ext}`, appending the role itself, so a `--name`
-   ending in `-whisper` files as `…-whisper-whisper-transcript_S-….md`. Every
+   own.** `fha process --more` names what you attach for its source: a name
+   starting with the source's shared stem keeps it and gains the role,
+   `{stem}-{role}_{S-id}.{ext}` (any other name takes the source's slug and
+   loses its topic), so a `--name` ending in `-whisper` files as
+   `…-whisper-whisper-transcript_S-….md`. The file can sit beside the
+   recording or in the inbox; `--more` files it beside the recording. Every
    file belonging to one source must share one prefix, with only the per-file
    role distinguishing it, so a reader sees each recording's audio, app
    transcript and whisper pass sitting together:
