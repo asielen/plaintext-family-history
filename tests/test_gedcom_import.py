@@ -168,8 +168,25 @@ class LivingHeuristicTestCase(unittest.TestCase):
         self.assertEqual(gedcom_import._birth_year_upper('187X'), 1879)
         self.assertEqual(gedcom_import._birth_year_upper('1870/1875'), 1875)
         self.assertEqual(gedcom_import._birth_year_upper('[..1880]'), 1880)
-        self.assertEqual(gedcom_import._birth_year_upper('1850~'), 1850)
+        # An approximate year's latest reading is one year on (edtf_bounds
+        # widens '1850~' to 1849-1851), so its upper bound is 1851.
+        self.assertEqual(gedcom_import._birth_year_upper('1850~'), 1851)
         self.assertIsNone(gedcom_import._birth_year_upper(None))
+        self.assertIsNone(gedcom_import._birth_year_upper('[1850..]'))
+
+    def test_living_flag_uses_widened_upper_bound_for_approx_birth(self) -> None:
+        # 'about 1915' can be 1916, which is not more than 110 years before
+        # 2026: the person must stay unknown (treated as living), not false.
+        self.assertEqual(
+            gedcom_import.living_flag_for_import(False, '1915~', today_year=2026), 'unknown')
+        self.assertEqual(
+            gedcom_import.living_flag_for_import(False, '1915?', today_year=2026), 'unknown')
+        self.assertEqual(
+            gedcom_import.living_flag_for_import(False, '1914~', today_year=2026), 'false')
+        self.assertEqual(
+            gedcom_import.living_flag_for_import(False, '1915', today_year=2026), 'false')
+        self.assertEqual(
+            gedcom_import.living_flag_for_import(False, '[1700..]', today_year=2026), 'unknown')
 
 
 # ── Dry-run ───────────────────────────────────────────────────────────────────
@@ -1205,6 +1222,35 @@ class LooseDateImportTestCase(_ArchiveCase):
         screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
         self.assertNotIn("@I5@ BIRT: '5 December 1810'", screen)
         self.assertIn('...', screen)
+
+    def test_plan_out_lists_every_untranslated_date(self) -> None:
+        body = ''.join(
+            f'0 @I{n}@ INDI\n1 NAME P{n} /Example/\n1 BIRT\n2 DATE sometime {n}\n'
+            for n in range(1, 6))
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                          name='bad.ged')
+        full = '\n'.join(gedcom_import._plan_lines(plan, applied=False, capped=False))
+        for n in range(1, 6):
+            self.assertIn(f"@I{n}@ BIRT: 'sometime {n}'", full)
+        screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False)
+                           + plan.warnings)
+        self.assertNotIn("'sometime 5'", screen)
+
+    def test_dedupe_line_shows_plain_wording(self) -> None:
+        people = self.archive / 'people'
+        people.mkdir(exist_ok=True)
+        (people / 'hartley__rose_P-aaaaaaaaaa.md').write_text(
+            '---\nid: P-aaaaaaaaaa\naliases: [P-aaaaaaaaaa]\nname: Rose Hartley\n'
+            'living: false\nbirth: 1849~\ntier: stub\n---\n', encoding='utf-8')
+        plan = self._plan('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n'
+                          '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 BIRT\n2 DATE after 1700\n'
+                          '0 TRLR\n', name='plain.ged')
+        self.assertEqual(len(plan.duplicates), 1, plan.duplicates)
+        line = plan.duplicates[0]
+        self.assertIn('b.after 1700', line)
+        self.assertIn('b.about 1849', line)
+        self.assertNotIn('[1700..]', line)
+        self.assertNotIn('1849~', line)
 
     def test_head_date_uses_the_strict_grammar_only(self) -> None:
         # HEAD DATE is written by the exporting program, never typed; it feeds

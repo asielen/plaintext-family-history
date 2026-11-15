@@ -142,6 +142,9 @@ class NormalizeDateTests(unittest.TestCase):
     def test_trailing_dots_are_not_an_open_end_silently_dropped(self) -> None:
         for raw in ('1850..', '1850...', 'about 1850..'):
             self.assertIsNone(normalize_date(raw), raw)
+        # With a before/after word the dots are only sentence noise.
+        self.assertEqual(normalize_date('after 1850...'), '[1850..]')
+        self.assertEqual(normalize_date('before 1850..'), '[..1850]')
         self.assertEqual(normalize_date('circa 1870.'), '1870~')
 
 
@@ -183,6 +186,15 @@ class LintForgivingDateTests(unittest.TestCase):
         self.assertTrue(msgs)
         self.assertIn("'187X'", msgs[0])
         self.assertIn('the 1870s', msgs[0])
+
+    def test_hedged_range_suggestion_reads_in_plain_words(self) -> None:
+        # #293 review: the gloss read 'between 1891~ and 1893~'.
+        findings = self._lint('about 1891-1893')
+        msgs = [f.message for f in findings
+                if f.code == 'W109' and "'about 1891-1893'" in f.message]
+        self.assertTrue(msgs)
+        self.assertIn("'1891~/1893~'", msgs[0])
+        self.assertIn('about 1891 to about 1893', msgs[0])
 
     def test_broken_date_is_single_plain_error(self) -> None:
         findings = self._lint('the day after never')

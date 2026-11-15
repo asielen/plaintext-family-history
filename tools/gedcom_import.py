@@ -104,6 +104,7 @@ from _lib import (
     configure_utf8_stdout,
     edtf_bounds,
     fmt_id_display,
+    humanize_edtf,
     is_template_file,
     is_valid_edtf,
     is_working_copy,
@@ -649,21 +650,17 @@ def _birth_year_upper(edtf: str | None) -> int | None:
     The living heuristic needs "born more than 110 years ago" to be TRUE only
     when the latest possible reading of the date is that old, so the error
     direction stays safe: an interval uses its upper bound, a decade its final
-    year, a before-form its cutoff. An after-form or phrase date yields None
-    (unbounded - the person could be young), which keeps them `unknown`."""
-    if not edtf:
+    year, a before-form its cutoff, and an approximate or uncertain year its
+    widened end (`1915~` can be 1916). That is `edtf_bounds`' upper bound,
+    the one reading every other tool uses. An after-form (open ceiling) or a
+    phrase date yields None (unbounded - the person could be young), which
+    keeps them `unknown`."""
+    if not edtf or not is_valid_edtf(edtf.strip()):
         return None
-    s = edtf.strip()
-    if s.startswith('[..') and s.endswith(']'):
-        s = s[3:-1]
-    if '/' in s:
-        s = s.split('/', 1)[1]
-    s = s.replace('~', '').replace('?', '')
-    m = re.match(r'^(\d{3})X', s)
-    if m:
-        return int(m.group(1)) * 10 + 9
-    m = re.match(r'^(\d{4})', s)
-    return int(m.group(1)) if m else None
+    upper = edtf_bounds(edtf.strip())[1]
+    if upper == '9999-12-31':      # the open ceiling of an after-form
+        return None
+    return int(upper[:4])
 
 
 def living_flag_for_import(has_death: bool, birth_edtf: str | None,
@@ -754,6 +751,7 @@ class ImportPlan:
     unread_top: list[tuple[str, int]]      # (tag, line count), most common first
     loose_dates: int = 0                   # dates read by the free-form fallback (#293)
     loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
+    date_downgrades: list[str] = field(default_factory=list)    # unreadable, uncapped
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -1148,8 +1146,12 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
                         and (in_win[0] - _DEDUPE_YEAR_SLACK > ex_win[1]
                              or ex_win[0] > in_win[1] + _DEDUPE_YEAR_SLACK)):
                     continue
-                in_b = f' b.{stub.birth}' if stub.birth else ''
-                ex_b = f' b.{person["birth_raw"]}' if person['birth_raw'] else ''
+                # Plain wording ("after 1700", "about 1849"), not EDTF codes;
+                # a hand-written non-EDTF birth is shown as typed.
+                in_b = f' b.{humanize_edtf(stub.birth)}' if stub.birth else ''
+                ex_raw = person['birth_raw']
+                ex_b = (f' b.{humanize_edtf(ex_raw) if is_valid_edtf(ex_raw) else ex_raw}'
+                        if ex_raw else '')
                 try:
                     where = person['path'].relative_to(archive_root)
                 except ValueError:
@@ -1429,6 +1431,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         duplicates=_find_duplicates(archive_root, stubs),
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
         loose_dates=len(date_loose), loose_date_reads=list(date_loose),
+        date_downgrades=list(date_downgrades),
     )
 
 
@@ -1654,6 +1657,12 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      f'rather than GEDCOM\'s date form ({shown}{more}) and were read '
                      'the way `fha claim --date` reads a typed date. The wording '
                      'stays in each claim\'s text, to check when you review it.')
+    if plan.date_downgrades and not capped:
+        # The warning names three; the full plan names every date left out.
+        lines.append('')
+        lines.append(f'  Dates left out of the date field ({len(plan.date_downgrades):,}; '
+                     'the wording is kept in each claim\'s text):')
+        lines.extend(f'    {d}' for d in plan.date_downgrades)
     if plan.unread_lines:
         top = ', '.join(f'{tag} x{n}' for tag, n in plan.unread_top)
         lines.append('')

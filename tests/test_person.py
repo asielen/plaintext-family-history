@@ -979,6 +979,13 @@ class NewTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('recorded birth as 1870~ - about 1870', text)
 
+    def test_hedged_range_birth_gloss_keeps_the_hedge_in_words(self) -> None:
+        # #293 review: a hedged range glossed as 'between 1891~ and 1893~'.
+        result = person.run_new(self.root, 'Rose Cole', birth='about 1891-1893')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('recorded birth as 1891~/1893~ - about 1891 to about 1893', text)
+
     def test_nonsense_date_refused_without_write(self) -> None:
         before = self._existing_stub_names()
         result = person.run_new(self.root, 'Nonsense Person', birth='blorptown')

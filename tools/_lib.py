@@ -6603,7 +6603,8 @@ def normalize_date(s: str | None) -> str | None:
       (the hedge goes on both endpoints; a hedge is never dropped)
       about 1870s, maybe 187x                              → None (no stored form)
       1870.., 1870...                                      → None (an open end
-      that is neither [..X] nor [X..]; never read as plain 1870)
+      that is neither [..X] nor [X..]; never read as plain 1870 - with a
+      before/after word the dots are noise: "after 1870..." → [1870..])
       a bare year/month/day already shaped like EDTF       → itself
 
     Month names such as "June 1923", "June 14 1923", and "14 June 1923"
@@ -6618,12 +6619,13 @@ def normalize_date(s: str | None) -> str | None:
         return None
     if is_valid_edtf(raw):
         return raw
+    text, approx, before, after, uncertain = _loose_date_parts(raw)
     # `_loose_date_parts` strips trailing dots as sentence noise, which would
     # turn "1850.." (an open end, half of an EDTF open form) into plain 1850.
-    if raw.endswith('..'):
+    # With a before/after word the open end is already said in words
+    # ("after 1850..." is [1850..]), so only a bare one is refused.
+    if raw.endswith('..') and not (before or after):
         return None
-
-    text, approx, before, after, uncertain = _loose_date_parts(raw)
 
     candidate: str | None = None
 
