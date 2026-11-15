@@ -4317,6 +4317,20 @@ class ClearFieldReviewTests(unittest.TestCase):
         return claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=list(fields))
 
     # P2-1: a key this edit cannot find is refused, not reported as done.
+    def test_setting_a_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
+        # The set_scalar twin: it used to insert a second key line (YAML keeps
+        # the last, so nothing failed) - silent duplication.
+        for key, flag_value in (('notes', 'New notes.'), ('place_text', 'Fairview'),
+                                ('anchor', 'p. 9')):
+            for line in (f'  "{key}": hi\n', f'  {key} : hi\n'):
+                with self.subTest(key=key, line=line):
+                    before = self._write(self.HEAD + line + self.NEXT)
+                    result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                             **{key: flag_value})
+                    self.assertEqual(result.exit_code, EXIT_FAILURE)
+                    self.assertIn('cannot safely change', result.messages[-1].text)
+                    self.assertEqual(self.path.read_bytes(), before)
+
     def test_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
         for line in ('  "notes": hi\n', '  notes : foo\n'):
             with self.subTest(line=line):

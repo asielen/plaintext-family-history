@@ -1215,6 +1215,20 @@ def _apply_claim_review(
             else:
                 item[idx:end] = [f'{key_indent}{key}: {value_text}']
             return idx
+        odd_form = re.compile(r'^\s*(?:-\s+)?(?:["\']' + re.escape(key)
+                              + r'["\']\s*|' + re.escape(key) + r'\s+):')
+        if key in parsed_items[span_index] and any(odd_form.match(ln) for ln in item):
+            # The claim HAS this key, written on a line this edit does not
+            # read (a quoted key `"notes": hi`, a space before the colon).
+            # Inserting a new line would leave the key twice - YAML keeps the
+            # last one, so nothing would fail, and the record would silently
+            # hold two (#273 review). Refuse, like remove_key does. Any other
+            # miss falls through to the insert and the pre-write guards.
+            raise _ClaimEditRefused(
+                f'the {key}: line of {fmt_id_display(target)} is written in a form '
+                'this edit cannot safely change (a quoted key, or a space before '
+                'the colon). Open the record file, fix that line by hand under '
+                '## Claims, then run `fha lint` to check it. Nothing was written.')
         pos = insert_after + 1
         item.insert(pos, f'{key_indent}{key}: {value_text}')
         return pos
