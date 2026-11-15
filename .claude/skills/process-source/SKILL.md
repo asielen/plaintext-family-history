@@ -123,10 +123,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      like a transcript in seconds instead of vision-reading hundreds of pages. An all-image PDF refuses
      honestly; fall back to the page windows below. A **"Words run together"** warning (also listed at
      the top of the dump) names pages whose words no reader could space: search misses phrases there,
-     so read those pages with vision, or transcribe them via `transcribe-source`. A **"Words broken in
-     the middle"** warning names pages whose words are still split ("Hart ley"): install poppler's
-     `pdftotext` and re-run (delete the dump and its `files:` entry first), or read those pages by eye
-     before trusting a name search on them. A source with several
+     so read those pages with vision, or transcribe them via `transcribe-source` (or install poppler's
+     `pdftotext` and re-run, after deleting the dump and its `files:` entry). A source with several
      copies attached as `primary:LABEL` reads the unlabelled one; `--copy LABEL` reads another.
    - Read in **page windows** (~20 pages at a time), not the whole file at once.
    - Anchor every claim to the **original's pagination** — `anchor: "page 214"` (SPEC §8.4 sanctions

@@ -148,20 +148,14 @@ CODE MAP
   _is_suspect / _long_pieces_flag - #281: long or glued pieces; the long sign
   _words_run_together         - #281: the trigger - worth a second reading?
   _suspect_chars / _hopeless_share - #281: suspicious text; 40+ letter pieces
-  _agrees                     - #281: layout confirms the GLUED pieces (never long)
+  _agrees                     - #281: the second reading confirms GLUED pieces
   _collapse_layout_text       - #281: second-reader text with its padding removed
   _reading_problem / _same_reading - #281: a second reading changes only spacing
   _clears_suspects            - #281: a second reading clears half the suspects
-  _broken_words / _breaks_more_words / _many_broken - #281: words one reader
-                                breaks, the other keeps whole (no word list)
-  _inner_space_positions / _kerned_breaks - #281: kerned breaks, read from
-                                layout's raw spacing (one space, not two)
-  _prefer_other               - #281: one-sided evidence for pdftotext's reading
-  _raw_layout_reading         - #281: layout mode with its spacing intact
   _layout_reading             - #281: pypdf layout mode, rotated text kept
   _pdftotext_path / _PdftotextPages / _pdftotext_reading - #281: poppler
                                 pdftotext, once per block of pages, when on PATH
-  _extract_page_text          - #281: one page: default, layout, pdftotext
+  _extract_page_text          - #281: one page: default, then pdftotext or layout
   run_source_extract         - PDF text layer -> derived extracted-text companion
                                 (pypdf optional; original never touched; M11.5)
   _run_exiftool_read_keyword_fields - {'keywords': […], 'subject': […]} raw read
@@ -2086,19 +2080,21 @@ def _dump_source_pdf(dump_path: Path) -> str | None:
 #      read as a gap while the real gaps were lost; "Abbott12" - an index's
 #      name run into its page number). Names and ordinals do this too
 #      (McDonald, FamilySearch, 21st), which agreement then clears.
-# 2. What does the page really say? (`_extract_page_text`.) Decided by
-#    COMPARING readers:
-#    - A second reading (layout mode, then pdftotext) is accepted when it
-#      clears at least half the default reading's suspicious text and is
-#      not still made of 40-letter runs (`_clears_suspects`), and changes
-#      nothing but spacing (`_reading_problem`). When both readers are
-#      there and pass, the one that does not break words the other keeps
-#      whole wins (`_broken_words`).
-#    - With no reading accepted, the page is plain only when the readers
-#      agree on the GLUED pieces (a second reader keeps McDonald whole) and
-#      the long-piece sign is not what fired: a long piece no reader splits
-#      is not evidence that it is a word - a text layer with no spaces at
-#      all reads the same in every reader (`_agrees`).
+# 2. What does the page really say? (`_extract_page_text`.) The page is read
+#    once more, by the best reader there is: poppler's pdftotext when it is
+#    installed (falling back to pypdf's layout mode when it fails or its
+#    reading cannot be used), else layout mode. That reading is accepted when it clears at least half the
+#    default reading's suspicious text and is not still made of 40-letter
+#    runs (`_clears_suspects`), and changes nothing but spacing
+#    (`_reading_problem`). An occasional word the second reader still breaks
+#    where the layer kerns ("Hart ley") is accepted - better than
+#    "ThomasHartley".
+#    - Not accepted, the page is plain only when the second reading agrees
+#      on the GLUED pieces (it keeps McDonald whole) and the page is not a
+#      layer without spaces - a long piece no reader splits is no evidence
+#      that it is a word (`_agrees`). This is what keeps ordinary pages of
+#      names plain.
+#    - Otherwise the default reading is kept and the page is warned about.
 _RUN_TOGETHER_MIN_CHARS = 100
 _RUN_TOGETHER_LONG_PIECE = 15
 _RUN_TOGETHER_SHARE = 0.20
@@ -2262,9 +2258,9 @@ def _reading_problem(default: str, other: str) -> str | None:
       letter sequences must reach 0.995, which a moved block of lines or an
       interleaved column fails.
 
-    Whether a reading breaks words apart is not judged here, against a word
-    list or a length: that needs another reading to compare with (see
-    `_broken_words`).
+    Whether a reading still breaks a word where the layer kerns ("Hart ley")
+    is not judged: such a reading is still far better for search than the
+    run-together default, and is accepted.
     """
     def _fold(text: str) -> str:
         text = _LINE_END_HYPHEN_RE.sub('', text)
@@ -2309,123 +2305,6 @@ def _clears_suspects(default: str, other: str | None) -> bool:
     return _suspect_chars(other) * 2 <= _suspect_chars(default)
 
 
-_WORD_CORE_STRIP = '.,;:()[]"\'!?'
-
-
-def _broken_words(reading: str, other: str) -> int:
-    """How many words `reading` breaks that `other` keeps whole.
-
-    Counts the 1-3 letter fragments of `reading` that are not a piece of
-    `other` but, joined to the fragment before or after them, are found
-    inside one of `other`'s pieces ("Tho" "mas" against "Thomas"). No word
-    list: a short word both readers set apart ("il y a", "ii", "dwl") is
-    never counted, whatever the language.
-    """
-    cores = [p.strip(_WORD_CORE_STRIP) for p in reading.split()]
-    other_cores = {p.strip(_WORD_CORE_STRIP) for p in other.split()}
-    joined = ' '.join(other.split())
-    count = 0
-    for i, core in enumerate(cores):
-        if not (core and len(core) <= 3 and core.isalpha()) or core in other_cores:
-            continue
-        before = cores[i - 1] + core if i else ''
-        after = core + cores[i + 1] if i + 1 < len(cores) else ''
-        if (before and before in joined) or (after and after in joined):
-            count += 1
-    return count
-
-
-def _many_broken(count: int, reading: str) -> bool:
-    """The count that decides when BOTH readings break words: more than 3, and over 2% of pieces."""
-    return count > max(3, len(reading.split()) // 50)
-
-
-def _prefer_other(layout: str, other: str) -> bool:
-    """True when the other reader's reading should replace layout's.
-
-    One-sided evidence needs no threshold: if layout breaks a word the other
-    reading keeps whole, and the other breaks none that layout keeps whole,
-    the other is simply better. Only when both break words does it come to
-    a count (`_breaks_more_words`).
-    """
-    mine, theirs = _broken_words(layout, other), _broken_words(other, layout)
-    if mine and not theirs:
-        return True
-    return _breaks_more_words(layout, other)
-
-
-def _breaks_more_words(reading: str, other: str) -> bool:
-    """True when `reading` breaks clearly more words than `other` does."""
-    mine, theirs = _broken_words(reading, other), _broken_words(other, reading)
-    return _many_broken(mine, reading) and mine > 2 * theirs
-
-
-_GAP_RE = re.compile(r'(?<=\S)( +)(?=\S)')
-
-
-def _inner_space_positions(text: str) -> tuple[str, set[int]]:
-    """(the letters and digits of `text`, the positions of its in-line spaces).
-
-    A position counts letters and digits only, so two readings of the same
-    glyphs can be lined up whatever their spacing and punctuation.
-    """
-    letters: list[str] = []
-    inner: set[int] = set()
-    pos = 0
-    for line in text.splitlines():
-        pieces = [''.join(ch for ch in p if ch.isalnum()) for p in line.split()]
-        pieces = [p for p in pieces if p]
-        for i, piece in enumerate(pieces):
-            letters.append(piece)
-            pos += len(piece)
-            if i + 1 < len(pieces):
-                inner.add(pos)
-    return ''.join(letters), inner
-
-
-def _kerned_breaks(raw_layout: str, default: str) -> int:
-    """How many breaks INSIDE words pypdf's raw layout reading keeps.
-
-    The kerning case: the layer kerns inside a word, and pypdf's default
-    reading puts a space there ("ThomasHart ley") while losing the real
-    gaps. Layout mode, before its padding is collapsed, shows which is which
-    directly: it sets a real word gap as two or more spaces and a kerned
-    break as one ('Thomas  Hart ley,  son  of'). Two pieces of evidence
-    must agree for a break to count:
-
-    - in the raw layout line, a one-space gap between two letters or digits
-      on a line whose usual gap (the most common width) is wider; a line
-      whose gaps are all one space wide has nothing to compare with and
-      counts nothing - a kerned break and a real gap look alike there;
-    - the default reading has a space at that same place. A narrower real
-      gap ("Andrew's in", where the apostrophe sets tight) is one the
-      default reading ran together like the rest, so it is not counted.
-
-    When the two readings' letters do not line up, only the first test is
-    applied.
-    """
-    d_letters, d_inner = _inner_space_positions(default)
-    lines = raw_layout.splitlines()
-    r_letters = ''.join(ch for ch in raw_layout if ch.isalnum())
-    check_default = r_letters == d_letters
-    count = 0
-    pos = 0
-    for line in lines:
-        gaps = list(_GAP_RE.finditer(line))
-        widths = Counter(len(m.group(1)) for m in gaps)
-        usual = max(widths.items(), key=lambda kv: (kv[1], kv[0]))[0] if widths else 1
-        cursor = 0
-        for m in gaps:
-            pos += sum(1 for ch in line[cursor:m.start()] if ch.isalnum())
-            cursor = m.start()
-            if (len(gaps) >= 2 and usual >= 2 and len(m.group(1)) == 1
-                    and line[m.start() - 1].isalnum() and line[m.end()].isalnum()
-                    and (not check_default or pos in d_inner)):
-                count += 1
-        pos += sum(1 for ch in line[cursor:] if ch.isalnum())
-    return count
-
-
 # pypdf logs "Rotated text discovered..." from layout mode through its
 # logger; the reading comparison is what decides about rotated text, so that
 # line is quieted during the retry rather than reaching the user's screen
@@ -2435,24 +2314,15 @@ _PYPDF_LOG_LOCK = threading.Lock()
 
 
 def _layout_reading(page) -> str | None:
-    """pypdf's layout-mode reading of a page, rotated text kept, padding
-    collapsed; None on error."""
-    raw = _raw_layout_reading(page)
-    return None if raw is None else _collapse_layout_text(raw)
-
-
-def _raw_layout_reading(page) -> str | None:
-    """pypdf's layout-mode reading as it comes, spacing intact; None on error.
-
-    The raw spacing is evidence (`_kerned_breaks`), so it is kept beside the
-    collapsed text rather than thrown away."""
+    """pypdf's layout-mode reading of a page, rotated text kept; None on error."""
     with _PYPDF_LOG_LOCK:
         pypdf_logger = logging.getLogger('pypdf')
         old_level = pypdf_logger.level
         pypdf_logger.setLevel(logging.ERROR)
         try:
-            return page.extract_text(extraction_mode='layout',
-                                     layout_mode_strip_rotated=False) or ''
+            return _collapse_layout_text(
+                page.extract_text(extraction_mode='layout',
+                                  layout_mode_strip_rotated=False) or '')
         except Exception:
             # Only a second try: its failure leaves the first read standing.
             return None
@@ -2569,33 +2439,24 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
     """One page's text and how it was read.
 
     Returns (text, how), how being 'plain' (pypdf's default reading),
-    'layout' or 'pdftotext' (a second reading that restored lost spaces),
-    'split' (layout's reading, which restored spaces but keeps words the
-    default reading broke in the middle, "Hart ley" - used, and warned about),
-    'reordered' (words run together; a second reader spaced them but changed
-    the text's order or dropped some, so it was not used) or 'squashed'
-    (words run together and no reader could space them).
+    'pdftotext' or 'layout' (a second reading that restored lost spaces),
+    'reordered' (words run together; the second reader spaced them but
+    changed the text's order or dropped some, so it was not used) or
+    'squashed' (words run together and the second reader could not space
+    them).
 
-    pypdf's default mode first. When the trigger fires, layout mode reads
-    the page again, placing each word by where it sits on the page rather
-    than by font widths - which recovers the spaces on OCR layers that
-    squeeze each word with horizontal scaling (`Tz`: pypdf's default mode
-    measures the word without that scaling, so the real gap looks like an
-    overlap and no space goes in) or split it with kerning. Then, as the
-    comment block above sets out:
-
-    - Layout's reading is used when it passes (`_clears_suspects` and
-      `_reading_problem`) - unless `second_reader()` (pdftotext, when the
-      caller has it) passes too and layout breaks clearly more of its words
-      ("Tho mas" where pdftotext reads "Thomas"), when pdftotext's is used.
-    - Otherwise, if layout mode agrees with the default reading (`_agrees`)
-      and did not change the text, the page is plain.
-    - Otherwise pdftotext's reading, if it passes.
-    - Otherwise the default text, marked 'reordered' when a reader spaced
-      the words but was refused for changing the text, else 'squashed'.
+    pypdf's default mode first. When the trigger fires, the page is read
+    once more, as the comment block above sets out: by `second_reader()`
+    (pdftotext, when the caller has it) or, when there is none, or it fails
+    or its reading cannot be used, by pypdf's layout mode - which places each word by where it
+    sits on the page rather than by font widths, and so recovers the spaces
+    on OCR layers that squeeze each word with horizontal scaling (`Tz`:
+    pypdf's default mode measures the word without that scaling, so the
+    real gap looks like an overlap and no space goes in).
 
     An error from the default read propagates: that is the caller's
-    "extraction FAILED" case.
+    "extraction FAILED" case. An error from a second reader never does - it
+    is optional help, and the page keeps what pypdf read.
     """
     text = (page.extract_text() or '').strip()
     if not _words_run_together(text):
@@ -2606,35 +2467,28 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
             return 'unspaced'
         return 'changed' if _reading_problem(text, reading) else 'ok'
 
-    def _second() -> str | None:
-        # The second reader is optional help: if it raises, the page keeps
-        # what pypdf read - never an "extraction FAILED" page.
-        if second_reader is None:
-            return None
+    changed = False
+    agreed = False
+    if second_reader is not None:
         try:
-            return second_reader()
+            other = second_reader()
         except Exception:
-            return None
-
-    raw = _raw_layout_reading(page)
-    layout = None if raw is None else _collapse_layout_text(raw)
-    layout_verdict = _verdict(layout)
-    if layout_verdict == 'ok':
-        other = _second()
-        if other and _verdict(other) == 'ok' and _prefer_other(layout, other):
-            return other, 'pdftotext'
-        # Spaced, but words still broken where the layer kerns: the layout
-        # text is kept (it is no worse than the default), and said so.
-        if _kerned_breaks(raw, text):
-            return layout, 'split'
+            other = None
+        if other:
+            verdict = _verdict(other)
+            if verdict == 'ok':
+                return other, 'pdftotext'
+            changed = verdict == 'changed'
+    # No pdftotext, or it failed or could not be used on this page: layout.
+    layout = _layout_reading(page)
+    verdict = _verdict(layout)
+    if verdict == 'ok':
         return layout, 'layout'
-    if layout_verdict != 'changed' and _agrees(text, layout):
+    changed = changed or verdict == 'changed'
+    if verdict != 'changed' and _agrees(text, layout):
+        agreed = True
+    if agreed and not changed:
         return text, 'plain'
-    other = _second()
-    other_verdict = _verdict(other)
-    if other_verdict == 'ok':
-        return other, 'pdftotext'
-    changed = 'changed' in (layout_verdict, other_verdict)
     return text, 'reordered' if changed else 'squashed'
 
 
@@ -2672,32 +2526,28 @@ def run_source_extract(
     on its own and squeeze it with horizontal scaling, and pypdf's default
     mode then drops every space ("ThomasHartley,sonofEdward"), which no
     phrase search can match. Each page is checked (`_words_run_together`) and
-    read again by pypdf's layout mode, then by poppler's `pdftotext` when it
-    is installed (`_extract_page_text`); a page no reader can space is still
+    read once more, by poppler's `pdftotext` when it is installed, else by
+    pypdf's layout mode (`_extract_page_text`); a page no reader can space is still
     written (its text is still evidence) but named at the top of the dump and
-    in a warning, because `fha find --text` will miss phrases on it. So is a
-    page whose layout reading restored the spaces but keeps words broken where
-    the layer kerns ("Hart ley"), with no clean pdftotext reading to use.
+    in a warning, because `fha find --text` will miss phrases on it.
 
     `data`: {'status': 'ok'|'already'|'dry-run'|'not-found'|'refused'|
     'no-text'|'extract-error'|'failed', 'source_id', 'extract_path',
     'pages_selected', 'pages_with_text', 'error_pages', 'squashed_pages'
     (every page whose words still run together), 'reordered_pages' (those
     of them a second reader spaced but reordered), 'layout_pages',
-    'pdftotext_pages', 'split_pages' (layout's reading used, but with words
-    still broken in the middle)}. `progress`, when given, is called with a
+    'pdftotext_pages'}. `progress`, when given, is called with a
     plain line before a long pdftotext run (the engine itself never prints).
     Exit codes: 0 ok/already/dry-run · 1 record or asset
     not found, working-copy, no text layer, and a dump (written, or previewed
-    by --dry-run) with pages that failed, whose words ran together, or whose
-    words are still broken in the middle (`split_pages`) · 3
+    by --dry-run) with pages that failed or whose words ran together · 3
     refusals (pypdf absent, bad id, ambiguous PDF or unknown --copy label,
     destination exists, unwritable).
     """
     result = Result(data={'status': None, 'source_id': None, 'extract_path': None,
                           'pages_selected': 0, 'pages_with_text': 0,
                           'error_pages': [], 'squashed_pages': [],
-                          'reordered_pages': [], 'layout_pages': [], 'split_pages': [],
+                          'reordered_pages': [], 'layout_pages': [],
                           'pdftotext_pages': []})
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
@@ -2870,7 +2720,6 @@ def run_source_extract(
     reordered_pages: list[int] = []
     layout_pages: list[int] = []
     pdftotext_pages: list[int] = []
-    split_pages: list[int] = []
     have_pdftotext = _pdftotext_path() is not None
     pdftotext_reader = _PdftotextPages(pdf_path, selected, progress)
     for page_no in selected:
@@ -2899,8 +2748,6 @@ def run_source_extract(
                 layout_pages.append(page_no)
             elif how == 'pdftotext':
                 pdftotext_pages.append(page_no)
-            elif how == 'split':
-                split_pages.append(page_no)
         else:
             empty_pages.append(page_no)
             parts.append(_NO_TEXT_PLACEHOLDER)
@@ -2911,7 +2758,6 @@ def run_source_extract(
     result.data['reordered_pages'] = reordered_pages
     result.data['layout_pages'] = layout_pages
     result.data['pdftotext_pages'] = pdftotext_pages
-    result.data['split_pages'] = split_pages
     if pdftotext_reader.calls:
         # The engine reports after the fact (it does not print); a run that
         # leaned on pdftotext says so, with how long it took.
@@ -2920,8 +2766,8 @@ def run_source_extract(
                            'words ran together.')
     for first, last, why in pdftotext_reader.failures:
         span = f'page {first}' if first == last else f'pages {first}-{last}'
-        result.add('info', f'pdftotext failed on {span} ({why}); those pages kept '
-                           "pypdf's reading.")
+        result.add('info', f'pdftotext failed on {span} ({why}); pypdf read those '
+                           'pages instead.')
 
     def _page_list(nums: list[int]) -> str:
         return (', '.join(str(p) for p in nums[:10])
@@ -2949,16 +2795,6 @@ def run_source_extract(
             "PDF's text layer gives no spaces between words there, so "
             '`fha find --text` will miss phrases on those pages. Read them in '
             'the PDF itself (or with vision) rather than trusting an empty search.',
-            '',
-        ]
-    if split_pages:
-        header += [
-            f'Words broken in the middle on page(s) '
-            f'{", ".join(str(p) for p in split_pages)}: the spaces between words '
-            'were recovered, but some words are still split where the PDF kerns '
-            '(e.g. "Hart ley"), so `fha find --text` may miss names there. Read '
-            'them in the PDF itself (or with vision) rather than trusting an '
-            'empty search.',
             '',
         ]
     parts = header + parts
@@ -3045,19 +2881,6 @@ def run_source_extract(
                            ' (delete the dump and its files: entry first)'))
             + '.')
 
-    if split_pages:
-        # Partly recovered: the layout text is kept (it is no worse than the
-        # default reading), but a name search can still miss these pages.
-        page_warnings.append(
-            f'Words broken in the middle on page(s) {_page_list(split_pages)}: the '
-            'spaces between words were recovered, but some words are still split '
-            'where the PDF kerns (e.g. "Hart ley"), so `fha find --text` may miss '
-            'names there - read them in the PDF itself, or with vision'
-            + ('' if have_pdftotext else
-               ". Installing poppler's pdftotext may read them cleanly on a re-run"
-               + ('' if dry_run else ' (delete the dump and its files: entry first)'))
-            + '.')
-
     coverage = (f'{pages_with_text} of {len(selected)} selected page(s) carry text'
                 + (f' (no text layer on: '
                    f'{", ".join(str(p) for p in empty_pages[:10])}'
@@ -3067,8 +2890,7 @@ def run_source_extract(
                    f'{" …" if len(error_pages) > 10 else ""})' if error_pages else '')
                 + (f' (words run together on: {_page_list(squashed_pages)})'
                    if squashed_pages else '')
-                + (f' (words broken in the middle on: {_page_list(split_pages)})'
-                   if split_pages else ''))
+)
 
     if dry_run:
         result.data['status'] = 'dry-run'

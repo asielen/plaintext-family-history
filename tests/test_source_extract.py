@@ -210,10 +210,6 @@ OTHER_TEXTS = {k: _ascii(v) for k, v in {
              'he pur- chased land in Lyon Town- ship and mar- ried Sarah Bell, daugh- ter of '
              'Thomas Bell, a black- smith of Novi.'),
 }.items()}
-# pypdf's raw layout reading of a kerned page: two spaces for a word gap,
-# one at each kerned break inside a word.
-RAW_KERNED_LAYOUT = ('Tho mas  Hart ley,  son  of  Edw ard,  b.  May  9,  18 54,  ca me  al so  '
-                     'fr om  Ma rsh  Cr eek\n') * 4
 SPANISH_TEXT = ('En la ciudad de Sevilla, a los doce dias del mes de mayo de mil ochocientos '
                 'uno, yo el cura de la parroquia de San Juan bautice a una nina hija legitima '
                 'de Jose Garcia y de Maria de la Cruz, su mujer. Fueron sus padrinos Juan de '
@@ -891,55 +887,49 @@ class SourceExtractTests(unittest.TestCase):
         self.assertIn('Thomas Hartley, son of Edward', text)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
-    def test_pdftotext_wins_when_layout_breaks_its_words(self) -> None:
-        # Third review: the split guard has to do something. Layout mode
-        # spaces the page but breaks words at kerning gaps; pdftotext reads
-        # them whole, so pdftotext's reading is the one kept.
+    def test_pdftotext_is_the_one_second_reading_when_installed(self) -> None:
+        # The best reader there is reads the page once: pdftotext, when it is
+        # installed and its reading can be used - layout mode is not asked.
         squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
         broken = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so fr om '
                   'Ma rsh Cr eek\n') * 4
         whole = 'Thomas Hartley, son of Edward, b. May 9, 1854, came also from Marsh Creek\n' * 4
-        reader, _ = self._fake_reader(squashed, broken)
+        reader, calls = self._fake_reader(squashed, broken)
         with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
                 mock.patch.object(source_mod._PdftotextPages, 'page', return_value=whole):
             result = self._run_with_reader(reader)
         self.assertEqual(result.data['pdftotext_pages'], [1])
+        self.assertNotIn('layout', calls)
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
             encoding='utf-8')
         self.assertIn('Thomas Hartley, son of Edward', text)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
-    def test_layout_only_page_with_mid_word_breaks_is_used_and_warned(self) -> None:
-        # Fourth review: layout mode spaces the page but keeps the default
-        # reading's mid-word breaks ("Tho mas Hart ley"), and there is no
-        # pdftotext. The layout text is kept (no worse than the default),
-        # but a search for "Hartley" still misses the page, so it is listed
-        # and warned about, exit 1.
-        squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
-        reader, _ = self._fake_reader(squashed, RAW_KERNED_LAYOUT)
-        dry = self._run_with_reader(reader, dry_run=True)
-        self.assertEqual(dry.exit_code, EXIT_WARNINGS)
-        result = self._run_with_reader(reader)
-        self.assertEqual(result.data['split_pages'], [1])
-        self.assertEqual(result.data['layout_pages'], [])
-        self.assertEqual(result.data['squashed_pages'], [])
-        self.assertEqual(result.exit_code, EXIT_WARNINGS)
-        warnings = ' '.join(m.text for m in result.messages if m.level == 'warning')
-        self.assertIn('page(s) 1', warnings)
-        self.assertIn('Hart ley', warnings)
-        self.assertIn('fha find --text', warnings)
-        self.assertIn('pdftotext', warnings)
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
-            encoding='utf-8')
-        head, _, body = text.partition('[Page 1]')
-        self.assertIn('Words broken in the middle on page(s) 1', head)
-        self.assertIn('Tho mas Hart ley, son of Edw ard', body)     # layout's text kept
+    def test_unusable_pdftotext_reading_falls_back_to_layout(self) -> None:
+        # pdftotext gave nothing, or a reading that changed the text: the
+        # page is read by layout mode instead.
+        squashed = (SQUASHED_LINE + '\n') * 3
+        spaced = 'Thomas Hartley, son of Edward, b. May 9, 1854, came also from Marsh Creek\n' * 3
+        for pt_reading in (None, 'Thomas Hartley, son of Edward\n'):
+            with self.subTest(pt_reading=pt_reading):
+                self.tearDown()
+                self.setUp()
+                reader, calls = self._fake_reader(squashed, spaced)
+                with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                        mock.patch.object(source_mod._PdftotextPages, 'page',
+                                          return_value=pt_reading):
+                    result = self._run_with_reader(reader)
+                self.assertIn('layout', calls)
+                self.assertEqual(result.data['layout_pages'], [1])
+                self.assertEqual(result.exit_code, EXIT_CLEAN)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
-    def test_kern170_style_pdf_without_pdftotext_warns_about_broken_words(self) -> None:
-        # The same on a real PDF: every longer word set as two halves with a
-        # wide kerning step (-170) between them.
+    def test_kern170_style_pdf_without_pdftotext_takes_layout(self) -> None:
+        # Every longer word set as two halves with a wide kerning step (-170).
+        # Without pdftotext, layout's reading spaces the page but still breaks
+        # some words ("Hart ley"). The owner's call (#281): that is accepted -
+        # far better for search than "ThomasHartley" - with no warning.
         body = ''
         for y in (720, 706, 692, 678):
             for x, word in _SQUEEZED_WORDS:
@@ -951,82 +941,23 @@ class SourceExtractTests(unittest.TestCase):
         self.pdf.write_bytes(_minimal_pdf(
             [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
         result = self._run()
-        self.assertEqual(result.data['split_pages'], [1])
-        self.assertEqual(result.exit_code, EXIT_WARNINGS)
-
-    def test_kerned_breaks_read_from_raw_layout_spacing(self) -> None:
-        # Fifth review P2-1: a kerned break is ONE space in pypdf's raw
-        # layout reading, a real word gap two or more - and the default
-        # reading has a space at the kerned break too.
-        count = source_mod._kerned_breaks
-        squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
-        self.assertGreater(count(RAW_KERNED_LAYOUT, squashed), 10)
-        whole = 'Thomas  Hartley,  son  of  Edward,  b.  May  9,  1854,  came\n' * 4
-        self.assertEqual(count(whole, squashed), 0)      # the breaks were joined back
-        # A real gap next to a short word is wide in the raw reading.
-        es_default = 'Enla ciudadde Sevilla,a losdocediasdelmesde mayode milochocientos\n' * 4
-        es_raw = ('En    la    ciudad    de    Sevilla,    a    los    doce    dias    del    '
-                  'mes    de    mayo    de    mil    ochocientos\n') * 4
-        self.assertEqual(count(es_raw, es_default), 0)
-        # A narrow real gap the default reading ran together is not kerning.
-        tight_default = "AndrewsinMarshCreek,1842.TheirsonJohn\n" * 4
-        tight_raw = "Andrews in  Marsh  Creek,  1842.  Their  son  John\n" * 4
-        self.assertEqual(count(tight_raw, tight_default), 0)
-        # A line of one-space gaps has nothing to compare with.
-        flat = 'In the spring of eighteen hundred fifty four Thomas Hartley\n' * 4
-        self.assertEqual(count(flat, 'In thespringof eighteenhundredfifty fourThomasHartley\n' * 4), 0)
+        self.assertEqual(result.data['layout_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('son of', text)
+        self.assertNotIn('sonofEdw', text)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_spanish_squeezed_page_with_wide_gaps_is_clean_layout(self) -> None:
-        # P2-1: Tz 60 with 6 pt gaps; the default reading keeps some real
-        # gaps next to short words ("mesde mayode"). Not kerning: no warning.
+        # Tz 60 with 6 pt gaps; the default reading keeps some real gaps
+        # next to short words ("mesde mayode"). Layout spaces it: no warning.
         body = _squeezed_block(SPANISH_TEXT.split(), left=72, width=468, tz=60, gap=6)
         self.pdf.write_bytes(_minimal_pdf(
             [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
         result = self._run()
         self.assertEqual(result.data['layout_pages'], [1])
-        self.assertEqual(result.data['split_pages'], [])
-        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-
-    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
-    def test_single_kerned_name_prefers_clean_pdftotext(self) -> None:
-        # P2-2: one broken word in layout's reading, none in pdftotext's:
-        # one-sided evidence, no threshold - pdftotext's reading is kept.
-        default = 'ThomasHart ley,sonofEdwardHartleyandMaryAnnDay,wasbaptizedatHalifax\n' + \
-            'ThomasHartley,sonofEdwardHartleyandMaryAnnDay,wasbaptizedatHalifax\n' * 3
-        raw = 'Thomas  Hart ley,  son  of  Edward  Hartley  and  Mary  Ann  Day,  was  baptized  at  Halifax\n' + \
-            'Thomas  Hartley,  son  of  Edward  Hartley  and  Mary  Ann  Day,  was  baptized  at  Halifax\n' * 3
-        clean = 'Thomas Hartley, son of Edward Hartley and Mary Ann Day, was baptized at Halifax\n' * 4
-        reader, _ = self._fake_reader(default, raw)
-        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
-                mock.patch.object(source_mod._PdftotextPages, 'page', return_value=clean):
-            result = self._run_with_reader(reader)
-        self.assertEqual(result.data['pdftotext_pages'], [1])
-        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        # Without pdftotext the same page is not silent layout: one kerned
-        # break is enough to say the page is only partly recovered.
-        self.tearDown()
-        self.setUp()
-        reader, _ = self._fake_reader(default, raw)
-        alone = self._run_with_reader(reader)
-        self.assertEqual(alone.data['split_pages'], [1])
-        self.assertEqual(alone.exit_code, EXIT_WARNINGS)
-
-    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
-    def test_few_kerned_words_prefer_pdftotext_over_split(self) -> None:
-        default = ('ThomasHart ley,sonofEd wardHartleyandMaryAnnDay,wasbaptizedatHal ifax\n'
-                   + 'ThomasHartley,sonofEdwardHartleyandMaryAnnDay,wasbaptizedatHalifax\n' * 3)
-        raw = ('Thomas  Hart ley,  son  of  Ed ward  Hartley  and  Mary  Ann  Day,  was  '
-               'baptized  at  Hal ifax\n'
-               + 'Thomas  Hartley,  son  of  Edward  Hartley  and  Mary  Ann  Day,  was  '
-                 'baptized  at  Halifax\n' * 3)
-        clean = 'Thomas Hartley, son of Edward Hartley and Mary Ann Day, was baptized at Halifax\n' * 4
-        reader, _ = self._fake_reader(default, raw)
-        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
-                mock.patch.object(source_mod._PdftotextPages, 'page', return_value=clean):
-            result = self._run_with_reader(reader)
-        self.assertEqual(result.data['pdftotext_pages'], [1])
-        self.assertEqual(result.data['split_pages'], [])
+        self.assertEqual(result.data['squashed_pages'], [])
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
@@ -1083,7 +1014,7 @@ class SourceExtractTests(unittest.TestCase):
             result = self._run_with_reader(reader)
         infos = [m.text for m in result.messages if m.level == 'info']
         self.assertFalse(any('pdftotext read' in t for t in infos), infos)
-        self.assertTrue(any("pdftotext failed on page 1" in t and "pypdf's reading" in t
+        self.assertTrue(any("pdftotext failed on page 1" in t and "pypdf read those" in t
                             for t in infos), infos)
 
     def test_second_reader_exception_does_not_mark_page_failed(self) -> None:
@@ -1393,8 +1324,8 @@ class SourceExtractTests(unittest.TestCase):
         self.assertFalse(same(default, '\n'.join(lines).replace(' 1854', ' 185')))
         # A block of whole lines in another order.
         self.assertFalse(same(default, '\n'.join(lines[2:] + lines[:2])))
-        # Whether words are broken apart is judged against another reading
-        # (test_broken_words_are_judged_against_another_reading), not here.
+        # Whether a reading still breaks a word where the layer kerns is not
+        # judged at all (#281, owner's call): "Hart ley" beats "ThomasHartley".
 
     def test_same_reading_accepts_short_pieced_pages_and_itself(self) -> None:
         # #281 re-review P2-C: correct pages of short pieces must pass.
@@ -1411,23 +1342,6 @@ class SourceExtractTests(unittest.TestCase):
         for text in (register, index, german, table):
             self.assertTrue(source_mod._same_reading(text, text), text[:40])
             self.assertTrue(source_mod._same_reading(text.replace(' ', ''), text), text[:40])
-
-    def test_broken_words_are_judged_against_another_reading(self) -> None:
-        # #281 third review: no word list. A fragment counts as a broken word
-        # only when the other reading has it joined to its neighbour.
-        correct = ('Thomas Hartley, son of Edward, b. May 9, 1854, came also from '
-                   'Marsh Creek\n') * 3
-        mid_word = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so '
-                    'fr om Ma rsh Cr eek\n') * 3
-        self.assertTrue(source_mod._breaks_more_words(mid_word, correct))
-        self.assertFalse(source_mod._breaks_more_words(correct, mid_word))
-        # Short words both readings set apart are never counted, in any language.
-        french = ('il y a vingt ans, le fils de la veuve du Pont est ne a Bayonne '
-                  'et il a ete baptise le jour meme\n') * 3
-        self.assertEqual(source_mod._broken_words(french, french), 0)
-        roman = '\n'.join(f'{n}. JOHN, b. 18{i}; dwl. 34, fol. 12, viz. lib. 3'
-                          for i, n in enumerate(['i', 'ii', 'iii', 'iv', 'v', 'vi'], 30))
-        self.assertEqual(source_mod._broken_words(roman, roman), 0)
 
     def test_words_run_together_check(self) -> None:
         check = source_mod._words_run_together
