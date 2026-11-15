@@ -40,6 +40,14 @@ so restricted and DNA sources are not eligible fact sources. Relationship edges
 backed exclusively by restricted/DNA sources are excluded alongside their vital
 and marriage event details.
 
+A person or source whose record file is present but whose own `restricted:`
+marker cannot be read (not UTF-8, no frontmatter block, frontmatter that is not
+valid YAML or not a block of fields - `_lib.read_restriction_marker`) is
+withheld as if it were restricted (fail closed, #267), under every flag; the
+export names each such file that touches it, says to run `fha lint`, and exits
+1. A source whose claims block alone is broken keeps its record and loses only
+its claims, whose per-claim markers cannot be read.
+
 SOURCES
 -------
 Every exported vital fact's `source_id` becomes a `SOUR` pointer to a top-level
@@ -61,6 +69,9 @@ CODE MAP
 
   Data gathering
     _load_persons, _load_vitals, _load_marriages
+    _marker                - one record's `restricted:` value; unreadable fails closed
+    _restricted_person_ids, _restricted_source_ids, _restricted_claim_ids
+                           - what the marker files withhold (fail closed, #267)
 
   Emission
     _emit_header, _emit_individual, _emit_family, _emit_source, run_gedcom
@@ -87,6 +98,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     claim_is_own_vital,
+    claim_role_pairs,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -95,6 +107,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     read_record,
+    read_restriction_marker,
     resolve_root_arg,
     spouse_parties,
     strip_generational_suffix,
@@ -435,42 +448,86 @@ def _load_persons(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     return {r['id']: r for r in rows}
 
 
-def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row]) -> set[str]:
-    """Person ids whose record carries a `restricted` marker (any value).
+def _marker(archive_root: Path, rel_path: str) -> tuple[object, bool]:
+    """One record's own `restricted:` value, and whether it could be read.
+
+    Returns (value, unreadable). `_lib.read_restriction_marker` is the rule,
+    shared with `fha wikitree`, `fha site` and `fha packet` (#267 review): a
+    file that will not open or decode, has no frontmatter block, carries
+    frontmatter that is not valid YAML, or frontmatter that is not a block of
+    fields cannot say whether it is private, and every caller here treats it as
+    restricted (AGENTS.md privacy rule, fail closed). `read_record` reports
+    none of those by raising, and two of them not at all, which is how a
+    `restricted: by-request` relative used to export by surname (#267).
+
+    A file that is ABSENT is index staleness, not damage, and reads as carrying
+    no marker - the rule `fha wikitree` keeps too. `fha index` drops the row on
+    its next run; a damaged file, by contrast, keeps its row (and its surname)
+    there indefinitely.
+
+    A claims-block failure is not this function's business: the record's own
+    marker sits in the frontmatter, so the record is judged on that alone and
+    `_restricted_claim_ids` withholds the claims whose markers it cannot see."""
+    value, trouble = read_restriction_marker(archive_root / rel_path, missing_ok=True)
+    return value, trouble is not None
+
+
+def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row],
+                           unreadable: list[str] | None = None) -> set[str]:
+    """Person ids whose record carries a `restricted` marker (any value), or
+    whose record could not be read to check (fail closed, #267).
 
     Read from the person `.md` because the index does not carry a person-level
     `restricted` column. A restricted person's name is withheld (`/Restricted/`)
-    while their structural family links stay, mirroring living redaction."""
+    while their structural family links stay, mirroring living redaction.
+
+    `unreadable`, when given, collects the path of every person file withheld
+    only because it could not be read, so the export can say so and name the
+    fix. `fha index` keeps such a person's row (name `unknown`, `living:
+    unknown`, the surname from the filename), so `--include-living` alone would
+    otherwise publish that surname and every fact the index still holds."""
     out: set[str] = set()
     for pid, row in persons.items():
         path = row['path']
         if not path:
             continue
-        try:
-            value = read_record(archive_root / path)['meta'].get('restricted')
-        except Exception:
+        value, bad = _marker(archive_root, path)
+        if bad:
+            out.add(pid)
+            if unreadable is not None:
+                unreadable.append(path)
             continue
         if _is_restricted_value(value):
             out.add(pid)
     return out
 
 
-def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
-    """Source ids that are restricted by a free-text type the index missed.
+def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
+                           unreadable: list[tuple[str, str]] | None = None) -> set[str]:
+    """Source ids that are restricted by a free-text type the index missed, or
+    whose record could not be read to check (fail closed, #267).
 
     `_public_source_filter_sql` already excludes index `restricted=1`, DNA, and
     `publication_ok=0`. A source carrying a free-text `restricted: by-request`
     stores `restricted=0` in the index, so it is read from the record file here
-    and added to the not-eligible set the caller unions into its source filter."""
+    and added to the not-eligible set the caller unions into its source filter.
+
+    A source record whose own marker will not read is withheld whole, and its
+    (id, path) goes into `unreadable` when given. Its claims can only
+    be in the index from an earlier read (a full build drops a source whose
+    frontmatter fails), so the index's `restricted=0` for it is a guess about a
+    file nobody can read now."""
     out: set[str] = set()
     for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
         if row['restricted']:
             continue   # already caught by the SQL filter
         if not row['path']:
             continue
-        try:
-            value = read_record(archive_root / row['path'])['meta'].get('restricted')
-        except Exception:
+        value, bad = _marker(archive_root, row['path'])
+        if bad:
+            out.add(row['id'])
+            if unreadable is not None:
+                unreadable.append((row['id'], row['path']))
             continue
         if _is_restricted_value(value):
             out.add(row['id'])
@@ -483,14 +540,35 @@ def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[s
     The claims table stores no claim-level `restricted` column; the flag lives
     in the source record file.  This function reads every source record whose
     source is otherwise public (index-restricted sources are already excluded by
-    `_public_source_filter_sql`) to collect per-claim ids that are withheld."""
+    `_public_source_filter_sql`) to collect per-claim ids that are withheld.
+
+    A record whose claims cannot all be read hides which of them were marked,
+    so every claim the index attributes to it is withheld (the same rule as
+    `fha wikitree`'s `_restricted_claim_ids`): a claims block that will not
+    parse, a file that will not decode, or a frontmatter the marker reader
+    refuses. A broken claims block alone withholds only the claims - the
+    source's own frontmatter marker was read and stands (#267 review)."""
     out: set[str] = set()
     for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
         if row['restricted'] or not row['path']:
             continue
+        record_path = archive_root / row['path']
+        if not record_path.exists():
+            continue   # index staleness, as in `_marker`
+        _value, bad = _marker(archive_root, row['path'])
         try:
-            rec = read_record(archive_root / row['path'])
-        except Exception:
+            rec = read_record(record_path, on_decode_error=lambda _p: None)
+        except Exception:   # noqa: BLE001 - any failure to read is the same failure here
+            rec, bad = None, True
+        if rec is not None and (rec.get('undecodable') or rec['parse_errors']):
+            bad = True
+        if bad:
+            for crow in conn.execute(
+                'SELECT id FROM claims WHERE source_id = ?', (row['id'],)
+            ).fetchall():
+                cid = normalize_id(str(crow['id']).strip())
+                if cid:
+                    out.add(cid)
             continue
         for claim in rec.get('claims') or []:
             if not isinstance(claim, dict):
@@ -612,7 +690,7 @@ def _spouse_persons_for_claim(conn: sqlite3.Connection, claim_id: str) -> frozen
         """,
         (claim_id,),
     ).fetchall()
-    return frozenset(spouse_parties([(r['person_id'], r['role']) for r in rows]))
+    return frozenset(spouse_parties(claim_role_pairs((r['person_id'], r['role']) for r in rows)))
 
 
 def _load_marriages(
@@ -865,8 +943,10 @@ def _gedcom_payload(
         # carries no person-level `restricted`, and stores a free-text source
         # type as 0. The SQL `_public_source_filter_sql` already excludes index
         # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
-        restricted_persons = _restricted_person_ids(archive_root, persons)
-        restricted_sources = _restricted_source_ids(conn, archive_root)
+        unreadable_persons: list[str] = []
+        unreadable_sources: list[tuple[str, str]] = []   # (source id, path)
+        restricted_persons = _restricted_person_ids(archive_root, persons, unreadable_persons)
+        restricted_sources = _restricted_source_ids(conn, archive_root, unreadable_sources)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
 
         def _public_claim_row(row: sqlite3.Row) -> bool:
@@ -977,6 +1057,40 @@ def _gedcom_payload(
                 '(no override - SPEC §21).'
             )
 
+        # Withheld because a file could not be read (#267): say which file and
+        # how to fix it, or the human reads "/Restricted/" on a relative who
+        # never asked for it and has no way to learn why. Only the files that
+        # touch this export are named - a person outside the selection, or a
+        # source whose claims name nobody in it, is scoping, not something
+        # this file lost. A source touches the export when any of its claims
+        # names an included person: those are the facts it could have carried.
+        included_paths = {persons[p]['path'] for p in included}
+        unread = [path for path in unreadable_persons if path in included_paths]
+        if unreadable_sources:
+            ids = sorted(included)
+            touching: set[str] = set()
+            for start in range(0, len(ids), 500):   # stay under SQLite's variable cap
+                chunk = ids[start:start + 500]
+                touching.update(r[0] for r in conn.execute(
+                    'SELECT DISTINCT c.source_id FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    f'WHERE cp.person_id IN ({",".join("?" * len(chunk))})', chunk))
+            unread += sorted(path for sid, path in unreadable_sources if sid in touching)
+        for path in unread:
+            # The reason, read again here so the warning can say what is wrong
+            # (a missing `---` block is not something `fha lint` reports as a
+            # parse error, so "run fha lint" alone could leave the human stuck).
+            _value, trouble = read_restriction_marker(archive_root / path, missing_ok=True)
+            messages.append(
+                f'WARNING: could not read {path} for its privacy marker'
+                + (f' ({trouble})' if trouble else '')
+                + ', so there is no way to tell whether it was marked private '
+                '(restricted:). It was withheld from this export - a person as '
+                '/Restricted/, a source with every fact it is the evidence for. '
+                'Repair the file (`fha lint` points at what is wrong), run '
+                '`fha index`, then export again.'
+            )
+
         # A marriage event that found no family to live on. `_load_marriages`
         # keys each claim by the people it says married EACH OTHER, and a FAM
         # record holds one couple - so a claim whose `roles: spouse:` names
@@ -1016,7 +1130,8 @@ def _gedcom_payload(
         # GEDCOM 5.5.1 lines are CR/LF-terminated; emit the file with a trailing newline.
         text = '\r\n'.join(lines) + '\r\n'
         return {'status': 'ok', 'text': text, 'messages': messages,
-                'person_count': len(included), 'family_count': len(families)}
+                'person_count': len(included), 'family_count': len(families),
+                'unreadable': unread}
     finally:
         conn.close()
 
@@ -1045,7 +1160,9 @@ def run_gedcom(
     # Mirror _cmd_gedcom's per-status exit codes so headless callers returning
     # Result.exit_code see a failed export as a failure, not a clean 0.
     if status == 'ok':
-        exit_code = EXIT_CLEAN
+        # A record withheld because it could not be read is a warning: the
+        # file was written, but not with everything the human asked for (#267).
+        exit_code = EXIT_WARNINGS if payload.get('unreadable') else EXIT_CLEAN
     elif status in ('not-found', 'no-persons'):
         exit_code = EXIT_WARNINGS
     else:  # bad-args, no-index
@@ -1113,8 +1230,10 @@ def _cmd_gedcom(args: argparse.Namespace) -> int:
 
     # A successful export is clean even when it redacted living persons -
     # redaction is the documented default, an informational stderr note, not a
-    # warning condition (cf. `--include-living` to suppress it).
-    return EXIT_CLEAN
+    # warning condition (cf. `--include-living` to suppress it). A record
+    # withheld because its file could not be read is different: that is damage
+    # the human has to repair, so it exits 1 (warnings) beside its message.
+    return result.exit_code
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:

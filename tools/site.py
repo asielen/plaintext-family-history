@@ -283,6 +283,7 @@ from _lib import (
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     read_record,
+    read_restriction_marker,
     read_text_or_report,
     replace_with_retry,
     resolve_path,
@@ -4295,12 +4296,18 @@ class _SiteBuilder:
         for pid, row in self.person_meta.items():
             if not row['path']:
                 continue
-            try:
-                rec = read_record(self.archive_root / row['path'],
-                                   on_decode_error=_raise_friendly_decode_error)
-                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
-            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
-                rec, trouble = None, str(e)
+            # The marker is read the one way every exporter reads it
+            # (`_lib.read_restriction_marker`, #267 review): a missing
+            # frontmatter block, or one that is a list rather than fields,
+            # reports nothing through `read_record` and read as public.
+            _marker, trouble = read_restriction_marker(self.archive_root / row['path'])
+            rec = None
+            if trouble is None:
+                try:
+                    rec = read_record(self.archive_root / row['path'],
+                                      on_decode_error=_raise_friendly_decode_error)
+                except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                    trouble = str(e)
             if trouble is not None:
                 self.restricted_persons.add(pid)
                 self.messages.append(
@@ -4323,12 +4330,33 @@ class _SiteBuilder:
         for sid, row in self.source_meta.items():
             if row['restricted'] or not row['path']:
                 continue   # index-restricted sources are already handled
-            try:
-                rec = read_record(self.archive_root / row['path'],
-                                   on_decode_error=_raise_friendly_decode_error)
-                trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
-            except Exception as e:   # noqa: BLE001 - any failure is the same failure here
-                rec, trouble = None, str(e)
+            _marker, trouble = read_restriction_marker(self.archive_root / row['path'])
+            rec = None
+            if trouble is None:
+                try:
+                    rec = read_record(self.archive_root / row['path'],
+                                      on_decode_error=_raise_friendly_decode_error)
+                except Exception as e:   # noqa: BLE001 - any failure is the same failure here
+                    trouble = str(e)
+            if trouble is None and rec['parse_errors']:
+                # The source's own marker read fine; only its claims block did
+                # not, so the per-claim `restricted:` markers are unknown.
+                # Withhold the claims the index attributes to it, not the
+                # source (#267 review): its frontmatter has already said it is
+                # public, and the claims are the part nobody can vouch for.
+                for crow in self.conn.execute(
+                        'SELECT id FROM claims WHERE source_id = ?', (sid,)):
+                    cid = normalize_id(str(crow[0]))
+                    if cid:
+                        self.restricted_claims.add(cid)
+                self.messages.append(
+                    f'WARNING: the claims in {row["path"]} could not be read, so '
+                    'there is no way to tell which of them were marked private. '
+                    'Every fact it is the evidence for has been withheld from this '
+                    'site. Run `fha lint` to see what is wrong, fix it, run '
+                    '`fha index`, then run `fha site` again.'
+                )
+                continue
             if trouble is not None:
                 self.restricted_sources.add(sid)
                 self.messages.append(
@@ -4799,12 +4827,8 @@ class _SiteBuilder:
             self._by_request_person_cache[pid] = (True, True)
             self._warn_by_request_no_profile(pid, question_origin, is_origin)
             return True
-        try:
-            rec = read_record(self.archive_root / row['path'], on_decode_error=_ignore_decode_error)
-            trouble = rec['parse_errors'][0][1] if rec['parse_errors'] else None
-        except Exception as e:   # noqa: BLE001 - any failure is the same failure here
-            rec, trouble = None, str(e)
-        if trouble is not None or (rec is not None and rec.get('undecodable')):
+        marker, trouble = read_restriction_marker(self.archive_root / row['path'])
+        if trouble is not None:
             # Unlike the "no profile at all" branch above, this message
             # never mentions refs:/origin - the profile DOES exist, it just
             # can't be read - so the same wording is correct for every
@@ -4820,7 +4844,8 @@ class _SiteBuilder:
             )
             self._by_request_person_cache[pid] = (False, True)
             return True
-        verdict = _restricted_type(rec['meta'].get('restricted')) == 'by-request'
+        # Raw (uncoerced) value: YAML `true` is True here, never 'by-request'.
+        verdict = _restricted_type(marker) == 'by-request'
         self._by_request_person_cache[pid] = (False, verdict)
         return verdict
 

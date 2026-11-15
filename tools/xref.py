@@ -237,6 +237,7 @@ from _lib import (
     place_text_cluster_key,
     open_index_db,
     resolve_root_arg,
+    claim_role_pairs,
     spouse_parties,
     vital_subjects,
 )
@@ -598,7 +599,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
             continue
         claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
         claim_persons.setdefault(row['claim_id'], []).append(row['person_id'])
-        # First occurrence's role wins, same as claim_persons/claims_by_person
+        # The role column holds every role this person carries on the claim
+        # (#266); `claim_role_pairs` splits it where the rules read it.
+        # First occurrence's row wins, same as claim_persons/claims_by_person
         # just above and the same contract vital_subjects/spouse_parties
         # document for their own input - `persons: [P-a, "[[Alice Smith]]"]`
         # is one person written twice, and a plain assignment here would let
@@ -644,9 +647,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     for cid, claim in claims_by_id.items():
         if claim['type'] not in _COUNTERPART_VITAL_TYPES:
             continue
-        persons_with_roles = [
+        persons_with_roles = claim_role_pairs(
             (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
-        ]
+        )
         parties = spouse_parties(persons_with_roles)
         claim_parties[cid] = parties
         named = set(claim_persons.get(cid, []))
@@ -723,9 +726,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     for cid, claim in claims_by_id.items():
         if claim['type'] not in _OTHER_VITAL_TYPES:
             continue
-        persons_with_roles = [
+        persons_with_roles = claim_role_pairs(
             (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
-        ]
+        )
         subjects = vital_subjects(claim['type'], persons_with_roles)
         claim_vital_subjects[cid] = subjects
         if subjects == [] and not any(role for _pid, role in persons_with_roles):
@@ -755,11 +758,19 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 # bucketed once per individual counterpart rather than once
                 # per whole counterpart set - otherwise a claim naming {P2, P3}
                 # would never compare against one naming only {P2}.
-                role = claim_role.get((cid, person_id))
+                # Bucketed once per ROLE too (#266 review): the column holds
+                # every role this person carries, so keying on it whole would
+                # never pair the informant-and-parent claim with a plain
+                # parent one, and would split two claims that listed the same
+                # roles in a different order.
+                roles = [str(r).strip().lower() if r else None
+                         for _p, r in claim_role_pairs(
+                             [(person_id, claim_role.get((cid, person_id)))])]
                 others = [p for p in claim_persons.get(cid, []) if p != person_id]
-                for other in others:
-                    key = (claim['type'], claim['subtype'], role, other)
-                    by_group.setdefault(key, []).append(cid)
+                for role in roles:
+                    for other in others:
+                        key = (claim['type'], claim['subtype'], role, other)
+                        by_group.setdefault(key, []).append(cid)
             elif claim['type'] in _COUNTERPART_VITAL_TYPES:
                 parties = claim_parties.get(cid, [])
                 if parties and person_id not in parties:

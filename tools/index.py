@@ -49,6 +49,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_role_pairs,
+    join_claim_roles,
     configure_utf8_stdout,
     SIGNIFICANCE,
     CLAIM_TYPES,
@@ -286,7 +288,9 @@ CREATE TABLE IF NOT EXISTS claims(
   negated INTEGER DEFAULT 0,
   notes TEXT
 );
--- claim_persons: ordered people and roles named by each claim.
+-- claim_persons: ordered people and roles named by each claim. One row per
+-- persons: entry; `role` holds EVERY role that person carries on the claim,
+-- joined by U+001F in roles: order (#266) - read it through _lib.claim_role_pairs.
 CREATE TABLE IF NOT EXISTS claim_persons(
   claim_id TEXT,
   person_id TEXT,
@@ -1000,10 +1004,17 @@ def _index_person(
     in the archive - and until it was wired the whole build still died with a
     traceback on one file saved in cp1252.  Reported through the same channel
     as the notes (`build_index`'s undecodable-files warning, which already
-    says these words are not in the index and names the re-save), and the file
-    is SKIPPED rather than indexed as an empty person: an empty `meta` here
-    would put a nameless, date-less row in `persons` where a real ancestor
-    belongs, which reads as a sparse record rather than as a file nobody read.
+    says these words are not in the index and names the re-save).
+
+    The person is NOT skipped, though (#267 review): a profile with a P-id in
+    its filename keeps a row, exactly as one whose YAML will not parse does -
+    name `unknown`, `living: unknown`, the surname from the filename. Skipped,
+    the person vanished from every exporter's view while other records still
+    named them: a `[[P-id|Their Name]]` link elsewhere rendered its display
+    text because the id resolved to nobody, and nothing could withhold a
+    person it never saw. With the row there, every exporter's fail-closed
+    read of the file (`_lib.read_restriction_marker` cannot decode it)
+    withholds them, and `unknown` reads as living everywhere.
     """
     if path.suffix.lower() != '.md':
         # SPEC §13 spells every person record `.md`, and the walker only ever
@@ -1017,7 +1028,29 @@ def _index_person(
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path, on_decode_error=on_decode_error)
     if rec['undecodable']:
-        return   # nothing was read; the build reports it (#68, see docstring)
+        # Nothing was read (the build reports it, #68); keep the row the
+        # filename can give (see docstring) so exporters can withhold it.
+        parsed_name = parse_filename(path)
+        if (parsed_name and parsed_name['id_type'] == 'P'
+                and not parsed_name.get('is_companion')):
+            pid = parsed_name['id_str']
+            stem = path.stem
+            surname = (stem.split('__')[0].replace('_', ' ').title()
+                       if '__' in stem else None)
+            conn.execute(
+                '''INSERT OR REPLACE INTO persons
+                   (id, name, surname, sex, living, tier, status, merged_into,
+                    no_known_marriages, no_known_children, birth, death, path)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (pid, 'unknown', surname, '', 'unknown', 'stub', 'active', None,
+                 0, 0, None, None, str(path.relative_to(archive_root))),
+            )
+            conn.execute(
+                'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) '
+                'VALUES (?,?,?,?)',
+                (pid, 'profile', str(path.relative_to(archive_root)), 0),
+            )
+        return
     meta = rec['meta']
     parsed_name = parse_filename(path)
 
@@ -1614,7 +1647,9 @@ def _index_source(
             ppid = resolve_typed_ref(p_raw, alias_map, want='P')
             if not ppid:
                 continue   # inert note-link: unknown/ambiguous name, no garbage row
-            role = next((rn for rn, pids in resolved_roles if ppid in pids), None)
+            # Every role this person carries, not just the first one listed:
+            # the mother who was also the informant is a parent too (#266).
+            role = join_claim_roles(rn for rn, pids in resolved_roles if ppid in pids)
             conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, ppid, pos, role),
@@ -1954,15 +1989,13 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
         # out once here: undeduplicated, a pairing loop pairs a person with
         # themselves (a self-marriage, a self-friendship) and every consumer
         # reads that edge back as fact.
-        all_persons: list[tuple[str, str | None]] = []
-        seen_pids: set[str] = set()
-        for person_id, role in conn.execute(
-                'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
-                'ORDER BY position', (cid,)):
-            if person_id not in seen_pids:
-                seen_pids.add(person_id)
-                all_persons.append((person_id, role))
-        pids = [p for p, r in all_persons]
+        # `all_persons` is one (pid, role) pair per role a person carries
+        # (#266: the informant who is also a parent is both), so `pids` is
+        # the deduplicated list of people.
+        all_persons = claim_role_pairs(conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
+            'ORDER BY position', (cid,)))
+        pids = list(dict.fromkeys(p for p, r in all_persons))
 
         if ctype == 'relationship':
             # The edge's kind comes from the roles: map (the part each person
@@ -2037,6 +2070,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     b_ids = [p for p, r in all_persons if r == role_b]
                     for pa in a_ids:
                         for pb in b_ids:
+                            if pa == pb:
+                                continue   # one person listed on both sides
                             conn.execute(
                                 'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                                 (pa, edge_a, pb, cid, dmin, dmax),
