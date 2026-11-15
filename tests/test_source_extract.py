@@ -9,6 +9,7 @@ when pypdf is not installed (it is an optional dependency by design - the
 one behavior tested WITHOUT it is the plain install-message refusal).
 """
 
+import re
 import shutil
 import sys
 import tempfile
@@ -118,7 +119,7 @@ _TIMES_WIDTHS = {
 
 
 def _times_width(word: str, size: float) -> float:
-    return sum(_TIMES_WIDTHS[ch] for ch in word) * size / 1000
+    return sum(_TIMES_WIDTHS.get(ch, 500) for ch in word) * size / 1000
 
 
 def _squeezed_block(words: list, left: float, width: float, tz: int, gap: float,
@@ -156,6 +157,59 @@ MC_TEXT = ("Angus McDonald married Mary MacArthur at St. Andrew's in 1842. Their
            "MacKenzie and Catriona McKay. The DeLancey and LaFontaine households were "
            "neighbours. McIntyre, McNab, MacGregor, McPherson and O'Neill also appear in "
            "the parish.")
+ENGLISH_WORDS = (('Thomas Hartley, son of Edward Hartley and Mary Ann Day, was baptized '
+                  'at Halifax in 1812 and emigrated with his parents to Michigan in 1836, '
+                  'where he purchased land in Lyon Township and married Sarah Bell, '
+                  'daughter of Thomas Bell, a blacksmith of Novi. ') * 2).split()
+
+
+def _ascii(text: str) -> str:
+    """Fold accents away (the test font is plain Times-Roman), drop parentheses."""
+    import unicodedata
+    for a, b in (('\u00f8', 'o'), ('\u00e6', 'ae'), ('\u0142', 'l'), ('\u0141', 'L')):
+        text = text.replace(a, b)
+    folded = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode()
+    return folded.replace('(', '').replace(')', '')
+
+
+OTHER_TEXTS = {k: _ascii(v) for k, v in {
+    'pl': ('Jan Kowalski, syn J\u00f3zefa i Marii z d. Nowak, ur. w Suwa\u0142kach dnia 3 maja '
+           '1868 r., zm. w Krasnopolu w 1921 r. Ochrzczony w ko\u015bciele parafialnym w '
+           'Suwa\u0142kach przez ks. Piotra Zawadzkiego. Rodzice chrzestni: Adam Wi\u015bniewski '
+           'z Suwa\u0142k i Anna Lewandowska ze wsi P\u0142ociczno. O\u017ceni\u0142 si\u0119 w r. '
+           '1892 z Katarzyn\u0105 Zieli\u0144sk\u0105, c\u00f3rk\u0105 Stanis\u0142awa, we wsi Huta.'),
+    'cz': ('Jan Nov\u00e1k, syn Josefa Nov\u00e1ka, roln\u00edka v Lipov\u00e9 \u010d. 12, a jeho '
+           'man\u017eelky Marie roz. Dvo\u0159\u00e1kov\u00e9 z Kun\u010dic, narozen dne 4. b\u0159ezna '
+           '1871 a pok\u0159t\u011bn v kostele sv. Jakuba v Lipov\u00e9. Kmot\u0159i: V\u00e1clav Svoboda '
+           'z Lipov\u00e9 a Anna \u010cern\u00e1 ze Skalice.'),
+    'fr': ('Le vingt-trois mai mil huit cent quarante-deux, \u00e0 dix heures du matin, '
+           'par-devant nous, maire de la commune de Saint-Jean-de-Luz, est comparu '
+           'Jean-Baptiste Dupont, \u00e2g\u00e9 de trente ans, cultivateur, domicili\u00e9 en cette '
+           'commune, lequel nous a pr\u00e9sent\u00e9 un enfant du sexe masculin, n\u00e9 hier \u00e0 six '
+           'heures du soir.'),
+    'nl': ('Heden den twaalfden Maart achttien honderd zeven en vijftig, compareerde voor '
+           'ons Ambtenaar van den Burgerlijken Stand der gemeente Zaltbommel, Jan van der '
+           'Berg, oud dertig jaren, van beroep schipper, wonende te Zaltbommel, dewelke ons '
+           'heeft verklaard dat op den tienden dezer maand is geboren een kind.'),
+    'no': ('Ole Olsen Haugen, f. 3. mai 1834 p\u00e5 Haugen i Sogndal, s\u00f8nn av Ola Pedersen '
+           'og Kari Andersdatter. Gift 1858 i Sogndal kirke med Brita Larsdatter Nes, f. 1836 '
+           'p\u00e5 Nes, datter av Lars Johannesen og Ingeborg Olsdatter. De bodde p\u00e5 plassen '
+           'under Haugen til 1866, da de utvandret til Amerika.'),
+    'regrom': ('1. THOMAS HARTLEY, b. 3 May 1812, Halifax, Yorks.; m. 1835 MARY ANN DAY. '
+               'Children: i. JOHN, b. 1836; m. Sarah Bell. ii. EDWARD, b. 1838; d. young. '
+               'iii. MARY, b. 1840; m. Wm. Cox. iv. ANN, b. 1842. v. ELI, b. 1845; m. Jane '
+               'Ives. vi. SARAH, b. 1847; d. 1849. vii. THOMAS, b. 1849. viii. HANNAH, b. 1851. '
+               'ix. GEORGE, b. 1853. x. JAMES, b. 1855.'),
+    'cite': ('Ancestry.com, 1880 U.S. Fed. Census, Twp. of Lyon, Oakland Co., Mich., ED 12, '
+             'sht. 4B, dwl. 34, fam. 36, NARA micro. T9, roll 597, p. 112. Cf. FHL film '
+             '1,254,597, it. 3; ibid., p. 113. Death Cert. no. 4521, gives b. abt. 1841 Eng.; '
+             'inf. dau. Mrs. Wm. Hartley. Op. cit. n. 4; viz. lib. 12, fol. 34v; wit. Jno. '
+             'and Thos. Hartley; bk. 3, pg. 7.'),
+    'hyph': ('Thomas Hart- ley, son of Edward Hart- ley and Mary Ann Day, was bap- tized at '
+             'Halifax in 1812 and emi- grated with his par- ents to Michi- gan in 1836, where '
+             'he pur- chased land in Lyon Town- ship and mar- ried Sarah Bell, daugh- ter of '
+             'Thomas Bell, a black- smith of Novi.'),
+}.items()}
 RIGHT_WORDS = ('Mary Ann Brown, daughter of Josiah, married Thomas in 1876 at the '
                'Methodist church in Marsh Creek and had nine children of whom seven '
                'survived to adulthood').split()
@@ -821,15 +875,79 @@ class SourceExtractTests(unittest.TestCase):
         self.pdf.write_bytes(_minimal_pdf(
             [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
         result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
             encoding='utf-8')
-        if 'Thomas Hartley, son of Edward' in text:
-            self.assertEqual(result.exit_code, EXIT_CLEAN,
-                             [m.text for m in result.messages])
-        else:
-            # Not recoverable by this pypdf: it must at least say so.
-            self.assertEqual(result.data['squashed_pages'], [1])
-            self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        self.assertIn('Thomas Hartley, son of Edward', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_pdftotext_wins_when_layout_breaks_its_words(self) -> None:
+        # Third review: the split guard has to do something. Layout mode
+        # spaces the page but breaks words at kerning gaps; pdftotext reads
+        # them whole, so pdftotext's reading is the one kept.
+        squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
+        broken = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so fr om '
+                  'Ma rsh Cr eek\n') * 4
+        whole = 'Thomas Hartley, son of Edward, b. May 9, 1854, came also from Marsh Creek\n' * 4
+        reader, _ = self._fake_reader(squashed, broken)
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod._PdftotextPages, 'page', return_value=whole):
+            result = self._run_with_reader(reader)
+        self.assertEqual(result.data['pdftotext_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('Thomas Hartley, son of Edward', text)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_pdftotext_dehyphenated_reading_is_not_reordered(self) -> None:
+        # Third review P2-2: pdftotext joins words hyphenated at a line end
+        # ("Hart-" / "ley" -> "Hartley"). That is not a change of text.
+        lines = ['Thomas Hart-', 'ley, son of Edward Hart-', 'ley and Mary Ann Day, was bap-',
+                 'tized at Halifax in 1812 and emi-', 'grated with his par-',
+                 'ents to Michigan in 1836, where he pur-', 'chased land in Lyon Town-',
+                 'ship and married Sarah Bell, daugh-', 'ter of Thomas Bell, a blacksmith.']
+        squashed = '\n'.join(line.replace(' ', '') for line in lines)
+        rejoined = re.sub(r'-\n', '', '\n'.join(lines))
+        reader, _ = self._fake_reader(squashed, ValueError('layout boom'))
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod._PdftotextPages, 'page', return_value=rejoined):
+            result = self._run_with_reader(reader)
+        self.assertEqual(result.data['reordered_pages'], [])
+        self.assertEqual(result.data['pdftotext_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertTrue(source_mod._same_reading(squashed, rejoined))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_narrow_column_no_space_layer_still_warns(self) -> None:
+        # Third review P1-1: in a 110 pt column every line of a no-space layer
+        # is one piece of 16-40 letters - under the 40-letter guard - and
+        # every reader agrees on it. Agreement must not make that plain.
+        body = _squeezed_block(ENGLISH_WORDS, left=60, width=110, tz=60, gap=0)
+        self.pdf.write_bytes(_minimal_pdf(
+            [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
+        result = self._run()
+        self.assertEqual(result.data['squashed_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_squeezed_pages_in_other_languages_and_formats_take_layout(self) -> None:
+        # Third review P2-1: correct layout readings of Polish, Czech, French,
+        # Dutch and Norwegian records (ASCII-folded - the test font has no
+        # other glyphs), a Roman-numeral register, citation abbreviations and
+        # a hyphenated page, all full of short words no word list knows.
+        for name, text in OTHER_TEXTS.items():
+            with self.subTest(name):
+                self.tearDown()
+                self.setUp()
+                body = _squeezed_block(text.split(), left=60, width=490, tz=60, gap=3)
+                self.pdf.write_bytes(_minimal_pdf(
+                    [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')],
+                    base_font='Times-Roman'))
+                result = self._run()
+                self.assertEqual(result.exit_code, EXIT_CLEAN,
+                                 [m.text for m in result.messages])
+                self.assertEqual(result.data['layout_pages'], [1])
 
     # -- #281 review: squeezed two-column pages ----------------------------------
 
@@ -976,24 +1094,36 @@ class SourceExtractTests(unittest.TestCase):
             self.assertEqual(source_mod._dump_source_pdf(dump), name)
         self.assertIsNone(source_mod._dump_source_pdf(self.root / 'missing.md'))
 
-    def test_pdftotext_runs_once_over_the_selected_span(self) -> None:
-        # L-d: one process for the run, split into pages on the form feed.
-        done = mock.Mock(returncode=0, stdout=b'page three\fpage four\f')
+    def test_pdftotext_runs_once_per_block_of_selected_pages(self) -> None:
+        # L-d / third review L-1: one process per contiguous block of the
+        # selected pages, split on the form feed, one budget for the run.
+        outputs = {('3', '4'): b'page three\fpage four\f', ('9', '9'): b'page nine\f'}
+
+        def fake_run(args, **kw):
+            key = (args[args.index('-f') + 1], args[args.index('-l') + 1])
+            return mock.Mock(returncode=0, stdout=outputs[key])
+
         with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
-                mock.patch.object(source_mod.subprocess, 'run', return_value=done) as run:
-            pages = source_mod._PdftotextPages(self.pdf, 3, 4)
+                mock.patch.object(source_mod.subprocess, 'run', side_effect=fake_run) as run:
+            pages = source_mod._PdftotextPages(self.pdf, [3, 4, 9])
             self.assertEqual(pages.page(3), 'page three')
             self.assertEqual(pages.page(4), 'page four')
-            self.assertIsNone(pages.page(5))
-        self.assertEqual(run.call_count, 1)
-        args = run.call_args[0][0]
-        self.assertEqual(args[args.index('-f') + 1], '3')
-        self.assertEqual(args[args.index('-l') + 1], '4')
+            self.assertEqual(pages.page(9), 'page nine')
+            self.assertIsNone(pages.page(5))           # not selected: never read
+        self.assertEqual(run.call_count, 2)            # pages 5-8 were never asked for
+        self.assertEqual(pages.budget, 60 + 2 * 3)     # by the pages selected, not the span
         # A page count that does not match cannot be split safely.
         done = mock.Mock(returncode=0, stdout=b'only one page\f')
         with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
                 mock.patch.object(source_mod.subprocess, 'run', return_value=done):
-            self.assertIsNone(source_mod._PdftotextPages(self.pdf, 3, 4).page(3))
+            self.assertIsNone(source_mod._PdftotextPages(self.pdf, [3, 4]).page(3))
+        # A spent budget reads nothing more.
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod.subprocess, 'run') as run:
+            spent = source_mod._PdftotextPages(self.pdf, [3])
+            spent.seconds = spent.budget
+            self.assertIsNone(spent.page(3))
+        run.assert_not_called()
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_copy_label_is_added_to_a_dump_name_that_lacks_it(self) -> None:
@@ -1027,10 +1157,8 @@ class SourceExtractTests(unittest.TestCase):
         self.assertFalse(same(default, '\n'.join(lines).replace(' 1854', ' 185')))
         # A block of whole lines in another order.
         self.assertFalse(same(default, '\n'.join(lines[2:] + lines[:2])))
-        # Words broken apart at glyph gaps.
-        split = '\n'.join(' '.join(word[i:i + 2] for i in range(0, len(word), 2))
-                          for line in lines for word in [line.replace(' ', '')])
-        self.assertFalse(same(default, split))
+        # Whether words are broken apart is judged against another reading
+        # (test_broken_words_are_judged_against_another_reading), not here.
 
     def test_same_reading_accepts_short_pieced_pages_and_itself(self) -> None:
         # #281 re-review P2-C: correct pages of short pieces must pass.
@@ -1048,11 +1176,22 @@ class SourceExtractTests(unittest.TestCase):
             self.assertTrue(source_mod._same_reading(text, text), text[:40])
             self.assertTrue(source_mod._same_reading(text.replace(' ', ''), text), text[:40])
 
-    def test_same_reading_rejects_mid_word_spaces(self) -> None:
-        default = (SQUASHED_LINE + '\n') * 3
+    def test_broken_words_are_judged_against_another_reading(self) -> None:
+        # #281 third review: no word list. A fragment counts as a broken word
+        # only when the other reading has it joined to its neighbour.
+        correct = ('Thomas Hartley, son of Edward, b. May 9, 1854, came also from '
+                   'Marsh Creek\n') * 3
         mid_word = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so '
                     'fr om Ma rsh Cr eek\n') * 3
-        self.assertFalse(source_mod._same_reading(default, mid_word))
+        self.assertTrue(source_mod._breaks_more_words(mid_word, correct))
+        self.assertFalse(source_mod._breaks_more_words(correct, mid_word))
+        # Short words both readings set apart are never counted, in any language.
+        french = ('il y a vingt ans, le fils de la veuve du Pont est ne a Bayonne '
+                  'et il a ete baptise le jour meme\n') * 3
+        self.assertEqual(source_mod._broken_words(french, french), 0)
+        roman = '\n'.join(f'{n}. JOHN, b. 18{i}; dwl. 34, fol. 12, viz. lib. 3'
+                          for i, n in enumerate(['i', 'ii', 'iii', 'iv', 'v', 'vi'], 30))
+        self.assertEqual(source_mod._broken_words(roman, roman), 0)
 
     def test_words_run_together_check(self) -> None:
         check = source_mod._words_run_together
