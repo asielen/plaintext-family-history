@@ -167,6 +167,25 @@ class MoreAcceptsARetiredIdTests(InboxFilingTestCase):
         self.assertTrue(old_page.is_file())
         self.assertEqual(record.read_text(encoding='utf-8'), before)
 
+    def test_a_listed_file_keyworded_for_the_alias_is_left_alone(self) -> None:
+        primary, record, sid = self._letter_with_alias()
+        page = self._put(self.docs / 'letter' / 'renamed-by-another-app.jpg', JPEG)
+        self.store.keywords[str(page)] = [f'SOURCE: {OLD}']
+        text = record.read_text(encoding='utf-8')
+        record.write_text(text.replace(
+            '    original_filename: scan-0412.pdf\n',
+            '    original_filename: scan-0412.pdf\n'
+            f'  - file: documents/letter/{page.name}\n    role: page-2\n', 1),
+            encoding='utf-8')
+        before = record.read_text(encoding='utf-8')
+
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('already listed', err)
+        self.assertTrue(page.is_file())
+        self.assertEqual(record.read_text(encoding='utf-8'), before)
+
     def test_an_id_that_is_not_an_alias_is_still_refused(self) -> None:
         primary, _record, _sid = self._file_letter()
         page = self._put(self.inbox / 'Letters' / f'scan_{OLD}.jpg', JPEG)

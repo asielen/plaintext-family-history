@@ -4687,7 +4687,7 @@ def _attach_more_engine(
          if str(e['file']).replace('\\', '/') == new_alias_norm),
         None,
     )
-    if named_for_retired:
+    if named_for_retired or embedded_doc_sid in retired_sids:
         # A file the record already lists under its old name (the usual state
         # right after a hand merge) is attached already; renaming it here
         # would leave that entry pointing at a file that is gone.
