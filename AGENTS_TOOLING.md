@@ -152,6 +152,35 @@ When implementation reveals that TOOLING/SPEC is ambiguous, contradictory, or wr
 Do not improvise past the spec (the docs must remain able to regenerate the tools).
 Present the gap, propose the spec amendment, and proceed only after the human's call.
 
+### Edge-case protocol: ask before you chase
+
+A fix should handle the case the issue describes, plus the cases that plainly follow from
+it, with the simplest rule that is correct for them. Edge cases beyond that are the owner's
+call, not yours. Before you add a heuristic, a threshold, a word list, a fallback chain or a
+special case for an edge case, stop and ask. Give him:
+
+- the case, in one line, with a concrete example;
+- how likely it is in a real archive;
+- what solving it costs: the code, the docs, and the new ways it can be wrong;
+- three choices with your recommendation: **solve it**, **report it** (a plain warning or
+  refusal that names the next step), or **ignore it** (document the limit).
+
+When you are unsure, recommend **report it**. A tool that handles the obvious case and
+tells the human plainly about everything else is better than one that guesses.
+
+Signs you are already too far down the path - stop and propose a simpler rule instead of
+another patch:
+
+- a review round finds a new edge case in the same heuristic you patched last round;
+- the fix needs a list of exceptions (words, file types, layouts) that could keep growing;
+- the rule can no longer be stated in one or two plain sentences;
+- you are inferring from free text or file names what structured data (an ID, a tag, an
+  explicit field) could say directly. Prefer the structured data, and ask before building
+  the inference.
+
+This applies to the scope of the work as well as to the code: do not widen a fix into
+neighbouring problems the issue did not ask about. File them as follow-up issues instead.
+
 ---
 
 ## Coding standards (tool-building mode)
@@ -168,7 +197,9 @@ interface changes.
 optimize for readability by a single developer, not enterprise-scale abstraction. Use
 straightforward control flow, small focused functions, and descriptive names. Favor boring,
 predictable code over compact or clever code. Do not introduce new abstractions, helpers, or
-architectural layers unless they clearly reduce complexity. Dead code is acceptable as
+architectural layers unless they clearly reduce complexity. Prefer the simplest rule that
+handles the common case and reports the rest over a clever one that tries to handle
+everything; see the Edge-case protocol above before adding special cases. Dead code is acceptable as
 intentional scaffolding for a planned feature - tag it with a `# TODO:` comment explaining
 what it scaffolds and what must happen before it is activated; remove dead code that has no
 planned future use.
@@ -277,7 +308,9 @@ messy-but-recoverable input is inferred or met with one plain question, never a 
 **Completion:** Work to completion in one run - do not stop after partial implementation if
 more required work is known. Keep interim narration brief so context is reserved for actual
 work. If context limits prevent full completion, finish the highest-risk and most central
-work first, then clearly list what remains.
+work first, then clearly list what remains. "Required" means the issue and its plain
+consequences; an edge case you discover along the way is a question for the owner (Edge-case
+protocol), not required work.
 
 ---
 
@@ -293,6 +326,15 @@ issues that are likely to survive implementation but get caught during PR review
 
 Focus less on formatting/style and more on correctness, contract mismatches, edge cases,
 and incomplete propagation.
+
+**Edge cases are not automatically fixes.** For each edge-case finding, say how likely it is in
+a real archive. A wrong answer the tool gives *silently* on a realistic input (data written
+wrong, privacy leaked, a confident false success) is a real finding at its normal severity.
+A rare case, or one the tool already reports honestly, goes in a separate **Owner decisions**
+list as "solve / report / ignore", with your recommendation, not in P1/P2. **Over-engineering
+is a finding too:** a heuristic that keeps growing exceptions, a rule that no longer fits in a
+sentence, or inference from free text where structured data exists - recommend the simpler
+rule.
 
 ### Issue classes to check
 
@@ -479,6 +521,11 @@ For each issue:
 
 **3. P2/important issues**
 Same format as P1.
+
+**3b. Owner decisions**
+Rare or already-reported edge cases (see "Edge cases are not automatically fixes" above). One
+line each: the case, how likely it is, the cost of solving it, and your recommendation:
+solve, report, or ignore.
 
 **4. Contract drift**
 List every mismatch between docs, code, CLI/API, schemas, and tests.

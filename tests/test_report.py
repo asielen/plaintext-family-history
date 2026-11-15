@@ -1750,5 +1750,59 @@ class ReportUndecodableFileVerdictTests(unittest.TestCase):
         self.assertIn('## 0.', result['markdown'])
 
 
+class ClaimFingerprintIsUnambiguousTests(unittest.TestCase):
+    """#266 review P3-4: a claim's participants go into its fingerprint. A
+    role word is free text that can hold a comma or colon, and the role column
+    now holds several roles, so a `:`/`,` join let two different participant
+    lists produce one string - a real change reported as no change."""
+
+    def _fingerprint(self, rows):
+        import types
+        from index import _DDL
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = sqlite3.connect(':memory:')
+            conn.executescript(_DDL)
+            conn.row_factory = sqlite3.Row
+            conn.execute("INSERT INTO claims(id, source_id, type, value, status) "
+                         "VALUES ('c-1', 's-1', 'birth', 'x', 'accepted')")
+            conn.executemany('INSERT INTO claim_persons VALUES (?,?,?,?)', rows)
+            snap = report._build_snapshot(
+                conn, Path(tmp), [], types.SimpleNamespace(person_profile_paths={}))
+            return snap['claim_fingerprints']['c-1']
+
+    def test_one_person_with_a_comma_role_differs_from_two_people(self):
+        one = self._fingerprint([('c-1', 'p-a', 0, 'x,p-b:1:y')])
+        two = self._fingerprint([('c-1', 'p-a', 0, 'x'), ('c-1', 'p-b', 1, 'y')])
+        self.assertNotEqual(one, two)
+
+    def test_a_role_added_to_a_person_is_a_change(self):
+        self.assertNotEqual(
+            self._fingerprint([('c-1', 'p-a', 0, 'parent')]),
+            self._fingerprint([('c-1', 'p-a', 0, 'informant\x1fparent')]))
+
+
+class ClaimFingerprintVersionTests(unittest.TestCase):
+    """#266 review P2-4: a snapshot saved before the fingerprint format changed
+    (no version, or another one) is a baseline - nothing reads as changed."""
+
+    def _snap(self, fp, version):
+        snap = {'source_ids': [], 'person_ids': [], 'claim_ids': ['c-1'],
+                'claim_fingerprints': {'c-1': fp}, 'source_fingerprints': {},
+                'person_fingerprints': {}}
+        if version is not None:
+            snap['claim_fingerprint_version'] = version
+        return snap
+
+    def test_an_older_snapshot_reports_no_changed_claims(self):
+        current = self._snap('new-form', report.CLAIM_FINGERPRINT_VERSION)
+        lines = report._section_new_since_last(self._snap('old-form', None), current)
+        self.assertFalse(any('Changed claims' in line for line in lines), lines)
+
+    def test_a_same_version_snapshot_still_reports_a_real_change(self):
+        v = report.CLAIM_FINGERPRINT_VERSION
+        lines = report._section_new_since_last(self._snap('before', v), self._snap('after', v))
+        self.assertTrue(any('hanged claims' in line for line in lines), lines)
+
+
 if __name__ == '__main__':
     unittest.main()

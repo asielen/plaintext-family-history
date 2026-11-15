@@ -2289,7 +2289,10 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         sources_dir = result['packet_dir'] / 'sources'
         self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
-        self.assertTrue(any('could not be read' in m for m in result['messages']))
+        # The copy-time warning: the privacy gate reads the marker through
+        # `_lib.read_restriction_marker`, which this patch does not reach,
+        # so only the copy step sees the simulated corruption.
+        self.assertTrue(any('could not read' in m for m in result['messages']))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertNotIn('andrew_sielen', readme)
         self.assertNotIn('Secret Folder', readme)
@@ -2339,7 +2342,10 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ok')
         sources_dir = result['packet_dir'] / 'sources'
         self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
-        self.assertTrue(any('could not be read' in m for m in result['messages']))
+        # The copy-time warning: the privacy gate reads the marker through
+        # `_lib.read_restriction_marker`, which this patch does not reach,
+        # so only the copy step sees the simulated corruption.
+        self.assertTrue(any('could not read' in m for m in result['messages']))
 
     def test_files_entry_as_a_mapping_instead_of_a_list_is_left_out(self):
         """Finding 3: a hand-edited archive where `files:` holds a MAPPING
