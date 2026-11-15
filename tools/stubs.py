@@ -26,17 +26,14 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     archive_root_missing_message,
-    duplicate_person_name_message,
+    duplicate_name_problems,
     find_archive_root,
-    find_people_by_name,
     id_type_of,
-    is_placeholder_name,
     is_template_file,
     link_field_refs,
     load_fha_yaml,
     mint_ids,
     normalize_id,
-    person_name_key,
     read_record,
     render_person_body_scaffold,
     render_stub_content,
@@ -274,31 +271,14 @@ def mint_named_stubs(
 
 def _duplicate_name_problems(archive_root: Path, names: list[str]) -> list[str]:
     """One plain sentence per name in `names` that is already taken - by a
-    record in the archive, or by an earlier name in the same batch (typed
-    twice, or twice with different accents/case). Empty when every name is
-    new."""
-    problems: list[str] = []
+    record in the archive, or by an earlier name in the same batch - via the
+    shared `_lib.duplicate_name_problems`. Empty when every name is new."""
     unreadable: list[str] = []
-    existing = find_people_by_name(archive_root, names, unreadable=unreadable)
+    problems, _existing = duplicate_name_problems(
+        archive_root, names, where='list', unreadable=unreadable)
     if unreadable:
         print(f'WARNING: {unreadable_people_note(unreadable)}', file=sys.stderr)
-    first_seen: dict[str, str] = {}
-    for name in names:
-        if name in existing:
-            problems.append(duplicate_person_name_message(name, existing[name]))
-            continue
-        key = person_name_key(name)
-        if not key or is_placeholder_name(name):
-            continue
-        if key in first_seen:
-            problems.append(
-                f'{name} is in this list twice (also as {first_seen[key]!r}), so '
-                'it would be minted as two records. If you have confirmed these '
-                'are two different people who share the name, run again with '
-                '`--force`.')
-        else:
-            first_seen[key] = name
-    return problems
+    return [text for _i, text in problems]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

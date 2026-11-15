@@ -54,7 +54,7 @@ class ScanSkipsNonRecordFoldersTests(unittest.TestCase):
             for rel, rid in placed.items():
                 (root / rel).write_text(f'id: {rid}\n', encoding='utf-8')
             for rel in ('.git/objects/x.txt', '.cache/log.md', '.fha/tools/t.md',
-                        'generated/site/p.md', 'people/.obsidian/w.md'):
+                        'generated/site/p.md', '.obsidian/w.md', '.claude/s.md'):
                 (root / rel).parent.mkdir(parents=True, exist_ok=True)
                 (root / rel).write_text('id: p-1111111111\n', encoding='utf-8')
 
@@ -74,8 +74,8 @@ class ScanSkipsNonRecordFoldersTests(unittest.TestCase):
             self.assertTrue(set(placed.values()) <= found)
             self.assertNotIn('p-1111111111', found)
             for rel in opened:
-                self.assertFalse(rel.startswith(('.git', '.cache', '.fha', 'generated'))
-                                 or '/.' in rel, rel)
+                self.assertFalse(rel.startswith(('.git', '.cache', '.fha', 'generated',
+                                                 '.obsidian', '.claude')), rel)
             self.assertIn('sources/a_S-0000000001.md', opened)
 
 
@@ -148,13 +148,13 @@ class FromFileTests(unittest.TestCase):
         person.run_new(self.root, 'Ann Smith')
         path = self._tsv('Henry Smith\tM\nAnn Smith\tF\nHenry Smith\tM\n')
         calls = []
-        real_find = person.find_people_by_name
+        real_find = _lib.find_people_by_name
 
         def counting_find(root, names, **kw):
             calls.append(list(names))
             return real_find(root, names, **kw)
 
-        with mock.patch.object(person, 'find_people_by_name', counting_find):
+        with mock.patch.object(_lib, "find_people_by_name", counting_find):
             code, _out, err = self._run('--from-file', str(path))
         self.assertEqual(code, EXIT_FAILURE)
         self.assertEqual(len(calls), 1)
@@ -199,6 +199,99 @@ class FromFileTests(unittest.TestCase):
         code, _out, err = self._run('--from-file', str(self.root / 'nope.tsv'))
         self.assertEqual(code, EXIT_FAILURE)
         self.assertIn('nope.tsv', err)
+
+
+
+class ReReviewTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _archive(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = person._standalone_main(['new', *argv, '--root', str(self.root)])
+        return code, out.getvalue(), err.getvalue()
+
+    def _dotfolder_record(self) -> None:
+        d = self.root / 'people' / '.old'
+        d.mkdir()
+        (d / 'x__y_p-0000000061.md').write_text('---\nid: p-0000000061\nname: X Y\n---\n',
+                                                 encoding='utf-8')
+
+    def test_scan_ids_finds_record_in_people_dotfolder(self) -> None:
+        self._dotfolder_record()
+        self.assertIn('p-0000000061', scan_ids_in_tree(self.root))
+
+    def test_confirm_discovery_accepts_ref_to_dotfolder_record(self) -> None:
+        import confirm
+        self._dotfolder_record()
+        result = confirm.run_add_discovery(self.root, text='Found X', refs=['P-0000000061'],
+                                           dry_run=True)
+        self.assertTrue(result.ok, [m.text for m in result.messages])
+
+    def test_from_file_punctuation_only_names_not_duplicates(self) -> None:
+        path = self.root / 'p.tsv'
+        path.write_text('?\tM\n...\tF\nunknown\t\nUnknown\t\n', encoding='utf-8')
+        result = person.run_new_from_file(self.root, path, dry_run=True)
+        self.assertNotEqual(result.data['status'], 'duplicate-name',
+                            [m.text for m in result.messages])
+
+    def test_from_file_excel_quoted_cell(self) -> None:
+        path = self.root / 'p.tsv'
+        path.write_text('"Mary ""Polly"" Smith"\tF\n', encoding='utf-8')
+        code, _out, err = self._run('--from-file', str(path))
+        self.assertEqual(code, EXIT_CLEAN, err)
+        [stub] = sorted((self.root / 'people' / 'stubs').glob('*.md'))
+        self.assertEqual(read_record(stub)['meta']['name'], 'Mary "Polly" Smith')
+
+    def test_from_file_refusal_is_truthful(self) -> None:
+        result = person.run_new_from_file(self.root, self.root / 'nope.tsv')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('nope.tsv', text)
+        self.assertNotIn('Errno', text)
+        self.assertEqual(result.data['people'], [])
+
+        path = self.root / 'p.tsv'
+        path.write_text('Henry Smith\tM\nAnn Smith\tF\n', encoding='utf-8')
+        real_write = person.write_text_exact_atomic
+        calls = []
+
+        def failing_write(p, text):
+            calls.append(p)
+            if len(calls) == 2:
+                raise OSError('disk full')
+            return real_write(p, text)
+
+        with mock.patch.object(person, 'write_text_exact_atomic', failing_write):
+            result = person.run_new_from_file(self.root, path)
+        self.assertEqual(result.data['people'], [])
+        ok = person.run_new_from_file(self.root, path, dry_run=True)
+        self.assertTrue(all(not Path(p['path']).is_absolute() for p in ok.data['people']))
+        self.assertTrue(all(p['path'].startswith('people/stubs/') for p in ok.data['people']))
+
+    def test_from_file_reports_a_stub_it_could_not_remove(self) -> None:
+        path = self.root / 'p.tsv'
+        path.write_text('Henry Smith\tM\nAnn Smith\tF\n', encoding='utf-8')
+        real_write = person.write_text_exact_atomic
+        calls = []
+
+        def failing_write(p, text):
+            calls.append(p)
+            if len(calls) == 2:
+                raise OSError('disk full')
+            return real_write(p, text)
+
+        with mock.patch.object(person, 'write_text_exact_atomic', failing_write), \
+                mock.patch.object(Path, 'unlink', side_effect=OSError('locked')):
+            result = person.run_new_from_file(self.root, path)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertNotIn('Nothing was kept', text)
+        self.assertIn('could not be removed', text)
 
 
 if __name__ == '__main__':

@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b9b979ef6f71972e66fc5dbc8e368931dd2317a1553abcbc291ff2e4aa8a05dd",
+      "sha256": "1713b63b530b45195422e98ed8422b75a7b5033f232d055e2deabf0cde96cedd",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b4c4ebc91168e0de995a9116b3868e6d36e2e21a244fc24e83aabb14f8ad9d71",
+      "sha256": "b26cbe6ce6218dc4807cff0203bfc24d3140dcce86681cf3c977a2399e5fd38e",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "2eabe1b5c6ba51f14e15fe639dca1aa9afc4361c53617ba2cdf70d193032d42e",
+      "sha256": "8b807dad2a1ddc0351b5b6e3029bd5c8b55a9918edaea647ae1b0193d9a663a0",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "166d095eea6324b2f43d7bc97dbcadece8d69f2d74571dd44af41021318bae89",
+      "sha256": "b1841e1502471360958ae9435a029fb6cfec8fae7bf53014e1a63e7a479c268d",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "266fe685041b04c0258117c760aa21b2006df46f2ba7e44e129e2d82325b8420",
+      "sha256": "72170c906e9809270c73a9e8a6a1a131b9e4e0701bebf9b327e31ed6d28037bd",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -749,7 +749,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "9644b0a2e1b2e2174e33566ed2f3f576ca4a43e58701444bf120b24b067da85e",
+      "sha256": "72a27fa5641a1dc487ced57f8b1096400e126dacea3ef0fe98a31ceb159f3999",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "201fe1b49d2df355be6e1b778868933f70d4750752311b73529372efa2231a24",
+      "sha256": "cad691eb60c22444a3beb7c398de85b98bf0e7248c1e0cd74a544b17c2b2e1b9",
       "spec_version": "1.2"
     },
     {

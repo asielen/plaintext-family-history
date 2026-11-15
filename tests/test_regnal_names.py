@@ -111,5 +111,68 @@ class RegnalNumberTests(unittest.TestCase):
             self.assertEqual([m['id'] for m in found['Henry VII']], [first.data['person_id']])
 
 
+
+class PreSuffixRuleRecordsTests(unittest.TestCase):
+    """Records filed before #292 carry the numeral (or Esq) as their filename
+    surname. They must still export one suffix, and a same-name rename must
+    be able to re-file them (P2-A)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _stub(self, filename: str, name: str, pid: str) -> Path:
+        path = self.root / 'people' / 'stubs' / filename
+        path.write_text(f'---\nid: {pid}\nname: {name}\nliving: false\ntier: stub\n---\n',
+                        encoding='utf-8')
+        return path
+
+    def test_gedcom_old_regnal_and_esq_slug_exports_single_suffix(self) -> None:
+        self._stub('vii__henry_p-0000000051.md', 'Henry VII', 'p-0000000051')
+        self._stub('esq__john_smith_p-0000000052.md', 'John Smith Esq', 'p-0000000052')
+        self._stub('xi__jin_p-0000000053.md', 'Jin XI', 'p-0000000053')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        time.sleep(0.02)
+        text = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)['text']
+        lines = text.splitlines()
+        self.assertIn('1 NAME Henry // VII', lines)
+        self.assertIn('1 NAME John /Smith/ Esq', lines)
+        self.assertIn('1 NAME Jin // XI', lines)
+        self.assertNotIn('/Vii/', text)
+        self.assertEqual(gedcom._gedcom_name('Henry VII', 'Vii'), ('Henry // VII', 'VII'))
+
+    def test_rename_same_name_refiles_pre_292_regnal_slug(self) -> None:
+        old = self._stub('vii__henry_p-0000000051.md', 'Henry VII', 'p-0000000051')
+        out = person.run_rename(self.root, 'P-0000000051', 'Henry VII')
+        self.assertEqual(out.data['status'], 'ok', [m.text for m in out.messages])
+        self.assertFalse(old.exists())
+        self.assertTrue((self.root / 'people' / 'stubs' / '__henry_vii_p-0000000051.md').is_file())
+        text = ' '.join(m.text for m in out.messages)
+        self.assertIn('re-filed', text)
+        self.assertNotIn("-> 'Henry VII'", text)
+
+
+class SuffixEdgeTests(unittest.TestCase):
+
+    def test_trailing_comma_does_not_hide_the_suffix(self) -> None:
+        self.assertEqual(_slots(stub_filename('Henry VII,', PID)), '__henry_vii')
+        self.assertEqual(_slots(stub_filename('Roy Dodson Jr.,', PID)), 'dodson__roy_jr')
+        self.assertEqual(strip_generational_suffix(['Henry', 'VII,']), (['Henry'], 'vii'))
+
+    def test_help_documents_the_capitalised_surname_escape(self) -> None:
+        # "Jinping XI" reads as a regnal number (the Louis XI tradeoff); the
+        # documented way out is --surname XI.
+        self.assertIn('--surname XI', person._NEW_DESCRIPTION)
+        self.assertIn('Esq', person._NEW_DESCRIPTION)
+        self.assertEqual(_slots(stub_filename('Jinping XI', PID, surname='XI')), 'xi__jinping')
+
+
 if __name__ == '__main__':
     unittest.main()

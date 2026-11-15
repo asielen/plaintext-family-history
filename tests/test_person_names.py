@@ -396,10 +396,6 @@ class MoreLettersFoldTests(unittest.TestCase):
         text = gedcom.run_gedcom(root, None, all_persons=True, include_living=True)['text']
         self.assertIn('1 NAME Guðrún /Þórðardóttir/', text)
 
-    def test_old_lossy_slug_still_exports_its_own_spelling(self) -> None:
-        self.assertEqual(gedcom._gedcom_name('Guðrún Þórðardóttir', 'Orardottir'),
-                         ('Guðrún /Þórðardóttir/', None))
-
     def test_turkish_and_french_letters(self) -> None:
         self.assertEqual(stub_filename('Ayşe Yıldız', 'p-0000000001'),
                          'yildiz__ayse_p-0000000001.md')
@@ -525,6 +521,15 @@ class RenameRepairsLossySlugTests(unittest.TestCase):
         result = person.run_rename(self.root, 'P-0000000042', 'Mary Jones')
         self.assertEqual(result.data['status'], 'already')
         self.assertTrue(path.exists())
+
+
+
+class EchoTests(unittest.TestCase):
+
+    def test_echo_person_new_keeps_empty_surname(self) -> None:
+        echo = serve._echo_person_new({'name': 'Henry Tudor', 'surname': ''})
+        self.assertIn('--surname ""', echo)
+        self.assertNotIn('--surname', serve._echo_person_new({'name': 'Henry Tudor'}))
 
 
 if __name__ == '__main__':

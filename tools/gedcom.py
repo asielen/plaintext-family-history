@@ -81,7 +81,6 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    ACCENT_FOLD_FIRST_CUT,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -266,22 +265,16 @@ def _surname_token_matches(name_token: str, slug_token: str) -> bool:
     reproduces that slug exactly, so such a record still exports its own
     spelling ("Wiśniewska", "O'Brien") without being renamed first.
 
-    The third test is the first two together: a slug written after a
-    partial fold, which folded some letters and dropped the rest
-    ("Þórðardóttir" filed as `orardottir` before þ and ð joined the table),
-    and an O'Brien with an accent. Fold the name's word with the table of
-    that time (`ACCENT_FOLD_FIRST_CUT`), then delete what is left outside
-    `[a-z0-9]`, and compare - once more with today's table, for punctuation.
+    The third test is the first two together, for a name with both an
+    accent and punctuation ("D'Ámico" filed as `damico`): fold the name's
+    word, then delete what is left outside `[a-z0-9]`, and compare.
     """
     slug = slug_token.lower()
     if fold_accents(name_token).lower() == fold_accents(slug_token).lower():
         return True
     if re.sub(r'[^a-z0-9]', '', name_token.lower()) == slug:
         return True
-    return slug in (
-        re.sub(r'[^a-z0-9]', '', fold_accents(name_token, ACCENT_FOLD_FIRST_CUT).lower()),
-        re.sub(r'[^a-z0-9]', '', fold_accents(name_token).lower()),
-    )
+    return re.sub(r'[^a-z0-9]', '', fold_accents(name_token).lower()) == slug
 
 
 def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
@@ -350,6 +343,13 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
 
     sn = _name_text(_escape(surname)) if surname else ''
     if is_placeholder_name(sn):
+        sn = ''
+    if sn and raw_suffix and len(sn.split()) == 1 and _surname_token_matches(raw_suffix, sn):
+        # A record filed before issue #292 carries its suffix as its filename
+        # surname (`vii__henry_P-….md`, `esq__john_smith_P-….md`), so the
+        # index says "Vii". That is the suffix read twice, not a surname:
+        # drop it and let the name's own split decide (`Henry // VII`,
+        # `John /Smith/ Esq`), as it does for a record filed today.
         sn = ''
     if sn:
         sn_tokens = sn.split()

@@ -7558,19 +7558,27 @@ def match_place_text_to_registry(
             'registry_error': registry_error, 'ambiguous_ids': None}
 
 
+# Archive-root folders that never hold a record's own ID (see scan_ids_in_tree).
+_ID_SCAN_SKIP_DIRS = frozenset({'.git', '.cache', '.fha', '.claude', '.obsidian', 'generated'})
+
+
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
     """
     Scan the archive tree for all ID strings (case-normalized).
     Used by id mint to verify non-existence without a built index.
 
-    Every mint pays for this scan, so it reads only where a record's own ID
-    can live (issue #291: in a large archive it took 8-10 s a person). It
-    never enters a dot-folder at any depth (`.git` objects, `.cache`, the
-    installed `.fha/` tools, an editor's `.obsidian`) or the top-level
-    `generated/` site: none of them holds an ID that is not also in a
-    record, and `.git` alone can be tens of thousands of files. `os.walk`
-    with pruning means those trees are not even listed, and a file is
-    opened only when its extension is one of the text kinds.
+    Every mint pays for this scan, so it skips the archive-root folders
+    that never hold a record's own ID (issue #291: in a large archive it
+    took 8-10 s a person): `.git` (its objects alone can be tens of
+    thousands of files), `.cache`, the installed `.fha/` tools, `.claude`,
+    an editor's `.obsidian`, and the `generated/` site (`_ID_SCAN_SKIP_DIRS`).
+    Only those, and only at the top: a dot-folder deeper down
+    (`people/.old/`, a `.trash/` inside a record folder) can hold a real
+    record that `fha index` and the duplicate-name check still read, so
+    its IDs must count here too, or a mint could reuse one and `fha confirm
+    discovery --refs` would call a real record's id unknown. `os.walk`
+    with pruning means the skipped trees are not even listed, and a file
+    is opened only when its extension is one of the text kinds.
 
     The index is deliberately NOT used as a shortcut, although its ID
     tables are faster to read. "Fresh" there means the database file is
@@ -7583,9 +7591,8 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
     root = Path(archive_root)
     found: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root):
-        top = Path(dirpath) == root
-        dirnames[:] = [d for d in dirnames
-                       if not d.startswith('.') and not (top and d == 'generated')]
+        if Path(dirpath) == root:
+            dirnames[:] = [d for d in dirnames if d not in _ID_SCAN_SKIP_DIRS]
         for filename in filenames:
             if os.path.splitext(filename)[1] not in ('.md', '.yaml', '.yml', '.txt'):
                 continue
@@ -9594,24 +9601,17 @@ def find_source_record_path(
 # filename slug, lint's --fix-ids rename, the GEDCOM importer and gedcom's
 # surname match now share the same table, so a name folds the same way
 # wherever it is turned into ASCII. The second row (Icelandic, Turkish,
-# French, Maltese, Sami letters) was added after the first cut still filed
-# "Guðrún Þórðardóttir" as `orardottir__gurun`; it extends xref's town fold
-# the same way (Þingvellir now matches Thingvellir), never contradicts it.
-_ACCENT_FOLD_FIRST_CUT_LETTERS = {
+# French, Maltese, Sami letters) extends xref's town fold the same way
+# (Þingvellir now matches Thingvellir), never contradicts it.
+ACCENT_FOLD = str.maketrans({
     'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
     'đ': 'd', 'Đ': 'D',
-}
-# The first row alone, kept so `gedcom` can still recognise a slug written
-# while only those letters folded (see `gedcom._surname_token_matches`).
-ACCENT_FOLD_FIRST_CUT = str.maketrans(_ACCENT_FOLD_FIRST_CUT_LETTERS)
-ACCENT_FOLD = str.maketrans({
-    **_ACCENT_FOLD_FIRST_CUT_LETTERS,
     'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'TH', 'ı': 'i', 'œ': 'oe', 'Œ': 'OE',
     'ħ': 'h', 'Ħ': 'H', 'ŧ': 't', 'Ŧ': 'T', 'ŋ': 'n', 'Ŋ': 'N',
 })
 
 
-def fold_accents(text: str, table: dict | None = None) -> str:
+def fold_accents(text: str) -> str:
     """`text` with accented letters folded to their base letters.
 
     "Wiśniewska" -> "Wisniewska", "Gołębiowska" -> "Golebiowska", "Müller"
@@ -9628,11 +9628,9 @@ def fold_accents(text: str, table: dict | None = None) -> str:
 
     For machine handles only (filenames, comparison keys): a record's
     `name:` always keeps the full spelling (SPEC §13 - "the filename is only
-    a sort handle"). `table` swaps the letter table, only so an old slug can
-    be reproduced exactly (`ACCENT_FOLD_FIRST_CUT`).
+    a sort handle").
     """
-    folded = unicodedata.normalize(
-        'NFKD', str(text or '').translate(ACCENT_FOLD if table is None else table))
+    folded = unicodedata.normalize('NFKD', str(text or '').translate(ACCENT_FOLD))
     return ''.join(c for c in folded if not unicodedata.combining(c))
 
 
@@ -9662,23 +9660,35 @@ def _roman_numeral(n: int) -> str:
 REGNAL_NUMERALS: frozenset[str] = frozenset(_roman_numeral(n) for n in range(6, 31))
 
 
-def is_name_suffix(token: str, rest: list[str]) -> bool:
+# The suffix list every release before issue #292 used - kept only so a
+# file name written then can be recognised (`stub_filename_is_lossy`).
+_LEGACY_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v'})
+
+
+def is_name_suffix(token: str, rest: list[str], *, legacy: bool = False) -> bool:
     """Whether `token`, the last word of a name, is a suffix and not the
     surname; `rest` is the words before it.
 
-    Jr, Sr, II-V and Esq always are (case-insensitive, a trailing period
-    tolerated). VI to XXX are when typed in capitals ("Henry VII", "Louis
-    XIV") and `rest` holds a lower-case letter, so "Jin Xi" and "JIN XI"
-    keep Xi as their surname. `--surname` is the escape hatch either way.
+    Jr, Sr, II-V and Esq always are (case-insensitive, a trailing period or
+    comma tolerated - "Henry VII,"). VI to XXX are when typed in capitals
+    ("Henry VII", "Louis XIV") and `rest` holds a lower-case letter, so
+    "Jin Xi" and "JIN XI" keep Xi as their surname. The rule cannot tell
+    "Louis XI" from "Jinping XI" (a surname written in capitals after the
+    given name): such a name needs `--surname XI`, the escape hatch for
+    anything this gets wrong. `legacy=True` answers with the pre-#292 list.
     """
-    bare = token.rstrip('.')
+    bare = token.rstrip('.,')
+    if legacy:
+        return bare.lower() in _LEGACY_NAME_SUFFIXES
     if bare.lower() in PERSON_NAME_SUFFIXES:
         return True
     return (bare in REGNAL_NUMERALS
             and any(c.islower() for word in rest for c in word))
 
 
-def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
+def strip_generational_suffix(
+    parts: list[str], *, legacy: bool = False,
+) -> tuple[list[str], str | None]:
     """Pull a trailing generational suffix off whitespace-split name tokens.
 
     Shared by every site that derives a person's SPEC §13 filename surname
@@ -9709,13 +9719,13 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     """
     if len(parts) < 2:
         return parts, None
-    if is_name_suffix(parts[-1], parts[:-1]):
-        return parts[:-1], parts[-1].rstrip('.').lower()
+    if is_name_suffix(parts[-1], parts[:-1], legacy=legacy):
+        return parts[:-1], parts[-1].rstrip('.,').lower()
     return parts, None
 
 
 def stub_slug_name(
-    name: str, surname: str | None = None, *, fold: str = 'current',
+    name: str, surname: str | None = None, *, legacy: bool = False,
 ) -> tuple[str, str]:
     """Parse a display name into (surname_slug, given_slug) for a stub filename.
 
@@ -9780,18 +9790,16 @@ def stub_slug_name(
     `surname` folds the same way, so an override typed with its accents
     still finds its own words inside the name.
 
-    `fold` exists only to reproduce the file names older versions wrote, so
-    `fha person rename` can tell a lossy name it may repair from a name a
-    human chose (`stub_filename_is_lossy`): 'current' (the default, every
-    writer), 'none' (no fold at all - before issue #279, when accented
-    letters were deleted) or 'first-cut' (`ACCENT_FOLD_FIRST_CUT`, which
-    still deleted ð, þ, ı and the rest).
+    `legacy=True` reproduces the slugger every earlier release shipped, so
+    `fha person rename` can tell a file name it may repair from one a human
+    chose (`stub_filename_is_lossy`): no accent fold (accented letters were
+    deleted, issue #279) and only Jr, Sr, II-V as suffixes (a regnal number
+    or Esq became the surname, issue #292). Every writer uses the default.
     """
-    if fold != 'none':
-        table = ACCENT_FOLD_FIRST_CUT if fold == 'first-cut' else ACCENT_FOLD
-        name = fold_accents(name, table)
+    if not legacy:
+        name = fold_accents(name)
         if surname is not None:
-            surname = fold_accents(surname, table)
+            surname = fold_accents(surname)
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
@@ -9804,10 +9812,14 @@ def stub_slug_name(
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
         n = len(surname_tokens)
-        core, suffix = strip_generational_suffix(parts)
+        core, suffix = strip_generational_suffix(parts, legacy=legacy)
         lowered_core = [p.lower() for p in core]
         surname_lowered = [t.lower() for t in surname_tokens]
-        if lowered_core[-n:] == surname_lowered:
+        if suffix and [p.lower().rstrip('.,') for p in parts[-n:]] == surname_lowered:
+            # The override names the word the suffix rule took: "Jinping XI"
+            # with --surname XI. The human has said it is the surname.
+            given_tokens, suffix = parts[:-n], None
+        elif lowered_core[-n:] == surname_lowered:
             given_tokens = core[:-n] if n else core
         elif lowered_core[:n] == surname_lowered:
             given_tokens = core[n:]
@@ -9827,7 +9839,7 @@ def stub_slug_name(
     if len(parts) == 1:
         given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
         return ('', given or 'unknown')
-    core, suffix = strip_generational_suffix(parts)
+    core, suffix = strip_generational_suffix(parts, legacy=legacy)
     if len(core) == 1:
         given = core[0] if not suffix else f'{core[0]}_{suffix}'
         given = re.sub(r'[^a-z0-9_]', '', given.lower())
@@ -9841,7 +9853,7 @@ def stub_slug_name(
 
 
 def stub_filename(
-    name: str | None, pid: str, surname: str | None = None, *, fold: str = 'current',
+    name: str | None, pid: str, surname: str | None = None, *, legacy: bool = False,
 ) -> str:
     """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
 
@@ -9856,7 +9868,7 @@ def stub_filename(
     cannot be expected to get right.
     """
     if name and name.lower() not in ('unknown', ''):
-        surname_slug, given = stub_slug_name(name, surname=surname, fold=fold)
+        surname_slug, given = stub_slug_name(name, surname=surname, legacy=legacy)
     else:
         surname_slug, given = 'unknown', 'unknown'
     return f'{surname_slug}__{given}_{pid}.md'
@@ -9867,7 +9879,9 @@ def stub_filename_is_lossy(
 ) -> bool:
     """Whether `filename` is what an OLDER slugger made of `name`, and today's
     differs - a file name that lost letters (`winiewska__halina_P-….md` for
-    "Halina Wiśniewska", issue #279) rather than one a human chose.
+    "Halina Wiśniewska", issue #279) or took a suffix for the surname
+    (`vii__henry_P-….md` for "Henry VII", issue #292) rather than one a
+    human chose.
 
     Compared case-insensitively (a P-id is written either case). This is
     the gate that lets `fha person rename P-x "<same name>"` re-file such a
@@ -9877,8 +9891,7 @@ def stub_filename_is_lossy(
     current = stub_filename(name, pid, surname=surname).lower()
     if filename.lower() == current:
         return False
-    return any(filename.lower() == stub_filename(name, pid, surname=surname, fold=f).lower()
-               for f in ('none', 'first-cut'))
+    return filename.lower() == stub_filename(name, pid, surname=surname, legacy=True).lower()
 
 
 # ── Is this name already taken? (issue #282) ─────────────────────────────────
@@ -10107,6 +10120,41 @@ def duplicate_person_name_message(name: str, matches: list[dict]) -> str:
     return (f'{name} already has {has}: {listed}. It is most likely the same '
             'person - use that record. If you have confirmed this is a '
             'different person who shares the name, run again with `--force`.')
+
+
+def duplicate_name_problems(
+    archive_root: str | Path, names: list[str], *, where: str = 'list',
+    unreadable: list | None = None,
+) -> tuple[list[tuple[int, str]], dict[str, list[dict]]]:
+    """Every name in a batch that is already taken, as `(index, sentence)`.
+
+    The one batch check `fha stubs --from-names` and `fha person new
+    --from-file` share (issue #282): one `find_people_by_name` walk over all
+    names (never one per name), then names repeated inside the batch - the
+    second spelling of "Ada Quillfeather" / "ada quillfeather" is flagged,
+    because the same name twice would mint two records. A name with no
+    comparison key (punctuation only) or a placeholder ("unknown") is never
+    a duplicate of anything: those are not names. `where` words the
+    in-batch sentence ("list", "file"). Also returns the existing matches.
+    """
+    existing = find_people_by_name(archive_root, names, unreadable=unreadable)
+    problems: list[tuple[int, str]] = []
+    first_seen: dict[str, str] = {}
+    for i, name in enumerate(names):
+        if name in existing:
+            problems.append((i, duplicate_person_name_message(name, existing[name])))
+            continue
+        key = person_name_key(name)
+        if not key or is_placeholder_name(name):
+            continue
+        if key in first_seen:
+            problems.append((i, (
+                f'{name} is in this {where} twice (also as {first_seen[key]!r}), so it '
+                'would be minted as two records. If you have confirmed these are two '
+                'different people who share the name, run again with `--force`.')))
+        else:
+            first_seen[key] = name
+    return problems, existing
 
 
 def unreadable_people_note(paths: list[str]) -> str:

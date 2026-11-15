@@ -248,6 +248,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import difflib
 import re
 import sqlite3
@@ -274,6 +275,7 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     configure_utf8_stdout,
+    duplicate_name_problems,
     duplicate_person_name_message,
     find_people_by_name,
     unreadable_people_note,
@@ -298,9 +300,7 @@ from _lib import (
     lines_end_with_newline,
     living_edit_problem,
     load_fha_yaml,
-    is_placeholder_name,
     mint_ids,
-    person_name_key,
     normalize_date,
     normalize_id,
     normalize_living,
@@ -1184,15 +1184,24 @@ def _read_people_file(path: Path) -> tuple[list[dict], list[str]]:
     """
     rows: list[dict] = []
     problems: list[str] = []
+    fix = 'one person per line: name, sex, surname, separated by tabs'
+    if not path.is_file():
+        return [], [f'there is no file at {path} - check the path ({fix}).']
     try:
-        text = path.read_text(encoding='utf-8-sig')
-    except (OSError, UnicodeDecodeError) as e:
-        return [], [f'cannot read {path}: {e}. Check the path, and save the file as '
-                    'UTF-8 text (one person per line: name, sex, surname, separated by tabs).']
-    for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip() or line.lstrip().startswith('#'):
+        with open(path, encoding='utf-8-sig', newline='') as fh:
+            # csv, not split('\t'): a spreadsheet saving as TSV quotes a cell
+            # holding a quote ("Mary ""Polly"" Smith"), and csv unwraps it.
+            lines = list(csv.reader(fh, delimiter='\t'))
+    except UnicodeDecodeError:
+        return [], [f'{path} is not saved as UTF-8 text. Save it again choosing '
+                    f'UTF-8 (in Excel: Save As, UTF-8), {fix}.']
+    except (OSError, csv.Error) as e:
+        return [], [f'{path} could not be read ({e.__class__.__name__}) - check the '
+                    f'file is not open in another program and is plain text, {fix}.']
+    for number, raw in enumerate(lines, start=1):
+        if not raw or not ''.join(raw).strip() or raw[0].lstrip().startswith('#'):
             continue
-        cells = [c.strip() for c in line.split('\t')]
+        cells = [c.strip() for c in raw]
         if not rows and not problems and cells[0].lower() == 'name':
             continue   # header row
         while len(cells) > 1 and cells[-1] == '':
@@ -1252,25 +1261,10 @@ def run_new_from_file(
 
     unreadable: list[str] = []
     if not force:
-        names = [r['name'] for r in rows]
-        existing = find_people_by_name(archive_root, names, unreadable=unreadable)
-        lines: list[str] = []
-        first_seen: dict[str, str] = {}
-        for r in rows:
-            name = r['name']
-            if name in existing:
-                result.data['duplicates'][name] = existing[name]
-                lines.append(f"row {r['row']}: "
-                             + duplicate_person_name_message(name, existing[name]))
-                continue
-            key = person_name_key(name)
-            if key in first_seen and not is_placeholder_name(name):
-                lines.append(f"row {r['row']}: {name} is in this file twice (also as "
-                             f'{first_seen[key]!r}), so it would be minted as two records. '
-                             'If you have confirmed these are two different people who '
-                             'share the name, run again with `--force`.')
-            else:
-                first_seen.setdefault(key, name)
+        problems_at, existing = duplicate_name_problems(
+            archive_root, [r['name'] for r in rows], where='file', unreadable=unreadable)
+        result.data['duplicates'] = dict(existing)
+        lines = [f"row {rows[i]['row']}: {text}" for i, text in problems_at]
         if lines:
             return _refuse_result(result, 'duplicate-name',
                                   'Nothing was minted:\n  ' + '\n  '.join(lines))
@@ -1284,7 +1278,8 @@ def run_new_from_file(
                    + '\n' + render_person_body_scaffold(r['name']))
         planned.append((r, pid, target, content))
         result.data['people'].append(
-            {'person_id': fmt_id_display(pid), 'name': r['name'], 'path': str(target)})
+            {'person_id': fmt_id_display(pid), 'name': r['name'],
+             'path': target.relative_to(archive_root).as_posix()})
     if unreadable:
         result.add('warning', unreadable_people_note(unreadable))
 
@@ -1307,14 +1302,23 @@ def run_new_from_file(
             write_text_exact_atomic(target, content)
             written.append(target)
     except OSError as e:
+        left: list[str] = []
         for done in written:
-            with contextlib.suppress(OSError):
+            try:
                 done.unlink()
-        return _refuse_result(
-            result, 'refused',
-            f'cannot write the new records ({e}). Nothing was kept - the '
-            f'{len(written)} written before the failure were removed. Check that '
-            'people/stubs/ is writable, then run the same command again.')
+            except OSError:
+                left.append(done.relative_to(archive_root).as_posix())
+        result.data['people'] = []
+        if left:
+            kept = (f'{len(written) - len(left)} of the {len(written)} written before the '
+                    f'failure were removed, but {len(left)} could not be removed and are '
+                    f'still on disk: {", ".join(left)}. Delete those by hand before '
+                    'running the same command again, or they will be minted twice.')
+        else:
+            kept = (f'Nothing was kept - the {len(written)} written before the failure '
+                    'were removed. Check that people/stubs/ is writable, then run the '
+                    'same command again.')
+        return _refuse_result(result, 'refused', f'cannot write the new records ({e}). {kept}')
 
     result.data['status'] = 'ok'
     for (r, pid, target, _content) in planned:
@@ -2254,7 +2258,9 @@ def run_rename(
         new_folder = None
 
     # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
-    steps = [f'set name: {old_name or "(none)"} -> {clean_new}']
+    # A re-file (#279/#292 repair) leaves name: as it is; say what it does.
+    steps = ([f're-file under its corrected file name (name: stays {clean_new})']
+             if refile_only else [f'set name: {old_name or "(none)"} -> {clean_new}'])
     if keep_variant:
         if 'name_variants' in changed_keys:
             steps.append(f'add {old_name!r} to name_variants:')
@@ -2354,7 +2360,8 @@ def run_rename(
                        'delete it by hand.')
 
     result.data['status'] = 'ok'
-    changed_bits = [f'name -> {clean_new}']
+    changed_bits = ([f're-filed under its corrected file name (name: unchanged, {clean_new})']
+                    if refile_only else [f'name -> {clean_new}'])
     if renaming_file:
         changed_bits.append(f'file -> {new_filename}')
     if renaming_research:
@@ -3685,13 +3692,15 @@ landed. --sex accepts M, F, intersex, or unknown (case-insensitive for M/F).
 --birth/--death record PROVISIONAL, unsourced estimates: the archive's exact
 date form (1870, 1870-06) or plain words ("circa 1870", "before 1940") -
 loose wording is translated for you. A generational suffix (Jr, Sr, II, III,
-IV, V) in the name is recognised automatically and never taken as the
+IV, V, Esq) in the name is recognised automatically and never taken as the
 surname. --surname overrides the filename's surname split outright, for
 names no automatic split can be expected to get right (Spanish double
 surnames, particles like "van der", surname-first conventions), and
 --surname "" files the person with no surname at all (__henry_tudor_...).
-A regnal number in capitals ("Henry VII", "Louis XIV") is read as a suffix
-too, not a surname. name: is written exactly as given either way. A name that already has a record
+A regnal number VI-XXX in capitals ("Henry VII", "Louis XIV") is read as a
+suffix too, not a surname, unless the whole name is in capitals. A surname
+that is written in capitals and looks like one ("Jinping XI", "Thi VI")
+needs --surname XI to be filed under it. name: is written exactly as given either way. A name that already has a record
 (same spelling, ignoring case and accents) is refused so the same person is
 never filed twice; add --force when it really is someone else who shares
 the name. Use `fha person relate` next to tie the new person to family, and

@@ -1308,10 +1308,14 @@ def _verb_person_new(state, kw, dry_run):
 
 def _echo_person_new(kw):
     parts = ['fha person new', _q(kw.get('name', ''))]
-    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place', 'surname'):
+    for flag in ('sex', 'gender', 'birth', 'birth-place', 'death', 'death-place'):
         key = flag.replace('-', '_')
         if kw.get(key):
             parts += [f'--{flag}', _q(kw[key])]
+    # An empty surname is a real value ("no surname", issue #292), so the
+    # echo keeps it: `--surname ""` is the command the button ran.
+    if kw.get('surname') is not None:
+        parts += ['--surname', _q(kw['surname'])]
     if kw.get('force'):
         parts.append('--force')
     return ' '.join(parts)
