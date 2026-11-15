@@ -165,6 +165,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
+#    photo_reconcile_route     - can `fha reconcile` find a moved photo here, and how
 #
 #  Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/)
 #    cooccur_dismissed_paths   - current (notes/) path + legacy (.cache/) path
@@ -3032,6 +3033,29 @@ def photoindex_config_drift(archive_root: str | Path, fha_config: dict) -> str |
     if not reasons:
         return None
     return '; '.join(reasons)
+
+
+def photo_reconcile_route(archive_root: str | Path, fha_config: dict) -> str:
+    """How `fha reconcile` could re-tie a moved photo in this archive (#289).
+
+    Reconcile finds a moved photo by the `SOURCE:` keyword inside it, and it
+    can learn that keyword two ways: from a photo catalog that is current with
+    the photos folder, or by reading the photos with exiftool (`--with-exif`).
+    Returns 'catalog', 'exif' or 'none'. Shared by lint (E011), doctor and
+    `fha process refile`, so every message that points at reconcile names a
+    command that can work here - or, for 'none', the hand edit instead.
+    The catalog check walks the photos root: callers that need it more than
+    once per run keep the answer.
+    """
+    try:
+        status, _lag = photoindex_status(archive_root, fha_config)
+    except (OSError, RuntimeError):
+        status = 'unreadable'
+    if status == 'fresh':
+        return 'catalog'
+    if shutil.which('exiftool'):
+        return 'exif'
+    return 'none'
 
 
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
