@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "062cfe01398a8243ef66ca8924a38958b3afd976ad0b08de355069b6070d1b95",
+      "sha256": "a3fd2083cf5c03775e107e5ed783fa297f0cf88c7e8bbfcce0d9ca3330b4721f",
       "spec_version": "1.2"
     },
     {
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b5852ac8b9dc91b7b79d6e677103d812522e720f18d76a39ed601fca43527a1c",
+      "sha256": "32e5c55923b3ee51b8fe4cb8e71b132558f638b9e911dffeed2e1d40c68e7a48",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "0641a5728bf2bd04950dc4da7100889b6ae3887e7fc907a7b795134f17485ab5",
+      "sha256": "c48c71508f3dd2fb550a9df3f385a9a9c97f0d1a92c3a59a53ddaa7d3ea3ff5b",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "4c1debe9749e9124d0fa1e619f218822340392a09b4af1a21cb51bc50eab5ecb",
+      "sha256": "dab09a7167834d9731dd96212855e105af7212af85ce63caee08695e06777a85",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -602,14 +602,14 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "0900ff69ae4a90e9558eada6e64893eff6425357a769a81b941af1b28855a711",
+      "sha256": "71d2eb8030866e0460cde013771d1906829486552aa7d830e5bbcc812176afd8",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "d9f700938cefe64cc5a1b1f03531b6666277e122a3c0967354863a6e6289d89f",
+      "sha256": "e91989a679f4492bc3264ad07808281d4fb366c5bad46b2e3aa1f3ac1595712e",
       "spec_version": "1.2",
       "src": "tools/gedcom_import.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "262a57b71e0143f24ec52da8c86d01f0e7c2a62e9aa88a45e65f32c30635c817",
+      "sha256": "229cabd8d4f820a7d4e1e66f31e5d42b7429795f83fbc278a6b3449ab860e429",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "5e70b46ea06773ce82377bb3ea7f088f0c270dd3ced063f2ee64239e0bf09640",
+      "sha256": "0ad0e485abc953e64d2f15c7964d1c59450163b230fbe68a66e2c744d079a9c7",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -651,14 +651,14 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "3e3947c9681adc2c17a2e9b7dc06951965f88233bf3cc8e5abd816d66eab865a",
+      "sha256": "e264c4cb0671b4a4187bef1a7327827d5b47b411e1853b360cd6457667ca9f90",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "20fc60e13904e760eb25027ef57498cd82e7ea3e20d27dbcebf531e9cee60e2c",
+      "sha256": "9d7273243678725941b3225019a84e03237c46d079807c73dd68896b60b85d0d",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -672,7 +672,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "46ae0bccc28eb46edaa77c7fc3a80a164c73b4a70fd4934a4f29ea69347da5ae",
+      "sha256": "5318aacaf66a6a071a9b1812dc936d4fe7c552902d60dd57ecd1af55857e6bea",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -707,7 +707,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "1cd71539f43d2ccc09bf5a2b25955e3fbfdf1ce6ad26310309bd2a34e335198f",
+      "sha256": "e75d2294096ec9a15968cb59607f9caf5c1433b1876c19f1be8473fae9f81c28",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -728,21 +728,21 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "ebba11bb814accafdb0620eb730b33220cdc245352646a3c911ede9813da0d9a",
+      "sha256": "d1672b8edd47a758b13f60d1f3959cb698ca070130ac099e7d4216d6242cafc2",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "364b563a494d90a2a8d3087b82adff3ffc17d6d7c05a7f76926b6d6644f85679",
+      "sha256": "89a698a878eb0a21b6f84e0fdf6d57ff91d94fe2d9edc566dcf4b9842db68e62",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "ad4ce84d282e587c0631c95c37fdedc3918d2e90565a10755fdf804cb9d1a12e",
+      "sha256": "87ed66bec35855da6a0f883c606bc5f648d0b1d0e4ad0340ec40c796ea90ee58",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
@@ -889,7 +889,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "6af24765fce52ac6942c695d9f4fd9bc5e8ec91368504322b02d75bc9fb664ed",
+      "sha256": "1780d384eddfa183614594dff969c84124bbd0c7b390d163fa9116286c3633c6",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "f35d587067fd4d5b8f72e8e6319ce0947aefec9c243294c8faa86a41561ee343",
+      "sha256": "18e9c1a14fd76e65f27cba59e8466c62e2b238855498bdf4867a96d3ced3a32a",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "785a4b068a157d5af16325c59cc9a5744fc3b2593d62e61d0fedb5ab352df70f",
+      "sha256": "3a699095ba04da2f60fbbdb04205361c2552c4c671bc1719edf6e895bffed631",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "987ed2e6585e73c831e33d526c82841fd4040d82136b3604f938b84d46ac43bc",
+      "sha256": "4f26993114720e2b909c949bb3c01e27614874b744b8effb4dfd64043bc53bb4",
       "spec_version": "1.2"
     },
     {
