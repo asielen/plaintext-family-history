@@ -153,6 +153,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      ```
      `fha stubs` mints a **fresh random** `P-…` on each run, so the dry-run's ID is illustrative only —
      use the `P-…` the **apply** command prints (not the dry-run's) when you draft the claim's `persons:`.
+     **If `fha stubs` refuses because the name already has a record** (`REFUSED: … already has a
+     record: P-… (people/…)`, exit 3, nothing written), that record is your candidate, not an obstacle:
+     show it to the human (`fha find <P-id>`), or hand off to **merge-identities** when the evidence is
+     mixed. Use that `P-…` in the claim if he says it is the same person. Add `--force` **only after he
+     says it is a different person** who shares the name - never on your own, and never just because the
+     refusal mentions the flag.
    Resolve places against the registry before falling back to free text — looking up the **settlement name
    on its own**, not the source's whole place wording. `--kind place` matches a place's `name:` and its
    `alt_names:`, and nothing else: `hierarchy:` is not a searched field, so a query in the usual

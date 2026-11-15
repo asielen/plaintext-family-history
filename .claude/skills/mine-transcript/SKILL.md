@@ -114,6 +114,11 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    **fresh random** `P-…` each run, so the dry-run's ID is illustrative only — use the `P-…` the **apply**
    command prints when you set the claim's `persons:`. A bare `fha id mint P` only returns an ID with no
    record, so a claim using it would trip lint **E005**. Never write a silent guess as a claim's `persons:`.
+   If `fha stubs` refuses because the name **already has a record** (`REFUSED: … already has a record:
+   P-… (people/…)`, exit 3, nothing written), treat that record as the candidate: show it to the human
+   (`fha find <P-id>`) or hand off to **merge-identities**, and use its `P-…` if he says it is the same
+   person. Add `--force` only after he says it is a different person who shares the name - the refusal
+   naming the flag is not permission to use it.
 
 4. **Route narrative to `## Stories`; leave the rest in the transcript.** Story-shaped passages (an
    anecdote about the railroad job, a description of the family home) go to the source's `## Stories`

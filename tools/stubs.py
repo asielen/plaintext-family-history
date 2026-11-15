@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     archive_root_missing_message,
     duplicate_person_name_message,
@@ -41,6 +42,7 @@ from _lib import (
     render_stub_content,
     stub_filename,
     stub_slug_name,
+    unreadable_people_note,
     undecodable_file_recorder,
     write_text_exact_atomic,
 )
@@ -276,7 +278,10 @@ def _duplicate_name_problems(archive_root: Path, names: list[str]) -> list[str]:
     twice, or twice with different accents/case). Empty when every name is
     new."""
     problems: list[str] = []
-    existing = find_people_by_name(archive_root, names)
+    unreadable: list[str] = []
+    existing = find_people_by_name(archive_root, names, unreadable=unreadable)
+    if unreadable:
+        print(f'WARNING: {unreadable_people_note(unreadable)}', file=sys.stderr)
     first_seen: dict[str, str] = {}
     for name in names:
         if name in existing:
@@ -288,8 +293,9 @@ def _duplicate_name_problems(archive_root: Path, names: list[str]) -> list[str]:
         if key in first_seen:
             problems.append(
                 f'{name} is in this list twice (also as {first_seen[key]!r}), so '
-                'it would be minted as two records. If these are two different '
-                'people with the same name, run again with `--force`.')
+                'it would be minted as two records. If you have confirmed these '
+                'are two different people who share the name, run again with '
+                '`--force`.')
         else:
             first_seen[key] = name
     return problems
@@ -347,6 +353,14 @@ def _run_stubs(args: argparse.Namespace) -> int:
     dry_run = getattr(args, 'dry_run', False)
 
     from_names = getattr(args, 'from_names', None)
+    if getattr(args, 'force', False) and not from_names:
+        # Accepted and ignored would read as "forced" to someone who meant
+        # something by it; the reference scan has no name check to force.
+        print('ERROR: --force only applies with --from-names (it mints a name '
+              'that already has a record). Run `fha stubs --from-names "Name" '
+              '--force`, or drop --force to scan for unresolved references.',
+              file=sys.stderr)
+        return EXIT_ERRORS
     if from_names:
         names = [n.strip() for n in from_names.split(';') if n.strip()]
         return mint_named_stubs(archive_root, names, dry_run=dry_run,

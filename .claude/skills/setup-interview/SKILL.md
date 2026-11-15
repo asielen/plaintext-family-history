@@ -137,6 +137,9 @@ but optional.
   ```
   (`--surname` overrides the filename's surname split when the automatic split would get it wrong -
   Spanish double surnames, particles, surname-first conventions.)
+  If `fha person new` refuses because the name **already has a record** (status `duplicate-name`, exit 3,
+  nothing minted), that record is most likely him: show it (`fha find <P-id>`) and reuse it on his yes.
+  Add `--force` only once he has said it is someone else - never because the refusal mentions the flag.
 - **Set `sex:`/`living:`/a given birth year explicitly on the resolved `P-id`, whether it was just
   minted above or reused from a clear match.** A fresh mint took `--sex`/`--birth` at `fha person new`
   time, but a reused `P-id` never ran that command, so neither reached it - run these unconditionally so
@@ -206,6 +209,12 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
    fha person new "<Name>" [--surname <override>] --sex <M|F|intersex|unknown> --birth "<rough>" --dry-run
    fha person new "<Name>" [--surname <override>] --sex <M|F|intersex|unknown> --birth "<rough>"
    ```
+   A `duplicate-name` refusal (exit 3, nothing minted) names the record that already carries that name.
+   Treat it as a step-1 match: show it and ask, and use that `P-id` if it is the same person. The real
+   exception is a **father and son** (or mother and daughter) who share a name - "Roy Dodson" and his son
+   "Roy Dodson": only once he has confirmed they are two people, mint the second with `--force`, and give
+   the son his suffix in the name if the family uses one ("Roy Dodson Jr" files beside his father and
+   needs no `--force` at all).
    Then, **for every person on the list - newly minted here or already found in step 1's resolve pass**,
    set `sex:`/`living:`/a given birth year explicitly. A resolved match never ran `fha person new`, so
    it never got `--sex`/`--birth`; this is the same gap step 1 closes for the researcher himself, closed

@@ -66,7 +66,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "45e16aa8b1b2a0356726fb37eb2766c72d507c4c6713e85772f761d99eff915f",
+      "sha256": "425d8800a8772044203ae5e22914d914ffda5802810d40d3619f2b8595bc18cf",
       "spec_version": "1.2"
     },
     {
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "288c946c0b37087241e4a35c102d51d77c98922153594e60c0a4a6d600197ccb",
+      "sha256": "82cd0ab492b205f3157560a1c8e9015665a53a4a776a0f6e823021fe981852e1",
       "spec_version": "1.2"
     },
     {
@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "0c29e3bae6d17043ab2b4783e26f9ef0b3ec878e1a02b3231abd2416779f0f49",
+      "sha256": "381a3a5b8d55cf7dd9c84f7ed43d71e2c201a7f00f42cf3ec6055d94b257d2cf",
       "spec_version": "1.2"
     },
     {
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "141002061a0a93bfd365eb0eb211043d223111e1b624516914d6e02b5fc43646",
+      "sha256": "83c11e67d21cdcbec1e71f0d61a935ea805e6373a81cc520f8363181eed72192",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "e4998cb5b64843c9efc3b17f8ad3d8f65ce53ba710dbfb75f6f0a4646e2058b9",
+      "sha256": "560f326afb21e5ccf194c512095c215aed90a4aeb3d07f106f8c41c9f9c048a5",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "08bd6dcbf68ebacfbaf0cf764c465907b05b50703bc9e0221caa89643bd33110",
+      "sha256": "2eabe1b5c6ba51f14e15fe639dca1aa9afc4361c53617ba2cdf70d193032d42e",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "9cd7e35b94ce3d1a732b5d414945f9cafe314c7425dbc441fca9617cd61a2bea",
+      "sha256": "4049b78b5400689f3dbd7eced393e705e0883563e123e6cb32265960271868c5",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "0c2cc1b91487053c9e696dee2aa9ce57650d72ac2857988dc84c97e46b3d68bf",
+      "sha256": "611d6f729791cc9cae61b233959e322684abaa24ff1e87f3dfda2a850b916f4e",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -749,7 +749,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "1614e09c5bd41c1ba4a727b9b331884363bd3483ff736ef25e629238a277cb6e",
+      "sha256": "9644b0a2e1b2e2174e33566ed2f3f576ca4a43e58701444bf120b24b067da85e",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -875,7 +875,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "9ab946cd062c741f8951e816875700afd48939b73834dbf76ebc4daa6380d511",
+      "sha256": "04d64d53218209bad489ba59f5ad2fe4d8166213e265301da37abf6f715e51d1",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3b617fec69dd73ff41c66de1580822ad478afb5181147cc5d7e78e83827fa695",
+      "sha256": "7f284b4ae2afa956a95c9d2b5753ac299f056596c789e08179921aea0ca2c87a",
       "spec_version": "1.2"
     },
     {

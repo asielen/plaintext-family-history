@@ -523,12 +523,22 @@
          share a name (a father and son). Say so in plain words and offer
          the --force path as a button, instead of a bare "Cannot apply". */
       var dupOffer = dryRun && !ok && result.data && result.data.status === 'duplicate-name';
+      /* The page builds its own wording from data.duplicates (id, name,
+         path, the alias that matched) rather than showing the engine's
+         message, whose "run again with --force" sentence is CLI advice and
+         would sit next to the button that does it. */
       var dupHtml = dupOffer
-        ? '<p class="wb-preview-explain">This name already has a record in your archive. If it is the same '
-          + 'person, close this and use that record. If it is someone else who shares the name, '
-          + 'create a separate record.</p>'
+        ? '<p class="wb-preview-explain">This name already has a record in your archive:</p><ul>' +
+          (result.data.duplicates || []).map(function (m) {
+            var who = (m.id || 'a record with no ID yet') + (m.name ? ' - ' + m.name : '');
+            if (m.field && m.field !== 'name' && m.matched) who += ' (also known as "' + m.matched + '")';
+            return '<li>' + esc(who) + ' <span class="note">' + esc(m.path || '') + '</span></li>';
+          }).join('') + '</ul>' +
+          '<p class="wb-preview-explain">It is most likely the same person: close this and use that ' +
+          'record. Only if you know this is someone else who shares the name (a father and son, say), ' +
+          'create a separate record.</p>'
         : '';
-      var diffHtml = '<pre class="wb-diff">' + renderMessages(result) + '</pre>';
+      var diffHtml = dupOffer ? '' : '<pre class="wb-diff">' + renderMessages(result) + '</pre>';
       if (ok) diffHtml = '<details class="wb-diff-details"><summary>Show the technical preview</summary>' + diffHtml + '</details>';
       host.innerHTML =
         '<p class="wb-kicker">' + (dryRun ? 'Dry run - nothing written yet' : (ok ? 'Applied' : 'Not applied')) + '</p>' +

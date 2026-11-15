@@ -9569,14 +9569,25 @@ def find_source_record_path(
 # out of xref.py (issue #279), where it folded town names first; the person
 # filename slug, lint's --fix-ids rename, the GEDCOM importer and gedcom's
 # surname match now share the same table, so a name folds the same way
-# wherever it is turned into ASCII.
-ACCENT_FOLD = str.maketrans({
+# wherever it is turned into ASCII. The second row (Icelandic, Turkish,
+# French, Maltese, Sami letters) was added after the first cut still filed
+# "Guðrún Þórðardóttir" as `orardottir__gurun`; it extends xref's town fold
+# the same way (Þingvellir now matches Thingvellir), never contradicts it.
+_ACCENT_FOLD_FIRST_CUT_LETTERS = {
     'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
     'đ': 'd', 'Đ': 'D',
+}
+# The first row alone, kept so `gedcom` can still recognise a slug written
+# while only those letters folded (see `gedcom._surname_token_matches`).
+ACCENT_FOLD_FIRST_CUT = str.maketrans(_ACCENT_FOLD_FIRST_CUT_LETTERS)
+ACCENT_FOLD = str.maketrans({
+    **_ACCENT_FOLD_FIRST_CUT_LETTERS,
+    'ð': 'd', 'Ð': 'D', 'þ': 'th', 'Þ': 'TH', 'ı': 'i', 'œ': 'oe', 'Œ': 'OE',
+    'ħ': 'h', 'Ħ': 'H', 'ŧ': 't', 'Ŧ': 'T', 'ŋ': 'n', 'Ŋ': 'N',
 })
 
 
-def fold_accents(text: str) -> str:
+def fold_accents(text: str, table: dict | None = None) -> str:
     """`text` with accented letters folded to their base letters.
 
     "Wiśniewska" -> "Wisniewska", "Gołębiowska" -> "Golebiowska", "Müller"
@@ -9587,15 +9598,17 @@ def fold_accents(text: str) -> str:
     "Wiśniewska" was filed as `winiewska` and "Józef Żółć" lost his surname
     altogether (issue #279). NFKD splits most accented letters into a base
     letter plus a combining mark, which is dropped; `ACCENT_FOLD` covers the
-    few letters NFKD leaves whole (ł, ø, æ, ß, đ). A letter outside both
+    few letters NFKD leaves whole (ł, ø, æ, ß, đ, ð, þ, ı, œ, ħ, ŧ, ŋ). A letter outside both
     (Cyrillic, Greek, CJK) passes through unchanged, and a caller's own
     `[a-z0-9_]` filter decides what to do with it, exactly as before.
 
     For machine handles only (filenames, comparison keys): a record's
     `name:` always keeps the full spelling (SPEC §13 - "the filename is only
-    a sort handle").
+    a sort handle"). `table` swaps the letter table, only so an old slug can
+    be reproduced exactly (`ACCENT_FOLD_FIRST_CUT`).
     """
-    folded = unicodedata.normalize('NFKD', str(text or '').translate(ACCENT_FOLD))
+    folded = unicodedata.normalize(
+        'NFKD', str(text or '').translate(ACCENT_FOLD if table is None else table))
     return ''.join(c for c in folded if not unicodedata.combining(c))
 
 
@@ -9643,7 +9656,9 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     return parts, None
 
 
-def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
+def stub_slug_name(
+    name: str, surname: str | None = None, *, fold: str = 'current',
+) -> tuple[str, str]:
     """Parse a display name into (surname_slug, given_slug) for a stub filename.
 
     Best effort, not a real name-parsing engine: the last word is taken as the
@@ -9703,10 +9718,19 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     than losing the `ś` to the `[a-z0-9_]` filter and filing as `winiewska`.
     `surname` folds the same way, so an override typed with its accents
     still finds its own words inside the name.
+
+    `fold` exists only to reproduce the file names older versions wrote, so
+    `fha person rename` can tell a lossy name it may repair from a name a
+    human chose (`stub_filename_is_lossy`): 'current' (the default, every
+    writer), 'none' (no fold at all - before issue #279, when accented
+    letters were deleted) or 'first-cut' (`ACCENT_FOLD_FIRST_CUT`, which
+    still deleted ð, þ, ı and the rest).
     """
-    name = fold_accents(name)
-    if surname is not None:
-        surname = fold_accents(surname)
+    if fold != 'none':
+        table = ACCENT_FOLD_FIRST_CUT if fold == 'first-cut' else ACCENT_FOLD
+        name = fold_accents(name, table)
+        if surname is not None:
+            surname = fold_accents(surname, table)
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
@@ -9749,7 +9773,9 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     return (surname_tok or 'unknown', given or 'unknown')
 
 
-def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str:
+def stub_filename(
+    name: str | None, pid: str, surname: str | None = None, *, fold: str = 'current',
+) -> str:
     """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
 
     A blank or literal "unknown" name falls back to the surname-less
@@ -9763,10 +9789,29 @@ def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str
     cannot be expected to get right.
     """
     if name and name.lower() not in ('unknown', ''):
-        surname_slug, given = stub_slug_name(name, surname=surname)
+        surname_slug, given = stub_slug_name(name, surname=surname, fold=fold)
     else:
         surname_slug, given = 'unknown', 'unknown'
     return f'{surname_slug}__{given}_{pid}.md'
+
+
+def stub_filename_is_lossy(
+    filename: str, name: str, pid: str, surname: str | None = None,
+) -> bool:
+    """Whether `filename` is what an OLDER slugger made of `name`, and today's
+    differs - a file name that lost letters (`winiewska__halina_P-….md` for
+    "Halina Wiśniewska", issue #279) rather than one a human chose.
+
+    Compared case-insensitively (a P-id is written either case). This is
+    the gate that lets `fha person rename P-x "<same name>"` re-file such a
+    record: a hand-chosen name (a birth surname the `name:` no longer
+    carries) matches no slugger's output, so it is never touched.
+    """
+    current = stub_filename(name, pid, surname=surname).lower()
+    if filename.lower() == current:
+        return False
+    return any(filename.lower() == stub_filename(name, pid, surname=surname, fold=f).lower()
+               for f in ('none', 'first-cut'))
 
 
 # ── Is this name already taken? (issue #282) ─────────────────────────────────
@@ -9780,8 +9825,9 @@ def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str
 # Frontmatter fields that name a person: the display name, `aliases:` and
 # the alternate names the index also registers as resolution aliases
 # (index.py's alias pass). `aliases:` also holds the P-id and filename stems
-# (`quillfeather__ada`); neither can collide with a typed name, because
-# `person_name_key` keeps word order and a P-id is not a name.
+# (`quillfeather__ada`): `_person_meta_names` drops both, because a stem's
+# key ("quillfeather ada") would otherwise match the surname-first name
+# "Quillfeather Ada", and a P-id is not a name at all.
 _PERSON_NAME_FIELDS = ('name', 'aliases', 'name_variants', 'also_known_as',
                        'name_at_birth', 'married_name')
 
@@ -9799,29 +9845,80 @@ def person_name_key(text: object) -> str:
     return ' '.join(re.sub(r'[\W_]+', ' ', folded).split())
 
 
-def _person_meta_names(meta: dict) -> list[str]:
-    """Every name string a person record's frontmatter carries (see
+def _person_meta_names(meta: dict) -> list[tuple[str, str]]:
+    """Every `(field, name)` a person record's frontmatter carries (see
     `_PERSON_NAME_FIELDS`), with the `{value, restricted}` variant form
-    unwrapped the way index.py unwraps it."""
-    names: list[str] = []
+    unwrapped the way index.py unwraps it. `aliases:` entries that are link
+    handles rather than names - a filename stem (it holds the `__` the SPEC
+    §13 grammar puts between surname and given names) or an ID - are left
+    out."""
+    names: list[tuple[str, str]] = []
     for field in _PERSON_NAME_FIELDS:
         raw = meta.get(field)
         items = raw if isinstance(raw, (list, tuple)) else [raw]
         for item in items:
             value = item.get('value') if isinstance(item, dict) else item
-            if value:
-                names.append(str(value))
+            if not value:
+                continue
+            text = str(value)
+            if field == 'aliases' and ('__' in text or is_valid_id(text.strip())):
+                continue
+            names.append((field, text))
     return names
 
 
+def _person_frontmatter(path: Path, wanted_keys) -> dict | None:
+    """The frontmatter mapping of one person file, read and parsed alone -
+    or {} when it cannot name anyone in `wanted_keys`.
+
+    Stops reading at the closing `---` and never parses the body or its
+    `## Claims` block: that full `read_record` parse is what made this check
+    cost several times `mint_ids` on a large archive, and the names live in
+    the frontmatter only. Even the frontmatter's YAML is parsed only when
+    its raw text, under `person_name_key`, holds one of the wanted keys as a
+    run of whole words - a name can only match if its words are in the
+    text, and on an 8,000-stub archive the YAML parse was most of the cost.
+
+    Returns {} for a file with no frontmatter (a hand note under people/) or
+    no candidate words, and None when the file cannot be read (not UTF-8, or
+    a candidate's YAML will not parse) so the caller can say so. A broken
+    file whose text does not hold the name cannot be that person, so it is
+    not reported.
+    """
+    lines: list[str] = []
+    try:
+        with open(path, encoding='utf-8', newline='') as fh:
+            first = fh.readline()
+            if first.rstrip('\r\n') != '---':
+                return {}
+            for line in fh:
+                if line.rstrip('\r\n') == '---':
+                    break
+                lines.append(line)
+            else:
+                return {}
+    except (OSError, UnicodeDecodeError):
+        return None
+    raw = ''.join(lines)
+    padded = f' {person_name_key(raw)} '
+    if not any(f' {key} ' in padded for key in wanted_keys):
+        return {}
+    try:
+        meta = safe_load_yaml(raw)
+    except yaml.YAMLError:
+        return None
+    return meta if isinstance(meta, dict) else {}
+
+
 def find_people_by_name(
-    archive_root: str | Path, names: list[str],
+    archive_root: str | Path, names: list[str], *, unreadable: list | None = None,
 ) -> dict[str, list[dict]]:
     """For each name, the person records that already carry it.
 
-    Returns `{name: [{'id': 'P-…', 'path': 'people/…', 'name': as written}]}`
-    for every input name with at least one match; a name nobody carries is
-    absent. Matching is by `person_name_key` (case-, accent- and
+    Returns `{name: [{'id': 'P-…' or None, 'path': 'people/…', 'name':
+    the record's name:, 'matched': the text that matched, 'field': where it
+    was}]}` for every input name with at least one match; a name nobody
+    carries is absent. Matching is by `person_name_key` (case-, accent- and
     punctuation-insensitive) against `name:`, `aliases:` and the
     alternate-name fields. Placeholder names ("unknown", blank) never match
     anything: they are not names, and every unnamed stub shares them.
@@ -9834,23 +9931,28 @@ def find_people_by_name(
     file's own mtime is not that time: `fha index --source` (`upsert_source`)
     moves it forward without re-reading any person, so a profile renamed
     from Ada Smith to Ada Jones before that upsert looks older than the index
-    while its indexed row still says Ada Smith. Reading the files costs one
-    frontmatter parse per person, small beside the whole-tree id scan
-    `mint_ids` runs on the same call.
+    while its indexed row still says Ada Smith. Only the frontmatter is
+    read, and only a frontmatter whose text holds the name's words is parsed
+    (`_person_frontmatter`), so the cost stays close to the whole-tree text
+    scan `mint_ids` runs on the same call.
 
     A file is identified the way `index._index_person` identifies it, so
     the two never disagree about who is on file: the frontmatter `id:` when
     it is a valid P-id, else the filename's P-id. A hand-named profile
     (`people/stubs/Mary Smith.md`, valid `id:`, no `__` or P-id in the name -
-    SPEC §10's legal pre-rename state) therefore counts. Generated
-    companions are left out by content first (`person_file_kind`), merged
-    tombstones by `merged_into:`/`status: merged` - their name lives on in
-    the record they were merged into.
+    SPEC §10's legal pre-rename state) therefore counts. So does a profile
+    with no id anywhere yet, as long as it has a `name:`: the index skips
+    it until `fha lint --fix-ids` mints one, but it is still that person,
+    and it is reported with `id: None`. Generated companions are left out by
+    content first (`person_file_kind`), merged tombstones by
+    `merged_into:`/`status: merged` - their name lives on in the record they
+    were merged into.
 
-    A file that cannot be read is skipped rather than blocking the mint:
-    this is a courtesy check in front of a write that is always allowed
-    with `--force`, not a gate on archive integrity (`fha lint` reports the
-    unreadable file on its own).
+    A file that cannot be read (not UTF-8, or frontmatter holding the
+    name's words that will not parse) is skipped rather than blocking the mint - this is a courtesy check in
+    front of a write that is always allowed with `--force` - but not in
+    silence: pass a list as `unreadable` and its archive-relative path is
+    appended, so the caller can say the check could not see everyone.
     """
     archive_root = Path(archive_root)
     wanted: dict[str, list[str]] = {}
@@ -9871,51 +9973,84 @@ def find_people_by_name(
     for path in sorted(walk_files(people_dir, suffix='.md')):
         if is_template_file(path):
             continue
-        try:
-            rec = read_record(path, on_decode_error=lambda _p: None)
-        except Exception:
+        meta = _person_frontmatter(path, wanted)
+        if meta:
+            try:
+                rel = path.relative_to(archive_root).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+        if meta is None:
+            if unreadable is not None:
+                unreadable.append(path.relative_to(archive_root).as_posix()
+                                  if path.is_relative_to(archive_root) else path.as_posix())
             continue
-        meta = rec.get('meta') or {}
-        if rec.get('undecodable') or not isinstance(meta, dict):
+        if not meta:
             continue
         parsed = parse_filename(path) or {}
         pid = normalize_id(str(meta.get('id') or ''))
         if not is_valid_id(pid) or id_type_of(pid) != 'P':
             pid = parsed.get('id_str') if parsed.get('id_type') == 'P' else ''
-        if not pid or person_file_kind(path, meta) != 'profile':
+        if not pid and not meta.get('name'):
+            continue
+        if person_file_kind(path, meta) != 'profile':
             continue
         if meta.get('merged_into') or is_merged_meta(meta):
             continue
-        try:
-            rel = path.relative_to(archive_root).as_posix()
-        except ValueError:
-            rel = path.as_posix()
-        display = fmt_id_display(pid)
-        for text in _person_meta_names(meta):
+        display = fmt_id_display(pid) if pid else None
+        record_name = str(meta.get('name') or '')
+        for field, text in _person_meta_names(meta):
             key = person_name_key(text)
             if key in wanted:
-                found.setdefault(key, {}).setdefault(
-                    display, {'id': display, 'path': rel, 'name': text})
+                found.setdefault(key, {}).setdefault(display or rel, {
+                    'id': display, 'path': rel, 'name': record_name,
+                    'matched': text, 'field': field})
 
     return {
-        name: sorted(found[key].values(), key=lambda m: m['id'])
+        name: sorted(found[key].values(), key=lambda m: (m['id'] or '', m['path']))
         for key, inputs in wanted.items() if key in found
         for name in inputs
     }
 
 
+def describe_person_match(match: dict) -> str:
+    """One record a duplicate-name refusal points at, in plain words:
+    `P-… (people/…)`, plus the record's own name and the alternate name it
+    matched when the match came from an alias (`P-… Edith Hartley (also
+    known as "Edith Bradford") (people/…)`), and "no ID yet" for a hand-made
+    record nobody has minted an id for."""
+    who = match['id'] or ''
+    if match.get('field') != 'name' and match.get('name'):
+        who = f"{who} {match['name']} (also known as \"{match['matched']}\")".strip()
+    where = match['path'] if match['id'] else f"{match['path']}, no ID yet"
+    return f'{who} ({where})' if who else f'({where})'
+
+
 def duplicate_person_name_message(name: str, matches: list[dict]) -> str:
     """The one sentence both minting verbs refuse with when a name is taken.
 
-    Names the record(s) by P-id and path so the human can open them, then
-    gives the way through: two people really can share a name (a father
-    and son), so the refusal is a question, and `--force` is the answer
-    "yes, this is someone else".
+    Names the record(s) by P-id and path so the human can open them, says
+    the likely answer (it is the same person - use that record), and only
+    then the way through. Two people really can share a name (a father and
+    son), so `--force` exists; but it is worded as the human's decision,
+    never as a next step, because an agent reading this refusal would
+    otherwise just add the flag and mint the duplicate anyway.
     """
-    listed = ', '.join(f"{m['id']} ({m['path']})" for m in matches)
+    listed = ', '.join(describe_person_match(m) for m in matches)
     has = 'a record' if len(matches) == 1 else f'{len(matches)} records'
-    return (f'{name} already has {has}: {listed}. If this is a different '
-            'person with the same name, run again with `--force`.')
+    return (f'{name} already has {has}: {listed}. It is most likely the same '
+            'person - use that record. If you have confirmed this is a '
+            'different person who shares the name, run again with `--force`.')
+
+
+def unreadable_people_note(paths: list[str]) -> str:
+    """The one line both minting verbs print when the duplicate-name check
+    could not read some person files, so "no match" is not mistaken for "no
+    such person": names up to five files and the fix."""
+    shown = ', '.join(paths[:5]) + (f' and {len(paths) - 5} more' if len(paths) > 5 else '')
+    return (f'{len(paths)} person file(s) could not be read, so the check for a '
+            f'record with this name could not look inside them: {shown}. Run '
+            '`fha lint` to see what is wrong with each (usually a file saved in '
+            'another encoding, or a frontmatter line that will not parse).')
 
 
 def render_stub_content(

@@ -275,6 +275,7 @@ from _lib import (
     configure_utf8_stdout,
     duplicate_person_name_message,
     find_people_by_name,
+    unreadable_people_note,
     couple_folder_dirs,
     couple_folder_for_prefix,
     couple_folder_prefix,
@@ -318,6 +319,7 @@ from _lib import (
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
+    stub_filename_is_lossy,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -1059,8 +1061,10 @@ def run_new(
     # After the id checks (a stale preview's "record already exists" is the
     # more specific answer) and before `mint_ids`, so a refused name never
     # draws an id.
+    unreadable: list[str] = []
     if not force:
-        duplicates = find_people_by_name(archive_root, [clean_name]).get(clean_name, [])
+        duplicates = find_people_by_name(
+            archive_root, [clean_name], unreadable=unreadable).get(clean_name, [])
         if duplicates:
             result.data['duplicates'] = duplicates
             return _refuse_result(
@@ -1101,6 +1105,8 @@ def run_new(
     content += '\n' + render_person_body_scaffold(clean_name)
 
     def _add_new_messages() -> None:
+        if unreadable:
+            result.add('warning', unreadable_people_note(unreadable))
         for field, note in gloss.items():
             result.add('info', f'recorded {field} as {fields[field]} - {note}.')
         if fields:
@@ -1936,6 +1942,13 @@ def run_rename(
     and regenerate identically from `fha views …` whether or not the rest of
     the rename lands, so there is nothing to lose by deleting them early.
 
+    The same name is 'already' (nothing to do), with one exception: a file
+    name an older slugger wrote with accented letters deleted
+    (`winiewska__halina_P-….md` for "Halina Wiśniewska", issue #279 -
+    `_lib.stub_filename_is_lossy`) is re-filed, steps 2-4 only, so running
+    rename with the unchanged name is the repair path for such a record. A
+    hand-chosen file name matches no slugger's output and is left alone.
+
     `data` is {'status': 'ok'|'ok-folder-unrenamed'|'already'|'dry-run'|
     'not-found'|'merged'|'refused', 'person_id', 'path', 'new_path',
     'old_name', 'new_name', 'folder', 'new_folder', 'deleted_companions'}.
@@ -1965,7 +1978,15 @@ def run_rename(
     result.data['old_name'] = old_name
     label = f'{old_name} ({fmt_id_display(pid)})' if old_name else fmt_id_display(pid)
 
-    if old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new):
+    # The same name normally means nothing to do - except for a record whose
+    # FILE name lost letters to the old slugger (`winiewska__halina_P-…` for
+    # "Halina Wiśniewska", issue #279): re-running rename with the same name
+    # is the repair path, so it carries on and only the file is renamed.
+    refile_only = bool(
+        old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new)
+        and stub_filename_is_lossy(path.name, clean_new, pid, surname=surname))
+    if (old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new)
+            and not refile_only):
         result.data['status'] = 'already'
         result.add('info', f'{label} is already named {clean_new!r} - nothing to change.')
         return result
@@ -1994,7 +2015,7 @@ def run_rename(
 
     changed_keys = {'name'}
     variant_note = None
-    if keep_variant and old_name:
+    if keep_variant and old_name and not refile_only:
         new_lines, variant_added, variant_note = _append_name_variant(
             new_lines, start, end, old_name)
         if variant_added:

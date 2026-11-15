@@ -41,6 +41,7 @@ import stubs
 import xref
 from _lib import (
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     find_people_by_name,
     fold_accents,
@@ -122,7 +123,9 @@ class AccentFoldTests(unittest.TestCase):
                 self.assertEqual(gedcom_import._name_slot(' '.join(parts[:-1])), given)
 
     def test_xref_town_key_unchanged(self) -> None:
-        # xref now calls the shared fold; its town keys must not move.
+        # xref now calls the shared fold. Town keys built from the letters
+        # its own table already folded (and from NFKD) must not move; the
+        # letters added since (ð, þ, ı, œ, ħ, ŧ, ŋ) only extend it.
         self.assertEqual(xref._town_key('Suwałki, Poland'), 'suwalki')
         self.assertEqual(xref._town_key('München'), 'munchen')
         self.assertEqual(xref._town_key('Muenchen'), 'munchen')
@@ -175,9 +178,10 @@ class DuplicateNameTests(unittest.TestCase):
         self.assertEqual(code, EXIT_FAILURE)
         pid = 'P-' + first[:-len('.md')].rsplit('_p-', 1)[1]
         self.assertIn(
-            f'Ada Quillfeather already has a record: {pid} (people/stubs/{first}). '
-            'If this is a different person with the same name, run again with `--force`.',
-            err)
+            f'Ada Quillfeather already has a record: {pid} (people/stubs/{first}).', err)
+        # `--force` is the human's call, not the agent's next step.
+        self.assertIn('If you have confirmed this is a different person', err)
+        self.assertIn('`--force`', err)
         self.assertEqual(_stub_files(self.root), [first])
 
     def test_from_names_twice_without_reindex_is_refused(self) -> None:
@@ -374,6 +378,153 @@ class DuplicateNameTests(unittest.TestCase):
         self.assertTrue(forced.ok)
         self.assertTrue(any(n.endswith('_p-0000000009.md') for n in _stub_files(self.root)))
         self.assertEqual(serve.VERBS['person.add_family']['schema'].get('force'), 'bool')
+
+
+# ── Review follow-ups (PR #285) ───────────────────────────────────────────────
+
+class MoreLettersFoldTests(unittest.TestCase):
+    """Letters NFKD leaves whole beyond xref's original table were still
+    dropped (P2-1): "Guðrún Þórðardóttir" filed as `orardottir__gurun`."""
+
+    def test_icelandic_name_files_and_exports_its_own_spelling(self) -> None:
+        self.assertEqual(stub_filename('Guðrún Þórðardóttir', 'p-0000000001'),
+                         'thordardottir__gudrun_p-0000000001.md')
+        tmp, root = _new_archive()
+        self.addCleanup(tmp.cleanup)
+        _mint_from_names(root, ['Guðrún Þórðardóttir'])
+        _reindex(root)
+        text = gedcom.run_gedcom(root, None, all_persons=True, include_living=True)['text']
+        self.assertIn('1 NAME Guðrún /Þórðardóttir/', text)
+
+    def test_old_lossy_slug_still_exports_its_own_spelling(self) -> None:
+        self.assertEqual(gedcom._gedcom_name('Guðrún Þórðardóttir', 'Orardottir'),
+                         ('Guðrún /Þórðardóttir/', None))
+
+    def test_turkish_and_french_letters(self) -> None:
+        self.assertEqual(stub_filename('Ayşe Yıldız', 'p-0000000001'),
+                         'yildiz__ayse_p-0000000001.md')
+        self.assertEqual(stub_filename('Œdipe', 'p-0000000001'), '__oedipe_p-0000000001.md')
+        self.assertEqual(fold_accents('ħŧŋĦŦŊ'), 'htnHTN')
+
+    def test_fix_ids_fallback_slug_folds(self) -> None:
+        # No usable name: lint falls back to the hand filename, folded too.
+        self.assertEqual(lint._person_filename_parts('', 'Wiśniewska'),
+                         ('wisniewska', 'unknown'))
+
+
+class DuplicateNameReviewTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self._tmp, self.root = _new_archive()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, filename: str, frontmatter: str) -> Path:
+        path = self.root / 'people' / 'stubs' / filename
+        path.write_text(f'---\n{frontmatter}---\n', encoding='utf-8')
+        return path
+
+    def test_stem_alias_is_not_a_name(self) -> None:
+        # `aliases:` carries filename stems; `quillfeather__ada` is a link
+        # handle, not the surname-first name "Quillfeather Ada".
+        self._write('quillfeather__ada_p-0000000001.md',
+                    'id: p-0000000001\nname: Ada Quillfeather\n'
+                    'aliases: [p-0000000001, quillfeather__ada]\nliving: unknown\n')
+        self.assertEqual(find_people_by_name(self.root, ['Quillfeather Ada']), {})
+
+    def test_refusal_names_the_alias_it_matched(self) -> None:
+        self._write('hartley__edith_p-0000000001.md',
+                    'id: p-0000000001\nname: Edith Hartley\n'
+                    'name_variants: [Edith Bradford]\nliving: false\n')
+        result = person.run_new(self.root, 'Edith Bradford')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('P-0000000001 Edith Hartley (also known as "Edith Bradford")', text)
+
+    def test_id_less_hand_profile_counts(self) -> None:
+        # A hand-made record nobody has minted an id for yet (SPEC §10) is
+        # still that person.
+        self._write('Mary Smith.md', 'name: Mary Smith\nliving: unknown\n')
+        result = person.run_new(self.root, 'Mary Smith')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        [match] = result.data['duplicates']
+        self.assertIsNone(match['id'])
+        self.assertEqual(match['path'], 'people/stubs/Mary Smith.md')
+        self.assertIn('people/stubs/Mary Smith.md, no ID yet',
+                      ' '.join(m.text for m in result.messages))
+
+    def test_unreadable_file_is_reported_not_silent(self) -> None:
+        (self.root / 'people' / 'stubs' / 'broken__one_p-0000000001.md').write_bytes(
+            b'---\nname: Caf\xe9 Owner\n---\n')
+        unreadable: list = []
+        find_people_by_name(self.root, ['Ada Quillfeather'], unreadable=unreadable)
+        self.assertEqual(unreadable, ['people/stubs/broken__one_p-0000000001.md'])
+        result = person.run_new(self.root, 'Ada Quillfeather', dry_run=True)
+        self.assertTrue(any(m.level == 'warning' and 'could not be read' in m.text
+                            for m in result.messages))
+        code, _out, err = _mint_from_names(self.root, ['Bea Newname'], dry_run=True)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('could not be read', err)
+
+    def test_reads_frontmatter_only(self) -> None:
+        # The check parses frontmatter, never the claims block: a profile
+        # whose body YAML is broken is still found by its name.
+        self._write('quillfeather__ada_p-0000000001.md',
+                    'id: p-0000000001\nname: Ada Quillfeather\nliving: unknown\n')
+        path = self.root / 'people' / 'stubs' / 'quillfeather__ada_p-0000000001.md'
+        path.write_text(path.read_text(encoding='utf-8')
+                        + '\n## Claims\n```yaml\n- id: [unclosed\n```\n', encoding='utf-8')
+        import _lib
+        original = _lib.read_record
+        _lib.read_record = lambda *a, **k: (_ for _ in ()).throw(AssertionError('full parse'))
+        try:
+            found = find_people_by_name(self.root, ['Ada Quillfeather'])
+        finally:
+            _lib.read_record = original
+        self.assertEqual([m['id'] for m in found['Ada Quillfeather']], ['P-0000000001'])
+
+    def test_stubs_force_without_from_names_is_refused(self) -> None:
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = stubs._standalone_main(['--force', '--root', str(self.root)])
+        self.assertEqual(code, EXIT_ERRORS)
+        self.assertIn('--from-names', err.getvalue())
+
+
+class RenameRepairsLossySlugTests(unittest.TestCase):
+    """`fha person rename P-x "<same name>"` re-files a record whose file
+    name was written by the old, letter-dropping slugger (L6) - the repair
+    path for existing `winiewska__halina_…` files."""
+
+    def setUp(self) -> None:
+        self._tmp, self.root = _new_archive()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, filename: str, name: str, pid: str) -> Path:
+        path = self.root / 'people' / 'stubs' / filename
+        path.write_text(f'---\nid: {pid}\nname: {name}\nliving: unknown\n---\n',
+                        encoding='utf-8')
+        return path
+
+    def test_same_name_rename_refiles_a_lossy_slug(self) -> None:
+        old = self._write('winiewska__halina_p-0000000041.md', 'Halina Wiśniewska',
+                          'p-0000000041')
+        result = person.run_rename(self.root, 'P-0000000041', 'Halina Wiśniewska')
+        self.assertEqual(result.data['status'], 'ok', [m.text for m in result.messages])
+        self.assertFalse(old.exists())
+        self.assertTrue((self.root / 'people' / 'stubs'
+                         / 'wisniewska__halina_p-0000000041.md').is_file())
+
+    def test_same_name_rename_leaves_a_hand_chosen_name_alone(self) -> None:
+        # Filed under a birth surname the name: no longer carries: not a
+        # lossy slug, so an unchanged name still changes nothing.
+        path = self._write('smith__mary_p-0000000042.md', 'Mary Jones', 'p-0000000042')
+        result = person.run_rename(self.root, 'P-0000000042', 'Mary Jones')
+        self.assertEqual(result.data['status'], 'already')
+        self.assertTrue(path.exists())
 
 
 if __name__ == '__main__':

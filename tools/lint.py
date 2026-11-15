@@ -5168,7 +5168,7 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
             given = f'{core[0]} {suffix}'
             return '', '_'.join(letters(p) for p in given.split()) or 'unknown'
         return letters(core[0]) or 'unknown', 'unknown'
-    seg = re.sub(r'[^a-z]+', '', fallback_slug.lower())
+    seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())
     return (seg or 'unknown'), 'unknown'
 
 
