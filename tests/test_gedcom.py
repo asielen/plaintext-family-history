@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import sys
 import tempfile
@@ -838,6 +839,100 @@ class BirthDeathRoleScopingTests(unittest.TestCase):
         indi = _individuals(r['text'])
         self.assertNotIn('DEAT', indi[self.SON])
         self.assertIn('DEAT', indi[self.MOM])
+
+
+class UnreadablePrivacyRecordTests(unittest.TestCase):
+    """#267: a record whose file will not parse cannot say it is private, so
+    every gedcom export withholds it (fail closed) and says which file to fix.
+
+    Built through a real `fha index` so the row under test is exactly the one
+    the indexer keeps for a damaged person file: empty frontmatter, name
+    `unknown`, `living: unknown`, and the surname still read off the filename."""
+
+    KID = 'p-0000000001'
+    AUNT = 'p-0000000002'
+
+    def setUp(self):
+        import index
+        self._index = index
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('archive_name: test\n', encoding='utf-8')
+        self._write('people/zabrowski__kit_P-0000000001.md',
+                    '---\nid: P-0000000001\nname: Kit Zabrowski\ntier: curated\n'
+                    'living: false\n---\n# Kit Zabrowski\n')
+        # The unclosed quote is the hand-edit slip the issue describes.
+        self._write('people/quillfeather__ada_P-0000000002.md',
+                    '---\nid: P-0000000002\nname: "Ada Quillfeather\ntier: curated\n'
+                    'living: true\nrestricted: by-request\n---\n# Ada\n')
+        self._write('sources/birth_S-0000000001.md',
+                    '---\nid: S-0000000001\ntitle: Kit birth\nsource_type: vital-record\n'
+                    'citation: "Birth record."\n---\n\n## Claims\n```yaml\n'
+                    '- id: C-0000000001\n  type: birth\n  date: 1890\n'
+                    '  place_text: Marrowvale\n  persons: [P-0000000002]\n'
+                    '  value: born\n  status: accepted\n```\n')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write(self, rel, text):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+
+    def test_a_person_whose_file_will_not_parse_is_withheld_even_with_include_living(self):
+        self._index.build_index(self.root, {})
+        r = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)
+        self.assertEqual(r['status'], 'ok')
+        # A withheld person carries no REFN, so their block is not keyed.
+        self.assertNotIn(self.AUNT, _individuals(r['text']))
+        self.assertIn('1 NAME /Restricted/', r['text'])
+        self.assertNotIn('Quillfeather', r['text'])
+        self.assertNotIn('Marrowvale', r['text'])
+        self.assertNotIn('BIRT', r['text'])
+        # The human is told which file, and what to run, and the exit says so.
+        warned = [m for m in r['messages'] if 'quillfeather__ada' in m]
+        self.assertEqual(len(warned), 1)
+        self.assertIn('fha lint', warned[0])
+        self.assertEqual(r.exit_code, gedcom.EXIT_WARNINGS)
+
+    def test_a_readable_export_still_exits_clean(self):
+        # The guard's other side: nothing damaged, nothing reported.
+        path = self.root / 'people' / 'quillfeather__ada_P-0000000002.md'
+        path.write_text(path.read_text(encoding='utf-8').replace('"Ada', 'Ada')
+                        .replace('restricted: by-request\n', ''), encoding='utf-8')
+        self._index.build_index(self.root, {})
+        r = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)
+        self.assertIn('Quillfeather', r['text'])
+        self.assertFalse([m for m in r['messages'] if 'could not read' in m])
+        self.assertEqual(r.exit_code, gedcom.EXIT_CLEAN)
+
+    def test_a_source_whose_file_breaks_after_indexing_is_withheld(self):
+        # Index first, then damage the source: the index still holds its
+        # claims with restricted=0, which is a guess about a file nobody can
+        # read now. The source had said `restricted: by-request`.
+        path = self.root / 'sources' / 'birth_S-0000000001.md'
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'source_type: vital-record\n', 'source_type: vital-record\nrestricted: by-request\n'),
+            encoding='utf-8')
+        kid = self.root / 'people' / 'quillfeather__ada_P-0000000002.md'
+        kid.write_text(kid.read_text(encoding='utf-8').replace('"Ada', 'Ada')
+                       .replace('restricted: by-request\n', ''), encoding='utf-8')
+        self._index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.execute("UPDATE sources SET restricted = 0")   # the free-text type the SQL filter misses
+        conn.commit()
+        conn.close()
+        # Break it without moving its mtime past the index's (a restore, a
+        # sync tool), so the freshness check cannot be what catches it.
+        before = path.stat()
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'title: Kit birth', 'title: "Kit birth'), encoding='utf-8')
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        r = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)
+        self.assertNotIn('Marrowvale', r['text'])
+        self.assertTrue([m for m in r['messages'] if 'birth_S-0000000001' in m])
+        self.assertEqual(r.exit_code, gedcom.EXIT_WARNINGS)
 
 
 if __name__ == '__main__':
