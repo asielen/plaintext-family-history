@@ -35,10 +35,16 @@ import gedcom
 import gedcom_import
 import index
 import lint
+import person
+import serve
 import stubs
 import xref
 from _lib import (
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    find_people_by_name,
     fold_accents,
+    person_name_key,
     stub_filename,
 )
 
@@ -124,7 +130,8 @@ class AccentFoldTests(unittest.TestCase):
     def test_stubs_from_names_writes_folded_file(self) -> None:
         tmp, root = _new_archive()
         self.addCleanup(tmp.cleanup)
-        _mint_from_names(root, ['Halina Wiśniewska'])
+        code, _out, _err = _mint_from_names(root, ['Halina Wiśniewska'])
+        self.assertEqual(code, EXIT_CLEAN)
         [filename] = _stub_files(root)
         self.assertTrue(filename.startswith('wisniewska__halina_p-'), filename)
 
@@ -147,6 +154,179 @@ class AccentFoldTests(unittest.TestCase):
         # A surname override the name does not end with still lands whole.
         self.assertEqual(gedcom._gedcom_name('Halina Wiśniewska', 'Kowalska'),
                          ('Halina Wiśniewska /Kowalska/', None))
+
+
+# ── #282: a name that already has a record is not minted again ───────────────
+
+class DuplicateNameTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self._tmp, self.root = _new_archive()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_name_key_ignores_case_accents_and_spacing(self) -> None:
+        self.assertEqual(person_name_key('Ada  QUILLFEATHER.'), person_name_key('ada quillfeather'))
+        self.assertEqual(person_name_key('Halina Wiśniewska'), person_name_key('halina wisniewska'))
+        self.assertNotEqual(person_name_key('Quillfeather Ada'), person_name_key('Ada Quillfeather'))
+
+    def _assert_refused_once(self, code: int, err: str, first: str) -> None:
+        self.assertEqual(code, EXIT_FAILURE)
+        pid = 'P-' + first[:-len('.md')].rsplit('_p-', 1)[1]
+        self.assertIn(
+            f'Ada Quillfeather already has a record: {pid} (people/stubs/{first}). '
+            'If this is a different person with the same name, run again with `--force`.',
+            err)
+        self.assertEqual(_stub_files(self.root), [first])
+
+    def test_from_names_twice_without_reindex_is_refused(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        [first] = _stub_files(self.root)
+        code, _out, err = _mint_from_names(self.root, ['Ada Quillfeather'])
+        self._assert_refused_once(code, err, first)
+
+    def test_from_names_twice_with_fresh_index_is_refused(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        [first] = _stub_files(self.root)
+        _reindex(self.root)
+        code, _out, err = _mint_from_names(self.root, ['ada quillfeather'])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn(f'(people/stubs/{first})', err)
+        self.assertEqual(_stub_files(self.root), [first])
+
+    def test_index_alias_is_matched_for_an_unchanged_file(self) -> None:
+        # An alternate name the index registered (name_variants) counts too.
+        path = self.root / 'people' / 'stubs' / 'quillfeather__ada_p-0000000001.md'
+        path.write_text('---\nid: p-0000000001\nname: Ada Quillfeather\n'
+                        'name_variants: [Addie Quillfeather]\nliving: unknown\n'
+                        'tier: stub\n---\n', encoding='utf-8')
+        _reindex(self.root)
+        found = find_people_by_name(self.root, ['Addie Quillfeather'])
+        self.assertEqual([m['id'] for m in found['Addie Quillfeather']], ['P-0000000001'])
+
+    def test_dry_run_shows_the_same_refusal(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        [first] = _stub_files(self.root)
+        code, _out, err = _mint_from_names(self.root, ['Ada Quillfeather'], dry_run=True)
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn('[dry-run] REFUSED: Ada Quillfeather already has a record', err)
+        self.assertEqual(_stub_files(self.root), [first])
+
+    def test_same_name_twice_in_one_batch_is_refused(self) -> None:
+        code, _out, err = _mint_from_names(self.root, ['Ada Quillfeather', 'ADA Quillfeather'])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn('is in this list twice', err)
+        self.assertEqual(_stub_files(self.root), [])
+
+    def test_refusal_writes_nothing_for_the_other_names_either(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        code, _out, _err = _mint_from_names(self.root, ['Bea Newname', 'Ada Quillfeather'])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertEqual(len(_stub_files(self.root)), 1)
+
+    def test_from_names_force_creates_the_second_record(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        code, _out, _err = _mint_from_names(self.root, ['Ada Quillfeather'], force=True)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertEqual(len(_stub_files(self.root)), 2)
+
+    def test_accented_spelling_matches_the_plain_one(self) -> None:
+        _mint_from_names(self.root, ['Halina Wiśniewska'])
+        code, _out, err = _mint_from_names(self.root, ['Halina Wisniewska'])
+        self.assertEqual(code, EXIT_FAILURE)
+        self.assertIn('Halina Wisniewska already has a record', err)
+
+    def test_merged_tombstone_does_not_count(self) -> None:
+        path = self.root / 'people' / 'stubs' / 'quillfeather__ada_p-0000000001.md'
+        path.write_text('---\nid: p-0000000001\nname: Ada Quillfeather\nstatus: merged\n'
+                        'merged_into: p-0000000002\n---\n', encoding='utf-8')
+        self.assertEqual(find_people_by_name(self.root, ['Ada Quillfeather']), {})
+
+    def test_placeholder_names_never_match(self) -> None:
+        _mint_from_names(self.root, ['unknown'])
+        self.assertEqual(find_people_by_name(self.root, ['unknown']), {})
+
+    def test_person_new_after_from_names_is_refused(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        [first] = _stub_files(self.root)
+        result = person.run_new(self.root, 'Ada Quillfeather')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        self.assertEqual([m['path'] for m in result.data['duplicates']],
+                         [f'people/stubs/{first}'])
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('Ada Quillfeather already has a record', text)
+        self.assertIn('`--force`', text)
+        self.assertEqual(_stub_files(self.root), [first])
+
+    def test_person_new_dry_run_refuses_identically(self) -> None:
+        person.run_new(self.root, 'Ada Quillfeather')
+        result = person.run_new(self.root, 'Ada Quillfeather', dry_run=True)
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        self.assertEqual(len(_stub_files(self.root)), 1)
+
+    def test_person_new_force_creates_the_second_record(self) -> None:
+        person.run_new(self.root, 'Ada Quillfeather')
+        result = person.run_new(self.root, 'Ada Quillfeather', force=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(len(_stub_files(self.root)), 2)
+
+    def test_person_new_cli_force_flag(self) -> None:
+        person.run_new(self.root, 'Ada Quillfeather')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            refused = person._standalone_main(['new', 'Ada Quillfeather', '--root', str(self.root)])
+            forced = person._standalone_main(
+                ['new', 'Ada Quillfeather', '--force', '--root', str(self.root)])
+        self.assertEqual((refused, forced), (EXIT_FAILURE, EXIT_CLEAN))
+        self.assertEqual(len(_stub_files(self.root)), 2)
+
+    def test_stubs_cli_force_flag(self) -> None:
+        _mint_from_names(self.root, ['Ada Quillfeather'])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            refused = stubs._standalone_main(
+                ['--from-names', 'Ada Quillfeather', '--root', str(self.root)])
+            forced = stubs._standalone_main(
+                ['--from-names', 'Ada Quillfeather', '--force', '--root', str(self.root)])
+        self.assertEqual((refused, forced), (EXIT_FAILURE, EXIT_CLEAN))
+        self.assertEqual(len(_stub_files(self.root)), 2)
+
+    def test_workbench_verb_passes_force_and_echoes_it(self) -> None:
+        person.run_new(self.root, 'Ada Quillfeather')
+        state = type('State', (), {'archive_root': self.root})()
+        refused = serve._verb_person_new(state, {'name': 'Ada Quillfeather'}, True)
+        self.assertEqual(refused.data['status'], 'duplicate-name')
+        forced = serve._verb_person_new(state, {'name': 'Ada Quillfeather', 'force': True}, False)
+        self.assertTrue(forced.ok)
+        self.assertEqual(len(_stub_files(self.root)), 2)
+        self.assertTrue(serve._echo_person_new(
+            {'name': 'Ada Quillfeather', 'force': True}).endswith('--force'))
+        self.assertEqual(serve.VERBS['person.new']['schema'].get('force'), 'bool')
+        self.assertEqual(serve.VERBS['person.add_family']['schema'].get('force'), 'bool')
+
+    def test_workbench_add_family_mint_asks_too(self) -> None:
+        subject = person.run_new(self.root, 'Subject Person').data['person_id']
+        person.run_new(self.root, 'Ada Quillfeather')
+        state = type('State', (), {'archive_root': self.root})()
+        kw = {'person_id': subject, 'relation_type': 'sibling', 'name': 'Ada Quillfeather'}
+        refused = serve._verb_add_family(state, dict(kw), True)
+        self.assertEqual(refused.data['status'], 'duplicate-name')
+        self.assertEqual(len(_stub_files(self.root)), 2)
+        forced = serve._verb_add_family(state, dict(kw, force=True), False)
+        self.assertTrue(forced.ok, [m.text for m in forced.messages])
+        self.assertEqual(len(_stub_files(self.root)), 3)
+
+    def test_claim_reference_mint_with_explicit_id_is_checked(self) -> None:
+        # The workbench's mint '+' beside a claim-named P-id passes that id;
+        # a same-name record already on file is still surfaced first.
+        person.run_new(self.root, 'Ada Quillfeather')
+        result = person.run_new(self.root, 'Ada Quillfeather', person_id='P-0000000009')
+        self.assertEqual(result.data['status'], 'duplicate-name')
+        forced = person.run_new(self.root, 'Ada Quillfeather', person_id='P-0000000009', force=True)
+        self.assertTrue(forced.ok)
+        self.assertTrue(any(n.endswith('_p-0000000009.md') for n in _stub_files(self.root)))
+        self.assertEqual(serve.VERBS['person.add_family']['schema'].get('force'), 'bool')
 
 
 if __name__ == '__main__':

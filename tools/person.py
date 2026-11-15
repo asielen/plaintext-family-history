@@ -273,6 +273,8 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     configure_utf8_stdout,
+    duplicate_person_name_message,
+    find_people_by_name,
     couple_folder_dirs,
     couple_folder_for_prefix,
     couple_folder_prefix,
@@ -921,7 +923,7 @@ def run_new(
     birth: str | None = None, death: str | None = None, dry_run: bool = False,
     person_id: str | None = None,
     birth_place: str | None = None, death_place: str | None = None,
-    surname: str | None = None,
+    surname: str | None = None, force: bool = False,
 ) -> Result:
     """Mint one P-id, render its stub, and write it under people/stubs/;
     return a Result.
@@ -983,8 +985,24 @@ def run_new(
     fix for a suffix the built-in Jr/Sr/II/III/IV/V list gets wrong (issue
     #53). `name:` is written exactly as given either way; only the filename's
     surname slug changes.
+
+    A name the archive already carries is refused with status
+    'duplicate-name' (exit 3, nothing minted) unless `force` is set (issue
+    #282): `_lib.find_people_by_name` asks both the index and the files on
+    disk, so a stub minted since the last `fha index` still counts, and the
+    refusal names each existing record (`data['duplicates']`, a list of
+    {'id', 'path', 'name'}) so the workbench can offer "create a separate
+    record anyway" instead of failing opaquely. Two people really can share
+    a name (a father and son), which is why this is a question with an
+    answer (`--force`) rather than a ban. The check runs whether or not
+    `person_id` is given: the workbench's claim-reference mint passes the
+    P-id its claims already name, and if a record of that name already
+    exists, the claims most likely mean that person - the human should see
+    that before a second record is filed beside the first. Dry runs refuse
+    identically, so the preview never promises a write the apply refuses.
     """
-    result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None})
+    result = Result(data={'status': None, 'person_id': None, 'path': None, 'name': None,
+                          'duplicates': []})
 
     clean_name = str(name or '').strip()
     if not clean_name:
@@ -1038,7 +1056,18 @@ def run_new(
                 f'{existing} - nothing to mint. If this came from a preview, '
                 'something else created the record since; review it with '
                 f'`fha find {fmt_id_display(pid)}`.')
-    else:
+    # After the id checks (a stale preview's "record already exists" is the
+    # more specific answer) and before `mint_ids`, so a refused name never
+    # draws an id.
+    if not force:
+        duplicates = find_people_by_name(archive_root, [clean_name]).get(clean_name, [])
+        if duplicates:
+            result.data['duplicates'] = duplicates
+            return _refuse_result(
+                result, 'duplicate-name',
+                duplicate_person_name_message(clean_name, duplicates)
+                + ' Nothing was minted.')
+    if not person_id:
         pid = mint_ids('P', 1, archive_root)[0].lower()
     filename = stub_filename(clean_name, pid, surname=surname)
     path = stubs_dir / filename
@@ -3293,6 +3322,7 @@ def _cmd_new(args: argparse.Namespace) -> int:
         birth_place=getattr(args, 'birth_place', None),
         death_place=getattr(args, 'death_place', None),
         surname=getattr(args, 'surname', None),
+        force=bool(getattr(args, 'force', False)),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -3457,8 +3487,11 @@ IV, V) in the name is recognised automatically and never taken as the
 surname. --surname overrides the filename's surname split outright, for
 names no automatic split can be expected to get right (Spanish double
 surnames, particles like "van der", surname-first conventions) - name: is
-written exactly as given either way. Use `fha person relate` next to tie
-the new person to family, and `fha find` to confirm the record."""
+written exactly as given either way. A name that already has a record
+(same spelling, ignoring case and accents) is refused so the same person is
+never filed twice; add --force when it really is someone else who shares
+the name. Use `fha person relate` next to tie the new person to family, and
+`fha find` to confirm the record."""
 
 _SET_LIVING_DESCRIPTION = """\
 Mark one person as living, passed away, or unknown - the privacy switch.
@@ -3501,6 +3534,9 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                     help='A provisional, unsourced death date or estimate.')
     nw.add_argument('--death-place', metavar='PLACE', dest='death_place',
                     help='A provisional, unsourced death place (free text).')
+    nw.add_argument('--force', action='store_true',
+                    help='Mint even when this name already has a record - for two '
+                         'different people who share a name (a father and son).')
     nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     nw.add_argument('--dry-run', action='store_true', dest='dry_run',

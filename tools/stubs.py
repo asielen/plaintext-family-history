@@ -4,6 +4,8 @@ stubs.py - fha stubs: mint person stubs for unresolved P-id references.
 
   fha stubs                           Scan claims and create missing stubs
   fha stubs --from-names "A; B; C"    Mint new P-ids + stubs for named people
+                                      (refuses a name that already has a
+                                      record; --force mints it anyway)
   fha stubs --dry-run                 Preview without writing
 
 Creates {surname}__{given}_{P-id}.md in people/stubs/.
@@ -23,13 +25,17 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     archive_root_missing_message,
+    duplicate_person_name_message,
     find_archive_root,
+    find_people_by_name,
     id_type_of,
+    is_placeholder_name,
     is_template_file,
     link_field_refs,
     load_fha_yaml,
     mint_ids,
     normalize_id,
+    person_name_key,
     read_record,
     render_person_body_scaffold,
     render_stub_content,
@@ -205,11 +211,40 @@ def mint_named_stubs(
     archive_root: Path,
     names: list[str],
     dry_run: bool = False,
-) -> None:
-    """Mint new P-ids and create stubs for named people."""
+    force: bool = False,
+) -> int:
+    """Mint new P-ids and create stubs for named people; return the exit code.
+
+    Before anything is minted, every name is checked against the people the
+    archive already has (`_lib.find_people_by_name`: `name:` and alternate
+    names, case- and accent-insensitive, from the index AND the files on
+    disk, so a stub minted since the last `fha index` still counts) and
+    against the other names in this same batch. Any hit refuses the WHOLE
+    batch with nothing written (exit 3, the refusal code every write verb
+    uses) and names each existing record, because a duplicate person is
+    expensive to undo once claims point at it (issue #282): lint only
+    notices later, as W112, and the two records must then be merged by
+    hand. `--dry-run` prints the identical refusal. `force` skips the check
+    for the father-and-son case, where two people really share a name.
+
+    The refusal is all-or-nothing rather than "mint the rest" so a re-run
+    with `--force` (or with the duplicate names taken out) is the same
+    batch the human typed, not a partial one he has to reconstruct.
+    """
     clean_names = [n.strip() for n in names if n.strip()]
     if not clean_names:
-        return
+        return EXIT_CLEAN
+
+    if not force:
+        problems = _duplicate_name_problems(archive_root, clean_names)
+        if problems:
+            prefix = '[dry-run] ' if dry_run else ''
+            for line in problems:
+                print(f'{prefix}REFUSED: {line}', file=sys.stderr)
+            print(f'{prefix}Nothing was created. Use the existing record, take the '
+                  'name out of the list, or add `--force` to mint every name '
+                  'anyway.', file=sys.stderr)
+            return EXIT_FAILURE
 
     stubs_dir = archive_root / 'people' / 'stubs'
     if not dry_run:
@@ -232,6 +267,32 @@ def mint_named_stubs(
             # guard at all, because every P-id in it was just minted fresh.
             write_text_exact_atomic(stub_path, content)
             print(f'Created: people/stubs/{filename} ({pid})')
+    return EXIT_CLEAN
+
+
+def _duplicate_name_problems(archive_root: Path, names: list[str]) -> list[str]:
+    """One plain sentence per name in `names` that is already taken - by a
+    record in the archive, or by an earlier name in the same batch (typed
+    twice, or twice with different accents/case). Empty when every name is
+    new."""
+    problems: list[str] = []
+    existing = find_people_by_name(archive_root, names)
+    first_seen: dict[str, str] = {}
+    for name in names:
+        if name in existing:
+            problems.append(duplicate_person_name_message(name, existing[name]))
+            continue
+        key = person_name_key(name)
+        if not key or is_placeholder_name(name):
+            continue
+        if key in first_seen:
+            problems.append(
+                f'{name} is in this list twice (also as {first_seen[key]!r}), so '
+                'it would be minted as two records. If these are two different '
+                'people with the same name, run again with `--force`.')
+        else:
+            first_seen[key] = name
+    return problems
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -245,7 +306,9 @@ Create placeholder records for people who are named but not yet filed.
   fha stubs --dry-run                Preview without writing
 
 Like dropping a blank labeled folder in the cabinet for a name you've heard but
-not yet researched. --from-names runs INSTEAD of the reference scan, not with it."""
+not yet researched. --from-names runs INSTEAD of the reference scan, not with it.
+A name that already has a record is refused (nothing is created) so the same
+person is never filed twice; add --force when it really is someone else."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -263,6 +326,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument('--dry-run', action='store_true',
                    help='Preview without writing')
+    p.add_argument(
+        '--force', action='store_true',
+        help='With --from-names: mint even when a name already has a record '
+             '(two different people who share a name, e.g. a father and son).',
+    )
     p.set_defaults(func=_run_stubs)
 
 
@@ -281,8 +349,8 @@ def _run_stubs(args: argparse.Namespace) -> int:
     from_names = getattr(args, 'from_names', None)
     if from_names:
         names = [n.strip() for n in from_names.split(';') if n.strip()]
-        mint_named_stubs(archive_root, names, dry_run=dry_run)
-        return EXIT_CLEAN
+        return mint_named_stubs(archive_root, names, dry_run=dry_run,
+                                force=bool(getattr(args, 'force', False)))
 
     # Default: scan for unresolved P-ids in claims
     unresolved = _collect_unresolved_persons(archive_root)
@@ -309,6 +377,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', metavar='PATH')
     parser.add_argument('--from-names', metavar='NAMES')
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--force', action='store_true')
     args = parser.parse_args(argv)
     return _run_stubs(args)
 

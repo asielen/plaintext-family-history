@@ -443,9 +443,12 @@
          back to a fresh collect only if apply is somehow invoked without a
          prior preview), and reloads the page on success so the rebuilt
          snapshot (serve invalidates it after any write) is what the human
-         sees next. */
-  function runVerb(modal, dryRun) {
-    var c = dryRun ? collect(modal) : (modal._run || collect(modal));
+         sees next.
+     `override` (optional) is a {verb, args} to preview instead of a fresh
+     collect - the "create a separate record anyway" button re-runs the SAME
+     preview with args.force set, so the form is not re-read. */
+  function runVerb(modal, dryRun, override) {
+    var c = override || (dryRun ? collect(modal) : (modal._run || collect(modal)));
     if (dryRun) {
       if (!c.verb) return;
       if (c.verb === '__unwritable__') {
@@ -515,12 +518,22 @@
             return '<p>' + esc(m.text) + '</p>';
           }).join('') + '</div>'
         : '';
+      /* A name that already has a record (person.run_new's 'duplicate-name'
+         refusal, issue #282) is a question, not a dead end: two people can
+         share a name (a father and son). Say so in plain words and offer
+         the --force path as a button, instead of a bare "Cannot apply". */
+      var dupOffer = dryRun && !ok && result.data && result.data.status === 'duplicate-name';
+      var dupHtml = dupOffer
+        ? '<p class="wb-preview-explain">This name already has a record in your archive. If it is the same '
+          + 'person, close this and use that record. If it is someone else who shares the name, '
+          + 'create a separate record.</p>'
+        : '';
       var diffHtml = '<pre class="wb-diff">' + renderMessages(result) + '</pre>';
       if (ok) diffHtml = '<details class="wb-diff-details"><summary>Show the technical preview</summary>' + diffHtml + '</details>';
       host.innerHTML =
         '<p class="wb-kicker">' + (dryRun ? 'Dry run - nothing written yet' : (ok ? 'Applied' : 'Not applied')) + '</p>' +
         '<h3>' + (dryRun ? (ok ? 'Preview' : 'Cannot apply yet') : (ok ? 'Done' : 'Nothing was written')) + '</h3>' +
-        explain + warnHtml + diffHtml +
+        explain + dupHtml + warnHtml + diffHtml +
         cliBlock(result) +
         '<div class="wb-modal-foot">' +
         (dryRun
@@ -532,7 +545,9 @@
               '<button type="button" class="btn" data-wb-back>&larr; Back</button>') +
              '<button type="button" class="btn" data-wb-close>Cancel</button>' +
              (ok ? '<button type="button" class="btn btn-primary" data-wb-apply-run>'
-                   + esc(modal.getAttribute('data-wb-apply-label') || 'Apply') + '</button>' : ''))
+                   + esc(modal.getAttribute('data-wb-apply-label') || 'Apply') + '</button>' : '') +
+             (dupOffer ? '<button type="button" class="btn btn-primary" data-wb-force-run>'
+                   + 'Create a separate record anyway</button>' : ''))
           : ('<button type="button" class="btn btn-primary" data-wb-close>' + (ok ? 'Done' : 'Close') + '</button>')) +
         '</div>';
       showStep(modal, host);
@@ -855,6 +870,17 @@
       var m1 = t.closest('.wb-modal'); substitute(m1); runPreview(m1); return;
     }
     if (e.target.closest('[data-wb-apply-run]')) { runApply(e.target.closest('.wb-modal')); return; }
+    if (e.target.closest('[data-wb-force-run]')) {
+      /* Re-preview the exact args the refused preview sent, now with force:
+         the human said "this is someone else", so the name check is skipped
+         and Apply then carries force (and the newly minted id) too. */
+      var mf = e.target.closest('.wb-modal');
+      if (mf && mf._run) {
+        mf._run.args.force = true;
+        runVerb(mf, true, mf._run);
+      }
+      return;
+    }
     if (e.target.closest('[data-wb-back]')) { showStep(e.target.closest('.wb-modal'), 0); return; }
 
     /* inline reference lookup: toggle the panel that lives in the same .wb-field */

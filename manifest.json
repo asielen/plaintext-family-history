@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-10",
+  "generated": "2026-11-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9e974eba015a8e15bf5ff4ed7f013f30fb5652585fc6db3e1e927b70e870c260",
+      "sha256": "b55fbb351c12442b3829bd44a0003335fee1660fa67a7d8086e3cf9dd6f7f862",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8002ed0c821c571ca098cb56f0a272effbd3eb782c390b18cf1afa5b5d2407e7",
+      "sha256": "53a47a3f773711cf74b6a410083c767a70537cbf3a1b0d7b83f9fccad886753d",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,14 +602,14 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "71d2eb8030866e0460cde013771d1906829486552aa7d830e5bbcc812176afd8",
+      "sha256": "08bd6dcbf68ebacfbaf0cf764c465907b05b50703bc9e0221caa89643bd33110",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "d9f700938cefe64cc5a1b1f03531b6666277e122a3c0967354863a6e6289d89f",
+      "sha256": "b982b92f827b19435a145ec36b9adfab93cca363e20dfbecac64e2a60a735e71",
       "spec_version": "1.2",
       "src": "tools/gedcom_import.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ab286c8c81feec3ae0bd958813ca0d96ac19b62ade2e7a15734ba30ae17a07ae",
+      "sha256": "9cd7e35b94ce3d1a732b5d414945f9cafe314c7425dbc441fca9617cd61a2bea",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "20fc60e13904e760eb25027ef57498cd82e7ea3e20d27dbcebf531e9cee60e2c",
+      "sha256": "e152621c418aa538ddb4375eefbda228296f2c6793f888fe7a9799e919adcfa4",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "ebba11bb814accafdb0620eb730b33220cdc245352646a3c911ede9813da0d9a",
+      "sha256": "266fe685041b04c0258117c760aa21b2006df46f2ba7e44e129e2d82325b8420",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -749,7 +749,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "e56f016cc8119c3f424033197350f591851a6b70bdcfaeee7e2f7600f915b98a",
+      "sha256": "728268697ac5e2bd220104df999b8891d44c700326759b6fdeead2dc78e35d37",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -875,7 +875,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "b21b70159a5f43f63c63af7ce6e834e10b2c424920c6365616609e2da4b76bee",
+      "sha256": "9ab946cd062c741f8951e816875700afd48939b73834dbf76ebc4daa6380d511",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "18e9c1a14fd76e65f27cba59e8466c62e2b238855498bdf4867a96d3ced3a32a",
+      "sha256": "f3ee0275065af1e4a5b3b75db4d260e575d78fcab086a90fe75dc72a54c0e841",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },

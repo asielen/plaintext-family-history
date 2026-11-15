@@ -9769,6 +9769,209 @@ def stub_filename(name: str | None, pid: str, surname: str | None = None) -> str
     return f'{surname_slug}__{given}_{pid}.md'
 
 
+# ── Is this name already taken? (issue #282) ─────────────────────────────────
+#
+# `fha stubs --from-names` and `fha person new` used to mint a second record
+# for a name the archive already had, without a word; the duplicate surfaced
+# only later as lint W112, after claims could already point at either id.
+# These helpers are the one check both minting paths (and the workbench's
+# mint button, which calls `person.run_new`) ask before they mint.
+
+# Frontmatter fields that name a person: the display name, `aliases:` and
+# the alternate names the index also registers as resolution aliases
+# (index.py's alias pass). `aliases:` also holds the P-id and filename stems
+# (`quillfeather__ada`); neither can collide with a typed name, because
+# `person_name_key` keeps word order and a P-id is not a name.
+_PERSON_NAME_FIELDS = ('name', 'aliases', 'name_variants', 'also_known_as',
+                       'name_at_birth', 'married_name')
+
+
+def person_name_key(text: object) -> str:
+    """A comparison key under which two spellings of one name are equal.
+
+    Case, accents, punctuation and spacing are ignored: "Ada Quillfeather",
+    "ada  quillfeather" and "Ada Quillfeather." share a key, and so do
+    "Halina Wiśniewska" and "Halina Wisniewska" (the #279 fold). Word order
+    is kept, so "Quillfeather Ada" is a different key - a surname-first
+    spelling is a judgment call this check leaves to the human.
+    """
+    folded = fold_accents(str(text or '')).casefold()
+    return ' '.join(re.sub(r'[\W_]+', ' ', folded).split())
+
+
+def _person_meta_names(meta: dict) -> list[str]:
+    """Every name string a person record's frontmatter carries (see
+    `_PERSON_NAME_FIELDS`), with the `{value, restricted}` variant form
+    unwrapped the way index.py unwraps it."""
+    names: list[str] = []
+    for field in _PERSON_NAME_FIELDS:
+        raw = meta.get(field)
+        items = raw if isinstance(raw, (list, tuple)) else [raw]
+        for item in items:
+            value = item.get('value') if isinstance(item, dict) else item
+            if value:
+                names.append(str(value))
+    return names
+
+
+def _index_person_names(archive_root: Path) -> tuple[dict[str, list[tuple[str, str]]], float | None]:
+    """`{posix path: [(P-id, name), ...]}` from the index, and the index's mtime.
+
+    Reads `persons` (the display name) and `aliases` (kinds 'name', 'stem'
+    and 'variant': the record's `aliases:` and alternate names) for every
+    record not merged away. Returns `({},
+    None)` when the index is absent, unreadable or on another schema: the
+    disk scan in `find_people_by_name` then reads every file instead, so a
+    missing index costs speed, never a missed duplicate.
+    """
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    status, _detail = sqlite_cache_schema_status(
+        db_path, INDEX_SCHEMA_VERSION, ('persons', 'aliases'))
+    if status != 'fresh':
+        return {}, None
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT id, name, path FROM persons "
+            "WHERE merged_into IS NULL AND COALESCE(status, 'active') != 'merged'"
+        ).fetchall()
+        path_of: dict[str, str] = {}
+        for pid, name, path in rows:
+            if not path:
+                continue
+            key = Path(str(path)).as_posix()
+            path_of[pid] = key
+            by_path.setdefault(key, []).append((pid, str(name or '')))
+        for alias, pid in conn.execute(
+            "SELECT alias, canonical_id FROM aliases "
+            "WHERE kind IN ('name', 'stem', 'variant')"
+        ).fetchall():
+            if pid in path_of and alias:
+                by_path[path_of[pid]].append((pid, str(alias)))
+    except sqlite3.Error:
+        return {}, None
+    finally:
+        if conn is not None:
+            conn.close()
+    return by_path, db_mtime(db_path)
+
+
+def find_people_by_name(
+    archive_root: str | Path, names: list[str],
+) -> dict[str, list[dict]]:
+    """For each name, the person records that already carry it.
+
+    Returns `{name: [{'id': 'P-…', 'path': 'people/…', 'name': as written}]}`
+    for every input name with at least one match; a name nobody carries is
+    absent. Matching is by `person_name_key` (case-, accent- and
+    punctuation-insensitive) against `name:` and the alternate-name fields.
+    Placeholder names ("unknown", blank) never match anything: they are not
+    names, and every unnamed stub shares them.
+
+    Both the index and the files are asked, because neither alone is
+    enough. The index is fast and knows every alias, but a record minted
+    since the last `fha index` is only on disk - which is exactly how three
+    duplicates were minted in one unindexed overnight run (issue #282). So
+    the disk is the authority: every person record under `people/` is
+    walked, and a file the index already holds, unchanged since the index
+    was built, is answered from the index; any other file (new, edited, or
+    with no usable index at all) has its frontmatter read. A record the
+    index lists but the disk no longer has is not reported. Merged
+    tombstones (`merged_into:`) are skipped - their name lives on in the
+    record they were merged into.
+
+    A file that cannot be read is skipped rather than blocking the mint:
+    this is a courtesy check in front of a write that is always allowed
+    with `--force`, not a gate on archive integrity (`fha lint` reports the
+    unreadable file on its own).
+    """
+    archive_root = Path(archive_root)
+    wanted: dict[str, list[str]] = {}
+    for name in names:
+        if is_placeholder_name(name):
+            continue
+        key = person_name_key(name)
+        if key:
+            wanted.setdefault(key, []).append(name)
+    if not wanted:
+        return {}
+
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return {}
+    indexed, index_mtime = _index_person_names(archive_root)
+
+    found: dict[str, dict[str, dict]] = {}
+
+    def note(key: str, pid: str, rel: str, as_written: str) -> None:
+        display = fmt_id_display(normalize_id(pid))
+        found.setdefault(key, {}).setdefault(
+            display, {'id': display, 'path': rel, 'name': as_written})
+
+    for path in sorted(walk_files(people_dir, suffix='.md')):
+        if is_template_file(path):
+            continue
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_type') != 'P':
+            continue
+        if parsed.get('is_companion') and not parsed.get('kind_ambiguous'):
+            continue
+        try:
+            rel = path.relative_to(archive_root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if rel in indexed and index_mtime is not None and mtime <= index_mtime:
+            for pid, text in indexed[rel]:
+                key = person_name_key(text)
+                if key in wanted:
+                    note(key, pid, rel, text)
+            continue
+        try:
+            rec = read_record(path, on_decode_error=lambda _p: None)
+        except Exception:
+            continue
+        meta = rec.get('meta') or {}
+        if rec.get('undecodable') or not isinstance(meta, dict):
+            continue
+        if parsed.get('is_companion') and person_file_kind(path, meta) != 'profile':
+            continue
+        if meta.get('merged_into') or is_merged_meta(meta):
+            continue
+        pid = normalize_id(str(meta.get('id') or '')) or parsed.get('id_str') or ''
+        if id_type_of(pid) != 'P':
+            continue
+        for text in _person_meta_names(meta):
+            key = person_name_key(text)
+            if key in wanted:
+                note(key, pid, rel, text)
+
+    return {
+        name: sorted(found[key].values(), key=lambda m: m['id'])
+        for key, inputs in wanted.items() if key in found
+        for name in inputs
+    }
+
+
+def duplicate_person_name_message(name: str, matches: list[dict]) -> str:
+    """The one sentence both minting verbs refuse with when a name is taken.
+
+    Names the record(s) by P-id and path so the human can open them, then
+    gives the way through: two people really can share a name (a father
+    and son), so the refusal is a question, and `--force` is the answer
+    "yes, this is someone else".
+    """
+    listed = ', '.join(f"{m['id']} ({m['path']})" for m in matches)
+    has = 'a record' if len(matches) == 1 else f'{len(matches)} records'
+    return (f'{name} already has {has}: {listed}. If this is a different '
+            'person with the same name, run again with `--force`.')
+
+
 def render_stub_content(
     pid: str,
     name: str | None,
