@@ -979,6 +979,13 @@ class NewTests(unittest.TestCase):
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('recorded birth as 1870~ - about 1870', text)
 
+    def test_hedged_range_birth_gloss_keeps_the_hedge_in_words(self) -> None:
+        # #293 review: a hedged range glossed as 'between 1891~ and 1893~'.
+        result = person.run_new(self.root, 'Rose Cole', birth='about 1891-1893')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('recorded birth as 1891~/1893~ - about 1891 to about 1893', text)
+
     def test_nonsense_date_refused_without_write(self) -> None:
         before = self._existing_stub_names()
         result = person.run_new(self.root, 'Nonsense Person', birth='blorptown')
@@ -1984,6 +1991,73 @@ class EditNoteTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertIn('not found', result.messages[0].text)
         self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_one_sentence_of_an_entry_asks_for_the_whole_paragraph(self) -> None:
+        # Issue #272, the person twin.
+        person.run_note(self.root, PID, 'research',
+                        'Checked the 1880 census. Found the family in Fairview.')
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Found the family in Fairview.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-partial')
+        msg = result.messages[0].text
+        self.assertIn('whole paragraph', msg)
+        self.assertIn('starts "Checked the 1880 census.', msg)
+        self.assertNotIn('Reload', msg)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_text_inside_several_entries_says_how_many(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'research', 'note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('inside 3 different entries', result.messages[0].text)
+
+    def test_whole_paragraph_on_one_line_is_that_entry(self) -> None:
+        person.run_note(self.root, PID, 'research', 'Line one of it.\nLine two of it.')
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Line one of it.  Line two of it.', 'Rewritten.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = self.stub.read_text(encoding='utf-8')
+        self.assertIn('Third note.\n\nRewritten.', text)
+        self.assertNotIn('Line one of it.', text)
+
+    def test_old_text_covering_two_whole_entries_asks_for_one(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.\n\nSecond note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 entries', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_two_whole_paragraphs_never_loosely_match_a_third_entry(self) -> None:
+        for note in ('Checked the census. Nothing found.', 'Checked the census.',
+                     'Nothing found.'):
+            person.run_note(self.root, PID, 'research', note)
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Checked the census.\n\nNothing found.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_pieces_of_two_entries_say_it_reaches_across_them(self) -> None:
+        person.run_note(self.root, PID, 'research', 'Alpha one. Alpha two.')
+        person.run_note(self.root, PID, 'research', 'Beta one. Beta two.')
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Alpha two.\n\nBeta one.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('reaches across 2 entries', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_true_miss_is_a_cli_not_found_message(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Never written anywhere.', 'x')
+        self.assertEqual(result.data['reason'], 'entry-not-found')
+        self.assertIn('not even in part', result.messages[0].text)
+        self.assertNotIn('Reload the page', result.messages[0].text)
 
     def test_duplicate_entry_refused_as_ambiguous(self) -> None:
         person.run_note(self.root, PID, 'research', 'First note.')  # a duplicate

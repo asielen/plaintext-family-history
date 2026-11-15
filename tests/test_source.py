@@ -324,6 +324,97 @@ class SourceEditNoteTests(unittest.TestCase):
             self.root, SID, old_text='Second note.', text='  ')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
 
+    def test_one_sentence_of_a_paragraph_asks_for_the_whole_paragraph(self) -> None:
+        # Issue #272: one sentence from the middle of an unchanged paragraph
+        # is not a stale page - it is a partial quote. Say so, point at the
+        # paragraph by its opening words, and write nothing.
+        source.run_source_note(
+            self.root, SID,
+            text='The compiler is unknown. The date is\nestimated from the paper type.')
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='The date is estimated', text='X.')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-partial')
+        msg = result.messages[0].text
+        self.assertIn('whole paragraph', msg)
+        self.assertIn('starts "The compiler is unknown. The date', msg)
+        self.assertNotIn('Reload', msg)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_text_inside_several_notes_says_how_many(self) -> None:
+        source.run_source_note(self.root, SID, text='Third note.')
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='note.', text='X.')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-partial')
+        self.assertIn('inside 2 different notes', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_whole_paragraph_on_one_line_is_that_paragraph(self) -> None:
+        # PR #284 review: a whole paragraph pasted onto one line (its line
+        # breaks became spaces) is the paragraph, not "only part of" it.
+        source.run_source_note(self.root, SID, text='Line one of it.\nLine two of it.')
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Line one of it. Line two of it.', text='Rewritten.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = self.record.read_text(encoding='utf-8')
+        self.assertIn('Second note.\n\nRewritten.', text)
+        self.assertNotIn('Line one of it.', text)
+
+    def test_trailing_spaces_in_the_file_still_match(self) -> None:
+        text = self.record.read_text(encoding='utf-8')
+        self.record.write_text(text.replace('Second note.', 'Second note.   '),
+                               encoding='utf-8', newline='')
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Second note.', text='Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertIn('Second note, corrected.', self.record.read_text(encoding='utf-8'))
+
+    def test_old_text_covering_two_whole_notes_asks_for_one(self) -> None:
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Found in the attic in 1998.\n\nSecond note.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 notes', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_two_whole_paragraphs_never_loosely_match_a_third_entry(self) -> None:
+        # PR #284 re-review: collapsing whitespace erased the paragraph break,
+        # so "A.\n\nB." equalled the entry "A. B." and rewrote it.
+        for note in ('Checked the census. Nothing found.', 'Checked the census.',
+                     'Nothing found.'):
+            source.run_source_note(self.root, SID, text=note)
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Checked the census.\n\nNothing found.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_pieces_of_two_notes_say_it_reaches_across_them(self) -> None:
+        source.run_source_note(self.root, SID, text='Alpha one. Alpha two.')
+        source.run_source_note(self.root, SID, text='Beta one. Beta two.')
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Alpha two.\n\nBeta one.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('reaches across 2 notes', result.messages[0].text)
+        self.assertNotIn('not even in part', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_true_miss_is_a_cli_not_found_message(self) -> None:
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Never written anywhere.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-not-found')
+        msg = result.messages[0].text
+        self.assertIn('not even in part', msg)
+        self.assertNotIn('Reload the page', msg)
+
     def test_claims_block_never_touched(self) -> None:
         result = source.run_source_edit_note(
             self.root, SID, old_text='Second note.', text='Second note, corrected.')
@@ -394,6 +485,23 @@ class SourceNoteCliTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn('dry-run', out)
         self.assertEqual(self.record.read_bytes(), before)
+
+    def test_cli_edit_note_partial_quote_exit_3_names_whole_paragraph(self) -> None:
+        before = self.record.read_bytes()
+        rc, _out, err = self._run(
+            ['source', 'edit-note', SID, '--old-text', 'in the attic',
+             '--text', 'X.', '--root', str(self.root)])
+        self.assertEqual(rc, 3)
+        self.assertIn('whole paragraph', err)
+        self.assertIn('starts "Found in the attic in 1998."', err)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_cli_edit_note_help_says_whole_paragraph(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            fha.main(['source', 'edit-note', '--help'])
+        self.assertIn('whole paragraph', ' '.join(out.getvalue().split()))
 
     def test_cli_unknown_id_exit_1(self) -> None:
         # The not-found message is a warning, not an error - _emit sends

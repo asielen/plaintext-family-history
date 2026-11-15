@@ -118,6 +118,7 @@ from _lib import (
     format_source_type_error,
     format_w120_message,
     id_type_of,
+    humanize_edtf,
     is_catalogued_photo_name,
     is_fixture_path,
     is_person_file_kind,
@@ -746,8 +747,10 @@ def _edtf_gloss(edtf: str) -> str:
     just the code: '1870~' is shown as 'about 1870', '187X' as 'the 1870s'.
     """
     if '/' in edtf:
-        a, b = edtf.split('/', 1)
-        return f'between {a} and {b}'
+        # A range reads through the shared reader, so a hedge on its
+        # endpoints is said in words ('1891~/1893~' -> 'about 1891 to
+        # about 1893'), never echoed as 'between 1891~ and 1893~' (#293).
+        return humanize_edtf(edtf)
     before_m = re.match(r'^\[\.{2}(.+)\]$', edtf)
     if before_m:
         return f'on or before {before_m.group(1)}'

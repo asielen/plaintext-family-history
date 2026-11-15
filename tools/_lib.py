@@ -233,6 +233,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    append_paragraph_to_section - add a paragraph at a `## Heading`'s end (shared by
 #                                 person edit/note + source note; CRLF-safe, bounded)
 #    split_log_entries         - an append-log section's entries (paragraph runs)
+#    match_log_entry           - find the ONE log entry an --old-text names; on a miss,
+#                                 a LOG_ENTRY_* reason (not found / only part of a
+#                                 paragraph / ambiguous) and a plain message
 #    replace_paragraph_in_section - swap ONE entry of an append-log section (the
 #                                 workbench's per-entry edit; matched by exact text)
 #    parse_filename            - decompose filename into {id_str, kind, is_companion,
@@ -1805,6 +1808,15 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
             f'{field} {value!r} puts "{word}" in front of {rest!r}, and the archive '
             f'can only keep "{word}" with a single date. Say which one you mean - '
             f'{choices} - or drop "{word}" and keep {rest!r} as it is.'
+        )
+    decade = _hedge_on_a_decade(value)
+    if decade:
+        first, last = decade
+        return (
+            f'{field} {value!r} puts a hedge ("about", "maybe") on a whole decade, '
+            f'and the archive has no way to keep that. Write "the {first}s" '
+            f'(stored as {first[:3]}X), a hedged year such as "about {int(first) + 5}", '
+            f'or a hedged range such as "about {first}-{last}".'
         )
     backwards = backwards_interval_halves(value)
     if backwards:
@@ -5738,31 +5750,157 @@ def split_log_entries(text: str) -> list[str]:
     return entries
 
 
+# Why an `--old-text` did not name exactly one log entry. The engines put the
+# reason in `result.data['reason']` beside their plain message so a front
+# door can re-word it for its own setting: on the command line a miss means
+# "you did not quote the whole paragraph", but behind the workbench's
+# per-entry edit button (which always sends a whole entry) it means the page
+# is stale. The engine text stays interface-neutral; serve.py re-words.
+LOG_ENTRY_NO_SECTION = 'no-section'
+LOG_ENTRY_NOT_FOUND = 'entry-not-found'
+LOG_ENTRY_PARTIAL = 'entry-partial'
+LOG_ENTRY_AMBIGUOUS = 'entry-ambiguous'
+LOG_ENTRY_SPANS = 'entry-spans'
+
+
+def _log_entry_norm(text: str) -> str:
+    """One entry's text as the matcher compares it: per-line `\r` stripped
+    (a CRLF record matches an LF copy) and surrounding blank lines dropped."""
+    return '\n'.join(ln.rstrip('\r') for ln in (text or '').strip('\n').split('\n'))
+
+
+def _entry_preview(entry: str, words: int = 6) -> str:
+    """The first few words of an entry, for a message that has to point the
+    caller at one paragraph without quoting all of it."""
+    parts = entry.split()
+    head = ' '.join(parts[:words])
+    return head + (' ...' if len(parts) > words else '')
+
+
+def match_log_entry(
+    entries: list[str], old_text: str, *, noun: str, where: str, file_hint: str,
+) -> tuple[int | None, str | None, str | None]:
+    """Find the ONE append-log entry `old_text` names; say plainly why not.
+
+    Shared by every per-entry editor (person Stories/Research Notes, a
+    source's `## Notes`, a place's `notes:`) so they all answer a miss the
+    same way. A match is the whole entry, exactly (after `\r` stripping) -
+    the position-free identity `replace_paragraph_in_section` explains.
+
+    Returns `(index, None, None)` on the single match, else
+    `(None, reason, message)` with `reason` one of the `LOG_ENTRY_*` codes.
+    The match tries exact text first; failing that, exactly one entry equal
+    once whitespace is collapsed is still that entry (a paragraph pasted
+    onto one line, so its line breaks became spaces, or a file line with
+    trailing spaces) - still unique, still position-free. The misses:
+      - ambiguous: the text is two or more entries (exactly, or with
+        whitespace collapsed when no exact match exists);
+      - spans: the text is two or more blank-line separated paragraphs that
+        are each a whole entry, or each part of one - one edit rewrites one
+        entry, so the caller is asked for one. Checked BEFORE the
+        whitespace-collapsed match, which would erase the paragraph breaks;
+      - partial: no entry equals it, but one or more CONTAIN it - the common
+        command-line slip of quoting one sentence of a paragraph. Containment
+        compares with whitespace collapsed, so a sentence that wraps across a
+        line break in the file still counts as "part of" that paragraph;
+      - not-found: it is nowhere in the log, not even in part.
+    `noun` ("note", "entry"), `where` ("## Notes") and `file_hint` (the file
+    to copy the paragraph from) only shape the wording."""
+    a_noun = ('an ' if noun[:1] in 'aeiou' else 'a ') + noun
+    target = _log_entry_norm(old_text)
+    normed = [_log_entry_norm(e) for e in entries]
+    exact = [i for i, e in enumerate(normed) if e == target]
+    if len(exact) == 1:
+        return exact[0], None, None
+    if exact:
+        return None, LOG_ENTRY_AMBIGUOUS, (
+            f'that exact {noun} appears {len(exact)} times in {where}, so this '
+            'edit cannot tell which one you meant. Edit the record file '
+            f'directly for this one ({file_hint}). Nothing was written.')
+    squeezed = ' '.join(target.split())
+    squeezed_entries = [' '.join(e.split()) for e in normed]
+    plural = noun[:-1] + 'ies' if noun.endswith('y') else noun + 's'
+    # Paragraph breaks first: collapsing whitespace erases them, so a text of
+    # two whole entries ("A.\n\nB.") would otherwise loosely equal a third
+    # entry "A. B." and rewrite it (PR #284 re-review). Several paragraphs
+    # are never one entry - they are a request to edit several.
+    parts = [' '.join(p.split()) for p in split_log_entries(target)]
+    if len(parts) > 1:
+        if all(p in squeezed_entries for p in parts):
+            return None, LOG_ENTRY_SPANS, (
+                f'--old-text covers {len(parts)} {plural} in {where}, and one edit '
+                f'rewrites one {noun}. Give one {noun} at a time - its whole '
+                'paragraph, word for word - and run the edit once for each. '
+                'Nothing was written.')
+        if all(any(p in e for e in squeezed_entries) for p in parts):
+            return None, LOG_ENTRY_SPANS, (
+                f'--old-text reaches across {len(parts)} {plural} in {where} (it '
+                f'has {len(parts)} paragraphs, each part of a {noun}), and one '
+                f'edit rewrites one {noun}. Give one {noun} at a time - its whole '
+                'paragraph, word for word - and run the edit once for each. '
+                'Nothing was written.')
+    loose = [i for i, e in enumerate(squeezed_entries)
+             if len(parts) == 1 and squeezed and e == squeezed]
+    if len(loose) == 1:
+        return loose[0], None, None
+    if loose:
+        return None, LOG_ENTRY_AMBIGUOUS, (
+            f'that exact {noun} appears {len(loose)} times in {where}, so this '
+            'edit cannot tell which one you meant. Edit the record file '
+            f'directly for this one ({file_hint}). Nothing was written.')
+    containing = [i for i, e in enumerate(normed)
+                  if squeezed and squeezed in ' '.join(e.split())]
+    if len(containing) == 1:
+        return None, LOG_ENTRY_PARTIAL, (
+            f'--old-text is only part of {a_noun} in {where} - it must be the '
+            f'whole paragraph, word for word. It is part of the {noun} that '
+            f'starts "{_entry_preview(normed[containing[0]])}": pass that whole '
+            f'paragraph as --old-text (copy it from {file_hint}). Nothing was '
+            'written.')
+    if containing:
+        return None, LOG_ENTRY_PARTIAL, (
+            f'--old-text is only part of {a_noun}, and it appears inside '
+            f'{len(containing)} different {plural} in {where}. --old-text must '
+            f'be one whole paragraph, word for word - copy the one you mean '
+            f'from {file_hint}. Nothing was written.')
+    return None, LOG_ENTRY_NOT_FOUND, (
+        f'--old-text was not found in {where}, not even in part. --old-text '
+        'must be one whole paragraph, word for word as it stands in the file '
+        f'now - copy it from {file_hint}. Nothing was written.')
+
+
 def replace_paragraph_in_section(
     lines: list[str], body_start: int, heading_text: str,
     old_paragraph: str, new_paragraph: str, cr: str,
-) -> tuple[list[str] | None, str | None]:
+    *, noun: str = 'entry', file_hint: str = 'the record file',
+) -> tuple[list[str] | None, str | None, str | None]:
     """Replace ONE existing entry of a `## {heading_text}` append-log section.
 
     The surgical sibling of `append_paragraph_to_section`: where that one
     only ever adds at the end (the nothing-ever-lost note path), this one
     swaps a single existing entry for new text and leaves every other line
-    of the file untouched - the workbench's per-entry edit button.
+    of the file untouched - the workbench's per-entry edit button, and the
+    `edit-note` verbs on the command line.
 
     `old_paragraph` identifies the entry BY ITS EXACT TEXT, not by position:
     positions shift whenever drafts or private fences are display-stripped,
     so a rendered entry's index is not trustworthy across the render/disk
-    boundary, but its text is. Both sides are compared with per-line `\\r`
+    boundary, but its text is. Both sides are compared with per-line `\r`
     stripped so a CRLF-authored record matches the browser's LF copy.
-    Returns `(new_lines, None)` on the single match, else `(None, reason)` -
-    absent section, entry not found (stale page), or the same text appearing
-    more than once (ambiguous; the file edit is the honest fallback). `cr`
-    follows the same convention as `append_paragraph_to_section`.
+    Returns `(new_lines, None, None)` on the single match, else
+    `(None, reason, message)`: a `LOG_ENTRY_*` reason code (absent section,
+    or whatever `match_log_entry` decided) and an interface-neutral message.
+    The caller puts the reason in `result.data['reason']` so the workbench
+    can say "reload the page" where a miss really does mean a stale page.
+    `cr` follows the same convention as `append_paragraph_to_section`;
+    `noun`/`file_hint` shape the wording only.
     """
     located = section_bounds(lines, body_start, heading_text)
     if located is None:
-        return None, (f'this record has no ## {heading_text} section - '
-                      'the entry may have been removed. Reload the page.')
+        return None, LOG_ENTRY_NO_SECTION, (
+            f'this record has no ## {heading_text} section, so there is no '
+            f'{noun} to edit. Check the record in {file_hint}. Nothing was '
+            'written.')
     _, content_start, content_end = located
 
     spans: list[tuple[int, int]] = []
@@ -5777,25 +5915,17 @@ def replace_paragraph_in_section(
     if run_start is not None:
         spans.append((run_start, content_end))
 
-    def norm(text: str) -> str:
-        return '\n'.join(ln.rstrip('\r') for ln in text.strip('\n').split('\n'))
-
-    target = norm(old_paragraph)
-    matches = [(s, e) for s, e in spans
-               if '\n'.join(ln.rstrip('\r') for ln in lines[s:e]) == target]
-    if not matches:
-        return None, (f'that entry was not found in ## {heading_text} - it may '
-                      'have been edited since this page was loaded. Reload the '
-                      'page and try again.')
-    if len(matches) > 1:
-        return None, (f'that exact entry appears {len(matches)} times in '
-                      f'## {heading_text}, so this edit cannot tell which one '
-                      'you meant. Edit the record file directly for this one.')
-    start, end = matches[0]
+    entries = ['\n'.join(lines[s:e]) for s, e in spans]
+    found, reason, message = match_log_entry(
+        entries, old_paragraph, noun=noun, where=f'## {heading_text}',
+        file_hint=file_hint)
+    if found is None:
+        return None, reason, message
+    start, end = spans[found]
     new_lines = list(lines[:start])
-    new_lines.extend(f'{ln}{cr}' for ln in norm(new_paragraph).split('\n'))
+    new_lines.extend(f'{ln}{cr}' for ln in _log_entry_norm(new_paragraph).split('\n'))
     new_lines.extend(lines[end:])
-    return new_lines, None
+    return new_lines, None, None
 
 
 def parse_filename(path: str | Path) -> dict | None:
@@ -6474,6 +6604,19 @@ def _open_bound_on_a_span(value: object) -> tuple[str, str, str, str] | None:
     return None
 
 
+def _hedge_on_a_decade(value: object) -> tuple[str, str] | None:
+    """(first year, last year) when `value` puts "about"/"maybe" on a decade
+    ("about 1850s", "maybe 187x") - the shape normalize_date refuses, so the
+    refusal can say why (#293 review)."""
+    text, approx, _before, _after, uncertain = _loose_date_parts(str(value or ''))
+    if not (approx or uncertain):
+        return None
+    decade = re.match(r"^(\d{3})0(?:'s|s)$", text) or re.match(r'^(\d{3})x$', text)
+    if decade:
+        return f'{decade.group(1)}0', f'{decade.group(1)}9'
+    return None
+
+
 def format_date_spread(date_min: str | None, date_max: str | None) -> str:
     """A plain date spread for a report line: "1880-09-30/1882-05-01".
 
@@ -6601,6 +6744,12 @@ def normalize_date(s: str | None) -> str | None:
       between 1870 and 1875, 1870 to 1875, 1870-1875       → 1870/1875 (interval)
       ("1875 to 1870" runs backwards → None, never silently swapped: either
       year may be the typo, so the human is asked - format_edtf_error)
+      about/circa 1870-1875, maybe 1870-1875               → 1870~/1875~, 1870?/1875?
+      (the hedge goes on both endpoints; a hedge is never dropped)
+      about 1870s, maybe 187x                              → None (no stored form)
+      1870.., 1870...                                      → None (an open end
+      that is neither [..X] nor [X..]; never read as plain 1870 - with a
+      before/after word the dots are noise: "after 1870..." → [1870..])
       a bare year/month/day already shaped like EDTF       → itself
 
     Month names such as "June 1923", "June 14 1923", and "14 June 1923"
@@ -6615,8 +6764,13 @@ def normalize_date(s: str | None) -> str | None:
         return None
     if is_valid_edtf(raw):
         return raw
-
     text, approx, before, after, uncertain = _loose_date_parts(raw)
+    # `_loose_date_parts` strips trailing dots as sentence noise, which would
+    # turn "1850.." (an open end, half of an EDTF open form) into plain 1850.
+    # With a before/after word the open end is already said in words
+    # ("after 1850..." is [1850..]), so only a bare one is refused.
+    if raw.endswith('..') and not (before or after):
+        return None
 
     candidate: str | None = None
 
@@ -6635,7 +6789,14 @@ def normalize_date(s: str | None) -> str | None:
     )
 
     if range_m:
-        candidate = f'{range_m.group(1)}/{range_m.group(2)}'
+        # A hedge on a range qualifies both endpoints ("about 1891-1893" →
+        # 1891~/1893~). Dropping it would write a valid but wrong date.
+        # The years are compared bare first: widened by the hedge, a reversed
+        # "about 1941-1940" would overlap and pass is_valid_edtf.
+        if range_m.group(1) > range_m.group(2):
+            return None
+        mark = '~' if approx else '?' if uncertain else ''
+        candidate = f'{range_m.group(1)}{mark}/{range_m.group(2)}{mark}'
     elif decade_word_m:
         candidate = f'{decade_word_m.group(1)}X'
     elif decade_x_m:
@@ -6665,6 +6826,11 @@ def normalize_date(s: str | None) -> str | None:
     # silently dropped as "the 1880s" (#218 audit). format_edtf_error says
     # why in plain words.
     if (before or after) and (range_m or decade_word_m or decade_x_m):
+        return None
+    # "about the 1880s" / "maybe 188x": a decade has no approximate or
+    # uncertain stored form ('188X~' is not valid), so refuse rather than
+    # silently store the bare decade with the hedge dropped.
+    if (approx or uncertain) and (decade_word_m or decade_x_m):
         return None
 
     if candidate and (date_m or month_year_m or month_day_year_m or day_month_year_m):
@@ -9447,6 +9613,31 @@ def find_person_record_path(
             if carries_person_record_fields(meta):
                 named_like_a_companion = path
     return named_like_a_companion
+
+
+def claims_in_text(text: str) -> list | None:
+    """A record TEXT's whole `## Claims` list, parsed raw (no coercion), or
+    None when the fenced block is missing or does not read as a list.
+
+    For a writer's after-the-edit check (#273 review): `fha claim` compares
+    every claim before and after its rewrite, so an edit that touched more
+    than it was asked to is refused instead of saved."""
+    if yaml is None:
+        return None
+    body = text
+    fm = FRONT_RE.match(text)
+    if fm:
+        body = text[fm.end():]
+    cm = CLAIMS_RE.search(body)
+    if cm is None:
+        return None
+    try:
+        parsed = safe_load_yaml(cm.group(1))
+    except yaml.YAMLError:
+        return None
+    if parsed is None:
+        return []
+    return parsed if isinstance(parsed, list) else None
 
 
 def claim_in_text(text: str, claim_id: str) -> dict | None:

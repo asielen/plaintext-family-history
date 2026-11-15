@@ -286,6 +286,7 @@ from _lib import (
     frontmatter_key_line_indexes,
     frontmatter_edit_problem,
     frontmatter_fence_span,
+    humanize_edtf,
     id_type_of,
     is_generated_file,
     is_merged_meta,
@@ -2557,8 +2558,10 @@ def _edtf_gloss(edtf: str) -> str:
     rather than being hoisted to the one shared home it would otherwise earn).
     """
     if '/' in edtf:
-        a, b = edtf.split('/', 1)
-        return f'between {a} and {b}'
+        # A range reads through the shared reader, so a hedge on its
+        # endpoints is said in words ('1891~/1893~' -> 'about 1891 to
+        # about 1893'), never echoed as 'between 1891~ and 1893~' (#293).
+        return humanize_edtf(edtf)
     before_m = re.match(r'^\[\.{2}(.+)\]$', edtf)
     if before_m:
         return f'on or before {before_m.group(1)}'
@@ -3218,9 +3221,11 @@ def run_edit_note(
     cr = '\r' if lines[0].endswith('\r') else ''
     heading_text = SECTION_HEADINGS[section]
 
-    new_lines, err = replace_paragraph_in_section(
-        lines, fence_end + 1, heading_text, old_text, text, cr)
-    if err is not None:
+    new_lines, reason, err = replace_paragraph_in_section(
+        lines, fence_end + 1, heading_text, old_text, text, cr,
+        noun='entry', file_hint=str(path))
+    if new_lines is None:
+        result.data['reason'] = reason
         return _refuse_result(result, 'refused', err)
     new_full_text = '\n'.join(new_lines)
 
@@ -3830,9 +3835,10 @@ Rewrite ONE existing entry of Stories or Research Notes - the rest is untouched.
   fha person edit-note P-2b3c4d5e6f --section research \\
       --old-text "Check the 1880 census." --text "Checked the 1880 census - nothing."
 
-The entry is named by its exact current text (--old-text); if that text is
-not found (someone edited the file since), or appears more than once, nothing
-is written and the message says so. Deleting an entry stays a hand edit to
+The entry is named by its exact current text (--old-text): give the whole
+paragraph, word for word - one sentence of it is not enough. If --old-text is
+only part of an entry, is not found, or appears more than once, nothing is
+written and the message says which. Deleting an entry stays a hand edit to
 the record file - this only rewrites."""
 
 
@@ -3849,7 +3855,7 @@ def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
     en.add_argument('--section', required=True, choices=('stories', 'research'),
                     help='Which section the entry lives in.')
     en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                    help="The entry's current text, exactly as it stands.")
+                    help="The entry's current text - the whole paragraph, exactly as it stands.")
     en.add_argument('--text', metavar='TEXT', required=True,
                     help='The corrected entry text.')
     en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,

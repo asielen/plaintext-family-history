@@ -457,9 +457,11 @@ def run_source_edit_note(
             'the extra heading by hand, then run `fha lint`. Nothing was written.')
 
     cr = '\r' if '\r\n' in text_in else ''
-    new_lines, err = replace_paragraph_in_section(
-        lines, body_start, 'Notes', old_text, text, cr)
-    if err is not None:
+    new_lines, reason, err = replace_paragraph_in_section(
+        lines, body_start, 'Notes', old_text, text, cr,
+        noun='note', file_hint=str(path))
+    if new_lines is None:
+        result.data['reason'] = reason
         return _refuse('refused', err)
     new_text = '\n'.join(new_lines)
 
@@ -2346,9 +2348,10 @@ Rewrite ONE existing ## Notes paragraph - the rest of the section is untouched.
   fha source edit-note S-2b3c4d5e6f \\
       --old-text "Found in the cedar chest." --text "Found in Grandma's cedar chest, 2024."
 
-The note is named by its exact current text (--old-text); if that text is not
-found (someone edited the file since), or appears more than once, nothing is
-written and the message says so. Deleting a note stays a hand edit to the
+The note is named by its exact current text (--old-text): give the whole
+paragraph, word for word - one sentence of it is not enough. If --old-text is
+only part of a note, is not found, or appears more than once, nothing is
+written and the message says which. Deleting a note stays a hand edit to the
 record file - this only rewrites. Preview first with --dry-run."""
 
 
@@ -2363,7 +2366,7 @@ def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
     en.add_argument('source_id', metavar='S-id',
                     help='The source whose note is being corrected.')
     en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                    help="The note's current text, exactly as it stands.")
+                    help="The note's current text - the whole paragraph, exactly as it stands.")
     en.add_argument('--text', metavar='TEXT', required=True,
                     help='The corrected note text.')
     en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
