@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-10",
+  "generated": "2026-11-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9e974eba015a8e15bf5ff4ed7f013f30fb5652585fc6db3e1e927b70e870c260",
+      "sha256": "8319fe65de5d06b492d44da33a741a68cc506b1fa6b3cfcf3a183b77bfa7ed62",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8002ed0c821c571ca098cb56f0a272effbd3eb782c390b18cf1afa5b5d2407e7",
+      "sha256": "211899ab2fb39e3bcdc12bea6a01f8f88b27091f245c20e710995bd75d5d3294",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "4c1debe9749e9124d0fa1e619f218822340392a09b4af1a21cb51bc50eab5ecb",
+      "sha256": "b65ec31b18e72269e21eed18798f3faa861d8886e1148fc3f62c87544cbcac79",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "20fc60e13904e760eb25027ef57498cd82e7ea3e20d27dbcebf531e9cee60e2c",
+      "sha256": "a350e2f19dfc5ef5943ba273f2d8d0fc6c9049203df62d2e876d0fa4c2a98235",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -672,7 +672,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "46ae0bccc28eb46edaa77c7fc3a80a164c73b4a70fd4934a4f29ea69347da5ae",
+      "sha256": "5318aacaf66a6a071a9b1812dc936d4fe7c552902d60dd57ecd1af55857e6bea",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "ebba11bb814accafdb0620eb730b33220cdc245352646a3c911ede9813da0d9a",
+      "sha256": "1f47fbe3d748c0d84019ac896e7f8368c506477d3dd307dd997146371dcd9708",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "ad4ce84d282e587c0631c95c37fdedc3918d2e90565a10755fdf804cb9d1a12e",
+      "sha256": "87ed66bec35855da6a0f883c606bc5f648d0b1d0e4ad0340ec40c796ea90ee58",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
