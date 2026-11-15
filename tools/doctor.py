@@ -107,6 +107,7 @@ from _lib import (
     parse_media_filename,
     path_to_alias,
     PHOTOINDEX_SCHEMA_VERSION,
+    photo_reconcile_route,
     photoindex_status,
     pip_command,
     probe_sqlite,
@@ -681,8 +682,9 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
     naming a vanished primary there would hand back a command that fails the
     moment it is run. That case routes to the missing-file recovery path
     instead, mirroring lint.py's own E011 guidance for a missing inventory
-    file (`fha reconcile` re-ties a MOVED file by name; it cannot help a
-    truly deleted file or a changed `roots:` mapping). The missing-primary
+    file (`fha reconcile` re-ties a MOVED photo by the SOURCE: keyword
+    inside it; it cannot help a truly deleted file or a changed `roots:`
+    mapping). The missing-primary
     check runs BEFORE the ambiguous-candidate branch below and covers BOTH
     the one-candidate and 2+-candidate shapes (issue #169 followup review,
     finding 6): a missing primary with multiple unlisted back candidates is
@@ -831,6 +833,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
         for _item in _files:
             if isinstance(_item, dict) and str(_item.get('file') or '').startswith('photos/'):
                 listed_anywhere.add(str(_item['file']))
+    route = None   # photo_reconcile_route, worked out on first need (it walks photos/)
     for record_path, rec in records:
         if rec.get('undecodable') or rec.get('parse_errors'):
             continue                # unreadable/malformed - not this check's job
@@ -914,18 +917,32 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
                 # would be exactly as broken for the same reason. Route to
                 # the missing-file recovery path instead, mirroring lint.py's
                 # own E011 guidance for a missing inventory file: `fha
-                # reconcile` re-ties a MOVED file automatically by matching
-                # name; it cannot help if the file is simply gone, or if
-                # roots: changed instead.
+                # reconcile` re-ties a MOVED photo by the SOURCE: keyword
+                # inside it (#289; --with-exif reads that keyword when the
+                # catalog has not caught up with the move); it cannot help if
+                # the file is simply gone, or if roots: changed instead.
                 names = ', '.join(candidate_aliases)
                 what = (f'{names} sits' if len(candidate_aliases) == 1 else
                         f'{len(candidate_aliases)} unlisted back-shaped files ({names}) sit')
+                # Routed the way lint's E011 is (_lib.photo_reconcile_route):
+                # name the reconcile command that can work here, or the hand
+                # edit when neither a current catalog nor exiftool exists.
+                if route is None:
+                    route = photo_reconcile_route(archive_root, fha_config)
+                if route == 'none':
+                    fix = (f'edit the `file: {primary_alias}` line in {record_path.name} '
+                           "to the photo's new path under photos/ (exiftool is not "
+                           'installed and the photo catalog is not current, so reconcile '
+                           'cannot find it)')
+                else:
+                    flag = '' if route == 'catalog' else ' --with-exif'
+                    fix = (f'run `{_LAUNCHER} reconcile{flag} --root "{archive_root}"` '
+                           '(preview with --dry-run) to re-tie it')
                 findings.append(
                     f'orphaned back scan: {what} on disk, but its listed '
                     f"primary {primary_alias} is missing from disk, so {record_path.name}'s "
                     'own entry needs fixing first - next: if the primary was moved within '
-                    f'the photos root, run `{_LAUNCHER} reconcile --root "{archive_root}"` '
-                    '(preview with --dry-run) to re-tie it, then re-run `fha doctor`; if it '
+                    f'the photos root, {fix}, then re-run `fha doctor`; if it '
                     'was deleted or the roots: mapping changed, fix the record by hand.'
                 )
                 continue
