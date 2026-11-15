@@ -1066,19 +1066,44 @@ def _apply_claim_review(
     def remove_key(key: str) -> None:
         """Delete one top-level key of the item, value span and all (#273).
 
-        Blank lines that close the span are kept: they separate this claim
-        from the next one, they are not part of the value. When the key is
-        the item's first (it sits on the `- ` dash line), the dash moves to
-        the next key, so the item still starts where it did."""
-        idx, kind, _ = find_key(key)
+        Only the key line and its real value lines go: the lines below it
+        indented deeper than the item's key column (a wrapped plain scalar,
+        a block-style list, block-scalar content). Inside a `>`/`|` block
+        scalar a deeper `#` line is content and goes too; after any other
+        value it is a comment and stays. Everything after the last value
+        line - blank separators, a comment at any column, the next key - is
+        kept byte for byte (PR #284 review: `_value_span_end` stops only at
+        a sibling key, so it swallowed a column-zero comment).
+
+        When the key is the item's first (it sits on the `- ` dash line),
+        the dash moves to the next remaining key, past any blank or comment
+        lines between them, so the item still parses as one list entry."""
+        idx, kind, raw = find_key(key)
         if idx is None:
             return
-        end = _value_span_end(idx)
-        while end > idx + 1 and item[end - 1].strip() == '':
-            end -= 1
+        block_scalar = (raw or '').strip()[:1] in ('>', '|')
+        end = idx + 1
+        j = idx + 1
+        while j < len(item):
+            ln = item[j]
+            if ln.strip() == '':
+                j += 1
+                continue
+            if not (ln.startswith(key_indent) and len(ln) > len(key_indent)
+                    and ln[len(key_indent)] in ' \t'):
+                break   # at or above the key column: not this value any more
+            if block_scalar or not ln.strip().startswith('#'):
+                end = j + 1
+            j += 1
         del item[idx:end]
-        if kind == 'dash' and idx < len(item) and item[idx].startswith(key_indent):
-            item[idx] = dash_prefix + item[idx][len(key_indent):]
+        if kind == 'dash':
+            for k in range(idx, len(item)):
+                ln = item[k]
+                if ln.strip() == '' or ln.strip().startswith('#'):
+                    continue
+                if ln.startswith(key_indent):
+                    item[k] = dash_prefix + ln[len(key_indent):]
+                break
 
     def set_scalar(key: str, value_text: str, insert_after: int) -> int:
         idx, kind, _ = find_key(key)

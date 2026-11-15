@@ -4199,5 +4199,84 @@ class ClearFieldShapeTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding='utf-8'), expected)
 
 
+    # PR #284 review: a comment after the cleared field is not its value.
+    _TAIL = ('  status: suggested\n'
+             '  confidence: high\n')
+
+    def _notes_then(self, between: str, notes: str = '  notes: A plain note.\n') -> str:
+        return ('- value: "Anna born 1880"\n'
+                '  id: C-aa11bb22cc\n'
+                '  type: birth\n'
+                '  persons: [P-aaaaaaaaaa]\n'
+                + notes + between + self._TAIL
+                + '\n- value: "Anna died 1950"\n'
+                  '  id: C-bb22cc33dd\n'
+                  '  type: death\n'
+                  '  persons: [P-aaaaaaaaaa]\n'
+                  '  status: suggested\n'
+                  '  confidence: medium\n')
+
+    def _clear_notes_keeps(self, block: str, notes: str) -> None:
+        path = self._source(block)
+        before = path.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['notes'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    def test_column_zero_comment_after_the_cleared_field_is_kept(self) -> None:
+        for notes in ('  notes: A plain note.\n',
+                      '  notes: >\n    First line,\n    second line.\n'):
+            for comment in ('# Keep this research reminder\n',
+                            '  # Keep this research reminder\n',
+                            '    # Keep this research reminder\n'):
+                with self.subTest(notes=notes, comment=comment):
+                    if notes.endswith('>\n    First line,\n    second line.\n') \
+                            and comment.startswith('    #'):
+                        continue   # deeper than the key inside a block scalar: content
+                    self._clear_notes_keeps(self._notes_then(comment, notes), notes)
+
+    def test_comment_after_the_last_key_of_a_claim_is_kept(self) -> None:
+        notes = '  notes: A plain note.\n'
+        block = ('- value: "Anna born 1880"\n'
+                 '  id: C-aa11bb22cc\n'
+                 '  type: birth\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: high\n'
+                 + notes +
+                 '# Keep this research reminder\n'
+                 '\n'
+                 '- value: "Anna died 1950"\n'
+                 '  id: C-bb22cc33dd\n'
+                 '  type: death\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: medium\n')
+        self._clear_notes_keeps(block, notes)
+
+    def test_first_key_dash_moves_past_a_blank_line_or_comment(self) -> None:
+        for sep in ('\n', '# a reminder\n', '\n  # a reminder\n'):
+            with self.subTest(sep=sep):
+                block = ('- notes: First note.\n'
+                         + sep +
+                         '  status: suggested\n'
+                         '  value: "Anna born 1880"\n'
+                         '  id: C-aa11bb22cc\n'
+                         '  type: birth\n'
+                         '  persons: [P-aaaaaaaaaa]\n'
+                         '  confidence: high\n')
+                path = self._source(block)
+                before = path.read_text(encoding='utf-8')
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['notes'])
+                self.assertEqual(result.exit_code, EXIT_CLEAN,
+                                 [m.text for m in result.messages])
+                expected = before.replace('- notes: First note.\n' + sep + '  status:',
+                                          sep + '- status:', 1)
+                self.assertEqual(path.read_text(encoding='utf-8'), expected)
+                c = read_record(path)['claims'][0]
+                self.assertNotIn('notes', c)
+                self.assertEqual(str(c['id']).lower(), 'c-aa11bb22cc')
+
+
 if __name__ == '__main__':
     unittest.main()
