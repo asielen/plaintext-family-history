@@ -99,6 +99,7 @@ from _lib import (
     parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
+    photo_reconcile_route,
     clean_role_word,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
@@ -119,6 +120,7 @@ from _lib import (
     format_w120_message,
     id_type_of,
     humanize_edtf,
+    is_catalogued_photo_name,
     is_fixture_path,
     is_person_file_kind,
     is_template_file,
@@ -300,6 +302,10 @@ class Registry:
         self.fha_config = fha_config
         self.is_fixture = is_fixture_path(archive_root)
         self.is_working_copy = is_working_copy(archive_root)
+        # How `fha reconcile` could find a moved photo here, worked out on the
+        # first missing photos-root entry (see _photo_heal_route): None until
+        # then, so a lint run with nothing missing never walks the photos root.
+        self.photo_heal_route: str | None = None
 
         # id → list of paths where that id appears as THE record id (frontmatter)
         self.person_profile_paths: dict[str, list[Path]] = {}   # P-id → [profile paths]
@@ -1240,6 +1246,55 @@ def _process_person_file(path: Path, registry: Registry,
     return rec
 
 
+def _photo_heal_route(registry: Registry) -> str:
+    """How `fha reconcile` could re-tie a moved photo here (#289): the shared
+    `_lib.photo_reconcile_route` answer ('catalog', 'exif' or 'none'), worked
+    out once per lint run and kept on the registry, because the catalog check
+    walks the photos root and must not run once per entry."""
+    if registry.photo_heal_route is None:
+        registry.photo_heal_route = photo_reconcile_route(
+            registry.archive_root, registry.fha_config)
+    return registry.photo_heal_route
+
+
+def _missing_photo_message(file_path_str: str, registry: Registry) -> str:
+    """E011 text for a photos-root `files:` entry whose file is not on disk.
+
+    A photo is never renamed and carries its source's ID as an embedded
+    keyword, not in its name, so its fix differs from a document's: the
+    reconcile command needs the keyword (see `_photo_heal_route`), and an entry
+    that is not a photo at all has no keyword to be found by. Each branch
+    names what will work; the roots: hint stays, since a changed mapping
+    looks the same from here and no reconcile can fix it.
+    """
+    roots_hint = ('if the roots: mapping in fha.yaml changed instead, see the '
+                  'W121 finding on fha.yaml - reconcile cannot help there, '
+                  'because nothing moved')
+    hand_edit = (f"edit the `file: {file_path_str}` line in this record's "
+                 "frontmatter to the photo's new path under photos/")
+    name = file_path_str.replace('\\', '/').rsplit('/', 1)[-1]
+    if not is_catalogued_photo_name(name):
+        return (f'Inventory file not found on disk: {file_path_str!r} - it sits '
+                'in the photos folder but is not a photo, so `fha reconcile` has '
+                f'no keyword to find it by. If you moved it, {hand_edit}; '
+                f'{roots_hint}')
+    route = _photo_heal_route(registry)
+    if route == 'none':
+        return (f'Inventory file not found on disk: {file_path_str!r} - if you '
+                f'moved the photo within the photos folder, {hand_edit}. '
+                '(Reconcile finds a moved photo by the SOURCE: keyword inside '
+                'it, but here there is no up-to-date photo catalog and no '
+                'exiftool to read that keyword with. Once exiftool is installed '
+                '- `fha doctor` checks it - `fha reconcile --with-exif` can do '
+                'this for you.) '
+                f'{roots_hint[0].upper()}{roots_hint[1:]}')
+    command = '`fha reconcile`' if route == 'catalog' else '`fha reconcile --with-exif`'
+    return (f'Inventory file not found on disk: {file_path_str!r} - if the photo '
+            f'was moved within the photos folder, {command} finds it again by '
+            'the SOURCE: keyword inside it and re-ties this record (preview with '
+            f'--dry-run); {roots_hint}')
+
+
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
@@ -1528,10 +1583,13 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                     findings.append(Finding('E', 'E011', path,
                         f'status: missing-fixture is only allowed in example-archive/ or tests/fixtures/; '
                         f'file {file_path_str!r} is missing'))
+            elif file_path_str.replace('\\', '/').split('/', 1)[0] == 'photos':
+                findings.append(Finding('E', 'E011', path,
+                    _missing_photo_message(file_path_str, registry)))
             else:
                 findings.append(Finding('E', 'E011', path,
                     f'Inventory file not found on disk: {file_path_str!r} - if the '
-                    'file was moved within its asset folder, `fha reconcile` '
+                    'file was moved within the documents folder, `fha reconcile` '
                     're-ties it automatically (preview with --dry-run); if the '
                     'roots: mapping in fha.yaml changed instead, see the W121 '
                     'finding on fha.yaml - reconcile cannot help there, because '

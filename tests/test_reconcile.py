@@ -23,6 +23,7 @@ import argparse
 import contextlib
 import io
 
+import photoindex
 import reconcile
 from _lib import (
     EXIT_CLEAN,
@@ -509,6 +510,530 @@ class ReconcileTests(unittest.TestCase):
         msgs = [m.text for m in result.messages]
         self.assertTrue(any('not reachable' in t for t in msgs), msgs)
         self.assertTrue(any('No photo catalog' in t for t in msgs), msgs)
+
+
+class DuplicateTargetParityTests(unittest.TestCase):
+    """A re-tie whose target the record already lists under another spelling
+    is refused at planning time, so --dry-run and the real run agree."""
+
+    def test_dry_run_and_real_run_agree_on_a_duplicate_target(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            (root / 'sources' / 'letter').mkdir(parents=True)
+            moved = root / 'documents' / 'box' / DOC
+            moved.parent.mkdir(parents=True)
+            moved.write_text('x', encoding='utf-8')
+            record = root / 'sources' / 'letter' / f'letter_{SID.lower()}.md'
+            record.write_text(
+                f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\nfiles:\n'
+                f'  - file: documents/{DOC}\n    role: primary\n'
+                f'  - file: documents/box/./{DOC}\n    role: copy\n---\n',
+                encoding='utf-8')
+            config = load_fha_yaml(root)
+            before = record.read_text(encoding='utf-8')
+            preview = reconcile.run_reconcile(root, config, dry_run=True)
+            real = reconcile.run_reconcile(root, config)
+            self.assertEqual(record.read_text(encoding='utf-8'), before)
+            self.assertEqual(preview.exit_code, real.exit_code)
+            self.assertEqual(preview.exit_code, EXIT_WARNINGS)
+            self.assertEqual(preview['healed'], real['healed'])
+            self.assertFalse(any('Would re-tie' in m.text for m in preview.messages))
+            for result in (preview, real):
+                self.assertTrue(any('already listed in this record' in m.text
+                                    for m in result.messages),
+                                [m.text for m in result.messages])
+
+
+PHOTO_SID = 'S-6gqarv176s'
+PHOTO_FIXTURES = ROOT / 'tests' / 'fixtures' / 'photo-fixture' / 'photos'
+
+
+class PhotoRecordReconcileTests(unittest.TestCase):
+    """#289: a photo filed as a source and then moved within the photos root.
+
+    The one rule (owner decision): re-tie a missing entry only when exactly
+    one unlisted file under the photos root has its exact filename, that file
+    carries the record's own `SOURCE:` keyword and no other, and no other
+    entry of the record shares the name. Everything else is one report naming
+    the candidates and the `file:` line to edit, exit 1.
+
+    These tests build a small archive from the shared photo-fixture JPEGs and
+    stand in for exiftool at photoindex's `_run_exiftool` seam (the same seam
+    test_photoindex uses). The keyword map is keyed by each file's current
+    location and follows a move, the way an embedded keyword travels.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'documents').mkdir()
+        (self.root / 'photos').mkdir()
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+        self.config = load_fha_yaml(self.root)
+        self.keywords: dict[Path, list[str]] = {}
+        patcher = unittest.mock.patch.object(
+            photoindex, '_run_exiftool', side_effect=self._fake_exiftool)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.record = self._write_photo_record(PHOTO_SID, ['photos/portrait_1880.jpg'])
+        self._place('portrait_1880.jpg', 'photos/portrait_1880.jpg', PHOTO_SID)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    # -- helpers ------------------------------------------------------------
+
+    def _fake_exiftool(self, paths, *_args, **_kwargs):
+        return [{'SourceFile': str(p), 'Keywords': self.keywords.get(Path(p).resolve(), [])}
+                for p in paths]
+
+    def _place(self, fixture_name: str, alias: str, *sids: str) -> Path:
+        dest = self.root / alias
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes((PHOTO_FIXTURES / fixture_name).read_bytes())
+        self.keywords[dest.resolve()] = [f'SOURCE: {sid}' for sid in sids]
+        return dest
+
+    def _move(self, old_alias: str, new_alias: str) -> None:
+        old, new = self.root / old_alias, self.root / new_alias
+        new.parent.mkdir(parents=True, exist_ok=True)
+        kws = self.keywords.pop(old.resolve(), [])
+        old.rename(new)
+        self.keywords[new.resolve()] = kws
+
+    def _write_photo_record(self, sid: str, aliases: list, status: str = '') -> Path:
+        rec = self.root / 'sources' / 'photos' / f'portrait_{sid}.md'
+        lines = [f'---\nid: {sid}\ntitle: A portrait\nsource_type: photo\nfiles:\n']
+        for i, alias in enumerate(aliases):
+            lines.append(f'  - file: {alias}\n    role: {"front" if i == 0 else "back"}\n')
+            if status:
+                lines.append(f'    status: {status}\n')
+        lines.append('---\n\n## Notes\nx.\n')
+        rec.write_text(''.join(lines), encoding='utf-8')
+        return rec
+
+    def _scan(self) -> None:
+        photoindex.run_scan(self.root, self.config)
+
+    def _run(self, **kw):
+        return reconcile.run_reconcile(self.root, self.config, **kw)
+
+    def _files(self, rec=None) -> list:
+        return [f['file'] for f in read_record(rec or self.record)['meta']['files']]
+
+    def _warnings(self, result) -> str:
+        return ' '.join(m.text for m in result.messages if m.level == 'warning')
+
+    def _assert_reported(self, result, before: str, *candidates: str) -> str:
+        """Nothing written, exit 1, one report naming the `file:` line."""
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, [m.text for m in result.messages])
+        self.assertGreaterEqual(result['photos_reported'], 1)
+        self.assertNotIn(str(self.record), result.changed)
+        text = self._warnings(result)
+        self.assertIn('is missing from disk and was not re-tied', text)
+        self.assertIn('line in ' + self.record.name, text)
+        for cand in candidates:
+            self.assertIn(cand, text)
+        return text
+
+    def _e011_for(self, rec_path: Path) -> list:
+        import lint
+        result = lint.run_lint(self.root, self.config)
+        return [m.text for m in result.messages
+                if m.code == 'E011' and Path(str(m.path)).name == rec_path.name]
+
+    # -- the issue's two cases, and the one rule's heal -----------------------
+
+    def test_moved_photo_is_re_tied_without_a_rescan(self) -> None:
+        """Case A: catalog built, photo moved, reconcile (no rescan between)."""
+        self._scan()
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+
+        preview = self._run(dry_run=True, with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertIn(
+            '[dry-run] Would re-tie photos/portrait_1880.jpg -> '
+            f'photos/portraits/portrait_1880.jpg ({self.record.name})',
+            [m.text for m in preview.messages])
+
+        applied = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/portraits/portrait_1880.jpg'])
+        self.assertEqual(applied['photos_healed'], 1)
+        self.assertIn(str(self.record), applied.changed)
+        self.assertEqual(applied.exit_code, EXIT_CLEAN, [m.text for m in applied.messages])
+        self.assertEqual(self._e011_for(self.record), [])
+
+    def test_moved_photo_is_re_tied_after_a_rescan(self) -> None:
+        """Case B: `fha photoindex` ran after the move and dropped the old row.
+        The catalog knows the photo at its new path, which is enough."""
+        self._scan()
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        self._scan()
+        preview = self._run(dry_run=True)
+        self.assertTrue(any('[dry-run] Would re-tie photos/portrait_1880.jpg' in m.text
+                            for m in preview.messages), [m.text for m in preview.messages])
+        self.assertEqual(self._files(), ['photos/portrait_1880.jpg'])
+        applied = self._run()
+        self.assertEqual(self._files(), ['photos/portraits/portrait_1880.jpg'])
+        self.assertEqual(applied.exit_code, EXIT_CLEAN, [m.text for m in applied.messages])
+        self.assertEqual(self._e011_for(self.record), [])
+
+    def test_front_and_back_both_moved_heal_by_their_own_names(self) -> None:
+        self.record = self._write_photo_record(
+            PHOTO_SID, ['photos/portrait_1880.jpg', 'photos/portrait_1880-back.jpg'])
+        self._place('portrait_1880-back.jpg', 'photos/portrait_1880-back.jpg', PHOTO_SID)
+        self._move('photos/portrait_1880.jpg', 'photos/1880s/portrait_1880.jpg')
+        self._move('photos/portrait_1880-back.jpg', 'photos/1880s/portrait_1880-back.jpg')
+        result = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/1880s/portrait_1880.jpg',
+                                         'photos/1880s/portrait_1880-back.jpg'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+
+    def test_photo_dry_run_makes_zero_mutations(self) -> None:
+        self._scan()
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+
+        def snapshot():
+            out = {}
+            for base in ('sources', '.cache'):
+                for p in sorted((self.root / base).rglob('*')):
+                    if p.is_file():
+                        out[p.relative_to(self.root).as_posix()] = p.read_bytes()
+            return out
+
+        before = snapshot()
+        result = self._run(dry_run=True, with_exif=True)
+        self.assertTrue(any('[dry-run] Would re-tie' in m.text for m in result.messages))
+        self.assertEqual(snapshot(), before)
+        self.assertEqual(result.changed, [])
+
+    # -- everything else is one report ---------------------------------------
+
+    def test_two_same_named_carriers_are_reported(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/sorted/portrait_1880.jpg')
+        self._place('portrait_1880.jpg', 'photos/exports/portrait_1880.jpg', PHOTO_SID)
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before,
+                              'photos/sorted/portrait_1880.jpg',
+                              'photos/exports/portrait_1880.jpg',
+                              '`file: photos/portrait_1880.jpg`')
+
+    def test_a_second_same_named_file_without_the_keyword_still_blocks(self) -> None:
+        # "Exactly one unlisted file with the name": an unrelated same-named
+        # file elsewhere is enough to make the match uncertain.
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        self._place('wedding_1902.jpg', 'photos/b/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before,
+                              'photos/a/portrait_1880.jpg', 'photos/b/portrait_1880.jpg')
+
+    def test_keyword_under_another_name_is_reported_not_applied(self) -> None:
+        # A back scan, an edit or an export can carry the same keyword. The
+        # catalog is what knows keywords under other names (--with-exif reads
+        # only same-named candidates), so build it first.
+        (self.root / 'photos' / 'portrait_1880.jpg').unlink()
+        self.keywords.clear()
+        self._place('portrait_1880-back.jpg', 'photos/portrait_1880-back.jpg', PHOTO_SID)
+        self._place('portrait_1880.jpg', 'photos/portrait_1880-Edit.jpg', PHOTO_SID)
+        self._scan()
+        before = self.record.read_text(encoding='utf-8')
+        text = self._assert_reported(self._run(with_exif=True), before,
+                                     'photos/portrait_1880-back.jpg',
+                                     'photos/portrait_1880-Edit.jpg')
+        self.assertIn('under another name', text)
+
+    def test_same_named_file_with_another_source_id_is_reported(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        self.keywords[(self.root / 'photos/a/portrait_1880.jpg').resolve()] = [
+            'SOURCE: S-0000000001']
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before, 'photos/a/portrait_1880.jpg')
+
+    def test_same_named_file_with_an_extra_source_id_is_reported(self) -> None:
+        # Both routes read every SOURCE: keyword, not only the first.
+        for route in ('exif', 'catalog'):
+            with self.subTest(route=route):
+                self.tearDown()
+                self.setUp()
+                self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+                self.keywords[(self.root / 'photos/a/portrait_1880.jpg').resolve()] = [
+                    'SOURCE: S-0000000001', f'SOURCE: {PHOTO_SID}']
+                if route == 'catalog':
+                    self._scan()
+                before = self.record.read_text(encoding='utf-8')
+                text = self._assert_reported(self._run(with_exif=(route == 'exif')), before)
+                self.assertIn('S-0000000001', text)
+
+    def test_unread_keywords_are_reported_with_the_flag_that_reads_them(self) -> None:
+        # No catalog and no --with-exif: the same-named file's keywords are
+        # unknown, so nothing is written.
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        text = self._assert_reported(self._run(), before, 'photos/portraits/portrait_1880.jpg')
+        self.assertIn('fha reconcile --with-exif', text)
+
+    def test_catalog_keywords_not_trusted_after_a_roots_change(self) -> None:
+        # The catalog was built against another photos root; a file in the
+        # new root that happens to match an old row on alias, mtime and size
+        # must not inherit that row's keyword.
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        self._scan()
+        with unittest.mock.patch.object(
+                reconcile, 'photoindex_config_drift', return_value='the photos root changed'):
+            before = self.record.read_text(encoding='utf-8')
+            result = self._run()
+            self._assert_reported(result, before, 'photos/portraits/portrait_1880.jpg')
+            self.assertIn('fha reconcile --with-exif', self._warnings(result))
+            # A fresh read is still allowed to decide.
+            healed = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/portraits/portrait_1880.jpg'])
+        self.assertEqual(healed.exit_code, EXIT_CLEAN, [m.text for m in healed.messages])
+
+    def test_a_catalog_row_for_a_changed_file_is_not_trusted(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        self._scan()
+        changed = self.root / 'photos' / 'a' / 'portrait_1880.jpg'
+        with changed.open('ab') as fh:
+            fh.write(b'\0')
+        self.keywords[changed.resolve()] = []
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(), before)
+
+    def test_same_named_sibling_taking_old_path_is_not_healed(self) -> None:
+        # Front and back share one name in two folders. The front moves on,
+        # then the back moves into the front's old folder: the back's entry
+        # must not be re-tied to the front picture.
+        self.record = self._write_photo_record(PHOTO_SID, ['photos/f/x.jpg', 'photos/b/x.jpg'])
+        (self.root / 'photos' / 'portrait_1880.jpg').unlink()
+        self.keywords.clear()
+        self._place('portrait_1880.jpg', 'photos/f/x.jpg', PHOTO_SID)
+        self._place('portrait_1880-back.jpg', 'photos/b/x.jpg', PHOTO_SID)
+        self._move('photos/f/x.jpg', 'photos/n/x.jpg')
+        self._move('photos/b/x.jpg', 'photos/f/x.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before, 'photos/n/x.jpg')
+
+    def test_a_file_another_record_lists_is_never_taken(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/shared/portrait_1880.jpg')
+        (self.root / 'sources' / 'photos' / 'other_S-0000000001.md').write_text(
+            '---\nid: S-0000000001\ntitle: Other\nsource_type: photo\nfiles:\n'
+            '  - file: photos/shared/portrait_1880.jpg\n    role: front\n---\n',
+            encoding='utf-8')
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before)
+
+    def test_listed_photo_spelled_differently_is_still_treated_as_listed(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        (self.root / 'sources' / 'photos' / 'other_S-0000000001.md').write_text(
+            '---\nid: S-0000000001\ntitle: Other\nsource_type: photo\nfiles:\n'
+            '  - file: photos/a/./portrait_1880.jpg\n    role: front\n---\n',
+            encoding='utf-8')
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(self._run(with_exif=True), before)
+
+    def test_heal_never_duplicates_an_entry_in_the_same_record(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        self.record = self._write_photo_record(
+            PHOTO_SID, ['photos/portrait_1880.jpg', 'photos/a/./portrait_1880.jpg'])
+        before = self.record.read_text(encoding='utf-8')
+        preview = self._run(dry_run=True, with_exif=True)
+        real = self._run(with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(preview.exit_code, real.exit_code)
+        self.assertFalse(any('Would re-tie' in m.text for m in preview.messages))
+
+    def test_photo_moved_into_an_ignored_folder_is_reported(self) -> None:
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n'
+            "photos_ignore:\n  - 'Bulk Export'\n", encoding='utf-8')
+        config = load_fha_yaml(self.root)
+        self._move('photos/portrait_1880.jpg', 'photos/Bulk Export/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        self._assert_reported(reconcile.run_reconcile(self.root, config, with_exif=True), before)
+
+    def test_no_exiftool_still_reports_the_line_to_edit(self) -> None:
+        from _lib import format_exiftool_error
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+
+        def no_exiftool(_paths, *_args):
+            raise RuntimeError(format_exiftool_error('fha reconcile'))
+
+        before = self.record.read_text(encoding='utf-8')
+        with unittest.mock.patch.object(photoindex, '_run_exiftool', side_effect=no_exiftool):
+            result = self._run(with_exif=True)
+        self._assert_reported(result, before, 'photos/portraits/portrait_1880.jpg')
+        self.assertIn('exiftool', self._warnings(result))
+
+    def test_a_malformed_photos_ignore_is_one_plain_error(self) -> None:
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n'
+            'photos_ignore:\n  bad: shape\n', encoding='utf-8')
+        config = load_fha_yaml(self.root)
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        result = reconcile.run_reconcile(self.root, config, with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        errors = [m.text for m in result.messages if m.level == 'error']
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn('photos_ignore', errors[0])
+
+    def test_missing_fixture_photo_entry_is_left_alone(self) -> None:
+        self.record = self._write_photo_record(
+            PHOTO_SID, ['photos/gone.jpg'], status='missing-fixture')
+        before = self.record.read_text(encoding='utf-8')
+        result = self._run(with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+
+    def test_a_photos_folder_that_will_not_open_heals_nothing(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/seen/portrait_1880.jpg')
+        self._place('portrait_1880.jpg', 'photos/shut/inner/portrait_1880.jpg', PHOTO_SID)
+        before = self.record.read_text(encoding='utf-8')
+        with unittest.mock.patch(
+                'os.scandir', new=_scandir_denying(self.root / 'photos' / 'shut')):
+            result = self._run(with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('shut', text)
+        self.assertNotIn('Re-tied', text)
+
+    def test_unmoved_photo_records_report_nothing_to_heal(self) -> None:
+        result = self._run(with_exif=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(result['photos_healed'], 0)
+        self.assertIn('No filed photo is missing from disk',
+                      ' '.join(m.text for m in result.messages))
+
+
+@unittest.skipUnless(__import__('shutil').which('exiftool'), 'needs exiftool on PATH')
+class PhotoReconcileEndToEndTests(unittest.TestCase):
+    """#289 with the real tools: `fha process` embeds the keyword, the photo
+    moves, `fha reconcile --with-exif` re-ties the record, lint is clean.
+    Case A has no rescan between the move and the reconcile; case B runs
+    `fha photoindex` after the move, which drops the old catalog row."""
+
+    FHA = ROOT / 'tools' / 'fha.py'
+
+    def _fha(self, root: Path, *args: str) -> 'subprocess.CompletedProcess':
+        import subprocess
+        return subprocess.run(
+            [sys.executable, str(self.FHA), *args, '--root', str(root)],
+            capture_output=True, text=True, encoding='utf-8')
+
+    def _case(self, rescan_after_move: bool) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            for sub in ('photos', 'documents', 'sources'):
+                (root / sub).mkdir()
+            photo = root / 'photos' / 'portrait_1880.jpg'
+            photo.write_bytes((PHOTO_FIXTURES / 'portrait_1880.jpg').read_bytes())
+            done = self._fha(root, 'process', str(photo))
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+            self.assertEqual(self._fha(root, 'photoindex').returncode, 0)
+            (root / 'photos' / 'portraits').mkdir()
+            photo.rename(root / 'photos' / 'portraits' / 'portrait_1880.jpg')
+            if rescan_after_move:
+                self.assertEqual(self._fha(root, 'photoindex').returncode, 0)
+            healed = self._fha(root, 'reconcile', '--with-exif')
+            self.assertEqual(healed.returncode, 0, healed.stdout + healed.stderr)
+            self.assertIn('Re-tied photos/portrait_1880.jpg -> '
+                          'photos/portraits/portrait_1880.jpg', healed.stdout)
+            lint_out = self._fha(root, 'lint')
+            self.assertNotIn('E011', lint_out.stdout + lint_out.stderr)
+
+    def test_case_a_move_then_reconcile(self) -> None:
+        self._case(rescan_after_move=False)
+
+    def test_case_b_move_rescan_then_reconcile(self) -> None:
+        self._case(rescan_after_move=True)
+
+
+class PhotoE011MessageTests(unittest.TestCase):
+    """#289: lint E011 for a photos-root entry names a fix that can work.
+
+    Before, it promised `fha reconcile` re-ties the photo, which no command
+    did. Now reconcile can, but only when it can read the photo's keyword:
+    from a current catalog (plain `fha reconcile`), or through exiftool
+    (`--with-exif`). With neither, the honest next step is the hand edit.
+    """
+
+    def setUp(self) -> None:
+        import lint
+        self.lint = lint
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'documents').mkdir()
+        (self.root / 'photos').mkdir()
+        (self.root / 'sources' / 'photos').mkdir(parents=True)
+        self.record = self.root / 'sources' / 'photos' / f'portrait_{PHOTO_SID}.md'
+        self.record.write_text(
+            f'---\nid: {PHOTO_SID}\ntitle: A portrait\nsource_type: photo\nfiles:\n'
+            '  - file: photos/portrait_1880.jpg\n    role: front\n---\n\n## Notes\nx.\n',
+            encoding='utf-8')
+        self.config = load_fha_yaml(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _e011(self, *, catalog: str, exiftool: bool) -> str:
+        import _lib
+        with unittest.mock.patch.object(_lib, 'photoindex_status',
+                                        return_value=(catalog, 0.0)), \
+             unittest.mock.patch.object(_lib.shutil, 'which',
+                                        return_value='/usr/bin/exiftool' if exiftool else None):
+            result = self.lint.run_lint(self.root, self.config)
+        found = [m.text for m in result.messages if m.code == 'E011']
+        self.assertEqual(len(found), 1, found)
+        return found[0]
+
+    def test_fresh_catalog_points_at_plain_reconcile(self) -> None:
+        text = self._e011(catalog='fresh', exiftool=False)
+        self.assertIn('`fha reconcile`', text)
+        self.assertNotIn('--with-exif', text)
+
+    def test_exiftool_points_at_reconcile_with_exif(self) -> None:
+        text = self._e011(catalog='stale', exiftool=True)
+        self.assertIn('`fha reconcile --with-exif`', text)
+
+    def test_neither_names_the_line_to_edit(self) -> None:
+        text = self._e011(catalog='absent', exiftool=False)
+        self.assertNotIn('`fha reconcile`', text)
+        self.assertIn('`file: photos/portrait_1880.jpg`', text)
+        self.assertIn('exiftool', text)
+
+    def test_shared_route_used_by_doctor_and_refile(self) -> None:
+        # doctor's orphaned-back-scan step and refile's not-on-disk message
+        # route through the same helper E011 uses, so none of them names
+        # --with-exif where exiftool is absent.
+        import _lib
+        cases = {('fresh', True): 'catalog', ('stale', True): 'exif',
+                 ('absent', False): 'none', ('fresh', False): 'catalog'}
+        for (catalog, exiftool), want in cases.items():
+            with unittest.mock.patch.object(_lib, 'photoindex_status',
+                                            return_value=(catalog, 0.0)), \
+                 unittest.mock.patch.object(_lib.shutil, 'which',
+                                            return_value='/x/exiftool' if exiftool else None):
+                self.assertEqual(_lib.photo_reconcile_route(self.root, self.config), want)
+
+    def test_documents_entry_keeps_its_own_message(self) -> None:
+        self.record.write_text(
+            f'---\nid: {PHOTO_SID}\ntitle: A letter\nsource_type: letter\nfiles:\n'
+            f'  - file: documents/letter_{PHOTO_SID}.pdf\n    role: primary\n---\n',
+            encoding='utf-8')
+        text = self._e011(catalog='absent', exiftool=False)
+        self.assertIn('`fha reconcile` re-ties it', text)
 
 
 if __name__ == '__main__':

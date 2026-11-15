@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "4973c25d380d67fe9a0892ee7150e39ddbc27a75dd5c1a6c64370831b817342c",
+      "sha256": "efddb41312b5c5127aa7c3673072dbdbc3ea3decaa9255a15ff9a73ac430f44e",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "86cddfec34305a695bcfd79054af5ea089244b80c0c738a8e0c3b64f20d2f506",
+      "sha256": "01a1b0ae87c8f48414e323d7b8f20c8e5a102f9e8970b8f9e7409e420a3d3f9e",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "f50ceb53095ef106d1fe3abcb8634b5ff276a5da3e66e6e87c73a78d9f5d1ea8",
+      "sha256": "e9fab0e2b72571b19753a476747140a1281547cd207a9ad34f8d22417c4cb05f",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "5ca4af11c8ceea855357971496c8832eb6817f180a0f8a74a0892d1328aeaa82",
+      "sha256": "6bb794aee2bcbbe446797b8fa5f6ce93991cd6402c7982ac9dc83673368c3eda",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -665,7 +665,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "2aa28cfd4f9fbe95271f62e44449ab0ef802c8cf46dd76fded279fa19995a107",
+      "sha256": "aee0f8fe168703b0698c8d3ad3ec03a2f22e45df50e3046b6d59f7e749347376",
       "spec_version": "1.2",
       "src": "tools/photoindex.py"
     },
@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "89c99399ef8f6836c534795b95a26f6d80004ac4cfd2a99d78f62c851c8db2f9",
+      "sha256": "434aca10c5548c0ad76f9099890612bbe11bfe97f0d6fcbdfd681173b779c415",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "f64f2ae08c753017c2ac335d3db9c0a60cca6be9f6f1da0331992580a65752e7",
+      "sha256": "edb2b8f5a133f573641d6bc01e98031c371667a29853ac5babcb534b79524377",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
@@ -949,7 +949,7 @@
     {
       "path": "GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "0a73bef5f3bd575d9eb1af924f06bd88ab47e492c739eb9bf89b1b71193ab533",
+      "sha256": "5b6149f772e7da680225adf89bc25e0254cffccbc9e8a7368f1d6e130a82e7f2",
       "spec_version": "1.2"
     },
     {
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "95fca9e346ee084b995b5afbfa79f979620fa94a9f86142ca9deed406ab0a397",
+      "sha256": "e1d8ccd4d900b049c730b6d1053d54ea5407750f52abe0f2f5bd5b9fdf4bd2ac",
       "spec_version": "1.2"
     },
     {
@@ -1009,7 +1009,7 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "158633829d3f3d537884f9cc9f8bb6975143b7f459c28691578fc8ca130fcc51",
+      "sha256": "f87c34943f1f256c9770b13f66482302e6ab5327c6a0692187e1603d56b78b8a",
       "spec_version": "1.2"
     },
     {

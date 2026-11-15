@@ -710,10 +710,11 @@ def _record_dir_label(path: Path, archive_root: Path) -> str:
         return str(path).replace('\\', '/')
 
 
-def _run_exiftool(paths: list[Path]) -> list[dict]:
+def _run_exiftool(paths: list[Path], fields: list[str] | None = None) -> list[dict]:
     """
     Run one batched `exiftool -j -struct` call over `paths` and return the
-    parsed JSON rows.
+    parsed JSON rows. `fields` narrows the tags read (default: the catalog's
+    full `_EXIFTOOL_FIELDS`); reconcile's record pass asks for keywords only.
 
     This is the seam a test harness replaces to inject pre-cooked JSON
     without requiring exiftool on PATH (BUILD.md layer-3 fixture note) -
@@ -747,7 +748,7 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     cmd = [
         'exiftool', '-charset', 'filename=utf8', '-@', '-',
         '-j', '-struct', '-n', '-Error',
-    ] + _EXIFTOOL_FIELDS
+    ] + list(fields or _EXIFTOOL_FIELDS)
     try:
         proc = subprocess.run(
             cmd, check=False, capture_output=True, input=stdin_bytes)

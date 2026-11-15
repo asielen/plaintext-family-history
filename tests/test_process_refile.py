@@ -700,8 +700,8 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(asset.exists(), "another source's photo must never move")
         # Issue #170 finding 3 (round-3 audit): the photo branch of this same
         # conflict used to suggest `fha reconcile`, which cannot fix it -
-        # its document pass ignores photos/ aliases and its photo pass only
-        # re-ties the photo catalog, not this record. It must name the exact
+        # reconcile re-ties only an entry whose photo is missing from disk
+        # (#289), and this one is on disk. It must name the exact
         # files: entry to fix by hand instead, mirroring the documents-root
         # branch's own fix (test_documents_asset_belonging_to_different_
         # source_refused above).
