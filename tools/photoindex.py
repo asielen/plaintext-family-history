@@ -564,8 +564,7 @@ _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 _EXIFTOOL_BATCH_SIZE = 500
 
 
-def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_error=None,
-                      linked_dirs: list | None = None, ignored_paths: list | None = None):
+def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_error=None):
     """
     Yield catalogable photo files under photos_root, or nothing if it is absent.
 
@@ -590,13 +589,6 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_err
     and treat every path under a reported directory as unverified rather than
     absent. Callers that only READ the listing (a preview, a count) may pass
     None and simply see fewer files.
-
-    `linked_dirs`, when given, collects every symlinked folder the walk saw
-    and did not descend into (os.walk never follows links by default). A
-    caller that concludes "this photo is nowhere" from the listing - reconcile's
-    record-side pass (#289) - must know the listing has a hole there.
-    `ignored_paths`, when given, collects every folder `photos_ignore:` pruned
-    and every photo file it skipped, for the same reason.
     """
     if not photos_root.is_dir():
         return
@@ -607,20 +599,10 @@ def _iter_photo_files(photos_root: Path, ignore: list[str] | None = None, on_err
         rel_dir = Path(dirpath).relative_to(photos_root).as_posix()
         prefix = '' if rel_dir == '.' else f'{rel_dir}/'
         if patterns:
-            if ignored_paths is not None:
-                ignored_paths.extend(Path(dirpath) / d for d in dirnames
-                                     if _ignored(f'{prefix}{d}'))
             dirnames[:] = [d for d in dirnames if not _ignored(f'{prefix}{d}')]
-        if linked_dirs is not None:
-            linked_dirs.extend(Path(dirpath) / d for d in dirnames
-                               if os.path.islink(os.path.join(dirpath, d)))
         for name in filenames:
             p = Path(dirpath) / name
-            if not is_catalogued_photo_name(name):
-                continue
-            if _ignored(f'{prefix}{name}'):
-                if ignored_paths is not None:
-                    ignored_paths.append(p)
+            if not is_catalogued_photo_name(name) or _ignored(f'{prefix}{name}'):
                 continue
             # os.walk lists a dangling symlink among the files; the old
             # rglob walker's is_file() dropped it silently, and without this
@@ -3059,8 +3041,7 @@ def _group_id_of(conn: sqlite3.Connection, path: str) -> str | None:
 
 def _on_disk_aliases(
     photos_root: Path, fha_config: dict, archive_root: Path,
-    unreadable_dirs: list | None = None, linked_dirs: list | None = None,
-    ignored_paths: list | None = None,
+    unreadable_dirs: list | None = None,
 ) -> dict[str, Path]:
     """Map alias-form path -> absolute Path for every photo file currently on disk.
 
@@ -3076,36 +3057,19 @@ def _on_disk_aliases(
     listed reads as "every photo in it vanished" unless the caller is told -
     which would flag a whole shelf MISSING:, blank out its groups' dates, and
     report the loss to the human as fact.
-
-    Pass a list as `linked_dirs` to collect (alias, path) for every symlinked
-    folder the walk did not follow - the same kind of hole, for a caller
-    that must not call a photo gone because it sat behind a link. Its alias is
-    the folder the human sees (`photos/linked`), computed from the link
-    itself; resolving it would name the link's target, an absolute path that
-    must never reach output. `ignored_paths` collects what `photos_ignore:`
-    pruned or skipped (absolute Paths).
     """
     on_error = (
         _unreadable_dir_recorder(fha_config, archive_root, unreadable_dirs)
         if unreadable_dirs is not None else None
     )
-    links: list[Path] | None = [] if linked_dirs is not None else None
     out: dict[str, Path] = {}
     for p in _iter_photo_files(
         photos_root, _photos_ignore_patterns(fha_config), on_error=on_error,
-        linked_dirs=links, ignored_paths=ignored_paths,
     ):
         try:
             out[path_to_alias(p, 'photos', fha_config, archive_root)] = p
         except OSError:
             continue
-    if linked_dirs is not None:
-        for link in links or []:
-            try:
-                alias = f'photos/{link.relative_to(photos_root).as_posix()}'
-            except ValueError:
-                alias = link.name
-            linked_dirs.append((alias, link))
     return out
 
 

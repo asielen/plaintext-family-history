@@ -1857,9 +1857,9 @@ never mistaken for a clean one. Lint E011's message now names `fha reconcile`
 as the fix for a documents-root entry; for a photos-root entry (#289) it names
 `fha reconcile` when the photo catalog is current, `fha reconcile --with-exif`
 when exiftool is installed, and otherwise the exact `file:` line to edit by
-hand. Filed photos heal from the records' side by their embedded `SOURCE:`
-keyword plus the same filename (a keyword-only match is only ever proposed,
-never written - TOOLING §9).
+hand. Filed photos heal from the records' side only when exactly one
+unlisted same-named file carries the record's own `SOURCE:` keyword (every
+other case is reported with the `file:` line to edit - TOOLING §9).
 Tests: `tests/test_reconcile.py` (heal round-trip incl. dry-run zero-writes
 and idempotent re-run, ambiguous/missing/unlisted buckets, missing-fixture
 skip, working-copy no-op, unreachable root).

@@ -227,48 +227,27 @@ fha reconcile --dry-run --with-exif   # preview what will be re-tied
 fha reconcile --with-exif             # apply, then run fha index and fha photoindex
 ```
 
-A filed document carries its ID tag in its name, so it is found wherever you put it. A
-photo is never renamed, so it is found by the source ID the system wrote inside it when
-you processed it, plus its file name. `--with-exif` lets reconcile read that ID out of
-photos the photo catalog has not seen yet; it needs exiftool (`fha doctor` checks). If
-you ran `fha photoindex` after moving the photos, plain `fha reconcile` is enough. The
-checker's message tells you which one applies to your archive.
+A filed document carries its ID tag in its name, so it is found wherever you put it.
+A photo is re-tied only when the answer is certain: exactly one photo with the same file
+name, carrying the source ID the system wrote inside it when you processed it.
+`--with-exif` lets reconcile read that ID out of photos the photo catalog has not seen
+yet; it needs exiftool (`fha doctor` checks). If you ran `fha photoindex` after moving
+the photos, plain `fha reconcile` is enough. The checker's message tells you which one
+applies to your archive.
 
-What the other messages mean, and what to do:
+Anything less certain is reported, never guessed - for example two copies with the same
+name, or a photo that was renamed on the way:
 
-- **"exists in more than one place"** (documents) or **"more than one photo named ...
-  carries"** (photos) - you have two copies with the same name. The system never picks
-  one, even when one sits in a folder that looks more like the old one. Edit the `file:`
-  line it names to point at the right copy, or move the extra copy out of the folder, and
-  re-run.
-- **"sits in ..., which photos_ignore: skips"** - a photo with that name is inside a folder
-  your `fha.yaml` tells the system to ignore. If that is the one, move it out of the
-  ignored folder and re-run; otherwise edit the `file:` line it names.
-- **"carries more than one source ID"** - the photo is tagged for two sources, so the
-  system will not decide whose it is. Edit the `file:` line it names if it is this
-  record's photo.
-- **"matches more than one missing entry"** - one photo would fit two missing entries.
-  Edit the `file:` lines by hand so each points at its own photo.
-- **"nothing named ... is left, but ... carries"** (photos) - the photo seems to have been
-  renamed as well as moved. Photo programs also copy the ID onto edited copies, exports
-  and back scans, so the system only proposes; if one of the files it names is your
-  photo, edit the `file:` line it names to point at it.
-- **"keywords have not been read"** or **"could not be read just now"** - the system
-  needs to look inside the photos first. Run `fha reconcile --with-exif` (close any
-  program that has the photos open). Without exiftool, edit the `file:` line it names.
-- **"already listed by another record"** - two records list the same photo. Fix the
-  duplicate `files:` entry by hand.
-- **"aliases: list ..., which is the id: of ..."** - one record names another record's ID
-  as its own old ID. Remove it from that record's `aliases:` if it got there by mistake.
-- **"could not be looked inside"** - a folder could not be opened, or is a shortcut
-  (symbolic link) to somewhere else. Reconnect the drive or fix your access; move a linked
-  folder's contents into the photos folder for real. Nothing is re-tied until then.
-- **"is gone"** - it left the folder entirely. Bring it back, or note in the record that
-  it's lost.
-- **"is on disk but does not carry"** (photos) - a different picture now sits at the old
-  path while the record's photo is elsewhere. The message names both. If the record's
-  photo moved, fix the `file:` line; if the listed file is right, the message gives the
-  exact line that writes the ID into it, or move the other copy out of the photos folder.
+```
+portrait.md: 'photos/portrait.jpg' is missing from disk and was not re-tied.
+Possible matches, most likely first: ... Edit the `file: photos/portrait.jpg` line ...
+```
+
+Look at the photos it lists, then edit that `file:` line to point at the right one. If it
+finds no candidate, the photo left the photos folder (or sits in a folder `photos_ignore:`
+skips) - bring it back, or note in the record that it's lost. For documents, "in more
+than one place" means two copies of the same file: move or rename the extra one and
+re-run.
 
 ---
 
