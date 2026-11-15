@@ -2150,6 +2150,45 @@ class PlaceVerbTests(_ServeCase):
         self.assertIn('First finding, corrected.', registry)
         self.assertNotIn('First finding.\n', registry)
 
+    def test_place_edit_note_miss_keeps_the_reload_wording(self):
+        # Issue #272: the engine now words a miss for the command line; the
+        # workbench's per-entry button always sends a whole entry, so a miss
+        # there (absent or only part of a longer note) still means "reload".
+        before = (self.root / 'places' / 'places.yaml').read_bytes()
+        for old in ('Never written anywhere.', 'town'):
+            s, d, _h = self.post_run('place.edit_note',
+                                     {'place_id': self.LID, 'old_text': old,
+                                      'text': 'x'}, False)
+            self.assertEqual(s, 200)
+            payload = json.loads(d)
+            self.assertFalse(payload['ok'])
+            self.assertEqual(payload['exit_code'], 3)
+            text = payload['messages'][0]['text']
+            self.assertIn('Reload the page', text)
+            self.assertNotIn('--old-text', text)
+        self.assertEqual((self.root / 'places' / 'places.yaml').read_bytes(), before)
+
+    def test_source_and_person_edit_note_miss_keep_the_reload_wording(self):
+        # The same #272 rule for the two section-log verbs that share
+        # `_lib.replace_paragraph_in_section`.
+        for verb, args in (
+            ('source.edit_note', {'source_id': 'S-fa1234567b'}),
+            ('person.edit_note', {'person_id': 'P-de957bcda1', 'section': 'research'}),
+            ('person.edit_note', {'person_id': 'P-de957bcda1', 'section': 'stories'}),
+        ):
+            with self.subTest(verb=verb, args=args):
+                before = _tree_hash(self.root)
+                s, d, _h = self.post_run(verb, dict(args, old_text='Never written anywhere.',
+                                                    text='x'), False)
+                self.assertEqual(s, 200)
+                payload = json.loads(d)
+                self.assertFalse(payload['ok'])
+                self.assertEqual(payload['exit_code'], 3)
+                text = payload['messages'][0]['text']
+                self.assertIn('Reload the page', text)
+                self.assertNotIn('--old-text', text)
+                self.assertEqual(_tree_hash(self.root), before)
+
     def test_place_set_unknown_id_is_a_plain_refusal(self):
         s, d, _h = self.post_run('place.set',
                                  {'place_id': 'L-bbbbbbbbbb', 'lat': '1', 'lon': '2'}, True)

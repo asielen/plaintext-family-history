@@ -1985,6 +1985,33 @@ class EditNoteTests(unittest.TestCase):
         self.assertIn('not found', result.messages[0].text)
         self.assertEqual(self.stub.read_bytes(), before)
 
+    def test_one_sentence_of_an_entry_asks_for_the_whole_paragraph(self) -> None:
+        # Issue #272, the person twin.
+        person.run_note(self.root, PID, 'research',
+                        'Checked the 1880 census. Found the family in Fairview.')
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Found the family in Fairview.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-partial')
+        msg = result.messages[0].text
+        self.assertIn('whole paragraph', msg)
+        self.assertIn('starts "Checked the 1880 census.', msg)
+        self.assertNotIn('Reload', msg)
+        self.assertEqual(self.stub.read_bytes(), before)
+
+    def test_text_inside_several_entries_says_how_many(self) -> None:
+        result = person.run_edit_note(self.root, PID, 'research', 'note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('inside 3 different entries', result.messages[0].text)
+
+    def test_true_miss_is_a_cli_not_found_message(self) -> None:
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Never written anywhere.', 'x')
+        self.assertEqual(result.data['reason'], 'entry-not-found')
+        self.assertIn('not even in part', result.messages[0].text)
+        self.assertNotIn('Reload the page', result.messages[0].text)
+
     def test_duplicate_entry_refused_as_ambiguous(self) -> None:
         person.run_note(self.root, PID, 'research', 'First note.')  # a duplicate
         before = self.stub.read_bytes()
