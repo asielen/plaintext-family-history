@@ -1004,5 +1004,159 @@ class ParseGedcomNameTests(unittest.TestCase):
         self.assertEqual(len(mine.split('__')[1].rsplit('_P-', 1)[0]), 60)
 
 
+# ── Free-form dates as Ancestry exports them (#293) ───────────────────────────
+
+# Issue #293's table: what a person typed into Ancestry, and the reading the
+# archive's own loose-date reader (`_lib.normalize_date`, the one behind
+# `fha claim --date` and `fha person new --birth`) gives it. The importer
+# must reach the same reading when GEDCOM's strict grammar does not fit.
+_T97_TABLE = [
+    ('3 December 1810', '1810-12-03'),
+    ('15 Sept 1873', '1873-09-15'),
+    ('after 1888', '[1888..]'),
+    ('Aft. 1930', '[1930..]'),
+    ('about 1910', '1910~'),
+    ('Before 1951', '[..1951]'),
+    ('Bef. 1900', '[..1900]'),
+    ('Jul 7 1879', '1879-07-07'),
+    ('1998-2002', '1998/2002'),
+    ('circa 1850', '1850~'),
+    ('Abt. 1891', '1891~'),
+    ('3 Dec 1810', '1810-12-03'),
+]
+
+_T97_GED = (
+    '0 HEAD\n1 SOUR Ancestry.com Family Trees\n1 GEDC\n2 VERS 5.5.1\n'
+    '2 FORM LINEAGE-LINKED\n1 CHAR UTF-8\n'
+    '0 @I1@ INDI\n1 NAME Test /Example/\n1 SEX M\n'
+    '1 BIRT\n2 DATE 3 December 1810\n'
+    '1 RESI\n2 DATE Jul 7 1879\n'
+    '1 RESI\n2 DATE 1998-2002\n'
+    '1 DEAT\n2 DATE after 1888\n'
+    '1 BURI\n2 DATE about 1910\n'
+    '0 @I2@ INDI\n1 NAME Other /Example/\n1 SEX F\n'
+    '1 BIRT\n2 DATE 15 Sept 1873\n'
+    '1 DEAT\n2 DATE Before 1951\n'
+    '0 TRLR\n'
+)
+
+
+class LooseDateFallbackTestCase(unittest.TestCase):
+    """#293: a date typed as free text falls back to the archive's loose-date
+    reader instead of being left out of `date:`."""
+
+    def test_every_issue_table_row_reads(self) -> None:
+        for raw, want in _T97_TABLE:
+            with self.subTest(raw=raw):
+                got = gedcom_import.gedcom_date_to_edtf(raw)
+                self.assertEqual(got, want)
+                self.assertTrue(is_valid_edtf(got))
+
+    def test_ambiguous_slash_date_stays_unread(self) -> None:
+        # Both parts are 12 or under: day/month or month/day is a coin toss.
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('05/06/1950'))
+
+    def test_slash_date_reads_when_one_part_is_over_12(self) -> None:
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('19/05/1987'), '1987-05-19')
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('5/19/1987'), '1987-05-19')
+
+    def test_impossible_slash_dates_stay_unread(self) -> None:
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('19/19/1987'))
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('31/02/1950'))
+        self.assertIsNone(gedcom_import.gedcom_date_to_edtf('19/00/1950'))
+
+    def test_two_digit_year_range_is_not_read_as_a_month(self) -> None:
+        # `normalize_date` passes valid EDTF through, so '1908-10' would come
+        # back as October 1908. GEDCOM never writes ISO dates; typed into a
+        # tree, this is the short way to write 1908 to 1910.
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('1908-10'), '1908/1910')
+        self.assertEqual(gedcom_import.gedcom_date_to_edtf('1914-18'), '1914/1918')
+
+    def test_two_digit_suffix_that_is_not_a_later_year_stays_unread(self) -> None:
+        for raw in ('1908-05', '1908-08', '1998-02'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
+
+    def test_hedged_two_digit_suffix_stays_unread(self) -> None:
+        # 'about 1908-10' would read as about October 1908; refused instead.
+        for raw in ('about 1908-10', 'Bef. 1908-10', 'ABT 1908-10'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
+
+    def test_unreadable_wording_still_omits(self) -> None:
+        for raw in ('sometime nice', '(deceased)', 'INT 1902 (spring)',
+                    'after 1880s', '2002-1998'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
+
+    def test_strict_grammar_unchanged(self) -> None:
+        strict = [
+            ('12 JAN 1850', '1850-01-12'), ('JAN 1850', '1850-01'),
+            ('1850', '1850'), ('ABT 1850', '1850~'), ('EST 1848', '1848~'),
+            ('CAL 1850', '1850~'), ('ABT JAN 1850', '1850-01~'),
+            ('ABT 12 JAN 1850', '1850-01-12~'), ('BEF 1920', '[..1920]'),
+            ('BEF JAN 1920', '[..1920-01]'), ('AFT 1850', '[1850..]'),
+            ('AFT 30 SEP 1880', '[1880-09-30..]'),
+            ('BET 1870 AND 1875', '1870/1875'), ('FROM 1901 TO 1903', '1901/1903'),
+            ('BET 1900 AND JUN 1900', '1900/1900-06'),
+        ]
+        for raw, want in strict:
+            with self.subTest(raw=raw):
+                self.assertEqual(gedcom_import.gedcom_date_to_edtf(raw), want)
+        # A reversed range is still malformed: the fallback must not rescue it.
+        for raw in ('BET 1900 AND 1850', 'FROM 1903 TO 1901', 'BET JUN 1900 AND 1900'):
+            with self.subTest(raw=raw):
+                self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
+
+
+class LooseDateImportTestCase(_ArchiveCase):
+    """#293 end to end: t97.ged imports with every date in `date:`, and the
+    plan says how many dates were read from free-form wording."""
+
+    def _plan(self, text: str, name: str = 't97.ged'):
+        ged = Path(self._tmp.name) / name
+        ged.write_text(text, encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def test_t97_imports_with_no_untranslated_dates(self) -> None:
+        plan = self._plan(_T97_GED)
+        self.assertFalse(any('could not be translated' in w for w in plan.warnings),
+                         plan.warnings)
+        self.assertEqual(len(plan.claims), 7)
+        self.assertTrue(all(c.date for c in plan.claims),
+                        [(c.value, c.date) for c in plan.claims])
+        dates = {c.value.split(' (GEDCOM')[0]: c.date for c in plan.claims}
+        self.assertEqual(dates['Test Example: born 3 December 1810'], '1810-12-03')
+        self.assertEqual(dates['Test Example: died after 1888'], '[1888..]')
+        self.assertEqual(dates['Other Example: died Before 1951'], '[..1951]')
+
+    def test_plan_text_counts_free_form_dates(self) -> None:
+        plan = self._plan(_T97_GED)
+        self.assertEqual(getattr(plan, 'loose_dates', None), 7)
+        text = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('7 date(s) were typed as free-form wording', text)
+
+    def test_warning_counts_only_truly_unreadable_dates(self) -> None:
+        plan = self._plan(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n'
+            '0 @I1@ INDI\n1 NAME Pat /Example/\n'
+            '1 BIRT\n2 DATE 3 December 1810\n'
+            '1 DEAT\n2 DATE sometime nice\n'
+            '0 @I2@ INDI\n1 NAME Sam /Example/\n'
+            '0 @F1@ FAM\n1 HUSB @I1@\n1 WIFE @I2@\n'
+            '1 MARR\n2 DATE Jul 7 1835\n'
+            '1 DIV\n2 DATE 05/06/1850\n'
+            '0 TRLR\n', name='mixed.ged')
+        marr = next(c for c in plan.claims if c.claim_type == 'marriage')
+        self.assertEqual(marr.date, '1835-07-07')      # the FAM caller falls back too
+        self.assertEqual(getattr(plan, 'loose_dates', None), 2)
+        warning = next(w for w in plan.warnings if 'could not be translated' in w)
+        self.assertTrue(warning.startswith('2 date(s) could not be translated'), warning)
+        self.assertIn("'sometime nice'", warning)
+        self.assertIn("'05/06/1850'", warning)
+        self.assertNotIn('3 December 1810', warning)
+        self.assertIn('2 other date(s)', warning)
+
+
 if __name__ == '__main__':
     unittest.main()

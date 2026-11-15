@@ -954,7 +954,7 @@ gradually as claims are accepted (the relationships table derives from accepted 
 Contract highlights: **plan-then-apply, one-shot** (dry-run default prints the plan and writes
 nothing; `--plan-out FILE` writes the full uncapped plan, refused inside the archive except
 `out/`, and is written *before* an apply so a bad destination refuses while nothing has been
-written); UTF-8 only in v1 (ANSEL/UTF-16 refused with a re-export fix); a file that defines the
+written); UTF-8 only in v1 (ANSEL/UTF-16 refused with a re-export fix); a `DATE` is read by the GEDCOM 5.5.1 grammar first and, when that fails, as a date a person typed (Ancestry exports dates as typed, #293) by the same `normalize_date` reader `fha claim --date` uses - except that `YYYY-NN` becomes a year range only when NN is a later year in the same century and is otherwise left out (GEDCOM has no numeric date form), and `D/M/YYYY` or `M/D/YYYY` is read only when one part is over 12; an unreadable date leaves `date:` out with its wording kept in the value, and the plan counts the free-form dates it read apart from the ones it could not; a file that defines the
 same xref twice is **refused as malformed, never guessed**; **sentinel + rollback** -
 the audit CSV `.cache/gedcom_import/{sha12-of-file-hash}.csv` maps every GEDCOM xref to its minted
 id AND is the re-run guard (same file twice = refusal naming the date and S-id; a *different*
