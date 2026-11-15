@@ -121,7 +121,10 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    - **Text layer first:** many archived PDFs carry an embedded text layer — `fha source extract <S-id>
      --dry-run` previews the coverage, and the live run writes a `[Page N]`-labeled companion you mine
      like a transcript in seconds instead of vision-reading hundreds of pages. An all-image PDF refuses
-     honestly; fall back to the page windows below.
+     honestly; fall back to the page windows below. A **"Words run together"** warning (also listed at
+     the top of the dump) names pages whose words no reader could space: search misses phrases there,
+     so read those pages with vision, or transcribe them via `transcribe-source`. A source with several
+     copies attached as `primary:LABEL` reads the unlabelled one; `--copy LABEL` reads another.
    - Read in **page windows** (~20 pages at a time), not the whole file at once.
    - Anchor every claim to the **original's pagination** — `anchor: "page 214"` (SPEC §8.4 sanctions
      page anchors) — so the reviewer can find the spot in any copy.
