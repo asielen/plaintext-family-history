@@ -471,6 +471,43 @@ class SourceExtractTests(unittest.TestCase):
             self.assertTrue(any('page(s) 1' in m.text and 'fha find --text' in m.text
                                 for m in result.messages))
 
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_rotated_body_is_never_dropped_for_a_spaced_heading(self) -> None:
+        # PR #283 review: pypdf's layout mode leaves out rotated text by
+        # default. A short upright heading over a rotated, squeezed,
+        # run-together body then read back as just the heading - spaced
+        # normally, so it passed the check and replaced the whole page with no
+        # warning. The body must survive, and the page must be flagged.
+        body = ''.join(f'0 1 -1 0 {x0} {y - 72 + 100:.2f} Tm ({word}) Tj\n'
+                       for x0 in (300, 314, 328) for y, word in _SQUEEZED_WORDS)
+        stream = ('BT /F1 11 Tf 100 Tz 1 0 0 1 72 740 Tm '
+                  '(County History of Marsh Creek) Tj\n3 Tr 60 Tz\n' + body + 'ET')
+        self.pdf.write_bytes(_minimal_pdf([_raw(stream)], base_font='Times-Roman'))
+        result = self._run()
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        self.assertIn('County History of Marsh Creek', text)
+        self.assertIn(SQUASHED_LINE, text)            # the rotated body is kept
+        self.assertEqual(result.data['layout_pages'], [])
+        self.assertEqual(result.data['squashed_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_same_reading_refuses_a_layout_read_that_loses_or_scrambles(self) -> None:
+        same = source_mod._same_reading
+        default = 'Heading line\n' + (SQUASHED_LINE + '\n') * 3
+        spaced = ('Heading line\n'
+                  + 'Thomas Hartley, son of Edward, b. May 9, 1854, came also '
+                    'from Marsh Creek\n' * 3)
+        self.assertTrue(same(default, spaced))
+        self.assertFalse(same(default, 'Heading line'))                 # lost
+        self.assertFalse(same(default, spaced.rsplit('\n', 2)[0]))      # a line lost
+        scrambled = 'Heading line\n' + '\n'.join(
+            'ThomasThomasThomas Hartley,Hartley,Hartley, sonsonson '
+            'ofofof Edward,Edward,Edward, b.b.b. MayMayMay 9,9,9, '
+            '1854,1854,1854, camecamecame alsoalsoalso fromfromfrom '
+            'MarshMarshMarsh CreekCreekCreek'.split(' '))
+        self.assertFalse(same(default, scrambled))
+
     def _fake_reader(self, default_text: str, layout_text):
         """A PdfReader stand-in whose one page reads back as given, per mode."""
         calls: list = []

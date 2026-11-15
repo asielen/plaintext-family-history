@@ -145,6 +145,7 @@ CODE MAP
                                 primary, or the --copy one); never a guess
   _words_run_together         - #281: does a page's text read as words?
   _collapse_layout_text       - #281: layout-mode text with its padding removed
+  _same_reading               - #281: layout text drops or reorders nothing
   _extract_page_text          - #281: one page, default mode then layout retry
   run_source_extract         - PDF text layer -> derived extracted-text companion
                                 (pypdf optional; original never touched; M11.5)
@@ -168,6 +169,7 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
+import logging
 import re
 import sys
 from collections import Counter
@@ -2076,6 +2078,40 @@ def _collapse_layout_text(text: str) -> str:
     return re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
 
 
+def _same_reading(default: str, layout: str) -> bool:
+    """True when the layout-mode text holds the same characters as the default.
+
+    Layout mode is only allowed to change the SPACING of a page. It must not
+    drop text (pypdf's layout mode leaves out rotated text unless told not
+    to, and may skip other things it cannot place) or scramble it (rotated
+    text it does keep comes back interleaved column by column). Whitespace
+    aside, both readings come from the same glyphs, so:
+
+    - Loss: the characters on each side, counted (a multiset), may differ by
+      at most 0.5% of the page, and never fewer than 2. That allows for a
+      stray character the two modes decode differently (a ligature, a soft
+      hyphen) and nothing more: on a 3,000-character page it is 15
+      characters, well under one printed line, so a dropped heading, line or
+      sidebar fails it.
+    - Order: each layout line, spaces removed, should appear as it is in the
+      default reading. Lines that do not may add up to at most 5% of the
+      page - a line where one character decoded differently - but not a
+      block read in a different order. The loss check above already
+      guarantees every character is there; this one keeps the reading order.
+    """
+    d = ''.join(default.split())
+    lay = ''.join(layout.split())
+    if d == lay:
+        return True
+    loss_tolerance = max(2, len(d) // 200)
+    if (sum((Counter(d) - Counter(lay)).values()) > loss_tolerance
+            or sum((Counter(lay) - Counter(d)).values()) > loss_tolerance):
+        return False
+    unplaced = sum(len(s) for s in (''.join(line.split()) for line in layout.splitlines())
+                   if s and s not in d)
+    return unplaced <= max(loss_tolerance, len(d) // 20)
+
+
 def _extract_page_text(page) -> tuple[str, str]:
     """One page's text and how it was read: 'plain', 'layout' or 'squashed'.
 
@@ -2084,21 +2120,35 @@ def _extract_page_text(page) -> tuple[str, str]:
     sits on the page rather than by font widths, which recovers the spaces
     on OCR layers that squeeze each word to its box with horizontal scaling
     (`Tz` - pypdf's default mode measures the word without that scaling, so
-    the real gap looks like an overlap and no space goes in). If layout mode
-    cannot do better, or fails, the default text is kept and marked
+    the real gap looks like an overlap and no space goes in). The layout
+    text replaces the default only when it reads as words AND holds the
+    same text (`_same_reading`): rotated text is kept in the layout read
+    (`layout_mode_strip_rotated=False`), and anything layout mode still
+    drops or reorders sends the page back to the default text. Otherwise,
+    or when layout mode fails, the default text is kept and marked
     'squashed' so the caller can say so. An error from the default read
     propagates: that is the caller's "extraction FAILED" case.
     """
     text = (page.extract_text() or '').strip()
     if not _words_run_together(text):
         return text, 'plain'
+    # Layout mode logs "Rotated text discovered..." through pypdf's logger,
+    # which would reach the user's screen as an unexplained line; the
+    # comparison below is what decides about rotated text, so quiet it here.
+    pypdf_logger = logging.getLogger('pypdf')
+    old_level = pypdf_logger.level
+    pypdf_logger.setLevel(logging.ERROR)
     try:
-        layout = _collapse_layout_text(page.extract_text(extraction_mode='layout') or '')
+        layout = _collapse_layout_text(
+            page.extract_text(extraction_mode='layout',
+                              layout_mode_strip_rotated=False) or '')
     except Exception:
         # Layout mode is only a second try; its failure leaves the first read
         # standing, marked so the dump and the output say the words run together.
         return text, 'squashed'
-    if layout and not _words_run_together(layout):
+    finally:
+        pypdf_logger.setLevel(old_level)
+    if layout and not _words_run_together(layout) and _same_reading(text, layout):
         return layout, 'layout'
     return text, 'squashed'
 
