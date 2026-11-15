@@ -609,7 +609,7 @@ def _intake_default(file_path: Path, fha_config: dict, archive_root: Path) -> tu
 
 
 def _intake_default_type(file_path: Path, fha_config: dict, archive_root: Path,
-                         *, dry_run: bool) -> str | None:
+                         *, dry_run: bool, shown: Path | None = None) -> str | None:
     """The `intake_defaults:` type for an inbox file, said out loud, or None.
 
     The caller uses it exactly as if it were `--type`, and only when no
@@ -621,7 +621,7 @@ def _intake_default_type(file_path: Path, fha_config: dict, archive_root: Path,
     if hit is None:
         return None
     stype, pattern = hit
-    print(f'{"[dry-run] " if dry_run else ""}{file_path.name}: type {stype} from '
+    print(f'{"[dry-run] " if dry_run else ""}{(shown or file_path).name}: type {stype} from '
           f"intake_defaults '{pattern}' (pass --type to choose otherwise)")
     return stype
 
@@ -3362,11 +3362,14 @@ def process_bundle(
             stated_type = hinted_type
     bundle_rule = None
     if stated_type is None:
-        # The bundle folder's standing type in the inbox (#294).
-        stated_type = _intake_default_type(folder, fha_config, archive_root,
-                                           dry_run=dry_run)
+        # The bundle folder's standing type in the inbox (#294), matched by
+        # its notes.md's path as a file inside the folder would be - so a
+        # bundle at `inbox/Postcards/` itself is covered by `Postcards/**` -
+        # and announced by the folder's name.
+        stated_type = _intake_default_type(notes_path, fha_config, archive_root,
+                                           dry_run=dry_run, shown=folder)
         if stated_type is not None:
-            bundle_rule = _intake_default(folder, fha_config, archive_root)[1]
+            bundle_rule = _intake_default(notes_path, fha_config, archive_root)[1]
     asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
                    for a in assets}
 

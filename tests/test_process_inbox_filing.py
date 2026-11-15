@@ -1325,6 +1325,25 @@ class FourthReviewTests(InboxFilingTestCase):
         self.assertIn('kept original of something already filed', err)
         self.assertTrue(page.is_file())
 
+    def test_bundle_at_the_rules_own_folder_matches(self) -> None:
+        # Codex on PR #287: a bundle sitting directly at `inbox/Postcards/` is
+        # matched as its notes.md would be (`Postcards/notes.md`), so
+        # `Postcards/**` covers it; a bundle one folder down still matches.
+        cfg = self.archive / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8')
+                       + 'intake_defaults:\n  - match: "Postcards/**"\n    source_type: letter\n',
+                       encoding='utf-8')
+        for folder in (self.inbox / 'Postcards' / 'b1', self.inbox / 'Postcards'):
+            with self.subTest(folder=folder.name):
+                self._put(folder / f'front-{folder.name}.jpg', JPEG)
+                (folder / 'notes.md').write_text('---\ntitle: Card\n---\n', encoding='utf-8')
+                rc, out, err = self._run(str(folder))
+                self.assertEqual(rc, EXIT_CLEAN, err)
+                self.assertIn(f"{folder.name}: type letter from intake_defaults 'Postcards/**'", out)
+                self.assertEqual(self._files(self.photos), [])
+                self.assertEqual(len(list((self.docs / 'letter').glob(f'*_S-*.jpg'))),
+                                 1 if folder.name == 'b1' else 2)
+
     def test_bundle_dest_refusal_names_the_rule(self) -> None:
         cfg = self.archive / 'fha.yaml'
         cfg.write_text(cfg.read_text(encoding='utf-8')
