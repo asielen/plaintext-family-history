@@ -27,7 +27,9 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    (site), Pillow (optional - `fha site` standalone image derivatives; the site degrades
    gracefully without it, omitting images rather than copying originals), pypdf (optional -
    `fha source extract` PDF text layers; that one verb refuses with a plain install
-   message without it), exiftool-as-binary
+   message without it), exiftool-as-binary, pdftotext-as-binary (optional - poppler's
+   reader, used by `fha source extract` only when it is on PATH, as a third reading of a page
+   whose words run together; absent, that page keeps pypdf's reading and its warning says so)
    - adding any other is a proposed decision, not a choice; one
    file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools;
    no network access (geocoder's gazetteer download excepted).

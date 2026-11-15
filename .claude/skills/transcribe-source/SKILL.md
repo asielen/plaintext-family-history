@@ -98,6 +98,14 @@ own pagination, and refuses honestly on an all-image PDF. If it succeeds, **the 
 image-only and this skill is finished** — hand straight to `mine-transcript`. An extract dump is a
 mechanical copy of the file's own words, not a model reading, so it carries **no** AI marker.
 
+**Except the pages a "Words run together" warning names.** On those pages the PDF's text layer gives no
+spaces between words (`ThomasHartley,sonofEdward`) and no reader could recover them, so `fha find --text`
+misses phrases there; the dump lists them at the top too. Those pages still need a reading: transcribe
+them from the images with the steps below (or read them with vision while mining), page by page - or, if
+poppler's `pdftotext` is not installed, install it and re-run `fha source extract` (after deleting the
+dump and its `files:` entry), which may read them cleanly. The rest of the dump stands.
+
+
 If it refuses, or covers only some pages, the rest is yours to read.
 
 ### 3. Read the images, in the original's pagination
