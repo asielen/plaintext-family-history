@@ -2006,7 +2006,12 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # that rebuild (same rationale as v2/v3/v4/v5/v7) - freshness here is a
 # schema-version gate, not a file-timestamp one, so updating the TOOLS alone
 # (no record file touched) would otherwise never invalidate the stale cache.
-INDEX_SCHEMA_VERSION = 8
+# 9: persons.surname is read from the record (`surname:`, else `name:` -
+# `_lib.person_surname`, SPEC §13), never from the file name (#279/#292,
+# PR #285). A v8 index holds slug spellings ("Winiewska", "Vii") that every
+# export and the site's A-Z read, so bump to force the rebuild (same
+# rationale as v8).
+INDEX_SCHEMA_VERSION = 9
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
@@ -9851,12 +9856,7 @@ def _roman_numeral(n: int) -> str:
 REGNAL_NUMERALS: frozenset[str] = frozenset(_roman_numeral(n) for n in range(6, 31))
 
 
-# The suffix list every release before issue #292 used - kept only so a
-# file name written then can be recognised (`stub_filename_is_lossy`).
-_LEGACY_NAME_SUFFIXES: frozenset[str] = frozenset({'jr', 'sr', 'ii', 'iii', 'iv', 'v'})
-
-
-def is_name_suffix(token: str, rest: list[str], *, legacy: bool = False) -> bool:
+def is_name_suffix(token: str, rest: list[str]) -> bool:
     """Whether `token`, the last word of a name, is a suffix and not the
     surname; `rest` is the words before it.
 
@@ -9866,20 +9866,16 @@ def is_name_suffix(token: str, rest: list[str], *, legacy: bool = False) -> bool
     "Jin Xi" and "JIN XI" keep Xi as their surname. The rule cannot tell
     "Louis XI" from "Jinping XI" (a surname written in capitals after the
     given name): such a name needs `--surname XI`, the escape hatch for
-    anything this gets wrong. `legacy=True` answers with the pre-#292 list.
+    anything this gets wrong.
     """
     bare = token.rstrip('.,')
-    if legacy:
-        return bare.lower() in _LEGACY_NAME_SUFFIXES
     if bare.lower() in PERSON_NAME_SUFFIXES:
         return True
     return (bare in REGNAL_NUMERALS
             and any(c.islower() for word in rest for c in word))
 
 
-def strip_generational_suffix(
-    parts: list[str], *, legacy: bool = False,
-) -> tuple[list[str], str | None]:
+def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     """Pull a trailing generational suffix off whitespace-split name tokens.
 
     Shared by every site that derives a person's SPEC §13 filename surname
@@ -9910,13 +9906,13 @@ def strip_generational_suffix(
     """
     if len(parts) < 2:
         return parts, None
-    if is_name_suffix(parts[-1], parts[:-1], legacy=legacy):
+    if is_name_suffix(parts[-1], parts[:-1]):
         return parts[:-1], parts[-1].rstrip('.,').lower()
     return parts, None
 
 
 def stub_slug_name(
-    name: str, surname: str | None = None, *, legacy: bool = False,
+    name: str, surname: str | None = None,
 ) -> tuple[str, str]:
     """Parse a display name into (surname_slug, given_slug) for a stub filename.
 
@@ -9980,17 +9976,10 @@ def stub_slug_name(
     than losing the `ś` to the `[a-z0-9_]` filter and filing as `winiewska`.
     `surname` folds the same way, so an override typed with its accents
     still finds its own words inside the name.
-
-    `legacy=True` reproduces the slugger every earlier release shipped, so
-    `fha person rename` can tell a file name it may repair from one a human
-    chose (`stub_filename_is_lossy`): no accent fold (accented letters were
-    deleted, issue #279) and only Jr, Sr, II-V as suffixes (a regnal number
-    or Esq became the surname, issue #292). Every writer uses the default.
     """
-    if not legacy:
-        name = fold_accents(name)
-        if surname is not None:
-            surname = fold_accents(surname)
+    name = fold_accents(name)
+    if surname is not None:
+        surname = fold_accents(surname)
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
@@ -10003,7 +9992,7 @@ def stub_slug_name(
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
         n = len(surname_tokens)
-        core, suffix = strip_generational_suffix(parts, legacy=legacy)
+        core, suffix = strip_generational_suffix(parts)
         lowered_core = [p.lower() for p in core]
         surname_lowered = [t.lower() for t in surname_tokens]
         if suffix and [p.lower().rstrip('.,') for p in parts[-n:]] == surname_lowered:
@@ -10030,7 +10019,7 @@ def stub_slug_name(
     if len(parts) == 1:
         given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
         return ('', given or 'unknown')
-    core, suffix = strip_generational_suffix(parts, legacy=legacy)
+    core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
         given = core[0] if not suffix else f'{core[0]}_{suffix}'
         given = re.sub(r'[^a-z0-9_]', '', given.lower())
@@ -10044,7 +10033,7 @@ def stub_slug_name(
 
 
 def stub_filename(
-    name: str | None, pid: str, surname: str | None = None, *, legacy: bool = False,
+    name: str | None, pid: str, surname: str | None = None,
 ) -> str:
     """Return the `{surname}__{given}_{P-id}.md` stub filename (SPEC §13).
 
@@ -10059,30 +10048,10 @@ def stub_filename(
     cannot be expected to get right.
     """
     if name and name.lower() not in ('unknown', ''):
-        surname_slug, given = stub_slug_name(name, surname=surname, legacy=legacy)
+        surname_slug, given = stub_slug_name(name, surname=surname)
     else:
         surname_slug, given = 'unknown', 'unknown'
     return f'{surname_slug}__{given}_{pid}.md'
-
-
-def stub_filename_is_lossy(
-    filename: str, name: str, pid: str, surname: str | None = None,
-) -> bool:
-    """Whether `filename` is what an OLDER slugger made of `name`, and today's
-    differs - a file name that lost letters (`winiewska__halina_P-….md` for
-    "Halina Wiśniewska", issue #279) or took a suffix for the surname
-    (`vii__henry_P-….md` for "Henry VII", issue #292) rather than one a
-    human chose.
-
-    Compared case-insensitively (a P-id is written either case). This is
-    the gate that lets `fha person rename P-x "<same name>"` re-file such a
-    record: a hand-chosen name (a birth surname the `name:` no longer
-    carries) matches no slugger's output, so it is never touched.
-    """
-    current = stub_filename(name, pid, surname=surname).lower()
-    if filename.lower() == current:
-        return False
-    return filename.lower() == stub_filename(name, pid, surname=surname, legacy=True).lower()
 
 
 # ── Is this name already taken? (issue #282) ─────────────────────────────────
@@ -10383,6 +10352,28 @@ def recorded_surname(meta: dict) -> str | None:
     if not isinstance(meta, dict) or 'surname' not in meta:
         return None
     return str(meta.get('surname') or '').strip()
+
+
+def person_surname(name: object, recorded: str | None = None) -> str | None:
+    """A person's surname, by the one rule every reader uses (SPEC §13).
+
+    `recorded` is the record's `surname:` line (`recorded_surname`): when
+    present it wins, and '' means the person has no surname. Otherwise the
+    surname is the last word of `name` once a trailing generational or
+    regnal suffix is set aside (`strip_generational_suffix`) - the same
+    split `stub_slug_name` files by - '' for a one-word name, and None when
+    there is no real name to read ("unknown", blank).
+
+    The file name is never read: it is only a sort handle, and an older
+    slugger's guess sits there ("winiewska", "vii") for records filed
+    before #279/#292.
+    """
+    if recorded is not None:
+        return recorded
+    if is_placeholder_name(name):
+        return None
+    core, _suffix = strip_generational_suffix(str(name).split())
+    return core[-1].rstrip(',') if len(core) >= 2 else ''
 
 
 def render_stub_content(

@@ -146,18 +146,9 @@ class AccentFoldTests(unittest.TestCase):
         text = gedcom.run_gedcom(root, None, all_persons=True, include_living=True)['text']
         self.assertIn('1 NAME Halina /Wiśniewska/', text)
 
-    def test_record_filed_with_the_old_broken_slug_exports_its_own_spelling(self) -> None:
-        # A record minted before the fold is still filed `winiewska__halina_…`
-        # and indexed with the surname "Winiewska"; the export must still
-        # carry the name's own spelling, not the broken slug.
-        self.assertEqual(gedcom._gedcom_name('Halina Wiśniewska', 'Winiewska'),
-                         ('Halina /Wiśniewska/', None))
-        self.assertEqual(gedcom._gedcom_name('Halina Wiśniewska', 'Wisniewska'),
-                         ('Halina /Wiśniewska/', None))
-        # A surname override the name does not end with still lands whole.
+    def test_surname_override_the_name_does_not_end_with_lands_whole(self) -> None:
         self.assertEqual(gedcom._gedcom_name('Halina Wiśniewska', 'Kowalska'),
                          ('Halina Wiśniewska /Kowalska/', None))
-
 
 # ── #282: a name that already has a record is not minted again ───────────────
 
@@ -488,10 +479,10 @@ class DuplicateNameReviewTests(unittest.TestCase):
         self.assertIn('--from-names', err.getvalue())
 
 
-class RenameRepairsLossySlugTests(unittest.TestCase):
-    """`fha person rename P-x "<same name>"` re-files a record whose file
-    name was written by the old, letter-dropping slugger (L6) - the repair
-    path for existing `winiewska__halina_…` files."""
+class SameNameRenameTests(unittest.TestCase):
+    """Since PR #285 no reader takes a surname from a file name, so a
+    same-name `fha person rename` without --surname changes nothing - an
+    old `winiewska__halina_…` file is only a sort handle."""
 
     def setUp(self) -> None:
         self._tmp, self.root = _new_archive()
@@ -505,24 +496,18 @@ class RenameRepairsLossySlugTests(unittest.TestCase):
                         encoding='utf-8')
         return path
 
-    def test_same_name_rename_refiles_a_lossy_slug(self) -> None:
-        old = self._write('winiewska__halina_p-0000000041.md', 'Halina Wiśniewska',
-                          'p-0000000041')
+    def test_same_name_rename_leaves_an_old_file_name_alone(self) -> None:
+        path = self._write('winiewska__halina_p-0000000041.md', 'Halina Wiśniewska',
+                           'p-0000000041')
         result = person.run_rename(self.root, 'P-0000000041', 'Halina Wiśniewska')
-        self.assertEqual(result.data['status'], 'ok', [m.text for m in result.messages])
-        self.assertFalse(old.exists())
-        self.assertTrue((self.root / 'people' / 'stubs'
-                         / 'wisniewska__halina_p-0000000041.md').is_file())
+        self.assertEqual(result.data['status'], 'already')
+        self.assertTrue(path.exists())
 
     def test_same_name_rename_leaves_a_hand_chosen_name_alone(self) -> None:
-        # Filed under a birth surname the name: no longer carries: not a
-        # lossy slug, so an unchanged name still changes nothing.
         path = self._write('smith__mary_p-0000000042.md', 'Mary Jones', 'p-0000000042')
         result = person.run_rename(self.root, 'P-0000000042', 'Mary Jones')
         self.assertEqual(result.data['status'], 'already')
         self.assertTrue(path.exists())
-
-
 
 class EchoTests(unittest.TestCase):
 

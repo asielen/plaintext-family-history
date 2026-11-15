@@ -81,7 +81,6 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    recorded_surname as recorded_surname_of,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -250,88 +249,44 @@ def _name_text(value: str) -> str:
     return ' '.join(value.replace('/', ' ').split())
 
 
-def _surname_token_matches(name_token: str, slug_token: str) -> bool:
-    """Whether one word of a person's name is the indexed surname's word.
-
-    `persons.surname` comes from the filename slug, an ASCII handle: lowercase,
-    accents folded, punctuation gone, re-capitalised by `fha index`. So the
-    name's "Wiśniewska" has to be compared with the slug's "Wisniewska" once
-    both are folded (`_lib.fold_accents`, issue #279), or the match fails and
-    the slug's spelling is exported between the slashes.
-
-    The second test reads a slug written before that fold existed: the old
-    slugger deleted every letter outside `[a-z0-9]` instead of folding it, so
-    a record minted then is still filed as `winiewska__halina_P-….md`, and
-    "O'Brien" as `obrien`. Deleting the same letters from the name's word
-    reproduces that slug exactly, so such a record still exports its own
-    spelling ("Wiśniewska", "O'Brien") without being renamed first.
-
-    The third test is the first two together, for a name with both an
-    accent and punctuation ("D'Ámico" filed as `damico`): fold the name's
-    word, then delete what is left outside `[a-z0-9]`, and compare.
-    """
-    slug = slug_token.lower()
-    if fold_accents(name_token).lower() == fold_accents(slug_token).lower():
-        return True
-    if re.sub(r'[^a-z0-9]', '', name_token.lower()) == slug:
-        return True
-    return re.sub(r'[^a-z0-9]', '', fold_accents(name_token).lower()) == slug
+def _same_word(a: str, b: str) -> bool:
+    """Whether two spellings are one word of a name: case, accents and a
+    trailing comma or period aside ("Wiśniewska" / "Wisniewska")."""
+    return fold_accents(a.rstrip('.,')).lower() == fold_accents(b.rstrip('.,')).lower()
 
 
-def _gedcom_name(
-    name: str, surname: str | None, *, recorded_surname: str | None = None,
-) -> tuple[str, str | None]:
+def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
-    Uses the index's `surname` (the birth surname from the filename slug)
-    when present; otherwise falls back to the last whitespace token of the
-    full name. Either way, a trailing generational suffix (Jr, Sr, II, III,
-    IV, V - `_lib.strip_generational_suffix`, issue #53) is pulled off the
-    name FIRST and never folded into the slash field: GEDCOM's `1 NAME` line
-    carries it as trailing free text and the dedicated `NSFX` sub-tag also
-    names it structurally, so the caller emits `2 NSFX <suffix>` alongside
-    the `1 NAME` line built from what this returns (issue #78).
+    `surname` is the index's `persons.surname`, which `fha index` reads by
+    the one rule (`_lib.person_surname`, SPEC §13): the record's `surname:`
+    line when it has one, else the last word of `name:` once a generational
+    or regnal suffix is set aside. It is never read from the file name, so
+    there is no slug spelling to undo here ("Winiewska", "Vii") - only three
+    cases:
 
-    Returns `(name_field, suffix)`: `name_field` is the full
-    `Given /Surname/ [Suffix]` text for the `1 NAME` line; `suffix` is the
-    token exactly as it appeared in `name` (original case, e.g. "Jr"), or
-    `None` when the name carried none.
+      - None (no usable name, or an old index): split `name` the same way.
+      - '' : the person has no surname - a one-word name, or a recorded
+        `surname: ""` ("Jon Thorsson") - so the whole suffix-stripped name is
+        the given part (`Jon Thorsson //`, `Henry // VII`).
+      - a surname: matched as a trailing word run of the name, first with
+        the suffix still on (a `surname: XI` on "Jinping XI" says XI IS the
+        surname, so `Jinping /XI/`), then without it (`Roy /Dodson/ Jr`).
+        The slash field carries the name's own spelling of those words. A
+        surname the name does not end with (an override such as a birth
+        surname) keeps the full name as the given part rather than
+        guessing which words to drop.
 
-    The indexed surname, when present, is matched as a TOKEN (or trailing
-    token run, for a multi-word surname) of the suffix-stripped name - not
-    a raw string suffix. A plain `name.endswith(sn)` test is wrong two
-    ways: it treats a suffix-stripped hit as a miss (an indexed "Dodson" on
-    "Roy Eugene Dodson Jr" no longer ends the raw string, so the old code
-    fell through to the append-both-copies branch below and doubled the
-    surname), and it treats an incidental substring hit as a match
-    ("Vandodson".endswith("dodson") is true with no "Dodson" token at
-    all). Testing token equality against the suffix-stripped core fixes
-    both.
+    A trailing generational suffix (Jr, Sr, II-V, Esq, regnal VI-XXX -
+    `_lib.strip_generational_suffix`) is never put in the slash field:
+    GEDCOM's `1 NAME` line carries it as trailing free text and the caller
+    also emits `2 NSFX <suffix>` (issue #78). Returns `(name_field, suffix)`,
+    `suffix` as written in `name` or None.
 
-    When the indexed surname DOES match, the slash field carries the
-    name's own spelling of those tokens rather than the index's: the match
-    is case-insensitive, and `persons.surname` is a lowercase filename
-    slug that `fha index` re-capitalises with `str.title()`, so "McDonald"
-    comes back as "Mcdonald" and "van Dodson" as "Van Dodson". The two
-    spellings name the same surname; the human's is the one worth
-    exporting.
-
-    Both inputs run through `_name_text` first, so a `/` in either can
-    never redraw the slash field (see that function).
-
-    A placeholder is not a name, on either side, and this is a naming
-    surface like any other - so it asks `_lib.is_placeholder_name`, the
-    one home for "that string stands in for a name nobody recorded"
-    (`unknown`, `none`/`null` from a bare `name:` key, `unnamed`, `?`,
-    blank). `fha index` stores a record with no `name:` as "unknown" and
-    reads the surname out of an `unknown__unknown_P-….md` filename slug
-    as "Unknown", so a person nobody has named yet arrived here looking
-    like a person surnamed Unknown - and left as `1 NAME /Unknown/`, a
-    surname asserted in material that goes out to other people. The slug
-    also outlives the placeholder: a human who types a name into that
-    file before `fha lint --fix-ids` renames it got
-    `Roy Dodson /Unknown/`. Both slots drop it, leaving the `or 'Unknown'`
-    given-name placeholder below as the one place the word may appear.
+    Both inputs run through `_name_text` first, so a `/` in either can never
+    redraw the slash field. A placeholder (`_lib.is_placeholder_name`:
+    "unknown", a bare `name:`, "?") is not a name on either side: a person
+    nobody has named exports as `1 NAME Unknown //`, never `/Unknown/`.
     """
     name = _name_text(_escape(name))
     if is_placeholder_name(name):
@@ -340,60 +295,29 @@ def _gedcom_name(
     core, suffix = strip_generational_suffix(parts)
     raw_suffix = parts[-1] if suffix else None
 
-    def compose(given: str, sn_field: str) -> str:
+    def compose(given: str, sn_field: str, tail: str | None) -> str:
         field = f'{given} /{sn_field}/'.strip()
-        return f'{field} {raw_suffix}' if raw_suffix else field
-
-    if recorded_surname == '':
-        # `surname: ""`: a human said this person has no surname (SPEC §13,
-        # `--surname ""`), so the whole suffix-stripped name is the given part.
-        return compose(' '.join(core), ''), raw_suffix
+        return f'{field} {tail}' if tail else field
 
     sn = _name_text(_escape(surname)) if surname else ''
-    if is_placeholder_name(sn):
-        sn = ''
-    surname_is_explicit = bool(recorded_surname)
-    if sn and raw_suffix and len(sn.split()) == 1 and _surname_token_matches(raw_suffix, sn):
-        if surname_is_explicit:
-            # The human set that word as the surname (`--surname XI` on
-            # "Jinping XI", recorded as `surname:`): it is not a suffix.
-            core, raw_suffix = parts, None
-        else:
-            # A record filed before issue #292 carries its suffix as its
-            # filename surname (`vii__henry_P-….md`, `esq__john_smith_P-….md`),
-            # so the index says "Vii". That is the suffix read twice, not a
-            # surname: drop it and let the name's own split decide
-            # (`Henry // VII`, `John /Smith/ Esq`), as for a record filed today.
-            sn = ''
-    if sn:
-        sn_tokens = sn.split()
-        n = len(sn_tokens)
-        tail = core[-n:] if len(core) >= n else []
-        if tail and all(_surname_token_matches(p, t) for p, t in zip(tail, sn_tokens)):
-            given = ' '.join(core[:-n])
-            # The name's OWN spelling of those tokens wins over the index's.
-            # `persons.surname` is not authored text: it is the lowercase
-            # filename slug re-capitalised with `str.title()`, so a person
-            # filed as `mcdonald__john_P-….md` carries "Mcdonald" while his
-            # record says "McDonald" - and the export used to publish the
-            # machine's spelling. They differ only in case, accents or
-            # punctuation here (see `_surname_token_matches`), so there is
-            # nothing to lose and a human's spelling to keep.
-            return compose(given, ' '.join(core[-n:])), raw_suffix
-        # Indexed surname recorded but not present as a trailing token run
-        # of the (suffix-stripped) name - an override this heuristic
-        # cannot place. Keep the full suffix-stripped name as the given
-        # field rather than silently dropping or duplicating it.
-        return compose(' '.join(core), sn), raw_suffix
+    if surname is None or (surname and is_placeholder_name(sn)):
+        # No surname read, or a placeholder standing in for one ("Unknown"
+        # from an old index): split the name itself.
+        if len(core) <= 1:
+            return compose(core[0], '', raw_suffix), raw_suffix
+        return compose(' '.join(core[:-1]), core[-1], raw_suffix), raw_suffix
+    if not sn:
+        return compose(' '.join(core), '', raw_suffix), raw_suffix
 
-    if len(core) <= 1:
-        # Mononym, with or without a stripped suffix riding along - the
-        # suffix does not promote the one remaining token into a surname
-        # (mirrors `stub_slug_name`'s same-shaped rule).
-        return compose(core[0], ''), raw_suffix
-
-    given = ' '.join(core[:-1])
-    return compose(given, core[-1]), raw_suffix
+    sn_tokens = sn.split()
+    n = len(sn_tokens)
+    if raw_suffix and len(parts) > n and all(
+            _same_word(p, t) for p, t in zip(parts[-n:], sn_tokens)):
+        # The recorded surname is the word the suffix rule took.
+        return compose(' '.join(parts[:-n]), ' '.join(parts[-n:]), None), None
+    if len(core) > n and all(_same_word(p, t) for p, t in zip(core[-n:], sn_tokens)):
+        return compose(' '.join(core[:-n]), ' '.join(core[-n:]), raw_suffix), raw_suffix
+    return compose(' '.join(core), sn, raw_suffix), raw_suffix
 
 
 # ── Graph traversal ─────────────────────────────────────────────────────────────
@@ -517,38 +441,18 @@ def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row]) 
     Read from the person `.md` because the index does not carry a person-level
     `restricted` column. A restricted person's name is withheld (`/Restricted/`)
     while their structural family links stay, mirroring living redaction."""
-    return _person_record_flags(archive_root, persons)[0]
-
-
-def _person_record_flags(
-    archive_root: Path, persons: dict[str, sqlite3.Row],
-) -> tuple[set[str], dict[str, str]]:
-    """`(restricted ids, {id: recorded surname})`, from ONE read of each
-    person `.md` - neither fact is an index column.
-
-    A recorded surname is a `surname:` line (`_lib.recorded_surname`), which
-    `fha person new --surname` writes to record that a human set the file
-    name's surname slot by hand - '' for "no surname". `_gedcom_name` needs
-    it: "Jinping XI" filed under `xi__` on purpose must export `/XI/`, "Jon
-    Thorsson" filed `__jon_thorsson` must export no surname, while a
-    `vii__henry` file the old slugger wrote, with no line, exports `Henry //
-    VII`."""
-    restricted: set[str] = set()
-    explicit: dict[str, str] = {}
+    out: set[str] = set()
     for pid, row in persons.items():
         path = row['path']
         if not path:
             continue
         try:
-            meta = read_record(archive_root / path)['meta']
+            value = read_record(archive_root / path)['meta'].get('restricted')
         except Exception:
             continue
-        if _is_restricted_value(meta.get('restricted')):
-            restricted.add(pid)
-        recorded = recorded_surname_of(meta)
-        if recorded is not None:
-            explicit[pid] = recorded
-    return restricted, explicit
+        if _is_restricted_value(value):
+            out.add(pid)
+    return out
 
 
 def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
@@ -819,7 +723,6 @@ def _emit_individual(
     fam_xref: dict[frozenset[str], str],
     src_xref: dict[str, str], place_cache: dict[str, str],
     include_living: bool, restricted_persons: set[str] = frozenset(),
-    explicit_surname_persons: dict[str, str] | None = None,
 ) -> list[str]:
     pid = person['id']
     redacted = _is_redacted(person, include_living, restricted_persons)
@@ -828,9 +731,7 @@ def _emit_individual(
     if redacted:
         lines.append(f'1 NAME {_redacted_name(person, restricted_persons)}')
     else:
-        name_field, suffix = _gedcom_name(
-            person['name'], person['surname'],
-            recorded_surname=(explicit_surname_persons or {}).get(pid))
+        name_field, suffix = _gedcom_name(person['name'], person['surname'])
         lines.append(f'1 NAME {name_field}')
         if suffix:
             lines.append(f'2 NSFX {suffix}')
@@ -964,7 +865,7 @@ def _gedcom_payload(
         # carries no person-level `restricted`, and stores a free-text source
         # type as 0. The SQL `_public_source_filter_sql` already excludes index
         # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
-        restricted_persons, explicit_surname_persons = _person_record_flags(archive_root, persons)
+        restricted_persons = _restricted_person_ids(archive_root, persons)
         restricted_sources = _restricted_source_ids(conn, archive_root)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
 
@@ -1047,7 +948,7 @@ def _gedcom_payload(
             lines += _emit_individual(
                 persons[pid_], person_xref[pid_], conn, vitals, person_fams,
                 child_fam, fam_xref, src_xref, place_cache, include_living,
-                restricted_persons, explicit_surname_persons,
+                restricted_persons,
             )
         for key, children in families:
             lines += _emit_family(

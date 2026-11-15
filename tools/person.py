@@ -324,7 +324,6 @@ from _lib import (
     section_bounds,
     sqlite_cache_schema_status,
     stub_filename,
-    stub_filename_is_lossy,
     recorded_surname,
     surname_frontmatter_line,
     write_text_exact_atomic,
@@ -2185,12 +2184,13 @@ def run_rename(
     and regenerate identically from `fha views …` whether or not the rest of
     the rename lands, so there is nothing to lose by deleting them early.
 
-    The same name is 'already' (nothing to do), with one exception: a file
-    name an older slugger wrote with accented letters deleted
-    (`winiewska__halina_P-….md` for "Halina Wiśniewska", issue #279 -
-    `_lib.stub_filename_is_lossy`) is re-filed, steps 2-4 only, so running
-    rename with the unchanged name is the repair path for such a record. A
-    hand-chosen file name matches no slugger's output and is left alone.
+    The same name is 'already' (nothing to do) unless an explicit
+    `--surname` changes the recorded `surname:` line or the file name that
+    override gives: then the line is written and the files re-filed (steps
+    2-4), with `name:` untouched. Nothing else re-files a same-name record:
+    readers take the surname from `surname:`/`name:`, never the file name
+    (SPEC §13), so an older file name (`winiewska__halina_…`) is only a
+    sort handle and costs nothing until the human chooses to rename it.
 
     `data` is {'status': 'ok'|'ok-folder-unrenamed'|'already'|'dry-run'|
     'not-found'|'merged'|'refused', 'person_id', 'path', 'new_path',
@@ -2228,10 +2228,9 @@ def run_rename(
     #
     # A `surname:` line records that a human set the file name's surname slot
     # by hand (`--surname`, SPEC §13). Without a new --surname it stays the
-    # override, as long as the new name still carries it - so a same-name
-    # rename of "Jinping XI" (filed `xi__jinping` on purpose) is not taken
-    # for a pre-#292 slug and "repaired". A new --surname replaces it, and
-    # --surname "" removes it, which is itself a change worth writing.
+    # override for the file name, as long as the new name still carries it
+    # ('' - no surname - always does). A new --surname replaces it, and is
+    # itself a change worth writing.
     recorded = recorded_surname(before_meta)
     same_name = bool(old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new))
     if surname is None and recorded is not None and (
@@ -2245,9 +2244,7 @@ def run_rename(
     # disk (`Henry Tudor` with --surname "" -> `__henry_tudor_P-…`).
     explicit_refile = surname is not None and (
         stub_filename(clean_new, pid, surname=surname).lower() != path.name.lower())
-    refile_only = same_name and (
-        surname_changes or explicit_refile
-        or stub_filename_is_lossy(path.name, clean_new, pid, surname=effective_surname))
+    refile_only = same_name and (surname_changes or explicit_refile)
     if same_name and not refile_only:
         result.data['status'] = 'already'
         result.add('info', f'{label} is already named {clean_new!r} - nothing to change.')
@@ -2362,7 +2359,7 @@ def run_rename(
         new_folder = None
 
     # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
-    # A re-file (#279/#292 repair) leaves name: as it is; say what it does.
+    # A re-file (a new --surname on the same name) leaves name: as it is.
     steps = ([f're-file under its corrected file name (name: stays {clean_new})']
              if refile_only else [f'set name: {old_name or "(none)"} -> {clean_new}'])
     if surname is not None:

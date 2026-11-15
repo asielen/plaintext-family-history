@@ -112,10 +112,11 @@ class RegnalNumberTests(unittest.TestCase):
 
 
 
-class PreSuffixRuleRecordsTests(unittest.TestCase):
-    """Records filed before #292 carry the numeral (or Esq) as their filename
-    surname. They must still export one suffix, and a same-name rename must
-    be able to re-file them (P2-A)."""
+class OldFileNamesExportByNameTests(unittest.TestCase):
+    """Files an older slugger named (`vii__henry`, `esq__john_smith`,
+    `winiewska__halina`, `orardottir__gurun`) export by their `name:`, with
+    no special code: the surname is never read from the file name (owner
+    decision, PR #285)."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -133,31 +134,28 @@ class PreSuffixRuleRecordsTests(unittest.TestCase):
                         encoding='utf-8')
         return path
 
-    def test_gedcom_old_regnal_and_esq_slug_exports_single_suffix(self) -> None:
+    def test_old_file_names_export_their_names(self) -> None:
         self._stub('vii__henry_p-0000000051.md', 'Henry VII', 'p-0000000051')
         self._stub('esq__john_smith_p-0000000052.md', 'John Smith Esq', 'p-0000000052')
-        self._stub('xi__jin_p-0000000053.md', 'Jin XI', 'p-0000000053')
+        self._stub('winiewska__halina_p-0000000053.md', 'Halina Wiśniewska', 'p-0000000053')
+        self._stub('orardottir__gurun_p-0000000054.md', 'Guðrún Þórðardóttir', 'p-0000000054')
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             index.build_index(self.root, {})
         time.sleep(0.02)
-        text = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)['text']
-        lines = text.splitlines()
-        self.assertIn('1 NAME Henry // VII', lines)
-        self.assertIn('1 NAME John /Smith/ Esq', lines)
-        self.assertIn('1 NAME Jin // XI', lines)
-        self.assertNotIn('/Vii/', text)
-        self.assertEqual(gedcom._gedcom_name('Henry VII', 'Vii'), ('Henry // VII', 'VII'))
-
-    def test_rename_same_name_refiles_pre_292_regnal_slug(self) -> None:
-        old = self._stub('vii__henry_p-0000000051.md', 'Henry VII', 'p-0000000051')
-        out = person.run_rename(self.root, 'P-0000000051', 'Henry VII')
-        self.assertEqual(out.data['status'], 'ok', [m.text for m in out.messages])
-        self.assertFalse(old.exists())
-        self.assertTrue((self.root / 'people' / 'stubs' / '__henry_vii_p-0000000051.md').is_file())
-        text = ' '.join(m.text for m in out.messages)
-        self.assertIn('re-filed', text)
-        self.assertNotIn("-> 'Henry VII'", text)
-
+        lines = gedcom.run_gedcom(self.root, None, all_persons=True,
+                                  include_living=True)['text'].splitlines()
+        for expected in ('1 NAME Henry // VII', '1 NAME John /Smith/ Esq',
+                         '1 NAME Halina /Wiśniewska/', '1 NAME Guðrún /Þórðardóttir/'):
+            self.assertIn(expected, lines)
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            got = dict(conn.execute('SELECT id, surname FROM persons').fetchall())
+        finally:
+            conn.close()
+        self.assertEqual(got, {'p-0000000051': '', 'p-0000000052': 'Smith',
+                               'p-0000000053': 'Wiśniewska',
+                               'p-0000000054': 'Þórðardóttir'})
 
 class SuffixEdgeTests(unittest.TestCase):
 
