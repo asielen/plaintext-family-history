@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "062cfe01398a8243ef66ca8924a38958b3afd976ad0b08de355069b6070d1b95",
+      "sha256": "a3fd2083cf5c03775e107e5ed783fa297f0cf88c7e8bbfcce0d9ca3330b4721f",
       "spec_version": "1.2"
     },
     {
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "8319fe65de5d06b492d44da33a741a68cc506b1fa6b3cfcf3a183b77bfa7ed62",
+      "sha256": "206f974c4d243461b2c68047dbecd34db7fff18f40347776d67bf069e85cffae",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "211899ab2fb39e3bcdc12bea6a01f8f88b27091f245c20e710995bd75d5d3294",
+      "sha256": "9dd6d7c6a65b0511b46482bdbe59799529c81683e0a251d83327d2a88a21925d",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "d0b935e2d295047504455f4abf6cdc9fbde852d14d33327cb4e8988218541a22",
+      "sha256": "dff8d32c9c5a2acd4b1f53a116ac3e3dc008c4536a81fc4dc5e1e8ae0a62dff8",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "1f47fbe3d748c0d84019ac896e7f8368c506477d3dd307dd997146371dcd9708",
+      "sha256": "cd3170c9514b33cb7f00907748e87717e0eac5ae8792d75753b76d4572ddc57c",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "3b617fec69dd73ff41c66de1580822ad478afb5181147cc5d7e78e83827fa695",
+      "sha256": "aa07fadfa80e27913b4c8b217d03dbc1aead6d3bec1dba08887bbc08deccf793",
       "spec_version": "1.2"
     },
     {

@@ -352,6 +352,35 @@ class SourceEditNoteTests(unittest.TestCase):
         self.assertIn('inside 2 different notes', result.messages[0].text)
         self.assertEqual(self.record.read_bytes(), before)
 
+    def test_whole_paragraph_on_one_line_is_that_paragraph(self) -> None:
+        # PR #284 review: a whole paragraph pasted onto one line (its line
+        # breaks became spaces) is the paragraph, not "only part of" it.
+        source.run_source_note(self.root, SID, text='Line one of it.\nLine two of it.')
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Line one of it. Line two of it.', text='Rewritten.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = self.record.read_text(encoding='utf-8')
+        self.assertIn('Second note.\n\nRewritten.', text)
+        self.assertNotIn('Line one of it.', text)
+
+    def test_trailing_spaces_in_the_file_still_match(self) -> None:
+        text = self.record.read_text(encoding='utf-8')
+        self.record.write_text(text.replace('Second note.', 'Second note.   '),
+                               encoding='utf-8', newline='')
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Second note.', text='Second note, corrected.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertIn('Second note, corrected.', self.record.read_text(encoding='utf-8'))
+
+    def test_old_text_covering_two_whole_notes_asks_for_one(self) -> None:
+        before = self.record.read_bytes()
+        result = source.run_source_edit_note(
+            self.root, SID, old_text='Found in the attic in 1998.\n\nSecond note.', text='x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 notes', result.messages[0].text)
+        self.assertEqual(self.record.read_bytes(), before)
+
     def test_true_miss_is_a_cli_not_found_message(self) -> None:
         result = source.run_source_edit_note(
             self.root, SID, old_text='Never written anywhere.', text='x')

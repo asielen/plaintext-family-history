@@ -5727,6 +5727,7 @@ LOG_ENTRY_NO_SECTION = 'no-section'
 LOG_ENTRY_NOT_FOUND = 'entry-not-found'
 LOG_ENTRY_PARTIAL = 'entry-partial'
 LOG_ENTRY_AMBIGUOUS = 'entry-ambiguous'
+LOG_ENTRY_SPANS = 'entry-spans'
 
 
 def _log_entry_norm(text: str) -> str:
@@ -5753,9 +5754,16 @@ def match_log_entry(
     same way. A match is the whole entry, exactly (after `\r` stripping) -
     the position-free identity `replace_paragraph_in_section` explains.
 
-    Returns `(index, None, None)` on the single exact match, else
-    `(None, reason, message)` with `reason` one of the `LOG_ENTRY_*` codes:
-      - ambiguous: the exact text is two or more entries;
+    Returns `(index, None, None)` on the single match, else
+    `(None, reason, message)` with `reason` one of the `LOG_ENTRY_*` codes.
+    The match tries exact text first; failing that, exactly one entry equal
+    once whitespace is collapsed is still that entry (a paragraph pasted
+    onto one line, so its line breaks became spaces, or a file line with
+    trailing spaces) - still unique, still position-free. The misses:
+      - ambiguous: the text is two or more entries (exactly, or with
+        whitespace collapsed when no exact match exists);
+      - spans: the text is two or more WHOLE entries, blank-line separated -
+        one edit rewrites one entry, so the caller is asked for one;
       - partial: no entry equals it, but one or more CONTAIN it - the common
         command-line slip of quoting one sentence of a paragraph. Containment
         compares with whitespace collapsed, so a sentence that wraps across a
@@ -5769,12 +5777,25 @@ def match_log_entry(
     exact = [i for i, e in enumerate(normed) if e == target]
     if len(exact) == 1:
         return exact[0], None, None
-    if exact:
+    squeezed = ' '.join(target.split())
+    squeezed_entries = [' '.join(e.split()) for e in normed]
+    loose = [i for i, e in enumerate(squeezed_entries) if squeezed and e == squeezed]
+    if not exact and len(loose) == 1:
+        return loose[0], None, None
+    if exact or loose:
+        count = len(exact) or len(loose)
         return None, LOG_ENTRY_AMBIGUOUS, (
-            f'that exact {noun} appears {len(exact)} times in {where}, so this '
+            f'that exact {noun} appears {count} times in {where}, so this '
             'edit cannot tell which one you meant. Edit the record file '
             f'directly for this one ({file_hint}). Nothing was written.')
-    squeezed = ' '.join(target.split())
+    plural = noun[:-1] + 'ies' if noun.endswith('y') else noun + 's'
+    parts = [' '.join(p.split()) for p in split_log_entries(target)]
+    if len(parts) > 1 and all(p in squeezed_entries for p in parts):
+        return None, LOG_ENTRY_SPANS, (
+            f'--old-text covers {len(parts)} {plural} in {where}, and one edit '
+            f'rewrites one {noun}. Give one {noun} at a time - its whole '
+            'paragraph, word for word - and run the edit once for each. '
+            'Nothing was written.')
     containing = [i for i, e in enumerate(normed)
                   if squeezed and squeezed in ' '.join(e.split())]
     if len(containing) == 1:
@@ -5785,7 +5806,6 @@ def match_log_entry(
             f'paragraph as --old-text (copy it from {file_hint}). Nothing was '
             'written.')
     if containing:
-        plural = noun[:-1] + 'ies' if noun.endswith('y') else noun + 's'
         return None, LOG_ENTRY_PARTIAL, (
             f'--old-text is only part of {a_noun}, and it appears inside '
             f'{len(containing)} different {plural} in {where}. --old-text must '
@@ -9505,6 +9525,31 @@ def find_person_record_path(
             if carries_person_record_fields(meta):
                 named_like_a_companion = path
     return named_like_a_companion
+
+
+def claims_in_text(text: str) -> list | None:
+    """A record TEXT's whole `## Claims` list, parsed raw (no coercion), or
+    None when the fenced block is missing or does not read as a list.
+
+    For a writer's after-the-edit check (#273 review): `fha claim` compares
+    every claim before and after its rewrite, so an edit that touched more
+    than it was asked to is refused instead of saved."""
+    if yaml is None:
+        return None
+    body = text
+    fm = FRONT_RE.match(text)
+    if fm:
+        body = text[fm.end():]
+    cm = CLAIMS_RE.search(body)
+    if cm is None:
+        return None
+    try:
+        parsed = safe_load_yaml(cm.group(1))
+    except yaml.YAMLError:
+        return None
+    if parsed is None:
+        return []
+    return parsed if isinstance(parsed, list) else None
 
 
 def claim_in_text(text: str, claim_id: str) -> dict | None:

@@ -103,6 +103,7 @@ from _lib import (  # noqa: E402
     LOG_ENTRY_NO_SECTION,
     LOG_ENTRY_NOT_FOUND,
     LOG_ENTRY_PARTIAL,
+    LOG_ENTRY_SPANS,
     manifest_diff,
     manifest_has_changed,
     normalize_id,
@@ -1480,10 +1481,13 @@ def _stale_entry_wording(result: Result, noun: str, where: str) -> Result:
     happens. The workbench button always sends one whole entry exactly as
     it was rendered, so if the engine cannot find it (or finds it only
     inside a longer paragraph) the file changed after the page loaded - and
-    the honest next step is to reload. The engine's `data['reason']` says
-    which miss it was; an ambiguous duplicate keeps the engine's own words."""
+    the honest next step is to reload. The same holds when the text now
+    covers several entries (the entry was split since the page loaded).
+    The engine's `data['reason']` says which miss it was; an ambiguous
+    duplicate keeps the engine's own words - reloading would not help."""
     reason = result.data.get('reason')
-    if reason not in (LOG_ENTRY_NO_SECTION, LOG_ENTRY_NOT_FOUND, LOG_ENTRY_PARTIAL):
+    if reason not in (LOG_ENTRY_NO_SECTION, LOG_ENTRY_NOT_FOUND, LOG_ENTRY_PARTIAL,
+                      LOG_ENTRY_SPANS):
         return result
     if reason == LOG_ENTRY_NO_SECTION:
         text = (f'{where} is no longer on this record - the {noun} may have '

@@ -2005,6 +2005,24 @@ class EditNoteTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertIn('inside 3 different entries', result.messages[0].text)
 
+    def test_whole_paragraph_on_one_line_is_that_entry(self) -> None:
+        person.run_note(self.root, PID, 'research', 'Line one of it.\nLine two of it.')
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'Line one of it.  Line two of it.', 'Rewritten.')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        text = self.stub.read_text(encoding='utf-8')
+        self.assertIn('Third note.\n\nRewritten.', text)
+        self.assertNotIn('Line one of it.', text)
+
+    def test_old_text_covering_two_whole_entries_asks_for_one(self) -> None:
+        before = self.stub.read_bytes()
+        result = person.run_edit_note(
+            self.root, PID, 'research', 'First note.\n\nSecond note.', 'x')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 entries', result.messages[0].text)
+        self.assertEqual(self.stub.read_bytes(), before)
+
     def test_true_miss_is_a_cli_not_found_message(self) -> None:
         result = person.run_edit_note(
             self.root, PID, 'research', 'Never written anywhere.', 'x')

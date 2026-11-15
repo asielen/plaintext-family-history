@@ -932,6 +932,27 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 3)
         self.assertIn('inside 2 different notes', result.messages[0].text)
 
+    def test_edit_note_whole_paragraph_on_one_line_is_that_note(self) -> None:
+        self.registry.write_text(
+            _SET_REGISTRY.replace('  notes: fictional town\n',
+                                  '  notes: |\n    fictional town,\n    for the tests\n'),
+            encoding='utf-8', newline='')
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town, for the tests', 'Rewritten.')
+        self.assertEqual(result.exit_code, 0, [m.text for m in result.messages])
+        self.assertEqual(self._parsed()['L-7c1a9f4e22']['notes'].strip(), 'Rewritten.')
+
+    def test_edit_note_covering_two_whole_notes_asks_for_one(self) -> None:
+        places.run_place_note(self.root, 'L-7c1a9f4e22', 'Second note.')
+        second = self._parsed()['L-7c1a9f4e22']['notes'].strip().split('\n\n')[1]
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town\n\n' + second, 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 notes', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
     def test_edit_note_true_miss_is_a_cli_not_found_message(self) -> None:
         result = places.run_place_edit_note(
             self.root, 'L-7c1a9f4e22', 'Never written anywhere.', 'x')

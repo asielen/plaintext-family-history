@@ -2168,6 +2168,41 @@ class PlaceVerbTests(_ServeCase):
             self.assertNotIn('--old-text', text)
         self.assertEqual((self.root / 'places' / 'places.yaml').read_bytes(), before)
 
+    def test_place_edit_note_duplicate_keeps_the_engine_wording(self):
+        # An ambiguous duplicate is not a stale page - reloading would not
+        # help - so the workbench shows the engine's own "edit the file" text.
+        for _ in range(2):
+            s, _d, _h = self.post_run('place.note',
+                                      {'place_id': self.LID, 'text': 'Same.'}, False)
+            self.assertEqual(s, 200)
+        registry = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        dup = next(ln.strip() for ln in registry.splitlines() if ln.strip().endswith('Same.'))
+        before = (self.root / 'places' / 'places.yaml').read_bytes()
+        s, d, _h = self.post_run('place.edit_note',
+                                 {'place_id': self.LID, 'old_text': dup, 'text': 'x'}, False)
+        payload = json.loads(d)
+        self.assertFalse(payload['ok'])
+        text = payload['messages'][0]['text']
+        self.assertIn('2 times', text)
+        self.assertNotIn('Reload', text)
+        self.assertEqual((self.root / 'places' / 'places.yaml').read_bytes(), before)
+
+    def test_place_edit_note_spanning_two_notes_reads_as_stale(self):
+        s, _d, _h = self.post_run('place.note',
+                                  {'place_id': self.LID, 'text': 'Second one.'}, False)
+        self.assertEqual(s, 200)
+        import yaml as _yaml
+        registry = _yaml.safe_load(
+            (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        notes = next(e for e in registry if e['id'] == self.LID)['notes'].strip()
+        first, second = notes.split('\n\n')[0], notes.split('\n\n')[-1]
+        s, d, _h = self.post_run('place.edit_note',
+                                 {'place_id': self.LID, 'old_text': first + '\n\n' + second,
+                                  'text': 'x'}, False)
+        payload = json.loads(d)
+        self.assertFalse(payload['ok'])
+        self.assertIn('Reload the page', payload['messages'][0]['text'])
+
     def test_source_and_person_edit_note_miss_keep_the_reload_wording(self):
         # The same #272 rule for the two section-log verbs that share
         # `_lib.replace_paragraph_in_section`.

@@ -4278,5 +4278,143 @@ class ClearFieldShapeTests(unittest.TestCase):
                 self.assertEqual(str(c['id']).lower(), 'c-aa11bb22cc')
 
 
+
+class ClearFieldReviewTests(unittest.TestCase):
+    """PR #284 review, round two: `--clear` never reports a removal it did not
+    make, reads each value's extent the way YAML does, and every edit is
+    checked claim by claim after the rewrite (`_edit_drift`)."""
+
+    HEAD = ('- value: "Anna born 1880"\n'
+            '  id: C-aa11bb22cc\n'
+            '  type: birth\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  status: suggested\n'
+            '  confidence: high\n')
+    NEXT = ('\n- value: "Anna died 1950"\n'
+            '  id: C-bb22cc33dd\n'
+            '  type: death\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  status: suggested\n'
+            '  confidence: medium\n')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.path = self.root / 'sources' / 'other' / 'shape_S-1111111111.md'
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, block: str, nl: str = '\n') -> bytes:
+        text = ('---\nid: S-1111111111\ntitle: T\nsource_type: other\n---\n\n'
+                '## Claims\n```yaml\n' + block + '```\n')
+        data = text.replace('\n', nl).encode('utf-8')
+        self.path.write_bytes(data)
+        return data
+
+    def _clear(self, *fields: str):
+        return claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=list(fields))
+
+    # P2-1: a key this edit cannot find is refused, not reported as done.
+    def test_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
+        for line in ('  "notes": hi\n', '  notes : foo\n'):
+            with self.subTest(line=line):
+                before = self._write(self.HEAD + line + self.NEXT)
+                result = self._clear('notes')
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('cannot safely remove', result.messages[-1].text)
+                self.assertIn('by hand', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    # L1: inside an open quoted scalar a `#` line is text, not a comment.
+    def test_multiline_double_quoted_value_goes_whole(self) -> None:
+        notes = '  notes: "first line of it\n    # still in string"\n'
+        before = self._write(self.HEAD + notes + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    # L2: a comment shallower than a block scalar's text is a real comment.
+    def test_comment_shallower_than_block_text_is_kept(self) -> None:
+        notes = '  notes: |\n      Indented text.\n      More text.\n'
+        comment = '    # a real comment\n'
+        before = self._write(self.HEAD + notes + comment + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    def test_block_scalar_with_indentation_indicator_goes_whole(self) -> None:
+        notes = '  notes: |2\n      deeper first line\n    text at the stated indent\n'
+        before = self._write(self.HEAD + notes + '  anchor: p. 4\n' + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+        c = read_record(self.path)['claims'][0]
+        self.assertNotIn('notes', c)
+        self.assertEqual(c['anchor'], 'p. 4')
+
+    def test_crlf_line_endings_are_kept(self) -> None:
+        notes = '  notes: A plain note.\n'
+        before = self._write(self.HEAD + notes + self.NEXT, nl='\r\n')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_bytes(),
+                         before.replace(notes.replace('\n', '\r\n').encode('utf-8'), b'', 1))
+
+    # L3: a confirmed absence keeps its evidence: negative.
+    def test_clearing_evidence_on_a_negated_claim_is_refused(self) -> None:
+        before = self._write(self.HEAD + '  negated: true\n  evidence: negative\n' + self.NEXT)
+        result = self._clear('evidence')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('§8.6', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    # L4: an empty --date / --place points at --clear.
+    def test_empty_date_and_place_point_at_clear(self) -> None:
+        before = self._write(self.HEAD + '  date: 1880\n' + self.NEXT)
+        for key in ('date', 'place'):
+            with self.subTest(key=key):
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', **{key: ''})
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn(f'--clear {key}', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    # P2-3: the after-the-edit comparison refuses a rewrite that did more.
+    def _with_extra_damage(self, damage):
+        real = claim._apply_claim_review
+
+        def broken(text, claim_id, **kw):
+            new_text, changed = real(text, claim_id, **kw)
+            return damage(new_text), changed
+        return mock.patch.object(claim, '_apply_claim_review', side_effect=broken)
+
+    def test_drift_guard_refuses_a_dropped_sibling_key(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n  anchor: p. 4\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace('  anchor: p. 4\n', '', 1)):
+            result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('also change its anchor', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_drift_guard_refuses_a_cleared_key_left_behind(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace(
+                '  confidence: high\n', '  confidence: high\n  notes: A note.\n', 1)):
+            result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('leave notes on the claim', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_drift_guard_refuses_a_change_to_another_claim(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace(
+                '  confidence: medium\n', '  confidence: low\n', 1)):
+            result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', notes='New.')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('another claim', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

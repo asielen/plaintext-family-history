@@ -289,6 +289,7 @@ from _lib import (
     DeceasedReading,
     claim_death_reading,
     claim_in_text,
+    claims_in_text,
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
@@ -349,9 +350,12 @@ _REQUIRED_FIELD_FLAG = {
     'status': '--status', 'confidence': '--confidence', 'id': None,
 }
 
-# The free-text flags whose value lands in the claim verbatim; an empty one
-# would write `key: ''` (#273), so it is refused and pointed at --clear.
-_FREE_TEXT_FLAGS = (('place_text', '--place-text'), ('anchor', '--anchor'),
+# The flags of optional fields whose empty value is refused with a pointer to
+# --clear (#273): an empty free-text one would write `key: ''`, and an empty
+# --date/--place used to get a bare "not a date"/"not a place ID" refusal that
+# never said how to remove the field.
+_FREE_TEXT_FLAGS = (('date', '--date'), ('place', '--place'),
+                    ('place_text', '--place-text'), ('anchor', '--anchor'),
                     ('notes', '--notes'))
 
 # run_claim's two per-call trailer lines, named so `run_claim_batch` can
@@ -758,9 +762,10 @@ def _clear_problem(
     for key, flag in _FREE_TEXT_FLAGS:
         text = given[key]
         if text is not None and not text.strip():
-            return (), (f'{flag} was empty, which would leave a blank {key}: line in the '
-                        f'claim. To remove {key} from the claim, use --clear {key}; to '
-                        'change it, pass the new text. Nothing was changed.')
+            return (), (f'{flag} was empty - an empty value is never written (it would '
+                        f'leave a blank {key}: line in the claim). To remove {key} from '
+                        f'the claim, use --clear {key}; to change it, pass the new value. '
+                        'Nothing was changed.')
     if persons is not None and not persons:
         return (), ('--persons was empty, but a claim must name at least one person. '
                     'Pass the P-ids it is about, comma-separated (e.g. --persons '
@@ -867,6 +872,66 @@ def _own_id_key_line(
         elif key_id_re is not None and key_id_re.match(lines[j]):
             return j, m.group(1)
     return None
+
+
+def _edit_drift(text: str, new_text: str, claim_id: str, *,
+                set_keys: set[str], cleared: tuple[str, ...]) -> str | None:
+    """What an edit changed beyond what it was asked to, or None (#273 review).
+
+    `claims_edit_problem` proves the rewritten block still parses and still
+    holds the claim once; it cannot see a line edit that quietly dropped a
+    sibling key, left a cleared field behind, or bled into the next claim.
+    This compares the parsed claims: in the target, every `cleared` key must
+    be gone and every key outside `set_keys` must read exactly as before;
+    every other claim must parse equal, in the same order. Returns a short
+    phrase for the refusal ("leave notes on the claim", ...), else None."""
+    before = claims_in_text(text)
+    after = claims_in_text(new_text)
+    if before is None or after is None or len(before) != len(after):
+        return 'change how many claims the block holds'
+    target = normalize_id(claim_id)
+
+    def is_target(c: object) -> bool:
+        return (isinstance(c, dict) and c.get('id') is not None
+                and normalize_id(str(c['id'])) == target)
+
+    for old, new in zip(before, after):
+        if is_target(old) != is_target(new):
+            return 'move the claim within the block'
+        if not is_target(old):
+            if old != new:
+                return 'also change another claim in this record'
+            continue
+        for key in cleared:
+            if key in new:
+                return f'leave {key} on the claim'
+        for key in set(old) | set(new):
+            if key in set_keys or key in cleared:
+                continue
+            if (key in old) != (key in new) or old.get(key) != new.get(key):
+                return f'also change its {key}'
+    return None
+
+
+def _quote_still_open(text: str, quote: str) -> bool:
+    """Is a YAML quoted scalar that is open at the start of `text` still open
+    at its end? `--clear` (#273) needs this to know which lines a multi-line
+    `"..."` or `'...'` value owns: inside the quotes a line starting with
+    `#` is text, not a comment. Double quotes escape with a backslash;
+    single quotes escape a quote by doubling it (`''`)."""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == '"' and ch == '\\':
+            i += 2
+            continue
+        if ch == quote:
+            if quote == "'" and text[i + 1:i + 2] == "'":
+                i += 2
+                continue
+            return False
+        i += 1
+    return True
 
 
 def _apply_claim_review(
@@ -1066,33 +1131,69 @@ def _apply_claim_review(
     def remove_key(key: str) -> None:
         """Delete one top-level key of the item, value span and all (#273).
 
-        Only the key line and its real value lines go: the lines below it
-        indented deeper than the item's key column (a wrapped plain scalar,
-        a block-style list, block-scalar content). Inside a `>`/`|` block
-        scalar a deeper `#` line is content and goes too; after any other
-        value it is a comment and stays. Everything after the last value
-        line - blank separators, a comment at any column, the next key - is
-        kept byte for byte (PR #284 review: `_value_span_end` stops only at
-        a sibling key, so it swallowed a column-zero comment).
+        Only the key line and its real value lines go, read the way YAML
+        reads them:
+          - a `>`/`|` block scalar owns the lines at or past its content
+            indent (from an indentation indicator like `|2`, else from its
+            first non-blank line) - a `#` line there is text, not a comment,
+            but a shallower `#` line is a real comment and stays;
+          - a quoted scalar left open on the key line owns the lines up to
+            the one that closes it, whatever they start with;
+          - any other value owns the following lines indented deeper than
+            the key column that are not comments (a wrapped plain scalar, a
+            block-style list).
+        Everything after the last value line - blank separators, a comment
+        at any column, the next key - is kept as written (PR #284 review).
 
         When the key is the item's first (it sits on the `- ` dash line),
         the dash moves to the next remaining key, past any blank or comment
-        lines between them, so the item still parses as one list entry."""
+        lines between them, so the item still parses as one list entry.
+
+        A key the claim carries that is not found here (a quoted key
+        `"notes": ...`, a space before the colon) is refused rather than
+        skipped: skipping it reported "already done" for a field still on
+        the claim."""
         idx, kind, raw = find_key(key)
         if idx is None:
-            return
-        block_scalar = (raw or '').strip()[:1] in ('>', '|')
+            raise _ClaimEditRefused(
+                f'the {key}: line of {fmt_id_display(target)} is written in a form '
+                'this edit cannot safely remove (a quoted key, or a space before '
+                'the colon). Open the record file, delete that line by hand under '
+                '## Claims, then run `fha lint` to check it. Nothing was written.')
+        value = (raw or '').strip()
+        block = re.match(r'^[|>][+-]?([1-9])?[+-]?(\s|#|$)', value)
+        content_indent = None
+        if block and block.group(1):
+            content_indent = len(key_indent) + int(block.group(1))
+        open_quote = None
+        if value[:1] in ('"', "'") and _quote_still_open(value[1:], value[0]):
+            open_quote = value[0]
+
+        def depth(ln: str) -> int:
+            return len(ln) - len(ln.lstrip(' '))
+
         end = idx + 1
         j = idx + 1
         while j < len(item):
             ln = item[j]
+            if open_quote is not None:
+                end = j + 1
+                if not _quote_still_open(ln, open_quote):
+                    break
+                j += 1
+                continue
             if ln.strip() == '':
                 j += 1
                 continue
-            if not (ln.startswith(key_indent) and len(ln) > len(key_indent)
-                    and ln[len(key_indent)] in ' \t'):
+            if depth(ln) <= len(key_indent):
                 break   # at or above the key column: not this value any more
-            if block_scalar or not ln.strip().startswith('#'):
+            if block:
+                if content_indent is None:
+                    content_indent = depth(ln)
+                if depth(ln) < content_indent:
+                    break   # shallower than the text: a real comment, kept
+                end = j + 1
+            elif not ln.strip().startswith('#'):
                 end = j + 1
             j += 1
         del item[idx:end]
@@ -1888,6 +1989,13 @@ def run_claim(
     current = claim_in_text(text, cid) or claim
     to_clear = tuple(f for f in clear_fields if f in current)
     not_there = [f for f in clear_fields if f not in current]
+    if 'evidence' in to_clear and str(current.get('negated')).strip().lower() == 'true':
+        return _fail(result, 'refused',
+                     f'{fmt_id_display(cid)} records a confirmed absence (negated: true), '
+                     'which SPEC §8.6 pairs with evidence: negative - clearing evidence '
+                     'would break that pair. If the claim is not a confirmed absence after '
+                     'all, remove its negated: line by hand under ## Claims first (then run '
+                     '`fha lint`), and retry. Nothing was written.')
 
     try:
         new_text, changed = _apply_claim_review(
@@ -1945,6 +2053,24 @@ def run_claim(
                        'Open that file, edit the claim under ## Claims by hand, then run '
                        '`fha lint` to check it.')
         return result
+
+    # Second guard (#273 review): the block parsing is not enough - compare
+    # every claim before and after. Only the keys this call sets may change,
+    # every key it clears must be gone, and no other claim may move at all.
+    set_keys = {k for k, v in (
+        ('status', status), ('reviewed', reviewed if status is not None else None),
+        ('value', value), ('date', normalized_date), ('type', claim_type),
+        ('place', place_display), ('place_text', place_text), ('persons', persons_norm),
+        ('confidence', confidence), ('information', information),
+        ('evidence', evidence), ('anchor', anchor), ('notes', notes),
+    ) if v is not None}
+    drift = _edit_drift(text, new_text, cid, set_keys=set_keys, cleared=to_clear)
+    if drift is not None:
+        return _fail(result, 'refused',
+                     f'Refusing to change {fmt_id_display(cid)}: the rewrite would {drift}, '
+                     'which is more than was asked. Nothing was written. Open '
+                     f'{record_path}, make the change by hand under ## Claims, then run '
+                     '`fha lint` to check it.')
 
     changed_bits = []
     if status is not None:
@@ -3057,8 +3183,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         '(notes: > or notes: |); the whole field is replaced, never appended.')
     p.add_argument('--clear', metavar='FIELD', action='append',
                    help='Remove an optional field from the claim (repeatable): one of '
-                        + ', '.join(CLEARABLE_CLAIM_FIELDS) + '. Only that line goes; the '
-                        'rest of the claim is left exactly as written. Required fields '
+                        + ', '.join(CLEARABLE_CLAIM_FIELDS) + '. The field goes whole (a '
+                        'multi-line value with it); comments and the other keys stay as '
+                        'written. Required fields '
                         '(value, type, persons, status, confidence) cannot be cleared - '
                         'correct them with their own flag.')
     p.add_argument('--keep-living', action='store_true', dest='keep_living',
