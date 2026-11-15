@@ -1872,6 +1872,22 @@ def _is_photo_ext(file_path: Path) -> bool:
     return file_path.suffix.lower() in PHOTO_EXTENSIONS
 
 
+# Formats that are certainly not pictures. A file of one of these sitting in
+# the photo library is a note or a scan saved in the wrong place, and cannot
+# take a photo keyword. An unlisted extension (a `.webp`, a camera's own raw
+# format) is NOT presumed to be a non-image: a photo the library holds in a
+# format this list does not know is still processed as a photo.
+_NOT_A_PICTURE_SUFFIXES: frozenset[str] = frozenset({
+    '.md', '.txt', '.pdf', '.doc', '.docx', '.odt', '.rtf', '.html', '.htm',
+    '.json', '.xml', '.csv', '.xmp',
+})
+
+
+def _is_known_non_image(file_path: Path) -> bool:
+    """True for a file whose format is certainly not a picture (see above)."""
+    return file_path.suffix.lower() in _NOT_A_PICTURE_SUFFIXES
+
+
 def _photo_variation_siblings(file_path: Path) -> list[Path]:
     """Return the photo files in `file_path`'s directory that share its base_id.
 
@@ -4179,7 +4195,7 @@ def _more_file_kind(
         # A note or a PDF saved into the photo library is not a photo, and
         # exiftool cannot keyword it as one: it is attached as a document,
         # which refuses plainly because it is not in the documents root.
-        return kind if _is_photo_ext(more_file) else 'document'
+        return 'document' if _is_known_non_image(more_file) else kind
     if (source_type or '').strip().lower() == _PHOTO_SOURCE_TYPE:
         return kind
     documents_root = resolve_path('documents', fha_config, archive_root)
@@ -6722,7 +6738,7 @@ def _run_process(args: argparse.Namespace) -> int:
         else:
             kind = classify_asset(file_path, fha_config, archive_root,
                                   source_type=source_type)
-            if kind == 'photo' and not _is_photo_ext(file_path):
+            if kind == 'photo' and _is_known_non_image(file_path):
                 # A note or a PDF saved into the photo library: classify
                 # calls it a photo because of where it sits, but it cannot
                 # take a photo keyword, and fha never moves a file out of

@@ -1234,6 +1234,17 @@ class ThirdReviewTests(InboxFilingTestCase):
                 self.assertNotIn('exiftool', err.lower())
                 self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_an_unlisted_picture_format_in_the_library_is_still_a_photo(self) -> None:
+        # Only formats that are certainly not pictures are refused; a .webp
+        # the library holds is still attached as a photo.
+        front = self._put(self.inbox / 'card.jpg', JPEG)
+        rc, _out, err = self._run(str(front))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        webp = self._put(self.photos / 'card-reverse.webp', b'RIFF')
+        rc, _out, err = self._run(str(self.photos / 'card.jpg'), '--more', str(webp), 'back')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(len(self.store.read(webp)), 1)
+
     def test_dest_refusal_names_the_rule(self) -> None:
         self._rule('Postcards/**')
         card = self._put(self.inbox / 'Postcards' / 'c.tif', TIFF)
