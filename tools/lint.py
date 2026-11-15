@@ -598,6 +598,18 @@ def _never_mintable(path: Path) -> bool:
     return path.name.lower() == 'readme.md' or _is_generated_file(path)
 
 
+def _retired_source_holder(token_id: str, alias_map: dict[str, str],
+                           registry) -> str | None:
+    """The source whose `aliases:` lists `token_id`, an S-id with no record of
+    its own (a source merged away, #300); None for anything else."""
+    if id_type_of(token_id) != 'S':
+        return None
+    holder = resolve_ref(token_id, alias_map)
+    if holder and holder != normalize_id(token_id) and holder in registry.source_paths:
+        return holder
+    return None
+
+
 def _resolve_person_ref(ref: str, alias_map: dict[str, str] | None) -> str | None:
     """One persons:/roles: reference → a normalized P-id, or None when inert.
 
@@ -2762,7 +2774,17 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     for token_id, refs in registry.token_refs.items():
         tid_type = token_id[0].upper() if token_id else ''
 
-        if token_id not in known_ids:
+        if token_id not in known_ids and _retired_source_holder(token_id, alias_map, registry):
+            # W107 (#300): a source id that a merge retired - it sits in the
+            # survivor's `aliases:`, so the link still finds the right record.
+            # Gradual cleanup, like a link to a merged person, not an orphan.
+            holder = _retired_source_holder(token_id, alias_map, registry)
+            for ref_path, ref_line in refs[:5]:
+                findings.append(Finding('W', 'W107', ref_path,
+                    f'[{fmt_id_display(token_id)}] at line {ref_line} names a merged '
+                    f'source (now {fmt_id_display(holder)}, which lists it in its '
+                    f'aliases:); update to the survivor S-id'))
+        elif token_id not in known_ids:
             # E004: orphan reference. `fha stubs` only mints P-ids - naming it
             # for an H-id misdirects (issue #56's own complaint: the prefix is
             # unambiguous, so the hint can say the right thing instead of the

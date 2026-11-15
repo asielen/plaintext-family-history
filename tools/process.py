@@ -235,6 +235,7 @@ from _lib import (
     photos_ignore_matcher,
     photos_ignore_patterns,
     is_valid_id,
+    link_field_refs,
     keyword_values_from_row,
     load_fha_yaml,
     mint_ids,
@@ -627,6 +628,27 @@ def _intake_default_type(file_path: Path, fha_config: dict, archive_root: Path,
     return stype
 
 
+def _retired_source_ids(meta: dict, sid: str) -> frozenset[str]:
+    """The other S-ids in a source record's `aliases:` (lowercased) - the ids
+    of sources merged into it (#300). Its own id is not among them."""
+    out = set()
+    for ref in link_field_refs(meta.get('aliases')):
+        ref = str(ref).strip()
+        if is_valid_id(ref) and id_type_of(ref) == 'S':
+            out.add(normalize_id(ref))
+    out.discard(sid.lower())
+    return frozenset(out)
+
+
+def _without_retired_sid(file_path: Path, retired: frozenset[str]) -> Path:
+    """`file_path` with a trailing `_{S-id}` cut off its stem when that id is
+    one the target source retired, so the new name does not carry it."""
+    m = _FILENAME_SOURCE_ID_RE.search(file_path.stem)
+    if m and m.group(1).lower() in retired:
+        return file_path.with_name(file_path.stem[:m.start()] + file_path.suffix)
+    return file_path
+
+
 def _filename_has_source_id(file_path: Path) -> str | None:
     """Return the S-id already embedded in the filename, or None.
 
@@ -737,6 +759,7 @@ def _document_takes_keyword(path: Path) -> bool:
 
 def _embed_document_keyword(
     path: Path, sid: str, *, backup: OriginalBackup,
+    retired: frozenset[str] = frozenset(),
 ) -> tuple[str | None, Path | None]:
     """Write `SOURCE: {sid}` into a documents-root file.
 
@@ -771,9 +794,12 @@ def _embed_document_keyword(
     except RuntimeError:
         existing = []
     canonical = f'SOURCE: {sid}'
+    # Spelling variants of this source's keyword, and the keyword of an S-id
+    # this source retired in a merge (#300), give way to the canonical one.
+    own = {sid.lower(), *retired}
     variants = [kw for kw in existing if kw != canonical
                 and (m := _SOURCE_KEYWORD_RE.match(kw.strip()))
-                and m.group(1).lower() == sid.lower()]
+                and m.group(1).lower() in own]
     try:
         err = _run_exiftool_embed_source(
             path, sid, backup=backup, **({'remove_keywords': variants} if variants else {}))
@@ -4563,12 +4589,20 @@ def _attach_more_engine(
     # filed for another source, which is exactly the silent-re-processing
     # case it exists to catch.
     existing_doc_sid = _filename_has_source_id(more_file)
+    # An S-id this record retired in a merge (#300) is in its own `aliases:`,
+    # so a file named or keyworded with it belongs HERE: it is renamed into
+    # this source's grammar and re-keyworded, the old name kept as
+    # `original_filename:`.
+    retired_sids = _retired_source_ids(meta_for_check, sid)
+    if existing_doc_sid in retired_sids:
+        existing_doc_sid = None
     # The name is one carrier; the keyword inside the file is another (#252).
     # A scan another program renamed still says which source it belongs to,
     # and attaching it here would give one file two sources (#253 review).
     # Checked before any rename or write.
     embedded_doc_sid = _document_source_keyword(more_on_disk)
-    if embedded_doc_sid is not None and embedded_doc_sid != sid.lower():
+    if (embedded_doc_sid is not None and embedded_doc_sid != sid.lower()
+            and embedded_doc_sid not in retired_sids):
         shown = fmt_id_display(embedded_doc_sid)
         raise ProcessError(
             f'{more_file.name} already carries SOURCE: {shown} inside the file, so it '
@@ -4596,7 +4630,8 @@ def _attach_more_engine(
         # word already baked into the stem or double the S-id suffix.
         new_name = more_file.name
     else:
-        base = _attachment_base(more_file, meta_for_check, record_path, sid, role, copy)
+        base = _attachment_base(_without_retired_sid(more_file, retired_sids),
+                                meta_for_check, record_path, sid, role, copy)
         suffix = f'-{_slugify(role)}'
         if copy:
             suffix = f'-{_slugify(copy)}{suffix}'
@@ -4808,7 +4843,8 @@ def _attach_more_engine(
             undo.append((f'move {new_path.name} back to {more_file.name}',
                          lambda: new_path.rename(more_file)))
         if takes_keyword:
-            keyword_warning, undo_copy = _embed_document_keyword(new_path, sid, backup=backup)
+            keyword_warning, undo_copy = _embed_document_keyword(
+                new_path, sid, backup=backup, retired=retired_sids)
             if keyword_warning is None:
                 undo_copies.append(undo_copy)
                 undo.append((f'remove the SOURCE: {sid} keyword from {new_path.name}',
