@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "1.2",
-  "generated": "2026-11-10",
+  "generated": "2026-11-15",
   "files": [
     {
       "path": ".claude/skills/README.md",
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9e974eba015a8e15bf5ff4ed7f013f30fb5652585fc6db3e1e927b70e870c260",
+      "sha256": "0782499b70dc1338c8cf285dc2bd7bce665fb075b00f00605aee850c5edf0aa6",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8002ed0c821c571ca098cb56f0a272effbd3eb782c390b18cf1afa5b5d2407e7",
+      "sha256": "de9c56bd47b5a5e09550966a0f9a954a5658d393538112e524dec30745801df8",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "71d2eb8030866e0460cde013771d1906829486552aa7d830e5bbcc812176afd8",
+      "sha256": "3eea67b6b5cf66f06078329642e0b8174ebf0ed045c111034e3d7f90bafbd322",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "229cabd8d4f820a7d4e1e66f31e5d42b7429795f83fbc278a6b3449ab860e429",
+      "sha256": "61ff0e6de9d019a99b26faaf902215dad05e8cd4b81ed4a404d145014afe6e08",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ab286c8c81feec3ae0bd958813ca0d96ac19b62ade2e7a15734ba30ae17a07ae",
+      "sha256": "56a51d37e08902b393465092c17d78b7bfb2622ab37a60e091339b97509ac6d5",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "18e9c1a14fd76e65f27cba59e8466c62e2b238855498bdf4867a96d3ced3a32a",
+      "sha256": "39b326ec7228be26285c3c35878d943d0c29af80ec457842fff0330da698c7c1",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },

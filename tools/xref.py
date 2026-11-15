@@ -237,6 +237,7 @@ from _lib import (
     place_text_cluster_key,
     open_index_db,
     resolve_root_arg,
+    claim_role_pairs,
     spouse_parties,
     vital_subjects,
 )
@@ -604,7 +605,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
             continue
         claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
         claim_persons.setdefault(row['claim_id'], []).append(row['person_id'])
-        # First occurrence's role wins, same as claim_persons/claims_by_person
+        # The role column holds every role this person carries on the claim
+        # (#266); `claim_role_pairs` splits it where the rules read it.
+        # First occurrence's row wins, same as claim_persons/claims_by_person
         # just above and the same contract vital_subjects/spouse_parties
         # document for their own input - `persons: [P-a, "[[Alice Smith]]"]`
         # is one person written twice, and a plain assignment here would let
@@ -650,9 +653,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     for cid, claim in claims_by_id.items():
         if claim['type'] not in _COUNTERPART_VITAL_TYPES:
             continue
-        persons_with_roles = [
+        persons_with_roles = claim_role_pairs(
             (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
-        ]
+        )
         parties = spouse_parties(persons_with_roles)
         claim_parties[cid] = parties
         named = set(claim_persons.get(cid, []))
@@ -729,9 +732,9 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     for cid, claim in claims_by_id.items():
         if claim['type'] not in _OTHER_VITAL_TYPES:
             continue
-        persons_with_roles = [
+        persons_with_roles = claim_role_pairs(
             (pid, claim_role.get((cid, pid))) for pid in claim_persons.get(cid, [])
-        ]
+        )
         subjects = vital_subjects(claim['type'], persons_with_roles)
         claim_vital_subjects[cid] = subjects
         if subjects == [] and not any(role for _pid, role in persons_with_roles):

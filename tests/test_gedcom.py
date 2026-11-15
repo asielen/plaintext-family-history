@@ -471,6 +471,27 @@ class GedcomExportTests(unittest.TestCase):
         self.assertNotIn('DNA Lab', r['text'])
         self.assertNotIn('DNA birth estimate', r['text'])
 
+    def test_a_bride_who_was_also_the_informant_keeps_the_marriage_event(self):
+        # #266: `claim_persons.role` holds every role she carries
+        # ('informant,spouse'); read as one word, she was no spouse and the
+        # wedding's date and place found no family to live on.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        _add_person(conn, 'p-0000000006', 'Anna Role', 'F', surname='Role')
+        _add_person(conn, 'p-0000000007', 'Ben Role', 'M', surname='Role')
+        _spouse(conn, 'p-0000000006', 'p-0000000007')
+        _add_source(conn, 's-0000000003', 'Role marriage record')
+        _add_claim(conn, 'c-0000000003', 'marriage',
+                   ['p-0000000006', 'p-0000000007'], date_edtf='1901',
+                   place_text='Role Town', source_id='s-0000000003',
+                   roles={'p-0000000006': 'informant,spouse',
+                          'p-0000000007': 'spouse'})
+        conn.commit()
+        conn.close()
+        r = gedcom.run_gedcom(self.root, 'p-0000000006', mode='connected')
+        self.assertIn('1 MARR', r['text'])
+        self.assertIn('Role Town', r['text'])
+
     def test_marriage_with_witness_uses_spouse_roles(self):
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         conn.row_factory = sqlite3.Row

@@ -99,6 +99,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    files_carry_searchable_text - a source's files: block -> any text at all?
 #
 #  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
+#    roles_by_person           - a claim's (pid, role) pairs -> every role each
+#                                 person carries, in order; the one fold the
+#                                 rules below read (#266: a person can be both
+#                                 the informant and a parent)
+#    join_claim_roles, claim_role_pairs
+#                              - write / read `claim_persons.role`, which holds
+#                                 every role a person carries on a claim
 #    spouse_parties            - a claim's (pid, role) list -> the people it says
 #                                 married EACH OTHER; the one rule index, gedcom
 #                                 and lint all read, so they cannot disagree
@@ -811,6 +818,78 @@ def _min_cost_max_matching(cost: list[list[int | None]], n_tokens: int) -> list[
             j = nxt if prev[i] is not None else None
 
 
+# `claim_persons.role` holds EVERY role a person carries on one claim, joined
+# by this separator in `roles:` order (#266). One row per `persons:` entry
+# stays the table's shape - dozens of queries join it to list a person's
+# claims, and a row per role would list the mother's birth certificate twice
+# wherever she is both its informant and a parent - so the extra roles ride
+# in the one column instead. A role key is a single word (SPEC §8.3's role
+# words), so a comma never occurs inside one. Read the column back only
+# through `claim_role_pairs`, never with `role = 'parent'` in SQL.
+CLAIM_ROLE_SEP = ','
+
+
+def join_claim_roles(roles: Iterable[Any]) -> str | None:
+    """The `claim_persons.role` value for one person: every role they carry,
+    in `roles:` order, deduplicated, or None when the claim gives them none.
+    The writer half of `claim_role_pairs`."""
+    out: list[str] = []
+    for role in roles:
+        text = str(role or '').strip()
+        if text and text not in out:
+            out.append(text)
+    return CLAIM_ROLE_SEP.join(out) if out else None
+
+
+def claim_role_pairs(rows: Iterable[tuple[str, Any]]) -> list[tuple[str, str | None]]:
+    """`claim_persons` `(person_id, role)` rows -> `(pid, role)` pairs, one per
+    role a person carries (and one `(pid, None)` for a person with none).
+
+    The reader half of `join_claim_roles`: every tool that hands indexed roles
+    to `spouse_parties`, `parentage_parties`, `vital_subjects` or
+    `social_parties` reads them through here, so the column's joined form never
+    reaches a rule that would compare it whole against `'parent'`. Rows are
+    taken in the order given (callers ORDER BY position); a pair seen twice -
+    one person written two ways in `persons:` - is kept once."""
+    out: list[tuple[str, str | None]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for pid, raw in rows:
+        roles = [r.strip() for r in str(raw or '').split(CLAIM_ROLE_SEP) if r.strip()]
+        for role in (roles or [None]):
+            pair = (pid, role)
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+    return out
+
+
+def roles_by_person(
+    persons_with_roles: Iterable[tuple[str, Any]],
+) -> dict[str, tuple[str, ...]]:
+    """Every role each person carries on a claim, people in first-appearance
+    order, roles normalised (stripped, lower-cased) and deduplicated in the
+    order written. A person the claim gives no role maps to `()`.
+
+    Input is `(pid, role)` pairs, and a person may appear in several - one per
+    role, the shape `claim_role_pairs` and `resolve_claim_persons_with_roles`
+    produce - or twice with the same role (one person written two ways in
+    `persons:`). This is the one fold every role rule below reads.
+
+    It used to be "first role wins": each rule kept the first role it saw for
+    a person and dropped the rest. A birth certificate's mother is routinely
+    also its informant, and `roles: {informant: [mother], parent: [mother,
+    father]}` then read her as an informant only - no mother-child link, while
+    the father's was built, so nothing looked wrong (#266). A role is a part
+    the person played on this record, and one person can play several."""
+    out: dict[str, list[str]] = {}
+    for pid, role in persons_with_roles:
+        roles = out.setdefault(pid, [])
+        norm = str(role or '').strip().lower()
+        if norm and norm not in roles:
+            roles.append(norm)
+    return {pid: tuple(roles) for pid, roles in out.items()}
+
+
 def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     """
     Who a marriage/divorce claim says were married TO EACH OTHER.
@@ -825,23 +904,22 @@ def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     Input is the claim's people paired with the role each plays, in the claim's
     own order: `[(pid, role), …]`, role None or '' where the claim gave none.
 
-    People are counted ONCE each, first appearance keeping their place. A claim
+    People are counted ONCE each, first appearance keeping their place, with
+    every role they carry (`roles_by_person`). A claim
     can name the same person twice - `persons: [P-a, "[[Alice Smith]]"]` is one
     man written two ways, and `claim_persons` stores a row per entry with no
     UNIQUE constraint to stop it. Counting entries instead of people read those
     two rows as a couple and married the man to himself: a spouse edge from a
     person to themselves, which `fha lint` cannot see (W125 needs two distinct
-    people to speak) and every consumer reads back as fact. Every producer
-    assigns a person's role by their id, so the duplicate entries carry the
-    same role and first-one-wins loses nothing.
+    people to speak) and every consumer reads back as fact.
 
     Then three cases, in order:
 
       1. `roles: spouse:` naming TWO OR MORE people -> those people, whatever
-         else is listed. Two is a couple; three or more is the serial case (one
+         else is listed (a spouse who was also the informant is a spouse). Two is a couple; three or more is the serial case (one
          claim recording successive marriages), and every pairing is derived.
-      2. Otherwise, exactly two people named AND no named person carrying an
-         explicit role other than spouse -> those two. This is the ordinary
+      2. Otherwise, exactly two people named AND no named person whose
+         explicit roles leave out spouse -> those two. This is the ordinary
          hand-written claim and by far the commonest shape; it must keep working
          without ceremony. Note what falls in here besides "no roles: map at
          all": a map naming ONE resolvable spouse. A typo'd id, a spouse left
@@ -870,17 +948,14 @@ def spouse_parties(persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
     twice drifts, and the two disagreeing is worse than either being wrong
     alone. `fha lint`'s W115 reads the same rule over raw claim YAML.
     """
-    first_role: dict[str, str] = {}
-    for pid, role in persons_with_roles:
-        if pid not in first_role:
-            first_role[pid] = str(role or '').strip().lower()
-    pairs = list(first_role.items())
+    roles_of = roles_by_person(persons_with_roles)
 
-    spouses = [pid for pid, role in pairs if role == 'spouse']
+    spouses = [pid for pid, roles in roles_of.items() if 'spouse' in roles]
     if len(spouses) >= 2:
         return spouses
-    if len(pairs) == 2 and not any(role and role != 'spouse' for _pid, role in pairs):
-        return [pid for pid, _role in pairs]
+    if len(roles_of) == 2 and not any(
+            roles and 'spouse' not in roles for roles in roles_of.values()):
+        return list(roles_of)
     return []
 
 
@@ -899,6 +974,10 @@ def parentage_parties(
     People are counted ONCE each, first appearance keeping their place, for the
     reason spelled out in `spouse_parties`: `persons: [P-a, "[[Sam Rivera]]"]`
     is one child written two ways, and `claim_persons` stores a row per entry.
+    Every role a person carries counts (`roles_by_person`): the mother who was
+    also the informant is a parent (#266). A person listed as both the `child`
+    and a `parent` of one record is read as the child only - nobody is their
+    own parent, and the record is about the child.
 
     **Roles only. There is no positional fallback, at any person count.** This
     is the one place the rule is stricter than `spouse_parties`, and the
@@ -936,13 +1015,11 @@ def parentage_parties(
     implemented twice drifts, and the two disagreeing is worse than either
     being wrong alone.
     """
-    first_role: dict[str, str] = {}
-    for pid, role in persons_with_roles:
-        if pid not in first_role:
-            first_role[pid] = str(role or '').strip().lower()
+    roles_of = roles_by_person(persons_with_roles)
 
-    children = [pid for pid, role in first_role.items() if role == 'child']
-    parents = [pid for pid, role in first_role.items() if role == 'parent']
+    children = [pid for pid, roles in roles_of.items() if 'child' in roles]
+    parents = [pid for pid, roles in roles_of.items()
+               if 'parent' in roles and 'child' not in roles]
     if not children or not parents:
         return [], []
     return children, parents
@@ -996,6 +1073,8 @@ def vital_subjects(
     People are counted ONCE each, first appearance keeping their place, for the
     reason `spouse_parties` spells out: `persons: [P-a, "[[Alice Smith]]"]` is
     one person written two ways and `claim_persons` stores a row per entry.
+    Every role a person carries counts (`roles_by_person`), so "unroled" below
+    means a person the claim gives no role at all.
 
     Returns, in order:
 
@@ -1085,11 +1164,8 @@ def vital_subjects(
     date at all, and the archive's bargain throughout this file is that a
     missing fact is recoverable where a false one is not.
     """
-    first_role: dict[str, str] = {}
-    for pid, role in persons_with_roles:
-        if pid not in first_role:
-            first_role[pid] = str(role or '').strip().lower()
-    pairs = list(first_role.items())
+    pairs = list(persons_with_roles)
+    roles_of = roles_by_person(pairs)
 
     subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
     if subject_role == 'spouse':
@@ -1097,14 +1173,14 @@ def vital_subjects(
         if couple:
             return couple
 
-    if not any(role for _pid, role in pairs):
-        return None if len(pairs) <= 1 else []
+    if not any(roles_of.values()):
+        return None if len(roles_of) <= 1 else []
 
     if subject_role:
-        named = [pid for pid, role in pairs if role == subject_role]
+        named = [pid for pid, roles in roles_of.items() if subject_role in roles]
         if named:
             return named
-    return [pid for pid, role in pairs if not role]
+    return [pid for pid, roles in roles_of.items() if not roles]
 
 
 # The claim types whose subject has died (SPEC §8.3: both name him `deceased:`).
@@ -1164,17 +1240,14 @@ def death_claim_deceased(
     ctype = str(claim_type or '').strip().lower()
     if ctype not in DEATH_CLAIM_TYPES:
         return DeceasedReading()
-    first_role: dict[str, str] = {}
-    for pid, role in persons_with_roles:
-        if pid not in first_role:
-            first_role[pid] = str(role or '').strip().lower()
-    pairs = list(first_role.items())
+    pairs = list(persons_with_roles)
+    roles_of = roles_by_person(pairs)
     subjects = vital_subjects(ctype, pairs)
     if subjects is None:                       # one person (or none), no roles
-        return DeceasedReading(named=tuple(pid for pid, _ in pairs))
-    if not any(role for _pid, role in pairs):  # several people, no roles
-        return DeceasedReading(unscoped=tuple(pid for pid, _ in pairs))
-    if any(role == VITAL_SUBJECT_ROLES[ctype] for _pid, role in pairs):
+        return DeceasedReading(named=tuple(roles_of))
+    if not any(roles_of.values()):             # several people, no roles
+        return DeceasedReading(unscoped=tuple(roles_of))
+    if any(VITAL_SUBJECT_ROLES[ctype] in roles for roles in roles_of.values()):
         return DeceasedReading(named=tuple(subjects))
     return DeceasedReading(by_elimination=tuple(subjects))
 
@@ -1349,7 +1422,7 @@ def claim_is_own_vital(
             'ORDER BY position', (claim_id,)).fetchall()
         subjects = vital_subjects(
             claim_type,
-            [(normalize_id(str(r[0])), r[1]) for r in rows])
+            claim_role_pairs((normalize_id(str(r[0])), r[1]) for r in rows))
         if cache is not None:
             cache[claim_id] = subjects
     return subjects is None or normalize_id(str(person_id)) in subjects
@@ -1359,7 +1432,9 @@ def resolve_claim_persons_with_roles(
     claim: dict, alias_map: dict[str, str] | None = None,
 ) -> list[tuple[str, str | None]]:
     """Resolve a raw claim dict's `persons:`/`roles:` into `(pid, role)` pairs,
-    in `persons:` order.
+    in `persons:` order - one pair per role a person carries, in `roles:`
+    order (the mother who was also the informant yields two), and one
+    `(pid, None)` pair for a person the map does not name (#266).
 
     The registry-world twin of what `fha index` resolves into the
     `claim_persons` table's `(person_id, role)` columns (`tools/index.py`'s
@@ -1413,8 +1488,9 @@ def resolve_claim_persons_with_roles(
         pid = resolve_typed_ref(p_raw, alias_map, want='P')
         if not pid:
             continue
-        role = next((rn for rn, pids in resolved_roles if pid in pids), None)
-        out.append((pid, role))
+        roles = [rn for rn, pids in resolved_roles if pid in pids]
+        for role in (roles or [None]):
+            out.append((pid, role))
     return out
 
 
@@ -1469,7 +1545,7 @@ def social_parties(
 
     Input is the claim's people paired with the role each plays, in the claim's
     own order; people are counted once each, first appearance keeping their
-    place, exactly as in `spouse_parties`.
+    place, with every role they carry, exactly as in `spouse_parties`.
 
     Four cases, in order:
 
@@ -1497,20 +1573,18 @@ def social_parties(
          reason.
     """
     want = str(subtype or '').strip().lower()
-    first_role: dict[str, str] = {}
-    for pid, role in persons_with_roles:
-        if pid not in first_role:
-            first_role[pid] = str(role or '').strip().lower()
-    pairs = list(first_role.items())
+    roles_of = roles_by_person(persons_with_roles)
 
-    exact = [pid for pid, role in pairs if role and role == want]
+    exact = [pid for pid, roles in roles_of.items() if want and want in roles]
     if len(exact) >= 2:
         return exact
-    social = [pid for pid, role in pairs if role in SOCIAL_TIE_SUBTYPES]
+    social = [pid for pid, roles in roles_of.items()
+              if any(r in SOCIAL_TIE_SUBTYPES for r in roles)]
     if len(social) >= 2:
         return social
-    if not any(role and role not in SOCIAL_TIE_SUBTYPES for _pid, role in pairs):
-        return [pid for pid, _role in pairs]
+    if not any(roles and not any(r in SOCIAL_TIE_SUBTYPES for r in roles)
+               for roles in roles_of.values()):
+        return list(roles_of)
     return []
 
 
@@ -1992,7 +2066,12 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # that rebuild (same rationale as v2/v3/v4/v5/v7) - freshness here is a
 # schema-version gate, not a file-timestamp one, so updating the TOOLS alone
 # (no record file touched) would otherwise never invalidate the stale cache.
-INDEX_SCHEMA_VERSION = 8
+# 9: `claim_persons.role` holds EVERY role a person carries on a claim,
+# comma-joined in `roles:` order, not just the first (#266). A v8 index kept
+# the first key only, so the mother listed as `informant:` before `parent:`
+# has no parent edge in its `relationships` rows - the same tools-only change
+# v8 describes, so bump to force the rebuild.
+INDEX_SCHEMA_VERSION = 9
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).

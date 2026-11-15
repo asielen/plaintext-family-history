@@ -2264,16 +2264,19 @@ def _claim_subtype_norm(claim: dict) -> str:
     return ''
 
 
-def _claim_roles_by_person(
+def _claim_all_roles_by_person(
     claim: dict, alias_map: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Each named person's role on this claim, read the way the index stores it.
+) -> dict[str, list[str]]:
+    """Every role key each person is listed under, in the order written - read
+    the way the index stores it.
 
-    `fha index` fills `claim_persons.role` by walking the `roles:` map in the
-    order it was written and taking the FIRST key whose people include this
-    person (index.py, the claim_persons insert). Lint mirrors that exactly:
-    the two must not disagree about what a claim says, or a warning here
-    describes a tree the indexer never built.
+    `fha index` fills `claim_persons.role` with every key whose people include
+    this person, in `roles:` order (index.py, the claim_persons insert; #266).
+    Lint mirrors that exactly: the two must not disagree about what a claim
+    says, or a warning here describes a tree the indexer never built. It used
+    to be the FIRST key only, on both sides, and a mother listed as
+    `informant:` and then `parent:` got no mother-child link while the father
+    got his.
 
     Roles the claim never mentions are simply absent - a person with no role is
     a person the claim said nothing about, which is a different thing from a
@@ -2282,28 +2285,6 @@ def _claim_roles_by_person(
     roles = claim.get('roles')
     if not isinstance(roles, dict):
         return {}   # `roles: [parent, child]` names nobody; not a crash, just empty
-    out: dict[str, str] = {}
-    for role_name in roles:
-        norm = str(role_name).strip().lower()
-        for pid in _role_pids(claim, role_name, alias_map):
-            out.setdefault(pid, norm)
-    return out
-
-
-def _claim_all_roles_by_person(
-    claim: dict, alias_map: dict[str, str] | None = None,
-) -> dict[str, list[str]]:
-    """Every role key each person is listed under, in the order written.
-
-    `_claim_roles_by_person` keeps only the FIRST key, because that is all the
-    index keeps. W126 needs the rest to see what that costs: a mother listed
-    as `informant:` and then `parent:` reads as an informant to the indexer,
-    her `parent:` line is dropped, and no mother-child link is built (#260
-    review). Normalised the same way, so the two never disagree on a key.
-    """
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return {}
     out: dict[str, list[str]] = {}
     for role_name in roles:
         norm = str(role_name).strip().lower()
@@ -2312,6 +2293,19 @@ def _claim_all_roles_by_person(
             if norm not in keys:
                 keys.append(norm)
     return out
+
+
+def _claim_role_pairs(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str | None]]:
+    """The claim's named people paired with every role each carries - one
+    `(pid, role)` pair per role, `(pid, None)` for a person with none - the
+    input `_lib.spouse_parties` / `_lib.parentage_parties` take, built the way
+    `fha index` builds it from `claim_persons`."""
+    all_roles = _claim_all_roles_by_person(claim, alias_map)
+    return [(pid, role)
+            for pid in dict.fromkeys(_claim_person_ids(claim, alias_map))
+            for role in (all_roles.get(pid) or [None])]
 
 
 def _claim_spouse_pids(
@@ -2346,9 +2340,7 @@ def _claim_spouse_pids(
     wrapper that flattened every non-spouse role to "no role" would have lint
     reporting a couple the index refuses to derive.
     """
-    named = _claim_person_ids(claim, alias_map)
-    by_person = _claim_roles_by_person(claim, alias_map)
-    return set(spouse_parties((pid, by_person.get(pid)) for pid in named))
+    return set(spouse_parties(_claim_role_pairs(claim, alias_map)))
 
 
 def _claim_parentage_pids(
@@ -2367,10 +2359,7 @@ def _claim_parentage_pids(
     index builds `claim_persons`: a `roles:` entry naming somebody left out of
     `persons:` is a broken map, not a secret extra parent.
     """
-    named = _claim_person_ids(claim, alias_map)
-    by_person = _claim_roles_by_person(claim, alias_map)
-    children, parents = parentage_parties(
-        (pid, by_person.get(pid)) for pid in named)
+    children, parents = parentage_parties(_claim_role_pairs(claim, alias_map))
     return set(children), set(parents)
 
 
@@ -2947,11 +2936,11 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         # somewhere other than the couple. It HAS said which two
                         # of them were the couple - it said these two were not -
                         # so the certificate wording would read as nonsense here.
-                        by_person = _claim_roles_by_person(claim, alias_map)
+                        all_roles = _claim_all_roles_by_person(claim, alias_map)
                         elsewhere = ', '.join(
-                            f'{fmt_id_display(pid)} a {by_person[pid]}'
+                            f'{fmt_id_display(pid)} a {" and ".join(all_roles[pid])}'
                             for pid in distinct
-                            if by_person.get(pid) and by_person[pid] != 'spouse')
+                            if all_roles.get(pid) and 'spouse' not in all_roles[pid])
                         cost = ('no marriage is recorded as ending'
                                 if claim_type == 'divorce' else
                                 'no marriage is recorded between them')
@@ -3010,11 +2999,11 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         'from `fha relate`, and from the charts on their pages. ')
                     head = (f'Claim {claim.get("id","?")} (type: birth) names '
                             f'{len(distinct)} people')
-                    by_person = _claim_roles_by_person(claim, alias_map)
+                    all_roles = _claim_all_roles_by_person(claim, alias_map)
                     role_children = [pid for pid in distinct
-                                     if by_person.get(pid) == 'child']
+                                     if 'child' in all_roles.get(pid, [])]
                     role_parents = [pid for pid in distinct
-                                    if by_person.get(pid) == 'parent']
+                                    if 'parent' in all_roles.get(pid, [])]
                     if role_children:
                         # Half a map: it says who was born and leaves someone
                         # else unplaced. Reading the unplaced as the parents is
@@ -3022,29 +3011,27 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         # is unplaced the map is whole and there is nothing to
                         # ask (#260) - the child arm alone has this exit.
                         # Placement reads EVERY key a person is listed under,
-                        # not just the first one the index keeps. A person is
-                        # unplaced when (1) the claim gives them no role, (2)
-                        # ANY of their keys is outside the SPEC list - the
-                        # `mother:` written after `informant:` is still a typo
-                        # the tree cannot read - or (3) any of their keys is
-                        # `parent`: this arm only runs when no parent edge was
-                        # derived, so that line was hidden by a key written
-                        # before it (the mother who was also the informant).
+                        # as the index does (#266). A person is unplaced when
+                        # (1) the claim gives them no role, (2) ANY of their
+                        # keys is outside the SPEC list - the `mother:` written
+                        # after `informant:` is still a typo the tree cannot
+                        # read - or (3) any of their keys is `parent`: this arm
+                        # only runs when no parent edge was derived, and a
+                        # `parent:` listing always derives one unless the same
+                        # person is also the `child:` (nobody is their own
+                        # parent, so the index reads them as the child only).
                         # A child who ALSO carries a recognised role - the
                         # adult registering her own delayed birth as informant,
                         # a twin who reported it - is placed: the index reads
                         # her as a child, and warning would ask her to delete
                         # a true fact.
-                        all_roles = _claim_all_roles_by_person(claim, alias_map)
 
                         def _unplaced_reason(pid: str) -> str | None:
                             keys = all_roles.get(pid, [])
                             if not keys:
                                 return 'no role given'
                             if 'parent' in keys:
-                                return (f'listed as a parent, but the '
-                                        f'`{by_person.get(pid)}:` line written '
-                                        f'before it hides that')
+                                return 'listed both as the person born and as a parent'
                             off_list = [k for k in keys if k not in CLAIM_ROLE_WORDS]
                             if off_list:
                                 return (f'under `{off_list[0]}:`, which is not a '
@@ -3057,30 +3044,28 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             listing = ', '.join(
                                 f'{fmt_id_display(pid)} ({reasons[pid]})'
                                 for pid in unplaced)
-                            hidden = any('parent' in all_roles.get(pid, [])
-                                         for pid in unplaced)
+                            self_parent = any('parent' in all_roles.get(pid, [])
+                                              for pid in unplaced)
                             # The child herself can only be here for an
                             # off-list word beside her `child:` line; the
                             # parent repair is never offered for her.
                             stray_on_child = any(
-                                by_person.get(pid) == 'child'
+                                'child' in all_roles.get(pid, [])
                                 and 'parent' not in all_roles.get(pid, [])
                                 for pid in unplaced)
-                            others = any(
-                                by_person.get(pid) != 'child'
-                                or 'parent' in all_roles.get(pid, [])
-                                for pid in unplaced)
+                            others = any('child' not in all_roles.get(pid, [])
+                                         for pid in unplaced)
                             findings.append(Finding('W', 'W126', src_path,
                                 f'{head} and says who was born, but '
-                                + ('its `parent:` line is hidden behind another role'
-                                   if hidden else
+                                + ('lists the person born as a parent too'
+                                   if self_parent else
                                    'marks none of the others as a parent')
                                 + f', so no parent link is recorded'
                                 f'{where_it_goes}'
                                 f'Not yet placed: {listing}. '
-                                + ('The archive reads each person by the first role '
-                                   'listed for them: give a parent one role, or put '
-                                   'the `parent:` line first. ' if hidden else '')
+                                + ('Nobody is both the person born and a parent: '
+                                   'take them off whichever of the `child:` and '
+                                   '`parent:` lines is wrong. ' if self_parent else '')
                                 + ('If they are the parents, add them to the roles: '
                                    'map - an indented `parent: [P-…, P-…]` line beside '
                                    'the `child:` one (`parent:` covers a mother and a '

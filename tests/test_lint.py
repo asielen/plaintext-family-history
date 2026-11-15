@@ -3034,48 +3034,48 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertIn('`mother:`, which is not a role word', msg)
         self.assertIn('parent: [P-', msg)
 
-    # -- #260 review: a parent: line hidden behind an earlier role -------------
-    # The index reads each person's FIRST role key only. A mother who was also
-    # the informant, written `informant:` before `parent:`, is an informant to
-    # the tree and no mother-child link is built - so she is not "placed", and
-    # W126 must keep saying so.
+    # -- #266: a person carries every role they are listed under ----------------
+    # The index used to read each person's FIRST role key only, so a mother
+    # who was also the informant, written `informant:` before `parent:`, got
+    # no mother-child link. It now reads every key, so she IS placed - the
+    # link is built and there is nothing to warn about - whichever order the
+    # lines are written in. Only a person listed as both the child and a
+    # parent is still unplaced: nobody is their own parent.
 
     def _hidden_parent_w126(self, roles: str) -> list:
         return self._w126(self._build(persons=[self.CHILD, self.MOTHER],
                                       roles_block=roles))
 
-    def test_mother_as_informant_then_parent_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_mother_as_informant_then_parent_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    informant: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        msg = w[0].message
-        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (listed as a parent, '
-                      'but the `informant:` line written before it hides that)', msg)
-        self.assertIn('put the `parent:` line first', msg)
+            f'    informant: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n'), [])
 
-    def test_informant_written_before_child_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_informant_written_before_child_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    informant: [{self.MOTHER}]\n'
-            f'    child: [{self.CHILD}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        self.assertIn('listed as a parent', w[0].message)
+            f'    child: [{self.CHILD}]\n    parent: [{self.MOTHER}]\n'), [])
 
-    def test_mother_as_witness_then_parent_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_mother_as_witness_then_parent_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    witness: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        self.assertIn('`witness:` line written before it', w[0].message)
+            f'    witness: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n'), [])
 
     def test_person_listed_as_child_and_parent_still_warns(self) -> None:
         # A contradiction, not a placement: the index reads her as a second
-        # child and drops the parent line.
+        # child and derives no parent from her.
         w = self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}, {self.MOTHER}]\n'
             f'    parent: [{self.MOTHER}]\n')
         self.assertEqual(len(w), 1)
-        self.assertIn('`child:` line written before it', w[0].message)
+        msg = w[0].message
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (listed both as the '
+                      'person born and as a parent)', msg)
+        self.assertIn('take them off whichever of the `child:` and `parent:` '
+                      'lines is wrong', msg)
+        # She is on the `child:` line already, so the "add a parent: line"
+        # repair is not offered for her.
+        self.assertNotIn('If they are the parents', msg)
 
     # -- #260 review, round 3: every key counts, both ways ---------------------
     # A child who also carries a recognised role is still read as a child, so

@@ -49,6 +49,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_role_pairs,
+    join_claim_roles,
     configure_utf8_stdout,
     SIGNIFICANCE,
     CLAIM_TYPES,
@@ -285,7 +287,9 @@ CREATE TABLE IF NOT EXISTS claims(
   negated INTEGER DEFAULT 0,
   notes TEXT
 );
--- claim_persons: ordered people and roles named by each claim.
+-- claim_persons: ordered people and roles named by each claim. One row per
+-- persons: entry; `role` holds EVERY role that person carries on the claim,
+-- comma-joined in roles: order (#266) - read it through _lib.claim_role_pairs.
 CREATE TABLE IF NOT EXISTS claim_persons(
   claim_id TEXT,
   person_id TEXT,
@@ -1629,7 +1633,9 @@ def _index_source(
             ppid = resolve_typed_ref(p_raw, alias_map, want='P')
             if not ppid:
                 continue   # inert note-link: unknown/ambiguous name, no garbage row
-            role = next((rn for rn, pids in resolved_roles if ppid in pids), None)
+            # Every role this person carries, not just the first one listed:
+            # the mother who was also the informant is a parent too (#266).
+            role = join_claim_roles(rn for rn, pids in resolved_roles if ppid in pids)
             conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
                 (cid, ppid, pos, role),
@@ -1969,15 +1975,13 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
         # out once here: undeduplicated, a pairing loop pairs a person with
         # themselves (a self-marriage, a self-friendship) and every consumer
         # reads that edge back as fact.
-        all_persons: list[tuple[str, str | None]] = []
-        seen_pids: set[str] = set()
-        for person_id, role in conn.execute(
-                'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
-                'ORDER BY position', (cid,)):
-            if person_id not in seen_pids:
-                seen_pids.add(person_id)
-                all_persons.append((person_id, role))
-        pids = [p for p, r in all_persons]
+        # `all_persons` is one (pid, role) pair per role a person carries
+        # (#266: the informant who is also a parent is both), so `pids` is
+        # the deduplicated list of people.
+        all_persons = claim_role_pairs(conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
+            'ORDER BY position', (cid,)))
+        pids = list(dict.fromkeys(p for p, r in all_persons))
 
         if ctype == 'relationship':
             # The edge's kind comes from the roles: map (the part each person
@@ -2052,6 +2056,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     b_ids = [p for p, r in all_persons if r == role_b]
                     for pa in a_ids:
                         for pb in b_ids:
+                            if pa == pb:
+                                continue   # one person listed on both sides
                             conn.execute(
                                 'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                                 (pa, edge_a, pb, cid, dmin, dmax),

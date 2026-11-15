@@ -94,6 +94,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     claim_is_own_vital,
+    claim_role_pairs,
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
@@ -705,7 +706,7 @@ def _spouse_persons_for_claim(conn: sqlite3.Connection, claim_id: str) -> frozen
         """,
         (claim_id,),
     ).fetchall()
-    return frozenset(spouse_parties([(r['person_id'], r['role']) for r in rows]))
+    return frozenset(spouse_parties(claim_role_pairs((r['person_id'], r['role']) for r in rows)))
 
 
 def _load_marriages(
