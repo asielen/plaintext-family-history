@@ -3598,16 +3598,18 @@ class OriginalBackup:
 
         `files` are the files about to be written to, when the caller knows
         them. The warning used to say "your original photo files" whatever
-        they were, so attaching a PDF to a letter warned about photos (#280).
-        A run that writes only to photos keeps the photo wording; any other
-        run names files in general, since a scanned document gets the same
-        embedded `SOURCE:` keyword (#252).
+        they were, so attaching a PDF to a letter warned about photos (PR
+        #287). A run that writes only to photos keeps the photo wording; any
+        other run names files in general, since a scanned document gets the
+        same embedded `SOURCE:` keyword (#252). What counts is where a file
+        is filed, not its extension: a `.tif` page filed with a letter in
+        the documents root is a document (`_is_document_target`).
         """
         if self._announced:
             return
         self._announced = True
         paths = [Path(f) for f in (files or [])]
-        if paths and not all(p.suffix.lower() in PHOTO_EXTENSIONS for p in paths):
+        if any(self._is_document_target(p) for p in paths):
             what, each, unit = 'original files (scanned documents and photos)', 'file', 'files'
         else:
             what, each, unit = 'original photo files', 'photo', 'photos'
@@ -3621,6 +3623,16 @@ class OriginalBackup:
             f'(any folder outside your archive; copies are made once per {each}, '
             f'so the space it needs is one copy of the {unit} you work on).',
         ))
+
+    def _is_document_target(self, path: Path) -> bool:
+        """True for a file the archive keeps as a document: one in the
+        documents root whatever its extension, or a non-image elsewhere."""
+        documents_root = resolve_path('documents', self.fha_config, self.archive_root)
+        try:
+            Path(path).resolve().relative_to(documents_root.resolve())
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return Path(path).suffix.lower() not in PHOTO_EXTENSIONS
 
     def announce(self, files=None) -> None:
         """Say up front what will happen, before the human confirms a write.

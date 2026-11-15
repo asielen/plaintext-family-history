@@ -10,10 +10,11 @@ Each test names the issue it guards:
   * #275 - `--dest` chooses the photo-library folder for a photo filed out of
     the inbox; without it the live output says the photo is at the top.
   * #276 - only an image or a PDF counts as a back scan.
-  * #277 - "Filed ... and parked the original" is said only once the command
-    has succeeded.
+  * #277 - the line saying the original was kept in `inbox/processed/` is
+    said only once the command has succeeded, and reads in order after the
+    lines above it.
   * #278 - a `--more` attachment in the documents root is named for its source.
-  * #280 (also seen) - the no-safety-copies warning names the right kind of file.
+  * PR #287 - the no-safety-copies warning names the right kind of file.
 
 The photo paths never call exiftool: `test_process.FakePhotoStore` stands in.
 
@@ -336,8 +337,8 @@ class FiledLineOnlyOnSuccessTests(InboxFilingTestCase):
 
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('more than one possible back scan', err)
+        self.assertNotIn('is kept at', out)
         self.assertNotIn('Filed', out)
-        self.assertNotIn('parked', out)
         self.assertEqual(self._snapshot(self.inbox), before)
         self.assertEqual(self._files(self.docs), [])
 
@@ -351,6 +352,7 @@ class FiledLineOnlyOnSuccessTests(InboxFilingTestCase):
 
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('different S-id', err)
+        self.assertNotIn('is kept at', out)
         self.assertNotIn('Filed', out)
         self.assertEqual(self._snapshot(self.inbox), before_inbox)
         self.assertEqual(self._files(self.docs), before_docs)
@@ -359,8 +361,14 @@ class FiledLineOnlyOnSuccessTests(InboxFilingTestCase):
         self._put(self.inbox / 'Letters' / 'scan-0412.pdf', PDF)
         rc, out, err = self._run(str(self.inbox / 'Letters' / 'scan-0412.pdf'), '--type', 'letter')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        self.assertIn('Filed scan-0412.pdf into', out)
-        self.assertIn('parked the original', out)
+        lines = out.splitlines()
+        kept = [i for i, ln in enumerate(lines)
+                if ln.startswith('The original scan-0412.pdf is kept at')]
+        self.assertEqual(len(kept), 1, out)
+        # Review L6: it reads in order - after the rename it refers back to.
+        renamed = [i for i, ln in enumerate(lines) if ln.startswith('Renamed scan-0412.pdf')]
+        self.assertTrue(renamed and renamed[0] < kept[0], out)
+        self.assertIn('the copy filed above', lines[kept[0]])
 
 
 class PhotoDestTests(InboxFilingTestCase):
@@ -487,7 +495,7 @@ class PhotoDestTests(InboxFilingTestCase):
 
 
 class SafetyCopyWordingTests(InboxFilingTestCase):
-    """#280 (also seen): the warning names the kind of file being written."""
+    """PR #287: the warning names the kind of file being written."""
 
     def test_attaching_a_pdf_does_not_warn_about_photo_files(self) -> None:
         primary, _record, _sid = self._file_letter()
@@ -505,6 +513,164 @@ class SafetyCopyWordingTests(InboxFilingTestCase):
         rc, _out, err = self._run(str(photo))
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn('original photo files', err)
+
+
+class ReviewFollowupTests(InboxFilingTestCase):
+    """PR #287 review: the cases the first pass got wrong or left silent."""
+
+    # P2-2: the narrowed naming rule (#278, owner decision)
+
+    def test_a_short_stem_takes_the_sources_slug(self) -> None:
+        primary, _record, sid = self._file_letter()
+        page = self._put(self.inbox / 'postcard.jpg', JPEG)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-4')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue(
+            (self.docs / 'letter' / f'postcard-from-aunt-1908-page-4_{sid}.jpg').is_file(),
+            sorted(p.name for p in (self.docs / 'letter').iterdir()))
+
+    def test_a_role_already_in_the_stem_is_not_doubled(self) -> None:
+        primary, _record, sid = self._file_letter()
+        back = self._put(self.inbox / 'postcard-from-aunt-1908-back.tif', TIFF)
+        rc, _out, err = self._run(str(primary), '--more', str(back), 'back:c')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue(
+            (self.docs / 'letter' / f'postcard-from-aunt-1908-c-back_{sid}.tif').is_file(),
+            sorted(p.name for p in (self.docs / 'letter').iterdir()))
+
+    def test_a_session_transcript_keeps_its_stem_on_an_audio_source(self) -> None:
+        folder = self.docs / 'interviews'
+        audio = self._put(folder / 'hartley-1998-audio.m4a', b'audio')
+        rc, _out, err = self._run(str(audio), '--type', 'interview', '--slug', 'hartley-1998-audio')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next(folder.glob('hartley-1998-audio_S-*.m4a'))
+        sid = primary.stem.split('_')[-1]
+        whisper = self._put(folder / 'hartley-1998.md', b'# Whisper transcript\n')
+        rc, _out, err = self._run(str(primary), '--more', str(whisper), 'whisper-transcript')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((folder / f'hartley-1998-whisper-transcript_{sid}.md').is_file())
+
+    # P2-3: a photo source's --more photo files beside its primary
+
+    def test_more_photo_lands_beside_a_photo_primary(self) -> None:
+        front = self._put(self.inbox / 'T4' / 'x.jpg', JPEG)
+        rc, _out, err = self._run(str(front), '--type', 'photo', '--dest', 'C')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        back = self._put(self.inbox / 'T4' / 'x-back.jpg', JPEG)
+        rc, out, err = self._run(str(self.photos / 'C' / 'x.jpg'), '--more', str(back), 'back')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._files(self.photos), ['C/x-back.jpg', 'C/x.jpg'])
+        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(self._files_entries(record)[1]['file'], 'photos/C/x-back.jpg')
+        self.assertNotIn('top of your photo library', out)
+
+    # P2-4: --dest is never accepted and then ignored
+
+    def test_dest_on_a_bundle_without_photos_is_refused(self) -> None:
+        folder = self.inbox / 'Papers'
+        self._put(folder / 'deed.pdf', PDF)
+        (folder / 'notes.md').write_text('---\ntitle: Deed\n---\n', encoding='utf-8')
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(folder), '--dest', 'C')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--dest', err)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    def test_dest_on_a_pointer_only_stub_is_refused(self) -> None:
+        stub = self.inbox / 'census.notes.md'
+        stub.write_text('---\nasset_elsewhere: true\nexternal_links:\n'
+                        '  - https://example.org/record/1\n---\n', encoding='utf-8')
+        before = self._snapshot(self.tmp)
+        rc, _out, err = self._run(str(stub), '--dest', 'C')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--dest', err)
+        self.assertEqual(self._snapshot(self.tmp), before)
+
+    # L1: no empty --dest folder survives a refused run
+
+    def test_unparkable_original_leaves_no_empty_dest_folder(self) -> None:
+        photo = self._put(self.inbox / 'x.jpg', JPEG)
+        (self.inbox / 'processed').write_bytes(b'a plain file where the folder goes')
+        rc, _out, err = self._run(str(photo), '--type', 'photo', '--dest', 'New/Deep')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(photo.is_file())
+        self.assertEqual(list(self.photos.iterdir()), [])
+
+    def test_bundle_rollback_leaves_no_empty_dest_folder(self) -> None:
+        folder = self.inbox / 'Reunion'
+        self._put(folder / 'group.jpg', JPEG)
+        (folder / 'notes.md').write_text('---\ntitle: Reunion\n---\n', encoding='utf-8')
+        self.store.fail_paths.add(str(self.photos / 'Reunions' / 'Deep' / 'group.jpg'))
+        rc, _out, _err = self._run(str(folder), '--dest', 'Reunions/Deep')
+        self.assertNotEqual(rc, EXIT_CLEAN)
+        self.assertTrue((folder / 'group.jpg').is_file())
+        self.assertEqual(list(self.photos.iterdir()), [])
+
+    # L2: the copy-letter suggestion can be run as shown
+
+    def test_copy_letter_suggestion_names_the_inbox_path(self) -> None:
+        primary, _record, _sid = self._file_letter()
+        self._put(self.inbox / 'x' / 'a.jpg', JPEG)
+        two = self._put(self.inbox / 'x' / 'b.jpg', JPEG)
+        rc, _out, err = self._run(str(primary), '--more', str(self.inbox / 'x' / 'a.jpg'), 'page')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        rc, _out, err = self._run(str(primary), '--more', str(two), 'page')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--more "inbox/x/b.jpg" page:b', err)
+        self.assertNotIn('#278', err)
+
+    # L3: the warning goes by where the file is filed, not its extension
+
+    def test_a_tif_page_filed_as_a_document_is_not_called_a_photo(self) -> None:
+        primary, _record, _sid = self._file_letter()
+        page = self._put(self.inbox / 'p2.tif', TIFF)
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertIn('No safety copies are being kept', err)
+        self.assertNotIn('original photo files', err)
+
+    # L4: --dest on a file outside everything gets the inbox advice
+
+    def test_dest_on_a_file_outside_every_root_names_the_inbox(self) -> None:
+        stray = self._put(self.tmp / 'elsewhere' / 'x.jpg', JPEG)
+        rc, _out, err = self._run(str(stray), '--type', 'photo', '--dest', 'C')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn("isn't in your inbox", err)
+
+    # L5: a caller that cannot pass --dest is not told to
+
+    def test_no_dest_advice_when_the_caller_cannot_pass_it(self) -> None:
+        import argparse
+        photo = self._put(self.inbox / 'Trip' / 'x.jpg', JPEG)
+        ns = argparse.Namespace(
+            file=str(photo), source_type='photo', title=None, slug=None, source_date=None,
+            more=None, people=None, dry_run=False, root=str(self.archive), source_id=None,
+            offer_dest=False)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            res = process.run_process(ns)
+        self.assertTrue(res.ok)
+        self.assertIn('top of your photo library', out.getvalue())
+        self.assertNotIn('--dest', out.getvalue())
+
+    # L7: "skip" at the variation prompt puts the photo back
+
+    def test_skip_at_the_variation_prompt_puts_the_photo_back(self) -> None:
+        self._put(self.photos / 'card-back.jpg', JPEG)  # an unprocessed back already filed
+        front = self._put(self.inbox / 'card.jpg', JPEG)
+        saved = process._prompt
+        process._prompt = lambda _msg: 'skip'
+        try:
+            rc, out, _err = self._run(str(front))
+        finally:
+            process._prompt = saved
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(front.is_file(), 'the photo is back in the inbox')
+        self.assertFalse((self.photos / 'card.jpg').exists())
+        self.assertFalse((self.inbox / 'processed').exists())
+        self.assertNotIn('is kept at', out)
+        self.assertIn('back in the inbox', out)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
 
 if __name__ == '__main__':

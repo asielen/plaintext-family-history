@@ -1276,6 +1276,28 @@ class ProcessVerbExternalRootTests(_ServeCase):
             ext_tmp.cleanup()
 
 
+class ProcessVerbDestAdviceTests(_ServeCase):
+    """PR #287 review L5: the workbench's process.file verb has no way to send
+    `--dest`, so it asks the engine not to advise it (`offer_dest=False`)."""
+
+    def test_verb_process_asks_for_no_dest_advice(self):
+        (self.root / 'inbox').mkdir(exist_ok=True)
+        (self.root / 'inbox' / 'scan.jpg').write_bytes(b'not-a-real-jpeg')
+        seen = {}
+        real_run_process = serve.process_mod.run_process
+
+        def spy(ns):
+            seen['offer_dest'] = getattr(ns, 'offer_dest', True)
+            return serve.Result(ok=True, exit_code=serve.EXIT_CLEAN)
+
+        serve.process_mod.run_process = spy
+        try:
+            serve._verb_process(self.state, {'file': 'inbox/scan.jpg'}, True)
+        finally:
+            serve.process_mod.run_process = real_run_process
+        self.assertIs(seen.get('offer_dest'), False)
+
+
 class CapturePathVerbTests(_ServeCase):
     """Fix 2: `capture.path` registers a file OUTSIDE the archive on purpose -
     no `_confine_asset_path` gate - but a RELATIVE path must resolve against

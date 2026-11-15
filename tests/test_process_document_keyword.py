@@ -425,7 +425,7 @@ class RealDocumentKeywordTests(_Base):
                         f'-XMP-dc:Subject=SOURCE: {sid.upper()}', str(page)], check=True)
         rc, _out, err = self._run([str(primary), '--more', str(page), 'page'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        attached = next(folder.glob('page3-page_S-*.tif'))
+        attached = next(folder.glob('will-page_S-*.tif'))  # #278: named for the source
         for tag, values in read_fields(attached).items():
             self.assertEqual(values, [f'SOURCE: {sid}'], tag)
 

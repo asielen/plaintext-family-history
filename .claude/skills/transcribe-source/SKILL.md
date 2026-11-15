@@ -175,9 +175,9 @@ Three structural rules the file must obey, because tools read it:
   line, which would publish your directory layout into an archived file and break the day the archive
   moves (AGENTS_TOOLING §11, SPEC §12.4).
 
-Then file it and attach it. `fha process --more` only attaches a file already under the documents root,
-and it appends the role to the stem itself, so write the file with the **source's shared stem carrying
-neither the S-id nor a role suffix**, beside the primary:
+Then file it and attach it. `fha process --more` names the attachment for its source and appends the
+role itself, so write the file with the **source's shared stem carrying neither the S-id nor a role
+suffix**, beside the primary (a file in the inbox works too: `--more` files it beside the primary):
 
 ```
 fha process <one of the source's files> --more <documents/…/{stem}.md> transcript --dry-run
@@ -185,10 +185,13 @@ fha process <one of the source's files> --more <documents/…/{stem}.md> transcr
 fha index                    # the words only become searchable once the index has read them
 ```
 
-`{stem}.md` becomes `{stem}-transcript_{S-id}.md`. Two ways to get the name wrong, both avoidable: a file
-that **already carries an S-id** is refused outright ("already carries an S-id"), and a file you helpfully
-named `{stem}-transcript.md` is *not* refused — it files as `{stem}-transcript-transcript_{S-id}.md`,
-because `--more` appends the role itself. If the resulting filename looks wrong, **say so and stop**: a
+`{stem}.md` becomes `{stem}-transcript_{S-id}.md`. The rule behind it: a documents-root attachment is
+named `{source slug}[-{copy}]-{role}_{S-id}`, and a file whose name already starts with the source's slug
+keeps that name with the role added (not doubled - `{stem}-transcript.md` also files as
+`{stem}-transcript_{S-id}.md`). A file named anything else - `notes.md`, `page3.md` - takes the source's
+slug instead, so the topic in its name is lost; use the shared stem. A file that **already carries a
+different S-id** is refused outright ("already carries a different S-id"), and a second transcript is
+refused until you give it a copy letter (`transcript:b`). If the resulting filename looks wrong, **say so and stop**: a
 documents-root file is renamed exactly once, by `fha process`, and neither the file nor its `files:` entry
 is ever hand-edited afterwards.
 

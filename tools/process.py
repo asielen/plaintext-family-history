@@ -126,7 +126,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #                                 scan, pulled in automatically rather than left behind
 #                                 (#113); raises on more than one candidate (#145 finding 4)
 #    _companion_for_sidecar    - resolve direct sidecar input to its asset
-#    _InboxRelocation          - a relocation's undo + its "Filed ..." line, said on success (#277)
+#    _InboxRelocation          - a relocation's undo + its "original is kept at" line, said on success (#277)
 #    _report_relocations       - print those lines once the command has succeeded
 #    _relocate_from_inbox      - copy an inbox file into its root, park the original
 #    _remove_empty_dirs        - drop folders a refused relocation created
@@ -828,7 +828,7 @@ def _open_backup(
     processing group after group) is handed the outer run's object so the
     "no safety copies" warning is said once, not once per group. `files` are
     the files about to be written to, so a warning names documents when the
-    run writes to documents (#280); without them it speaks of photos.
+    run writes to documents (PR #287); without them it speaks of photos.
     """
     if backup is None:
         backup = OriginalBackup(archive_root, fha_config)
@@ -1239,8 +1239,8 @@ class _InboxRelocation:
     """A finished inbox relocation: its undo, and the line that reports it.
 
     Calling the object undoes the relocation (the no-arg `undo()` every
-    caller already invokes on a refusal). `report()` prints the "Filed ...
-    and parked the original" line, and the caller calls it only once the
+    caller already invokes on a refusal). `report()` prints the "The original X is kept at
+    ...; the copy filed above is ..." line, and the caller calls it only once the
     whole command has succeeded (#277). The relocation runs first, before
     the checks that can still refuse, so a line printed at that moment was
     a promise the run could not keep: a refused run put everything back,
@@ -1259,7 +1259,7 @@ class _InboxRelocation:
 
 
 def _report_relocations(*relocations) -> None:
-    """Print the "Filed ..." line of each relocation that happened (#277)."""
+    """Print the "original is kept at" line of each relocation that happened (#277)."""
     for relocation in relocations:
         if relocation is not None:
             relocation.report()
@@ -1460,6 +1460,10 @@ def _relocate_from_inbox(
         dest_root.mkdir(parents=True, exist_ok=True)
         parked_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
+        # The --dest folder may have been made before the park folder
+        # failed (`inbox/processed` a plain file, say).
+        _remove_empty_dirs(created_park_dirs)
+        _remove_empty_dirs(created_dest_dirs)
         raise ProcessError(
             f'could not create a destination folder for {file_path.name}: {e}. '
             'Nothing was moved out of inbox/.'
@@ -1527,13 +1531,14 @@ def _relocate_from_inbox(
             f'{_rel(processed_root, archive_root)}/: {e}.{recovery_note}'
         ) from e
 
+    # Printed last, after the lines that file and rename the copy, so it is
+    # worded as a look back at them rather than as the first step (#277).
+    kept = f'The original {file_path.name} is kept at {_rel(parked_path, archive_root)}'
     if kind == 'photo':
-        filed_line = (f'Filed {file_path.name} at {_rel(new_path, archive_root)}{top_note} '
-                      f'and parked the original at {_rel(parked_path, archive_root)}')
+        filed_line = (f'{kept}; the copy filed above is at '
+                      f'{_rel(new_path, archive_root)}{top_note}.')
     else:
-        filed_as = '' if new_path.name == file_path.name else f' as {new_path.name}'
-        filed_line = (f'Filed {file_path.name} into {_rel(dest_root, archive_root)}/{filed_as} '
-                      f'and parked the original at {_rel(parked_path, archive_root)}')
+        filed_line = f'{kept}; the copy filed above is the one the archive keeps.'
 
     def undo() -> None:
         if new_path.exists():
@@ -1575,6 +1580,15 @@ def _remove_empty_dirs(created: list[Path]) -> None:
 def _inbox_shown(file_path: Path, fha_config: dict, archive_root: Path) -> str:
     """An inbox file spelled the way `fha process` reads it back (`inbox/...`)."""
     return path_to_alias(file_path, 'inbox', fha_config, archive_root)
+
+
+def _typed_path(file_path: Path, fha_config: dict, archive_root: Path) -> str:
+    """A file spelled so a suggested command can be run as shown: alias form
+    (`inbox/x/b.jpg`, `documents/...`) under a root, else its full path."""
+    for alias in ASSET_ROOT_ALIASES:
+        if _is_under(file_path, resolve_path(alias, fha_config, archive_root)):
+            return path_to_alias(file_path, alias, fha_config, archive_root)
+    return Path(file_path).as_posix()
 
 
 def _dest_example(file_path: Path, inbox_root: Path) -> str:
@@ -2938,6 +2952,10 @@ def _process_variation_set(
                                        real_path=real_paths.get(m), backup=backup))
         return rc
     print('Skipped - deferred to a later session.')
+    if report is not None:
+        # The caller may have filed the photo out of the inbox to get here;
+        # a skip files nothing, so it puts the photo back (PR #287 review).
+        report['skipped'] = True
     return EXIT_CLEAN
 
 
@@ -3135,6 +3153,7 @@ def process_bundle(
     source_type: str | None = None,
     backup: OriginalBackup | None = None,
     photo_dest_dir: Path | None = None,
+    offer_dest: bool = True,
 ) -> int:
     """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
 
@@ -3221,6 +3240,15 @@ def process_bundle(
             stated_type = hinted_type
     asset_kinds = {a: classify_asset(a, fha_config, archive_root, source_type=stated_type)
                    for a in assets}
+
+    if photo_dest_dir is not None and not any(k == 'photo' for k in asset_kinds.values()):
+        # A flag accepted and then ignored is the confident-wrong-answer
+        # class (#59): --dest names a photo-library folder, and this bundle
+        # files nothing there.
+        raise ProcessError(
+            f'--dest chooses the photo-library folder for a bundle\'s photos, and '
+            f'{folder.name} holds no photos - its files are filed with your documents - '
+            'so drop --dest. Nothing was changed.')
 
     source_type = stated_type or _DEFAULT_DOCUMENT_TYPE
     if stated_type is None and asset_kinds \
@@ -3337,7 +3365,7 @@ def process_bundle(
     )
 
     # The files the keyword goes into, so a safety-copy warning names the
-    # right kind of file (#280).
+    # right kind of file (PR #287).
     embed_targets = [item['dest'] for item in plan if item['embed']]
     if dry_run:
         if any(item['embed'] for item in plan):
@@ -3350,9 +3378,10 @@ def process_bundle(
                 verb = 'rename + file + embed SOURCE in'
             else:
                 verb = 'rename + file'
-            where = (' (the top of your photo library - add --dest FOLDER to file it in a '
-                     'folder instead)'
-                     if item['kind'] == 'photo' and photo_dest_dir is None else '')
+            where = ''
+            if item['kind'] == 'photo' and photo_dest_dir is None:
+                where = (' (the top of your photo library - add --dest FOLDER to file it in '
+                         'a folder instead)' if offer_dest else ' (the top of your photo library)')
             print(f'[dry-run] Would {verb} {item["src"].name} -> '
                   f'{_rel(item["dest"], archive_root)}{where}')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
@@ -3369,6 +3398,14 @@ def process_bundle(
     keyword_warnings: list[str] = []
     undo_copies: list[Path] = []
     notes_text = notes_path.read_text(encoding='utf-8')
+    # A --dest folder this run creates in the photo library is removed again
+    # if the run rolls back: the library is the owner's to arrange.
+    created_dest_dirs: list[Path] = []
+    if photo_dest_dir is not None:
+        probe = photo_dest_dir
+        while not probe.exists() and probe != probe.parent and probe != photos_root:
+            created_dest_dirs.append(probe)
+            probe = probe.parent
     try:
         for item in plan:
             item['dest'].parent.mkdir(parents=True, exist_ok=True)
@@ -3420,6 +3457,7 @@ def process_bundle(
             if kw_err is not None:
                 failed.append(f'remove the SOURCE: {dsid} keyword from {dest.name} ({kw_err})')
         failed.extend(_run_undo(undo))
+        _remove_empty_dirs(created_dest_dirs)
         if failed:
             print(f'ERROR: bundle dissolution failed, and the rollback could not '
                   f'finish: {e}', file=sys.stderr)
@@ -3448,8 +3486,9 @@ def process_bundle(
     if photo_dest_dir is None and any(item['kind'] == 'photo' for item in plan):
         # Said on the live run, not only the dry run: loose photos at the top
         # of the library are a tidy-up the owner has to know about (#275).
-        print('The photos are at the top of your photo library. Next time, add '
-              '--dest FOLDER to file a bundle\'s photos into a folder of the library.')
+        print('The photos are at the top of your photo library.'
+              + (' Next time, add --dest FOLDER to file a bundle\'s photos into a folder '
+                 'of the library.' if offer_dest else ''))
     for warning in keyword_warnings:
         print(warning, file=sys.stderr)
     print(f'Scaffolded {_rel(record_path, archive_root)} with {len(assets)} files')
@@ -3944,13 +3983,15 @@ def attach_more(
     more_file, _, more_relocate_undo = _relocate_from_inbox(
         archive_root, fha_config, more_file, None,
         source_type=source_type, dry_run=dry_run, name_if_taken=print_name,
-        kind=more_kind)
+        kind=more_kind,
+        photo_dest_dir=_photo_primary_folder(archive_root, fha_config, primary_path, more_kind))
     more_real_path = pre_move_more if dry_run and more_file != pre_move_more else None
     try:
         rc = _attach_more_engine(
             archive_root, fha_config, primary_path, more_file, role, copy,
             dry_run=dry_run, real_path=real_path, more_real_path=more_real_path,
             backup=backup, source_type=source_type, more_kind=more_kind,
+            more_shown=_typed_path(pre_move_more, fha_config, archive_root),
         )
     except Exception:
         if more_relocate_undo is not None:
@@ -3960,9 +4001,34 @@ def attach_more(
         more_relocate_undo()
     elif more_relocate_undo is not None:
         # Said only now, once the attach has succeeded: a refusal above put
-        # the file back, and its last word must not be "Filed" (#277).
+        # the file back, and its last word must not say it was kept (#277).
         more_relocate_undo.report()
     return rc
+
+
+def _photo_primary_folder(
+    archive_root: Path, fha_config: dict, primary_path: Path, more_kind: str,
+) -> Path | None:
+    """The photo-library folder a `--more` photo joins: its primary's own.
+
+    The back of a photo filed into `photos/Cemetery Visit 2021/` belongs
+    beside it, not loose at the top of the library (PR #287 review). None
+    when the attachment is not a photo, when the primary is not in the
+    photo library, or when the primary sits at the library's top already -
+    then the relocation files at the top and says so.
+    """
+    if more_kind != 'photo':
+        return None
+    photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
+    if not _is_under(primary_path, photos_root):
+        return None
+    folder = primary_path.parent
+    try:
+        if folder.resolve() == photos_root.resolve():
+            return None
+    except (OSError, RuntimeError):
+        return None
+    return folder
 
 
 def _more_file_kind(
@@ -4005,7 +4071,8 @@ def _more_file_kind(
     return kind
 
 
-def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str) -> str:
+def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
+                     role: str) -> str:
     """The `{slug}` a documents-root `--more` attachment is named with (#278).
 
     SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
@@ -4015,16 +4082,21 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str) -
     (photos are never renamed, so their name is no guide). The scan's real
     name is not lost: it is recorded as `original_filename:`.
 
-    A file already named on the source's stem keeps that name, and the role
-    is added to it: `{slug}-farm.m4a` attached as `audio` files as
-    `{slug}-farm-audio_...`. That is the naming the recording and
-    transcript skills write files under on purpose (one session, one
-    prefix, the topic in the name), and it is the shape #108 already
-    protects once a file carries the S-id too. "On the source's stem"
-    means the two names agree up to a hyphen, in either direction - the
-    whisper-pass convention names a transcript `{session}` for a source
-    whose slug is `{session}-audio`. Anything else, a scanner's
-    `scan-0412-p3`, takes the source's slug.
+    Two names are kept, both the recording and transcript skills'
+    deliberate conventions (owner decision on PR #287):
+
+      * a file whose name starts with the source's slug and a hyphen -
+        `{slug}-farm.m4a` attached as `audio` files as
+        `{slug}-farm-audio_...` (one session, one prefix, the topic in the
+        name). If its name already ends in the role (`{slug}-back.tif`
+        attached as `back:c`), the role is not added twice: it files as
+        `{slug}-c-back_...`.
+      * a transcript named `{session}` attached to a recording source whose
+        slug is `{session}-audio` (the whisper-pass convention) keeps
+        `{session}`.
+
+    Everything else takes the source's slug - a scanner's `scan-0412-p3`,
+    and a short name like `postcard` that merely begins the slug.
     """
     slug = None
     for entry in meta.get('files') or []:
@@ -4035,7 +4107,14 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str) -
     if not slug:
         slug = _strip_sid_suffix(record_path.stem, sid)
     own = _slugify(more_file.stem)
-    if own == slug or own.startswith(slug + '-') or slug.startswith(own + '-'):
+    role_tail = '-' + _slugify(role)
+    if own == slug:
+        return own
+    if own.startswith(slug + '-'):
+        if own.endswith(role_tail) and len(own) - len(role_tail) >= len(slug):
+            own = own[:-len(role_tail)]
+        return own
+    if slug == own + '-audio':
         return own
     return slug
 
@@ -4093,6 +4172,7 @@ def _attach_more_engine(
     backup: OriginalBackup | None,
     source_type: str | None = None,
     more_kind: str | None = None,
+    more_shown: str | None = None,
 ) -> int:
     """The `--more` attach logic proper, run against `more_file`'s resolved
     location (`attach_more`'s inbox-relocation wrapper has already moved it,
@@ -4116,6 +4196,9 @@ def _attach_more_engine(
     `more_kind` is `attach_more`'s answer from `_more_file_kind`, the same
     one its inbox relocation filed by, so the file is marked and listed for
     the root it was actually put in (#274). Classified here when absent.
+
+    `more_shown` is the file as the human can type it again after a refusal
+    has put it back (`inbox/x/b.jpg`), for the suggested command.
     """
     more_on_disk = more_real_path if more_real_path is not None else more_file
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
@@ -4330,7 +4413,7 @@ def _attach_more_engine(
         # word already baked into the stem or double the S-id suffix.
         new_name = more_file.name
     else:
-        base = _attachment_base(more_file, meta_for_check, record_path, sid)
+        base = _attachment_base(more_file, meta_for_check, record_path, sid, role)
         suffix = f'-{_slugify(role)}'
         if copy:
             suffix = f'-{_slugify(copy)}{suffix}'
@@ -4428,9 +4511,10 @@ def _attach_more_engine(
                     f"role '{existing_role}'"
                     + (f' (copy: {existing_copy})' if existing_copy else '')
                     + ', and a different file already sits at that path. Attachments '
-                    'are named for their source (#278), so a second file with the same '
+                    'are named for their source, so a second file with the same '
                     'role needs its own role or a copy letter, e.g. '
-                    f'`--more "{more_file.name}" {_slugify(role)}:b`. Nothing was changed.'
+                    f'`--more "{more_shown or more_file.name}" {_slugify(role)}:b`. '
+                    'Nothing was changed.'
                 )
             raise ProcessError(
                 f'{new_alias} is already listed in {_rel(record_path, archive_root)} as '
@@ -4465,7 +4549,7 @@ def _attach_more_engine(
             f'destination file already exists: {new_path.name} - this source already '
             f'has a file named for the role {role!r}'
             + (f' (copy {copy})' if copy else '') + '. Give this one its own role or '
-            f'a copy letter, e.g. `--more "{more_file.name}" {_slugify(role)}:b`, '
+            f'a copy letter, e.g. `--more "{more_shown or more_file.name}" {_slugify(role)}:b`, '
             'then run it again. Nothing was changed.')
 
     more_dest_display = (new_name if new_path.parent == more_file.parent
@@ -5997,6 +6081,11 @@ def _refuse_dest_for(
     this project treats as the cardinal sin (#59).
     """
     inbox_root = resolve_path('inbox', fha_config, archive_root)
+    if not any(_is_under(file_path, resolve_path(alias, fha_config, archive_root))
+               for alias in ASSET_ROOT_ALIASES):
+        raise ProcessError(_outside_roots_message(
+            file_path, archive_root, fha_config, root=inbox_root,
+            root_label='inbox', doing='processing'))
     if not _is_under(file_path, inbox_root):
         raise ProcessError(
             f'--dest chooses where a photo goes when it is filed out of the inbox, and '
@@ -6286,6 +6375,10 @@ def _run_process(args: argparse.Namespace) -> int:
     # same containment rule `fha process refile --dest` uses.
     dest = getattr(args, 'dest', None)
     photo_dest_dir: Path | None = None
+    # Not a CLI flag: `fha serve`'s process.file verb sets it False, because
+    # the workbench has no way to send --dest, so advice to add it would be a
+    # dead end there (PR #287 review).
+    offer_dest = bool(getattr(args, 'offer_dest', True)) and not args.more
     if dest is not None:
         if args.more:
             print('ERROR: --dest chooses the photo-library folder for a new photo. '
@@ -6318,6 +6411,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     archive_root, fha_config, file_path,
                     source_date=source_date, dry_run=dry_run,
                     source_type=source_type, photo_dest_dir=photo_dest_dir,
+                    offer_dest=offer_dest,
                 )
             refusal = _triage_folder_refusal(
                 archive_root, fha_config, file_path, dest=dest)
@@ -6349,6 +6443,12 @@ def _run_process(args: argparse.Namespace) -> int:
                     print('ERROR: --more attaches a file to a record with an asset; '
                           'a pointer-only source has none.', file=sys.stderr)
                     return EXIT_ERRORS
+                if dest is not None:
+                    print(f'ERROR: --dest chooses the photo-library folder for a photo, and '
+                          f'{file_path.name} files no photo - it records a source whose file '
+                          'is kept elsewhere - so drop --dest. Nothing was changed.',
+                          file=sys.stderr)
+                    return EXIT_ERRORS
                 rc = process_pointer_only(
                     archive_root, fha_config, file_path,
                     source_type=source_type, slug=args.slug, title=args.title,
@@ -6378,7 +6478,7 @@ def _run_process(args: argparse.Namespace) -> int:
         file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path,
             source_type=relocate_type, dry_run=dry_run,
-            photo_dest_dir=photo_dest_dir, offer_dest=not args.more,
+            photo_dest_dir=photo_dest_dir, offer_dest=offer_dest,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -6490,10 +6590,16 @@ def _run_process(args: argparse.Namespace) -> int:
             relocate_undo()
         if rc != EXIT_CLEAN and back_relocate_undo is not None:
             back_relocate_undo()
-        if rc == EXIT_CLEAN:
+        if rc == EXIT_CLEAN and mint_report.get('skipped') and relocate_undo is not None:
+            # "skip" at the variation prompt filed nothing: the photo goes back
+            # where it came from, rather than sitting in the library with no
+            # record while its original waits in inbox/processed/.
+            relocate_undo()
+            print(f'Put {pre_move_path.name} back in the inbox - nothing was filed.')
+        elif rc == EXIT_CLEAN:
             # Only now, once nothing below can refuse: a refused run put the
-            # file back in the inbox, and "Filed ..." must not be its last
-            # word (#277).
+            # file back in the inbox, and the line saying it was kept must not
+            # be its last word (#277).
             _report_relocations(relocate_undo, back_relocate_undo)
         args.result_source_id = mint_report.get('source_id')
         return rc

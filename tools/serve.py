@@ -1647,6 +1647,9 @@ def _verb_process(state, kw, dry_run):
         # person.new/claim.new). Not a real `fha process` CLI flag - this
         # Namespace attribute exists only for this verb's own round-trip.
         source_id=kw.get('source_id'),
+        # The workbench cannot send --dest, so the engine must not tell the
+        # human to add it - that advice would be a dead end here (PR #287).
+        offer_dest=False,
     )
     buf = io.StringIO()
     out_tee = sys.stdout if isinstance(sys.stdout, _ThreadTee) else None

@@ -159,8 +159,9 @@ Capture the session transcript proving each "Done when" in the skill's PR descri
 
 One mechanical check precedes the behavioral one: **every `fha` command the SKILL.md documents was
 run against `example-archive/` before the skill shipped, and any filename or path the prose
-predicts is the actual result of running it** - a `--more` rename appends the role to the stem,
-`--more` refuses a file outside the documents root, `fha claim` has no `--notes` flag. A skill is
+predicts is the actual result of running it** - a `--more` rename names the file for its source
+and appends the role, `--more` refuses a file outside every root and the inbox, `fha claim` has no
+`--notes` flag. A skill is
 the human's memory of how the tools behave; a documented command that does not run as written
 teaches the wrong thing every time it is read (AGENTS_TOOLING §"Porting from an archive").
 Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented

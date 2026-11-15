@@ -112,11 +112,10 @@ came, rather than the bare form.
    - the original app/human transcript (role `transcript`) — if the recording
      arrived with one and it isn't archived yet, attach it too; if the audio
      itself isn't archived yet, run it through `process-source` first;
-   - the whisper pass (role `whisper-transcript`). `--more` attaches only files
-     that already sit under the documents root, so copy the reviewed `.md` out
-     of the scratch folder into the recording's own folder first — it is a new
-     working file, not an archived original — and then attach it, previewing
-     as always:
+   - the whisper pass (role `whisper-transcript`). Copy the reviewed `.md` out
+     of the scratch folder into the recording's own folder first, so it is
+     filed beside the recording — it is a new working file, not an archived
+     original — and then attach it, previewing as always:
    ```
    fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript --dry-run
    fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript
