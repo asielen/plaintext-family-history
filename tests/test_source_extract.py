@@ -900,6 +900,92 @@ class SourceExtractTests(unittest.TestCase):
         self.assertIn('Thomas Hartley, son of Edward', text)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_layout_only_page_with_mid_word_breaks_is_used_and_warned(self) -> None:
+        # Fourth review: layout mode spaces the page but keeps the default
+        # reading's mid-word breaks ("Tho mas Hart ley"), and there is no
+        # pdftotext. The layout text is kept (no worse than the default),
+        # but a search for "Hartley" still misses the page, so it is listed
+        # and warned about, exit 1.
+        squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
+        broken = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so fr om '
+                  'Ma rsh Cr eek\n') * 4
+        reader, _ = self._fake_reader(squashed, broken)
+        dry = self._run_with_reader(reader, dry_run=True)
+        self.assertEqual(dry.exit_code, EXIT_WARNINGS)
+        result = self._run_with_reader(reader)
+        self.assertEqual(result.data['split_pages'], [1])
+        self.assertEqual(result.data['layout_pages'], [])
+        self.assertEqual(result.data['squashed_pages'], [])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        warnings = ' '.join(m.text for m in result.messages if m.level == 'warning')
+        self.assertIn('page(s) 1', warnings)
+        self.assertIn('Hart ley', warnings)
+        self.assertIn('fha find --text', warnings)
+        self.assertIn('pdftotext', warnings)
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+            encoding='utf-8')
+        head, _, body = text.partition('[Page 1]')
+        self.assertIn('Words broken in the middle on page(s) 1', head)
+        self.assertIn('Tho mas Hart ley, son of Edw ard', body)     # layout's text kept
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_kern170_style_pdf_without_pdftotext_warns_about_broken_words(self) -> None:
+        # The same on a real PDF: every longer word set as two halves with a
+        # wide kerning step (-170) between them.
+        body = ''
+        for y in (720, 706, 692, 678):
+            for x, word in _SQUEEZED_WORDS:
+                if len(word) >= 4:
+                    h = len(word) // 2
+                    body += f'1 0 0 1 {x:.2f} {y} Tm [({word[:h]}) -170 ({word[h:]})] TJ\n'
+                else:
+                    body += f'1 0 0 1 {x:.2f} {y} Tm ({word}) Tj\n'
+        self.pdf.write_bytes(_minimal_pdf(
+            [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
+        result = self._run()
+        self.assertEqual(result.data['split_pages'], [1])
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_kept_mid_word_breaks_leave_real_spaces_alone(self) -> None:
+        count = source_mod._kept_mid_word_breaks
+        squashed = 'Tho masHart ley,sonofEdw ard,b.May9,18 54,ca meal sofr omMa rshCr eek\n' * 4
+        broken = ('Tho mas Hart ley, son of Edw ard, b. May 9, 18 54, ca me al so fr om '
+                  'Ma rsh Cr eek\n') * 4
+        whole = 'Thomas Hartley, son of Edward, b. May 9, 1854, came also from Marsh Creek\n' * 4
+        self.assertGreater(count(broken, squashed), 10)
+        self.assertEqual(count(whole, squashed), 0)      # the breaks were joined back
+        # A default reading with a few real spaces (before a capitalised word,
+        # or between whole words) keeps them, and that is not a broken word.
+        polish_default = 'JanKowalski,synJozefai Mariizd.Nowak,ur.wSuwalkach\n' * 4
+        polish_layout = 'Jan Kowalski, syn Jozefa i Marii z d. Nowak, ur. w Suwalkach\n' * 4
+        self.assertEqual(count(polish_layout, polish_default), 0)
+        partial_default = 'In the spring of eighteenhundredfifty four ThomasHartley\n' * 4
+        partial_layout = 'In the spring of eighteen hundred fifty four Thomas Hartley\n' * 4
+        self.assertEqual(count(partial_layout, partial_default), 0)
+
+    def test_progress_is_announced_before_a_long_pdftotext_run(self) -> None:
+        # L-1: the engine never prints, but a caller can hear about a long
+        # pdftotext run BEFORE it starts.
+        events: list = []
+
+        def fake_run(args, **kw):
+            events.append('run')
+            return mock.Mock(returncode=0, stdout=b'\f' * 12)
+
+        with mock.patch.object(source_mod, '_pdftotext_path', return_value='pdftotext'), \
+                mock.patch.object(source_mod.subprocess, 'run', side_effect=fake_run):
+            pages = source_mod._PdftotextPages(self.pdf, list(range(1, 13)),
+                                               progress=lambda text: events.append(text))
+            pages.page(3)
+            short = source_mod._PdftotextPages(self.pdf, [1, 2],
+                                               progress=lambda text: events.append(text))
+            short.page(1)
+        self.assertEqual(len(events), 3)
+        self.assertIn('pdftotext', events[0])
+        self.assertIn('1-12', events[0])
+        self.assertEqual(events[1:], ['run', 'run'])      # a short block is not announced
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_pdftotext_dehyphenated_reading_is_not_reordered(self) -> None:
         # Third review P2-2: pdftotext joins words hyphenated at a line end
         # ("Hart-" / "ley" -> "Hartley"). That is not a change of text.

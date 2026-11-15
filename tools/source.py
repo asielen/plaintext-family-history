@@ -152,8 +152,9 @@ CODE MAP
   _collapse_layout_text       - #281: second-reader text with its padding removed
   _reading_problem / _same_reading - #281: a second reading changes only spacing
   _clears_suspects            - #281: a second reading clears half the suspects
-  _broken_words / _breaks_more_words - #281: words one reader breaks, the
-                                other keeps whole (no word list)
+  _broken_words / _breaks_more_words / _many_broken - #281: words one reader
+                                breaks, the other keeps whole (no word list)
+  _kept_mid_word_breaks       - #281: the default's mid-word spaces a reading keeps
   _layout_reading             - #281: pypdf layout mode, rotated text kept
   _pdftotext_path / _PdftotextPages / _pdftotext_reading - #281: poppler
                                 pdftotext, once per block of pages, when on PATH
@@ -1725,6 +1726,9 @@ def _cmd_source_extract(args: argparse.Namespace) -> int:
         archive_root, fha_config, source_id=args.source_id,
         pages=getattr(args, 'pages', None),
         copy_label=getattr(args, 'copy_label', None),
+        # The engine never prints; this is how a long pdftotext run gets
+        # announced on the terminal before it starts, not after.
+        progress=lambda text: print(text, flush=True),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -2326,10 +2330,76 @@ def _broken_words(reading: str, other: str) -> int:
     return count
 
 
+def _many_broken(count: int, reading: str) -> bool:
+    """The one threshold for "breaks words": more than 3, and over 2% of its pieces."""
+    return count > max(3, len(reading.split()) // 50)
+
+
 def _breaks_more_words(reading: str, other: str) -> bool:
     """True when `reading` breaks clearly more words than `other` does."""
     mine, theirs = _broken_words(reading, other), _broken_words(other, reading)
-    return mine > max(3, len(reading.split()) // 50) and mine > 2 * theirs
+    return _many_broken(mine, reading) and mine > 2 * theirs
+
+
+def _kept_mid_word_breaks(reading: str, default: str) -> int:
+    """How many of the default reading's mid-word spaces `reading` keeps.
+
+    The kerning case: the default reading put a space INSIDE words where
+    the layer kerns ("Tho masHart ley,sonofEdw") and lost the real ones;
+    layout mode restores the real spaces but keeps the wrong ones ("Tho mas
+    Hart ley"). Measured against the default reading alone - no other
+    reader, no word list - over the letters and digits both readings share:
+    a space the default reading has inside a line counts when
+
+    - it falls between two small letters (a real gap before a capitalised
+      name, "Jozefai Marii", is not a mid-word break), and
+    - the second reading splits the default piece beside it further, leaving
+      a 1-3 letter fragment against that space ("mas" | "Hart" cut from
+      "masHart"). A real space between whole words leaves the pieces beside
+      it whole, or cut far from it ("of" | "eighteen hundred fifty").
+
+    A squeezed page with no spaces inside its lines has nothing to count.
+    Returns 0 when the two readings do not share the same letters and
+    digits in the same order (then `_reading_problem` has already refused).
+    """
+    def _boundaries(text: str) -> tuple[str, list[int], set[int]]:
+        letters, ends, inner = [], [], set()
+        pos = 0
+        for line in text.splitlines():
+            pieces = [''.join(ch for ch in p if ch.isalnum()) for p in line.split()]
+            pieces = [p for p in pieces if p]
+            for i, piece in enumerate(pieces):
+                letters.append(piece)
+                pos += len(piece)
+                ends.append(pos)
+                if i + 1 < len(pieces):
+                    inner.add(pos)
+        return ''.join(letters), ends, inner
+
+    d_text, d_ends, d_inner = _boundaries(default)
+    r_text, r_ends, _ = _boundaries(reading)
+    if d_text != r_text or not d_inner:
+        return 0
+    cuts = [0] + r_ends
+    kept = set(cuts)
+    d_cuts = set([0] + d_ends)
+    count = 0
+    for gap in sorted(d_inner):
+        if gap not in kept:
+            continue                  # the reading joined the word back up
+        if not (d_text[gap - 1].islower() and d_text[gap].islower()):
+            continue
+        before = max(c for c in cuts if c < gap)      # the reading's cut before the gap
+        after = min((c for c in cuts if c > gap), default=len(d_text))
+        left, right = d_text[before:gap], d_text[gap:after]
+        # The default piece beside the gap must be cut further by the reading:
+        # the fragment's far edge is a cut the default reading does not have.
+        left_cut = before not in d_cuts
+        right_cut = after not in d_cuts
+        if ((left_cut and len(left) <= 3 and left.isalpha())
+                or (right_cut and len(right) <= 3 and right.isalpha())):
+            count += 1
+    return count
 
 
 # pypdf logs "Rotated text discovered..." from layout mode through its
@@ -2383,8 +2453,12 @@ class _PdftotextPages:
     _SECONDS_BASE = 60
     _SECONDS_PER_PAGE = 2
 
-    def __init__(self, pdf_path: Path, selected: list[int]) -> None:
+    # A block this long gets a "this may take a while" line first.
+    _ANNOUNCE_PAGES = 10
+
+    def __init__(self, pdf_path: Path, selected: list[int], progress=None) -> None:
         self.pdf_path = pdf_path
+        self.progress = progress
         self.blocks: list[tuple[int, int]] = []
         for page_no in sorted(set(selected)):
             if self.blocks and page_no == self.blocks[-1][1] + 1:
@@ -2412,6 +2486,9 @@ class _PdftotextPages:
         remaining = self.budget - self.seconds
         if exe is None or remaining <= 0:
             return None
+        if self.progress is not None and last - first + 1 >= self._ANNOUNCE_PAGES:
+            self.progress(f'Reading pages {first}-{last} again with pdftotext, for '
+                          'pages whose words ran together (this can take a minute)...')
         started = time.monotonic()
         self.calls += 1
         try:
@@ -2443,6 +2520,8 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
 
     Returns (text, how), how being 'plain' (pypdf's default reading),
     'layout' or 'pdftotext' (a second reading that restored lost spaces),
+    'split' (layout's reading, which restored spaces but keeps words the
+    default reading broke in the middle, "Hart ley" - used, and warned about),
     'reordered' (words run together; a second reader spaced them but changed
     the text's order or dropped some, so it was not used) or 'squashed'
     (words run together and no reader could space them).
@@ -2483,6 +2562,10 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
         other = second_reader() if second_reader is not None else None
         if other and _verdict(other) == 'ok' and _breaks_more_words(layout, other):
             return other, 'pdftotext'
+        # Spaced, but words still broken where the layer kerns: the layout
+        # text is kept (it is no worse than the default), and said so.
+        if _many_broken(_kept_mid_word_breaks(layout, text), layout):
+            return layout, 'split'
         return layout, 'layout'
     if layout_verdict != 'changed' and _agrees(text, layout):
         return text, 'plain'
@@ -2497,6 +2580,7 @@ def _extract_page_text(page, second_reader=None) -> tuple[str, str]:
 def run_source_extract(
     archive_root: Path, fha_config: dict, source_id: str,
     pages: str | None = None, dry_run: bool = False, copy_label: str | None = None,
+    progress=None,
 ) -> Result:
     """Extract a source PDF's embedded text layer into a derived companion file.
 
@@ -2537,7 +2621,10 @@ def run_source_extract(
     'pages_selected', 'pages_with_text', 'error_pages', 'squashed_pages'
     (every page whose words still run together), 'reordered_pages' (those
     of them a second reader spaced but reordered), 'layout_pages',
-    'pdftotext_pages'}. Exit codes: 0 ok/already/dry-run · 1 record or asset
+    'pdftotext_pages', 'split_pages' (layout's reading used, but with words
+    still broken in the middle)}. `progress`, when given, is called with a
+    plain line before a long pdftotext run (the engine itself never prints).
+    Exit codes: 0 ok/already/dry-run · 1 record or asset
     not found, working-copy, no text layer, and a dump (written, or previewed
     by --dry-run) with pages that failed or whose words ran together · 3
     refusals (pypdf absent, bad id, ambiguous PDF or unknown --copy label,
@@ -2546,7 +2633,7 @@ def run_source_extract(
     result = Result(data={'status': None, 'source_id': None, 'extract_path': None,
                           'pages_selected': 0, 'pages_with_text': 0,
                           'error_pages': [], 'squashed_pages': [],
-                          'reordered_pages': [], 'layout_pages': [],
+                          'reordered_pages': [], 'layout_pages': [], 'split_pages': [],
                           'pdftotext_pages': []})
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
@@ -2719,8 +2806,9 @@ def run_source_extract(
     reordered_pages: list[int] = []
     layout_pages: list[int] = []
     pdftotext_pages: list[int] = []
+    split_pages: list[int] = []
     have_pdftotext = _pdftotext_path() is not None
-    pdftotext_reader = _PdftotextPages(pdf_path, selected)
+    pdftotext_reader = _PdftotextPages(pdf_path, selected, progress)
     for page_no in selected:
         parts.append(f'[Page {page_no}]')
         second_reader = ((lambda n=page_no: pdftotext_reader.page(n))
@@ -2747,6 +2835,8 @@ def run_source_extract(
                 layout_pages.append(page_no)
             elif how == 'pdftotext':
                 pdftotext_pages.append(page_no)
+            elif how == 'split':
+                split_pages.append(page_no)
         else:
             empty_pages.append(page_no)
             parts.append(_NO_TEXT_PLACEHOLDER)
@@ -2757,6 +2847,7 @@ def run_source_extract(
     result.data['reordered_pages'] = reordered_pages
     result.data['layout_pages'] = layout_pages
     result.data['pdftotext_pages'] = pdftotext_pages
+    result.data['split_pages'] = split_pages
     if pdftotext_reader.calls:
         # The engine reports after the fact (it does not print); a run that
         # leaned on pdftotext says so, with how long it took.
@@ -2790,6 +2881,16 @@ def run_source_extract(
             "PDF's text layer gives no spaces between words there, so "
             '`fha find --text` will miss phrases on those pages. Read them in '
             'the PDF itself (or with vision) rather than trusting an empty search.',
+            '',
+        ]
+    if split_pages:
+        header += [
+            f'Words broken in the middle on page(s) '
+            f'{", ".join(str(p) for p in split_pages)}: the spaces between words '
+            'were recovered, but some words are still split where the PDF kerns '
+            '(e.g. "Hart ley"), so `fha find --text` may miss names there. Read '
+            'them in the PDF itself (or with vision) rather than trusting an '
+            'empty search.',
             '',
         ]
     parts = header + parts
@@ -2876,6 +2977,19 @@ def run_source_extract(
                            ' (delete the dump and its files: entry first)'))
             + '.')
 
+    if split_pages:
+        # Partly recovered: the layout text is kept (it is no worse than the
+        # default reading), but a name search can still miss these pages.
+        page_warnings.append(
+            f'Words broken in the middle on page(s) {_page_list(split_pages)}: the '
+            'spaces between words were recovered, but some words are still split '
+            'where the PDF kerns (e.g. "Hart ley"), so `fha find --text` may miss '
+            'names there - read them in the PDF itself, or with vision'
+            + ('' if have_pdftotext else
+               ". Installing poppler's pdftotext may read them cleanly on a re-run"
+               + ('' if dry_run else ' (delete the dump and its files: entry first)'))
+            + '.')
+
     coverage = (f'{pages_with_text} of {len(selected)} selected page(s) carry text'
                 + (f' (no text layer on: '
                    f'{", ".join(str(p) for p in empty_pages[:10])}'
@@ -2884,7 +2998,9 @@ def run_source_extract(
                    f'{", ".join(str(p) for p in error_pages[:10])}'
                    f'{" …" if len(error_pages) > 10 else ""})' if error_pages else '')
                 + (f' (words run together on: {_page_list(squashed_pages)})'
-                   if squashed_pages else ''))
+                   if squashed_pages else '')
+                + (f' (words broken in the middle on: {_page_list(split_pages)})'
+                   if split_pages else ''))
 
     if dry_run:
         result.data['status'] = 'dry-run'
