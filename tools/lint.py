@@ -59,6 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
     CLAIM_ROLE_WORDS,
@@ -5148,9 +5149,14 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     ORIGINAL single-token-with-no-suffix behaviour just below (surname =
     that word, given = 'unknown') is untouched - it predates this fix and is
     not part of it; SPEC §13's actual mononym convention (empty surname) is
-    `stub_slug_name`'s job, not this function's."""
+    `stub_slug_name`'s job, not this function's.
+
+    Accented letters fold to their base letters before the letters-only
+    filter (`_lib.fold_accents`, issue #279), the same fold `stub_slug_name`
+    applies, so "Halina Wiśniewska" becomes `wisniewska__halina` here too
+    instead of losing the `ś`."""
     def letters(word: str) -> str:
-        return re.sub(r'[^a-z]+', '', word.lower())
+        return re.sub(r'[^a-z]+', '', fold_accents(word).lower())
     parts = [p for p in str(name).split() if letters(p)]
     core, suffix = strip_generational_suffix(parts)
     if len(core) >= 2:

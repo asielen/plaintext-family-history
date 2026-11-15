@@ -295,6 +295,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_fixture_path           - path under example-archive/ or tests/fixtures/?
 #    find_person_record_path   - scan people/ for one P-id's record file (never the index)
 #    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
+#    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
+#                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
@@ -9562,6 +9564,41 @@ def find_source_record_path(
     return None
 
 
+# Letters NFKD does not split into a base letter plus an accent, so the
+# combining-mark strip in `fold_accents` cannot reach them on its own. Lifted
+# out of xref.py (issue #279), where it folded town names first; the person
+# filename slug, lint's --fix-ids rename, the GEDCOM importer and gedcom's
+# surname match now share the same table, so a name folds the same way
+# wherever it is turned into ASCII.
+ACCENT_FOLD = str.maketrans({
+    'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
+    'đ': 'd', 'Đ': 'D',
+})
+
+
+def fold_accents(text: str) -> str:
+    """`text` with accented letters folded to their base letters.
+
+    "Wiśniewska" -> "Wisniewska", "Gołębiowska" -> "Golebiowska", "Müller"
+    -> "Muller", "Suwałki" -> "Suwalki". Case is kept; nothing else changes.
+
+    Why: every filename slug keeps only `[a-z0-9_]`, and before this fold an
+    accented letter fell outside that set and was simply deleted, so
+    "Wiśniewska" was filed as `winiewska` and "Józef Żółć" lost his surname
+    altogether (issue #279). NFKD splits most accented letters into a base
+    letter plus a combining mark, which is dropped; `ACCENT_FOLD` covers the
+    few letters NFKD leaves whole (ł, ø, æ, ß, đ). A letter outside both
+    (Cyrillic, Greek, CJK) passes through unchanged, and a caller's own
+    `[a-z0-9_]` filter decides what to do with it, exactly as before.
+
+    For machine handles only (filenames, comparison keys): a record's
+    `name:` always keeps the full spelling (SPEC §13 - "the filename is only
+    a sort handle").
+    """
+    folded = unicodedata.normalize('NFKD', str(text or '').translate(ACCENT_FOLD))
+    return ''.join(c for c in folded if not unicodedata.combining(c))
+
+
 # Generational suffixes SPEC §13's filename split must never mistake for a
 # surname (issue #53: "Roy Eugene Dodson Jr" filed as `jr__roy_eugene_dodson`,
 # sorting the son under a different letter than his father). Matched
@@ -9660,7 +9697,16 @@ def stub_slug_name(name: str, surname: str | None = None) -> tuple[str, str]:
     unrelated override), the full name is kept as the given slug rather than
     silently dropping part of it - a redundant sort handle is honest; a
     guessed-wrong deletion is not.
+
+    Accented letters are folded to their base letters first (`fold_accents`,
+    issue #279), so "Halina Wiśniewska" files as `wisniewska__halina` rather
+    than losing the `ś` to the `[a-z0-9_]` filter and filing as `winiewska`.
+    `surname` folds the same way, so an override typed with its accents
+    still finds its own words inside the name.
     """
+    name = fold_accents(name)
+    if surname is not None:
+        surname = fold_accents(surname)
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')

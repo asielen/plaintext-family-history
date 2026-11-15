@@ -91,6 +91,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    fold_accents,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -193,8 +194,13 @@ def _name_slot(text: str) -> str:
 
     Mirrors stubs.py's sanitation (SPEC §13 person grammar uses underscores
     where source slugs use hyphens). Capped so a 2,000-stub import can't butt
-    into Windows path-length limits on a deep archive root."""
-    slot = re.sub(r'[^a-z0-9_]', '', (text or '').strip().lower().replace(' ', '_'))
+    into Windows path-length limits on a deep archive root.
+
+    Accented letters fold to their base letters first (`_lib.fold_accents`,
+    issue #279), the same fold `stub_slug_name` applies, so an imported
+    "Wiśniewska" files as `wisniewska` rather than `winiewska`."""
+    slot = re.sub(r'[^a-z0-9_]', '',
+                  fold_accents(text or '').strip().lower().replace(' ', '_'))
     return (slot or 'unknown')[:60]
 
 

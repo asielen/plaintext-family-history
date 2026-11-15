@@ -81,6 +81,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
@@ -248,6 +249,28 @@ def _name_text(value: str) -> str:
     return ' '.join(value.replace('/', ' ').split())
 
 
+def _surname_token_matches(name_token: str, slug_token: str) -> bool:
+    """Whether one word of a person's name is the indexed surname's word.
+
+    `persons.surname` comes from the filename slug, an ASCII handle: lowercase,
+    accents folded, punctuation gone, re-capitalised by `fha index`. So the
+    name's "Wiśniewska" has to be compared with the slug's "Wisniewska" once
+    both are folded (`_lib.fold_accents`, issue #279), or the match fails and
+    the slug's spelling is exported between the slashes.
+
+    The second test reads a slug written before that fold existed: the old
+    slugger deleted every letter outside `[a-z0-9]` instead of folding it, so
+    a record minted then is still filed as `winiewska__halina_P-….md`, and
+    "O'Brien" as `obrien`. Deleting the same letters from the name's word
+    reproduces that slug exactly, so such a record still exports its own
+    spelling ("Wiśniewska", "O'Brien") without being renamed first.
+    """
+    slug = slug_token.lower()
+    if fold_accents(name_token).lower() == fold_accents(slug_token).lower():
+        return True
+    return re.sub(r'[^a-z0-9]', '', name_token.lower()) == slug
+
+
 def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
@@ -318,17 +341,17 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     if sn:
         sn_tokens = sn.split()
         n = len(sn_tokens)
-        core_lower = [p.lower() for p in core]
-        if core_lower[-n:] == [t.lower() for t in sn_tokens]:
+        tail = core[-n:] if len(core) >= n else []
+        if tail and all(_surname_token_matches(p, t) for p, t in zip(tail, sn_tokens)):
             given = ' '.join(core[:-n])
             # The name's OWN spelling of those tokens wins over the index's.
             # `persons.surname` is not authored text: it is the lowercase
             # filename slug re-capitalised with `str.title()`, so a person
             # filed as `mcdonald__john_P-….md` carries "Mcdonald" while his
             # record says "McDonald" - and the export used to publish the
-            # machine's spelling. They differ only in case here (the match
-            # above is case-insensitive), so there is nothing to lose and a
-            # human's capitalisation to keep.
+            # machine's spelling. They differ only in case, accents or
+            # punctuation here (see `_surname_token_matches`), so there is
+            # nothing to lose and a human's spelling to keep.
             return compose(given, ' '.join(core[-n:])), raw_suffix
         # Indexed surname recorded but not present as a trailing token run
         # of the (suffix-stripped) name - an override this heuristic
