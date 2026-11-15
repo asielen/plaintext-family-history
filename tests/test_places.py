@@ -913,6 +913,76 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertIn('not found', result.messages[0].text)
         self.assertEqual(self.registry.read_bytes(), before)
 
+    def test_edit_note_one_sentence_asks_for_the_whole_paragraph(self) -> None:
+        # Issue #272, the place twin: `fictional town` is the fixture's whole
+        # note, so `town` alone is only part of it.
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(self.root, 'L-7c1a9f4e22', 'town', 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertEqual(result.data['reason'], 'entry-partial')
+        msg = result.messages[0].text
+        self.assertIn('whole paragraph', msg)
+        self.assertIn('starts "fictional town"', msg)
+        self.assertNotIn('Reload', msg)
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_edit_note_text_inside_several_notes_says_how_many(self) -> None:
+        places.run_place_note(self.root, 'L-7c1a9f4e22', 'Another town record.')
+        result = places.run_place_edit_note(self.root, 'L-7c1a9f4e22', 'town', 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertIn('inside 2 different notes', result.messages[0].text)
+
+    def test_edit_note_whole_paragraph_on_one_line_is_that_note(self) -> None:
+        self.registry.write_text(
+            _SET_REGISTRY.replace('  notes: fictional town\n',
+                                  '  notes: |\n    fictional town,\n    for the tests\n'),
+            encoding='utf-8', newline='')
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town, for the tests', 'Rewritten.')
+        self.assertEqual(result.exit_code, 0, [m.text for m in result.messages])
+        self.assertEqual(self._parsed()['L-7c1a9f4e22']['notes'].strip(), 'Rewritten.')
+
+    def test_edit_note_covering_two_whole_notes_asks_for_one(self) -> None:
+        places.run_place_note(self.root, 'L-7c1a9f4e22', 'Second note.')
+        second = self._parsed()['L-7c1a9f4e22']['notes'].strip().split('\n\n')[1]
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'fictional town\n\n' + second, 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertIn('covers 2 notes', result.messages[0].text)
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_edit_note_two_whole_paragraphs_never_loosely_match_a_third(self) -> None:
+        self.registry.write_text(
+            _SET_REGISTRY.replace(
+                '  notes: fictional town\n',
+                '  notes: |\n    Checked the census. Nothing found.\n\n'
+                '    Checked the census.\n\n    Nothing found.\n'),
+            encoding='utf-8', newline='')
+        before = self.registry.read_bytes()
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'Checked the census.\n\nNothing found.', 'x')
+        self.assertEqual(result.exit_code, 3)
+        self.assertEqual(result.data['reason'], 'entry-spans')
+        self.assertEqual(self.registry.read_bytes(), before)
+
+    def test_edit_note_true_miss_is_a_cli_not_found_message(self) -> None:
+        result = places.run_place_edit_note(
+            self.root, 'L-7c1a9f4e22', 'Never written anywhere.', 'x')
+        self.assertEqual(result.data['reason'], 'entry-not-found')
+        self.assertIn('not even in part', result.messages[0].text)
+        self.assertNotIn('Reload the page', result.messages[0].text)
+
+    def test_edit_note_help_says_whole_paragraph(self) -> None:
+        import contextlib
+        import io
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            fha.main(['places', 'edit-note', '--help'])
+        self.assertIn('whole paragraph', ' '.join(out.getvalue().split()))
+
     def test_edit_note_empty_replacement_refused(self) -> None:
         result = places.run_place_edit_note(
             self.root, 'L-7c1a9f4e22', 'fictional town', '  ')

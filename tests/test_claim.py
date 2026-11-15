@@ -3974,5 +3974,481 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
         self.assertIn('W136', self._text(result))
 
 
+
+class ClearFieldTests(unittest.TestCase):
+    """#273: `fha claim <C-id> --clear FIELD` removes an optional field, and an
+    empty value is never written as `key: ''`.
+
+    Expected texts are derived from the record as it stood (the one key line
+    deleted, nothing else), and lint is compared before/after - SPEC §8.4
+    makes place_text/anchor/notes optional and value required, so a clear
+    must add no lint finding and an empty value must not reach the file."""
+
+    CID = 'C-1b9d4e7a30'   # 1880 census birth: carries place_text, notes; no anchor
+    REL = Path('sources/census/1880-census-fairview-hartley-household_S-4f5f215e60.md')
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not EXAMPLE.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+        import index
+        import lint
+        cls.index = index
+        cls.lint = lint
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'archive'
+        shutil.copytree(EXAMPLE, self.root)
+        self.path = self.root / self.REL
+        self.before = self.path.read_bytes()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claim(self) -> dict:
+        return next(c for c in read_record(self.path)['claims']
+                    if str(c['id']).lower() == self.CID.lower())
+
+    def _lint_lines(self) -> set[tuple]:
+        config = load_fha_yaml(self.root)
+        self.index.build_index(self.root, config)
+        result = self.lint.run_lint(self.root, config)
+        return {(m.level, m.code, m.text) for m in result.messages}
+
+    def _without_line(self, line: str) -> bytes:
+        text = self.before.decode('utf-8')
+        self.assertEqual(text.count(line + '\n'), 1)
+        return text.replace(line + '\n', '', 1).encode('utf-8')
+
+    def test_clear_place_text_removes_only_that_line_and_lint_adds_nothing(self) -> None:
+        lint_before = self._lint_lines()
+        result = claim.run_claim(self.root, claim_id=self.CID, clear=['place_text'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: "New York"'))
+        self.assertNotIn('place_text', self._claim())
+        self.assertEqual(self._lint_lines(), lint_before)
+
+    def test_clear_is_repeatable_and_accepts_the_flag_spelling(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID,
+                                 clear=['place-text', 'information', 'evidence'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        expected = self.before.decode('utf-8')
+        for line in ('  place_text: "New York"', '  information: secondary',
+                     '  evidence: indirect'):
+            expected = expected.replace(line + '\n', '', 1)
+        self.assertEqual(self.path.read_bytes(), expected.encode('utf-8'))
+
+    def test_value_empty_is_refused_and_the_file_is_byte_identical(self) -> None:
+        lint_before = self._lint_lines()
+        for empty in ('', '   '):
+            with self.subTest(value=empty):
+                result = claim.run_claim(self.root, claim_id=self.CID, value=empty)
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('--value cannot be empty', result.messages[0].text)
+                self.assertEqual(self.path.read_bytes(), self.before)
+        lint_after = self._lint_lines()
+        self.assertEqual(lint_after, lint_before)
+        self.assertFalse(any(code == 'E010' for _lvl, code, _t in lint_after))
+
+    def test_empty_free_text_flag_is_refused_and_points_at_clear(self) -> None:
+        for key in ('place_text', 'anchor', 'notes'):
+            with self.subTest(key=key):
+                result = claim.run_claim(self.root, claim_id=self.CID, **{key: ' '})
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn(f'--clear {key}', result.messages[0].text)
+                self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_dry_run_previews_the_removal_and_writes_nothing(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID, clear=['place_text'],
+                                 dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        joined = '\n'.join(m.text for m in result.messages)
+        self.assertIn('-  place_text: "New York"', joined)
+        self.assertIn('place_text removed', joined)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_clearing_a_field_the_claim_lacks_says_so_and_succeeds(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID, clear=['anchor'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'already-done')
+        joined = '\n'.join(m.text for m in result.messages)
+        self.assertIn('no anchor line, so there was nothing to clear', joined)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_absent_clear_alongside_a_real_change_still_applies_the_change(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID,
+                                 clear=['anchor', 'place_text'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: "New York"'))
+
+    def test_required_fields_cannot_be_cleared(self) -> None:
+        for field, flag in (('value', '--value'), ('confidence', '--confidence'),
+                            ('persons', '--persons'), ('type', '--type'),
+                            ('status', '--status')):
+            with self.subTest(field=field):
+                result = claim.run_claim(self.root, claim_id=self.CID, clear=[field])
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('required on every claim', result.messages[0].text)
+                self.assertIn(flag, result.messages[0].text)
+                self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_unknown_field_is_refused_with_the_valid_list(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID, clear=['placetext'])
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('place_text', result.messages[0].text)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_set_and_clear_of_the_same_field_is_refused(self) -> None:
+        result = claim.run_claim(self.root, claim_id=self.CID, clear=['notes'],
+                                 notes='New notes.')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('both given', result.messages[0].text)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_clear_place_stops_place_text_from_auto_linking(self) -> None:
+        # Without --clear place, an exact registry match on --place-text
+        # attaches place: (#79). Asking to clear place means "no link".
+        result = claim.run_claim(self.root, claim_id=self.CID,
+                                 place_text='Fairview', clear=['place'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        c = self._claim()
+        self.assertEqual(c.get('place_text'), 'Fairview')
+        self.assertNotIn('place', c)
+
+    def test_batch_with_clear_is_refused(self) -> None:
+        result = claim.run_claim_batch(
+            self.root, claim_ids=[self.CID, 'C-bdfbce2a11'], status='accepted',
+            clear=['notes'])
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('--clear', result.messages[0].text)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_cli_clear_and_empty_persons_message(self) -> None:
+        import fha
+
+        def run(argv: list[str]) -> tuple[int, str, str]:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = fha.main(argv)
+            return rc, out.getvalue(), err.getvalue()
+
+        rc, _out, err = run(['claim', self.CID, '--persons', '', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('must name at least one person', err)
+        self.assertNotIn('Nothing to change', err)
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+        rc, out, _err = run(['claim', self.CID, '--clear', 'place_text', '--clear', 'notes',
+                             '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('place_text removed; notes removed', out)
+        c = self._claim()
+        self.assertNotIn('place_text', c)
+        self.assertNotIn('notes', c)
+
+
+class ClearFieldShapeTests(unittest.TestCase):
+    """#273: removing a key keeps the rest of the claim byte for byte, whatever
+    shape the key was written in."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _source(self, block: str) -> Path:
+        path = self.root / 'sources' / 'other' / 'shape_S-1111111111.md'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('---\nid: S-1111111111\ntitle: T\nsource_type: other\n---\n\n'
+                        '## Claims\n```yaml\n' + block + '```\n', encoding='utf-8')
+        return path
+
+    def test_first_key_on_the_dash_line_hands_the_dash_on(self) -> None:
+        block = ('- place_text: "Somewhere"\n'
+                 '  value: "Anna born 1880"\n'
+                 '  id: C-aa11bb22cc\n'
+                 '  type: birth\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: high\n')
+        path = self._source(block)
+        before = path.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['place_text'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        expected = before.replace('- place_text: "Somewhere"\n  value:', '- value:', 1)
+        self.assertEqual(path.read_text(encoding='utf-8'), expected)
+
+    def test_multiline_notes_block_goes_whole_and_the_separator_stays(self) -> None:
+        block = ('- value: "Anna born 1880"\n'
+                 '  id: C-aa11bb22cc\n'
+                 '  type: birth\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: high\n'
+                 '  notes: >\n'
+                 '    First line of the note,\n'
+                 '    second line of the note.\n'
+                 '\n'
+                 '- value: "Anna died 1950"\n'
+                 '  id: C-bb22cc33dd\n'
+                 '  type: death\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: medium\n')
+        path = self._source(block)
+        before = path.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['notes'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        expected = before.replace(
+            '  notes: >\n    First line of the note,\n    second line of the note.\n', '', 1)
+        self.assertEqual(path.read_text(encoding='utf-8'), expected)
+
+
+    # PR #284 review: a comment after the cleared field is not its value.
+    _TAIL = ('  status: suggested\n'
+             '  confidence: high\n')
+
+    def _notes_then(self, between: str, notes: str = '  notes: A plain note.\n') -> str:
+        return ('- value: "Anna born 1880"\n'
+                '  id: C-aa11bb22cc\n'
+                '  type: birth\n'
+                '  persons: [P-aaaaaaaaaa]\n'
+                + notes + between + self._TAIL
+                + '\n- value: "Anna died 1950"\n'
+                  '  id: C-bb22cc33dd\n'
+                  '  type: death\n'
+                  '  persons: [P-aaaaaaaaaa]\n'
+                  '  status: suggested\n'
+                  '  confidence: medium\n')
+
+    def _clear_notes_keeps(self, block: str, notes: str) -> None:
+        path = self._source(block)
+        before = path.read_text(encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['notes'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    def test_column_zero_comment_after_the_cleared_field_is_kept(self) -> None:
+        for notes in ('  notes: A plain note.\n',
+                      '  notes: >\n    First line,\n    second line.\n'):
+            for comment in ('# Keep this research reminder\n',
+                            '  # Keep this research reminder\n',
+                            '    # Keep this research reminder\n'):
+                with self.subTest(notes=notes, comment=comment):
+                    if notes.endswith('>\n    First line,\n    second line.\n') \
+                            and comment.startswith('    #'):
+                        continue   # deeper than the key inside a block scalar: content
+                    self._clear_notes_keeps(self._notes_then(comment, notes), notes)
+
+    def test_comment_after_the_last_key_of_a_claim_is_kept(self) -> None:
+        notes = '  notes: A plain note.\n'
+        block = ('- value: "Anna born 1880"\n'
+                 '  id: C-aa11bb22cc\n'
+                 '  type: birth\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: high\n'
+                 + notes +
+                 '# Keep this research reminder\n'
+                 '\n'
+                 '- value: "Anna died 1950"\n'
+                 '  id: C-bb22cc33dd\n'
+                 '  type: death\n'
+                 '  persons: [P-aaaaaaaaaa]\n'
+                 '  status: suggested\n'
+                 '  confidence: medium\n')
+        self._clear_notes_keeps(block, notes)
+
+    def test_first_key_dash_moves_past_a_blank_line_or_comment(self) -> None:
+        for sep in ('\n', '# a reminder\n', '\n  # a reminder\n'):
+            with self.subTest(sep=sep):
+                block = ('- notes: First note.\n'
+                         + sep +
+                         '  status: suggested\n'
+                         '  value: "Anna born 1880"\n'
+                         '  id: C-aa11bb22cc\n'
+                         '  type: birth\n'
+                         '  persons: [P-aaaaaaaaaa]\n'
+                         '  confidence: high\n')
+                path = self._source(block)
+                before = path.read_text(encoding='utf-8')
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=['notes'])
+                self.assertEqual(result.exit_code, EXIT_CLEAN,
+                                 [m.text for m in result.messages])
+                expected = before.replace('- notes: First note.\n' + sep + '  status:',
+                                          sep + '- status:', 1)
+                self.assertEqual(path.read_text(encoding='utf-8'), expected)
+                c = read_record(path)['claims'][0]
+                self.assertNotIn('notes', c)
+                self.assertEqual(str(c['id']).lower(), 'c-aa11bb22cc')
+
+
+
+class ClearFieldReviewTests(unittest.TestCase):
+    """PR #284 review, round two: `--clear` never reports a removal it did not
+    make, reads each value's extent the way YAML does, and every edit is
+    checked claim by claim after the rewrite (`_edit_drift`)."""
+
+    HEAD = ('- value: "Anna born 1880"\n'
+            '  id: C-aa11bb22cc\n'
+            '  type: birth\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  status: suggested\n'
+            '  confidence: high\n')
+    NEXT = ('\n- value: "Anna died 1950"\n'
+            '  id: C-bb22cc33dd\n'
+            '  type: death\n'
+            '  persons: [P-aaaaaaaaaa]\n'
+            '  status: suggested\n'
+            '  confidence: medium\n')
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.path = self.root / 'sources' / 'other' / 'shape_S-1111111111.md'
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, block: str, nl: str = '\n') -> bytes:
+        text = ('---\nid: S-1111111111\ntitle: T\nsource_type: other\n---\n\n'
+                '## Claims\n```yaml\n' + block + '```\n')
+        data = text.replace('\n', nl).encode('utf-8')
+        self.path.write_bytes(data)
+        return data
+
+    def _clear(self, *fields: str):
+        return claim.run_claim(self.root, claim_id='C-aa11bb22cc', clear=list(fields))
+
+    # P2-1: a key this edit cannot find is refused, not reported as done.
+    def test_setting_a_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
+        # The set_scalar twin: it used to insert a second key line (YAML keeps
+        # the last, so nothing failed) - silent duplication.
+        for key, flag_value in (('notes', 'New notes.'), ('place_text', 'Fairview'),
+                                ('anchor', 'p. 9')):
+            for line in (f'  "{key}": hi\n', f'  {key} : hi\n'):
+                with self.subTest(key=key, line=line):
+                    before = self._write(self.HEAD + line + self.NEXT)
+                    result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
+                                             **{key: flag_value})
+                    self.assertEqual(result.exit_code, EXIT_FAILURE)
+                    self.assertIn('cannot safely change', result.messages[-1].text)
+                    self.assertEqual(self.path.read_bytes(), before)
+
+    def test_a_key_listed_twice_is_refused_untouched(self) -> None:
+        # PR #284 re-review: YAML keeps the last copy, so rewriting the first
+        # `notes:` reported success while the claim still read the same.
+        for kw in ({'notes': 'NEW'}, {'clear': ['notes']}):
+            with self.subTest(kw=kw):
+                before = self._write(self.HEAD + '  notes: first\n  anchor: p. 1\n'
+                                     '  notes: second\n' + self.NEXT)
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', **kw)
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('lists notes: 2 times', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_key_written_in_an_unusual_form_is_refused_untouched(self) -> None:
+        for line in ('  "notes": hi\n', '  notes : foo\n'):
+            with self.subTest(line=line):
+                before = self._write(self.HEAD + line + self.NEXT)
+                result = self._clear('notes')
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn('cannot safely remove', result.messages[-1].text)
+                self.assertIn('by hand', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    # L1: inside an open quoted scalar a `#` line is text, not a comment.
+    def test_multiline_double_quoted_value_goes_whole(self) -> None:
+        notes = '  notes: "first line of it\n    # still in string"\n'
+        before = self._write(self.HEAD + notes + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    # L2: a comment shallower than a block scalar's text is a real comment.
+    def test_comment_shallower_than_block_text_is_kept(self) -> None:
+        notes = '  notes: |\n      Indented text.\n      More text.\n'
+        comment = '    # a real comment\n'
+        before = self._write(self.HEAD + notes + comment + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+
+    def test_block_scalar_with_indentation_indicator_goes_whole(self) -> None:
+        notes = '  notes: |2\n      deeper first line\n    text at the stated indent\n'
+        before = self._write(self.HEAD + notes + '  anchor: p. 4\n' + self.NEXT).decode('utf-8')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_text(encoding='utf-8'), before.replace(notes, '', 1))
+        c = read_record(self.path)['claims'][0]
+        self.assertNotIn('notes', c)
+        self.assertEqual(c['anchor'], 'p. 4')
+
+    def test_crlf_line_endings_are_kept(self) -> None:
+        notes = '  notes: A plain note.\n'
+        before = self._write(self.HEAD + notes + self.NEXT, nl='\r\n')
+        result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self.path.read_bytes(),
+                         before.replace(notes.replace('\n', '\r\n').encode('utf-8'), b'', 1))
+
+    # L3: a confirmed absence keeps its evidence: negative.
+    def test_clearing_evidence_on_a_negated_claim_is_refused(self) -> None:
+        before = self._write(self.HEAD + '  negated: true\n  evidence: negative\n' + self.NEXT)
+        result = self._clear('evidence')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('§8.6', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    # L4: an empty --date / --place points at --clear.
+    def test_empty_date_and_place_point_at_clear(self) -> None:
+        before = self._write(self.HEAD + '  date: 1880\n' + self.NEXT)
+        for key in ('date', 'place'):
+            with self.subTest(key=key):
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', **{key: ''})
+                self.assertEqual(result.exit_code, EXIT_FAILURE)
+                self.assertIn(f'--clear {key}', result.messages[-1].text)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    # P2-3: the after-the-edit comparison refuses a rewrite that did more.
+    def _with_extra_damage(self, damage):
+        real = claim._apply_claim_review
+
+        def broken(text, claim_id, **kw):
+            new_text, changed = real(text, claim_id, **kw)
+            return damage(new_text), changed
+        return mock.patch.object(claim, '_apply_claim_review', side_effect=broken)
+
+    def test_drift_guard_refuses_a_dropped_sibling_key(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n  anchor: p. 4\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace('  anchor: p. 4\n', '', 1)):
+            result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('also change its anchor', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_drift_guard_refuses_a_cleared_key_left_behind(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace(
+                '  confidence: high\n', '  confidence: high\n  notes: A note.\n', 1)):
+            result = self._clear('notes')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('leave notes on the claim', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_drift_guard_refuses_a_change_to_another_claim(self) -> None:
+        before = self._write(self.HEAD + '  notes: A note.\n' + self.NEXT)
+        with self._with_extra_damage(lambda t: t.replace(
+                '  confidence: medium\n', '  confidence: low\n', 1)):
+            result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', notes='New.')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('another claim', result.messages[-1].text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

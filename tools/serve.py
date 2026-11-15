@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import datetime
 import hmac
 import io
@@ -99,6 +100,10 @@ from _lib import (  # noqa: E402
     is_working_copy,
     load_fha_yaml,
     load_site_module,
+    LOG_ENTRY_NO_SECTION,
+    LOG_ENTRY_NOT_FOUND,
+    LOG_ENTRY_PARTIAL,
+    LOG_ENTRY_SPANS,
     manifest_diff,
     manifest_has_changed,
     normalize_id,
@@ -1120,6 +1125,17 @@ def _verb_claim_review(state, kw, dry_run):
             confidence=kw.get('confidence'), information=kw.get('information'),
             evidence=kw.get('evidence'), anchor=kw.get('anchor'), notes=kw.get('notes'),
             dry_run=dry_run, keep_living=bool(kw.get('keep_living', False)))
+    if 'persons' in kw and not kw['persons']:
+        # The engine's own refusal names the CLI flag (`--persons was
+        # empty`); an /api/run caller sent a field, not a flag, so it gets
+        # the same rule in its own words (PR #284 re-review).
+        refused = Result(ok=False, exit_code=EXIT_FAILURE,
+                         data={'status': 'failed', 'claim_id': kw.get('claim_id', '')})
+        refused.add('error', 'The persons list was empty, but a claim must name at '
+                             'least one person. Choose who this claim is about, or leave '
+                             'the persons field out to keep the list as it is. Nothing '
+                             'was changed.')
+        return refused
     return claim.run_claim(
         state.archive_root, claim_id=kw.get('claim_id', ''),
         status=kw.get('status'), value=kw.get('value'), date=kw.get('date'),
@@ -1468,10 +1484,42 @@ def _echo_person_note(kw):
             f'{kw.get("section", "?")} --text {_q(kw.get("text", ""))}')
 
 
+def _stale_entry_wording(result: Result, noun: str, where: str) -> Result:
+    """Re-word an edit-note miss for the workbench's per-entry edit button.
+
+    The engines word a miss for the command line ("--old-text must be the
+    whole paragraph"), because that is where a partial or mistyped quote
+    happens. The workbench button always sends one whole entry exactly as
+    it was rendered, so if the engine cannot find it (or finds it only
+    inside a longer paragraph) the file changed after the page loaded - and
+    the honest next step is to reload. The same holds when the text now
+    covers several entries (the entry was split since the page loaded).
+    The engine's `data['reason']` says which miss it was; an ambiguous
+    duplicate keeps the engine's own words - reloading would not help."""
+    reason = result.data.get('reason')
+    if reason not in (LOG_ENTRY_NO_SECTION, LOG_ENTRY_NOT_FOUND, LOG_ENTRY_PARTIAL,
+                      LOG_ENTRY_SPANS):
+        return result
+    if reason == LOG_ENTRY_NO_SECTION:
+        text = (f'{where} is no longer on this record - the {noun} may have '
+                'been removed since this page was loaded. Reload the page.')
+    else:
+        text = (f'that {noun} was not found in {where} - it may have been '
+                'edited since this page was loaded. Reload the page and try again.')
+    for i, msg in enumerate(result.messages):
+        if msg.level == 'error':
+            result.messages[i] = dataclasses.replace(msg, text=text, next_step=None)
+            break
+    return result
+
+
 def _verb_person_edit_note(state, kw, dry_run):
-    return person.run_edit_note(
-        state.archive_root, kw.get('person_id', ''), kw.get('section', ''),
+    section = kw.get('section', '')
+    result = person.run_edit_note(
+        state.archive_root, kw.get('person_id', ''), section,
         old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+    heading = person.SECTION_HEADINGS.get(section, section)
+    return _stale_entry_wording(result, 'entry', f'## {heading}')
 
 
 def _echo_person_edit_note(kw):
@@ -1490,9 +1538,10 @@ def _echo_source_note(kw):
 
 
 def _verb_source_edit_note(state, kw, dry_run):
-    return source_mod.run_source_edit_note(
+    result = source_mod.run_source_edit_note(
         state.archive_root, kw.get('source_id', ''),
         old_text=kw.get('old_text', ''), text=kw.get('text', ''), dry_run=dry_run)
+    return _stale_entry_wording(result, 'entry', '## Notes')
 
 
 def _echo_source_edit_note(kw):
@@ -1607,9 +1656,10 @@ def _echo_place_note(kw):
 
 
 def _verb_place_edit_note(state, kw, dry_run):
-    return places_mod.run_place_edit_note(
+    result = places_mod.run_place_edit_note(
         state.archive_root, kw.get('place_id', ''),
         kw.get('old_text', ''), kw.get('text', ''), dry_run=dry_run)
+    return _stale_entry_wording(result, 'note', "this place's notes")
 
 
 def _echo_place_edit_note(kw):
