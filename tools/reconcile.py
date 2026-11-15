@@ -50,11 +50,12 @@ name, keywords not read yet, a same-named file carrying a different or an
 extra source ID - is one plain report: the entry is missing, the candidates
 found (most likely first), and the exact `file:` line to edit. Exit 1;
 nothing else is ever written. "Unlisted" is judged by the file itself
-(device and inode), not by how a record spells its path, and `_apply`
-refuses a heal onto a file the record already lists. Keywords come from the
-catalog (every `SOURCE:` keyword, where its row still matches the file's
-mtime and size) or, under --with-exif, are read from the same-named
-candidates with exiftool. This works whether or not `fha photoindex` ran
+(device and inode), not by how a record spells its path, and a heal onto a
+file the record already lists is refused while planning, so --dry-run
+agrees. Keywords come from the catalog (every `SOURCE:` keyword, where its
+row still matches the file's mtime and size, and never after a `roots:` or
+`photos_ignore:` change since the catalog was built) or, under --with-exif,
+are read from the same-named candidates with exiftool. This works whether or not `fha photoindex` ran
 after the move.
 
 The photo catalog itself is `fha photoindex reconcile`'s machinery; when a
@@ -96,6 +97,8 @@ CODE MAP
   _photo_report          - the one message for an entry that is not re-tied
   _split_file_value      - split a file: line into (unquoted path, comment)
   _rewrite_entry         - line-surgical file: path rewrite inside one record text
+  _drop_duplicate_targets - planning step: refuse a re-tie onto a file the record
+                           already lists (dry-run and real run alike)
   _apply                 - group heals per record, rewrite, refuse on any drift
   run_reconcile          - engine: both record plans + (unless dry-run) apply
                            + the photo catalog pass
@@ -128,6 +131,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     parse_filename,
+    photoindex_config_drift,
     path_to_alias,
     read_record,
     read_text_exact,
@@ -600,7 +604,8 @@ def _plan_photos(
     else is ever written.
 
     Keywords come from the catalog where its row still matches the file's
-    mtime and size (the scan's own test for "unchanged"); under --with-exif,
+    mtime and size (the scan's own test for "unchanged"), and never when
+    fha.yaml has changed since the catalog was built; under --with-exif,
     the same-named candidates the catalog does not cover are read with
     exiftool. A folder under the photos root that will not list stops the
     pass: the file hiding there could be a second same-named copy. Walks the
@@ -644,7 +649,12 @@ def _plan_photos(
     for alias in unlisted:
         by_name.setdefault(PurePosixPath(alias).name, []).append(alias)
 
-    catalog = _catalog_source_ids(archive_root)
+    # After a roots: (or photos_ignore:) change the catalog's rows describe
+    # the old library; a file in the new one that matches an old row on
+    # alias, mtime and size must not inherit its keyword. Every candidate is
+    # then unread: --with-exif reads it, or the entry is reported.
+    drifted = photoindex_config_drift(archive_root, fha_config)
+    catalog = {} if drifted else _catalog_source_ids(archive_root)
     sids_of: dict[str, frozenset] = {}
     for alias, p in unlisted.items():
         row = catalog.get(alias)
@@ -847,15 +857,12 @@ def _rewrite_entry(text: str, old_alias: str, new_alias: str) -> tuple[str, bool
 
 
 def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
-           result: Result, fha_config: 'dict | None' = None) -> int:
+           result: Result) -> int:
     """Apply the planned rewrites, one record at a time, refusing on drift.
 
-    With `fha_config`, a heal whose target is a file the record ALREADY lists
-    (however that entry spells it) is refused and the record left untouched:
-    re-tying a stale entry onto it would list one file twice, and the second
-    entry would hide that the first one's real file is still lost. The
-    planners exclude listed files already; this is the writer's own check,
-    so no planner can get it wrong.
+    A heal onto a file the record already lists never reaches here: the
+    planning step (`_drop_duplicate_targets`) refuses it for --dry-run and the
+    real run alike.
 
     The refuse-rather-than-corrupt guard: the rewritten text must contain the
     same number of `file:` lines as before, and every planned old path must
@@ -898,16 +905,6 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
                 break
         if not ok:
             continue
-        if fha_config is not None:
-            duplicate = _already_listed_target(archive_root, fha_config, rec_path, pairs)
-            if duplicate:
-                new_alias, spelled = duplicate
-                result.add('warning',
-                           f'{rec_path.name}: {new_alias} is already listed in this '
-                           f'record (as {spelled}) - re-tying another entry to it '
-                           'would list one file twice. Record left untouched; fix '
-                           'the entry by hand, then run `fha lint`.')
-                continue
         if _file_line_count(after) != _file_line_count(before):
             result.add('warning',
                        f'{rec_path.name}: the rewrite would have changed the '
@@ -968,6 +965,33 @@ def _apply(archive_root: Path, heals: dict[Path, list[tuple[str, str]]],
         for old_alias, new_alias in pairs:
             result.add('info', f'Re-tied {old_alias} -> {new_alias} ({rec_path.name})')
     return applied
+
+
+def _drop_duplicate_targets(
+    archive_root: Path, fha_config: dict, heals: dict, result: Result,
+) -> dict:
+    """The planned heals minus every record whose re-tie targets a file that
+    record already lists under another entry (however it is spelled).
+
+    Shared planning step for both passes, run before the dry-run preview and
+    before `_apply`, so the preview and the real run refuse the same thing
+    with the same warning and exit code. Re-tying a stale entry onto a file
+    the record already lists would list one file twice and hide that the
+    stale entry's own file is still lost.
+    """
+    kept = {}
+    for rec_path, pairs in heals.items():
+        duplicate = _already_listed_target(archive_root, fha_config, rec_path, pairs)
+        if duplicate is None:
+            kept[rec_path] = pairs
+            continue
+        new_alias, spelled = duplicate
+        result.add('warning',
+                   f'{rec_path.name}: {new_alias} is already listed in this '
+                   f'record (as {spelled}) - re-tying another entry to it would '
+                   'list one file twice. Record left untouched; fix the entry by '
+                   'hand, then run `fha lint`.')
+    return kept
 
 
 def _already_listed_target(
@@ -1094,7 +1118,8 @@ def run_reconcile(
                        f'(or restore your access to the folder), then run '
                        f'`fha reconcile` again. (The photo pass below still ran.)')
         else:
-            heals, ambiguous = plan['heals'], plan['ambiguous']
+            heals = _drop_duplicate_targets(archive_root, fha_config, plan['heals'], result)
+            ambiguous = plan['ambiguous']
             missing, unlisted = plan['missing'], plan['unlisted']
             heal_count = sum(len(v) for v in heals.values())
             result.data.update({'healed': heal_count, 'ambiguous': len(ambiguous),
@@ -1109,7 +1134,7 @@ def run_reconcile(
             else:
                 # Report what actually landed, not what was planned - a refused
                 # rewrite must not inflate the healed count.
-                result.data['healed'] = _apply(archive_root, heals, result, fha_config)
+                result.data['healed'] = _apply(archive_root, heals, result)
                 records_healed += result.data['healed']
 
             for line in ambiguous:
@@ -1130,7 +1155,8 @@ def run_reconcile(
     # its rewrites land, from the catalog as it stood before the catalog pass
     # below moves rows, so the preview and the real run agree.
     if photo_plan is not None:
-        photo_heals = photo_plan['heals']
+        photo_heals = _drop_duplicate_targets(
+            archive_root, fha_config, photo_plan['heals'], result)
         photo_heal_count = sum(len(v) for v in photo_heals.values())
         result.data.update({
             'photos_healed': photo_heal_count,
@@ -1145,7 +1171,7 @@ def run_reconcile(
                                f'[dry-run] Would re-tie {old_alias} -> {new_alias} '
                                f'({rec_path.name})')
         else:
-            photo_records_healed = _apply(archive_root, photo_heals, result, fha_config)
+            photo_records_healed = _apply(archive_root, photo_heals, result)
             result.data['photos_healed'] = photo_records_healed
             records_healed += photo_records_healed
         for line in photo_plan['reports']:

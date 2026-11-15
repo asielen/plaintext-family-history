@@ -512,6 +512,40 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(any('No photo catalog' in t for t in msgs), msgs)
 
 
+class DuplicateTargetParityTests(unittest.TestCase):
+    """A re-tie whose target the record already lists under another spelling
+    is refused at planning time, so --dry-run and the real run agree."""
+
+    def test_dry_run_and_real_run_agree_on_a_duplicate_target(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'fha.yaml').write_text(
+                'roots:\n  photos: photos\n  documents: documents\n', encoding='utf-8')
+            (root / 'sources' / 'letter').mkdir(parents=True)
+            moved = root / 'documents' / 'box' / DOC
+            moved.parent.mkdir(parents=True)
+            moved.write_text('x', encoding='utf-8')
+            record = root / 'sources' / 'letter' / f'letter_{SID.lower()}.md'
+            record.write_text(
+                f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\nfiles:\n'
+                f'  - file: documents/{DOC}\n    role: primary\n'
+                f'  - file: documents/box/./{DOC}\n    role: copy\n---\n',
+                encoding='utf-8')
+            config = load_fha_yaml(root)
+            before = record.read_text(encoding='utf-8')
+            preview = reconcile.run_reconcile(root, config, dry_run=True)
+            real = reconcile.run_reconcile(root, config)
+            self.assertEqual(record.read_text(encoding='utf-8'), before)
+            self.assertEqual(preview.exit_code, real.exit_code)
+            self.assertEqual(preview.exit_code, EXIT_WARNINGS)
+            self.assertEqual(preview['healed'], real['healed'])
+            self.assertFalse(any('Would re-tie' in m.text for m in preview.messages))
+            for result in (preview, real):
+                self.assertTrue(any('already listed in this record' in m.text
+                                    for m in result.messages),
+                                [m.text for m in result.messages])
+
+
 PHOTO_SID = 'S-6gqarv176s'
 PHOTO_FIXTURES = ROOT / 'tests' / 'fixtures' / 'photo-fixture' / 'photos'
 
@@ -744,6 +778,23 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         text = self._assert_reported(self._run(), before, 'photos/portraits/portrait_1880.jpg')
         self.assertIn('fha reconcile --with-exif', text)
 
+    def test_catalog_keywords_not_trusted_after_a_roots_change(self) -> None:
+        # The catalog was built against another photos root; a file in the
+        # new root that happens to match an old row on alias, mtime and size
+        # must not inherit that row's keyword.
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        self._scan()
+        with unittest.mock.patch.object(
+                reconcile, 'photoindex_config_drift', return_value='the photos root changed'):
+            before = self.record.read_text(encoding='utf-8')
+            result = self._run()
+            self._assert_reported(result, before, 'photos/portraits/portrait_1880.jpg')
+            self.assertIn('fha reconcile --with-exif', self._warnings(result))
+            # A fresh read is still allowed to decide.
+            healed = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/portraits/portrait_1880.jpg'])
+        self.assertEqual(healed.exit_code, EXIT_CLEAN, [m.text for m in healed.messages])
+
     def test_a_catalog_row_for_a_changed_file_is_not_trusted(self) -> None:
         self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
         self._scan()
@@ -791,16 +842,11 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         self.record = self._write_photo_record(
             PHOTO_SID, ['photos/portrait_1880.jpg', 'photos/a/./portrait_1880.jpg'])
         before = self.record.read_text(encoding='utf-8')
-        self._run(with_exif=True)
+        preview = self._run(dry_run=True, with_exif=True)
+        real = self._run(with_exif=True)
         self.assertEqual(self.record.read_text(encoding='utf-8'), before)
-        # And the writer itself refuses such a heal, whoever planned it.
-        direct = reconcile.Result()
-        applied = reconcile._apply(
-            self.root, {self.record: [('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')]},
-            direct, self.config)
-        self.assertEqual(applied, 0)
-        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
-        self.assertTrue(any(m.level == 'warning' for m in direct.messages))
+        self.assertEqual(preview.exit_code, real.exit_code)
+        self.assertFalse(any('Would re-tie' in m.text for m in preview.messages))
 
     def test_photo_moved_into_an_ignored_folder_is_reported(self) -> None:
         (self.root / 'fha.yaml').write_text(
