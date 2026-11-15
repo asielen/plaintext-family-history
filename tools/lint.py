@@ -99,6 +99,7 @@ from _lib import (
     parentage_parties,
     photos_ignore_matcher,
     photos_ignore_patterns,
+    clean_role_word,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
@@ -1181,6 +1182,17 @@ def _process_person_file(path: Path, registry: Registry,
         if is_companion and parsed:
             pid = normalize_id(parsed['id_str'])
             registry.person_companion_paths.setdefault(pid, []).append(path)
+        elif parsed and not meta and not rec['parse_errors'] and not rec.get('undecodable'):
+            # A person file whose `---` block is gone (#267 review): nothing
+            # raises and nothing reports, but every tool now reads no name, no
+            # `living:` and no `restricted:` - exporters withhold the person
+            # and point the human here, so this must say what is wrong.
+            findings.append(Finding('E', 'E010', path,
+                'Person record has no frontmatter block: the `---` line at the top '
+                'and the fields under it (id:, name:, living:, ...) are missing or '
+                'empty, so no tool can read who this is or whether they asked to '
+                'be left out. Put back the opening and closing `---` lines around '
+                'the fields (compare another person file), then run `fha index`.'))
         elif not pid_raw and parsed is None and not _never_mintable(path):
             # A hand-authored, id-less record (no `id:`, no `_{P-id}` in the
             # filename). Not an error - auto-mintable on the next `fha lint
@@ -2287,7 +2299,7 @@ def _claim_all_roles_by_person(
         return {}   # `roles: [parent, child]` names nobody; not a crash, just empty
     out: dict[str, list[str]] = {}
     for role_name in roles:
-        norm = str(role_name).strip().lower()
+        norm = clean_role_word(role_name).lower()
         for pid in _role_pids(claim, role_name, alias_map):
             keys = out.setdefault(pid, [])
             if norm not in keys:
@@ -3101,6 +3113,27 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'parents too, and that is right) and add a roles: map - '
                             '`roles:` then indented `child: [P-…]` and '
                             '`parent: [P-…, P-…]` lines.'))
+
+            # W126, the self-parent variant (#266 review): a claim that lists one
+            # person under both `child:` and `parent:` and still derives a
+            # parent edge from someone else. The index reads that person as the
+            # child only (nobody is their own parent), so their `parent:` line
+            # silently says nothing; the arm above only speaks when NO parent
+            # edge was built, which is the other half of this shape.
+            if claim_type in ('birth', 'relationship') and derives_edges:
+                children, parents = _claim_parentage_pids(claim, alias_map)
+                if children and parents:
+                    all_roles = _claim_all_roles_by_person(claim, alias_map)
+                    both = [pid for pid in dict.fromkeys(_claim_person_ids(claim, alias_map))
+                            if {'child', 'parent'} <= set(all_roles.get(pid, []))]
+                    if both:
+                        who = ', '.join(fmt_id_display(pid) for pid in both)
+                        findings.append(Finding('W', 'W126', src_path,
+                            f'Claim {claim.get("id","?")} (type: {claim_type}) lists {who} '
+                            'both as the child and as a parent. Nobody is their own '
+                            'parent, so the archive reads them as the child only and '
+                            'their `parent:` listing records nothing. Take them off '
+                            'whichever of the `child:` and `parent:` lines is wrong.'))
 
             # W132: an accepted-or-needs-review death/burial/baptism claim
             # naming 2+ people with NO roles: map at all - the zero-role-signal

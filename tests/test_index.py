@@ -3530,10 +3530,10 @@ class UndecodableRecordTests(unittest.TestCase):
     #66 taught `build_index` to survive a note saved in another codepage, but
     every RECORD still went through `_lib.read_record`'s `except OSError`-only
     guard - so one cp1252 person file took the whole build down with a
-    traceback and nothing at all was indexed. The record is now skipped and
-    reported through the same channel #66 built: never indexed as an empty
-    person, because a nameless, date-less row in `persons` reads as a sparse
-    record rather than as a file nobody read.
+    traceback and nothing at all was indexed. The record is reported through
+    the same channel #66 built, and (#267 review) keeps the row its FILENAME
+    can give - name `unknown`, `living: unknown` - exactly as a record whose
+    YAML will not parse does, so every exporter can see and withhold it.
     """
 
     def setUp(self) -> None:
@@ -3567,15 +3567,22 @@ class UndecodableRecordTests(unittest.TestCase):
         self.assertTrue(any('muller__anne_P-3333333333.md' in t and 'UTF-8' in t
                             for t in texts), texts)
 
-    def test_no_empty_person_row_is_written_for_it(self) -> None:
+    def test_it_keeps_the_row_its_filename_gives(self) -> None:
         index.build_index(self.archive_root, {})
-        self.assertEqual(self._persons(), [])
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute('SELECT id, name, surname, living, path FROM persons').fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [('p-3333333333', 'unknown', 'Muller', 'unknown',
+                                 'people/muller__anne_P-3333333333.md')])
 
     def test_one_undecodable_record_does_not_cost_the_others(self) -> None:
         good = self.archive_root / 'people' / 'doe__jane_P-1111111111.md'
         _write(good, _person_md('P-1111111111', 'Jane Doe'))
         index.build_index(self.archive_root, {})
-        self.assertEqual([r[0] for r in self._persons()], ['p-1111111111'])
+        self.assertEqual(sorted(r[0] for r in self._persons()),
+                         ['p-1111111111', 'p-3333333333'])
 
     def test_the_record_is_never_rewritten(self) -> None:
         before = self.bad.read_bytes()

@@ -1006,10 +1006,17 @@ def _index_person(
     in the archive - and until it was wired the whole build still died with a
     traceback on one file saved in cp1252.  Reported through the same channel
     as the notes (`build_index`'s undecodable-files warning, which already
-    says these words are not in the index and names the re-save), and the file
-    is SKIPPED rather than indexed as an empty person: an empty `meta` here
-    would put a nameless, date-less row in `persons` where a real ancestor
-    belongs, which reads as a sparse record rather than as a file nobody read.
+    says these words are not in the index and names the re-save).
+
+    The person is NOT skipped, though (#267 review): a profile with a P-id in
+    its filename keeps a row, exactly as one whose YAML will not parse does -
+    name `unknown`, `living: unknown`, the surname from the filename. Skipped,
+    the person vanished from every exporter's view while other records still
+    named them: a `[[P-id|Their Name]]` link elsewhere rendered its display
+    text because the id resolved to nobody, and nothing could withhold a
+    person it never saw. With the row there, every exporter's fail-closed
+    read of the file (`_lib.read_restriction_marker` cannot decode it)
+    withholds them, and `unknown` reads as living everywhere.
     """
     if path.suffix.lower() != '.md':
         # SPEC §13 spells every person record `.md`, and the walker only ever
@@ -1023,7 +1030,29 @@ def _index_person(
         return   # `_TEMPLATE.*` is a teaching template, not a record
     rec = read_record(path, on_decode_error=on_decode_error)
     if rec['undecodable']:
-        return   # nothing was read; the build reports it (#68, see docstring)
+        # Nothing was read (the build reports it, #68); keep the row the
+        # filename can give (see docstring) so exporters can withhold it.
+        parsed_name = parse_filename(path)
+        if (parsed_name and parsed_name['id_type'] == 'P'
+                and not parsed_name.get('is_companion')):
+            pid = parsed_name['id_str']
+            stem = path.stem
+            surname = (stem.split('__')[0].replace('_', ' ').title()
+                       if '__' in stem else None)
+            conn.execute(
+                '''INSERT OR REPLACE INTO persons
+                   (id, name, surname, sex, living, tier, status, merged_into,
+                    no_known_marriages, no_known_children, birth, death, path)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (pid, 'unknown', surname, '', 'unknown', 'stub', 'active', None,
+                 0, 0, None, None, str(path.relative_to(archive_root))),
+            )
+            conn.execute(
+                'INSERT OR REPLACE INTO person_files(person_id, kind, path, generated) '
+                'VALUES (?,?,?,?)',
+                (pid, 'profile', str(path.relative_to(archive_root)), 0),
+            )
+        return
     meta = rec['meta']
     parsed_name = parse_filename(path)
 

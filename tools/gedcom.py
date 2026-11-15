@@ -1103,12 +1103,18 @@ def _gedcom_payload(
                     f'WHERE cp.person_id IN ({",".join("?" * len(chunk))})', chunk))
             unread += sorted(path for sid, path in unreadable_sources if sid in touching)
         for path in unread:
+            # The reason, read again here so the warning can say what is wrong
+            # (a missing `---` block is not something `fha lint` reports as a
+            # parse error, so "run fha lint" alone could leave the human stuck).
+            _value, trouble = read_restriction_marker(archive_root / path, missing_ok=True)
             messages.append(
-                f'WARNING: could not read {path}, so there is no way to tell '
-                'whether it was marked private (restricted:). It was withheld '
-                'from this export - a person as /Restricted/, a source with '
-                'every fact it is the evidence for. Run `fha lint` to see what '
-                'is wrong with the file, fix it, run `fha index`, then export again.'
+                f'WARNING: could not read {path} for its privacy marker'
+                + (f' ({trouble})' if trouble else '')
+                + ', so there is no way to tell whether it was marked private '
+                '(restricted:). It was withheld from this export - a person as '
+                '/Restricted/, a source with every fact it is the evidence for. '
+                'Repair the file (`fha lint` points at what is wrong), run '
+                '`fha index`, then export again.'
             )
 
         # A marriage event that found no family to live on. `_load_marriages`

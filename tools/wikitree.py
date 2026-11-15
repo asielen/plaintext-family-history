@@ -1341,6 +1341,23 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
             cannot_read, still_restricted = _split_by_decode_failure(
                 archive_root, restricted_people, undecodable)
             messages = []
+            # A record flagged only because its marker could not be read is
+            # not "restricted": say why, so the fix is the file, not the link.
+            unreadable_people = []
+            for r in still_restricted:
+                _value, trouble = read_restriction_marker(
+                    archive_root / r['path'], missing_ok=True) if r.get('path') else (None, None)
+                if trouble is not None:
+                    unreadable_people.append((r, trouble))
+            unreadable_ids = {r['id'] for r, _t in unreadable_people}
+            still_restricted = [r for r in still_restricted if r['id'] not in unreadable_ids]
+            for r, trouble in unreadable_people:
+                messages.append(
+                    f'WikiTree will not publish a profile linking {fmt_id_display(r["id"])}: '
+                    f'their record ({r["path"]}) could not be read for its privacy marker '
+                    f'({trouble}), so there is no way to tell whether they asked to be left '
+                    'out. Repair that file - put back its `---` lines and fields, or fix '
+                    'the YAML `fha lint` points at - run `fha index`, then export again.')
             if still_restricted:
                 items = ', '.join(
                     f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'

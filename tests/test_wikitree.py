@@ -332,6 +332,24 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIsNone(r['text'])
         self.assertTrue(any('fha lint' in m for m in r['messages']), r['messages'])
 
+    def test_a_linked_person_with_no_frontmatter_is_refused_with_the_reason(self):
+        # #267 review: not "restricted" - unreadable, and the message says so.
+        (self.root / 'people' / 'edith.md').write_text(
+            'id: P-0000000003\nname: Edith Kowalski\nrestricted: by-request\n',
+            encoding='utf-8')
+        subject = self.root / 'people' / 'subject.md'
+        subject.write_text(subject.read_text(encoding='utf-8').replace(
+            'He was born in 1875', 'He knew [[P-0000000003]]. He was born in 1875'),
+            encoding='utf-8')
+        _freshen_index(self.root)
+        conn = self._reopen()
+        _add_person(conn, 'p-0000000003', 'Edith Kowalski', tier='stub',
+                    path='people/edith.md')
+        conn.commit(); conn.close()
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'restricted-people')
+        self.assertTrue(any('no frontmatter block' in m for m in r['messages']), r['messages'])
+
     def test_participant_whose_frontmatter_is_a_list_is_withheld(self):
         # The twin of the malformed-participant test above, for a frontmatter
         # that parses as YAML but is a list, not a block of fields.

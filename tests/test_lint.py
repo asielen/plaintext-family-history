@@ -3077,6 +3077,27 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # repair is not offered for her.
         self.assertNotIn('If they are the parents', msg)
 
+    def test_child_also_listed_as_parent_beside_a_real_parent_warns(self) -> None:
+        # #266 review drift: the father's edge is built, so the no-parentage arm
+        # stays quiet - the self-parent variant still says what was ignored.
+        for ctype in ('birth', 'relationship'):
+            with self.subTest(ctype=ctype):
+                w = self._w126(self._build(ctype=ctype, roles_block=(
+                    f'  roles:\n    child: [{self.CHILD}]\n'
+                    f'    parent: [{self.CHILD}, {self.FATHER}]\n')))
+                self.assertEqual(len(w), 1, [f.message for f in w])
+                self.assertIn(f'lists {lint.fmt_id_display(self.CHILD)} both as the child '
+                              'and as a parent', w[0].message)
+
+    def test_a_control_character_in_a_role_key_reads_as_the_plain_word(self) -> None:
+        # #266 review: a double-quoted key can spell U+001F, the index's role
+        # separator; both index and lint drop it, so `"par\x1fent"` is
+        # `parent` to both and the edge is derived and nothing warns.
+        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER], roles_block=(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    "par\\x1fent": [{self.MOTHER}]\n')))
+        self.assertEqual(w, [])
+
     # -- #260 review, round 3: every key counts, both ways ---------------------
     # A child who also carries a recognised role is still read as a child, so
     # warning would ask the owner to delete a true fact. An off-list word is
@@ -5257,6 +5278,40 @@ class DiedButLivingW136Tests(unittest.TestCase):
             with self.subTest(roles=roles):
                 self._claim(self.ADA, roles=roles, also=self.MARY_DEATH)
                 self.assertEqual(self._names(), ['Mary Hartley'])
+
+
+
+class PersonWithoutFrontmatterE010Tests(unittest.TestCase):
+    """#267 review: a person file whose `---` block is gone reads as no name,
+    no `living:` and no `restricted:`, and the exporters withhold it and point
+    at `fha lint` - which must say what is wrong."""
+
+    def test_missing_frontmatter_block_is_reported(self) -> None:
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'reed__chastina_P-0000000002.md').write_text(
+            'id: P-0000000002\nname: Chastina Reed\nliving: false\n---\n# Chastina\n',
+            encoding='utf-8')
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        hits = [f for f in findings if f.code == 'E010' and 'no frontmatter block' in f.message]
+        self.assertEqual(len(hits), 1, [(f.code, f.message) for f in findings])
+
+    def test_a_non_utf8_person_file_is_not_called_frontmatter_less(self) -> None:
+        # Its frontmatter is there; only its encoding is wrong, which W128
+        # reports. An E010 telling the owner to put back `---` lines would
+        # send them to fix the wrong thing (#267 review).
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'reed__chastina_P-0000000002.md').write_bytes(
+            ('---\nid: P-0000000002\nname: Chastina Reed\nliving: false\n---\n'
+             '# Chastina\n\nBorn in Krak\u00f3w.\n').encode('cp1252'))
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        self.assertFalse([f for f in findings if 'no frontmatter block' in f.message],
+                         [(f.code, f.message) for f in findings])
 
 
 if __name__ == '__main__':

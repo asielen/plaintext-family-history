@@ -976,7 +976,10 @@ class UnreadablePrivacyRecordTests(unittest.TestCase):
         self._write('people/quillfeather__ada_P-0000000002.md',
                     'id: P-0000000002\nname: Ada Quillfeather\ntier: curated\n'
                     'living: true\nrestricted: by-request\n---\n# Ada\n')
-        self._assert_aunt_withheld(self._export_all())
+        r = self._export_all()
+        self._assert_aunt_withheld(r)
+        # The warning says why, since `fha lint`'s parse errors would not.
+        self.assertTrue([m for m in r['messages'] if 'no frontmatter block' in m], r['messages'])
 
     def test_a_person_frontmatter_that_is_a_list_is_withheld(self):
         self._write('people/quillfeather__ada_P-0000000002.md',

@@ -1781,5 +1781,28 @@ class ClaimFingerprintIsUnambiguousTests(unittest.TestCase):
             self._fingerprint([('c-1', 'p-a', 0, 'informant\x1fparent')]))
 
 
+class ClaimFingerprintVersionTests(unittest.TestCase):
+    """#266 review P2-4: a snapshot saved before the fingerprint format changed
+    (no version, or another one) is a baseline - nothing reads as changed."""
+
+    def _snap(self, fp, version):
+        snap = {'source_ids': [], 'person_ids': [], 'claim_ids': ['c-1'],
+                'claim_fingerprints': {'c-1': fp}, 'source_fingerprints': {},
+                'person_fingerprints': {}}
+        if version is not None:
+            snap['claim_fingerprint_version'] = version
+        return snap
+
+    def test_an_older_snapshot_reports_no_changed_claims(self):
+        current = self._snap('new-form', report.CLAIM_FINGERPRINT_VERSION)
+        lines = report._section_new_since_last(self._snap('old-form', None), current)
+        self.assertFalse(any('Changed claims' in line for line in lines), lines)
+
+    def test_a_same_version_snapshot_still_reports_a_real_change(self):
+        v = report.CLAIM_FINGERPRINT_VERSION
+        lines = report._section_new_since_last(self._snap('before', v), self._snap('after', v))
+        self.assertTrue(any('hanged claims' in line for line in lines), lines)
+
+
 if __name__ == '__main__':
     unittest.main()

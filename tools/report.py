@@ -227,6 +227,13 @@ def _vitals_gap_pids(findings: list, registry) -> list[str]:
     return sorted(pids)
 
 
+# The way `_build_snapshot` writes a claim's fingerprint. Bump it whenever
+# that changes, so the next run treats the saved snapshot's fingerprints as
+# a baseline instead of reporting every claim as changed. 2: participants
+# serialized as JSON, every role a person carries (#266).
+CLAIM_FINGERPRINT_VERSION = 2
+
+
 def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     """Current-state snapshot dict, built right after the refresh sequence."""
     source_ids = sorted(r[0] for r in conn.execute('SELECT id FROM sources'))
@@ -315,6 +322,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         'claim_statuses': claim_statuses,
         'claim_status_by_id': claim_status_by_id,
         'claim_fingerprints': claim_fingerprints,
+        'claim_fingerprint_version': CLAIM_FINGERPRINT_VERSION,
         'claim_links': claim_links,
         'relationships': [list(t) for t in relationships],
         'vitals_gap_person_ids': _vitals_gap_pids(findings, registry),
@@ -524,6 +532,11 @@ def _section_new_since_last(prev: dict, current: dict) -> list[str]:
     new_persons = sorted(set(current['person_ids']) - set(prev.get('person_ids', [])))
     new_claims = sorted(set(current['claim_ids']) - set(prev.get('claim_ids', [])))
     prev_claim_fingerprints = prev.get('claim_fingerprints', {})
+    if prev.get('claim_fingerprint_version') != current.get('claim_fingerprint_version'):
+        # Fingerprints written another way are not comparable: every claim
+        # would read as "changed" on the first run after an upgrade (#266
+        # review P2-4). This run is the new baseline; nothing is reported.
+        prev_claim_fingerprints = {}
     changed_claims = sorted(
         cid for cid, fingerprint in current['claim_fingerprints'].items()
         if cid in prev_claim_fingerprints and prev_claim_fingerprints[cid] != fingerprint

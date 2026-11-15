@@ -828,11 +828,22 @@ def _min_cost_max_matching(cost: list[list[int | None]], n_tokens: int) -> list[
 # in the one column instead. The separator is the ASCII unit separator
 # (U+001F), not a comma: SPEC §8.3 lets a role key be any word a human
 # writes, and a quoted YAML key can hold a comma (`"parent, informant"`),
-# which a comma split would read as two roles where lint reads one. YAML
-# refuses C0 control characters in a document, so U+001F can never be part
-# of a key and the encoding is lossless. Read the column back only through
+# which a comma split would read as two roles where lint reads one. A YAML
+# document cannot hold a raw U+001F, but a double-quoted key can still spell
+# one as an escape (`"parent\x1finformant"`), so every reader of a role
+# word - this writer, `roles_by_person`, `resolve_claim_persons_with_roles`
+# and lint's `_claim_all_roles_by_person` - drops C0 control characters
+# first (`clean_role_word`). After that the separator cannot occur inside a
+# role and the encoding is lossless. Read the column back only through
 # `claim_role_pairs`, never with `role = 'parent'` in SQL.
 CLAIM_ROLE_SEP = '\x1f'
+_C0_RE = re.compile(r'[\x00-\x1f\x7f]')
+
+
+def clean_role_word(role: Any) -> str:
+    """A `roles:` key as every tool reads it: control characters dropped,
+    whitespace trimmed. Not lower-cased - the comparison rules do that."""
+    return _C0_RE.sub('', str(role or '')).strip()
 
 
 def join_claim_roles(roles: Iterable[Any]) -> str | None:
@@ -841,7 +852,7 @@ def join_claim_roles(roles: Iterable[Any]) -> str | None:
     The writer half of `claim_role_pairs`."""
     out: list[str] = []
     for role in roles:
-        text = str(role or '').strip()
+        text = clean_role_word(role)
         if text and text not in out:
             out.append(text)
     return CLAIM_ROLE_SEP.join(out) if out else None
@@ -890,7 +901,7 @@ def roles_by_person(
     out: dict[str, list[str]] = {}
     for pid, role in persons_with_roles:
         roles = out.setdefault(pid, [])
-        norm = str(role or '').strip().lower()
+        norm = clean_role_word(role).lower()
         if norm and norm not in roles:
             roles.append(norm)
     return {pid: tuple(roles) for pid, roles in out.items()}
@@ -1488,7 +1499,7 @@ def resolve_claim_persons_with_roles(
                 for rid in [resolve_typed_ref(r, alias_map, want='P')]
                 if rid
             }
-            resolved_roles.append((str(role_name), role_pids))
+            resolved_roles.append((clean_role_word(role_name), role_pids))
     out: list[tuple[str, str | None]] = []
     for p_raw in link_field_refs(claim.get('persons')):
         pid = resolve_typed_ref(p_raw, alias_map, want='P')
