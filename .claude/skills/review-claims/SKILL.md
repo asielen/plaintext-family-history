@@ -124,6 +124,16 @@ its claims to the people asked about and leave the rest for later sessions.
      fha claim <C-id> --status accepted --value "…" --date 1923-06 --dry-run
      fha claim <C-id> --status accepted --value "…" --date 1923-06
      ```
+     **Removing a field** ("there was no place on that record", "drop that note") is
+     `--clear FIELD`, repeatable, for the optional fields only: `place`, `place_text`, `date`,
+     `information`, `evidence`, `anchor`, `notes`. Never pass an empty value (`--place-text ""`)
+     to mean "remove" - the tool refuses it and points at `--clear`. `value`, `type`, `persons`,
+     `status` and `confidence` are required on every claim and cannot be cleared; correct them
+     with their own flag. Preview first, as always:
+     ```
+     fha claim <C-id> --clear place_text --dry-run
+     fha claim <C-id> --clear place_text
+     ```
    - **Dispute** (keep it, mark it contested): `--status disputed` — same `--dry-run`, then apply.
    - **Reject** (wrong, but preserve the trail — never delete): `--status rejected` — preview, then apply.
    - **Park** (not sure yet): `--status needs-review` leaves it for later without accepting (preview

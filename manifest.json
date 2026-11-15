@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "062cfe01398a8243ef66ca8924a38958b3afd976ad0b08de355069b6070d1b95",
+      "sha256": "a3fd2083cf5c03775e107e5ed783fa297f0cf88c7e8bbfcce0d9ca3330b4721f",
       "spec_version": "1.2"
     },
     {
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "2d2356b4b8b77825f7cff348d62d8e77e25e88c4b0469bfb62fe457fdb8eff9b",
+      "sha256": "1c301f938671eb8c1d253492c914d3ff3232415ce09f2353b95df4c6aa5ddd1d",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "a44a085e2d398ddaf9690da33e7b3a36ecddd16d86a82f1e6124c360626d8e4d",
+      "sha256": "fe5c09eb62b38ae87f54dccd5ef21738cd8b30852c8b7f9efc3ad5075238ee54",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "4c1debe9749e9124d0fa1e619f218822340392a09b4af1a21cb51bc50eab5ecb",
+      "sha256": "dab09a7167834d9731dd96212855e105af7212af85ce63caee08695e06777a85",
       "spec_version": "1.2",
       "src": "tools/claim.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "6da12daedb7c8b4cd65c4502dfd728e0111c7fe9d4a4375d8ef0effb69128d46",
+      "sha256": "105faec0447eed98d84ba9270aec3a5123f79f11633d15a95c27ce041fe0846b",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -672,7 +672,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "46ae0bccc28eb46edaa77c7fc3a80a164c73b4a70fd4934a4f29ea69347da5ae",
+      "sha256": "5318aacaf66a6a071a9b1812dc936d4fe7c552902d60dd57ecd1af55857e6bea",
       "spec_version": "1.2",
       "src": "tools/places.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "72170c906e9809270c73a9e8a6a1a131b9e4e0701bebf9b327e31ed6d28037bd",
+      "sha256": "653523cedcd219616d1160233e19ac643d654549793f1f91a41d1368dbfaf6c1",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "ad4ce84d282e587c0631c95c37fdedc3918d2e90565a10755fdf804cb9d1a12e",
+      "sha256": "87ed66bec35855da6a0f883c606bc5f648d0b1d0e4ad0340ec40c796ea90ee58",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ee8b8227572cfe5d4a7c0edf7f42313e1c86f312780fb10572b697ee7e1d546e",
+      "sha256": "5a49209b26ccf8f35e5bc84e022f3de5aff3936b5b69d5bcff6784740e8835d7",
       "spec_version": "1.2"
     },
     {
