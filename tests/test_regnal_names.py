@@ -295,5 +295,31 @@ class NoSurnameOverrideTests(unittest.TestCase):
         self.assertIn('surname: Tudor', new.read_text(encoding='utf-8'))
 
 
+
+class FixIdsHonoursRecordedSurnameTests(unittest.TestCase):
+    """`fha lint --fix-ids` names an id-less hand record from its `name:`;
+    a `surname:` line a human wrote there is the same decision the minting
+    verbs record, so the rename follows it (sweep for PR #285)."""
+
+    def test_fix_ids_uses_the_surname_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stubs_dir = root / 'people' / 'stubs'
+            stubs_dir.mkdir(parents=True)
+            (root / 'sources').mkdir()
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            (stubs_dir / 'Jinping XI.md').write_text(
+                '---\nname: Jinping XI\nsurname: XI\nliving: unknown\n---\n',
+                encoding='utf-8')
+            (stubs_dir / 'Jon Thorsson.md').write_text(
+                '---\nname: Jon Thorsson\nsurname: ""\nliving: unknown\n---\n',
+                encoding='utf-8')
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                lint.run_lint(root, {}, fix_ids=True)
+            names = sorted(p.name.rsplit('_', 1)[0] for p in stubs_dir.glob('*.md'))
+            self.assertEqual(names, ['__jon_thorsson', 'xi__jinping'])
+
+
 if __name__ == '__main__':
     unittest.main()

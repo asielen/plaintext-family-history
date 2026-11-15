@@ -1179,6 +1179,22 @@ def run_new(
 _FROM_FILE_COLUMNS = ('name', 'sex', 'surname')
 
 
+def _first_unbalanced_quote_line(path: Path) -> int | None:
+    """The 1-based line of the first cell that opens a quote and does not
+    close it on the same line, or None - only to name the line in the
+    refusal `_read_people_file` gives for a csv.Error."""
+    try:
+        text = path.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeDecodeError):
+        return None
+    for number, line in enumerate(text.splitlines(), start=1):
+        for cell in line.split('\t'):
+            cell = cell.strip()
+            if cell.startswith('"') and (cell.count('"') % 2 == 1 or cell == '"'):
+                return number
+    return None
+
+
 def _read_people_file(path: Path) -> tuple[list[dict], list[str]]:
     """Parse a `--from-file` list into rows, or the plain reasons it cannot be.
 
@@ -1198,15 +1214,32 @@ def _read_people_file(path: Path) -> tuple[list[dict], list[str]]:
         with open(path, encoding='utf-8-sig', newline='') as fh:
             # csv, not split('\t'): a spreadsheet saving as TSV quotes a cell
             # holding a quote ("Mary ""Polly"" Smith"), and csv unwraps it.
-            lines = list(csv.reader(fh, delimiter='\t'))
+            # strict: an unterminated quote is an error, not a cell that
+            # swallows the following rows (which would merge people).
+            lines = list(csv.reader(fh, delimiter='\t', strict=True))
     except UnicodeDecodeError:
         return [], [f'{path} is not saved as UTF-8 text. Save it again choosing '
                     f'UTF-8 (in Excel: Save As, UTF-8), {fix}.']
-    except (OSError, csv.Error) as e:
+    except csv.Error:
+        # csv names the line it stopped on through the reader, not the
+        # error; re-read plainly to find the first unbalanced quote.
+        bad = _first_unbalanced_quote_line(path)
+        where = f'line {bad}' if bad else 'one line'
+        return [], [f'{path}: {where} opens a quote (") that never closes, so the '
+                    'rows after it would run together. Remove the stray quote, or '
+                    'close it, and run the same command again.']
+    except OSError as e:
         return [], [f'{path} could not be read ({e.__class__.__name__}) - check the '
                     f'file is not open in another program and is plain text, {fix}.']
     for number, raw in enumerate(lines, start=1):
         if not raw or not ''.join(raw).strip() or raw[0].lstrip().startswith('#'):
+            continue
+        if any('\n' in c or '\r' in c for c in raw):
+            # A quote closed on a later line: csv accepts it as one cell
+            # holding a line break, which would silently merge rows.
+            problems.append(f'row {number} has a quote (") that runs onto the next line, '
+                            'so the rows after it would run together. Remove the stray '
+                            'quote and run the same command again.')
             continue
         cells = [c.strip() for c in raw]
         if not rows and not problems and cells[0].lower() == 'name':

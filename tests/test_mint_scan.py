@@ -294,5 +294,34 @@ class ReReviewTests(unittest.TestCase):
         self.assertIn('could not be removed', text)
 
 
+
+class StrictTsvTests(unittest.TestCase):
+
+    def test_unterminated_quote_refuses_the_whole_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _archive(tmp)
+            path = root / 'p.tsv'
+            path.write_text('Henry Smith\tM\n"Ann Smith\tF\nJoan Smith\tF\n',
+                            encoding='utf-8')
+            with mock.patch.object(person, 'mint_ids',
+                                   side_effect=AssertionError('minted')):
+                result = person.run_new_from_file(root, path)
+            self.assertFalse(result.ok)
+            text = ' '.join(m.text for m in result.messages)
+            self.assertIn('line 2', text)
+            self.assertIn('quote', text)
+            self.assertEqual(list((root / 'people' / 'stubs').glob('*.md')), [])
+
+
+    def test_quote_closed_on_a_later_line_refuses_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _archive(tmp)
+            path = root / 'p.tsv'
+            path.write_text('"Henry\tM\nAnn" Smith\tF\n', encoding='utf-8')
+            result = person.run_new_from_file(root, path)
+            self.assertFalse(result.ok)
+            self.assertEqual(list((root / 'people' / 'stubs').glob('*.md')), [])
+
+
 if __name__ == '__main__':
     unittest.main()

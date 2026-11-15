@@ -59,6 +59,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    recorded_surname,
+    stub_slug_name,
     fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
@@ -5425,8 +5427,15 @@ def _fix_mint_ids(
             # by `_person_filename_parts`, minting the file a garbage
             # 'none__none_P-....md' name instead of falling back to the
             # filename-derived split the same as a truly nameless record.
-            name = str(read_record(path)['meta'].get('name') or '')
-            surname, given = _person_filename_parts(name, path.stem)
+            meta = read_record(path)['meta']
+            name = str(meta.get('name') or '')
+            recorded = recorded_surname(meta)
+            if name.strip() and recorded is not None:
+                # A `surname:` line is a hand-set sort name (SPEC §13): file
+                # by it, exactly as `fha person new --surname` would.
+                surname, given = stub_slug_name(name, surname=recorded)
+            else:
+                surname, given = _person_filename_parts(name, path.stem)
             new_name = f'{surname}__{given}_{new_id}.md'
         else:
             new_name = f'{slug}_{new_id}.md'

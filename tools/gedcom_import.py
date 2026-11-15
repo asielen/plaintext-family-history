@@ -95,6 +95,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    stub_slug_name,
+    surname_frontmatter_line,
     fold_accents,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -714,6 +716,31 @@ class _PersonStub:
     living: str               # 'false' | 'unknown'
     birth: str | None         # provisional EDTF
     death: str | None
+    # The NAME's `/…/` when it says something the name alone would not:
+    # written as `surname:` (SPEC §13); None when the automatic split of the
+    # display name already gives that surname (see _explicit_surname).
+    recorded_surname: str | None = None
+
+
+def _explicit_surname(raw_name: str, display: str, surname: str) -> str | None:
+    """The `surname:` line a GEDCOM NAME calls for, or None.
+
+    A slash-delimited surname is an explicit decision - the exporting app
+    (or person) said which words are the surname. It is recorded only where
+    it differs from what `_lib.stub_slug_name` reads from the display name
+    on its own: `Jinping /XI/` (the automatic split takes XI for a regnal
+    suffix) gives 'XI', `Jon Thorsson //` gives '' (no surname, where the
+    split would pick Thorsson), and the ordinary `Henry /Tudor/` gives None,
+    so thousands of imported records do not carry a line that only repeats
+    their file name. Without the record, a re-export could not tell such a
+    file name from one the old slugger guessed (`gedcom._gedcom_name`). A
+    NAME with no slashes made no decision, so it records nothing.
+    """
+    if '/' not in (raw_name or '') or not display:
+        return None
+    automatic = stub_slug_name(display)[0]
+    parsed = _name_slot(surname) if surname else ''
+    return None if parsed == automatic else surname
 
 
 @dataclass
@@ -937,6 +964,8 @@ def _map_individual(
         variants=variants, sex=sex,
         living=living_flag_for_import(has_death, birth_edtf),
         birth=birth_edtf, death=death_edtf,
+        recorded_surname=_explicit_surname(
+            names[0].value if names else '', display, surname),
     )
     return stub, claims, pedi_map
 
@@ -1457,6 +1486,8 @@ def _person_stub_text(stub: _PersonStub, today: str) -> str:
         f'aliases: [{stub.pid}]',
         f'name: {_yaml_inline(stub.name or "unknown")}',
     ]
+    if stub.recorded_surname is not None:
+        lines.append(surname_frontmatter_line(stub.recorded_surname))
     if stub.variants:
         rendered = ', '.join(_yaml_inline(v) for v in stub.variants)
         lines.append(f'name_variants: [{rendered}]')

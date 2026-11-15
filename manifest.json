@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "d413c104ed809eecc0c703ef9ae857d4a193195bbf8a9490aaa31ff1440b468b",
+      "sha256": "152eba99954010264eb51eff224214c13338efe0e3acf09e3a24474c0bb2ec00",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "1657e2c6fc2ae0435fac1310c5a2878c2b3d18349807e9bedfcee9d5b07f0156",
+      "sha256": "9764af9d6428d08b6159c24ec8e4f0e3a78b16961833d0d50fcafeb24bde2350",
       "spec_version": "1.2",
       "src": "tools/gedcom_import.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "f8eab17b2d91b27513b7bc036e0dab545f649dd3046876d4b86b8cd97be58fac",
+      "sha256": "b4c304a244d625a181622cede9871d19b7bf44a735d70ce041e889397c543d32",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "f769bf2ef6a5dff20fc3dc065e7dee08642e599d5bce2c4ed807e41e06d0dc4a",
+      "sha256": "d297749c3ec2a5857ad445de43a0c68df1e7e949c1af9df9e4375b69eaf544bc",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ef26d2a5c85897dd420f99ddff40560e366519f5736f19cc78d2f00272168cad",
+      "sha256": "0645027569260e3838c6d1bd797b9ef5f5c0822da0a1e94855b78577cf8561f1",
       "spec_version": "1.2"
     },
     {
