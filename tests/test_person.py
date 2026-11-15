@@ -937,7 +937,9 @@ class NewTests(unittest.TestCase):
         ]
         for kwargs, expect in cases:
             with self.subTest(kwargs=kwargs):
-                result = person.run_new(self.root, 'Option Test', **kwargs)
+                # One root, one name per subtest: force past the #282
+                # duplicate-name check, which is not what this test is about.
+                result = person.run_new(self.root, 'Option Test', force=True, **kwargs)
                 self.assertEqual(result.exit_code, EXIT_CLEAN)
                 meta = read_record(Path(result.data['path']))['meta']
                 for key, value in expect.items():
@@ -1050,7 +1052,8 @@ class NewTests(unittest.TestCase):
     def test_every_suffix_round_trips(self) -> None:
         for suffix in ('Jr', 'Jr.', 'Sr', 'Sr.', 'II', 'III', 'IV', 'V'):
             with self.subTest(suffix=suffix):
-                result = person.run_new(self.root, f'James Whitelock {suffix}')
+                # 'Jr' and 'Jr.' are one name to the #282 duplicate check.
+                result = person.run_new(self.root, f'James Whitelock {suffix}', force=True)
                 self.assertEqual(result.exit_code, EXIT_CLEAN)
                 name = Path(result.data['path']).name
                 self.assertTrue(name.startswith('whitelock__james_'), name)
@@ -2142,9 +2145,12 @@ class PersonNewVerbsCliTests(unittest.TestCase):
         import fha
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            with self.assertRaises(SystemExit) as cm:
-                fha.main(['person', 'new', '--root', str(self.root)])
-        self.assertEqual(cm.exception.code, 2)
+            # NAME became optional when --from-file arrived (issue #291), so
+            # the usage error is the command's own, still exit 2 and naming
+            # both ways to call it.
+            code = fha.main(['person', 'new', '--root', str(self.root)])
+        self.assertEqual(code, 2)
+        self.assertIn('--from-file', err.getvalue())
 
     def test_new_dry_run_cli_writes_nothing(self) -> None:
         stubs_dir = self.root / 'people' / 'stubs'

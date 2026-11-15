@@ -24,6 +24,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import gedcom
 import gedcom_import
 from _lib import (
     EXIT_CLEAN,
@@ -1281,6 +1282,49 @@ class LooseDateImportTestCase(_ArchiveCase):
                           name='dupes.ged')
         flagged = {line.split(' ', 1)[0] for line in plan.duplicates}
         self.assertEqual(flagged, {'@I1@', '@I2@', '@I3@', '@I5@'}, plan.duplicates)
+
+
+
+class ExplicitSurnameRoundTripTestCase(_ArchiveCase):
+    """A GEDCOM `/…/` is an explicit surname decision: the importer records
+    it as `surname:` where the name alone would be read differently, so a
+    re-export says what the import read (Codex, PR #285)."""
+
+    def _import_and_export(self, body: str) -> tuple[list[str], list[str]]:
+        import index
+        ged = Path(self._tmp.name) / 'names.ged'
+        ged.write_text('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n' + body + '0 TRLR\n',
+                       encoding='utf-8')
+        result, _out, err = self._run(ged, apply=True)
+        self.assertTrue(result.ok, err)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        import time
+        time.sleep(0.02)
+        text = gedcom.run_gedcom(self.archive, None, all_persons=True,
+                                 include_living=True)['text']
+        stubs = [p.read_text(encoding='utf-8')
+                 for p in (self.archive / 'people').rglob('*.md')]
+        return text.splitlines(), stubs
+
+    def test_numeral_surname_survives_import_and_export(self) -> None:
+        lines, stubs = self._import_and_export('0 @I1@ INDI\n1 NAME Jinping /XI/\n')
+        self.assertIn('1 NAME Jinping /XI/', lines)
+        self.assertTrue(any('surname: XI' in s for s in stubs))
+
+    def test_empty_slashes_mean_no_surname(self) -> None:
+        lines, stubs = self._import_and_export('0 @I1@ INDI\n1 NAME Jon Thorsson //\n')
+        self.assertIn('1 NAME Jon Thorsson //', lines)
+        self.assertTrue(any('surname: ""' in s for s in stubs))
+
+    def test_surname_only_name_round_trips(self) -> None:
+        lines, _stubs = self._import_and_export('0 @I1@ INDI\n1 NAME /Dodson/\n')
+        self.assertIn('1 NAME /Dodson/', lines)
+
+    def test_ordinary_surname_writes_no_line(self) -> None:
+        lines, stubs = self._import_and_export('0 @I1@ INDI\n1 NAME Henry /Tudor/\n')
+        self.assertIn('1 NAME Henry /Tudor/', lines)
+        self.assertFalse(any('\nsurname:' in s for s in stubs))
 
 
 if __name__ == '__main__':

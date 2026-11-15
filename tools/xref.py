@@ -221,7 +221,6 @@ import difflib
 import re
 import sqlite3
 import sys
-import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -233,6 +232,7 @@ from _lib import (
     Result,
     edtf_bounds,
     fmt_id_display,
+    fold_accents,
     normalize_place_text,
     place_text_cluster_key,
     open_index_db,
@@ -380,11 +380,6 @@ def _place_part_tokens(part: str) -> set[str]:
     return set(place_text_cluster_key(part).split()) - _PLACE_FILLER_WORDS
 
 
-# Letters NFKD does not split into base + accent.
-_PLACE_FOLD = str.maketrans({
-    'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE', 'ß': 'ss',
-    'đ': 'd', 'Đ': 'D',
-})
 _TOWN_LEADING_ABBREVIATIONS = {'st': 'saint', 'mt': 'mount', 'ft': 'fort'}
 # difflib ratio at or above which two town names read as one name spelled
 # two ways ("Riverton" / "Rivertown" / "Riverten"), while "Riverton" /
@@ -398,8 +393,7 @@ def _town_key(text: str | None) -> str:
     (Suwałki -> suwalki, München -> munchen, and "ue" -> "u" for Muenchen),
     a leading St/Mt/Ft spelled out, filler words dropped."""
     first = (text or '').split(',')[0].split('(')[0]
-    folded = unicodedata.normalize('NFKD', first.translate(_PLACE_FOLD))
-    folded = ''.join(c for c in folded if not unicodedata.combining(c)).lower()
+    folded = fold_accents(first).lower()
     folded = folded.replace('ue', 'u')
     words = [w for w in re.sub(r'[^\w\s]', ' ', folded).split()
              if w not in _PLACE_FILLER_WORDS]

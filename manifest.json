@@ -12,7 +12,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "ba83ecfbde40e5e51b899b7a4dc8e2c2c6f37ea7eca8c5ba1b50e3f0de7d5a65",
+      "sha256": "758a653c65337c2d847c25956cd907504f883690afcab0f5239702fb11c4a21d",
       "spec_version": "1.2"
     },
     {
@@ -36,7 +36,7 @@
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "c3ccd60311449079e15c3413d0c1f3806b30ba1d0bb1185a18310004a52e47fd",
+      "sha256": "c8b8d547958a104ecd8bc22279f94cc29b09a40e854c647930a33505e1d07bfd",
       "spec_version": "1.2"
     },
     {
@@ -66,7 +66,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "45e16aa8b1b2a0356726fb37eb2766c72d507c4c6713e85772f761d99eff915f",
+      "sha256": "425d8800a8772044203ae5e22914d914ffda5802810d40d3619f2b8595bc18cf",
       "spec_version": "1.2"
     },
     {
@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "cac1c862aaa8fac122a1f11ef14370491012c7e2655dd115d2c8649fb397f726",
+      "sha256": "6afb165d767876a1a2ec9208204b2dd7715979aa74df688340e1c327df2328d8",
       "spec_version": "1.2"
     },
     {
@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "0c29e3bae6d17043ab2b4783e26f9ef0b3ec878e1a02b3231abd2416779f0f49",
+      "sha256": "381a3a5b8d55cf7dd9c84f7ed43d71e2c201a7f00f42cf3ec6055d94b257d2cf",
       "spec_version": "1.2"
     },
     {
@@ -138,13 +138,13 @@
     {
       "path": ".claude/skills/transcribe-audio/SKILL.md",
       "category": "operating",
-      "sha256": "f4f33eb20f118b4297e26d52265c9e45c5afbd0beffe0d6fda9dabcf5555b12d",
+      "sha256": "fd38937724509ee88c3df68b950b217afbc4e917a7173b3dfb2ae8533bc5fe5b",
       "spec_version": "1.2"
     },
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "f0eb0e65d76ad841f7678cfbb4e3b51978f7583479bcc463d20434ddf741d46a",
+      "sha256": "29490a57d08ad9a8a87d7664a1cb35560d3304d6f422504aa2cc625bf0b1a88e",
       "spec_version": "1.2"
     },
     {
@@ -156,7 +156,7 @@
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "f5ff45fe9e95e00d1ace3a611db69b6ff8d1a8fab8610681e4acd629e1eeb30b",
+      "sha256": "5080faa1e2d45144a8a56aa8a8cc98948a7e7d3ea4c772f5f591864e072d18a8",
       "spec_version": "1.2"
     },
     {
@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "abae57bfa698c25eacef0f96e170450ba7e0cea1882f3efb6c8f56978834ff14",
+      "sha256": "87808e700ce39c11f509ccb8d2b917884ff2749e5b5bcb8421c9717dc3675476",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "01a1b0ae87c8f48414e323d7b8f20c8e5a102f9e8970b8f9e7409e420a3d3f9e",
+      "sha256": "42a3d6757df6bb1fe9f691363ac82ba51f71bf2eed581650419899cc8000e122",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "865aaa826c4f78b276960f6f369169f3f6e2019c3ba4ec2de22941fecc3260e4",
+      "sha256": "efd012d3791124624f2a77761ec3899b1839e9ef91f560e13e7015ebef910309",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -602,14 +602,14 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "0900ff69ae4a90e9558eada6e64893eff6425357a769a81b941af1b28855a711",
+      "sha256": "9967b62df64fad59be75a43d9f3c498a0a7670062bd82743093b546823c01b17",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "e91989a679f4492bc3264ad07808281d4fb366c5bad46b2e3aa1f3ac1595712e",
+      "sha256": "9764af9d6428d08b6159c24ec8e4f0e3a78b16961833d0d50fcafeb24bde2350",
       "spec_version": "1.2",
       "src": "tools/gedcom_import.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "262a57b71e0143f24ec52da8c86d01f0e7c2a62e9aa88a45e65f32c30635c817",
+      "sha256": "f3e745f4d4c71d0c83d399cb55d41a735248efee8fa7f1e6e3bc26a1201e571e",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "6bb794aee2bcbbe446797b8fa5f6ce93991cd6402c7982ac9dc83673368c3eda",
+      "sha256": "5a99a64561ba1be893349f6e6a352c82fe19cedcc1830ff2dfaaf82ec7f70c83",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -658,7 +658,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "9d7273243678725941b3225019a84e03237c46d079807c73dd68896b60b85d0d",
+      "sha256": "ac7d70ba9de0129150ab7b4709598e26e3e14c9dd6aeefe0fd7ddcdca9b9c2c0",
       "spec_version": "1.2",
       "src": "tools/person.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "434aca10c5548c0ad76f9099890612bbe11bfe97f0d6fcbdfd681173b779c415",
+      "sha256": "075b793e801f2f1ffcb7100a8d809c626707257e4188c12f793dad661584082b",
       "spec_version": "1.2",
       "src": "tools/process.py"
     },
@@ -728,7 +728,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "4163b08bf41a2f7b6edba228c630ebb92be551afd06502c6d2f39f0ca593a735",
+      "sha256": "653523cedcd219616d1160233e19ac643d654549793f1f91a41d1368dbfaf6c1",
       "spec_version": "1.2",
       "src": "tools/serve.py"
     },
@@ -749,7 +749,7 @@
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "e56f016cc8119c3f424033197350f591851a6b70bdcfaeee7e2f7600f915b98a",
+      "sha256": "72a27fa5641a1dc487ced57f8b1096400e126dacea3ef0fe98a31ceb159f3999",
       "spec_version": "1.2",
       "src": "tools/stubs.py"
     },
@@ -854,7 +854,7 @@
     {
       "path": ".fha/tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "21b7ff87fc38dbe2c3ef3d514e2d96dced7b93173f9884644d93e8a57c557435",
+      "sha256": "162f4c972e39f26e1efe107938d1a65127eed0bfeb943a6e0cc43e8529818e2d",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/_modals.html"
     },
@@ -875,7 +875,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "b21b70159a5f43f63c63af7ce6e834e10b2c424920c6365616609e2da4b76bee",
+      "sha256": "04d64d53218209bad489ba59f5ad2fe4d8166213e265301da37abf6f715e51d1",
       "spec_version": "1.2",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "f35d587067fd4d5b8f72e8e6319ce0947aefec9c243294c8faa86a41561ee343",
+      "sha256": "0a80cad4d17bcc647018873633263c59e78b7e55379b93926f25def1a15f2cd9",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
@@ -937,7 +937,7 @@
     {
       "path": "CHEATSHEET.md",
       "category": "operating",
-      "sha256": "7a59bcbfaa0bb2b62d0bf77159155805f65f18f724ab1023954791b3a72549b4",
+      "sha256": "fd0a0cefb3f65be3d3c48a5484e0e583c440b8bf7cc7df07f47686aaf9670afc",
       "spec_version": "1.2"
     },
     {
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "785a4b068a157d5af16325c59cc9a5744fc3b2593d62e61d0fedb5ab352df70f",
+      "sha256": "4aae6f6a31e7e90336a484ddba87669588141a52828308b8fe3a85099070801a",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "91a3eb79b69a7f387b7f737a50e3e236b10f8dc342be30c9d0a06507594d2be2",
+      "sha256": "efaab419f46662ac47a44b4e6b0f75efd5881e276efbc08b2612105f728c891e",
       "spec_version": "1.2"
     },
     {
@@ -1046,7 +1046,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "1ed658937d551244883e088c7308c510aea5e5e4f024dbc20344aab72a8c45c6",
+      "sha256": "a4f3a902df86ca976c47158b1ff0fd01cbd4e0882f4f0d2cd8345901595a727e",
       "spec_version": "1.2",
       "src": "archive-template/fha.yaml"
     },

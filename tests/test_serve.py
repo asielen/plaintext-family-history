@@ -729,6 +729,51 @@ class ApiRunTests(_ServeCase):
         self.assertIn('place_text: "Fairview, Kansas"', text)
 
 
+class DuplicateNameMintTests(_ServeCase):
+    """The workbench's person.new mint asks about a name that already has
+    a record (issue #282) instead of failing opaquely, and "Create a
+    separate record anyway" carries force plus the previewed id to Apply."""
+
+    def test_duplicate_preview_offers_force_and_apply_keeps_the_preview_id(self):
+        s, d, _h = self.post_run('person.new', {'name': 'Ethel Hartley'}, True)
+        self.assertEqual(s, 200)
+        refused = json.loads(d)
+        self.assertFalse(refused['ok'])
+        self.assertEqual(refused['data']['status'], 'duplicate-name')
+        self.assertEqual([m['id'] for m in refused['data']['duplicates']], ['P-c4b26bb4bc'])
+        # The page builds its own wording from data['duplicates'] (id, name,
+        # path), so the CLI's `--force` sentence never sits beside the button.
+        self.assertTrue(all(m.get('path') and m.get('name')
+                            for m in refused['data']['duplicates']))
+
+        s, d, _h = self.post_run('person.new', {'name': 'Ethel Hartley', 'force': True}, True)
+        preview = json.loads(d)
+        self.assertTrue(preview['ok'], preview['messages'])
+        self.assertIn('--force', preview['cli_echo'])
+        pid = preview['data']['person_id']
+
+        before = {p.name for p in (self.root / 'people').rglob('*.md')}
+        s, d, _h = self.post_run(
+            'person.new', {'name': 'Ethel Hartley', 'force': True, 'person_id': pid}, False)
+        applied = json.loads(d)
+        self.assertTrue(applied['ok'], applied['messages'])
+        self.assertEqual(applied['data']['person_id'], pid)
+        added = {p.name for p in (self.root / 'people').rglob('*.md')} - before
+        self.assertEqual(added, {f'hartley__ethel_{pid.lower()}.md'})
+
+    def test_workbench_js_renders_the_force_button_for_duplicate_name(self):
+        s, js, _h = self.req('GET', '/assets/workbench.js')
+        self.assertEqual(s, 200)
+        js = js.decode('utf-8')
+        self.assertIn("result.data.status === 'duplicate-name'", js)
+        self.assertIn('data-wb-force-run', js)
+        self.assertIn('mf._run.args.force = true', js)
+        self.assertIn('Create a separate record anyway', js)
+        # The refusal is re-worded for the page from data.duplicates rather
+        # than showing the CLI's "run again with --force" sentence.
+        self.assertIn('result.data.duplicates', js)
+
+
 class SnapshotIndexFreshnessTests(_ServeCase):
     """P2 codex finding (round 3, PR #30): `ensure_snapshot` used to check
     `snapshot_is_stale` (which DOES watch record-file mtimes) but then call

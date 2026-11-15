@@ -342,11 +342,14 @@ class IndexPersonSurnameSuffixTests(unittest.TestCase):
 
     def test_hand_authored_mononym_stays_surname_less(self) -> None:
         # A single-token name (or a suffix with nothing real to attach to)
-        # must NOT get a fabricated surname out of the fallback.
+        # must NOT get a fabricated surname out of the fallback. Since PR
+        # #285 the index stores '' - "no surname", the same value a
+        # `__cher_P-….md` file and a `surname: ""` line give - rather than
+        # None, which is kept for a record with no usable name.
         self._index_text(
             'Cher.md',
             '---\nid: P-4444444444\nname: Cher\nliving: false\n---\n\n# Cher\n')
-        self.assertIsNone(self._surname('p-4444444444'))
+        self.assertEqual(self._surname('p-4444444444'), '')
 
 
 class IndexPersonKindTests(unittest.TestCase):
@@ -1559,13 +1562,14 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_schema_version_is_9(self) -> None:
+    def test_schema_version_is_10(self) -> None:
         # Pins the bump itself - a silent regression back to 6 or 7 would
         # defeat every check below without failing any of them on its own.
-        # (#126 reopened bumped 7 -> 8 and #266 8 -> 9 after this class was
-        # written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests and
-        # IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 9)
+        # (#126 reopened bumped 7 -> 8, #266 8 -> 9 and PR #285 9 -> 10 - when
+        # persons.surname stopped being read from file names - after this
+        # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
+        # and IndexSchemaVersionV9BumpTests below.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 10)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
