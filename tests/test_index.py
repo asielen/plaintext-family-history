@@ -35,7 +35,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import index
 from _lib import (
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, claim_is_own_vital,
-    open_index_db, social_parties, spouse_parties, sqlite_cache_schema_status,
+    claim_role_pairs, join_claim_roles, open_index_db, parentage_parties,
+    social_parties, spouse_parties, sqlite_cache_schema_status,
     vital_subjects,
 )
 
@@ -1558,12 +1559,13 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_schema_version_is_8(self) -> None:
+    def test_schema_version_is_9(self) -> None:
         # Pins the bump itself - a silent regression back to 6 or 7 would
         # defeat every check below without failing any of them on its own.
-        # (#126 reopened bumped 7 -> 8 after this class was written for the
-        # 6 -> 7 bump; see IndexSchemaVersionV8BumpTests below for that one.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 8)
+        # (#126 reopened bumped 7 -> 8 and #266 8 -> 9 after this class was
+        # written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests and
+        # IndexSchemaVersionV9BumpTests below.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 9)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1686,6 +1688,38 @@ class IndexSchemaVersionV8BumpTests(unittest.TestCase):
             conn.close()
         self.assertEqual(rows, [])
         self.assertEqual(version[0], str(index.INDEX_SCHEMA_VERSION))
+
+
+class IndexSchemaVersionV9BumpTests(unittest.TestCase):
+    """#266: `claim_persons.role` now holds every role a person carries, so
+    the mother listed as `informant:` before `parent:` gets her parent edge.
+    A v8 cache's `relationships` rows were derived from the first role only,
+    and updating the tools touches no record file, so only the schema bump
+    makes every index-reading tool refuse that cache until `fha index` runs."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL.replace("'7'", "'8'")
+                           .replace('user_version=7', 'user_version=8'))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v8_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v8_cache(self) -> None:
+        self.assertIsNone(open_index_db(
+            self.root, ('persons', 'sources', 'claims'), strict=True))
 
 
 # ── Lookup indexes ────────────────────────────────────────────────────────────
@@ -3367,6 +3401,128 @@ class BirthClaimParentageTests(unittest.TestCase):
         c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
         self.assertEqual(self._edges(), {(c, 'parent', f), (f, 'child', c)})
 
+    # ── #266: a person carries every role they are listed under ──────────
+
+    _INFORMANT_MOTHER_ROLES = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                               f'    informant: [{_BIRTH_MOTHER}]\n'
+                               f'    parent: [{_BIRTH_MOTHER}, {_BIRTH_FATHER}]\n')
+
+    def _both_parent_edges(self) -> set:
+        c, f, m = (_BIRTH_CHILD.lower(), _BIRTH_FATHER.lower(),
+                   _BIRTH_MOTHER.lower())
+        return {(c, 'parent', f), (f, 'child', c),
+                (c, 'parent', m), (m, 'child', c)}
+
+    def test_a_mother_who_was_also_the_informant_is_still_a_parent(self) -> None:
+        # The issue's shape: she is listed under `informant:` first and then
+        # under `parent:`. Reading her first role only built the father's link
+        # and silently dropped hers.
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_MOTHER, _BIRTH_FATHER],
+            self._INFORMANT_MOTHER_ROLES))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), self._both_parent_edges())
+
+    def test_claim_persons_keeps_every_role_in_written_order(self) -> None:
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_MOTHER, _BIRTH_FATHER],
+            self._INFORMANT_MOTHER_ROLES))
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute(
+                'SELECT person_id, role FROM claim_persons ORDER BY position').fetchall()
+        finally:
+            conn.close()
+        # Still one row per persons: entry - a row per role would list her
+        # birth certificate twice everywhere her claims are listed.
+        self.assertEqual(rows, [(_BIRTH_CHILD.lower(), 'child'),
+                                (_BIRTH_MOTHER.lower(), 'informant\x1fparent'),
+                                (_BIRTH_FATHER.lower(), 'parent')])
+
+    def test_a_role_key_with_a_comma_reads_the_same_in_index_and_lint(self) -> None:
+        # #266 review P2-1: SPEC §8.3 lets a role be any word, and a quoted
+        # YAML key can hold a comma. The index must keep it whole, as lint
+        # does, so neither invents a `parent` the other does not see.
+        import lint
+        from _lib import resolve_claim_persons_with_roles
+        roles = (f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+                 f'    "parent, informant": [{_BIRTH_MOTHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_MOTHER], roles))
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            stored = conn.execute(
+                'SELECT person_id, role FROM claim_persons ORDER BY position').fetchall()
+        finally:
+            conn.close()
+        indexed = claim_role_pairs(stored)
+        self.assertIn((_BIRTH_MOTHER.lower(), 'parent, informant'), indexed)
+        self.assertEqual(self._edges(), set())
+
+        from _lib import read_record
+        claim = read_record(self._source_path())['claims'][0]
+        self.assertEqual(lint._claim_parentage_pids(claim), (set(), set()))
+        self.assertEqual(
+            [(p.lower(), r) for p, r in resolve_claim_persons_with_roles(claim)],
+            [(p.lower(), r) for p, r in indexed])
+
+    def test_the_incremental_upsert_keeps_every_role_too(self) -> None:
+        # The other half of the pair: an archive that only ever runs the fast
+        # path must get her link as well.
+        self._write_claims(self._claim('C-1111111111', 'birth', [_BIRTH_CHILD]))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), set())
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth',
+            [_BIRTH_CHILD, _BIRTH_MOTHER, _BIRTH_FATHER],
+            self._INFORMANT_MOTHER_ROLES))
+        self.assertEqual(
+            index.upsert_source(self.root, {}, self.SID), 'indexed')
+        self.assertEqual(self._edges(), self._both_parent_edges())
+
+    def test_a_relationship_claim_reads_every_role_too(self) -> None:
+        roles = (f'  roles:\n    witness: [{_BIRTH_MOTHER}]\n'
+                 f'    child: [{_BIRTH_CHILD}]\n'
+                 f'    parent: [{_BIRTH_MOTHER}, {_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'relationship',
+            [_BIRTH_CHILD, _BIRTH_MOTHER, _BIRTH_FATHER], roles))
+        index.build_index(self.root, {})
+        self.assertEqual(self._edges(), self._both_parent_edges())
+
+    def test_a_person_listed_as_child_and_parent_is_only_the_child(self) -> None:
+        # A contradictory map: the person born cannot also be a parent of the
+        # same record. Reading every role must not turn that into a self-edge
+        # or a parent edge from her; the real parent's link still stands.
+        roles = (f'  roles:\n    parent: [{_BIRTH_CHILD}, {_BIRTH_FATHER}]\n'
+                 f'    child: [{_BIRTH_CHILD}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'birth', [_BIRTH_CHILD, _BIRTH_FATHER], roles))
+        index.build_index(self.root, {})
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(), {(c, 'parent', f), (f, 'child', c)})
+
+    def test_a_spouse_who_was_also_the_informant_still_married(self) -> None:
+        # The same shadowing on a marriage record: the bride listed as
+        # informant first, then as a spouse.
+        roles = (f'  roles:\n    informant: [{_BIRTH_MOTHER}]\n'
+                 f'    spouse: [{_BIRTH_MOTHER}, {_BIRTH_FATHER}]\n')
+        self._write_claims(self._claim(
+            'C-1111111111', 'marriage', [_BIRTH_MOTHER, _BIRTH_FATHER], roles))
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = set(conn.execute(
+                "SELECT person_id, other_id FROM relationships WHERE rel = 'spouse'"))
+        finally:
+            conn.close()
+        f, m = _BIRTH_FATHER.lower(), _BIRTH_MOTHER.lower()
+        self.assertEqual(rows, {(f, m), (m, f)})
+
 
 class UndecodableRecordTests(unittest.TestCase):
     """A person or source record whose BYTES are not UTF-8 (#68).
@@ -3374,10 +3530,10 @@ class UndecodableRecordTests(unittest.TestCase):
     #66 taught `build_index` to survive a note saved in another codepage, but
     every RECORD still went through `_lib.read_record`'s `except OSError`-only
     guard - so one cp1252 person file took the whole build down with a
-    traceback and nothing at all was indexed. The record is now skipped and
-    reported through the same channel #66 built: never indexed as an empty
-    person, because a nameless, date-less row in `persons` reads as a sparse
-    record rather than as a file nobody read.
+    traceback and nothing at all was indexed. The record is reported through
+    the same channel #66 built, and (#267 review) keeps the row its FILENAME
+    can give - name `unknown`, `living: unknown` - exactly as a record whose
+    YAML will not parse does, so every exporter can see and withhold it.
     """
 
     def setUp(self) -> None:
@@ -3411,15 +3567,22 @@ class UndecodableRecordTests(unittest.TestCase):
         self.assertTrue(any('muller__anne_P-3333333333.md' in t and 'UTF-8' in t
                             for t in texts), texts)
 
-    def test_no_empty_person_row_is_written_for_it(self) -> None:
+    def test_it_keeps_the_row_its_filename_gives(self) -> None:
         index.build_index(self.archive_root, {})
-        self.assertEqual(self._persons(), [])
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute('SELECT id, name, surname, living, path FROM persons').fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [('p-3333333333', 'unknown', 'Muller', 'unknown',
+                                 'people/muller__anne_P-3333333333.md')])
 
     def test_one_undecodable_record_does_not_cost_the_others(self) -> None:
         good = self.archive_root / 'people' / 'doe__jane_P-1111111111.md'
         _write(good, _person_md('P-1111111111', 'Jane Doe'))
         index.build_index(self.archive_root, {})
-        self.assertEqual([r[0] for r in self._persons()], ['p-1111111111'])
+        self.assertEqual(sorted(r[0] for r in self._persons()),
+                         ['p-1111111111', 'p-3333333333'])
 
     def test_the_record_is_never_rewritten(self) -> None:
         before = self.bad.read_bytes()
@@ -3612,6 +3775,74 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         pairs = [('p-a', None), ('p-b', None), ('p-c', None), ('p-d', None)]
         self.assertEqual(spouse_parties(pairs), [])
         self.assertEqual(vital_subjects('marriage', pairs), [])
+
+
+class MultiRoleRuleTests(unittest.TestCase):
+    """#266: every role rule reads every role a person carries, not the first.
+
+    Input is the shape `claim_role_pairs` and
+    `resolve_claim_persons_with_roles` hand them: one `(pid, role)` pair per
+    role, in `roles:` order."""
+
+    def test_claim_role_pairs_splits_the_joined_column(self) -> None:
+        self.assertEqual(
+            claim_role_pairs([('p-c', 'child'), ('p-m', 'informant\x1fparent'),
+                              ('p-f', 'parent'), ('p-x', None)]),
+            [('p-c', 'child'), ('p-m', 'informant'), ('p-m', 'parent'),
+             ('p-f', 'parent'), ('p-x', None)])
+
+    def test_claim_role_pairs_keeps_one_person_written_twice_once(self) -> None:
+        self.assertEqual(
+            claim_role_pairs([('p-m', 'informant\x1fparent'), ('p-m', 'informant\x1fparent')]),
+            [('p-m', 'informant'), ('p-m', 'parent')])
+
+    def test_join_claim_roles_round_trips(self) -> None:
+        self.assertEqual(join_claim_roles(['informant', 'parent', 'informant']),
+                         'informant\x1fparent')
+        self.assertIsNone(join_claim_roles([]))
+
+    def test_parentage_reads_a_parent_listed_after_another_role(self) -> None:
+        pairs = [('p-c', 'child'), ('p-m', 'informant'), ('p-m', 'parent'),
+                 ('p-f', 'parent')]
+        self.assertEqual(parentage_parties(pairs), (['p-c'], ['p-m', 'p-f']))
+
+    def test_parentage_never_makes_the_child_her_own_parent(self) -> None:
+        pairs = [('p-c', 'parent'), ('p-c', 'child'), ('p-f', 'parent')]
+        self.assertEqual(parentage_parties(pairs), (['p-c'], ['p-f']))
+
+    def test_spouse_reads_a_spouse_listed_after_another_role(self) -> None:
+        pairs = [('p-a', 'informant'), ('p-a', 'spouse'), ('p-b', 'spouse')]
+        self.assertEqual(spouse_parties(pairs), ['p-a', 'p-b'])
+
+    def test_two_person_fallback_survives_a_spouse_who_is_also_informant(self) -> None:
+        # One named spouse who also informed, partner unroled: the claim
+        # never placed either of them outside the couple.
+        pairs = [('p-a', 'spouse'), ('p-a', 'informant'), ('p-b', None)]
+        self.assertEqual(spouse_parties(pairs), ['p-a', 'p-b'])
+
+    def test_two_person_fallback_still_refuses_a_non_spouse(self) -> None:
+        pairs = [('p-a', 'spouse'), ('p-b', 'parent')]
+        self.assertEqual(spouse_parties(pairs), [])
+
+    def test_vital_subject_reads_a_deceased_listed_after_another_role(self) -> None:
+        pairs = [('p-d', 'informant'), ('p-d', 'deceased'), ('p-w', 'spouse')]
+        self.assertEqual(vital_subjects('death', pairs), ['p-d'])
+
+    def test_claim_is_own_vital_splits_the_indexed_roles(self) -> None:
+        # The index-backed reader (site, gedcom, wikitree, views): her own
+        # death, though she is listed as informant first.
+        conn = sqlite3.connect(':memory:')
+        conn.execute('CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, '
+                     'position INTEGER, role TEXT)')
+        conn.executemany('INSERT INTO claim_persons VALUES (?,?,?,?)', [
+            ('c-1', 'p-d', 0, 'informant\x1fdeceased'), ('c-1', 'p-w', 1, 'spouse')])
+        self.assertTrue(claim_is_own_vital(conn, 'p-d', 'c-1', 'death'))
+        self.assertFalse(claim_is_own_vital(conn, 'p-w', 'c-1', 'death'))
+
+    def test_social_reads_a_friend_listed_after_another_role(self) -> None:
+        pairs = [('p-a', 'witness'), ('p-a', 'friend'), ('p-b', 'friend'),
+                 ('p-c', 'child')]
+        self.assertEqual(social_parties(pairs, 'friend'), ['p-a', 'p-b'])
 
 
 class SocialPartiesRuleTests(unittest.TestCase):
