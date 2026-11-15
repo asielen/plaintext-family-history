@@ -236,6 +236,7 @@ from _lib import (
     person_merge_chain,
     photoindex_status,
     read_record,
+    read_restriction_marker,
     read_text_exact,
     resolve_path,
     resolve_root_arg,
@@ -299,80 +300,19 @@ def _restricted_included(value, *, include_restricted: bool, include_dna: bool) 
 def _record_restriction(path: Path) -> tuple[object, str | None]:
     """Read one record's own `restricted:` marker. Returns (value, trouble).
 
-    `trouble` is None when the marker was genuinely read (the value may still
-    be None - that is a record saying it carries no restriction). A non-None
-    `trouble` is a plain phrase saying why the marker could NOT be read, and
-    every caller must treat that as "restricted", never as "no marker": a
-    missing privacy marker is indistinguishable from a person who never asked
-    to be left out, and only one of those two readings is safe to export.
-    This is the same withhold `fha site` makes for the same reason (site.py,
-    `_load_restriction_markers`).
+    `_lib.read_restriction_marker`, the one rule every exporter shares (#267
+    review): a non-None `trouble` means the marker could NOT be read - the
+    file will not open or decode, has no frontmatter block, its frontmatter is
+    not valid YAML, or it is not a block of fields - and every caller here
+    treats that as "restricted", never as "no marker". See that function for
+    why it reads the frontmatter itself rather than trusting `read_record`'s
+    `parse_errors`, and why a claims-block failure does not count.
 
-    FOUR ROUTES END HERE, and knowing why matters more than the code does,
-    because guarding only the obvious one leaves the real ones open:
-
-      1. The file cannot be opened or decoded - gone, locked, not UTF-8.
-      2. The frontmatter is not valid YAML.
-      3. The record has no frontmatter block at all. Nothing raises and nothing
-         is reported: `FRONT_RE` simply does not match, so the marker reads as
-         absent. This is the shape that shipped a written packet for a
-         `restricted: by-request` person.
-      4. The frontmatter parses to something that is not a block of fields (a
-         bare scalar, a list), so there is no key to look up.
-
-    WHY THIS PARSES THE FRONTMATTER ITSELF rather than asking `read_record` and
-    checking `parse_errors`, which is the obvious spelling and is wrong in both
-    directions. Too narrow: `read_record` does not RAISE for routes 1 and 2 - a
-    gone file, a permission error and malformed YAML all come back as an E010
-    entry with `meta` empty - so an `except` arm around it catches almost
-    nothing, which is exactly how the bug this replaces survived. Too broad:
-    its `parse_errors` also carries CLAIMS-block failures, and a source whose
-    claims YAML will not parse has a perfectly readable frontmatter marker.
-    Escalating that into a source-level exclusion would take the record's asset
-    files down with it, when the claim-level guard already answers that
-    question correctly and more precisely (`_source_copy_plan` withholds the
-    record and its claims, and lets the assets ship). This function asks one
-    question - can the record's own `restricted:` value be read - and the
-    frontmatter is the whole of where that value can live.
-
-    Route 3 is where the line gets drawn, so draw it explicitly: a frontmatter
-    block that PARSES - even one whose only line is blank, so it parses to no
-    fields at all - is the record STATING that it carries no restriction, and
-    is honored as such. No block is a record with nowhere to put the marker,
-    which is damage rather than a statement. The test of which one this is is
-    `FRONT_RE`, the same reader every other tool uses, so a file the archive
-    treats as having no frontmatter is treated that way here too rather than
-    getting a second opinion from this function.
-
-    Refusing route 3 costs nothing a correct archive would have wanted: `tier:`
-    and `living:` live in that same frontmatter, so a person whose block is
-    gone indexes as a non-living stub on the next `fha index` and could not be
-    a packet subject anyway. The only exports it stops are the ones where the
-    index and the file already disagree.
-
-    The raw parsed value is returned uncoerced, and the marker helpers here are
-    built for that: `_restricted_type` matches the YAML booleans `True`/`False`
-    and `read_record`'s coerced `'true'`/`'false'` strings alike, so the two
-    readers agree on every value the marker can hold."""
-    try:
-        text = read_text_exact(path)
-    except (OSError, UnicodeError) as e:
-        return None, f'the file could not be read ({e})'
-    fm = FRONT_RE.match(text)
-    if fm is None:
-        return None, (
-            'the record has no frontmatter block, which is the only place a '
-            'privacy marker can live'
-        )
-    try:
-        meta = safe_load_yaml(fm.group(1))
-    except yaml.YAMLError:
-        return None, 'the frontmatter is not valid YAML'
-    if meta is None:
-        meta = {}
-    if not isinstance(meta, dict):
-        return None, 'the frontmatter did not read as a block of fields'
-    return meta.get('restricted'), None
+    Refusing a frontmatter-less subject costs nothing a correct archive would
+    have wanted: `tier:` and `living:` live in that same frontmatter, so a
+    person whose block is gone indexes as a non-living stub on the next
+    `fha index` and could not be a packet subject anyway."""
+    return read_restriction_marker(path)
 
 
 # ── Privacy redaction of copied records ────────────────────────────────────────

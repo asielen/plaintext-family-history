@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b99ddab92d04e1559f46f4892d128369ebc325d8f33c74bcd2229e9911423198",
+      "sha256": "c4958288bf2f7a78e81c5d2532b8dfd2ad801cb53800a416d21b9324da9dd589",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c3e5ae06730ae5da8c05fc20dd57317d1c386eb3dda2d7fa7d5bcc7a4eb9e5d2",
+      "sha256": "be7652f9be2e805bd58a0b3ea1c58e105db139fd59d9e5c92e6efee2fe8158f1",
       "spec_version": "1.2",
       "src": "tools/_lib.py"
     },
@@ -602,7 +602,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "71d2eb8030866e0460cde013771d1906829486552aa7d830e5bbcc812176afd8",
+      "sha256": "0900ff69ae4a90e9558eada6e64893eff6425357a769a81b941af1b28855a711",
       "spec_version": "1.2",
       "src": "tools/gedcom.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "229cabd8d4f820a7d4e1e66f31e5d42b7429795f83fbc278a6b3449ab860e429",
+      "sha256": "262a57b71e0143f24ec52da8c86d01f0e7c2a62e9aa88a45e65f32c30635c817",
       "spec_version": "1.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "bc6c1a1d368f56fa9c66b38d84953f4c42f10ab837b27e56d13881b49d3eafec",
+      "sha256": "6bb794aee2bcbbe446797b8fa5f6ce93991cd6402c7982ac9dc83673368c3eda",
       "spec_version": "1.2",
       "src": "tools/lint.py"
     },
@@ -651,7 +651,7 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "e264c4cb0671b4a4187bef1a7327827d5b47b411e1853b360cd6457667ca9f90",
+      "sha256": "3e3947c9681adc2c17a2e9b7dc06951965f88233bf3cc8e5abd816d66eab865a",
       "spec_version": "1.2",
       "src": "tools/packet.py"
     },
@@ -686,7 +686,7 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "ebf03c50cd4cebb353ed95f3cb29ce9ae753faaba022da869dbc748883ed32d1",
+      "sha256": "edb2b8f5a133f573641d6bc01e98031c371667a29853ac5babcb534b79524377",
       "spec_version": "1.2",
       "src": "tools/reconcile.py"
     },
@@ -707,7 +707,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "e75d2294096ec9a15968cb59607f9caf5c1433b1876c19f1be8473fae9f81c28",
+      "sha256": "1cd71539f43d2ccc09bf5a2b25955e3fbfdf1ce6ad26310309bd2a34e335198f",
       "spec_version": "1.2",
       "src": "tools/report.py"
     },
@@ -735,7 +735,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "89a698a878eb0a21b6f84e0fdf6d57ff91d94fe2d9edc566dcf4b9842db68e62",
+      "sha256": "364b563a494d90a2a8d3087b82adff3ffc17d6d7c05a7f76926b6d6644f85679",
       "spec_version": "1.2",
       "src": "tools/site.py"
     },
@@ -889,7 +889,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "1780d384eddfa183614594dff969c84124bbd0c7b390d163fa9116286c3633c6",
+      "sha256": "6af24765fce52ac6942c695d9f4fd9bc5e8ec91368504322b02d75bc9fb664ed",
       "spec_version": "1.2",
       "src": "tools/wikitree.py"
     },
@@ -910,7 +910,7 @@
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
-      "sha256": "18e9c1a14fd76e65f27cba59e8466c62e2b238855498bdf4867a96d3ced3a32a",
+      "sha256": "f35d587067fd4d5b8f72e8e6319ce0947aefec9c243294c8faa86a41561ee343",
       "spec_version": "1.2",
       "src": "tools/xref.py"
     },
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "3a699095ba04da2f60fbbdb04205361c2552c4c671bc1719edf6e895bffed631",
+      "sha256": "785a4b068a157d5af16325c59cc9a5744fc3b2593d62e61d0fedb5ab352df70f",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "725c41d382b34bcec8cee6897611b5c4855a24c510dad81b7a3a7dafd7fde8e4",
+      "sha256": "52b2dcdb6b57aeb7166c7487cd6908c2e504ce0a7cc89aaf75e42b886680da54",
       "spec_version": "1.2"
     },
     {
