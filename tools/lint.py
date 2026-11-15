@@ -15,6 +15,7 @@ lint.py - fha lint: verify the archive against the spec.
                                      template placeholder ids (P-__________)
                                      count as missing and are replaced in place
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
+  fha lint --fix-surnames            Record the surname: each W138 file name implies
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
 SPEC §16, TOOLING §3.
@@ -59,6 +60,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    file_name_surname_mismatch,
+    person_surname,
+    set_surname_line,
     recorded_surname,
     stub_slug_name,
     fold_accents,
@@ -272,6 +276,8 @@ configure_utf8_stdout()
 #    _e009_question_heading      - value:-quoting question heading for one spawn (#55)
 #    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
+#    _check_file_name_surnames   - W138: the file name sorts under a surname the record does not read
+#    _fix_surnames               - write the surname: line W138 suggests (--fix-surnames)
 #    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
 #
 #  Main entry / CLI
@@ -374,6 +380,8 @@ class Registry:
         # `--fix-reciprocal` can append the mirror without re-parsing messages.
         # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
         self.missing_mirrors: list[dict] = []
+        # W138: (profile path, surname to record) for `--fix-surnames`.
+        self.surname_fixes: list[tuple[Path, str]] = []
 
         # Record folders Pass 1 could not list (W123). A lint that reports
         # "0 errors" is a certificate, and it must not be issued over records
@@ -3487,6 +3495,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # W136: an accepted death, but the person is still treated as living
     _check_died_but_living(registry, findings, alias_map)
+    _check_file_name_surnames(registry, findings)
 
     # E016: new claims referencing a merged person
     for pid, meta in registry.person_meta.items():
@@ -3614,6 +3623,72 @@ def _check_died_but_living(
                 'the site leave them out. If they have died, run '
                 f'`fha person set-living {shown} false`.')
         findings.append(Finding('W', 'W136', paths[0], message))
+
+
+def _check_file_name_surnames(registry: Registry, findings: list[Finding]) -> None:
+    """W138: a person file sorts them under a surname their record no
+    longer reads (`_lib.file_name_surname_mismatch`).
+
+    Readers take a surname from the record - a `surname:` line, else
+    `name:` (SPEC §13) - so a sort name once set by hand only in the file
+    name (`garcia_lopez__maria_jose_…`, from `fha person new --surname`
+    before the line existed) is now read as "Lopez". The warning says what
+    the file name implies and what is read, and `--fix-surnames` records
+    the file name's surname as the line when it maps onto words of `name:`;
+    when it does not, the human types the line."""
+    for pid, paths in sorted(registry.person_profile_paths.items()):
+        meta = registry.person_meta.get(pid) or {}
+        path = paths[0]
+        mismatch = file_name_surname_mismatch(path.stem, meta)
+        if mismatch is None:
+            continue
+        slot, suggestion = mismatch
+        read = person_surname(meta.get('name'), None) or '(none)'
+        if suggestion is None:
+            message = (
+                f"the file name sorts this person under '{slot}', but no words of "
+                f"name: spell that, so their surname is read from name: as {read!r}. "
+                "If the file name is right, add a surname: line with that surname by "
+                "hand (e.g. surname: Garcia Lopez); if name: is right, nothing needs "
+                'doing.')
+        else:
+            line = f'surname: {suggestion}' if suggestion else 'surname: ""'
+            implied = repr(suggestion) if suggestion else 'no surname'
+            message = (
+                f'the file name sorts this person under {implied}, but their surname is '
+                f'read from name: as {read!r}, so exports and the site use {read!r}. If '
+                f'the file name is right, add `{line}` - `fha lint --fix-surnames` writes '
+                'it for every file like this one (preview with --dry-run).')
+            registry.surname_fixes.append((path, suggestion))
+        findings.append(Finding('W', 'W138', path, message))
+
+
+def _fix_surnames(
+    registry: Registry, archive_root: Path, progress: list[str], changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """W138 fix: write the `surname:` line each mismatched file name implies
+    (`_lib.set_surname_line`). Additive - only files with no `surname:` line
+    are listed - and previewed under --dry-run."""
+    for path, value in registry.surname_fixes:
+        rel = path.relative_to(archive_root)
+        line = f'surname: {value}' if value else 'surname: ""'
+        if dry_run:
+            progress.append(f'--fix-surnames dry-run: would add `{line}` to {rel}')
+            continue
+        try:
+            text = read_text_exact(path)
+        except (OSError, UnicodeDecodeError):
+            progress.append(f'--fix-surnames: could not read {rel}; skipped.')
+            continue
+        nl = _file_newline(text)
+        new_lines, problem = set_surname_line(text.split(nl), value)
+        if problem:
+            progress.append(f'--fix-surnames: {rel} {problem} - add `{line}` by hand.')
+            continue
+        write_text_exact_atomic(path, nl.join(new_lines))
+        changed.append(str(path))
+        progress.append(f'Added `{line}` to {rel}')
 
 
 def _check_untranscribed_evidence(
@@ -4649,6 +4724,7 @@ def run_lint(
     fix_claims_fence: bool = False,
     fix_ids: bool = False,
     fix_reciprocal: bool = False,
+    fix_surnames: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
 ) -> Result:
     """
@@ -4719,6 +4795,8 @@ def run_lint(
                             extra_source_paths=minted_sources)
     if fix_reciprocal:
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_surnames:
+        _fix_surnames(registry, archive_root, progress, changed, dry_run=dry_run)
 
     # W128: files this run could not decode as UTF-8 (#68). `_run_lint_core`
     # already reported the ones ITS passes hit; this second call picks up the
@@ -6219,6 +6297,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
+    p.add_argument('--fix-surnames', action='store_true',
+                   help='Write the surname: line each W138 file name implies, so the record '
+                        'keeps the surname its file name was sorted under (with --dry-run '
+                        'to preview)')
     # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
     # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
     # flag: one owner per mutation, and E011's message names the tool.
@@ -6253,6 +6335,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_claims_fence=getattr(args, 'fix_claims_fence', False),
         fix_ids=getattr(args, 'fix_ids', False),
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
+        fix_surnames=getattr(args, 'fix_surnames', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
     return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
@@ -6278,6 +6361,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fix-claims-fence', action='store_true')
     parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-reciprocal', action='store_true')
+    parser.add_argument('--fix-surnames', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)
 

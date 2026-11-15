@@ -325,7 +325,7 @@ from _lib import (
     sqlite_cache_schema_status,
     stub_filename,
     recorded_surname,
-    surname_frontmatter_line,
+    set_surname_line,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -2089,42 +2089,6 @@ def _folder_rename_blocker(folder: Path) -> str | None:
     return None
 
 
-def _name_carries_words(name: str, words: str) -> bool:
-    """Whether `words` is a run of whole words at the start or end of
-    `name`, compared under `person_name_key` - the only places a surname
-    override can sit (`_lib.stub_slug_name`)."""
-    name_key = person_name_key(name).split()
-    want = person_name_key(words).split()
-    n = len(want)
-    return bool(n) and (name_key[-n:] == want or name_key[:n] == want)
-
-
-def _set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | None]:
-    """Set the frontmatter's `surname:` line, the record of a hand-set
-    surname slot (SPEC §13): the surname, or `surname: ""` when `value` is
-    empty ("no surname"). There is no flag that removes the line - it is
-    optional, so deleting it by hand returns the record to the automatic
-    split.
-    Returns the new lines, or a problem sentence when the header cannot be
-    edited safely (no fences, or more than one `surname:` line)."""
-    bounds = frontmatter_fence_span(lines)
-    if bounds is None:
-        return lines, 'has no frontmatter fences to edit safely'
-    start, end = bounds
-    found = _key_line_indexes(lines, start + 1, end, 'surname')
-    if len(found) > 1:
-        return lines, 'has more than one top-level surname: line'
-    out = list(lines)
-    cr = '\r' if lines[start].endswith('\r') else ''
-    line = surname_frontmatter_line(value, cr)
-    if found:
-        out[found[0]] = line
-        return out, None
-    names = _key_line_indexes(lines, start + 1, end, 'name')
-    out.insert((names[0] + 1) if names else end, line)
-    return out, None
-
-
 def run_rename(
     archive_root: Path, person_id: str, new_name: str, *,
     keep_variant: bool = False, surname: str | None = None, dry_run: bool = False,
@@ -2228,13 +2192,14 @@ def run_rename(
     #
     # A `surname:` line records that a human set the file name's surname slot
     # by hand (`--surname`, SPEC §13). Without a new --surname it stays the
-    # override for the file name, as long as the new name still carries it
-    # ('' - no surname - always does). A new --surname replaces it, and is
-    # itself a change worth writing.
+    # override for the file name; a new --surname replaces it, and is itself
+    # a change worth writing.
     recorded = recorded_surname(before_meta)
     same_name = bool(old_name and _norm_variant_text(old_name) == _norm_variant_text(clean_new))
-    if surname is None and recorded is not None and (
-            recorded == '' or _name_carries_words(clean_new, recorded)):
+    if surname is None and recorded is not None:
+        # Kept whatever the new name: it is the human's sort name until a
+        # --surname replaces it (a married name in `name:` still files
+        # under the birth surname the line records).
         effective_surname: str | None = recorded
     else:
         effective_surname = surname
@@ -2281,7 +2246,7 @@ def run_rename(
             changed_keys.add('name_variants')
 
     if surname is not None:
-        new_lines, surname_problem = _set_surname_line(new_lines, surname.strip())
+        new_lines, surname_problem = set_surname_line(new_lines, surname.strip())
         if surname_problem:
             return _refuse_result(
                 result, 'refused',

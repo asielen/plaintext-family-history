@@ -10409,7 +10409,19 @@ def find_people_by_name(
         return {}
 
     found: dict[str, dict[str, dict]] = {}
-    for path in sorted(walk_files(people_dir, suffix='.md')):
+    unlisted: list[Path] = []
+    paths = sorted(walk_files(people_dir, suffix='.md',
+                              on_error=unreadable_dir_recorder(unlisted)))
+    if unreadable is not None:
+        # A folder that will not list hides everyone in it from this check:
+        # say so in the same warning as a file that will not read.
+        for folder in unlisted:
+            try:
+                shown = folder.relative_to(archive_root).as_posix()
+            except ValueError:
+                shown = folder.as_posix()
+            unreadable.append(f'{shown}/ (folder could not be listed)')
+    for path in paths:
         if is_template_file(path):
             continue
         meta = _person_frontmatter(path, wanted)
@@ -10521,8 +10533,8 @@ def unreadable_people_note(paths: list[str]) -> str:
     could not read some person files, so "no match" is not mistaken for "no
     such person": names up to five files and the fix."""
     shown = ', '.join(paths[:5]) + (f' and {len(paths) - 5} more' if len(paths) > 5 else '')
-    return (f'{len(paths)} person file(s) could not be read, so the check for a '
-            f'record with this name could not look inside them: {shown}. Run '
+    return (f'{len(paths)} person file(s) or folder(s) could not be read, so the '
+            f'check for a record with this name could not look inside them: {shown}. Run '
             '`fha lint` to see what is wrong with each (usually a file saved in '
             'another encoding, or a frontmatter line that will not parse).')
 
@@ -10567,6 +10579,83 @@ def person_surname(name: object, recorded: str | None = None) -> str | None:
         return None
     core, _suffix = strip_generational_suffix(str(name).split())
     return core[-1].rstrip(',') if len(core) >= 2 else ''
+
+
+def set_surname_line(lines: list[str], value: str) -> tuple[list[str], str | None]:
+    """Set a person record's `surname:` frontmatter line (SPEC §13) in
+    `lines`: the surname, or `surname: ""` when `value` is empty ("no
+    surname"); inserted right after `name:` when absent. Shared by `fha
+    person rename --surname` and `fha lint --fix-surnames`. There is no
+    removal: the line is optional, and deleting it by hand returns the
+    record to the automatic split.
+
+    Returns the new lines, or the unchanged lines and a problem sentence
+    when the header cannot be edited safely (no fences, or more than one
+    `surname:` line)."""
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return lines, 'has no frontmatter fences to edit safely'
+    start, end = bounds
+    found = frontmatter_key_line_indexes(lines, start + 1, end, 'surname')
+    if len(found) > 1:
+        return lines, 'has more than one top-level surname: line'
+    out = list(lines)
+    cr = '\r' if lines[start].endswith('\r') else ''
+    line = surname_frontmatter_line(value, cr)
+    if found:
+        out[found[0]] = line
+        return out, None
+    names = frontmatter_key_line_indexes(lines, start + 1, end, 'name')
+    out.insert((names[0] + 1) if names else end, line)
+    return out, None
+
+
+def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] | None:
+    """When a person file's name sorts them under a surname the record no
+    longer reads, `(slot, suggestion)`; else None (lint W138).
+
+    Before the `surname:` line existed, `fha person new --surname` recorded
+    a hand-set sort name ONLY in the file name (`garcia_lopez__maria_jose_…`
+    for "Maria Jose Garcia Lopez"). Readers now take the surname from the
+    record (`person_surname`), so that record reads as "Lopez". `slot` is the
+    file name's surname part; `suggestion` is the words of `name:` it spells
+    ("Garcia Lopez"), '' when the file name says no surname (`__jon_thorsson`),
+    or None when the slot matches no run of the name's words (a surname the
+    human must supply by hand).
+
+    Not a mismatch, so None: a record with a `surname:` line, a merged
+    tombstone, no usable name,
+    a file name without `__`, a slot equal to what `stub_slug_name` files
+    the name under today, a slot an older slugger made of the same surname
+    by deleting its accented letters (`winiewska`), and a slot holding the
+    name's own suffix (`vii__henry` for "Henry VII", filed before regnal
+    numbers were suffixes) - none of those record a decision.
+    """
+    if recorded_surname(meta) is not None or '__' not in stem or is_merged_meta(meta):
+        return None
+    name = meta.get('name')
+    if is_placeholder_name(name):
+        return None
+    name = str(name)
+    slot = stem.split('__', 1)[0].lower()
+    if slot == stub_slug_name(name)[0]:
+        return None
+    parts = name.split()
+    core, suffix = strip_generational_suffix(parts)
+    derived = person_surname(name) or ''
+    if slot == re.sub(r'[^a-z0-9_]', '', derived.lower().replace(' ', '_')):
+        return None
+    if suffix and slot == re.sub(r'[^a-z0-9]', '', fold_accents(parts[-1]).lower()):
+        return None
+    if not slot:
+        return slot, ''
+    want = slot.split('_')
+    keys = [re.sub(r'[^a-z0-9]', '', fold_accents(p).lower()) for p in parts]
+    n = len(want)
+    for i in range(len(parts) - n + 1):
+        if keys[i:i + n] == want:
+            return slot, ' '.join(p.rstrip(',') for p in parts[i:i + n])
+    return slot, None
 
 
 def render_stub_content(

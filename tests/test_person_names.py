@@ -545,5 +545,31 @@ class EscapedNameTests(unittest.TestCase):
         self.assertEqual([m['id'] for m in found['Małgorzata Cole']], ['P-0000000072'])
 
 
+
+class UnlistableFolderTests(unittest.TestCase):
+
+    def test_unlistable_person_folder_is_reported(self) -> None:
+        tmp, root = _new_archive()
+        self.addCleanup(tmp.cleanup)
+        (root / 'people' / 'locked').mkdir()
+        import os
+        from unittest import mock
+        real_walk = os.walk
+
+        def walk(top, onerror=None, **kw):
+            for dirpath, dirnames, filenames in real_walk(top, onerror=onerror, **kw):
+                if 'locked' in dirnames:
+                    dirnames.remove('locked')
+                    if onerror is not None:
+                        onerror(PermissionError(13, 'Permission denied',
+                                                os.path.join(dirpath, 'locked')))
+                yield dirpath, dirnames, filenames
+
+        with mock.patch('os.walk', walk):
+            result = person.run_new(root, 'Ada Quillfeather', dry_run=True)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any('people/locked' in w for w in warnings), warnings)
+
+
 if __name__ == '__main__':
     unittest.main()

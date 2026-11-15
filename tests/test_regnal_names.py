@@ -319,5 +319,87 @@ class FixIdsHonoursRecordedSurnameTests(unittest.TestCase):
             self.assertEqual(names, ['__jon_thorsson', 'xi__jinping'])
 
 
+
+class FileNameSurnameLintTests(unittest.TestCase):
+    """W138: a file whose surname slot was set by hand before `surname:`
+    existed (`garcia_lopez__maria_jose_…`) now reads its surname from
+    `name:` ("Lopez"). Lint reports it and `--fix-surnames` records the
+    file name's surname as `surname:` (owner decision, PR #285)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources').mkdir()
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _stub(self, filename: str, name: str, pid: str) -> Path:
+        path = self.root / 'people' / 'stubs' / filename
+        path.write_text(f'---\nid: {pid}\naliases: [{pid}]\nname: {name}\n'
+                        'living: false\ntier: stub\n---\n', encoding='utf-8')
+        return path
+
+    def _lint(self, **kw):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return lint.run_lint(self.root, {}, **kw)
+
+    def _w138(self, result) -> list:
+        return [m for m in result.messages if m.code == 'W138']
+
+    def test_old_override_is_reported_and_fixed(self) -> None:
+        path = self._stub('garcia_lopez__maria_jose_p-0000000091.md',
+                          'Maria Jose Garcia Lopez', 'p-0000000091')
+        found = self._w138(self._lint())
+        self.assertEqual(len(found), 1)
+        self.assertIn('Garcia Lopez', found[0].text)
+        self.assertIn("'Lopez'", found[0].text)
+        dry = self._lint(fix_surnames=True, dry_run=True)
+        self.assertNotIn('surname:', path.read_text(encoding='utf-8'))
+        self.assertTrue(any('would' in line for line in dry.data.get('progress', [])),
+                        dry.data.get('progress'))
+        self._lint(fix_surnames=True)
+        self.assertIn('surname: Garcia Lopez', path.read_text(encoding='utf-8'))
+        self.assertEqual(self._w138(self._lint()), [])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index.build_index(self.root, {})
+        time.sleep(0.02)
+        lines = gedcom.run_gedcom(self.root, None, all_persons=True,
+                                  include_living=True)['text'].splitlines()
+        self.assertIn('1 NAME Maria Jose /Garcia Lopez/', lines)
+
+    def test_matching_and_old_slugger_names_are_not_reported(self) -> None:
+        self._stub('lopez__maria_p-0000000092.md', 'Maria Lopez', 'p-0000000092')
+        self._stub('winiewska__halina_p-0000000093.md', 'Halina Wiśniewska', 'p-0000000093')
+        self._stub('vii__henry_p-0000000094.md', 'Henry VII', 'p-0000000094')
+        self._stub('__caesar_p-0000000095.md', 'Caesar', 'p-0000000095')
+        self.assertEqual(self._w138(self._lint()), [])
+
+    def test_unmatched_slot_warns_without_a_fix(self) -> None:
+        path = self._stub('brown__mary_p-0000000096.md', 'Mary Jones', 'p-0000000096')
+        found = self._w138(self._lint())
+        self.assertEqual(len(found), 1)
+        self.assertIn('by hand', found[0].text)
+        self._lint(fix_surnames=True)
+        self.assertNotIn('surname:', path.read_text(encoding='utf-8'))
+
+
+class RenameKeepsRecordedSurnameTests(unittest.TestCase):
+
+    def test_rename_without_surname_keeps_the_recorded_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'people' / 'stubs').mkdir(parents=True)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            made = person.run_new(root, 'Jane Smith', surname='Smith')
+            out = person.run_rename(root, made.data['person_id'], 'Jane Jones')
+            self.assertTrue(out.ok, [m.text for m in out.messages])
+            [f] = list((root / 'people' / 'stubs').glob('*.md'))
+            self.assertTrue(f.name.startswith('smith__jane_'), f.name)
+            self.assertIn('surname: Smith', f.read_text(encoding='utf-8'))
+
+
 if __name__ == '__main__':
     unittest.main()
