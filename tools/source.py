@@ -2349,9 +2349,11 @@ def run_source_extract(
     ]
     if squashed_pages:
         # At the top, where a reader (or the assistant mining the dump) meets
-        # it before trusting a search that came back empty.
+        # it before trusting a search that came back empty. Every page is
+        # listed here (the dump is the lasting note; the console line trims).
         header += [
-            f'Words run together on page(s) {_page_list(squashed_pages)}: the '
+            f'Words run together on page(s) '
+            f'{", ".join(str(p) for p in squashed_pages)}: the '
             "PDF's text layer gives no spaces between words there, so "
             '`fha find --text` will miss phrases on those pages. Read them in '
             'the PDF itself (or with vision) rather than trusting an empty search.',
