@@ -45,6 +45,7 @@ no launcher of its own, so stay in the project folder and keep `--root`.
 
 ```
 fha process "inbox/the-file-you-added.jpg" --root my-family-archive   # file one new inbox item
+fha process "inbox/Trip/IMG_0001.jpg" --type photo --dest "Trip" --root my-family-archive   # a photo, into a folder of your photo library
 fha report   --root my-family-archive   # the review queue + research leads
 fha find --text "Rose Hartley" --root my-family-archive   # search everything
 fha doctor   --root my-family-archive   # health check - run this when stuck

@@ -74,6 +74,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -1674,8 +1675,10 @@ def _echo_place_edit_note(kw):
 
 
 def _verb_process(state, kw, dry_run):
-    """Stage A filing. Confine the path, then drive run_process with an explicit
-    --type so it never prompts. stdin is swapped to EOF so an unexpected prompt
+    """Stage A filing. Confine the path, then drive run_process with the
+    modal's type - blank ("archive default / by file") means no --type, so a
+    stub hint, an `intake_defaults:` rule or the file decides, and the engine
+    says which. stdin is swapped to EOF so an unexpected prompt
     fails cleanly (a plain message) instead of hanging a request thread - it is
     scoped to this one call because nothing else in serve ever reads stdin.
     stdout/stderr are captured through THIS thread's `_ThreadTee` buffer
@@ -1692,7 +1695,9 @@ def _verb_process(state, kw, dry_run):
     if err:
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', err)
     ns = argparse.Namespace(
-        file=str(confined), source_type=kw.get('source_type'), title=kw.get('title'),
+        # A blank type ("archive default / by file") is no --type at all, so an
+        # `intake_defaults:` rule or the file itself decides (#294).
+        file=str(confined), source_type=kw.get('source_type') or None, title=kw.get('title'),
         slug=kw.get('slug'), source_date=None, more=None, people=None,
         dry_run=dry_run, root=str(state.archive_root),
         # Threaded back in by the workbench's Apply step from the id its own
@@ -1703,6 +1708,9 @@ def _verb_process(state, kw, dry_run):
         # person.new/claim.new). Not a real `fha process` CLI flag - this
         # Namespace attribute exists only for this verb's own round-trip.
         source_id=kw.get('source_id'),
+        # The workbench cannot send --dest, so the engine must not tell the
+        # human to add it - that advice would be a dead end here (PR #287).
+        offer_dest=False,
     )
     buf = io.StringIO()
     out_tee = sys.stdout if isinstance(sys.stdout, _ThreadTee) else None
@@ -1719,7 +1727,8 @@ def _verb_process(state, kw, dry_run):
         return Result(ok=False, exit_code=EXIT_FAILURE).add(
             'error', 'this item needs the command line (it has variations or a bundle '
                      'that must be chosen interactively). Run it in a terminal.',
-            next_step=f'fha process {_q(raw)} --type {kw.get("source_type", "other")}')
+            next_step=f'fha process {_q(raw)}'
+                      + (f' --type {kw["source_type"]}' if kw.get('source_type') else ''))
     except Exception as e:  # noqa: BLE001 - a filing failure becomes a plain message
         return Result(ok=False, exit_code=EXIT_FAILURE).add('error', f'could not file: {e}')
     finally:
@@ -1729,9 +1738,19 @@ def _verb_process(state, kw, dry_run):
         if err_tee is not None:
             err_tee.set_buffer(None)
     out = Result(ok=res.ok, exit_code=res.exit_code, data=dict(res.data or {}))
+    # An inbox folder with no notes.md is filed one file at a time; the
+    # engine's refusal already names the per-file command, so it becomes the
+    # message's next step (no file listing of our own).
+    folder_refused = (not res.ok and confined.is_dir()
+                      and not (confined / 'notes.md').is_file())
     for line in buf.getvalue().splitlines():
         if line.strip():
-            out.add(_classify_captured_line(line), line)
+            level = _classify_captured_line(line)
+            command = re.search(r'`(fha process [^`]+)`', line) if folder_refused else None
+            if level == 'error' and command:
+                out.add(level, line, next_step=command.group(1))
+            else:
+                out.add(level, line)
     if not out.messages:
         out.add('info', 'filed' if not dry_run else 'preview complete')
     return out

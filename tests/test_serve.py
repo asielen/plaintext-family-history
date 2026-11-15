@@ -1321,6 +1321,84 @@ class ProcessVerbExternalRootTests(_ServeCase):
             ext_tmp.cleanup()
 
 
+class ProcessVerbDestAdviceTests(_ServeCase):
+    """PR #287 review L5: the workbench's process.file verb has no way to send
+    `--dest`, so it asks the engine not to advise it (`offer_dest=False`)."""
+
+    def test_verb_process_asks_for_no_dest_advice(self):
+        (self.root / 'inbox').mkdir(exist_ok=True)
+        (self.root / 'inbox' / 'scan.jpg').write_bytes(b'not-a-real-jpeg')
+        seen = {}
+        real_run_process = serve.process_mod.run_process
+
+        def spy(ns):
+            seen['offer_dest'] = getattr(ns, 'offer_dest', True)
+            return serve.Result(ok=True, exit_code=serve.EXIT_CLEAN)
+
+        serve.process_mod.run_process = spy
+        try:
+            serve._verb_process(self.state, {'file': 'inbox/scan.jpg'}, True)
+        finally:
+            serve.process_mod.run_process = real_run_process
+        self.assertIs(seen.get('offer_dest'), False)
+
+
+class ProcessVerbIntakeDefaultTests(_ServeCase):
+    """PR #287 third review: the workbench's filing modals default to "no
+    type", so an `intake_defaults:` rule applies and its line is shown."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_stdout, self._orig_stderr = sys.stdout, sys.stderr
+        sys.stdout = serve._ThreadTee(self._orig_stdout)
+        sys.stderr = serve._ThreadTee(self._orig_stderr)
+
+    def tearDown(self) -> None:
+        sys.stdout, sys.stderr = self._orig_stdout, self._orig_stderr
+        super().tearDown()
+
+    def _default_source_type(self, template_id: str) -> str:
+        import re
+        html = (Path(serve.__file__).parent / 'templates' / 'workbench'
+                / '_modals.html').read_text(encoding='utf-8')
+        block = html.split(f'id="{template_id}"', 1)[1].split('</template>', 1)[0]
+        select = block.split('<select name="source_type">', 1)[1].split('</select>', 1)[0]
+        m = re.search(r'<option([^>]*)\bselected\b[^>]*>', select)
+        self.assertIsNotNone(m, 'no preselected source_type option')
+        value = re.search(r'value="([^"]*)"', m.group(0))
+        return value.group(1) if value else re.search(r'>([^<]*)', select[m.start():]).group(1)
+
+    def test_inbox_folder_refusal_carries_the_per_file_command(self):
+        folder = self.root / 'inbox' / 'Trip'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'IMG_0001.jpg').write_bytes(b'\xff\xd8\xff')
+        result = serve._verb_process(self.state, {'file': 'inbox/Trip'}, dry_run=True)
+        self.assertFalse(result.ok)
+        steps = [m.next_step for m in result.messages if getattr(m, 'next_step', None)]
+        self.assertTrue(any(step.startswith('fha process') and 'IMG_0001.jpg' in step
+                            for step in steps), [m.text for m in result.messages])
+
+    def test_modals_default_to_no_type(self):
+        self.assertEqual(self._default_source_type('tpl-process'), '')
+        self.assertEqual(self._default_source_type('tpl-process-bundle'), '')
+
+    def test_the_default_lets_an_intake_rule_apply(self):
+        cfg = self.root / 'fha.yaml'
+        cfg.write_text(cfg.read_text(encoding='utf-8')
+                       + '\nintake_defaults:\n  - match: "Postcards/**"\n    source_type: letter\n',
+                       encoding='utf-8')
+        inbox = self.root / 'inbox' / 'Postcards'
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / 'card.txt').write_text('a postcard', encoding='utf-8')
+        kw = {'file': 'inbox/Postcards/card.txt'}
+        default = self._default_source_type('tpl-process')
+        if default.strip():  # workbench.js omits a blank field
+            kw['source_type'] = default
+        result = serve._verb_process(self.state, kw, dry_run=True)
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('intake_defaults', texts)
+
+
 class CapturePathVerbTests(_ServeCase):
     """Fix 2: `capture.path` registers a file OUTSIDE the archive on purpose -
     no `_confine_asset_path` gate - but a RELATIVE path must resolve against

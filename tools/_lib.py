@@ -88,6 +88,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
 #    is_catalogued_photo_name  - does the photo catalog keep this file? (scan + freshness)
+#    is_back_scan_candidate    - could this `-back` file be a scan? (process + doctor)
 #    picture_data_hash         - a JPEG/PNG's picture identity, blind to metadata writes
 #                                (jpeg_picture_hash, png_picture_hash; photoindex + process)
 #    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
@@ -161,6 +162,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 required-table probe every index-reading tool needs
 #    read_cache_meta / write_cache_meta - one meta(key, value) row of a cache
 #    photos_ignore_patterns    - fha.yaml photos_ignore: patterns, normalized
+#    inbox_triage_dirs         - fha.yaml inbox_triage_dirs: names, + a warning if malformed (#290)
+#    inbox_park_relpath        - an inbox file's place under inbox/processed/, triage folder dropped
+#    intake_default_rules      - fha.yaml intake_defaults: (pattern, type) rules + warnings (#294)
+#    intake_default_for        - the first rule matching an inbox-relative path, or None
+#    SESSION_MEDIA_SUFFIXES    - -audio/-video/-recording: a recording source's slug tails
 #    photos_ignore_matcher     - is_ignored(rel) closure shared by scan + freshness
 #    photoindex_config_fingerprint - the fha.yaml settings a photo catalog is built from
 #    photoindex_config_drift   - plain words for how those settings changed since
@@ -2026,6 +2032,30 @@ def is_catalogued_photo_name(name: str) -> bool:
     """
     return Path(name).suffix.lower() in PHOTO_EXTENSIONS
 
+
+# The one non-image format a scanner writes: a flatbed or a phone app saves the
+# back of a card as a PDF as readily as a TIFF.
+_BACK_SCAN_EXTRA_SUFFIXES: frozenset[str] = frozenset({'.pdf'})
+
+
+def is_back_scan_candidate(path: str | Path) -> bool:
+    """True when a file named like a back (`x-back.*`) could be a scan of one.
+
+    Only an image or a PDF can be the scanned back of a card. Scans arrive
+    with notes other programs write beside them - `x-back.md`, a Lightroom
+    `x-back.xmp`, a `.json` from a download tool - and those parse to the same
+    `-back` name. Counted as backs, they made `fha process` refuse a card
+    with one real back ("more than one possible back scan"), or, when the
+    note was the only one, file the note as the card's back (#276).
+
+    The one rule for both places that look for a back by name:
+    `process._find_back_sibling` at filing time and `doctor`'s orphaned-back
+    check afterwards. Kept here so the two cannot drift apart (tools never
+    import tools - TOOLING §15).
+    """
+    suffix = Path(path).suffix.lower()
+    return suffix in PHOTO_EXTENSIONS or suffix in _BACK_SCAN_EXTRA_SUFFIXES
+
 # The `files:` roles whose companion holds a source's words as text: the
 # `transcript` role SPEC §12.1 lists among the filename suffixes, and the
 # `extracted-text` role `fha source extract` stamps on a PDF text-layer dump.
@@ -2910,6 +2940,179 @@ def photos_ignore_patterns(fha_config: dict) -> list[str]:
     return out
 
 
+INBOX_PROCESSED_DIRNAME = 'processed'
+
+
+def inbox_triage_dirs(fha_config: dict) -> tuple[list[str], str | None]:
+    """The `inbox_triage_dirs:` folder names from fha.yaml, and a warning.
+
+    Some archives sort the inbox before filing: items waiting on an answer
+    go to `inbox/review/`, suspected duplicates to `inbox/already-existing/`.
+    Those folders are holding stages, not part of where an item belongs, so
+    `fha process` drops one from the front of the path it parks the original
+    under (`inbox/review/A/x.png` parks at `inbox/processed/A/x.png`) and
+    `processed/` keeps one tree instead of growing a copy per stage (#290).
+
+    Returns `(names, warning)`. Names are plain single folder names, compared
+    case-insensitively (the inbox may live on a Windows or Mac disk). A value
+    that is not a list, and any entry that is not a plain folder name (a
+    path, `..`, `processed` itself), is left out with a plain warning rather
+    than a crash - a mistyped setting must not stop filing, it only means
+    that folder is parked as it was before. Read by `fha process` (every
+    park path) and `fha doctor` (the warning).
+    """
+    raw = fha_config.get('inbox_triage_dirs')
+    example = 'e.g.\n  inbox_triage_dirs: [review, already-existing]'
+    if raw is None:
+        return [], None
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return [], (f'inbox_triage_dirs in fha.yaml must be a list of inbox folder names '
+                    f'({example}); it is ignored until fixed, so items are parked under '
+                    'their full inbox path.')
+    names: list[str] = []
+    bad: list[str] = []
+    for entry in raw:
+        text = str(entry).strip() if isinstance(entry, (str, int)) and not isinstance(entry, bool) else None
+        if (not text or '/' in text or '\\' in text or text in ('.', '..')
+                or text.casefold() == INBOX_PROCESSED_DIRNAME):
+            bad.append(repr(entry))
+            continue
+        names.append(text)
+    warning = None
+    if bad:
+        warning = (f'inbox_triage_dirs in fha.yaml lists {", ".join(bad)}, which is not a plain '
+                   f'inbox folder name (no paths, no "..", not "processed"; {example}); it is '
+                   'ignored, and the other names still apply.')
+    return names, warning
+
+
+def inbox_park_relpath(rel: Path, triage_dirs: list[str]) -> Path:
+    """Where an inbox file's original is parked, relative to `inbox/processed/`.
+
+    `rel` is the file's path inside the inbox. It is kept whole (#109: the
+    park mirrors the subfolders the item was staged under), except that a
+    leading folder named in `inbox_triage_dirs:` is dropped (#290). Only the
+    first folder, and only when something follows it: a triage folder is
+    one stage deep, and the file name itself is never dropped.
+    """
+    parts = rel.parts
+    folded = {name.casefold() for name in triage_dirs}
+    if len(parts) > 1 and parts[0].casefold() in folded:
+        return Path(*parts[1:])
+    return rel
+
+
+# The role tails a recording source's slug ends in when the session's first
+# recording is the primary (`{session}-audio`). A twin of
+# `.claude/skills/transcribe-audio/scripts/transcribe_audio.py`'s
+# `_MEDIA_ROLE_SUFFIXES` - that script runs standalone and imports nothing
+# from here - pinned equal by a test (tests/test_process_inbox_filing.py).
+SESSION_MEDIA_SUFFIXES: tuple[str, ...] = ('-audio', '-video', '-recording')
+
+
+def intake_default_rules(fha_config: dict) -> tuple[list[tuple[str, str]], list[str]]:
+    """The `intake_defaults:` rules from fha.yaml, and a warning per bad entry.
+
+    A standing decision about where a kind of item lives - "every postcard
+    is a record" - needs somewhere to live too, or it holds only as long as
+    whoever runs `fha process` remembers `--type` (#294). Each rule names an
+    inbox folder pattern and the source type an item found there is filed
+    as, when nothing more specific was said:
+
+        intake_defaults:
+          - match: "Postcards/**"
+            source_type: letter
+
+    Returns `([(pattern, source_type), ...], warnings)`, in file order (the
+    first matching rule wins). An entry that is not a `match:` +
+    `source_type:` pair, or whose type is not in the SPEC §14 vocabulary, is
+    left out with a plain warning rather than a crash: a mistyped rule must
+    not stop filing, it only means those items are classified as before.
+
+    Two more kinds of rule are left out, with a warning, because they could
+    only ever do nothing or do harm:
+
+      * a pattern that cannot match a path inside the inbox - one starting
+        with the inbox folder's own name (`inbox/Postcards/**`; patterns
+        are already relative to the inbox), an absolute path or a drive
+        letter, or one with a `..` step;
+      * a `source_type: photo` rule. An image already files as a photo when
+        nothing else is said, and a non-image never goes into the photo
+        library, so a photo rule could not change where anything goes; it
+        could only stamp `photo` on a PDF, or send a page that joins a
+        record into the photo library (#274). Only an explicit
+        `--type photo` says "this is a photograph".
+    """
+    raw = fha_config.get('intake_defaults')
+    example = ('e.g.\n  intake_defaults:\n    - match: "Postcards/**"\n'
+               '      source_type: letter')
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], [f'intake_defaults in fha.yaml must be a list of rules ({example}); '
+                    'it is ignored until fixed.']
+    rules: list[tuple[str, str]] = []
+    warnings: list[str] = []
+    configured_inbox = (fha_config.get('roots') or {}).get('inbox') \
+        if isinstance(fha_config.get('roots'), dict) else None
+    inbox_names = {'inbox'}
+    if isinstance(configured_inbox, str) and configured_inbox.strip():
+        inbox_names.add(Path(configured_inbox.replace('\\', '/').rstrip('/')).name.casefold())
+    for i, entry in enumerate(raw, 1):
+        match = entry.get('match') if isinstance(entry, dict) else None
+        stype = entry.get('source_type') if isinstance(entry, dict) else None
+        if not isinstance(match, str) or not match.strip() or not isinstance(stype, str):
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({entry!r}) needs a match: '
+                            f'folder pattern and a source_type: ({example}); it is ignored.')
+            continue
+        stype = stype.strip().lower()
+        if stype not in SOURCE_TYPES:
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({match!r}) names '
+                            f'{format_source_type_error(stype)} The rule is ignored until fixed.')
+            continue
+        if stype == 'photo':
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({match!r}) says photo. A '
+                            'photo rule cannot change where anything goes - an image already '
+                            'files as a photo, and a non-image never goes into the photo '
+                            'library - so it is ignored. Pass --type photo when you mean '
+                            '"this one is a photograph".')
+            continue
+        raw_pattern = match.strip().replace('\\', '/')
+        parts = [part for part in raw_pattern.split('/') if part]
+        if (raw_pattern.startswith('/') or re.match(r'^[A-Za-z]:', raw_pattern)
+                or '..' in parts or (parts and parts[0].casefold() in inbox_names)):
+            warnings.append(f'intake_defaults rule {i} in fha.yaml ({raw_pattern!r}) can never '
+                            'match: patterns are folder names relative to the inbox, so leave '
+                            'out the inbox folder itself, a drive letter or a leading "/", and '
+                            '".." steps (e.g. match: "Postcards/**"). It is ignored.')
+            continue
+        rules.append((raw_pattern.strip('/'), stype))
+    return rules, warnings
+
+
+def intake_default_for(rel_posix: str, rules: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """`(source_type, pattern)` of the first rule matching an inbox-relative
+    path, or None.
+
+    Patterns follow `photos_ignore:`: the same matcher (fnmatch-style,
+    case-insensitive, `*` crosses folders), tried against every folder
+    above the file as well as the whole path, the way a `photos_ignore:`
+    folder pattern prunes the walk (`photoindex._alias_is_ignored`). So
+    `Postcards`, `Postcards/`, `Postcards/*` and `Postcards/**` all match
+    `Postcards/1908/card.tif`. `**/Postcards/**` matches a `Postcards`
+    folder below the top (`Box/Postcards/x.tif`), not a top-level one.
+    """
+    parts = [part for part in rel_posix.split('/') if part]
+    candidates = ['/'.join(parts[:i]) for i in range(1, len(parts))] + ['/'.join(parts)]
+    for pattern, stype in rules:
+        is_match = photos_ignore_matcher([pattern])
+        if any(is_match(candidate) for candidate in candidates):
+            return stype, pattern
+    return None
+
+
 def photos_ignore_matcher(patterns: list[str]):
     """Build `is_ignored(rel_posix)` for a set of `photos_ignore:` patterns.
 
@@ -3668,7 +3871,7 @@ class OriginalBackup:
                 f'Nothing was written to the file.'
             )
         if self.dest is None:
-            self._warn_unconfigured()
+            self._warn_unconfigured([src])
             return
         target = self._copy_target(src)
         if target.exists():
@@ -3707,27 +3910,55 @@ class OriginalBackup:
 
     # -- what the human is told -------------------------------------------
 
-    def _warn_unconfigured(self) -> None:
+    def _warn_unconfigured(self, files=None) -> None:
+        """Warn once that no safety copies are kept, naming the right files.
+
+        `files` are the files about to be written to, when the caller knows
+        them. The warning used to say "your original photo files" whatever
+        they were, so attaching a PDF to a letter warned about photos (PR
+        #287). A run that writes only to photos keeps the photo wording; any
+        other run names files in general, since a scanned document gets the
+        same embedded `SOURCE:` keyword (#252). What counts is where a file
+        is filed, not its extension: a `.tif` page filed with a letter in
+        the documents root is a document (`_is_document_target`).
+        """
         if self._announced:
             return
         self._announced = True
+        paths = [Path(f) for f in (files or [])]
+        if any(self._is_document_target(p) for p in paths):
+            what, each, unit = 'original files (scanned documents and photos)', 'file', 'files'
+        else:
+            what, each, unit = 'original photo files', 'photo', 'photos'
         self._pending.append((
             'warning',
             'No safety copies are being kept. fha is about to write keywords or '
-            'captions into your original photo files, and there is no copy to '
+            f'captions into your {what}, and there is no copy to '
             'fall back on if a write is interrupted. Add one line to fha.yaml to '
-            'keep one pristine copy of each photo before it is first written to:\n'
+            f'keep one pristine copy of each {each} before it is first written to:\n'
             '  originals_backup: D:/PhotoOriginals\n'
-            '(any folder outside your archive; copies are made once per photo, '
-            'so the space it needs is one copy of the photos you work on).',
+            f'(any folder outside your archive; copies are made once per {each}, '
+            f'so the space it needs is one copy of the {unit} you work on).',
         ))
 
-    def announce(self) -> None:
+    def _is_document_target(self, path: Path) -> bool:
+        """True for a file the archive keeps as a document: one in the
+        documents root whatever its extension, or a non-image elsewhere."""
+        documents_root = resolve_path('documents', self.fha_config, self.archive_root)
+        try:
+            Path(path).resolve().relative_to(documents_root.resolve())
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return Path(path).suffix.lower() not in PHOTO_EXTENSIONS
+
+    def announce(self, files=None) -> None:
         """Say up front what will happen, before the human confirms a write.
 
         Called by the command layer ahead of its yes/no prompt so the
         no-safety-copies warning arrives while it can still be acted on -
-        after 500 photos are written it is only news.
+        after 500 photos are written it is only news. `files`, when given,
+        are the files the run will write to, so the warning names the right
+        kind of file (see `_warn_unconfigured`).
         """
         if self.refusal is not None:
             if not self._announced:
@@ -3739,7 +3970,7 @@ class OriginalBackup:
                 ))
             return
         if self.dest is None:
-            self._warn_unconfigured()
+            self._warn_unconfigured(files)
             return
         if not self._announced:
             self._announced = True

@@ -36,9 +36,12 @@ came, rather than the bare form.
 
    **`--name` decides where the file lands in a directory listing — get it
    right the first time, and pass the *shared* stem with no role of your
-   own.** `fha process --more` renames what you attach to
-   `{stem}-{role}_{S-id}.{ext}`, appending the role itself, so a `--name`
-   ending in `-whisper` files as `…-whisper-whisper-transcript_S-….md`. Every
+   own.** `fha process --more` names what you attach for its source: a name
+   starting with the source's shared stem keeps it and gains the role,
+   `{stem}-{role}_{S-id}.{ext}` (any other name takes the source's slug and
+   loses its topic), so a `--name` ending in `-whisper` files as
+   `…-whisper-whisper-transcript_S-….md`. The file can sit beside the
+   recording or in the inbox; `--more` files it beside the recording. Every
    file belonging to one source must share one prefix, with only the per-file
    role distinguishing it, so a reader sees each recording's audio, app
    transcript and whisper pass sitting together:
@@ -112,11 +115,10 @@ came, rather than the bare form.
    - the original app/human transcript (role `transcript`) — if the recording
      arrived with one and it isn't archived yet, attach it too; if the audio
      itself isn't archived yet, run it through `process-source` first;
-   - the whisper pass (role `whisper-transcript`). `--more` attaches only files
-     that already sit under the documents root, so copy the reviewed `.md` out
-     of the scratch folder into the recording's own folder first — it is a new
-     working file, not an archived original — and then attach it, previewing
-     as always:
+   - the whisper pass (role `whisper-transcript`). Copy the reviewed `.md` out
+     of the scratch folder into the recording's own folder first, so it is
+     filed beside the recording — it is a new working file, not an archived
+     original — and then attach it, previewing as always:
    ```
    fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript --dry-run
    fha process "<archived-audio-file>" --more "documents/interviews/<session-folder>/<name>.md" whisper-transcript

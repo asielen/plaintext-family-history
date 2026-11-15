@@ -97,6 +97,9 @@ from _lib import (
     grouping_stem,
     id_type_of,
     INDEX_SCHEMA_VERSION,
+    inbox_triage_dirs,
+    intake_default_rules,
+    is_back_scan_candidate,
     is_fixture_path,
     is_valid_id,
     is_working_copy,
@@ -784,7 +787,9 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             return []
         matches = []
         for candidate in siblings:
-            if not candidate.is_file():
+            # A note beside a scan (`x-back.md`, a Lightroom `x-back.xmp`) is
+            # not a scan of the back: the shared rule `process` files by (#276).
+            if not candidate.is_file() or not is_back_scan_candidate(candidate):
                 continue
             candidate_parsed = parse_media_filename(candidate.stem)
             if candidate_parsed.part_kind != 'back':
@@ -2310,12 +2315,35 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         worst = max(worst, EXIT_WARNINGS)
     lines.append('')
 
-    inbox_dir = archive_root / 'inbox'
+    # The configured inbox, which may live outside the archive (roots: inbox:).
+    # A folder listed in `inbox_triage_dirs:` (#290) is a holding stage, not
+    # an item: what waits inside it is what ages, so it is looked into.
+    inbox_dir = resolve_path('inbox', fha_config, archive_root)
     if inbox_dir.is_dir():
         now = datetime.datetime.now().timestamp()
         cutoff = now - 14 * 86400
         aged: list[tuple[int, Path]] = []
-        for item in inbox_dir.iterdir():
+        triage_folded = {n.casefold() for n in inbox_triage_dirs(fha_config)[0]}
+        inbox_items: list[Path] = []
+        def _waiting(entry: Path) -> bool:
+            # Not material waiting on the human: the parked originals of
+            # items already filed, hidden files a system writes (.DS_Store),
+            # and the capture templates (_TEMPLATE*). Counting them gave a
+            # "process it" next step that cannot be acted on.
+            name = entry.name
+            return not (name.startswith('.') or name.startswith('_TEMPLATE')
+                        or (entry.is_dir() and name == 'processed'))
+        try:
+            for entry in inbox_dir.iterdir():
+                if not _waiting(entry):
+                    continue
+                if entry.is_dir() and entry.name.casefold() in triage_folded:
+                    inbox_items.extend(e for e in entry.iterdir() if _waiting(e))
+                else:
+                    inbox_items.append(entry)
+        except OSError:
+            pass
+        for item in inbox_items:
             try:
                 mtime = item.stat().st_mtime
                 if mtime < cutoff:
@@ -2337,6 +2365,29 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         else:
             lines.append(f'inbox: {_OK} no items older than 14 days  next: no action needed')
             checks.append({'id': 'inbox', 'status': 'ok', 'detail': 'no aged items', 'next_step': None})
+        lines.append('')
+
+    # `inbox_triage_dirs:` (#290) - only reported when it needs fixing: a
+    # malformed value does not stop `fha process` (it parks as before), so
+    # this is where the human hears about it while it is still cheap.
+    _triage_names, triage_warning = inbox_triage_dirs(fha_config)
+    if triage_warning:
+        lines.append(f'inbox_triage_dirs: {triage_warning}  next: fix the line in fha.yaml')
+        checks.append({'id': 'inbox_triage_dirs', 'status': 'warn', 'detail': triage_warning,
+                       'next_step': 'edit inbox_triage_dirs in fha.yaml'})
+        worst = max(worst, EXIT_WARNINGS)
+        lines.append('')
+
+    # `intake_defaults:` (#294) - a bad rule is skipped by `fha process`, so
+    # items it was meant for are filed by extension; say so while it is cheap.
+    intake_warnings = intake_default_rules(fha_config)[1]
+    if intake_warnings:
+        for warning in intake_warnings:
+            lines.append(f'intake_defaults: {warning}  next: fix the rule in fha.yaml')
+        checks.append({'id': 'intake_defaults', 'status': 'warn',
+                       'detail': f'{len(intake_warnings)} rule(s) ignored',
+                       'next_step': 'edit intake_defaults in fha.yaml'})
+        worst = max(worst, EXIT_WARNINGS)
         lines.append('')
 
     # ── Staged captures waiting to be ingested ───────────────────────────────

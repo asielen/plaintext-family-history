@@ -534,8 +534,11 @@ proposal-and-confirm is unchanged.
 
    That renames the primary in place to `<session>_S-id.m4a` and scaffolds the record at
    `sources/interview/<session>_S-id.md`. Then, pointing at the **renamed** primary, one call per
-   companion — `--more` renames each attachment to `{its own stem}-{role}_{S-id}`, which is why the
-   topic survives on the companions and not on the primary's audio:
+   companion — `--more` names an attachment for its source, `{source slug}-{role}_{S-id}`, except that a
+   file whose name already starts with the source's slug and a hyphen (`<session>-<topic>`) keeps that
+   stem and gains the role (`{its own stem}-{role}_{S-id}`), which is why the topic survives on the
+   companions and not on the primary's audio. A companion named any other way loses its topic to the
+   source slug, so name every file `<session>-<topic>` before attaching it:
 
    ```
    fha process "<folder>/<session>_S-id.m4a" --more "<folder>/<session>-<topic>.txt" transcript

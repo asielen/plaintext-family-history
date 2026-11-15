@@ -1409,10 +1409,12 @@ class ProcessTestCase(unittest.TestCase):
         # time - unlike a copy-letter print, an explicit -back suffix names
         # no other physical item, so there is nothing for a human to be
         # asked about.
+        self._install_photo_store()
         primary = self.archive / 'documents' / 'census' / 'x-00200.txt'
         primary.write_text('front text', encoding='utf-8')
-        back = self.archive / 'documents' / 'census' / 'x-00200-back.txt'
-        back.write_text('handwritten caption', encoding='utf-8')
+        # A scan (#276: only an image or a PDF can be the back).
+        back = self.archive / 'documents' / 'census' / 'x-00200-back.pdf'
+        back.write_bytes(b'%PDF-1.4 handwritten caption')
 
         rc = self._run([str(primary), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
@@ -1424,18 +1426,19 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(files), 2)
         self.assertEqual(files[0]['role'], 'primary')
         self.assertEqual(files[1]['role'], 'back')
-        self.assertEqual(files[1]['original_filename'], 'x-00200-back.txt')
-        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_S-*.txt'))
+        self.assertEqual(files[1]['original_filename'], 'x-00200-back.pdf')
+        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_S-*.pdf'))
         self.assertEqual(len(attached_back), 1)
 
     def test_document_back_sibling_auto_attached_from_inbox(self) -> None:
         # Same as above, but both files staged together in inbox/ - the
         # realistic bulk-migration shape #113 was actually found in.
+        self._install_photo_store()
         (self.archive / 'inbox').mkdir()
         primary = self.archive / 'inbox' / 'x-00300.txt'
         primary.write_text('front text', encoding='utf-8')
-        back = self.archive / 'inbox' / 'x-00300-back.txt'
-        back.write_text('handwritten caption', encoding='utf-8')
+        back = self.archive / 'inbox' / 'x-00300-back.pdf'
+        back.write_bytes(b'%PDF-1.4 handwritten caption')
 
         rc = self._run([str(primary), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
@@ -1448,7 +1451,7 @@ class ProcessTestCase(unittest.TestCase):
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'back')
-        self.assertEqual(files[1]['original_filename'], 'x-00300-back.txt')
+        self.assertEqual(files[1]['original_filename'], 'x-00300-back.pdf')
 
     def test_document_copy_letter_primary_does_not_pull_back(self) -> None:
         # Scope guard: only a PLAIN scan auto-pulls a back sibling - a
@@ -1456,8 +1459,8 @@ class ProcessTestCase(unittest.TestCase):
         # scan that conceptually belongs with the group's plain primary.
         copy_print = self.archive / 'documents' / 'census' / 'x-00400b.txt'
         copy_print.write_text('second print', encoding='utf-8')
-        back = self.archive / 'documents' / 'census' / 'x-00400-back.txt'
-        back.write_text('caption', encoding='utf-8')
+        back = self.archive / 'documents' / 'census' / 'x-00400-back.pdf'
+        back.write_bytes(b'%PDF-1.4 caption')
 
         rc = self._run([str(copy_print), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
@@ -1543,15 +1546,15 @@ class ProcessTestCase(unittest.TestCase):
         # all") or silently proceeding with neither attached (finding 4).
         primary = self.archive / 'documents' / 'census' / 'ambiguous.txt'
         primary.write_text('front', encoding='utf-8')
-        back1 = self.archive / 'documents' / 'census' / 'ambiguous-back.txt'
-        back1.write_text('back1', encoding='utf-8')
+        back1 = self.archive / 'documents' / 'census' / 'ambiguous-back.jpg'
+        back1.write_bytes(b'\xff\xd8\xff')
         back2 = self.archive / 'documents' / 'census' / 'ambiguous_back.pdf'
         back2.write_text('back2', encoding='utf-8')
 
         with self.assertRaises(process.ProcessError) as ctx:
             process._find_back_sibling(primary)
         text = str(ctx.exception)
-        self.assertIn('ambiguous-back.txt', text)
+        self.assertIn('ambiguous-back.jpg', text)
         self.assertIn('ambiguous_back.pdf', text)
 
     # ── Codex review, PR #145 followups (PR #161), finding 4 ─────────────────
@@ -1568,8 +1571,8 @@ class ProcessTestCase(unittest.TestCase):
         # nothing downstream would ever have caught it.
         primary = self.archive / 'documents' / 'census' / 'twoback.txt'
         primary.write_text('front', encoding='utf-8')
-        back1 = self.archive / 'documents' / 'census' / 'twoback-back.txt'
-        back1.write_text('back1', encoding='utf-8')
+        back1 = self.archive / 'documents' / 'census' / 'twoback-back.jpg'
+        back1.write_bytes(b'\xff\xd8\xff')
         back2 = self.archive / 'documents' / 'census' / 'twoback_back.pdf'
         back2.write_text('back2', encoding='utf-8')
 
@@ -1579,7 +1582,7 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_ERRORS)
         text = err.getvalue()
-        self.assertIn('twoback-back.txt', text)
+        self.assertIn('twoback-back.jpg', text)
         self.assertIn('twoback_back.pdf', text)
         # Nothing moved or minted: the primary is refused before scaffolding,
         # not processed alone with the ambiguity silently dropped.
@@ -1788,7 +1791,8 @@ class ProcessTestCase(unittest.TestCase):
         original_more.write_text('original page 2', encoding='utf-8')
         rc = self._run([str(renamed), '--more', str(original_more), 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
-        attached = next((self.archive / 'documents' / 'census').glob('replacement-page-2_S-*.txt'))
+        # #278: named for the source, not for the scan it came in as.
+        attached = next((self.archive / 'documents' / 'census').glob('main-record-page-2_S-*.txt'))
         self.assertEqual(len(read_record(record)['meta']['files']), 2)
 
         # The listed file goes missing from disk (deleted, an external drive
@@ -1827,7 +1831,8 @@ class ProcessTestCase(unittest.TestCase):
         more_file.write_text('page 2', encoding='utf-8')
         rc = self._run([str(renamed), '--more', str(more_file), 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
-        attached = next((self.archive / 'documents' / 'census').glob('sidepage-page-2_S-*.txt'))
+        # #278: named for the source, not for the scan it came in as.
+        attached = next((self.archive / 'documents' / 'census').glob('main-record2-page-2_S-*.txt'))
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -2301,7 +2306,8 @@ class ProcessTestCase(unittest.TestCase):
         # not --type photo) - the extension never sends it to the photo
         # library, where this DNA-restriction fix does not reach.
         self.assertEqual(list((self.archive / 'photos').rglob('*ancestrydna*')), [])
-        attached = list((self.archive / 'documents' / 'census').glob('*ancestrydna-kit*_S-*'))
+        # #278: named for the source; the kit's own name is its original_filename.
+        attached = list((self.archive / 'documents' / 'census').glob('family-letter-attachment_S-*'))
         self.assertEqual(len(attached), 1)
 
         # packet.py's OWN decision function agrees this now reads as the
@@ -2354,7 +2360,8 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
         self.assertEqual(rc, EXIT_CLEAN)
-        attached = next((self.archive / 'documents' / 'census').glob('kit2*_S-*.txt'))
+        attached = next((self.archive / 'documents' / 'census').glob(
+            'family-letter2-attachment_S-*.txt'))  # #278: named for the source
         self.assertEqual(read_record(record)['meta']['restricted'], 'dna')
 
         # Simulate a pre-fix record: strip restricted: back out by hand, as
@@ -3636,7 +3643,9 @@ class InputPathResolutionTestCase(unittest.TestCase):
             rc = self._run(['inbox/note.txt'])
 
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn('not under the configured documents root', err.getvalue())
+        # #274: the workshop copy is in no folder of the archive and not in
+        # its inbox, so the refusal says to move it into the inbox.
+        self.assertIn("isn't in your inbox", err.getvalue())
         # Neither copy consumed: the CWD file refused in place, the archive
         # copy never relocated or renamed.
         self.assertTrue(cwd_copy.exists())
