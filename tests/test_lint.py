@@ -3070,48 +3070,69 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertIn('`mother:`, which is not a role word', msg)
         self.assertIn('parent: [P-', msg)
 
-    # -- #260 review: a parent: line hidden behind an earlier role -------------
-    # The index reads each person's FIRST role key only. A mother who was also
-    # the informant, written `informant:` before `parent:`, is an informant to
-    # the tree and no mother-child link is built - so she is not "placed", and
-    # W126 must keep saying so.
+    # -- #266: a person carries every role they are listed under ----------------
+    # The index used to read each person's FIRST role key only, so a mother
+    # who was also the informant, written `informant:` before `parent:`, got
+    # no mother-child link. It now reads every key, so she IS placed - the
+    # link is built and there is nothing to warn about - whichever order the
+    # lines are written in. Only a person listed as both the child and a
+    # parent is still unplaced: nobody is their own parent.
 
     def _hidden_parent_w126(self, roles: str) -> list:
         return self._w126(self._build(persons=[self.CHILD, self.MOTHER],
                                       roles_block=roles))
 
-    def test_mother_as_informant_then_parent_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_mother_as_informant_then_parent_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    informant: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        msg = w[0].message
-        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (listed as a parent, '
-                      'but the `informant:` line written before it hides that)', msg)
-        self.assertIn('put the `parent:` line first', msg)
+            f'    informant: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n'), [])
 
-    def test_informant_written_before_child_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_informant_written_before_child_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    informant: [{self.MOTHER}]\n'
-            f'    child: [{self.CHILD}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        self.assertIn('listed as a parent', w[0].message)
+            f'    child: [{self.CHILD}]\n    parent: [{self.MOTHER}]\n'), [])
 
-    def test_mother_as_witness_then_parent_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_mother_as_witness_then_parent_is_clean(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    witness: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        self.assertIn('`witness:` line written before it', w[0].message)
+            f'    witness: [{self.MOTHER}]\n    parent: [{self.MOTHER}]\n'), [])
 
     def test_person_listed_as_child_and_parent_still_warns(self) -> None:
         # A contradiction, not a placement: the index reads her as a second
-        # child and drops the parent line.
+        # child and derives no parent from her.
         w = self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}, {self.MOTHER}]\n'
             f'    parent: [{self.MOTHER}]\n')
         self.assertEqual(len(w), 1)
-        self.assertIn('`child:` line written before it', w[0].message)
+        msg = w[0].message
+        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (listed both as the '
+                      'person born and as a parent)', msg)
+        self.assertIn('take them off whichever of the `child:` and `parent:` '
+                      'lines is wrong', msg)
+        # She is on the `child:` line already, so the "add a parent: line"
+        # repair is not offered for her.
+        self.assertNotIn('If they are the parents', msg)
+
+    def test_child_also_listed_as_parent_beside_a_real_parent_warns(self) -> None:
+        # #266 review drift: the father's edge is built, so the no-parentage arm
+        # stays quiet - the self-parent variant still says what was ignored.
+        for ctype in ('birth', 'relationship'):
+            with self.subTest(ctype=ctype):
+                w = self._w126(self._build(ctype=ctype, roles_block=(
+                    f'  roles:\n    child: [{self.CHILD}]\n'
+                    f'    parent: [{self.CHILD}, {self.FATHER}]\n')))
+                self.assertEqual(len(w), 1, [f.message for f in w])
+                self.assertIn(f'lists {lint.fmt_id_display(self.CHILD)} both as the child '
+                              'and as a parent', w[0].message)
+
+    def test_a_control_character_in_a_role_key_reads_as_the_plain_word(self) -> None:
+        # #266 review: a double-quoted key can spell U+001F, the index's role
+        # separator; both index and lint drop it, so `"par\x1fent"` is
+        # `parent` to both and the edge is derived and nothing warns.
+        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER], roles_block=(
+            f'  roles:\n    child: [{self.CHILD}]\n'
+            f'    "par\\x1fent": [{self.MOTHER}]\n')))
+        self.assertEqual(w, [])
 
     # -- #260 review, round 3: every key counts, both ways ---------------------
     # A child who also carries a recognised role is still read as a child, so
@@ -5293,6 +5314,40 @@ class DiedButLivingW136Tests(unittest.TestCase):
             with self.subTest(roles=roles):
                 self._claim(self.ADA, roles=roles, also=self.MARY_DEATH)
                 self.assertEqual(self._names(), ['Mary Hartley'])
+
+
+
+class PersonWithoutFrontmatterE010Tests(unittest.TestCase):
+    """#267 review: a person file whose `---` block is gone reads as no name,
+    no `living:` and no `restricted:`, and the exporters withhold it and point
+    at `fha lint` - which must say what is wrong."""
+
+    def test_missing_frontmatter_block_is_reported(self) -> None:
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'reed__chastina_P-0000000002.md').write_text(
+            'id: P-0000000002\nname: Chastina Reed\nliving: false\n---\n# Chastina\n',
+            encoding='utf-8')
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        hits = [f for f in findings if f.code == 'E010' and 'no frontmatter block' in f.message]
+        self.assertEqual(len(hits), 1, [(f.code, f.message) for f in findings])
+
+    def test_a_non_utf8_person_file_is_not_called_frontmatter_less(self) -> None:
+        # Its frontmatter is there; only its encoding is wrong, which W128
+        # reports. An E010 telling the owner to put back `---` lines would
+        # send them to fix the wrong thing (#267 review).
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'reed__chastina_P-0000000002.md').write_bytes(
+            ('---\nid: P-0000000002\nname: Chastina Reed\nliving: false\n---\n'
+             '# Chastina\n\nBorn in Krak\u00f3w.\n').encode('cp1252'))
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        self.assertFalse([f for f in findings if 'no frontmatter block' in f.message],
+                         [(f.code, f.message) for f in findings])
 
 
 if __name__ == '__main__':

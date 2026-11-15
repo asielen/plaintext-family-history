@@ -1608,6 +1608,39 @@ class UnreadableRecordPrivacyTests(_Base):
             any('left out of public output' in m for m in res['messages']),
             res['messages'])
 
+    def test_a_person_record_with_no_frontmatter_block_is_withheld(self):
+        # #267 review: the opening `---` gone. `read_record` reports nothing,
+        # the marker just reads as absent, and the page used to be built.
+        self._seed_trio()
+        path = self.archive_root / 'people' / 'hollis__test_p-cccccccccc.md'
+        path.write_text(path.read_text(encoding='utf-8').split('---\n', 1)[1],
+                        encoding='utf-8')
+        res = self._run(linked=False)
+        self.assertFalse((self.out_dir / 'persons' / 'p-cccccccccc.html').exists())
+        self.assertNotIn('Hidden Hollis', self._all_output_text())
+        self.assertTrue(
+            any('hollis__test_p-cccccccccc.md' in m and 'no frontmatter block' in m
+                for m in res['messages']), res['messages'])
+
+    def test_a_source_whose_claims_block_alone_breaks_keeps_its_page(self):
+        # #267 review P3-1: the source's own marker reads fine, so the record
+        # is not withheld - only its claims are, since their per-claim markers
+        # cannot be read.
+        self._seed_person('p-aaaaaaaaaa', 'Public Pat', surname='Pat')
+        self._seed_source(
+            's-1111111111', 'Census page', people=('p-aaaaaaaaaa',),
+            frontmatter='---\nid: s-1111111111\ntitle: Census page\n'
+                        'source_type: census\ncitation: "A citation."\n---\n\n'
+                        '## Claims\n```yaml\n- id: c-1111111111\n  value: "unclosed\n```\n')
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence',
+                         'Lived on Secret Lane', persons=('p-aaaaaaaaaa',))
+        res = self._run(linked=False)
+        self.assertTrue((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        self.assertNotIn('Secret Lane', self._all_output_text())
+        self.assertTrue(
+            any('src_s-1111111111.md' in m and 'claims' in m for m in res['messages']),
+            res['messages'])
+
     def test_a_person_record_whose_read_raises_is_withheld_too(self):
         # `read_record` normally reports a bad file through `parse_errors`
         # rather than raising, so both routes have to land in the same place.
@@ -9059,8 +9092,10 @@ class OpenQuestionsSectionTests(_Base):
         builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir,
                                     linked=True, workbench=True)
         builder.prepare()
+        # The marker is read through `_lib.read_restriction_marker` (#267
+        # review), so that is the read counted.
         with unittest.mock.patch.object(
-            site, 'read_record', wraps=site.read_record
+            site, 'read_restriction_marker', wraps=site.read_restriction_marker
         ) as spy:
             for _ in range(5):
                 self.assertFalse(builder._person_is_by_request('p-aaaaaaaaaa'))
