@@ -721,27 +721,81 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertIn('photos/portrait_1880-Edit.jpg', self._warnings(result))
 
-    def test_same_name_heal_refused_when_part_kind_disagrees_with_role(self) -> None:
-        # The record says the entry is the front, but the only same-named
-        # candidate's name says it is a back scan. Something is inconsistent;
-        # a heal would carry the inconsistency onto a new path silently.
-        self.record = self._write_photo_record(PHOTO_SID, ['photos/portrait_1880-back.jpg'])
-        self._place('portrait_1880-back.jpg', 'photos/a/portrait_1880-back.jpg', PHOTO_SID)
+    def test_primary_with_bw_suffix_heals_after_move(self) -> None:
+        # `fha process` files a black-and-white scan as role: primary; its
+        # -bw name is not a contradiction, and moving it must still heal.
+        self.record = self._write_record_text(
+            f'portrait_{PHOTO_SID}.md',
+            f'---\nid: {PHOTO_SID}\ntitle: A portrait\nsource_type: photo\nfiles:\n'
+            '  - file: photos/clara-frost-portrait-bw.jpg\n    role: primary\n---\n')
+        self._place('portrait_1880.jpg', 'photos/1900s/clara-frost-portrait-bw.jpg', PHOTO_SID)
+        result = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/1900s/clara-frost-portrait-bw.jpg'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+
+    def test_two_same_named_carriers_with_unequal_tails_are_ambiguous(self) -> None:
+        # The export keeps more of the old folder path than the original
+        # does; that is no evidence it is the original.
+        self.record = self._write_photo_record(PHOTO_SID, ['photos/1950s/portrait_1880.jpg'])
+        self._move('photos/portrait_1880.jpg', 'photos/sorted/portrait_1880.jpg')
+        self._place('portrait_1880.jpg', 'photos/exports/1950s/portrait_1880.jpg', PHOTO_SID)
         before = self.record.read_text(encoding='utf-8')
         result = self._run(with_exif=True)
         self.assertEqual(self.record.read_text(encoding='utf-8'), before)
-        self.assertEqual(result.exit_code, EXIT_WARNINGS)
-        self.assertIn('back', self._warnings(result))
+        self.assertEqual(result['photos_ambiguous'], 1)
+        text = self._warnings(result)
+        self.assertIn('photos/sorted/portrait_1880.jpg', text)
+        self.assertIn('photos/exports/1950s/portrait_1880.jpg', text)
 
-    def test_same_name_in_two_folders_prefers_the_longest_matching_tail(self) -> None:
+    def test_same_named_photo_in_ignored_folder_blocks_heal(self) -> None:
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\n'
+            "photos_ignore:\n  - '_dupes'\n", encoding='utf-8')
+        config = load_fha_yaml(self.root)
+        self._move('photos/portrait_1880.jpg', 'photos/_dupes/portrait_1880.jpg')
+        self._place('portrait_1880.jpg', 'photos/a/portrait_1880.jpg', PHOTO_SID)
+        before = self.record.read_text(encoding='utf-8')
+        result = reconcile.run_reconcile(self.root, config, with_exif=True)
+        self.assertEqual(self.record.read_text(encoding='utf-8'), before)
+        self.assertEqual(result['photos_ambiguous'], 1)
+        self.assertIn('photos/_dupes', self._warnings(result))
+
+    def test_reused_warning_names_a_clearing_step(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/a/portrait_1880.jpg')
+        self._place('wedding_1902.jpg', 'photos/portrait_1880.jpg', None)
+        result = self._run(with_exif=True)
+        text = self._warnings(result)
+        self.assertNotIn('needs no change', text)
+        self.assertIn("exiftool -Keywords+='SOURCE: S-6GQARV176S'", text)
+        self.assertIn('moving photos/a/portrait_1880.jpg out of the photos folder', text)
+
+    def test_without_exiftool_points_straight_at_the_file_line(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        with unittest.mock.patch.object(reconcile.shutil, 'which', return_value=None):
+            result = self._run()
+        text = self._warnings(result)
+        self.assertIn(f'`file: photos/portrait_1880.jpg` line in {self.record.name}', text)
+        self.assertNotIn('so it can read the SOURCE: keyword', text)
+
+    def test_closing_line_without_catalog_does_not_deny_a_heal(self) -> None:
+        self._move('photos/portrait_1880.jpg', 'photos/portraits/portrait_1880.jpg')
+        result = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/portraits/portrait_1880.jpg'])
+        texts = [m.text for m in result.messages]
+        self.assertFalse(any('photo paths not checked' in t for t in texts), texts)
+
+    def test_same_name_in_two_folders_is_ambiguous_even_with_a_longer_tail(self) -> None:
         self.record = self._write_photo_record(PHOTO_SID, ['photos/front/0001.jpg'])
         (self.root / 'photos' / 'portrait_1880.jpg').unlink()
         self.keywords.clear()
         self._place('portrait_1880.jpg', 'photos/2020/front/0001.jpg', PHOTO_SID)
         self._place('portrait_1880-back.jpg', 'photos/2020/back/0001.jpg', PHOTO_SID)
         result = self._run(with_exif=True)
-        self.assertEqual(self._files(), ['photos/2020/front/0001.jpg'])
-        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(self._files(), ['photos/front/0001.jpg'])
+        self.assertEqual(result['photos_ambiguous'], 1)
+        text = self._warnings(result)
+        self.assertIn('photos/2020/front/0001.jpg', text)
+        self.assertIn('photos/2020/back/0001.jpg', text)
 
     def test_one_candidate_wanted_by_two_entries_is_refused_for_both(self) -> None:
         # Two prints of one photo, both role: variant, in folders x/ and y/.
@@ -886,7 +940,9 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         self.assertEqual(result['photos_missing'], 0)
         text = self._warnings(result)
         self.assertNotIn('is gone', text)
-        self.assertIn('linked', text)
+        # The folder as the human sees it, never the link's absolute target.
+        self.assertIn('photos/linked', text)
+        self.assertNotIn(str(outside), text)
 
     def test_photo_dry_run_makes_zero_mutations(self) -> None:
         self._scan()
@@ -1068,9 +1124,10 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         before = self.record.read_text(encoding='utf-8')
         result = reconcile.run_reconcile(self.root, config, with_exif=True)
         self.assertEqual(self.record.read_text(encoding='utf-8'), before)
-        self.assertEqual(result['photos_missing'], 1)
+        self.assertEqual(result['photos_ambiguous'], 1)
         text = ' '.join(m.text for m in result.messages if m.level == 'warning')
         self.assertIn('photos_ignore', text)
+        self.assertIn('photos/Bulk Export', text)
 
     def test_a_malformed_photos_ignore_is_one_plain_error(self) -> None:
         (self.root / 'fha.yaml').write_text(

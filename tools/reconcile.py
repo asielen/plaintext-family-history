@@ -43,12 +43,14 @@ record's `id:`) as that keyword. Every keyword a file carries counts: from the
 catalog's `photo_keywords` rows, trusted only for a file whose stored mtime and
 size still match, or read with exiftool under --with-exif. Then:
 
-  - a carrier with the entry's own name, not listed by any record, and the
-    only one with the longest stretch of matching folder names at the end of
-    its path                                         -> heal;
-  - two such candidates tied, a candidate that carries a second source's ID,
-    a name whose part-kind (back, negative, crop, bw, copy letter) disagrees
-    with the entry's `role:`/`copy:`, or one candidate wanted by two entries
+  - EXACTLY ONE carrier with the entry's own name, listed by no record
+                                                     -> heal (the only
+    automatic re-tie there is - owner policy);
+  - two or more such carriers (the one keeping most of the old folder path
+    is named first, but an export can keep it too), a candidate that carries
+    a second source's ID, one candidate wanted by two entries, or a photo of
+    the same name inside a folder `photos_ignore:` skips (its names are
+    listed, never its keywords read - the original may be sitting there)
                                                      -> ambiguous, reported;
   - no carrier with that name, but carriers under other names
                                                      -> a PROPOSAL naming
@@ -71,8 +73,10 @@ stops the pass with nothing healed and nothing called gone. The pass also
 checks the other direction: a listed photo still on disk whose keywords are
 known, lack the record's S-id, while an unlisted photo carries it - the old
 path now holds a different picture - is reported with the `file:` line, never
-healed. None of this depends on the catalog's history: it works whether or
-not `fha photoindex` ran after the move.
+healed; its message names a step that clears it (the exact exiftool line
+that writes the keyword into the listed photo, or moving the copy out of the
+photos folder). None of this depends on the catalog's history: it works
+whether or not `fha photoindex` ran after the move.
 
 The photo catalog itself is `fha photoindex reconcile`'s machinery; when a
 catalog exists this tool runs it too (pass-through of --dry-run/--with-exif),
@@ -110,9 +114,9 @@ CODE MAP
   _read_catalog          - per-alias S-id sets + stored fingerprints from photos.sqlite
   _read_source_keywords  - exiftool keyword read: every S-id per file, unread files
   _learn_keywords        - which S-ids each given photo carries, and which are unknown
-  _part_kind_clash       - does a name's back/negative/crop/copy marking disagree
-                           with the entry's role:/copy:?
   _tail_match            - how many path components two aliases share at the end
+                           (orders a list of candidates; never picks one)
+  _ignored_photo_names   - name -> [alias] of photos inside photos_ignore: folders
   _plan_photos           - the photo-record plan: heals, ambiguous, proposals,
                            missing, unverified, reused paths
   _split_file_value      - split a file: line into (unquoted path, comment)
@@ -128,7 +132,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import sqlite3
 import sys
@@ -150,13 +153,13 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     parse_filename,
-    parse_media_filename,
     path_to_alias,
     read_record,
     read_text_exact,
     reapply_newline,
     resolve_path,
     resolve_root_arg,
+    shell_quote,
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -451,12 +454,6 @@ def _plan(
 # large library from costing a full scan.
 _KEYWORD_FIELDS = ['-Keywords', '-Subject', '-HierarchicalSubject']
 
-# Name markings that say which physical part of a photo a file is. A heal
-# whose candidate's name disagrees with the entry's role: on any of these
-# would re-tie a front's entry to a back, a negative or a detail crop.
-_PART_WORDS = ('back', 'negative', 'bw', 'crop')
-
-
 def _file_key(path: Path):
     """The identity of an on-disk file, whatever spelling reached it.
 
@@ -703,43 +700,14 @@ def _learn_keywords(
     return {'known': known, 'unknown': sorted(todo), 'exif_error': exif_error}
 
 
-def _part_kind_clash(entry: dict, name: str) -> 'str | None':
-    """Why a file named `name` cannot be the part `entry` describes, or None.
-
-    The name's markings (`-back`, `-negative`, `-bw`, `-crop`, a copy letter)
-    must agree with the entry's `role:` and `copy:`. A record that calls the
-    entry its front while the name says back is already inconsistent, and a
-    silent heal would carry the inconsistency to a new path. An entry with no
-    role states nothing about part-kind, so only `copy:` is checked then.
-    """
-    parsed = parse_media_filename(PurePosixPath(name).stem)
-    marks = set()
-    if parsed.part_kind in ('back', 'negative', 'bw'):
-        marks.add(parsed.part_kind)
-    if parsed.is_crop:
-        marks.add('crop')
-    role = str(entry.get('role') or '').strip().lower()
-    words = set(re.split(r'[-_\s]+', role)) if role else set()
-    if role:
-        for word in _PART_WORDS:
-            if (word in marks) != (word in words):
-                said = f'its name marks it as {word}' if word in marks else (
-                    f'its name does not mark it as {word}')
-                return f'the record calls it role: {role}, but {said}'
-    copy = str(entry.get('copy') or '').strip().lower()
-    if copy and copy != (parsed.variant_id or '').lower():
-        return (f'the record calls it copy: {copy}, but its name carries '
-                f'{"copy letter " + parsed.variant_id if parsed.variant_id else "no copy letter"}')
-    return None
-
-
 def _tail_match(a: str, b: str) -> int:
     """How many path components alias `a` and alias `b` share at the end.
 
     `photos/front/0001.jpg` against `photos/2020/front/0001.jpg` shares two,
-    against `photos/2020/back/0001.jpg` one. When a batch of scans moves, the
-    folder right above a file usually moves with it, so the longer shared
-    tail is the better guess - and a tie is no guess at all.
+    against `photos/2020/back/0001.jpg` one. It only ORDERS the candidates a
+    message lists and names the likeliest: an export folder can keep more of
+    the old path than the original does, so a longer tail is never evidence
+    enough to re-tie on (owner policy - one same-named carrier or no heal).
     """
     pa = a.replace('\\', '/').split('/')
     pb = b.replace('\\', '/').split('/')
@@ -747,6 +715,37 @@ def _tail_match(a: str, b: str) -> int:
     while n < min(len(pa), len(pb)) and pa[-1 - n] == pb[-1 - n]:
         n += 1
     return n
+
+
+def _ignored_photo_names(photos_root: Path, ignored: list) -> dict[str, list[str]]:
+    """name -> [alias, ...] for every photo inside what `photos_ignore:` skips.
+
+    `ignored` is the walker's own list of what it pruned (folders) or skipped
+    (files). Only names are listed here - no keyword is read, so even a huge
+    excluded export costs one directory walk, and only when an entry is
+    stale. An ignored folder is a hole in the search exactly like one that
+    will not open: the original may be sitting in it while a same-named copy
+    elsewhere looks like the only match.
+    """
+    out: dict[str, list[str]] = {}
+
+    def note(p: Path) -> None:
+        if not is_catalogued_photo_name(p.name):
+            return
+        try:
+            alias = f'photos/{p.relative_to(photos_root).as_posix()}'
+        except ValueError:
+            alias = p.name
+        out.setdefault(p.name, []).append(alias)
+
+    for item in ignored:
+        if item.is_dir() and not item.is_symlink():
+            for dirpath, _dirs, files in os.walk(item):
+                for f in files:
+                    note(Path(dirpath) / f)
+        elif item.is_file():
+            note(item)
+    return {name: sorted(aliases) for name, aliases in out.items()}
 
 
 def _plan_photos(
@@ -817,7 +816,7 @@ def _plan_photos(
         except OSError:
             continue
     present_kw = _learn_keywords(catalog, present_files, with_exif, progress)
-    suspects: list[tuple[Path, dict, str, set[str]]] = []
+    suspects: list[tuple[Path, dict, str, set[str], frozenset]] = []
     for rec_path, meta, alias, path in present:
         try:
             key_alias = path_to_alias(path, 'photos', fha_config, archive_root)
@@ -826,7 +825,7 @@ def _plan_photos(
         carried = present_kw['known'].get(key_alias)
         sids = record_sids(rec_path, meta)
         if carried is not None and sids and not (carried & sids):
-            suspects.append((rec_path, meta, alias, sids))
+            suspects.append((rec_path, meta, alias, sids, carried))
 
     if not (stale or suspects):
         return plan
@@ -843,8 +842,10 @@ def _plan_photos(
 
     unreadable: list = []
     linked: list = []
+    ignored: list = []
     on_disk = photoindex._on_disk_aliases(
-        photos_root, fha_config, archive_root, unreadable, linked_dirs=linked)
+        photos_root, fha_config, archive_root, unreadable, linked_dirs=linked,
+        ignored_paths=ignored)
     blind = sorted({alias for alias, _p in unreadable} | {alias for alias, _p in linked})
     if blind:
         plan['notices'].append((
@@ -858,6 +859,7 @@ def _plan_photos(
             'into the photos folder for real. Then run `fha reconcile` again.'))
         return plan
 
+    ignored_by_name = _ignored_photo_names(photos_root, ignored) if stale else {}
     keywords = _learn_keywords(catalog, on_disk, with_exif, progress,
                                already=present_kw['known'])
     known, unknown = keywords['known'], keywords['unknown']
@@ -903,7 +905,7 @@ def _plan_photos(
                 'one, then run `fha lint`.')
 
     def why_unknown(rec_path, alias, same_named):
-        if exif_error:
+        if exif_error or (not with_exif and shutil.which('exiftool') is None):
             return (f'{rec_path.name}: {alias!r} is not on disk, and the keywords '
                     'that would say where it went could not be read. Edit the '
                     f'`file: {alias}` line in {rec_path.name} by hand to the '
@@ -945,6 +947,22 @@ def _plan_photos(
                     f'within the photos folder, edit the `file: {alias}` line in '
                     f'{rec_path.name} to its new path by hand.')
                 continue
+            hidden = ignored_by_name.get(name, [])
+            if hidden:
+                folders = sorted({str(PurePosixPath(h).parent) for h in hidden})
+                elsewhere = free(carriers(sids))
+                seen = (f'; outside it, {", ".join(elsewhere[:5])} carr'
+                        f'{"ies" if len(elsewhere) == 1 else "y"} {label(sids)}'
+                        if elsewhere else '')
+                plan['ambiguous'].append(
+                    f'{rec_path.name}: a photo named {name!r} sits in '
+                    f'{", ".join(folders)}, which photos_ignore: skips{seen} - '
+                    'reconcile does not look inside ignored folders, so it cannot '
+                    'tell which copy the record means. If the one in the ignored '
+                    'folder is it, move it out of that folder and re-run; '
+                    f'otherwise edit the `file: {alias}` line in {rec_path.name} '
+                    'to the right photo, then run `fha lint`.')
+                continue
             same = [a for a in free(carriers(sids)) if PurePosixPath(a).name == name]
             unknown_same = free(unknown_by_name.get(name, []))
             if not same:
@@ -956,15 +974,21 @@ def _plan_photos(
             if unknown_same:
                 plan['unverified'].append(why_unknown(rec_path, alias, unknown_same))
                 continue
-            best = max(_tail_match(alias, a) for a in same)
-            top = [a for a in same if _tail_match(alias, a) == best]
-            if len(top) >= 2:
+            if len(same) >= 2:
+                # Owner policy: one same-named carrier or no heal. The tail
+                # only orders the list and names the likeliest one.
+                ranked = sorted(same, key=lambda a: (-_tail_match(alias, a), a))
+                tails = [_tail_match(alias, a) for a in ranked]
+                hint = ''
+                if tails[0] > tails[1]:
+                    hint = (f' ({ranked[0]} keeps the most of the old folder path, '
+                            'but an exported copy can too)')
                 plan['ambiguous'].append(
                     f'{rec_path.name}: more than one photo named {name!r} carries '
-                    f'{label(sids)} ({", ".join(top)}) - reconcile will not guess '
-                    f'which one the record means. {edit_hint(rec_path, alias)}')
+                    f'{label(sids)} ({", ".join(ranked)}){hint} - reconcile will not '
+                    f'guess which one the record means. {edit_hint(rec_path, alias)}')
                 continue
-            cand = top[0]
+            cand = same[0]
             if len(known.get(cand, ())) >= 2:
                 plan['ambiguous'].append(
                     f'{rec_path.name}: {cand} has the right name but carries more '
@@ -972,15 +996,6 @@ def _plan_photos(
                     'decide which record it belongs to. If it is this record\'s '
                     f'photo, edit the `file: {alias}` line in {rec_path.name} to '
                     f'`file: {cand}`, then run `fha lint`.')
-                continue
-            clash = _part_kind_clash(entry, name)
-            if clash:
-                plan['ambiguous'].append(
-                    f'{rec_path.name}: {cand} has the right name and keyword, but '
-                    f'{clash} - reconcile will not re-tie a part of a photo it '
-                    f'cannot confirm. Fix the entry\'s role:/copy: or edit the '
-                    f'`file: {alias}` line in {rec_path.name} by hand, then run '
-                    '`fha lint`.')
                 continue
             claims.setdefault(cand, []).append((rec_path, alias))
     for cand, claimants in sorted(claims.items()):
@@ -1053,18 +1068,34 @@ def _plan_photos(
                     "is truly gone, note that in the record's ## Notes.")
 
     # 3. An old path a different picture now holds.
-    for rec_path, _meta, alias, sids in suspects:
+    # Every branch names a step that clears the warning for good. fha has no
+    # command that re-embeds a keyword into an already-listed photo (`fha
+    # process --more` on it would list it twice), so the re-embed step is the
+    # exiftool line itself, which keeps its own `_original` copy of the file.
+    for rec_path, _meta, alias, sids, carried in suspects:
         elsewhere = free(carriers(sids))
         if not elsewhere:
             continue
-        plan['reused'].append(
-            f'{rec_path.name}: {alias} is on disk but does not carry '
-            f'{label(sids)}, while {", ".join(elsewhere[:5])} does - a different '
-            'picture may have taken the old path after the photo moved. If so, '
-            f'edit the `file: {alias}` line in {rec_path.name} to the photo that '
-            'carries the keyword; if the listed file is the right photo, the '
-            'other one is a copy and the record needs no change. Nothing was '
-            'changed.')
+        found = (f'{rec_path.name}: {alias} is on disk but does not carry '
+                 f'{label(sids)}, while {", ".join(elsewhere[:5])} does - a '
+                 'different picture may have taken the old path after the photo '
+                 f'moved. If so, edit the `file: {alias}` line in {rec_path.name} '
+                 'to the photo that carries the keyword.')
+        if carried:
+            clear = (f' The listed file carries {label(carried)} instead, so it '
+                     "looks like another source's photo; if it really is this "
+                     f"record's, move {elsewhere[0]} out of the photos folder to "
+                     'clear this.')
+        else:
+            sid = sorted(sids)[0].upper()
+            keyword = shell_quote(f'SOURCE: {sid}')
+            target = shell_quote(alias.replace('\\', '/'))
+            clear = (' If the listed file is the right photo, clear this by '
+                     f'writing the keyword into it (run from the archive folder: '
+                     f'`exiftool -Keywords+={keyword} -XMP-dc:Subject+={keyword} '
+                     f'{target}`, then `fha photoindex`), or by moving '
+                     f'{elsewhere[0]} out of the photos folder.')
+        plan['reused'].append(f'{found}{clear} Nothing was changed.')
     return plan
 
 
@@ -1569,8 +1600,9 @@ def run_reconcile(
                                'photos: catalog matches the photo folder - nothing to heal.')
     else:
         result.add('info',
-                   'No photo catalog (.cache/photos.sqlite) - photo paths not '
-                   'checked. Run `fha photoindex` first if you want them covered.')
+                   'No photo catalog (.cache/photos.sqlite) yet, so there was no '
+                   'catalog to reconcile (filed photos above were still checked). '
+                   'Run `fha photoindex` to build one.')
 
     return _finalize(result)
 
