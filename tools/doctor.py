@@ -96,6 +96,7 @@ from _lib import (
     grouping_stem,
     id_type_of,
     INDEX_SCHEMA_VERSION,
+    is_back_scan_candidate,
     is_fixture_path,
     is_valid_id,
     is_working_copy,
@@ -781,7 +782,9 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             return []
         matches = []
         for candidate in siblings:
-            if not candidate.is_file():
+            # A note beside a scan (`x-back.md`, a Lightroom `x-back.xmp`) is
+            # not a scan of the back: the shared rule `process` files by (#276).
+            if not candidate.is_file() or not is_back_scan_candidate(candidate):
                 continue
             candidate_parsed = parse_media_filename(candidate.stem)
             if candidate_parsed.part_kind != 'back':

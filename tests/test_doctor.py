@@ -802,6 +802,38 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         self.assertEqual(check['status'], 'warn')
         self.assertGreaterEqual(result.exit_code, EXIT_WARNINGS)
 
+    def test_a_note_named_like_a_back_is_not_a_back_scan(self) -> None:
+        # #276: `x-back.xmp` (a Lightroom sidecar) and `x-back.md` beside the
+        # real back scan are notes, not scans - the same rule `fha process`
+        # files by (`_lib.is_back_scan_candidate`). The real back is the
+        # one orphan, not one of an "ambiguous" set.
+        (self.root / 'photos' / 'x-00700.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00700-back.jpg').write_bytes(b'back')
+        (self.root / 'photos' / 'x-00700-back.xmp').write_bytes(b'<x:xmpmeta/>')
+        (self.root / 'photos' / 'x-00700-back.md').write_bytes(b'note')
+        _write(self.root / 'sources' / 'photos' / 'card7_S-1111111117.md', _SOURCE.format(
+            sid='S-1111111117', title='Card 7',
+            line='files:\n  - file: photos/x-00700.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+        report = '\n'.join(result.data['lines'])
+
+        self.assertIn('photos/x-00700-back.jpg', report)
+        self.assertNotIn('x-00700-back.xmp', report)
+        self.assertNotIn('x-00700-back.md', report)
+        self.assertNotIn('ambiguous', report.lower())
+
+    def test_a_lone_note_named_like_a_back_is_not_an_orphan(self) -> None:
+        (self.root / 'photos' / 'x-00800.jpg').write_bytes(b'front')
+        (self.root / 'photos' / 'x-00800-back.md').write_bytes(b'note')
+        _write(self.root / 'sources' / 'photos' / 'card8_S-1111111118.md', _SOURCE.format(
+            sid='S-1111111118', title='Card 8',
+            line='files:\n  - file: photos/x-00800.jpg\n    role: primary\n'))
+
+        result = doctor.run_doctor(self.root, self._fha_config())
+
+        self.assertNotIn('x-00800-back.md', '\n'.join(result.data['lines']))
+
     # ── Codex review, PR #145 followups (PR #161), finding 2 ─────────────────
 
     def test_unlisted_back_sibling_different_case_is_flagged(self) -> None:

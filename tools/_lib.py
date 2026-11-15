@@ -88,6 +88,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
 #    is_catalogued_photo_name  - does the photo catalog keep this file? (scan + freshness)
+#    is_back_scan_candidate    - could this `-back` file be a scan? (process + doctor)
 #    picture_data_hash         - a JPEG/PNG's picture identity, blind to metadata writes
 #                                (jpeg_picture_hash, png_picture_hash; photoindex + process)
 #    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
@@ -1920,6 +1921,30 @@ def is_catalogued_photo_name(name: str) -> bool:
     """
     return Path(name).suffix.lower() in PHOTO_EXTENSIONS
 
+
+# The one non-image format a scanner writes: a flatbed or a phone app saves the
+# back of a card as a PDF as readily as a TIFF.
+_BACK_SCAN_EXTRA_SUFFIXES: frozenset[str] = frozenset({'.pdf'})
+
+
+def is_back_scan_candidate(path: str | Path) -> bool:
+    """True when a file named like a back (`x-back.*`) could be a scan of one.
+
+    Only an image or a PDF can be the scanned back of a card. Scans arrive
+    with notes other programs write beside them - `x-back.md`, a Lightroom
+    `x-back.xmp`, a `.json` from a download tool - and those parse to the same
+    `-back` name. Counted as backs, they made `fha process` refuse a card
+    with one real back ("more than one possible back scan"), or, when the
+    note was the only one, file the note as the card's back (#276).
+
+    The one rule for both places that look for a back by name:
+    `process._find_back_sibling` at filing time and `doctor`'s orphaned-back
+    check afterwards. Kept here so the two cannot drift apart (tools never
+    import tools - TOOLING §15).
+    """
+    suffix = Path(path).suffix.lower()
+    return suffix in PHOTO_EXTENSIONS or suffix in _BACK_SCAN_EXTRA_SUFFIXES
+
 # The `files:` roles whose companion holds a source's words as text: the
 # `transcript` role SPEC §12.1 lists among the filename suffixes, and the
 # `extracted-text` role `fha source extract` stamps on a PDF text-layer dump.
@@ -3529,7 +3554,7 @@ class OriginalBackup:
                 f'Nothing was written to the file.'
             )
         if self.dest is None:
-            self._warn_unconfigured()
+            self._warn_unconfigured([src])
             return
         target = self._copy_target(src)
         if target.exists():
@@ -3568,27 +3593,43 @@ class OriginalBackup:
 
     # -- what the human is told -------------------------------------------
 
-    def _warn_unconfigured(self) -> None:
+    def _warn_unconfigured(self, files=None) -> None:
+        """Warn once that no safety copies are kept, naming the right files.
+
+        `files` are the files about to be written to, when the caller knows
+        them. The warning used to say "your original photo files" whatever
+        they were, so attaching a PDF to a letter warned about photos (#280).
+        A run that writes only to photos keeps the photo wording; any other
+        run names files in general, since a scanned document gets the same
+        embedded `SOURCE:` keyword (#252).
+        """
         if self._announced:
             return
         self._announced = True
+        paths = [Path(f) for f in (files or [])]
+        if paths and not all(p.suffix.lower() in PHOTO_EXTENSIONS for p in paths):
+            what, each, unit = 'original files (scanned documents and photos)', 'file', 'files'
+        else:
+            what, each, unit = 'original photo files', 'photo', 'photos'
         self._pending.append((
             'warning',
             'No safety copies are being kept. fha is about to write keywords or '
-            'captions into your original photo files, and there is no copy to '
+            f'captions into your {what}, and there is no copy to '
             'fall back on if a write is interrupted. Add one line to fha.yaml to '
-            'keep one pristine copy of each photo before it is first written to:\n'
+            f'keep one pristine copy of each {each} before it is first written to:\n'
             '  originals_backup: D:/PhotoOriginals\n'
-            '(any folder outside your archive; copies are made once per photo, '
-            'so the space it needs is one copy of the photos you work on).',
+            f'(any folder outside your archive; copies are made once per {each}, '
+            f'so the space it needs is one copy of the {unit} you work on).',
         ))
 
-    def announce(self) -> None:
+    def announce(self, files=None) -> None:
         """Say up front what will happen, before the human confirms a write.
 
         Called by the command layer ahead of its yes/no prompt so the
         no-safety-copies warning arrives while it can still be acted on -
-        after 500 photos are written it is only news.
+        after 500 photos are written it is only news. `files`, when given,
+        are the files the run will write to, so the warning names the right
+        kind of file (see `_warn_unconfigured`).
         """
         if self.refusal is not None:
             if not self._announced:
@@ -3600,7 +3641,7 @@ class OriginalBackup:
                 ))
             return
         if self.dest is None:
-            self._warn_unconfigured()
+            self._warn_unconfigured(files)
             return
         if not self._announced:
             self._announced = True
