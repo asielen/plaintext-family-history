@@ -90,7 +90,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "82cd0ab492b205f3157560a1c8e9015665a53a4a776a0f6e823021fe981852e1",
+      "sha256": "6afb165d767876a1a2ec9208204b2dd7715979aa74df688340e1c327df2328d8",
       "spec_version": "1.2"
     },
     {
@@ -156,7 +156,7 @@
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "099826db4e3ba5aef2565f1e1dbb569e073d5f4ee47b15c0b210238c5d699abb",
+      "sha256": "5080faa1e2d45144a8a56aa8a8cc98948a7e7d3ea4c772f5f591864e072d18a8",
       "spec_version": "1.2"
     },
     {
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "3b7e2e388761e59550dfcd8e11742329ca5763e072ee11d6516ddd9492637716",
+      "sha256": "87808e700ce39c11f509ccb8d2b917884ff2749e5b5bcb8421c9717dc3675476",
       "spec_version": "1.2",
       "src": "tools/README.md"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "da1054545e60fe0ee2d6a0dae98942d271e6baa57eff71c8b383ca456f1aa018",
+      "sha256": "efd012d3791124624f2a77761ec3899b1839e9ef91f560e13e7015ebef910309",
       "spec_version": "1.2",
       "src": "tools/doctor.py"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "87ed66bec35855da6a0f883c606bc5f648d0b1d0e4ad0340ec40c796ea90ee58",
+      "sha256": "e2bf740458a1b5ca98d79be8b5fc460015a10691356871603dbb8542714c7d00",
       "spec_version": "1.2",
       "src": "tools/source.py"
     },
@@ -931,7 +931,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d4e62d3b59474c322a3ef076d40cb2d48028a604ca2e1fd91ddc3819c76fea77",
+      "sha256": "57e822255ed52941f7268e067ef72393690bf99850a8685bc52047588e906d89",
       "spec_version": "1.2"
     },
     {
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "2a6ff2a810bb8b12355b742c0d7cbca96265f949c6f04145c4776681a0d4eb4d",
+      "sha256": "efaab419f46662ac47a44b4e6b0f75efd5881e276efbc08b2612105f728c891e",
       "spec_version": "1.2"
     },
     {
