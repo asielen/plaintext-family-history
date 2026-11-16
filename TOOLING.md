@@ -1553,7 +1553,7 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 ## 16. The research workbench & skills (the AI interface)
 
-> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/`. Build sequence: [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
+> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview` - all seventeen authored and shipped). Build sequence: [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
 
 **Deterministic work belongs in `fha` tools; AI judgment belongs in skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` calls, no harness APIs. `AGENTS.md` is the canonical operating instruction; `CLAUDE.md` defers to it.
 
