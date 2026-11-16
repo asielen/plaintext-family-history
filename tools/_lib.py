@@ -5834,7 +5834,8 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
 
     True when the person, or anyone on their `merged_into` chain, is
     `living: true` or `unknown`, or the chain is broken (`merge_chain`) - or
-    when a record merged into the survivor at its end is (round 4 of #304). An id
+    when a record merged into the survivor at its end says, explicitly,
+    `living: true` (`living_carried_to_survivors`, #304). An id
     the index does not hold at all is not a person record, and stays False,
     as it always has: the exports' own checks for a dangling id still apply.
     One rule for the exports that share material: packet and wikitree read
@@ -8977,11 +8978,10 @@ def carry_to_survivors(marked: set[str], survivors: dict[str, str]) -> set[str]:
 
     A merge makes two records one person, and `fha index` hands the
     tombstone's claims to the survivor. A privacy marker on the tombstone -
-    `restricted:` (a request to be left out, made under that record) or a
-    `living: true|unknown` that keeps someone out of shared output - is about
+    `restricted:` (a request to be left out, made under that record) or an
+    explicit `living: true` (`living_carried_to_survivors`) - is about
     the same human, so it must keep governing what those claims publish: the
-    survivor is withheld too, by every gate (#304 review). The strictest
-    status anywhere in the merge wins. Erring this way costs a page the owner
+    survivor is withheld too, by every gate (#304 review). Erring this way costs a page the owner
     can re-open by fixing the tombstone's line deliberately; erring the other
     way publishes a living person's records, or what someone asked to keep
     private.
@@ -9006,33 +9006,40 @@ def carried_living_message(conn: sqlite3.Connection, pid: str, refusal: str) -> 
     named = ', '.join(f'{fmt_id_display(r["id"])} ({r["path"]}, living: {r["living"]})'
                       for r in rows)
     return (f'{fmt_id_display(pid)} is marked as having died, but {named} was merged into '
-            'them and still counts as living, and its records now count for this person - '
-            f'so {refusal}. If they have died, open that file and change its `living:` line '
-            'to `false` by hand (the tools never edit a merged record), then run `fha index` '
-            'and try again.')
+            'them and says they are living, and its records now count for this person - '
+            f'so {refusal}. If they have died, open that file and change its `living: true` '
+            'line to `false` by hand - `fha person set-living` on a merged record changes the '
+            'person it was merged into, not the record itself - then run `fha index` and try '
+            'again.')
 
 
 def living_tombstones_of(conn: sqlite3.Connection, pid: str) -> list[dict]:
-    """The records merged into `pid` that count as living (`true`/`unknown`):
-    [{'id', 'living', 'path'}], sorted - so a refusal or warning can name the
-    exact file whose `living:` line holds the survivor back. The tools never
-    edit a merged record (`set_person_living` refuses one), so the message must
-    point at the file for a hand edit."""
+    """The records merged into `pid` that say `living: true` - the only value
+    that carries (`living_carried_to_survivors`): [{'id', 'living', 'path'}],
+    sorted, so a refusal or warning can name the exact file whose `living:`
+    line holds the survivor back. `fha person set-living` on a merged record
+    acts on its survivor, not on the record itself, so the message must point
+    at the file for a hand edit."""
     out: list[dict] = []
     for tid in merged_into_survivor(index_merge_survivors(conn), pid):
         r = conn.execute('SELECT id, living, path FROM persons WHERE id = ?', (tid,)).fetchone()
-        if r is not None and str(r[1] or 'unknown').strip().lower() in ('true', 'unknown'):
+        if r is not None and str(r[1] or '').strip().lower() == 'true':
             out.append({'id': r[0], 'living': str(r[1] or 'unknown'), 'path': r[2]})
     return out
 
 
 def living_carried_to_survivors(conn: sqlite3.Connection) -> dict[str, str]:
-    """{survivor P-id: 'true' | 'unknown'} for every survivor that has a
-    tombstone counting as living (`living: true` or `unknown`) merged into it.
+    """{survivor P-id: 'true'} for every survivor with a record merged into
+    it that says, explicitly, `living: true`.
 
-    The strictest value wins: `true` over `unknown`. A survivor whose own
-    record says `living: false` is still held as living in shared output
-    while a record merged into him says otherwise - see `carry_to_survivors`.
+    Owner's rule (#304 round 5): only an explicit `living: true` on a merged
+    record carries - it is a statement that the person is alive, and the
+    survivor's claims then publish as a living person's would. A tombstone's
+    `unknown` (the default every new stub is minted with) or missing line
+    says nothing, and the survivor's own explicit `living: false` wins over
+    it; a survivor that is itself `unknown` already counts as living. Without
+    this, merging an ordinary stub into a dead ancestor hid him from every
+    shared output with no command that could release him.
     """
     survivors = index_merge_survivors(conn)
     if not survivors:
@@ -9044,11 +9051,8 @@ def living_carried_to_survivors(conn: sqlite3.Connection) -> dict[str, str]:
         for tid, living in conn.execute(
                 f"SELECT id, living FROM persons WHERE id IN ({','.join('?' * len(chunk))})",
                 chunk):
-            value = str(living or 'unknown').strip().lower()
-            if value in ('true', 'unknown'):
-                surv = survivors[tid]
-                if out.get(surv) != 'true':
-                    out[surv] = value
+            if str(living or '').strip().lower() == 'true':
+                out[survivors[tid]] = 'true'
     return out
 
 

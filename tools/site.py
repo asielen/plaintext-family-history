@@ -5014,8 +5014,8 @@ class _SiteBuilder:
         if any(self._person_row_is_redacted(r) for r in chain):
             return True
         # And the other way (#304 review): the index hands every record
-        # merged INTO the survivor its claims, so a tombstone that is living
-        # or unknown keeps the survivor out too (`living_carried_to_survivors`).
+        # merged INTO the survivor its claims, so a tombstone that says
+        # `living: true` keeps the survivor out too (`living_carried_to_survivors`).
         survivor = merge_survivor(chain)
         if survivor is None:
             return False
@@ -5052,7 +5052,7 @@ class _SiteBuilder:
 
     def _warn_carried_living(self) -> None:
         """Say which deceased people this build kept out because a record
-        merged into them still counts as living, and which line releases them.
+        merged into them says `living: true`, and which line releases them.
 
         A dead ancestor shown as "Living Person" for no visible reason is a
         dead end (the same reasoning as `_warn_broken_merge_chains`); the

@@ -2722,7 +2722,7 @@ def _packet_payload(
             return {'status': 'not-curated', 'packet_dir': None, 'zip_path': None, 'messages': messages}
         if person['living'] in ('true', 'unknown') or person_is_living(conn, pid):
             # person_is_living follows the merge both ways (#304 review): a
-            # living or unknown record merged into the subject counts too.
+            # record merged into the subject that says `living: true` counts too.
             return {
                 'status': 'living-subject', 'packet_dir': None, 'zip_path': None,
                 'messages': messages + [

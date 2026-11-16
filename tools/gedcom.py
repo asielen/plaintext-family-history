@@ -938,9 +938,9 @@ def _gedcom_payload(
 
     try:
         persons = _load_persons(conn)
-        # A tombstone that is living or unknown hands its claims to the
-        # survivor (SPEC §9), so the survivor is held to the strictest
-        # status in the merge (#304 review): every `living` check below,
+        # A tombstone that says `living: true` hands its claims to the
+        # survivor (SPEC §9), so the survivor is held as living too (#304:
+        # only an explicit true carries): every `living` check below,
         # redaction and --include-living alike, then reads the merged truth.
         _rank = {'false': 0, 'unknown': 1, 'true': 2}
         for surv, carried in living_carried_to_survivors(conn).items():

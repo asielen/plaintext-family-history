@@ -154,6 +154,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    LIVING_VALUES,
+    normalize_living,
     locate_claim_records,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -2177,7 +2179,7 @@ def _fm_parse_problem(text: str) -> str | None:
 _MERGE_SURVIVOR_KEYS = frozenset(
     {'name_variants', 'aliases', 'external_ids', 'relationships'})
 _MERGE_TOMBSTONE_KEYS = _MERGE_SURVIVOR_KEYS | frozenset(
-    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier'})
+    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier', 'living'})
 
 
 def _merge_fm_problem(
@@ -2950,6 +2952,15 @@ def run_confirm_merge(
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_into', ps_disp)
         tombstone_text = _set_fm_scalar(tombstone_text, 'merge_reason', _yaml_inline(reason))
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_date', _today())
+        # The same person, so the tombstone says what the survivor says about
+        # being alive - but only where it said nothing itself (`unknown`, the
+        # default every new stub is minted with, or no line). An explicit
+        # `living: true` stays: it is someone's word, and it keeps the
+        # survivor out of shared output until a human settles it (#304).
+        merged_living = normalize_living(merged_meta.get('living'))
+        survivor_living = normalize_living(survivor_meta.get('living'))
+        if merged_living in (None, 'unknown') and survivor_living in LIVING_VALUES:
+            tombstone_text = _set_fm_scalar(tombstone_text, 'living', survivor_living)
         problem = _merge_fm_problem(merged_before, tombstone_text,
                                     _MERGE_TOMBSTONE_KEYS)
     except _EditRefused as e:

@@ -1243,7 +1243,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
             return {'status': 'not-curated', 'text': None,
                     'messages': [f'{fmt_id_display(pid)} is not curated - wikitree exports curated profiles only.']}
         # person_is_living follows the merge both ways (#304 review): a
-        # living or unknown record merged into this one counts too.
+        # record merged into this one that says `living: true` counts too.
         if person['living'] in ('true', 'unknown') or person_is_living(conn, pid):
             return {'status': 'living-subject', 'text': None,
                     'messages': [

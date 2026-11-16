@@ -561,6 +561,40 @@ class MergeGuardTests(unittest.TestCase):
             (0, 4))
 
 
+class MergeTombstoneLivingTests(unittest.TestCase):
+    """#304 round 5 backstop: the tombstone `fha confirm merge` writes says
+    what the survivor says about being alive when it said nothing itself
+    (`unknown`, the stub default, or no line) - so an ordinary stub merge
+    leaves nothing that could hold a dead ancestor back as living. An
+    explicit `living: true` on the merged record is someone's word and stays."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = build_archive(Path(self._tmp.name))
+        self.merged_path = self.root / 'people' / 'stubs' / 'hartley__thos_P-bbbbbbbbbb.md'
+        self.tombstone_path = (self.root / 'people' / 'stubs'
+                               / 'MERGED-INTO-p-aaaaaaaaaa__hartley__thos_P-bbbbbbbbbb.md')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _merge_with(self, living_line: str) -> str:
+        text = self.merged_path.read_text(encoding='utf-8')
+        self.merged_path.write_text(text.replace('living: false\n', living_line), encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok', [m.text for m in result.messages])
+        return str(read_record(self.tombstone_path)['meta'].get('living')).lower()
+
+    def test_unknown_takes_the_survivors_value(self) -> None:
+        self.assertEqual(self._merge_with('living: unknown\n'), 'false')
+
+    def test_a_missing_line_takes_the_survivors_value(self) -> None:
+        self.assertEqual(self._merge_with(''), 'false')
+
+    def test_an_explicit_true_stays(self) -> None:
+        self.assertEqual(self._merge_with('living: true\n'), 'true')
+
+
 # ── The synthetic-archive matrix ─────────────────────────────────────────────────
 
 class MergeArchiveTests(unittest.TestCase):

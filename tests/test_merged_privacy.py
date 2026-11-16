@@ -175,8 +175,21 @@ class LivingTombstoneGovernsTests(unittest.TestCase):
         self.assertIn(DUP, said)
         self.assertIn('living:', said)
 
-    def test_living_unknown_tombstone_keeps_the_survivor_out(self) -> None:
-        self._check_all(self._archive('unknown'))
+    def test_an_unknown_tombstone_does_not_hide_a_dead_survivor(self) -> None:
+        # Owner's rule (round 5): only an explicit `living: true` carries. A
+        # stub's default `unknown` says nothing, and the survivor's explicit
+        # `living: false` wins - an ordinary stub merge must not hide a dead
+        # ancestor from every shared output.
+        root = self._archive('unknown')
+        out = root / '.cache' / 'site'
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            site.run_site(root, out, linked=False)
+            ged = gedcom.run_gedcom(root, MARY, mode='connected')
+            pk = packet.run_packet(root, THOMAS, root / 'out', no_photos=True, dry_run=True)
+        self.assertTrue((out / 'persons' / f'{THOMAS}.html').exists())
+        self.assertIn('Thomas', ged['text'] or '')
+        self.assertNotEqual(pk['status'], 'living-subject', pk.get('messages'))
+        self.assertNotEqual(wikitree.run_wikitree(root, THOMAS)['status'], 'living-subject')
 
     def test_a_chain_carries_it_to_the_end(self) -> None:
         self._check_all(self._archive('true', chain=True))
