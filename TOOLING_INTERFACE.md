@@ -82,7 +82,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.2 Further skills (frontier-tier candidates)
 
-- `merge-identities` - "same person" / "two people" judgment. Frontier-tier: cheap to attempt, expensive to get wrong. Reads the candidate neighborhood (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation; the mechanical write is the deterministic tool's job, never the skill's silent action. A `merged_into` person is never directly referenced again (lint E016/W107).
+- `merge-identities` - "same person" / "two people" judgment. Frontier-tier: cheap to attempt, expensive to get wrong. Reads the candidate neighborhood (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation; the mechanical write is the deterministic tool's job, never the skill's silent action. A `merged_into` person is never directly referenced again (lint W107 lists any left; it counts for the survivor meanwhile, SPEC §9).
 - `place-research` - "fill in this place's history." Loose citations are acceptable here (place context is narrative scaffolding, not vital fact); drafts dated `history:` entries and place notes, links `[[L-…]]`, and proposes registry entries for `fha confirm place` to write.
 
 ### 2.3 Usability-review skills (2026-07)

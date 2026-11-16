@@ -1518,7 +1518,7 @@ def _mark_deceased_not_living(
       - a negated claim (SPEC §8.6, "we looked and this death did not
         happen") changes nobody.
     A merged record (SPEC §9 tombstone) is skipped, not followed: the claim
-    should name the surviving record (lint E016), and the warning gives the
+    should name the surviving record (lint W107), and the warning gives the
     `set-living` command for the survivor rather than guessing.
 
     `keep_living` (`--keep-living`) accepts without touching any flag.
@@ -1587,7 +1587,7 @@ def _mark_deceased_not_living(
             result.add('warning',
                        f'{name} ({shown_pid}) was merged into another record, so '
                        f'{cid} should name the surviving record instead (`fha lint` '
-                       'lists it as E016). Nobody was marked as no longer living; '
+                       'lists it as W107). Nobody was marked as no longer living; '
                        f'if this is the same person, run {where}.')
             continue
         def _left_alone(found: str | None) -> None:

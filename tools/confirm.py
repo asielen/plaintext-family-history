@@ -71,8 +71,8 @@ THE SEVEN WRITE-BACKS
                fold its name variants / external ids / relationships into the
                survivor, delete its GENERATED companion views (timeline /
                sources-index / draft-queue - the survivor's views carry that
-               life now), and relink every claim (ALL statuses - lint E016 has no
-               status filter) plus other records' `relationships:`/`people:`
+               life now), and relink every claim (ALL statuses - lint W107 lists
+               claims of every status) plus other records' `relationships:`/`people:`
                references from the merged P-id to the survivor. Prose `[[P-…]]`
                mentions are deliberately left for lint W107's gradual-cleanup
                list (counted and reported). The judgment half - is this really
@@ -1915,7 +1915,7 @@ def _relink_claims_in_source(
     """Relink every claim in one source's ## Claims block, ALL statuses.
 
     Returns (new_text, edited_claim_ids, both_named_relationship_claim_ids).
-    E016 fires on ANY claim referencing a merged person - suggested, accepted,
+    W107 fires on ANY claim referencing a merged person - suggested, accepted,
     disputed, rejected, superseded, needs-review alike - so no status is
     skipped. Spans are rewritten bottom-up so earlier spans' line indexes stay
     valid when a duplicate list item is dropped.
@@ -1926,7 +1926,7 @@ def _relink_claims_in_source(
     rewritten block is re-parsed and must show the same claim count, the same
     id in every position, and NO remaining reference resolving to the merged
     person - so a form the line-level rewriter missed becomes a refusal
-    naming the file instead of a silent leftover E016.
+    naming the file instead of a silent leftover W107.
 
     Raises `_EditRefused` on any of those failures; the caller refuses the
     whole merge with nothing written.

@@ -400,6 +400,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
+#    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
 #    transcript_review_state   - has a human checked this transcript against the
 #                                 picture? unreviewed | verified | unmarked | damaged
@@ -8782,6 +8783,40 @@ def resolve_typed_ref(
     if resolved and (want is None or id_type_of(resolved) == want):
         return resolved
     return None
+
+
+def merge_survivor_map(
+    merged_into: dict[str, str], known_ids: set[str] | frozenset[str],
+) -> dict[str, str]:
+    """{merged P-id: the person it now counts as} for every merged record.
+
+    SPEC §9: a claim whose `persons:`/`roles:` still names a merged record
+    counts for the survivor in every derivation, view and export - so the
+    birth certificate filed against the duplicate before the merge still
+    puts the birth on the survivor's timeline and his parents in the tree.
+    This map is that rule in one place, read by `fha index` when it writes
+    `claim_persons`/`source_people` and by lint's twin of the tree.
+
+    `merged_into` is {record id: its `merged_into:` id}. Chains are followed
+    (a into b, then b into c: a counts as c). The walk stops - and the record
+    keeps its own id, so its claims stay where they were, on its tombstone -
+    when a pointer names no person record (`known_ids`) or comes back round
+    to itself: a broken pointer must never move evidence onto nobody.
+    """
+    out: dict[str, str] = {}
+    for start in merged_into:
+        seen = {start}
+        current = start
+        while current in merged_into:
+            nxt = merged_into[current]
+            if nxt in seen or nxt not in known_ids:
+                current = None
+                break
+            seen.add(nxt)
+            current = nxt
+        if current is not None and current != start:
+            out[start] = current
+    return out
 
 
 def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:

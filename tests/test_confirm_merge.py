@@ -34,7 +34,7 @@ mutation plus a rename), so the coverage here is deliberately thorough:
   named), the tombstone's `tier:` is stripped so refresh does not regrow
   them, dry-run previews the deletions, rollback restores them;
 - an end-to-end pass against a copy of `example-archive` proving the
-  post-merge archive lints with no E016/W115 and no new W107.
+  post-merge archive lints with no W115 and no new W107 (claims included).
 
 Fixtures only (AGENTS_TOOLING §5): a synthetic mini-archive for the surgical
 assertions (fast, byte-precise) and a temp copy of `example-archive` for the
@@ -1015,7 +1015,7 @@ A fixture source so the merged stub has a claim to relink.
 
 class ExampleArchiveMergeTests(unittest.TestCase):
     """The acceptance bar: a verb-enacted merge on (a copy of) example-archive
-    leaves lint with no E016, no W115 regression, and no new W107."""
+    leaves lint with no W115 regression and no new W107."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1069,10 +1069,9 @@ class ExampleArchiveMergeTests(unittest.TestCase):
 
         self.index.build_index(self.root, self.config)
         after = self._lint_codes()
-        # E016: no claim may reference the merged person. W107: nothing new was
-        # left pointing at it. W115: the relationships reconciliation is no
-        # worse than the baseline.
-        self.assertEqual(after.get('E016', 0), 0)
+        # W107: nothing new was left pointing at the merged person - no claim
+        # (the old E016, now part of W107) and no prose mention. W115: the
+        # relationships reconciliation is no worse than the baseline.
         self.assertEqual(after.get('W107', 0), baseline.get('W107', 0))
         self.assertEqual(after.get('W115', 0), baseline.get('W115', 0))
         self.assertEqual(after.get('E005', 0), baseline.get('E005', 0))

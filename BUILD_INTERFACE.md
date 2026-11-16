@@ -145,12 +145,12 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 **Status: authored** (`.claude/skills/merge-identities/SKILL.md`). The judgment half - pull both neighborhoods, lay out the evidence, propose, wait for human confirmation - is fully on shipped tools, and so is the write: the core gap this milestone surfaced (SPEC §9's merge write had no `fha` verb) **closed when `fha confirm merge` shipped** (BUILD.md M4.4a; audit Wave 3 / plan 16). The skill now drives the verb (dry-run first) and the interim hand-edit path was retired; `.claude/skills/merge-identities/GAP.md` remains as the historical record of the spec-discovery. Session check pending.
 
-"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write is `fha confirm merge`'s job - the skill never silently merges, and the split stays hand-guided (SPEC §9). A merged person is never directly referenced again (lint E016/W107 enforce this).
+"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write is `fha confirm merge`'s job - the skill never silently merges, and the split stays hand-guided (SPEC §9). A merged person is never directly referenced again (lint W107 lists any reference left; it still counts for the survivor meanwhile, SPEC §9).
 
-**Orchestrates:** `fha find --related`, `fha cooccur`, `fha confirm merge`, `fha lint` (E016/W107/W115 verification).
+**Orchestrates:** `fha find --related`, `fha cooccur`, `fha confirm merge`, `fha lint` (W107/W115 verification).
 
 **Done when:**
-- A merge/split proposal in a session lays out the neighborhood evidence and waits for human confirmation; post-merge, lint shows no E016/W107 regressions.
+- A merge/split proposal in a session lays out the neighborhood evidence and waits for human confirmation; post-merge, lint shows no W107 regressions.
 
 ---
 
