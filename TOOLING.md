@@ -1559,9 +1559,9 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 ---
 
-## 17. Command reference (the full surface)
+## 17. The working surface: which skill or command, when
 
-Invocation surfaces: **T** terminal (works with no AI) · **C** conversational (agent shells out) · **A** auto-triggering skill · **/** slash wrapper.
+Every command's flags are in `docs/COMMANDS.md`, generated from the commands themselves; this section is the map of what to reach for. Invocation surfaces: **T** terminal (works with no AI) · **C** conversational (agent shells out) · **A** auto-triggering skill · **/** slash wrapper.
 Organized by how often *you* touch it - the skills are the real working surface; most CLI commands are what skills shell into.
 
 ### The working surface (daily)

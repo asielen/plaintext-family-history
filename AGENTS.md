@@ -349,7 +349,7 @@ Text passed to the note verbs (`fha person note/edit-note`, `fha source note/edi
 `fha places note/edit-note`) and to `fha confirm discovery` is prose - any record ID inside it
 takes the `[[ ]]` wikilink form, never bare (see Citations above).
 
-Execution rules (all tools): `fha` is not on PATH - invoke it through the launcher at the archive root: `./fha <command>` (macOS/Linux), `.\fha <command>` (Windows PowerShell), or plain `fha <command>` (Windows cmd). The launcher finds the vendored tools wherever they live (`.fha/tools/` or `tools/`); if it is somehow missing, `python .fha/tools/fha.py <command>` (or `python tools/fha.py …`) runs the same entrypoint. Run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; full command reference: TOOLING §17.
+Execution rules (all tools): `fha` is not on PATH - invoke it through the launcher at the archive root: `./fha <command>` (macOS/Linux), `.\fha <command>` (Windows PowerShell), or plain `fha <command>` (Windows cmd). The launcher finds the vendored tools wherever they live (`.fha/tools/` or `tools/`); if it is somehow missing, `python .fha/tools/fha.py <command>` (or `python tools/fha.py …`) runs the same entrypoint. Run from the archive root; `--dry-run` (or the tool's preview) before ANY mutating operation; check exit codes (0 clean, 1 warnings, 2 errors, 3 tool failure) and never proceed past a 2/3 silently; on unexpected behavior, read the tool's TOOLING.md section before retrying; every flag: `docs/COMMANDS.md` (or `<command> --help`); which command when: TOOLING §17.
 
 Query the index, not the tree: person/claim/photo questions are SQL or `fha` calls.
 Never bulk-ingest `photos/` or `documents/` into context.
@@ -526,3 +526,4 @@ No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
 No hand-editing `.fha/` (vendored - log the defect in `TOOL_ISSUES.md`; a human-requested local patch is marked `LOCAL PATCH` line by line), and no filing an upstream issue without an explicit yes and a scrubbed body.
 No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.
+No history in the design docs (tool-building mode): SPEC, TOOLING, BUILD, AGENTS and CHEATSHEET say what is true now, in the present tense. The story of a fix - the issue number, what used to happen, when it changed - goes in the commit and the PR (AGENTS_TOOLING, "Docs are present tense").

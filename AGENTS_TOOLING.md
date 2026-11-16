@@ -74,8 +74,8 @@ Core contract, modes overview, research workflows, format reference, and tools: 
 9. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
 10. **Pre-push gate.** Mechanical, per push - the rules below already exist in the
    code-review checklist; this step exists because a checklist you can skip is a checklist
-   that gets skipped (PR #42, 2026-08-15: three rounds of review findings, most in commits
-   pushed after the one review pass).
+   that gets skipped, and review findings cluster in commits pushed after the one review
+   pass.
    - Run the code-review checklist (§Code-review mode) against the **final** diff. A
      commit added after a review is unreviewed - re-run before pushing. Never push a range
      the review has not seen.
@@ -139,8 +139,8 @@ authoring**, not copying:
   write; nothing emitted into an attachable artifact carries an absolute path.
 - A `LOCAL PATCH` and its "verified N cases" note are evidence about those N cases and
   nothing more. The SPEC/TOOLING table wins: write the test cases *from the table* (every row,
-  plus the omitted/unknown row) before the code, then port. #40's `?`/omitted-means-unknown
-  row was in the table and the patch defaulted it to confident.
+  plus the omitted/unknown row) before the code, then port. A patch that "works" on its N
+  cases can still default a table's `?`/omitted-means-unknown row to confident.
 - The scrub covers what the code *writes at run time*, not only the static text you grep.
 - The archive keeps its copy until `fha update-tools` replaces it; a ported skill that
   differs from the archive's is a customization the next update backs up and overwrites, so
@@ -188,6 +188,22 @@ Before changing a rule, read its entry in
 rejected. A proposal that reopens a rejected option names the new information that
 justifies it. A design decision made during a build that the rationale doc does not
 yet explain is added there, in the present tense, in the same change.
+
+### Docs are present tense
+
+SPEC.md, TOOLING*.md, BUILD*.md, AGENTS*.md and CHEATSHEET.md state the current design.
+A reader in fifty years needs the rule, not the story of how it came to be:
+
+- No issue numbers, no decision logs, no notes on what a past revision said, no "shipped in", no
+  "we found that". The story of a fix goes in its commit message and PR.
+- A reason that explains a rule stays, in one present-tense sentence beside it.
+  Anything longer goes to `docs/DESIGN_RATIONALE.md`.
+- A superseded design is deleted, not kept as a note.
+- Flags are not listed by hand: `docs/COMMANDS.md` is generated from the commands
+  (`py -3.14 build_commands_doc.py` after changing any flag).
+
+`tests/test_commands_doc.py` enforces the first and last points, and that
+TOOLING's lint table lists exactly the codes the linter emits.
 
 ---
 
