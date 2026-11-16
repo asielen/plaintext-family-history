@@ -9,8 +9,8 @@ This is a **repo-development tracking doc**, like `RELEASE_CHECKLIST.md`: it is
 deliberately *not* part of the operating layer (`_ROOT_OPERATING_DOCS` in
 `tools/scaffold.py`) and is never installed into a user's archive.
 
-For unbuilt *features* on the spec roadmap (e.g. working-copy mode, M10), see
-`BUILD.md` and the `README.md` roadmap instead - this file is only for
+For unbuilt *features* on the spec roadmap, see `BUILD.md` and the `README.md`
+roadmap instead - this file is only for
 deferred fixes/cleanups in already-shipped tools.
 
 ---
