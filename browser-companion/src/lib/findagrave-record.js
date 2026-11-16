@@ -324,16 +324,15 @@ async function fagGallery(memorialId, slug, d) {
   return { ok: true, photos, total, partial, partialStatus, partialError };
 }
 
-// What the memorial says about itself (TI-066): the shared rule over the
-// memorial's own death - Find a Grave gives no burial date, and a burial is
-// known only to be "on or after the death", so none is invented (TI-068) -
-// and always `derivative`: a memorial is a volunteer's compilation from the
-// stone, records and family knowledge, not the original record.
+// What the memorial says about itself (TI-066): always `derivative` - a
+// memorial is a volunteer's compilation from the stone, records and family
+// knowledge, not the original record - and so undated: it was made long after
+// the death, and the death date is a fact for a claim, not the memorial's.
 function fagHints(record) {
   const r = record || {};
   const h = recordHints(r.collection || 'Find a Grave', (word) =>
     (word === 'Death' ? ancDateToEdtf(r.death && r.death.date) : null));
-  return { sourceType: h.sourceType, sourceDate: h.sourceDate, sourceClass: 'derivative' };
+  return { sourceType: h.sourceType, sourceDate: null, sourceClass: 'derivative' };
 }
 
 // "{name} ({born}-{died}) - Find a Grave memorial", the years from its own dates.

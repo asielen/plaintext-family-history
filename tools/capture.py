@@ -29,10 +29,10 @@ Two extraction layers:
 
 `--title` / `--type` / `--date` always override whatever a recipe (or the
 generic pass) inferred - the human's explicit word wins. Capture also writes a
-research-log entry (capture is itself a logged search, closing the §16 loop):
-into the live index's `search_log` when an index exists, and always appended
-to `notes/capture-log.jsonl` (SPEC §16b - the durable copy `fha index` reads
-back, kept under notes/ so backups and git carry it).
+research-log entry (capture is itself a logged search): one SPEC §17c entry
+appended to `notes/research-log.md` - the one search log, the durable copy
+`fha index` reads back - and, when an index exists, a row straight into its
+`search_log` so `fha report` sees it at once.
 
 A third mode, `fha capture --path PATH`, has nothing to do with web pages: it
 registers a file (most often a photo) that must stay exactly where it is - the
@@ -61,11 +61,13 @@ library (the project adds no dependency before Jinja2 in M8).
 #
 #  Stub assembly
 #    _slugify / _yaml_inline   - slug + safe single-line YAML scalar
+#    site_person_ids           - a person page's own site id (SPEC A.7), from its URL
 #    _render_stub              - RecipeResult + body → the inbox notes.md text
 #    _unique_stub_stem         - collision-free {stem} for the stub (+ its asset)
 #
 #  Research log
-#    _write_capture_log        - notes/capture-log.jsonl line (+ search_log row if indexed)
+#    _render_log_entry         - one SPEC §17c research-log entry (list item + fields)
+#    _write_capture_log        - append it to notes/research-log.md (+ search_log row if indexed)
 #
 #  Top-level + CLI
 #    run_capture               - read HTML, choose recipe, write stub + asset + log
@@ -121,11 +123,9 @@ from _lib import (
     EXIT_WARNINGS,
     SOURCE_TYPES,
     FhaConfigError,
-    capture_log_paths,
     Result,
     configure_utf8_stdout,
     format_edtf_error,
-    migrate_capture_log,
     format_source_type_error,
     index_manifest_path,
     read_path_manifest,
@@ -597,6 +597,43 @@ def _yaml_inline(value: str) -> str:
     return rendered
 
 
+# A page that is one person's own page on a site (SPEC A.7 `external_ids`):
+# its id is in the address. Only these four shapes - a record or search page
+# names no one person, so it gets none.
+_SITE_PERSON_ID_RES = (
+    ('findagrave', re.compile(r'findagrave\.com/memorial/(\d+)', re.I)),
+    ('wikitree', re.compile(r'wikitree\.com/wiki/(?:Profile:)?([A-Za-z][^/?#\s:]*-\d+)\b', re.I)),
+    ('familysearch', re.compile(
+        r'familysearch\.org/(?:[a-z]{2}/)?tree/person/(?:[a-z]+/)?([A-Z0-9]{4}-[A-Z0-9]{2,4})\b', re.I)),
+    ('ancestry', re.compile(r'ancestry\.[a-z.]+/family-tree/person/tree/\d+/person/(\d+)', re.I)),
+)
+
+
+def site_person_ids(links) -> dict[str, str]:
+    """`{site: id}` for a captured page that is one person's own page.
+
+    Capture creates an inbox stub, not a person, so the id is a hint on the
+    stub (`external_ids:`) about the person the page is about - the first
+    name under `people:`. `fha process` carries it into the source's notes so
+    it reaches that person's `external_ids` when the person is linked.
+    """
+    found: dict[str, str] = {}
+    for link in links or []:
+        url = link.get('url') if isinstance(link, dict) else link
+        for site, rx in _SITE_PERSON_ID_RES:
+            m = rx.search(str(url or ''))
+            if m and site not in found:
+                found[site] = m.group(1).upper() if site == 'familysearch' else m.group(1)
+    return found
+
+
+def _external_ids_lines(result: 'RecipeResult') -> list[str]:
+    ids = site_person_ids(result.external_links)
+    if not ids:
+        return []
+    return ['external_ids:'] + [f'  {site}: {_yaml_inline(str(v))}' for site, v in ids.items()]
+
+
 def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str:
     """Render the inbox `*.notes.md` source stub (SPEC §12.1) as text.
 
@@ -639,6 +676,7 @@ def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str
     if result.people:
         lines.append('people:')
         lines += [f'  - {_yaml_inline(str(name))}' for name in result.people]
+    lines += _external_ids_lines(result)
     lines.append('---')
     lines.append('')
     body = result.body.strip()
@@ -675,6 +713,52 @@ _SEARCH_LOG_DDL = '''CREATE TABLE IF NOT EXISTS search_log(
 )'''
 
 
+_RESEARCH_LOG_HEADER = (
+    '# Research log\n'
+    '\n'
+    'Every search run, by hand or by `fha capture`, one entry per search, so no\n'
+    'collection is searched twice by accident.\n'
+)
+
+
+def _research_log_path(archive_root: Path) -> Path:
+    """The one search log (SPEC §17c): `notes/research-log.md`."""
+    return archive_root / 'notes' / 'research-log.md'
+
+
+def _log_value(value: str, *, quote: bool) -> str:
+    """One research-log field value on one line.
+
+    The index reads each field as the text after `field:` with one layer of
+    matching quotes stripped, so a free-text value (a page title, a
+    collection) is wrapped in double quotes and any double quote inside it
+    becomes a single one - a title like `Say "hi": a page` then reads back
+    whole. Line breaks fold to spaces: one field is one line.
+    """
+    v = ' '.join(str(value or '').split())
+    if quote or v[:1] in ('"', "'") or ': ' in v or ' #' in v:
+        return '"' + v.replace('"', "'") + '"'
+    return v
+
+
+def _render_log_entry(*, date: str, question: str, repository: str,
+                      collection: str, terms: str, result: str) -> str:
+    """One SPEC §17c entry: a list item, its other fields indented below it.
+
+    `collection` and `terms` are left out when the page did not give them;
+    `date`, `question`, `repository` and `result` are always written.
+    """
+    lines = [f'- date: {date}',
+             f'  question: {_log_value(question, quote=True)}',
+             f'  repository: {_log_value(repository, quote=False)}']
+    if (collection or '').strip():
+        lines.append(f'  collection: {_log_value(collection, quote=True)}')
+    if (terms or '').strip():
+        lines.append(f'  terms: {_log_value(terms, quote=True)}')
+    lines.append(f'  result: {result}')
+    return '\n'.join(lines) + '\n'
+
+
 def _write_capture_log(
     archive_root: Path,
     *,
@@ -684,67 +768,58 @@ def _write_capture_log(
     collection: str,
     terms: str,
     result: str,
-    stub_rel: str,
 ) -> str:
-    """Record the capture as a research-log search (§16): jsonl line + index row.
+    """Record the capture as a search in the research log (SPEC §17c).
 
     Capture is itself a logged search, so `fha report`'s "already searched"
-    annotation can see it the moment it lands. The line always appends to
-    `notes/capture-log.jsonl` first (SPEC §16b) - that file is the durable
-    record `fha index` re-ingests into `search_log` on every full rebuild
-    (which drops and recreates that table from scratch), and it lives under
-    notes/ rather than `.cache/` so `fha backup` and git keep it: losing it
-    would lose every "already searched there" the human has built up. An
-    archive still holding the old `.cache/capture_log.jsonl` has it carried
-    across first (`_lib.migrate_capture_log`), and the move is announced.
+    can see it. The entry is appended to `notes/research-log.md` - the one
+    search log, the same file hand searches go in - creating the file with a
+    short purpose line when it is absent. That file is the durable record:
+    `fha index` rebuilds `search_log` from it every time, and it lives under
+    notes/ so backups and git keep it.
+
     When `.cache/index.sqlite` already exists, the row is *also* written
     straight into its `search_log` table (`person_id`/`source_id` are null -
-    a stub has no resolved person and no S-id yet) so `fha report` sees it
-    immediately, without waiting for the next rebuild. Returns 'index' or
-    'jsonl' for the caller's status line (favoring 'index' when both
-    succeed); a logging failure is reported but never fails the capture (the
-    stub is already safely written).
+    a stub has no resolved person and no S-id yet) so `fha report` sees it at
+    once, without waiting for the next rebuild. Returns 'index' or 'log' for
+    the caller's status line (favoring 'index' when both succeed), 'none' when
+    neither landed; a logging failure is reported but never fails the capture
+    (the stub is already safely written).
     """
-    cache_dir = archive_root / '.cache'
-    db_path = cache_dir / 'index.sqlite'
-    log_path, legacy_path = capture_log_paths(archive_root)
-    row = (date, None, question, repository, collection, terms, result, None, stub_rel)
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    log_path = _research_log_path(archive_root)
+    log_rel = str(log_path.relative_to(archive_root))   # the index's own path form
 
     # Was the index up to date with the log BEFORE this capture touched it?
-    # Only then may the capture mark the log as read afterwards: a line synced
-    # in from another machine must keep the index stale until `fha index`
-    # replays it (#304 review).
-    log_was_indexed = db_path.exists() and _capture_log_is_indexed(
-        archive_root, log_path, legacy_path)
+    # Only then may the capture mark the log as read afterwards: an entry
+    # typed by hand or synced in from another machine must keep the index
+    # stale until `fha index` replays it (#304 review).
+    log_was_indexed = db_path.exists() and _research_log_is_indexed(archive_root, log_path)
 
-    if migrate_capture_log(archive_root):
-        print(f'Moved your capture history from {_rel(legacy_path, archive_root)} to '
-              f'{_rel(log_path, archive_root)}, where backups and git keep it '
-              f'(the old copy is gone; every line is in the new file).')
-
-    jsonl_ok = False
+    entry = _render_log_entry(date=date, question=question, repository=repository,
+                              collection=collection, terms=terms, result=result)
+    log_ok = False
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # A file last saved by hand or by a git merge may not end in a
-        # newline; appending straight on would glue this search onto the
-        # last one and the index would read neither (#304 review).
-        needs_break = False
+        # newline; appending straight on would glue this entry onto the last
+        # one and the index would read neither (#304 review). Entries are
+        # kept apart by a blank line.
         try:
-            if log_path.stat().st_size:
-                with open(log_path, 'rb') as tail:
-                    tail.seek(-1, os.SEEK_END)
-                    needs_break = tail.read(1) != b'\n'
+            size = log_path.stat().st_size
         except FileNotFoundError:
-            pass
+            size = None
+        if size is None:
+            prefix = _RESEARCH_LOG_HEADER + '\n'
+        elif size == 0:
+            prefix = ''
+        else:
+            with open(log_path, 'rb') as tail:
+                tail.seek(-1, os.SEEK_END)
+                prefix = '\n' if tail.read(1) == b'\n' else '\n\n'
         with open(log_path, 'a', encoding='utf-8', newline='') as f:
-            if needs_break:
-                f.write('\n')
-            f.write(json.dumps({
-                'date': date, 'question': question, 'repository': repository,
-                'collection': collection, 'terms': terms, 'result': result,
-                'path': stub_rel,
-            }, ensure_ascii=False) + '\n')
-        jsonl_ok = True
+            f.write(prefix + entry)
+        log_ok = True
     except OSError as e:
         print(f'WARNING: could not write {_rel(log_path, archive_root)}: {e}', file=sys.stderr)
 
@@ -758,66 +833,71 @@ def _write_capture_log(
                        (date, person_id, question, repository, collection, terms,
                         result, source_id, path)
                        VALUES (?,?,?,?,?,?,?,?,?)''',
-                    row,
+                    (date, None, question, repository, collection, terms, result,
+                     None, log_rel),
                 )
+                if log_ok:
+                    _refresh_log_text(conn, log_path, log_rel)
                 conn.commit()
             finally:
                 conn.close()
-            # The capture log is a freshness input (SPEC 16b: an index that has
-            # not read it is missing searches). This capture just put its own
-            # line in the index, so record the log as read - otherwise every
+            # The research log is a freshness input (an index that has not
+            # read it is missing searches). This capture just put its own row
+            # in the index, so record the log as read - otherwise every
             # capture would make `fha doctor` call a correct index stale.
-            if jsonl_ok and log_was_indexed:
-                _mark_capture_log_indexed(archive_root, log_path, legacy_path)
+            if log_ok and log_was_indexed:
+                _mark_research_log_indexed(archive_root, log_path)
             return 'index'
         except Exception as e:  # noqa: BLE001
             print(f'WARNING: could not write search_log row ({e})'
-                  + (' (still logged to jsonl)' if jsonl_ok else ''), file=sys.stderr)
+                  + (' (still logged in the research log)' if log_ok else ''),
+                  file=sys.stderr)
 
-    return 'jsonl' if jsonl_ok else 'none'
+    return 'log' if log_ok else 'none'
 
 
-def _capture_log_is_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> bool:
-    """True when the index's stored manifest records both capture-log paths
-    exactly as they are on disk now (same mtime, or absent on both sides) -
-    i.e. every line in them is already in `search_log`. A missing or
-    unreadable manifest is False: nothing proves the index read the log."""
+def _refresh_log_text(conn: sqlite3.Connection, log_path: Path, log_rel: str) -> None:
+    """Keep `fha find --text` in step: the research log is a note, and the
+    index holds its text in `notes_fts`. Replaced whole, as a rebuild would.
+    An index without that table (an old or partial one) is left alone."""
+    try:
+        content = log_path.read_text(encoding='utf-8')
+        conn.execute('DELETE FROM notes_fts WHERE path=?', (log_rel,))
+        conn.execute('INSERT INTO notes_fts(path, content) VALUES (?,?)', (log_rel, content))
+    except (sqlite3.Error, OSError, UnicodeDecodeError):
+        pass
+
+
+def _research_log_is_indexed(archive_root: Path, log_path: Path) -> bool:
+    """True when the index's stored manifest records the research log exactly
+    as it is on disk now (same mtime, or absent on both sides) - i.e. every
+    entry in it is already in `search_log`. A missing or unreadable manifest
+    is False: nothing proves the index read the log."""
     stored = read_path_manifest(index_manifest_path(archive_root))
     if stored is None:
         return False
-    for path in (log_path, legacy_path):
-        rel = _rel(path, archive_root)
-        try:
-            current = path.stat().st_mtime
-        except OSError:
-            current = None
-        if stored.get(rel) != current:
-            return False
-    return True
-
-
-def _mark_capture_log_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> None:
-    """Patch the index's path manifest for the capture log this run just wrote.
-
-    `fha index` lists both capture-log paths among the files it read, so a
-    log changed behind its back reads as stale. A capture that also wrote its
-    row straight into `search_log` has kept the index exactly as current as
-    the file, the same contract `index.upsert_source` keeps for one source.
-    The legacy key is dropped when the old file is gone (carried across).
-    Called only when `_capture_log_is_indexed` held before this capture's
-    append - so the one new line is the capture's own row, never a synced line
-    the index has not seen. Best effort: a failure here only costs one "run
-    fha index" suggestion.
-    """
-    updates: dict[str, float | None] = {}
-    for path in (log_path, legacy_path):
-        rel = _rel(path, archive_root)
-        try:
-            updates[rel] = path.stat().st_mtime
-        except OSError:
-            updates[rel] = None
     try:
-        update_path_manifest(index_manifest_path(archive_root), updates)
+        current = log_path.stat().st_mtime
+    except OSError:
+        current = None
+    return stored.get(_rel(log_path, archive_root)) == current
+
+
+def _mark_research_log_indexed(archive_root: Path, log_path: Path) -> None:
+    """Patch the index's path manifest for the research log this run just wrote.
+
+    `fha index` lists every notes/ file among the ones it read, so a log
+    changed behind its back reads as stale. A capture that also wrote its row
+    straight into `search_log` has kept the index exactly as current as the
+    file, the same contract `index.upsert_source` keeps for one source.
+    Called only when `_research_log_is_indexed` held before this capture's
+    append - so the one new entry is the capture's own, never a hand-typed or
+    synced one the index has not seen. Best effort: a failure here only costs
+    one "run fha index" suggestion.
+    """
+    try:
+        update_path_manifest(index_manifest_path(archive_root),
+                             {_rel(log_path, archive_root): log_path.stat().st_mtime})
     except Exception:  # noqa: BLE001 - never fail a capture over cache bookkeeping
         pass
 
@@ -1030,7 +1110,7 @@ def run_capture(
         print(f'[dry-run] Would stage stub {_rel(stub_path, archive_root)}')
         if asset_dest is not None:
             print(f'[dry-run] Would copy asset {_rel(asset_dest, archive_root)}')
-        print('[dry-run] Would log the search in notes/capture-log.jsonl (and the index, if built)')
+        print('[dry-run] Would log the search in notes/research-log.md (and the index, if built)')
         return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
 
     try:
@@ -1063,7 +1143,6 @@ def run_capture(
         collection=result.collection,
         terms=result.terms,
         result=f'staged {stub_rel}',
-        stub_rel=stub_rel,
     )
 
     print(f'Captured via {matched} ({result.source_type})')
@@ -1074,8 +1153,8 @@ def run_capture(
         print(f'Person hints: {", ".join(result.people)}')
     if log_sink == 'index':
         print('Logged the search in the index (search_log)')
-    elif log_sink == 'jsonl':
-        print('Logged the search in notes/capture-log.jsonl')
+    elif log_sink == 'log':
+        print('Logged the search in notes/research-log.md')
     changed = [str(stub_path)]
     if asset_dest is not None:
         changed.append(str(asset_dest))
@@ -1297,6 +1376,7 @@ def _render_bundle_notes(
     if result.people:
         lines.append('people:')
         lines += [f'  - {_yaml_inline(str(name))}' for name in result.people]
+    lines += _external_ids_lines(result)
     if assets:
         lines.append('files:')
         for filename, role in assets:
@@ -1383,7 +1463,7 @@ def _ingest_bundle_folder(
         print(f'[dry-run]   notes.md')
         for _, dest_name, role in planned:
             print(f'[dry-run]   {dest_name}  (role: {role})')
-        print('[dry-run] Would log the search in notes/capture-log.jsonl (and the index, if built)')
+        print('[dry-run] Would log the search in notes/research-log.md (and the index, if built)')
         return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
 
     try:
@@ -1411,7 +1491,6 @@ def _ingest_bundle_folder(
         collection=result.collection,
         terms=result.terms,
         result=f'staged {notes_rel}',
-        stub_rel=notes_rel,
     )
 
     print(f'Captured via {matched} ({result.source_type})')
@@ -1423,8 +1502,8 @@ def _ingest_bundle_folder(
         print(f'Person hints: {", ".join(result.people)}')
     if log_sink == 'index':
         print('Logged the search in the index (search_log)')
-    elif log_sink == 'jsonl':
-        print('Logged the search in notes/capture-log.jsonl')
+    elif log_sink == 'log':
+        print('Logged the search in notes/research-log.md')
 
     changed = [str(folder / 'notes.md')]
     changed += [str(folder / dest_name) for _, dest_name, _ in planned]

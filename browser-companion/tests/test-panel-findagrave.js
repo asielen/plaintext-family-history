@@ -8,7 +8,7 @@
 // What it guards, in the human's terms:
 //   - Capture on a memorial saves what it says (names, dates, places, cemetery,
 //     plot, inscription, family, bio), Find a Grave's own citation, and every
-//     photo at full size, filed as a website dated by the death (TI-066,
+//     photo at full size, filed as an undated website (TI-066,
 //     TI-068: never a burial date it does not give, never the birth);
 //   - photos come from Find a Grave's own image host only, and nothing is
 //     sent with them - no cookies, no login;
@@ -124,7 +124,7 @@ const today = () => {
 
 // ── one memorial ─────────────────────────────────────────────────────────────
 
-test('a memorial saves what it says, its own citation and every photo at full size, filed as a website dated by the death', async () => {
+test('a memorial saves what it says, its own citation and every photo at full size, filed as an undated website', async () => {
   const p = await open(CALVIN);
   assert.match(p.$('asset-status').textContent, /the memorial’s facts and citation \+ its photos at full size \(Find a Grave, auto\)/);
   assert.strictEqual(p.$('f-asset-url').value, '');
@@ -136,7 +136,7 @@ test('a memorial saves what it says, its own citation and every photo at full si
   assert.strictEqual(cap.url, CALVIN);
   assert.strictEqual(cap.title, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
   assert.strictEqual(cap.source_type, 'website');
-  assert.strictEqual(cap.source_date, '1918-01-04'); // the death; no burial date, never the birth
+  assert.strictEqual(cap.source_date, undefined); // never the death, the birth or a burial date
   assert.strictEqual(cap.source_class, 'derivative');
   assert.strictEqual(cap.repository, 'Find a Grave');
   assert.strictEqual(cap.recipe_hint, 'findagrave');
@@ -229,7 +229,7 @@ async function type(p, id, value) {
 test('what she typed is filed as typed, kept when she captures again, and cleared on the next memorial', async () => {
   const p = await open(CALVIN);
   assert.strictEqual(p.$('f-title').value, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
-  assert.strictEqual(p.$('f-date').value, '1918-01-04');
+  assert.strictEqual(p.$('f-date').value, '');
   await type(p, 'f-title', 'Find a Grave - Hartley, Calvin G.');
   await type(p, 'f-date', '1918-01');
   await type(p, 'f-type', 'other');
@@ -249,7 +249,7 @@ test('what she typed is filed as typed, kept when she captures again, and cleare
   await p.capture();
   const cap = p.capJson(p.written[2]);
   assert.strictEqual(cap.title, 'Warren Calvin Hartley (1870-1951) - Find a Grave memorial');
-  assert.strictEqual(cap.source_date, '1951-02-02');
+  assert.strictEqual(cap.source_date, undefined); // her typed date is gone, and a memorial is undated
   assert.strictEqual(cap.repository, 'Find a Grave');
 });
 

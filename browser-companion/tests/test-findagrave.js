@@ -98,15 +98,15 @@ test('fagMemorialFrom: the slug comes from the canonical link when the address h
 
 // ── what it says about itself (TI-066, TI-068) ──────────────────────────────
 
-test('fagHints: a website, derivative, dated by its own death - never its birth, never a burial date it lacks', () => {
+test('fagHints: a website, derivative, and undated - never its death, its birth, or a burial date it lacks', () => {
   const r = readMemorial().record;
-  assert.deepStrictEqual(fag.fagHints(r), { sourceType: 'website', sourceDate: '1918-01-04', sourceClass: 'derivative' });
+  assert.deepStrictEqual(fag.fagHints(r), { sourceType: 'website', sourceDate: null, sourceClass: 'derivative' });
   const born = Object.assign({}, r, { death: { date: null, place: null } });
   assert.deepStrictEqual(fag.fagHints(born), { sourceType: 'website', sourceDate: null, sourceClass: 'derivative' });
   const unsure = Object.assign({}, r, { death: { date: 'unknown' } });
   assert.strictEqual(fag.fagHints(unsure).sourceDate, null);
-  assert.strictEqual(fag.fagHints(Object.assign({}, r, { death: { date: 'Jan 1918' } })).sourceDate, '1918-01');
-  assert.strictEqual(fag.fagHints(Object.assign({}, r, { death: { date: '1918' } })).sourceDate, '1918');
+  assert.strictEqual(fag.fagHints(Object.assign({}, r, { death: { date: 'Jan 1918' } })).sourceDate, null);
+  assert.strictEqual(fag.fagHints(Object.assign({}, r, { death: { date: '1918' } })).sourceDate, null);
 });
 
 test('fagTitle: name and years from its own dates', () => {

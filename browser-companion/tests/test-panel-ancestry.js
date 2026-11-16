@@ -113,14 +113,14 @@ test('record-data.json is the site\'s index, without the Seen It badges (TI-067)
   }
 });
 
-test('TI-066: a death-index entry files as a vital record, dated by the death, marked derivative', async () => {
+test('TI-066: a death-index entry files as a vital record, undated (not by the death), marked derivative', async () => {
   const p = await open(ETHEL);
   await p.capture();
   const b = p.written[0];
   const cap = p.capJson(b);
   assert.strictEqual(cap.title, 'Ethel Hartley - California, U.S., Death Index, 1940-1997');
   assert.strictEqual(cap.source_type, 'vital-record');
-  assert.strictEqual(cap.source_date, '1957-01-07'); // not 1940, the index's first year
+  assert.strictEqual(cap.source_date, undefined); // not the death, not 1940: an index is undated
   assert.strictEqual(cap.source_class, 'derivative');
   // No scan on an index entry: nothing is fetched, and nothing is missing.
   assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'record-data.json']);

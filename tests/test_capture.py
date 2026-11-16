@@ -83,12 +83,40 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Body text here.', rec['body'])
         self.assertNotIn('ignored', rec['body'])            # script body dropped
 
-        # No index present -> entry lands in the capture log, under notes/
-        # (SPEC §16b) so backups and git keep it - never in .cache/.
-        log = self.archive / 'notes' / 'capture-log.jsonl'
+        # No index present -> the search lands in the one research log,
+        # notes/research-log.md (SPEC §17c) - no separate capture log.
+        log = self.archive / 'notes' / 'research-log.md'
         self.assertFalse((self.archive / '.cache' / 'capture_log.jsonl').exists())
+        self.assertFalse((self.archive / 'notes' / 'capture-log.jsonl').exists())
         self.assertTrue(log.exists())
-        self.assertIn('example.com', log.read_text(encoding='utf-8'))
+        self.assertIn('repository: example.com', log.read_text(encoding='utf-8'))
+
+    def _log_entries(self) -> list[dict]:
+        import index
+        text = (self.archive / 'notes' / 'research-log.md').read_text(encoding='utf-8')
+        return [{k: index._strip_quotes(v) for k, v in e.items()}
+                for e in index._parse_md_list_blocks(text)]
+
+    def test_research_log_entry_has_the_spec_shape(self) -> None:
+        # SPEC §17c: date, question (the page title), repository, collection
+        # when known, terms if any, result `staged <inbox path>`. A title with
+        # a colon and quotes must still read back as one value.
+        html = _sample('ancestry-record-death-index')
+        self._capture(html, url='https://www.ancestry.com/discoveryui-content/view/1:2')
+        self._capture('<html><title>Say "hi": a page</title></html>', url='https://x.test/q')
+        entries = self._log_entries()
+        self.assertEqual(len(entries), 2, entries)
+        first, second = entries
+        stub_names = sorted(p.name for p in (self.archive / 'inbox').glob('*.notes.md'))
+        self.assertTrue(first['result'].startswith('staged inbox/'), first)
+        self.assertIn(first['result'][len('staged inbox/'):], stub_names)
+        self.assertEqual(first['repository'], 'Ancestry.com')
+        self.assertTrue(first['collection'], first)
+        self.assertRegex(first['date'], r'^\d{4}-\d{2}-\d{2}$')
+        self.assertEqual(second['question'], "Say 'hi': a page")
+        self.assertEqual(second['repository'], 'x.test')
+        self.assertNotIn('collection', second)               # unknown -> left out
+        self.assertNotIn('terms', second)
 
     def test_search_log_written_when_index_present(self) -> None:
         cache = self.archive / '.cache'
@@ -110,28 +138,29 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rows[0][0], 'Indexed')
         self.assertTrue(rows[0][1].startswith('staged inbox/'))
         self.assertIsNone(rows[0][3])                        # no S-id at capture time
-        # Always also appended to the jsonl (durability across a search_log
-        # drop/rebuild), even though the index row already exists.
-        self.assertTrue((self.archive / 'notes' / 'capture-log.jsonl').exists())
-        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        # Always also appended to the research log (durability across a
+        # search_log drop/rebuild), even though the index row already exists.
+        self.assertTrue((self.archive / 'notes' / 'research-log.md').exists())
+        self.assertFalse((self.archive / 'notes' / 'capture-log.jsonl').exists())
 
     def test_a_log_without_a_final_newline_is_not_glued_onto(self) -> None:
         # A file last saved by hand or by a git merge may not end in a
-        # newline; the next capture must start its own line, or neither
-        # search would ever reach "already searched" (#304 review).
+        # newline; the next capture must start its own entry, or neither
+        # search would ever reach "already searched".
         notes = self.archive / 'notes'
         notes.mkdir()
-        (notes / 'capture-log.jsonl').write_bytes(b'{"question": "earlier"}')
+        (notes / 'research-log.md').write_bytes(
+            b'- date: 2020-01-01\n  question: earlier\n  result: nil')
         self._capture('<html><title>Later</title></html>', url='https://x.test/later')
-        lines = (notes / 'capture-log.jsonl').read_bytes().split(b'\n')
-        self.assertEqual(json.loads(lines[0])['question'], 'earlier')
-        self.assertEqual(json.loads(lines[1])['question'], 'Later')
+        questions = [e.get('question') for e in self._log_entries()]
+        self.assertEqual(questions, ['earlier', 'Later'])
 
-    def test_a_capture_keeps_a_fresh_index_fresh_and_a_synced_line_stales_it(self) -> None:
-        # The capture log is a freshness input: lines that arrive another way
-        # (a git pull from a second machine) mean "already searched" is short
-        # until the next fha index. But a capture writes its own row straight
-        # into the index, so it must not make a fresh index read stale.
+    def test_a_capture_keeps_a_fresh_index_fresh_and_a_hand_edit_stales_it(self) -> None:
+        # The research log is a freshness input: an entry that arrives another
+        # way (typed by hand, a git pull from a second machine) means "already
+        # searched" is short until the next fha index. But a capture writes
+        # its own row straight into the index, so it must not make a fresh
+        # index read stale.
         import index
         from _lib import record_manifest_is_stale
         self._capture('<html><title>First</title></html>', url='https://x.test/1')
@@ -140,27 +169,26 @@ class CaptureTestCase(unittest.TestCase):
         self.assertFalse(record_manifest_is_stale(self.archive))
         self._capture('<html><title>Second</title></html>', url='https://x.test/2')
         self.assertFalse(record_manifest_is_stale(self.archive))
-        log = self.archive / 'notes' / 'capture-log.jsonl'
+        log = self.archive / 'notes' / 'research-log.md'
         with open(log, 'a', encoding='utf-8', newline='') as f:
-            f.write(json.dumps({'question': 'from the other machine'}) + '\n')
+            f.write('\n- date: 2026-01-01\n  question: from the other machine\n')
         future = log.stat().st_mtime + 5
         os.utime(log, (future, future))
         self.assertTrue(record_manifest_is_stale(self.archive))
 
-    def test_a_local_capture_does_not_hide_a_synced_line(self) -> None:
-        # Round 4: a line pulled in from another machine, then a capture here.
-        # The capture may not mark the whole log as read - the synced line is
+    def test_a_local_capture_does_not_hide_a_synced_entry(self) -> None:
+        # An entry pulled in from another machine, then a capture here. The
+        # capture may not mark the whole log as read - the synced entry is
         # still missing from the index, so the index must stay stale until
         # fha index replays it, and then search_log must hold it.
         import index
-        import sqlite3
         from _lib import record_manifest_is_stale
         self._capture('<html><title>First</title></html>', url='https://x.test/1')
         with contextlib.redirect_stdout(io.StringIO()):
             index.build_index(self.archive, self.config)
-        log = self.archive / 'notes' / 'capture-log.jsonl'
+        log = self.archive / 'notes' / 'research-log.md'
         with open(log, 'a', encoding='utf-8', newline='') as f:
-            f.write(json.dumps({'question': 'from the other machine'}) + '\n')
+            f.write('\n- date: 2026-01-01\n  question: from the other machine\n')
         future = log.stat().st_mtime + 5
         os.utime(log, (future, future))
         self._capture('<html><title>Local</title></html>', url='https://x.test/2')
@@ -175,40 +203,44 @@ class CaptureTestCase(unittest.TestCase):
             conn.close()
         self.assertIn('from the other machine', got)
         self.assertIn('Local', got)
+        self.assertEqual(got.count('First'), 1)              # never double-counted
 
-    def test_old_cache_capture_log_is_carried_into_notes_once(self) -> None:
-        # An archive upgraded from before SPEC §16b still has its search
-        # history in .cache/, which backup skips. The first capture moves it
-        # to notes/ - old lines first, in order, never twice - and says so.
+    def test_old_capture_logs_are_left_alone_and_still_read(self) -> None:
+        # An archive from before the one research log still holds its capture
+        # history in notes/capture-log.jsonl (or .cache/capture_log.jsonl).
+        # Capture never touches those files; fha index keeps reading them, so
+        # "already searched" still sees every old capture alongside new ones.
+        import index
+        import report
         cache = self.archive / '.cache'
         cache.mkdir()
-        old_lines = [json.dumps({'date': '2020-01-0%d' % i, 'question': 'old %d' % i})
-                     for i in (1, 2)]
-        (cache / 'capture_log.jsonl').write_text(
-            ''.join(ln + '\n' for ln in old_lines), encoding='utf-8')
-        # A half-finished earlier move: the new file already holds line 1.
         notes = self.archive / 'notes'
         notes.mkdir()
-        (notes / 'capture-log.jsonl').write_text(old_lines[0] + '\n', encoding='utf-8')
-
+        old = json.dumps({'date': '2020-01-01', 'question': 'old cache',
+                          'result': 'staged inbox/a.notes.md'}) + '\n'
+        mid = json.dumps({'date': '2024-01-01', 'question': 'old notes',
+                          'result': 'staged inbox/b.notes.md'}) + '\n'
+        (cache / 'capture_log.jsonl').write_text(old, encoding='utf-8')
+        (notes / 'capture-log.jsonl').write_text(mid, encoding='utf-8')
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = self._capture('<html><title>New</title></html>', url='https://n.test/p')
-        self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('Moved your capture history', out.getvalue())
-        self.assertFalse((cache / 'capture_log.jsonl').exists())
-        lines = (notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()
-        self.assertEqual(lines[:2], old_lines)
-        self.assertEqual(len(lines), 3)
-        self.assertEqual(json.loads(lines[2])['question'], 'New')
-
-        # A second capture appends and announces nothing.
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self._capture('<html><title>Again</title></html>', url='https://n.test/q')
-        self.assertNotIn('Moved your capture history', out.getvalue())
-        self.assertEqual(
-            len((notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()), 4)
+            self._capture('<html><title>New</title></html>', url='https://n.test/p')
+        self.assertEqual((cache / 'capture_log.jsonl').read_text(encoding='utf-8'), old)
+        self.assertEqual((notes / 'capture-log.jsonl').read_text(encoding='utf-8'), mid)
+        self.assertIn('notes/research-log.md', out.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        conn = sqlite3.connect(str(cache / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            got = sorted(r[0] for r in conn.execute(
+                "SELECT question FROM search_log WHERE result LIKE 'staged %'"))
+            self.assertEqual(got, ['New', 'old cache', 'old notes'])
+            # fha report's "recently captured" call-out sees today's capture.
+            lines = report._section_search_log(conn, {'vitals_gap_person_ids': []})
+        finally:
+            conn.close()
+        self.assertTrue(any(': New' in ln for ln in lines), lines)
 
     def test_flag_overrides_and_unknown_type_refused(self) -> None:
         html = '<html><title>Original</title></html>'
@@ -476,15 +508,19 @@ class CaptureTestCase(unittest.TestCase):
         for name in ('Calvin Hartley', 'Harriet Hartley', 'Warren Hartley', 'Edith Hartley'):
             self.assertIn(name, meta['people'])
 
-    def test_ancestry_record_layout_death_index_is_a_dated_vital_record(self) -> None:
+    def test_ancestry_record_layout_death_index_is_an_undated_vital_record(self) -> None:
         rc = self._capture(_sample('ancestry-record-death-index'),
                            url='https://www.ancestry.com/search/collections/90002/records/2000001')
         self.assertEqual(rc, EXIT_CLEAN)
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['title'], 'Ethel Hartley - California, U.S., Death Index, 1940-1997')
         self.assertEqual(meta['source_type'], 'vital-record')
-        self.assertEqual(str(meta['source_date']), '1957-01-07')   # her death, not 1940
+        # An index entry is not dated by her death (SPEC §14: the date OF the
+        # source) - nor by the 1940 its collection opens with. The death date
+        # stays in the text, for a claim.
+        self.assertNotIn('source_date', meta)
         self.assertEqual(meta['source_class'], 'derivative')       # an index entry
+        self.assertIn('7 Jan 1957', read_record(self._only_stub())['body'])
 
     def test_ancestry_citation_keeps_every_date_but_a_bare_year_the_title_names(self) -> None:
         """PR #258 round 3: the citation dropped a real date whose year opened
@@ -492,12 +528,19 @@ class CaptureTestCase(unittest.TestCase):
         1940-1997" lost its date. Only a bare year the title already names on
         its own is dropped ("1880 United States Federal Census. 1880.")."""
         from capture_recipes import ancestry
-        html = _sample('ancestry-record-death-index')
+        # The death record itself (not an index, which is undated): its date
+        # is the death's, whatever year the collection's range opens with.
+        html = _sample('ancestry-record-death-index').replace('Death Index', 'Death Records')
         for day in ('1940-01-07', '1997-01-07', '1957-01-07'):
             r = ancestry.extract(html.replace('1957', day[:4]),
                                  'https://www.ancestry.com/search/collections/90002/records/2000001')
             self.assertEqual(r['source_date'], day)
             self.assertIn(f'1940-1997. {day}. Ancestry.com.', r['citation'])
+        # The index entry carries no date, so its citation names none.
+        r = ancestry.extract(_sample('ancestry-record-death-index'),
+                             'https://www.ancestry.com/search/collections/90002/records/2000001')
+        self.assertIsNone(r['source_date'])
+        self.assertIn('1940-1997. Ancestry.com.', r['citation'])
         r = ancestry.extract(_sample('ancestry-record-census'),
                              'https://www.ancestry.com/search/collections/90001/records/1000001')
         self.assertEqual(r['source_date'], '1880')
@@ -671,8 +714,8 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['source_type'], 'vital-record')
-        # The record's own birth date, not the index's first year (TI-066).
-        self.assertEqual(str(meta['source_date']), '1912-04-12')
+        # An index entry: neither its birth date nor the index's first year.
+        self.assertNotIn('source_date', meta)
         self.assertEqual(meta['source_class'], 'derivative')
         self.assertEqual(meta['title'], 'California, Birth Index, 1905-1995')
         self.assertIn('Warren B Hartley', meta['people'])
@@ -705,7 +748,7 @@ class CaptureTestCase(unittest.TestCase):
              'census', '1880', None),
             ('Ethel Hartley', 'California Death Index, 1940-1997',
              '<span>Event Type</span> <strong>Death</strong> <span>Event Date</span> <strong>7 Jan 1957</strong>',
-             'vital-record', '1957-01-07', 'derivative'),
+             'vital-record', None, 'derivative'),        # an index: never dated by the death
             # Nothing dated on the page: no date at all, never 1850.
             ('Warren Hartley', 'California, Marriages, 1850-1952', '<span>Event Type</span> <strong>Marriage</strong>',
              'vital-record', None, None),
@@ -733,7 +776,8 @@ class CaptureTestCase(unittest.TestCase):
         rc = self._capture(html, url='https://www.familysearch.org/ark:/61903/1:1:HRT1-COL1')
         self.assertEqual(rc, EXIT_CLEAN)
         meta = read_record(self._only_stub())['meta']
-        self.assertEqual(str(meta['source_date']), '1957-01-07')
+        self.assertEqual(meta['source_class'], 'derivative')
+        self.assertNotIn('source_date', meta)        # an index entry: its death stays a fact
         # ...and the documented content-panel fixture, opened as a record.
         for stub in list((self.archive / 'inbox').glob('*.notes.md')):
             stub.unlink()
@@ -892,10 +936,11 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Calvin George Hartley', meta['people'])
         self.assertNotIn('Family Members', meta['people'])   # header row not a person
         self.assertIn('Fairview Cemetery', rec['body'])
-        self.assertEqual(meta['source_date'], '1929')
+        self.assertNotIn('source_date', meta)        # a memorial is never dated by the death
 
     def test_findagrave_date_from_title_and_memorial_park(self) -> None:
-        # B2: lifespan only in the title → source_date still populates.
+        # B2: lifespan only in the title → still read (the title shows it),
+        # but a memorial is never dated by its death.
         # B3: a "Memorial Park" burial place is found, and the "Virtual
         # Cemetery" decoy is rejected.
         rc = self._capture(_sample('findagrave-memorial-park'),
@@ -903,7 +948,8 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         rec = read_record(self._only_stub())
         meta = rec['meta']
-        self.assertEqual(meta['source_date'], '1921')
+        self.assertNotIn('source_date', meta)
+        self.assertIn('1921', meta['title'])
         # The place hint is the Memorial Park, not the "Virtual Cemetery" decoy.
         self.assertIn('place_text hint): Fairview Memorial Park', rec['body'])
         self.assertNotIn('place_text hint): Ancestry Virtual Cemetery', rec['body'])
@@ -917,9 +963,14 @@ class CaptureTestCase(unittest.TestCase):
         rec = read_record(self._only_stub())
         meta, body = rec['meta'], rec['body']
         self.assertEqual(meta['title'], 'Calvin George Hartley (1842-1918) - Find a Grave memorial')
-        # TI-066 / TI-068: a website, derivative, dated by its own death - never the birth
+        # A website, derivative, and undated: the memorial was made long after
+        # the death (SPEC §14 - the date OF the source); the dates stay in the text.
         self.assertEqual(meta['source_type'], 'website')
-        self.assertEqual(meta['source_date'], '1918-01-04')
+        self.assertNotIn('source_date', meta)
+        self.assertIn('Death: 4 Jan 1918', body)
+        # The memorial is his own page on Find a Grave: its id rides on the
+        # stub for his person record's external_ids (SPEC A.7).
+        self.assertEqual(meta['external_ids'], {'findagrave': '900000001'})
         self.assertEqual(meta['source_class'], 'derivative')
         self.assertEqual(meta['repository'], 'Find a Grave')
         self.assertTrue(str(meta['citation']).startswith(
@@ -958,6 +1009,28 @@ class CaptureTestCase(unittest.TestCase):
         self.assertNotIn('source_date', meta)
         self.assertEqual(meta['source_type'], 'website')
         self.assertEqual(meta['title'], 'Calvin George Hartley (1842-?) - Find a Grave memorial')
+
+    def test_site_person_ids_only_from_a_persons_own_page(self) -> None:
+        # SPEC A.7: external_ids are a person's own page on a site. Capture
+        # knows the id from the address; a record or search page names none.
+        ids = capture.site_person_ids
+        self.assertEqual(ids([{'url': 'https://www.findagrave.com/memorial/123/x-y'}]),
+                         {'findagrave': '123'})
+        self.assertEqual(ids(['https://www.wikitree.com/wiki/Hartley-6084']),
+                         {'wikitree': 'Hartley-6084'})
+        self.assertEqual(ids(['https://www.familysearch.org/tree/person/details/kwcb-x7m']),
+                         {'familysearch': 'KWCB-X7M'})
+        self.assertEqual(ids(['https://www.ancestry.com/family-tree/person/tree/111/person/382013742308/facts']),
+                         {'ancestry': '382013742308'})
+        for url in ('https://www.ancestry.com/search/collections/90002/records/2000001',
+                    'https://www.familysearch.org/ark:/61903/1:1:AAAA-111',
+                    'https://www.findagrave.com/cemetery/55/fairview',
+                    'https://example.com/memorial/5'):
+            self.assertEqual(ids([url]), {}, url)
+        # A record page's stub carries no external_ids at all.
+        self._capture(_sample('ancestry-record-death-index'),
+                      url='https://www.ancestry.com/search/collections/90002/records/2000001')
+        self.assertNotIn('external_ids', read_record(self._only_stub())['meta'])
 
     # ── helpers ──────────────────────────────────────────────────────────────
 

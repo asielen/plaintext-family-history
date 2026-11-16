@@ -175,9 +175,11 @@ census entry, a death index entry), click the toolbar button and then
 - a copy of the page, if you keep one.
 
 It also tells filing what the record is: a census entry is filed as a census, a
-death index entry as a vital record dated by the death, and an index entry is
-marked as an index rather than the original record. Whatever you type in the
-form's title, date or kind boxes wins over that.
+death index entry as a vital record, and an index entry is marked as an index
+rather than the original record. An index entry gets no date of its own: the
+index was made later than the death it lists, so the death date stays in the
+record's text, where it becomes a fact about the person. Whatever you type in
+the form's title, date or kind boxes wins over that.
 
 Everyone in a household has their own record, but they share one census page.
 When you capture the next person on the same page while the panel is still open,
@@ -314,8 +316,8 @@ You need to be signed in to FamilySearch in that tab. The add-on saves:
 
 The title comes from FamilySearch's own name for the record ("Ethel Hartley -
 California Death Index, 1940-1997") unless you type your own. As for Ancestry, a
-census files as a census and a death index as a vital record dated by the death,
-and whatever you type wins.
+census files as a census and a death index as a vital record (undated, like
+any index entry), and whatever you type wins.
 
 Many FamilySearch images can only be seen at a FamilySearch center or an
 affiliate library. The panel checks before you press Capture: if the image

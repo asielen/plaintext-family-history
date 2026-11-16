@@ -1773,20 +1773,16 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
                        on_decode_error=None) -> None:
-    """Re-ingest the capture log (`notes/capture-log.jsonl`, SPEC §16b) into search_log.
+    """Read the old capture logs into search_log.
 
-    `fha capture` writes a search_log row directly into index.sqlite for
-    immediate freshness, but a full rebuild drops and recreates search_log
-    from scratch (`_drop_tables`) - without this, that row would vanish on the
-    next `fha index` run. capture.py also always appends the same row to the
-    capture log, so re-ingesting it here makes every capture survive a reindex
-    regardless of whether the index existed at capture time.
-
-    An archive that has not captured since the log moved out of `.cache/`
-    still has its history at `.cache/capture_log.jsonl`; `_lib.read_capture_log_lines`
-    reads both, oldest first, so none of it drops out of "already searched"
-    before the next capture carries the file across. The index never moves
-    the file itself - it is the human's record, and the writer owns the move.
+    `fha capture` now logs each capture in `notes/research-log.md` (read by
+    `_index_notes`). Archives from before that still hold earlier captures as
+    JSON lines in `notes/capture-log.jsonl` and `.cache/capture_log.jsonl`;
+    nothing writes those files any more, but a full rebuild drops search_log
+    (`_drop_tables`), so they are replayed here or those searches would drop
+    out of "already searched". `_lib.read_capture_log_lines` reads both,
+    oldest first. The index never moves or rewrites them - they are the
+    human's record.
     A file that is not UTF-8 is the ONLY record of the captures in it
     (`_drop_tables` clears search_log every build and this replays it), so it
     is named through `on_decode_error` rather than decoded away in silence.
@@ -2332,7 +2328,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Notes FTS
             _index_notes(conn, archive_root, on_error, on_decode_error)
 
-            # Capture log (durability: survives a search_log drop/rebuild)
+            # Old capture logs (read-only; new captures are in research-log.md)
             _index_capture_log(conn, archive_root, on_decode_error)
 
             # Citation scan - the full alias map now includes source stems, so a

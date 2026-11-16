@@ -136,12 +136,12 @@ test('fsFormalToEdtf: GEDCOM X formal dates in the archive\'s form', () => {
   }
 });
 
-test('fsHints: dated by the record\'s own event, never the collection\'s first year (TI-066)', () => {
+test('fsHints: dated by the record\'s own event, never the collection\'s first year (TI-066); an index entry undated', () => {
   const hint = (id) => {
     const g = FIX.records[id];
     return fsr.fsHints(fsr.fsRecordFrom(g, { fsId: id }).record, g);
   };
-  assert.deepStrictEqual(hint('HRT1-DTH1'), { sourceType: 'vital-record', sourceDate: '1957-01-07', sourceClass: 'derivative' });
+  assert.deepStrictEqual(hint('HRT1-DTH1'), { sourceType: 'vital-record', sourceDate: null, sourceClass: 'derivative' });
   assert.deepStrictEqual(hint('HRT1-CEN1'), { sourceType: 'census', sourceDate: '1880', sourceClass: null });
   // A marriage's date is on the couple, not the person: 1866, not 1855.
   assert.deepStrictEqual(hint('HRT1-MAR1'), { sourceType: 'vital-record', sourceDate: '1866-10-12', sourceClass: null });
@@ -198,7 +198,7 @@ test('fsRecordInfo reads the record with the login, and returns nothing of the l
   const info = await fsr.fsRecordInfo(PAGE, s.deps);
   assert.strictEqual(info.ok, true);
   assert.strictEqual(info.record.name, 'Ethel Hartley');
-  assert.deepStrictEqual(info.hints, { sourceType: 'vital-record', sourceDate: '1957-01-07', sourceClass: 'derivative' });
+  assert.deepStrictEqual(info.hints, { sourceType: 'vital-record', sourceDate: null, sourceClass: 'derivative' });
   assert.deepStrictEqual(s.calls.map((c) => [c.url, c.auth]),
     [['https://www.familysearch.org/ark:/61903/1:1:HRT1-DTH1', true]]);
   assert.ok(!JSON.stringify(info).includes(TOKEN), 'the login must never be in what is returned');

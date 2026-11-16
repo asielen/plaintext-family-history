@@ -257,7 +257,11 @@ def record_hints(collection: str | None, date_of) -> dict:
     "Death"), for a census its "Census" then "Residence" date, else its year,
     else the collection's one year when it names exactly one - never a year of
     a range, closed or open ("Death Index, 1940-1997", "Obituary Collection,
-    1930-Current"). An index is `derivative`. Each is None when the record does
+    1930-Current"). An index or a Find a Grave memorial is `derivative`, and a
+    derivative record gets NO date: SPEC §14's `source_date` is the date of the
+    source itself, and an index entry or memorial was made long after the death
+    it reports, on a day the page does not give. Its event date stays in the
+    stub's text, where it becomes a claim. Each is None when the record does
     not say. One rule for every site (the companion's `recordHints`, run from
     one shared case table).
     """
@@ -303,6 +307,8 @@ def record_hints(collection: str | None, date_of) -> dict:
         source_date = years[0]
 
     source_class = 'derivative' if findagrave or re.search(r'\bindex(es)?\b', c, re.I) else None
+    if source_class == 'derivative':
+        source_date = None
     return {'source_type': source_type, 'source_date': source_date, 'source_class': source_class}
 
 
