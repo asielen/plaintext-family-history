@@ -27,7 +27,7 @@ Phases use the **MG** series (this doc's own numbering).
 ## Layer G0 - The inbox contract (Milestone G0)
 
 The shapes a source can take while it waits in `inbox/` for `fha process`. Pre-source: none of
-them carries an S-id, and none decides `living` or `restricted` - processing does both.
+them carries an s-id, and none decides `living` or `restricted` - processing does both.
 
 ---
 
@@ -43,7 +43,7 @@ A stub is a plain Markdown notes file, in one of two arrangements:
 - **Bundle folder** the moment there is more than one file: `inbox/<name>/` holding the files
   and one `notes.md`. A recording with its transcript, a document with its translation, a photo
   with its back is always a bundle folder - the folder is the only thing grouping files that
-  have no S-id yet. At processing the folder dissolves into one source (BUILD.md M7.4); an
+  have no s-id yet. At processing the folder dissolves into one source (BUILD.md M7.4); an
   interview session's folder is kept in `documents/interviews/{interviewee}-{yyyy-mm-dd}/`.
 
 The notes file is **freeform first**: the body is whatever the human wants to say, and it becomes
@@ -61,7 +61,7 @@ repository: "Ancestry.com"
 external_links:
   - url: "https://www.ancestry.com/…"
     accessed: "2026-06-24"
-people: ["Thomas Hartley", "Margaret Hartley"]   # NAMES, never P-ids - a hint processing resolves
+people: ["Thomas Hartley", "Margaret Hartley"]   # NAMES, never p-ids - a hint processing resolves
 asset_elsewhere: true                # pointer-only: no companion file, on purpose
 asset_path: E:/family-photos/x.jpg   # with --path: where the file that must not move lives
 asset_path_absolute: E:/family-photos/x.jpg
@@ -72,7 +72,7 @@ Bob's great-grandfather's household. The boy listed as 'Calvin' is Cal.
 Rules a producer must follow:
 - **Pairing is by basename.** `{slug}.notes.md` pairs with `{slug}.{ext}`; a name collision is
   resolved before anything is written, never by overwriting.
-- **No S-id, no P-id.** `people:` carries names; resolution is the processing pass's job.
+- **No s-id, no p-id.** `people:` carries names; resolution is the processing pass's job.
 - **Pointer-only is explicit.** A stub with no companion file must say `asset_elsewhere: true`;
   without it, `fha process` reads the missing file as an error, not a choice. `asset_path` (as
   typed) and `asset_path_absolute` (resolved, forward slashes) say where a file that cannot be
@@ -174,7 +174,8 @@ the open page only: it never logs in, paginates, or fetches on its own (TOOLING_
 
 **The research-log entry.** A capture is a logged search: append one entry to
 `notes/research-log.md` in the SPEC §17c shape (`date`, `question`, `repository`, `collection`,
-`terms`, `result`), and add the `search_log` row when the index exists, so `fha report`'s
+`terms`, `result`), with `result: staged <inbox path>` naming the stub it just wrote (the
+capture is staged, not yet processed), and add the `search_log` row when the index exists, so `fha report`'s
 "already searched" annotation sees it at once. The log is durable, under `notes/`, never
 `.cache/`.
 

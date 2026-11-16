@@ -50,7 +50,7 @@ The three skills a genealogist touches every session: open the workbench, proces
 
 **One PR.** `.claude/skills/today/SKILL.md`; the folder name is the `/today` wrapper the harness surfaces. The reference skill for `_STANDARD.md`.
 
-Run `fha report`, then narrate it **discoveries-first** (the report is a research narrative before a chore list), and offer to start the top item - most often a `review-claims` session on the oldest `suggested` backlog, or processing the inbox. §6b is eligible for that one slot too: when its largest **unlinked** place-text cluster carries more claims than §1's oldest backlog has suggested ones (or §1 is empty), it wins and the offer hands off to `place-research` at its step 3 (the unlinked-cluster arm - a cluster has no `L-id` for step 1's neighborhood pull). A relative comparison of two counts the briefing already printed, never a hardcoded number, never a §6b GPS line's photo count; the offer says "unlinked", which is what §6b reports, not "unregistered", which this skill runs no registry lookup to establish. The skill reads the report; it does not recompute it. It writes nothing on its own except, on the human's say-so, a `fha confirm discovery` entry for a confirmed win.
+Run `fha report`, then narrate it **discoveries-first** (the report is a research narrative before a chore list), and offer to start the top item - most often a `review-claims` session on the oldest `suggested` backlog, or processing the inbox. §6b is eligible for that one slot too: when its largest **unlinked** place-text cluster carries more claims than §1's oldest backlog has suggested ones (or §1 is empty), it wins and the offer hands off to `place-research` at its step 3 (the unlinked-cluster arm - a cluster has no `l-id` for step 1's neighborhood pull). A relative comparison of two counts the briefing already printed, never a hardcoded number, never a §6b GPS line's photo count; the offer says "unlinked", which is what §6b reports, not "unregistered", which this skill runs no registry lookup to establish. The skill reads the report; it does not recompute it. It writes nothing on its own except, on the human's say-so, a `fha confirm discovery` entry for a confirmed win.
 
 **Orchestrates:** `fha report` (read), `fha confirm discovery` (on confirmation), then `review-claims` / `process-source` / `place-research` (the next-action hand-offs).
 
@@ -64,7 +64,7 @@ Run `fha report`, then narrate it **discoveries-first** (the report is a researc
 
 **One PR.** `.claude/skills/review-claims/SKILL.md`. The reused accept-gate interaction.
 
-Stage C of the pipeline. Walk one source's `suggested` backlog in one of three styles - guided one-by-one (the default), batched (numbered groups of ~5 grouped by person; one grouped reply = one stated decision per numbered claim; offered proactively past ~6 suggested claims), or self-serve skimming of the source file - the human's choice. Every claim shown, in any style, carries its `anchor:` context AND its evidence link (the anchored asset or record path, then the `[[S-id]]` token); capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept; a grouped same-status decision is one batch write, `fha claim C-a C-b ... --status X`, previewed once). A claim the human wants to come back to stays `suggested` with a `reviewed:` date, and - explicit yes only - what would settle it is recorded on the SPEC §17 research ladder (a question, or a working answer with its `verify:`). The close-out nudges promotion once for a decided-on stub at/over `promotion: claims_threshold:` (default 5) or flagged as a direct-line stub, running `fha person promote` (direct-line) or `fha person promote --into connections/` (anyone else, SPEC §12.3) + the `write-biography` hand-off only on the yes. It nudges place registration on the same terms: the largest `fha places candidates` cluster **holding a claim decided on in this session** - same scoping as promotion, so an untouched cluster stays report §6b's business rather than re-firing every run - at/over 10 claims, its town looked up with `fha find --json … --kind place` before the offer is spoken (unlinked is not unregistered), then `fha confirm place` `--into` an existing place or minting a new one, only on the yes. Finish with a reindex (full `fha index` - the `process-source`/`mine-transcript` hand-off usually minted new person stubs, which `fha index --source` does not index; `--source` is fine only for a status-only pass), `fha xref` to surface new corroboration/contradiction, a reindex again if any `fha confirm xref` link was written, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`. A place nudge answered yes writes *after* that done-gate and `fha confirm place` does not reindex, so it reopens the close-out: `fha index` + `fha places lint` + `fha lint` again.
+Stage C of the pipeline. Walk one source's `suggested` backlog in one of three styles - guided one-by-one (the default), batched (numbered groups of ~5 grouped by person; one grouped reply = one stated decision per numbered claim; offered proactively past ~6 suggested claims), or self-serve skimming of the source file - the human's choice. Every claim shown, in any style, carries its `anchor:` context AND its evidence link (the anchored asset or record path, then the `[[s-id]]` token); capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept; a grouped same-status decision is one batch write, `fha claim c-a c-b ... --status X`, previewed once). A claim the human wants to come back to stays `suggested` with a `reviewed:` date, and - explicit yes only - what would settle it is recorded on the SPEC §17 research ladder (a question, or a working answer with its `verify:`). The close-out nudges promotion once for a decided-on stub at/over `promotion: claims_threshold:` (default 5) or flagged as a direct-line stub, running `fha person promote` (direct-line) or `fha person promote --into connections/` (anyone else, SPEC §12.3) + the `write-biography` hand-off only on the yes. It nudges place registration on the same terms: the largest `fha places candidates` cluster **holding a claim decided on in this session** - same scoping as promotion, so an untouched cluster stays report §6b's business rather than re-firing every run - at/over 10 claims, its town looked up with `fha find --json … --kind place` before the offer is spoken (unlinked is not unregistered), then `fha confirm place` `--into` an existing place or minting a new one, only on the yes. Finish with a reindex (full `fha index` - the `process-source`/`mine-transcript` hand-off usually minted new person stubs, which `fha index --source` does not index; `--source` is fine only for a status-only pass), `fha xref` to surface new corroboration/contradiction, a reindex again if any `fha confirm xref` link was written, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`. A place nudge answered yes writes *after* that done-gate and `fha confirm place` does not reindex, so it reopens the close-out: `fha index` + `fha places lint` + `fha lint` again.
 
 **Orchestrates:** `fha claim`, `fha confirm xref`, `fha index`, `fha xref`, `fha views timeline`/`draft-queue` (touched persons), `fha lint`.
 
@@ -100,7 +100,7 @@ The skills invoked by name when the human wants prose written or leads found.
 
 **One PR.** `.claude/skills/mine-transcript/SKILL.md`. **Never runs unrequested.**
 
-The invoked extraction pass over a transcript: selective claim drafting (`suggested` + `anchor:` - substantive assertions only), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), narrative chunks to `## Stories`, the rest left in the transcript (it is preserved and searchable; extraction is indexing, not preservation). Record the pass in the source's `ai_passes:` list (date, model, task).
+The invoked extraction pass over a transcript: selective claim drafting (`suggested` + `anchor:` - substantive assertions only), name→p-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), narrative chunks to `## Stories`, the rest left in the transcript (it is preserved and searchable; extraction is indexing, not preservation). Record the pass in the source's `ai_passes:` list (date, model, task).
 
 **Orchestrates:** `fha stubs`, `fha id mint`, `fha index --source`, `fha lint`.
 
@@ -114,12 +114,12 @@ The invoked extraction pass over a transcript: selective claim drafting (`sugges
 
 **One PR.** `.claude/skills/write-biography/SKILL.md`.
 
-Drafting rules for profiles: facts only from `accepted` claims; cite every factual sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; `[[P-…]]`/`[[S-…]]` links only from verified IDs. Consumes the `fha views draft-queue` backlog (uncited accepted claims). Draft prose is written inside `<!-- AI-DRAFT … -->` markers; on human acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED … -->` (provenance preserved). Pronouns come from `gender`, else `sex`. Two named styles, `chronicle` (the default) and `narrative`, chosen in the session or by `fha.yaml`'s `biography:` block. A stub target is offered promotion first (`fha person promote`).
+Drafting rules for profiles: facts only from `accepted` claims; cite every factual sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; `[[p-…]]`/`[[s-…]]` links only from verified IDs. Consumes the `fha views draft-queue` backlog (uncited accepted claims). Draft prose is written inside `<!-- AI-DRAFT … -->` markers; on human acceptance, `fha confirm draft <p-id>` flips the marker to `<!-- AI-ACCEPTED … -->` (provenance preserved). Pronouns come from `gender`, else `sex`. Two named styles, `chronicle` (the default) and `narrative`, chosen in the session or by `fha.yaml`'s `biography:` block. A stub target is offered promotion first (`fha person promote`).
 
 **Orchestrates:** `fha views draft-queue`, `fha find` (verify IDs), `fha person promote`, `fha confirm draft`.
 
 **Done when:**
-- Drafting a bio in a session pulls from the draft queue, cites every factual sentence with a verified `[[S-…]]`, wraps new prose in AI-DRAFT markers, and never overwrites human-written text.
+- Drafting a bio in a session pulls from the draft queue, cites every factual sentence with a verified `[[s-…]]`, wraps new prose in AI-DRAFT markers, and never overwrites human-written text.
 - Acceptance flips markers via `fha confirm draft`, not by hand-editing.
 - A session in each style keeps the identical citation density and the lint baseline; the marker and the pass name the style; with no session ask and no `biography:` block the voice is `chronicle`.
 
@@ -162,12 +162,12 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 **One PR.** `.claude/skills/place-research/SKILL.md`.
 
-"Fill in this place's history." Loose citations are acceptable (place context is narrative scaffolding, not vital fact). Draft dated `history:` entries and place notes, link `[[L-…]]`, and propose registry entries for `fha confirm place` to write. Never edits `places.yaml` coordinates without human confirmation (AGENTS.md).
+"Fill in this place's history." Loose citations are acceptable (place context is narrative scaffolding, not vital fact). Draft dated `history:` entries and place notes, link `[[l-…]]`, and propose registry entries for `fha confirm place` to write. Never edits `places.yaml` coordinates without human confirmation (AGENTS.md).
 
-**Orchestrates:** `fha find --related <L-id>`, `fha places candidates`, `fha confirm place`, `fha places set` / `note`.
+**Orchestrates:** `fha find --related <l-id>`, `fha places candidates`, `fha confirm place`, `fha places set` / `note`.
 
 **Done when:**
-- Researching a place in a session drafts dated history with `[[L-…]]` links and proposes registry writes via `fha confirm place`; no coordinate is changed without confirmation.
+- Researching a place in a session drafts dated history with `[[l-…]]` links and proposes registry writes via `fha confirm place`; no coordinate is changed without confirmation.
 
 ---
 
@@ -194,7 +194,7 @@ The conversational entry points to the photo catalog and to sharing, plus the st
 
 **One PR.** `.claude/skills/find-photos/SKILL.md`.
 
-The photo subsystem's front door: resolve "show me grandma's photos" to a P-id via `fha find`, answer from `fha photoindex find` at variation-group granularity in plain language, offer a clickable `fha photoindex gallery` page, and hand identification to `tag-person`'s own confirm prompt. Read-only.
+The photo subsystem's front door: resolve "show me grandma's photos" to a p-id via `fha find`, answer from `fha photoindex find` at variation-group granularity in plain language, offer a clickable `fha photoindex gallery` page, and hand identification to `tag-person`'s own confirm prompt. Read-only.
 
 **Orchestrates:** `fha find` (+ `--related`), `fha photoindex` (freshen when stale), `fha photoindex find`/`triage`/`gallery`, `fha photoindex tag-person` (hand-off).
 
@@ -230,7 +230,7 @@ The recordings on-ramp: dedupe by content (`fha media dedupe`), date from the co
 
 **Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha media dedupe`, `fha media probe`, `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer only.
 
-**Done when:** one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
+**Done when:** one sitting lands as one folder under one s-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
 
 ```
 python -m unittest tests.test_import_recordings tests.test_media
@@ -246,7 +246,7 @@ The `--name` value is the source's **shared stem with no role suffix**: `attach_
 
 Two script invariants: **all-or-nothing publication** (`.part` siblings renamed into place only after the segment iterator is exhausted; an interruption, a decode failure or a zero-speech run leaves no file behind, and an existing output is a clean no-op unless `--force`) and a **portable `.md` header** (the recording is named by filename, never by an absolute path - AGENTS_TOOLING.md, SPEC §12.4).
 
-**Orchestrates:** `scripts/transcribe_audio.py`, `fha process --more … whisper-transcript`, `fha claim <C-id> --value` for audited corrections, `review-claims` for new material.
+**Orchestrates:** `scripts/transcribe_audio.py`, `fha process --more … whisper-transcript`, `fha claim <c-id> --value` for audited corrections, `review-claims` for new material.
 
 **Done when:**
 ```
@@ -310,7 +310,7 @@ The skill **drafts and edits no claims**. Unclaimed facts hand off to `mine-tran
 **Orchestrates:** `fha find`, `fha source extract`, `fha process --more … transcript`, `fha index`, `fha source note`, `fha lint` (W124 as its worklist and done-gate).
 
 **Done when:**
-- On a scratch copy: W124 fires on an image-only source with an accepted claim; `fha process --more <file> transcript` files `{stem}.md` as `{stem}-transcript_{S-id}.md`; `fha index` puts it in `transcripts_fts`; `fha find --text` returns a phrase that was unfindable before and its coverage count drops by one; W124 clears.
+- On a scratch copy: W124 fires on an image-only source with an accepted claim; `fha process --more <file> transcript` files `{stem}.md` as `{stem}-transcript_{s-id}.md`; `fha index` puts it in `transcripts_fts`; `fha find --text` returns a phrase that was unfindable before and its coverage count drops by one; W124 clears.
 
 ```
 python -m unittest tests.test_transcribe_source -v   # documented commands, naming rule, marker contract
