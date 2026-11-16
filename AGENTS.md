@@ -334,7 +334,7 @@ fha photoindex gallery ...   the matching photos as one clickable HTML page unde
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
                             FTS across records, notes, transcripts, photo captions
 fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
-                            adjacent to a person, place, source, claim, or hypothesis
+                            adjacent to a person, place, source, claim, or working answer
 fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
                             --kind/--limit narrow it
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
