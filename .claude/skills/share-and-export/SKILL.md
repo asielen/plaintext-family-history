@@ -62,7 +62,7 @@ for "import my Ancestry tree into here" — see Guardrails.
 2. **Say the privacy defaults BEFORE running, in the recipient's terms.** Every export tool fails
    closed on its own; say what that means in plain words first, so nothing here is a surprise:
    - **packet** — "Anything you've marked private stays out unless you tell me otherwise, and DNA
-     material stays out even then. A packet is only made for someone who has passed away — for a
+     material stays out even then. A note you've fenced off as private stays out with no exception. A packet is only made for someone who has passed away — for a
      living person the tool declines outright. If someone still living is mentioned inside, the
      packet notes that in its README as a caution, not a redaction."
    - **gedcom** — "Living people go in as 'Living', with their dates and details withheld, so the
@@ -73,7 +73,7 @@ for "import my Ancestry tree into here" — see Guardrails.
      own work on this machine only — never to share.)"
    - **wikitree** — "This is public output: the tool refuses outright to publish a living person,
      and it refuses a profile whose story leans on a private source rather than quietly rewriting
-     around it — you'd need to fix the story first."
+     around it — you'd need to fix the story first. Notes you've fenced off as private are never published."
    - **backup** — "Nothing is redacted here — it's your own safety copy, kept outside the archive
      folder, and it stays with you. Photos and documents are only included if you ask for them
      (`--include-assets`), since they're often huge."

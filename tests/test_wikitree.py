@@ -1340,5 +1340,201 @@ class WikitreeUnfilledSectionTests(unittest.TestCase):
         self.assertNotIn('== Stories ==', text)
 
 
+class WikitreePrivateFenceTests(unittest.TestCase):
+    """The profile template promises that prose wrapped in `<!-- private -->`
+    ... `<!-- /private -->` stays "out of a shared copy". WikiTree is the most
+    shared copy there is - a public wiki - so a hunch about a living cousin
+    the genealogist fenced off must never reach it, and neither may the
+    marker comments themselves."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people').mkdir()
+        (self.root / 'sources').mkdir()
+        (self.root / 'sources' / 'birth.md').write_text(
+            '---\nid: S-0000000001\ntitle: Birth cert\nsource_type: vital-record\n'
+            'citation: "Birth certificate, 1875."\n---\n',
+            encoding='utf-8',
+        )
+        (self.root / 'sources' / 'private.md').write_text(
+            '---\nid: S-0000000003\ntitle: Private\nrestricted: true\n---\n',
+            encoding='utf-8',
+        )
+        conn = _make_index(self.root)
+        _add_person(conn, 'p-0000000001', 'John Smith', path='people/subject.md',
+                    surname='Smith')
+        _add_source(conn, 's-0000000001', 'Birth cert', 'sources/birth.md')
+        _add_source(conn, 's-0000000003', 'Private', 'sources/private.md', restricted=1)
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _write_profile(self, body):
+        (self.root / 'people' / 'subject.md').write_text(
+            '---\nid: P-0000000001\nname: John Smith\ntier: curated\nliving: false\n---\n\n'
+            '# John Smith\n\n' + body,
+            encoding='utf-8',
+        )
+        _freshen_index(self.root)
+
+    def test_fenced_prose_never_published(self):
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nHis brother may have been jailed.\n<!-- /private -->\n\n'
+            '## Stories\n'
+            'He kept bees.\n\n'
+            '<!-- private -->\nAunt May says the fire was arson.\n<!-- /private -->\n\n'
+            '## Research Notes\n'
+            'Check the 1850 census.\n\n'
+            '<!-- private -->\nA living cousin says he left after a falling-out.\n'
+            '<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        text = r['text']
+        for hidden in ('jailed', 'arson', 'living cousin', 'private -->'):
+            self.assertNotIn(hidden, text)
+        self.assertIn('He was born in 1875', text)
+        self.assertIn('He kept bees.', text)
+        self.assertIn('Check the 1850 census.', text)
+
+    def test_unterminated_fence_withholds_to_end(self):
+        # Fail closed: no closer means everything after the opener stays home.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nA hunch about a living cousin.\n\n'
+            '## Stories\nAlso hidden by the open fence.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('He was born in 1875', r['text'])
+        self.assertNotIn('living cousin', r['text'])
+        self.assertNotIn('Also hidden', r['text'])
+
+    def test_fence_opened_above_a_heading_still_holds(self):
+        # The fence is resolved over the whole body, so an opener written
+        # above a section heading still covers the text below the heading.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\n## Research Notes\nA hunch about a living cousin.\n'
+            '<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('living cousin', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+
+    def test_fenced_restricted_citation_does_not_refuse(self):
+        # Text that will not be published must not refuse the export of the
+        # text that will - same rule as an unaccepted draft.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nA private fact [S-0000000003].\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('S-0000000003', r['text'])
+        self.assertNotIn('private fact', r['text'])
+
+    def test_fence_around_a_draft_withholds_both(self):
+        # Ordering guard: the draft stripper cuts back to the previous
+        # heading, swallowing a fence OPENER above the draft. If drafts ran
+        # first, "Secret B" (fenced, after the draft) would be published.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nSecret A.\n\nDrafted paragraph.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n\nSecret B.\n<!-- /private -->\n\n'
+            '## Stories\nA told story.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        for hidden in ('Secret A', 'Secret B', 'Drafted paragraph', 'AI-DRAFT', 'private -->'):
+            self.assertNotIn(hidden, r['text'])
+        self.assertIn('A told story.', r['text'])
+
+    def test_fencing_a_drafts_last_paragraph_keeps_the_whole_draft_out(self):
+        # Round-1 review P1: fencing the last paragraph of an unaccepted
+        # draft, marker included, erased the marker and published the
+        # draft's first paragraph to the wiki as if it were accepted.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n'
+            '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+            'DRAFT-PARA-1 he probably deserted the army.\n\n'
+            '<!-- private -->\nDRAFT-PARA-2.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('He was born in 1875', r['text'])
+        self.assertNotIn('DRAFT-PARA-1', r['text'])
+        self.assertNotIn('DRAFT-PARA-2', r['text'])
+
+    def test_whole_section_wrapped_around_the_template_example_stays_private(self):
+        # He wraps his whole Research Notes in a fence, leaving the template's
+        # own example fence inside it. Everything up to HIS closer is private.
+        tmpl = _lib.PERSON_BODY_SECTIONS_TEXT
+        rn = tmpl.index('## Research Notes\n') + len('## Research Notes\n')
+        ff = tmpl.index('## Friends & Family')
+        body = (tmpl[:rn] + '<!-- private -->\n' + tmpl[rn:ff].rstrip('\n')
+                + '\n\nCousin Ruth (living) may be his daughter - NESTED-SECRET.\n'
+                '<!-- /private -->\n\n' + tmpl[ff:])
+        self._write_profile(body.replace(
+            'Write their story', 'He was born in 1875 [S-0000000001]. Write their story'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('NESTED-SECRET', r['text'])
+        self.assertNotIn('private -->', r['text'])
+
+    def test_fence_opened_above_a_heading_holding_a_draft_keeps_his_biography(self):
+        # Round-2 review of #305: the dropped fence left the draft marker
+        # where the fence had been - above the heading - and the draft cut
+        # then reached back into his Biography and dropped its last paragraph.
+        self._write_profile(
+            '## Biography\nHe was born in 1875 [S-0000000001].\n\n'
+            'HUMAN-LAST-BIO-PARA he kept bees.\n\n'
+            '<!-- private -->\n## Research Notes\nDraft hunch.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n<!-- /private -->\n\n'
+            '## Stories\nHUMAN-STORY.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('HUMAN-LAST-BIO-PARA', r['text'])
+        self.assertIn('HUMAN-STORY', r['text'])
+        self.assertNotIn('Draft hunch', r['text'])
+
+    def test_damaged_marker_inside_a_fence_still_refuses(self):
+        # As on master: damage cannot be judged safe just because a fence is
+        # around it - it may be the end of a draft that began outside.
+        self._write_profile(
+            '## Biography\nHe was born in 1875 [S-0000000001].\n\nDRAFT-P1.\n\n'
+            '<!-- private -->\nhunch\n<!-- /AI-DRAFT -->\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'broken-draft-marker')
+
+    def test_plain_nested_fence_stays_private(self):
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nouter\n<!-- private -->\ninner\n<!-- /private -->\n'
+            'OUTER-TAIL-SECRET\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('OUTER-TAIL-SECRET', r['text'])
+        self.assertNotIn('inner', r['text'])
+
+    def test_all_private_section_exports_like_an_unwritten_one(self):
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '## Research Notes\n<!-- private -->\nOnly a hunch.\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('Only a hunch', r['text'])
+        self.assertNotIn('== Research Notes ==', r['text'])
+        self.assertIn('== Biography ==', r['text'])
+
+
 if __name__ == '__main__':
     unittest.main()

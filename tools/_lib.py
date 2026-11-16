@@ -8764,6 +8764,81 @@ _SECTION_HEADING_RE = re.compile(r'^#{1,2}[ \t][^\n]*$', re.M)
 _BLANK_RUN_RE = re.compile(r'\n{3,}')
 
 
+def _draft_cuts(text: str) -> list[tuple[int, int]]:
+    """One cut per unaccepted draft marker, as `[start, end)` offsets into
+    `text`: from the end of the nearest boundary above the marker (an earlier
+    AI marker of either state, or a `#`/`##` heading) to the end of the marker.
+    Ascending and non-overlapping, because a draft marker is itself a boundary
+    for the next one. The draft grammar's single home - `strip_unaccepted_drafts`
+    and `withhold_private_and_drafts` both cut exactly these ranges."""
+    boundaries = list(_AI_BLOCK_BOUNDARY_RE.finditer(text))
+    cuts: list[tuple[int, int]] = []
+    for marker in _AI_DRAFT_MARK_RE.finditer(text):
+        start = 0
+        for bd in boundaries:
+            if bd.end() <= marker.start():
+                start = bd.end()
+            else:
+                break
+        cuts.append((start, marker.end()))
+    return cuts
+
+
+def _cut_out(text: str, draft_cuts: list[tuple[int, int]],
+             other_cuts: list[tuple[int, int]]) -> str:
+    """Remove the union of `draft_cuts` and `other_cuts` from `text` in one
+    pass, plus the heading of any section a DRAFT cut left empty (so an
+    all-draft section publishes like one never written), then drop the
+    AI-ACCEPTED provenance markers. Every range is an offset into the same
+    original text, so no cut can move or hide what another one needs."""
+    merged: list[list[int]] = []
+    for cs, ce in sorted(draft_cuts + other_cuts):
+        if merged and cs <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], ce)
+        else:
+            merged.append([cs, ce])
+
+    def _surviving(lo: int, hi: int) -> str:
+        """Text of [lo, hi) that no cut removes - the empty-section probe."""
+        kept: list[str] = []
+        pos = lo
+        for cs, ce in merged:
+            if ce <= lo or cs >= hi:
+                continue
+            kept.append(text[pos:max(lo, cs)])
+            pos = max(pos, min(hi, ce))
+        kept.append(text[pos:hi])
+        return ''.join(kept)
+
+    # Drop the heading of any section the cuts emptied. Accepted markers
+    # do not count as surviving content (they are removed below anyway).
+    headings = list(_SECTION_HEADING_RE.finditer(text))
+    heading_cuts: list[tuple[int, int]] = []
+    for cs, _ce in draft_cuts:
+        h_prev = None
+        h_next_start = len(text)
+        for h in headings:
+            if h.end() <= cs:
+                h_prev = h
+            elif h.start() > cs:
+                h_next_start = h.start()
+                break
+        if h_prev is None:
+            continue
+        remainder = _AI_ACCEPTED_MARK_RE.sub('', _surviving(h_prev.end(), h_next_start))
+        if not _PRIVATE_MARK_RE.sub('', remainder).strip():
+            heading_cuts.append((h_prev.start(), h_prev.end()))
+
+    out: list[str] = []
+    pos = 0
+    for cs, ce in sorted([tuple(m) for m in merged] + heading_cuts):
+        if cs > pos:
+            out.append(text[pos:cs])
+        pos = max(pos, ce)
+    out.append(text[pos:])
+    return _AI_ACCEPTED_MARK_RE.sub('', ''.join(out))
+
+
 def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
     """Remove unaccepted AI draft prose - and every AI provenance marker -
     from prose that is about to be published. Returns `(text, problem)`.
@@ -8808,60 +8883,7 @@ def strip_unaccepted_drafts(text: str) -> tuple[str, str | None]:
     if 'AI-DRAFT' not in text:
         cleaned = _AI_ACCEPTED_MARK_RE.sub('', text)
     else:
-        boundaries = list(_AI_BLOCK_BOUNDARY_RE.finditer(text))
-        headings = list(_SECTION_HEADING_RE.finditer(text))
-
-        # One cut per draft marker: [end of the nearest boundary above it, end
-        # of the marker). Cuts come out in ascending, non-overlapping order
-        # because a draft marker is itself a boundary for the next one.
-        cuts: list[tuple[int, int]] = []
-        for marker in _AI_DRAFT_MARK_RE.finditer(text):
-            start = 0
-            for b in boundaries:
-                if b.end() <= marker.start():
-                    start = b.end()
-                else:
-                    break
-            cuts.append((start, marker.end()))
-
-        def _surviving(lo: int, hi: int) -> str:
-            """Text of [lo, hi) that no cut removes - the empty-section probe."""
-            kept: list[str] = []
-            pos = lo
-            for cs, ce in cuts:
-                if ce <= lo or cs >= hi:
-                    continue
-                kept.append(text[pos:max(lo, cs)])
-                pos = min(hi, ce)
-            kept.append(text[pos:hi])
-            return ''.join(kept)
-
-        # Drop the heading of any section the cuts emptied. Accepted markers
-        # do not count as surviving content (they are removed below anyway).
-        heading_cuts: list[tuple[int, int]] = []
-        for cs, _ce in cuts:
-            h_prev = None
-            h_next_start = len(text)
-            for h in headings:
-                if h.end() <= cs:
-                    h_prev = h
-                elif h.start() > cs:
-                    h_next_start = h.start()
-                    break
-            if h_prev is None:
-                continue
-            remainder = _AI_ACCEPTED_MARK_RE.sub('', _surviving(h_prev.end(), h_next_start))
-            if not remainder.strip():
-                heading_cuts.append((h_prev.start(), h_prev.end()))
-
-        out: list[str] = []
-        pos = 0
-        for cs, ce in sorted(set(cuts + heading_cuts)):
-            if cs > pos:
-                out.append(text[pos:cs])
-            pos = max(pos, ce)
-        out.append(text[pos:])
-        cleaned = _AI_ACCEPTED_MARK_RE.sub('', ''.join(out))
+        cleaned = _cut_out(text, _draft_cuts(text), [])
 
     # The fail-closed accounting: every marker word must be gone once all
     # complete markers were cut/removed. Anything left is a damaged marker
@@ -8961,10 +8983,44 @@ def transcript_text_is_unchecked(text: str) -> bool:
 # A general `<!-- private -->…<!-- /private -->` fence hides author-marked prose
 # (research hunches, notes touching living kin) from any shared/standalone output
 # while keeping it in the `--linked` working preview. Companion to
-# strip_unaccepted_drafts; usable on every publication path.
+# strip_unaccepted_drafts; usable on every publication path - and on any path
+# that ALSO strips drafts, use withhold_private_and_drafts, which runs the two
+# in the one order that cannot leak.
 _PRIVATE_MARK_RE = re.compile(r'<!--\s*/?\s*private\s*-->', re.I)
-_PRIVATE_BLOCK_RE = re.compile(
-    r'<!--\s*private\s*-->.*?(?:<!--\s*/\s*private\s*-->|\Z)', re.S | re.I)
+# The same markers with the slash captured, for the depth-counting scan.
+_PRIVATE_TOKEN_RE = re.compile(r'<!--\s*(/?)\s*private\s*-->', re.I)
+
+
+def private_fence_spans(text: str) -> list[tuple[int, int]]:
+    """The outermost fenced spans of `text`, as `[opener start, closer end)`.
+
+    Depth-counted, not paired first-opener-to-first-closer: a genealogist who
+    wraps a whole section in a fence while the template's own example fence is
+    still inside it has written `open … open … close … close`, and everything
+    up to the SECOND closer is what he meant to hide. Pairing on the first
+    closer (a non-greedy regex) published the tail after it. Fail closed both
+    ways: an opener never closed runs to the end of the text, and a closer
+    with no opener hides nothing (it is just a stray marker, removed)."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start = 0
+    for m in _PRIVATE_TOKEN_RE.finditer(text):
+        if m.group(1):
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0:
+                spans.append((start, m.end()))
+        else:
+            if depth == 0:
+                start = m.start()
+            depth += 1
+    if depth:
+        spans.append((start, len(text)))
+    return spans
+
+
+_private_fence_spans = private_fence_spans   # pre-#305-round-2 internal name
 
 
 def apply_private_fence(text: str, *, drop: bool) -> str:
@@ -8974,13 +9030,96 @@ def apply_private_fence(text: str, *, drop: bool) -> str:
     `drop=False` (the linked working preview) keeps the content but strips the
     marker comments so they never render as stray blank lines. FAIL-CLOSED: an
     unterminated `<!-- private -->` (no closing marker) drops to the end of the
-    text rather than risk publishing what was meant to stay hidden."""
+    text rather than risk publishing what was meant to stay hidden, and nested
+    fences count depth (see `private_fence_spans`).
+
+    For prose that ALSO carries AI-draft markers, call
+    `withhold_private_and_drafts` instead: running this and the draft
+    stripper one after the other leaks in either order."""
     if '<!--' not in text:
         return text
-    if drop:
-        text = _PRIVATE_BLOCK_RE.sub('', text)
-    text = _PRIVATE_MARK_RE.sub('', text)
-    return _BLANK_RUN_RE.sub('\n\n', text) if drop else text
+    if not drop:
+        return _PRIVATE_MARK_RE.sub('', text)
+    out: list[str] = []
+    pos = 0
+    for s_, e_ in private_fence_spans(text):
+        out.append(text[pos:s_])
+        pos = e_
+    out.append(text[pos:])
+    text = _PRIVATE_MARK_RE.sub('', ''.join(out))
+    return _BLANK_RUN_RE.sub('\n\n', text)
+
+
+def withhold_private_and_drafts(text: str, *, drop_private: bool) -> tuple[str, str | None]:
+    """Both publication-time exclusions - `<!-- private -->` fences and
+    unaccepted AI drafts - in ONE cut. Returns `(text, problem)` exactly like
+    `strip_unaccepted_drafts`.
+
+    Run one after the other, either order leaks: drafts first, a draft cut
+    back to its heading takes a fence opener with it and strands the fenced
+    text after the draft; fences first, a fence around a draft's last
+    paragraph deletes the draft's end marker and its earlier paragraphs read
+    as accepted prose. So both sets of ranges are computed on the ORIGINAL
+    text - drafts with the draft grammar exactly as written (`_draft_cuts`,
+    markers and headings untouched), fences depth-counted - and their union
+    is cut once. A draft's extent is therefore exactly what it is with no
+    fence present, and a fence hides exactly what it hides with no draft.
+
+    The damaged-marker refusal is judged on the original text too, so a
+    damaged marker refuses even when it sits inside a fence (a fence cannot
+    say whether the damage was the end of a draft that started outside it).
+
+    `drop_private=False` (the linked preview) keeps fenced text, strips only
+    the fence markers, and withholds drafts as usual."""
+    if not drop_private:
+        return strip_unaccepted_drafts(_PRIVATE_MARK_RE.sub('', text) if '<!--' in text else text)
+    if not _PRIVATE_MARK_RE.search(text):
+        return strip_unaccepted_drafts(text)
+    _unused, problem = strip_unaccepted_drafts(text)
+    if problem is not None:
+        return '', problem
+    draft_cuts = _draft_cuts(text) if 'AI-DRAFT' in text else []
+    cleaned = _cut_out(text, draft_cuts, private_fence_spans(text))
+    cleaned = _PRIVATE_MARK_RE.sub('', cleaned)
+    return _BLANK_RUN_RE.sub('\n\n', cleaned), None
+
+
+def has_unfenced_draft_text(text: str) -> bool:
+    """True when unaccepted AI-draft text in `text` would survive dropping
+    its `<!-- private -->` fences - the "this copy still carries draft text"
+    test for an export that ships drafts by design (a packet research file)
+    and must say so. Same ranges as `withhold_private_and_drafts`: a draft
+    whose last paragraph was fenced still has its earlier paragraphs outside
+    the fence, so it counts; a draft wholly inside a fence does not. A
+    damaged marker counts (fail closed: warn rather than guess)."""
+    if 'AI-DRAFT' not in text and 'AI-ACCEPTED' not in text:
+        return False
+    if strip_unaccepted_drafts(text)[1] is not None:
+        return True
+    fences = private_fence_spans(text)
+    for cs, ce in _draft_cuts(text):
+        pos = cs
+        for fs, fe in fences:
+            if fe <= pos or fs >= ce:
+                continue
+            if text[pos:fs].strip():
+                return True
+            pos = max(pos, fe)
+        if text[pos:ce].strip():
+            return True
+    return False
+
+
+def count_private_fences(text: str, *, ignore: str | None = None) -> int:
+    """How many outermost private fences `text` holds - the "N notes you
+    marked private were left out" count a packet README gives. `ignore` is a
+    fenced text (compared with whitespace collapsed) not to count: the
+    template's own example block is scaffolding, not a note he wrote."""
+    def _norm(t: str) -> str:
+        return ' '.join(_PRIVATE_MARK_RE.sub(' ', t).split())
+    skip = _norm(ignore) if ignore else None
+    return sum(1 for a, b in private_fence_spans(text)
+               if skip is None or _norm(text[a:b]) != skip)
 
 
 # ── GENERATED-file ownership ──────────────────────────────────────────────────
