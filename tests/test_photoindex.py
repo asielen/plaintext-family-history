@@ -3564,7 +3564,7 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(result['tagged'], ['photos/family_reunion.jpg'])
             self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0][1], 'P-de957bcda1')
+            self.assertEqual(calls[0][1], 'p-de957bcda1')
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
@@ -3574,7 +3574,7 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(people, [('p-de957bcda1', 'pid-keyword')])
                 keywords = conn.execute(
                     "SELECT keyword FROM photo_keywords WHERE path='photos/family_reunion.jpg' "
-                    "AND keyword='P-de957bcda1'"
+                    "AND keyword='p-de957bcda1'"
                 ).fetchall()
                 self.assertEqual(len(keywords), 1)
             finally:
@@ -3602,7 +3602,7 @@ class PhotoindexTests(unittest.TestCase):
                 row = conn.execute(
                     "SELECT keywords FROM photo_fts WHERE path='photos/family_reunion.jpg'"
                 ).fetchone()
-                self.assertIn('P-de957bcda1', row[0])
+                self.assertIn('p-de957bcda1', row[0])
             finally:
                 conn.close()
 
@@ -5367,7 +5367,7 @@ class GalleryTests(unittest.TestCase):
             self.assertIn('Verify these', html)
             self.assertIn('Margaret Hartley', html)      # display name in the strip
             self.assertIn('name match', html)            # the via label
-            self.assertIn('tag-person P-de957bcda1', html)
+            self.assertIn('tag-person p-de957bcda1', html)
             verify_at = html.index('gallery-verify')
             self.assertLess(html.index('family_reunion.jpg'), verify_at)   # main flow
             self.assertGreater(html.index('portrait_1880.jpg'), verify_at)  # verify tail
@@ -5485,7 +5485,7 @@ class GalleryTests(unittest.TestCase):
             sentinel.write_text('SITE OUTPUT', encoding='utf-8')
 
             default = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
-            expected = archive / 'generated' / 'gallery' / 'margaret-hartley_P-de957bcda1.html'
+            expected = archive / 'generated' / 'gallery' / 'margaret-hartley_p-de957bcda1.html'
             self.assertEqual(Path(default['written']), expected)
             self.assertTrue(expected.exists())
 
@@ -5928,13 +5928,13 @@ class GalleryTests(unittest.TestCase):
 
             self.assertNotEqual(farm['written'], school['written'])
             self.assertTrue(Path(farm['written']).name
-                            .endswith('_P-de957bcda1_keyword-farm.html'))
+                            .endswith('_p-de957bcda1_keyword-farm.html'))
             self.assertTrue(Path(school['written']).name
-                            .endswith('_P-de957bcda1_keyword-school.html'))
+                            .endswith('_p-de957bcda1_keyword-school.html'))
             # Bare --person keeps the plain {slug}_{P-id}.html shape.
             bare = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
             self.assertEqual(Path(bare['written']).name,
-                             'margaret-hartley_P-de957bcda1.html')
+                             'margaret-hartley_p-de957bcda1.html')
 
     def test_gallery_edtf_filename_keeps_qualifiers_distinct(self) -> None:
         # F6: distinct EDTF forms map to distinct file stems - the qualifier is
@@ -6090,9 +6090,9 @@ class GalleryTests(unittest.TestCase):
 
             result = photoindex.run_gallery(archive, cfg, person='P-de957bcda1')
 
-            self.assertEqual(Path(result['written']).name, 'P-de957bcda1.html')
+            self.assertEqual(Path(result['written']).name, 'p-de957bcda1.html')
             html = self._read(result['written'])
-            self.assertIn('Photos of P-de957bcda1', html)
+            self.assertIn('Photos of p-de957bcda1', html)
             self.assertNotIn('Margaret Hartley', html)
 
     def test_gallery_missing_css_warning_travels_through_result_and_cmd(self) -> None:

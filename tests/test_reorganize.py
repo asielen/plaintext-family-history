@@ -171,7 +171,9 @@ class ReorganizeSurveyTests(unittest.TestCase):
 
         self.assertEqual(result.data['planned'], 4)
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn(f'documents/census/thing_{SID_A}/thing-{copies[0]}_{SID_A}.pdf', text)
+        # The new folder takes the one lowercase id form (SPEC §10); the file an
+        # older tool named `_S-…` keeps its own name.
+        self.assertIn(f'documents/census/thing_{SID_A.lower()}/thing-{copies[0]}_{SID_A}.pdf', text)
 
     def test_group_threshold_not_exceeded_stays_in_shared_type_folder(self) -> None:
         copies = [f'p{i}' for i in range(3)]
@@ -1307,7 +1309,7 @@ class ReorganizeCliTests(unittest.TestCase):
         rc, out, err = self._cli(['--group-threshold', '0'])
 
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn(f'documents/census/thing_{SID_A}/thing_{SID_A}.pdf', out)
+        self.assertIn(f'documents/census/thing_{SID_A.lower()}/thing_{SID_A}.pdf', out)
 
 
 if __name__ == '__main__':

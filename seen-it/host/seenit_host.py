@@ -142,7 +142,8 @@ SID_RE = re.compile(r'_(S-[0-9a-z]{10})\.json$', re.I)
 NP_ARTICLE_RE = re.compile(r'newspapers\.com/(?:article|clip)/(?:[^/]+/)?(\d+)')
 FS_RECORD_RE = re.compile(r'familysearch\.org/(?:[a-z]{2}/)?ark:/61903/1:1:([A-Z0-9-]+)', re.I)
 FAG_MEMORIAL_RE = re.compile(r'findagrave\.com/memorial/(\d+)', re.I)
-SOURCE_ID_RE = re.compile(r'^id:\s*["\']?(S-[0-9a-z]{10})', re.M)
+# Any casing: fha writes `id: s-…` (SPEC §10), an older fha wrote `S-…`.
+SOURCE_ID_RE = re.compile(r'^id:\s*["\']?(S-[0-9a-z]{10})', re.M | re.I)
 # A photo or story someone shared to an Ancestry tree: its media id is the same
 # in every tree that saved it, so the tree and person in the address are not
 # part of the key (content-ancestry.js keys it the same way: med:{id}).

@@ -177,10 +177,10 @@ class WikitreeRenderTests(unittest.TestCase):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         self.assertEqual(r['status'], 'ok')
         text = r['text']
-        self.assertEqual(text.count('<ref name="S-0000000001">'), 1)
-        self.assertEqual(text.count('<ref name="S-0000000002">'), 1)
+        self.assertEqual(text.count('<ref name="s-0000000001">'), 1)
+        self.assertEqual(text.count('<ref name="s-0000000002">'), 1)
         # self-closing at use site
-        self.assertIn('<ref name="S-0000000001"/>', text)
+        self.assertIn('<ref name="s-0000000001"/>', text)
         self.assertIn('<div name="references" style="display: none">', text)
         self.assertTrue(text.rstrip().endswith('<references/>'))
         self.assertIn('== Sources ==', text)
@@ -477,7 +477,7 @@ class WikitreeRenderTests(unittest.TestCase):
         self.assertIsNone(r['text'])
         joined = ' '.join(r['messages'])
         self.assertIn('remove or rewrite citations', joined)   # the restricted one
-        self.assertIn('S-0000000002', joined)
+        self.assertIn('s-0000000002', joined)
         self.assertIn('not saved as UTF-8 text', joined)       # the undecodable one
         self.assertIn('sources/birth.md', joined)
         # ...and the restricted source is not blamed for the encoding, nor the
@@ -915,7 +915,7 @@ class WikitreeRenderTests(unittest.TestCase):
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         self.assertEqual(r['status'], 'restricted-people', r['messages'])
         self.assertIsNone(r['text'])
-        self.assertIn('P-0000000006', r['messages'][0])   # the link as written
+        self.assertIn('p-0000000006', r['messages'][0])   # the link as written
 
     def test_a_parked_claim_naming_an_old_id_of_a_restricted_person_is_withheld(self):
         conn = self._reopen()
@@ -998,7 +998,7 @@ class WikitreeRenderTests(unittest.TestCase):
         notes = [m for m in r['messages'] if 'merged_into:' in m]
         self.assertTrue(notes, r['messages'])
         self.assertIn('pell.md', notes[0])
-        self.assertIn('P-0000000099', notes[0])
+        self.assertIn('p-0000000099', notes[0])
 
     def test_living_unknown_name_wikilink_refused(self):
         # living: unknown IS living (SPEC §19) - the name-link gate must treat
@@ -1069,7 +1069,7 @@ class WikitreeRenderTests(unittest.TestCase):
 
         self.assertEqual(r['status'], 'restricted-sources')
         self.assertIsNone(r['text'])
-        self.assertIn('S-0000000003', r['messages'][0])
+        self.assertIn('s-0000000003', r['messages'][0])
 
     def test_dna_source_citation_refused(self):
         profile = self.root / 'people' / 'subject.md'
@@ -1128,8 +1128,8 @@ class WikitreeRenderTests(unittest.TestCase):
 
         self.assertEqual(r['status'], 'restricted-names')
         msg = r['messages'][0]
-        self.assertIn('P-0000000002', msg)
-        self.assertIn('P-0000000003', msg)   # the person the old break dropped
+        self.assertIn('p-0000000002', msg)
+        self.assertIn('p-0000000003', msg)   # the person the old break dropped
 
 
 class WikitreeDraftExclusionTests(unittest.TestCase):
@@ -1184,7 +1184,7 @@ class WikitreeDraftExclusionTests(unittest.TestCase):
         self.assertEqual(r['status'], 'ok')
         text = r['text']
         self.assertIn('He was born in 1875', text)
-        self.assertIn('<ref name="S-0000000001"/>', text)
+        self.assertIn('<ref name="s-0000000001"/>', text)
         self.assertNotIn('drafted marriage', text)
         self.assertNotIn('S-0000000002', text)    # draft-only citation: no use, no definition
         self.assertNotIn('AI-DRAFT', text)

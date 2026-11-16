@@ -104,6 +104,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 person carries, in order; the one fold the
 #                                 rules below read (#266: a person can be both
 #                                 the informant and a parent)
+#    role_meaning              - one roles: key as the rules read it: cleaned,
+#                                 lower-cased, kin synonym folded (`mother` ->
+#                                 `parent`, SPEC §8.3 "Synonyms")
 #    join_claim_roles, claim_role_pairs
 #                              - write / read `claim_persons.role`, which holds
 #                                 every role a person carries on a claim
@@ -129,8 +132,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 headline: most exact date, then confidence (#201)
 #    social_parties            - who a friend/associate/neighbor claim says knew
 #                                 EACH OTHER; read by index
-#    CLAIM_ROLE_WORDS          - SPEC §8.3's closed list of roles: words; read
-#                                 by lint W126 only (#260)
+#    CLAIM_ROLE_WORDS          - SPEC §8.3's closed list of roles: words (#260)
+#    CLAIM_ROLE_SYNONYMS       - SPEC §8.3's six kin words (`mother`, `son`,
+#                                 `wife`, ...) and the role each one means
 #
 #  Archive configuration
 #    find_archive_root         - walk up from CWD to find fha.yaml
@@ -303,7 +307,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    normalize_id              - lowercase for consistent set/dict keying
 #    is_valid_id               - syntactic validity check
 #    id_type_of                - extract P/S/C/L/H type prefix
-#    fmt_id_display            - uppercase the type prefix for display (p-xxx → P-xxx)
+#    fmt_id_display            - the one written/shown ID form: all lowercase (P-XXX → p-xxx)
 #    contradiction_question_heading - value:-quoting ## Q: heading for a
 #                              contradicts: pair, shared by lint.py's
 #                              --spawn-questions and confirm.py's xref write
@@ -854,8 +858,35 @@ _C0_RE = re.compile(r'[\x00-\x1f\x7f]')
 
 def clean_role_word(role: Any) -> str:
     """A `roles:` key as every tool reads it: control characters dropped,
-    whitespace trimmed. Not lower-cased - the comparison rules do that."""
+    whitespace trimmed. Not lower-cased - the comparison rules do that
+    (`role_meaning`)."""
     return _C0_RE.sub('', str(role or '')).strip()
+
+
+# SPEC §8.3 "Synonyms": the kin words a transcriber naturally writes off a
+# birth or marriage record, read exactly as the role they name. A certificate
+# copied as `mother:` and `father:` is right as written, and its parents must
+# reach the family tree the same as `parent:` would put them there. Kept apart
+# from CLAIM_ROLE_WORDS (the SPEC "Role words" list, which these are not part
+# of); tests/test_lint.py checks this map against the SPEC paragraph.
+CLAIM_ROLE_SYNONYMS: dict[str, str] = {
+    'mother': 'parent', 'father': 'parent',
+    'son': 'child', 'daughter': 'child',
+    'husband': 'spouse', 'wife': 'spouse',
+}
+
+
+def role_meaning(role: Any) -> str:
+    """One `roles:` key as every role rule compares it: control characters
+    dropped, trimmed, lower-cased, and a kin synonym read as the role it
+    names (`Mother` -> `parent`). Every comparison of a role word against
+    `'parent'`, `'child'`, `'spouse'` or any other role goes through here, so
+    `fha index`, `fha lint`, `fha xref` and the exports cannot read one claim
+    two ways. A word outside both lists comes back as itself, lower-cased: a
+    descriptive role (`grandparent`, `sibling`) that places the person and
+    derives nothing."""
+    norm = clean_role_word(role).lower()
+    return CLAIM_ROLE_SYNONYMS.get(norm, norm)
 
 
 def join_claim_roles(roles: Iterable[Any]) -> str | None:
@@ -896,8 +927,9 @@ def roles_by_person(
     persons_with_roles: Iterable[tuple[str, Any]],
 ) -> dict[str, tuple[str, ...]]:
     """Every role each person carries on a claim, people in first-appearance
-    order, roles normalised (stripped, lower-cased) and deduplicated in the
-    order written. A person the claim gives no role maps to `()`.
+    order, roles normalised (`role_meaning`: stripped, lower-cased, a kin
+    synonym such as `mother` read as `parent`) and deduplicated in the order
+    written. A person the claim gives no role maps to `()`.
 
     Input is `(pid, role)` pairs, and a person may appear in several - one per
     role, the shape `claim_role_pairs` and `resolve_claim_persons_with_roles`
@@ -913,7 +945,7 @@ def roles_by_person(
     out: dict[str, list[str]] = {}
     for pid, role in persons_with_roles:
         roles = out.setdefault(pid, [])
-        norm = clean_role_word(role).lower()
+        norm = role_meaning(role)
         if norm and norm not in roles:
             roles.append(norm)
     return {pid: tuple(roles) for pid, roles in out.items()}
@@ -1032,8 +1064,8 @@ def parentage_parties(
 
     Nothing here is silent in the archive: `fha lint` W126 warns whenever an
     accepted birth claim names two or more people, this returns nothing, and
-    the claim either names nobody as the child or leaves someone unplaced (no
-    role, or a word outside `CLAIM_ROLE_WORDS`), so the refusal is never the
+    the claim either names nobody as the child or leaves someone unplaced (a
+    person with no role at all), so the refusal is never the
     end of the story - the same bargain W125 strikes for couple claims. A claim
     that placed everyone (the child and the informant) has said all its record
     says; there is nothing left to ask it (#260).
@@ -1536,16 +1568,13 @@ SOCIAL_TIE_SUBTYPES: frozenset[str] = frozenset({'friend', 'associate', 'neighbo
 
 
 # The closed list of `roles:` words SPEC §8.3 gives a meaning to ("Role words",
-# #260). A person filed under one of these has been placed by the claim - the
-# record said who they were. A word outside it (`mother:`, `father:`) is not an
-# error and nothing rejects it, but no tool reads a meaning from it.
-#
-# One consumer today, on purpose: lint W126 asks it whether a birth claim that
-# names a child has said who EVERYONE else was, so a claim naming the child and
-# the informant is left alone while `{child: [...], mother: [...]}` is still
-# reported. Nothing else validates role words against this list, so no archive
-# gets a new warning from its existence. tests/test_lint.py checks it against
-# the SPEC paragraph, so the two cannot drift apart.
+# #260). A word outside it (`grandparent:`, `sibling:`) is a descriptive role:
+# valid, never rejected, it places the person on the claim and derives nothing.
+# The kin synonyms (`mother:`, `son:`, `wife:`) are not on this list either -
+# they are read as the role they name (CLAIM_ROLE_SYNONYMS, `role_meaning`).
+# Nothing validates role words against this list, so no archive gets a
+# warning from its existence. tests/test_lint.py checks it against the SPEC
+# paragraph, so the two cannot drift apart.
 CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
     # The family, household, power-tie and affiliation roles §8.3 defines.
     'child', 'parent', 'spouse', 'head', 'household_member',
@@ -7725,9 +7754,11 @@ ID_TYPES: frozenset[str] = frozenset('PSCLH')
 
 
 def _mint_candidate(prefix: str) -> str:
-    """Draw one Crockford ID candidate with the canonical uppercase type prefix."""
+    """Draw one Crockford ID candidate in the canonical all-lowercase form
+    (`p-3kq9v8x2m1`, SPEC §10), so every record, filename and keyword a tool
+    writes from it spells the ID one way."""
     body = ''.join(secrets.choice(CROCKFORD_ALPHA) for _ in range(10))
-    return f'{prefix.upper()}-{body}'
+    return f'{prefix.lower()}-{body}'
 
 
 def mint_ids(prefix: str, count: int, archive_root: str | Path) -> list[str]:
@@ -7748,9 +7779,9 @@ def mint_ids(prefix: str, count: int, archive_root: str | Path) -> list[str]:
     result: list[str] = []
     while len(result) < count:
         candidate = _mint_candidate(prefix)
-        if candidate.lower() not in existing:
+        if candidate not in existing:
             result.append(candidate)
-            existing.add(candidate.lower())
+            existing.add(candidate)
     return result
 
 
@@ -7805,15 +7836,23 @@ def id_type_of(id_str: str) -> str | None:
 
 def fmt_id_display(id_str: str) -> str:
     """
-    Return an ID string with its type prefix uppercased (p-xxx -> P-xxx).
+    Return an ID in the one form the tools write and show it in: all
+    lowercase, prefix included (`P-3KQ9V8X2M1` -> `p-3kq9v8x2m1`, SPEC §10).
 
-    The index stores all IDs lowercase (normalize_id); display output across
-    the CLI uses the uppercase-prefix convention instead, so every command
-    that prints an ID runs it through this first.
+    Every command that prints or writes an ID runs it through this first, so
+    a message, a filename and the record itself spell the ID the same way,
+    whatever casing an older tool or a human typed. Readers still match any
+    casing. Text that is not an ID is returned unchanged, apart from a
+    leading type prefix (`P-…` in a template placeholder), which is
+    lower-cased the same way.
     """
     if not id_str:
         return id_str
-    return id_str[0].upper() + id_str[1:]
+    if is_valid_id(id_str):
+        return id_str.strip().lower()
+    if len(id_str) > 1 and id_str[1] == '-' and id_str[0].upper() in ID_TYPES:
+        return id_str[0].lower() + id_str[1:]
+    return id_str
 
 
 def contradiction_question_heading(cid: str, cval: str | None, tid: str, tval: str | None) -> str:

@@ -102,7 +102,7 @@ class NormalizeLinksDryRunTests(unittest.TestCase):
         rc = normalize_links._cmd_normalize_links(self._args(write=True))
         self.assertEqual(rc, EXIT_CLEAN)
         text = self.record.read_text(encoding='utf-8')
-        self.assertIn(f'[[{SOURCE_ID}]]', text)     # legacy cite upgraded
+        self.assertIn(f'[[{SOURCE_ID.lower()}]]', text)     # legacy cite upgraded
         self.assertNotIn(f' [{SOURCE_ID}] ', text)
 
     def test_generated_file_with_leading_blank_line_untouched(self) -> None:
@@ -187,7 +187,7 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
         result = normalize_links.run_normalize_links(self.archive, {}, write=True)
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         text = self.record.read_text(encoding='utf-8')
-        self.assertIn(f'[[{SOURCE_ID}]]', text)   # the good record still normalized
+        self.assertIn(f'[[{SOURCE_ID.lower()}]]', text)   # the good record still normalized
 
     def test_result_names_both_skipped_files(self) -> None:
         result = normalize_links.run_normalize_links(self.archive, {})

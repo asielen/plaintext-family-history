@@ -51,15 +51,15 @@ class OutPathForInsertsViewMarkerTests(unittest.TestCase):
 
     def test_timeline_gets_the_view_marker(self) -> None:
         out = views._out_path_for(self.profile_path, 'timeline', PID)
-        self.assertEqual(out.name, f'hartley__thomas_edward_view_timeline_{PID}.md')
+        self.assertEqual(out.name, f'hartley__thomas_edward_view_timeline_{PID.lower()}.md')
 
     def test_sources_index_gets_the_view_marker(self) -> None:
         out = views._out_path_for(self.profile_path, 'sources-index', PID)
-        self.assertEqual(out.name, f'hartley__thomas_edward_view_sources-index_{PID}.md')
+        self.assertEqual(out.name, f'hartley__thomas_edward_view_sources-index_{PID.lower()}.md')
 
     def test_draft_queue_gets_the_view_marker(self) -> None:
         out = views._out_path_for(self.profile_path, 'draft-queue', PID)
-        self.assertEqual(out.name, f'hartley__thomas_edward_view_draft-queue_{PID}.md')
+        self.assertEqual(out.name, f'hartley__thomas_edward_view_draft-queue_{PID.lower()}.md')
 
     def test_output_lands_beside_the_profile(self) -> None:
         out = views._out_path_for(self.profile_path, 'timeline', PID)
@@ -75,7 +75,7 @@ class OutPathForInsertsViewMarkerTests(unittest.TestCase):
         marie_profile = (
             Path('people') / '040 Hartley' / f'hartley__marie_timeline_{PID}.md')
         out = views._out_path_for(marie_profile, 'timeline', PID)
-        self.assertEqual(out.name, f'hartley__marie_timeline_view_timeline_{PID}.md')
+        self.assertEqual(out.name, f'hartley__marie_timeline_view_timeline_{PID.lower()}.md')
 
 
 class CompanionFamilySortOrderTests(unittest.TestCase):
@@ -97,9 +97,9 @@ class CompanionFamilySortOrderTests(unittest.TestCase):
         self.assertEqual(names, [
             profile_path.name,
             research_path.name,
-            f'hartley__thomas_edward_view_draft-queue_{PID}.md',
-            f'hartley__thomas_edward_view_sources-index_{PID}.md',
-            f'hartley__thomas_edward_view_timeline_{PID}.md',
+            f'hartley__thomas_edward_view_draft-queue_{PID.lower()}.md',
+            f'hartley__thomas_edward_view_sources-index_{PID.lower()}.md',
+            f'hartley__thomas_edward_view_timeline_{PID.lower()}.md',
         ])
 
     def test_the_issues_own_five_file_example_sorts_as_proposed(self) -> None:
@@ -119,9 +119,9 @@ class CompanionFamilySortOrderTests(unittest.TestCase):
         self.assertEqual(names, [
             profile,
             research,
-            f'{stem}_view_draft-queue_{pid}.md',
-            f'{stem}_view_sources-index_{pid}.md',
-            f'{stem}_view_timeline_{pid}.md',
+            f'{stem}_view_draft-queue_{pid.lower()}.md',
+            f'{stem}_view_sources-index_{pid.lower()}.md',
+            f'{stem}_view_timeline_{pid.lower()}.md',
         ])
 
 

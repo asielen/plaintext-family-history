@@ -4831,10 +4831,10 @@ class TreeTests(_Base):
         data = self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json'
         self.assertTrue(data.exists())
         tree = json.loads(data.read_text(encoding='utf-8'))
-        self.assertEqual(tree['seed'], 'P-cccccccccc')
+        self.assertEqual(tree['seed'], 'p-cccccccccc')
         self.assertEqual(tree['mode'], 'descendants')
         ids = {n['p_id'] for n in tree['nodes']}
-        self.assertEqual(ids, {'P-aaaaaaaaaa', 'P-bbbbbbbbbb', 'P-cccccccccc'})  # whole line
+        self.assertEqual(ids, {'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'})  # whole line
         # Gus's own page embeds the tree data + includes both vendor scripts,
         # behind the opt-in disclosure - the home page carries neither.
         gus_page = self._read('persons/p-cccccccccc.html')
@@ -4897,7 +4897,7 @@ class TreeTests(_Base):
             (self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json').read_text(encoding='utf-8'))
         ids = {n['p_id'] for n in tree['nodes']}
         # Gus and Umberto survive; Pat (living) and Carl (behind her) do not.
-        self.assertEqual(ids, {'P-cccccccccc', 'P-dddddddddd'})
+        self.assertEqual(ids, {'p-cccccccccc', 'p-dddddddddd'})
         # Every node url that is set must point to a generated person page.
         for n in tree['nodes']:
             if n['url']:
@@ -4946,7 +4946,7 @@ class TreeTests(_Base):
         artifacts = list((self.out_dir / 'data').glob('tree_*_descendants.json'))
         self.assertTrue(artifacts)
         ids = [n['p_id'] for n in json.loads(artifacts[0].read_text(encoding='utf-8'))['nodes']]
-        self.assertEqual(sorted(set(ids)), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])
+        self.assertEqual(sorted(set(ids)), ['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
         self.assertEqual(len(ids), len(set(ids)))                      # each node once
 
     def test_descendant_tree_data_stays_complete_beyond_old_bound(self):
@@ -4983,7 +4983,7 @@ class TreeTests(_Base):
         data = json.loads(
             (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
         got_ids = {n['p_id'] for n in data['nodes']}
-        expected_ids = {f'P-{pid[2:]}' for pid in ids}
+        expected_ids = {f'p-{pid[2:]}' for pid in ids}
         self.assertEqual(got_ids, expected_ids)          # every generation present, none dropped
         self.assertFalse(any('truncated' in m.lower() for m in res['messages']))
 
@@ -5012,8 +5012,8 @@ class TreeTests(_Base):
         data = json.loads(
             (self.out_dir / 'data' / f'tree_{ids[0]}_descendants.json').read_text(encoding='utf-8'))
         got_ids = {n['p_id'] for n in data['nodes']}
-        within_bound = f'P-{ids[2][2:]}'      # hop == 2: still walked
-        beyond_bound = f'P-{ids[3][2:]}'      # hop == 3: never reached, safety net stopped it
+        within_bound = f'p-{ids[2][2:]}'      # hop == 2: still walked
+        beyond_bound = f'p-{ids[3][2:]}'      # hop == 3: never reached, safety net stopped it
         self.assertIn(within_bound, got_ids)
         self.assertNotIn(beyond_bound, got_ids)
         self.assertTrue(any('truncated' in m.lower() and 'descendants' in m.lower()
@@ -8197,7 +8197,7 @@ class WorkbenchModeTests(_Base):
         self.assertNotIn('estimate - unsourced', wb)
         self.assertIn('wb-vital-edit', wb)
         self.assertIn('tpl-claim-edit', wb)
-        self.assertIn('C-1111111111', wb)
+        self.assertIn('c-1111111111', wb)
         self.assertIn('data-wb-prefill', wb)
 
         self._seed_person('p-bbbbbbbbbb', name='Provisional Person', living='false',
@@ -8371,7 +8371,7 @@ class WorkbenchModeTests(_Base):
         self._seed_source('s-1111111111', title='1900 Census', people=('p-aaaaaaaaaa',))
         self._run_wb()
         wb = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('<option value="S-1111111111">S-1111111111 - 1900 Census</option>', wb)
+        self.assertIn('<option value="s-1111111111">s-1111111111 - 1900 Census</option>', wb)
         self.assertIn('<option value="__paste__">paste an S-id&hellip;</option>', wb)
         self.assertIn('"subject_name": "Milestone Person"', wb)
 
@@ -8456,7 +8456,7 @@ class WorkbenchModeTests(_Base):
         self._seed_person('p-aaaaaaaaaa', name='Test Person', living='false', tier='curated')
         self._run_wb()
         wb = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('data-wb-fill="persons=P-aaaaaaaaaa"', wb)
+        self.assertIn('data-wb-fill="persons=p-aaaaaaaaaa"', wb)
 
     def test_edit_biography_modal_prefills_existing_prose_not_blank(self):
         # P2 codex finding (round 4, PR #30): the biography editor is a
@@ -10446,7 +10446,7 @@ class MergedDuplicateClaimTests(_Base):
         res = self._run(linked=False)
         self.assertEqual(res['status'], 'ok', res['messages'])
         self._assert_withheld(res)
-        self.assertTrue(any('P-zzzzzzzzzz' in m and 'merged_into:' in m
+        self.assertTrue(any('p-zzzzzzzzzz' in m and 'merged_into:' in m
                             for m in res['messages']), res['messages'])
 
     def test_a_merge_into_a_restricted_person_keeps_their_sources_facts_out(self):
@@ -10483,7 +10483,7 @@ class MergedDuplicateClaimTests(_Base):
         self._merge(self.DUP, 'p-eeeeeeeeee')
         self._merge('p-eeeeeeeeee', 'p-zzzzzzzzzz')
         res = self._run(linked=False)
-        lars = [m for m in res['messages'] if '(P-dddddddddd)' in m]
+        lars = [m for m in res['messages'] if '(p-dddddddddd)' in m]
         self.assertTrue(lars, res['messages'])
         self.assertIn('quistold__test_p-eeeeeeeeee.md', lars[0])
 

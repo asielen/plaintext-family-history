@@ -1148,9 +1148,9 @@ def _find_record_for_sid(archive_root: Path, s_id: str) -> Path | None:
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
         return None
-    # Match the S-id case-insensitively: filenames carry the uppercase-prefix
-    # form ('…_S-xxxx.md') but a caller may pass either casing, and only the
-    # 10-char body is identity.
+    # Match the S-id case-insensitively: today's filenames carry the lowercase
+    # form ('…_s-xxxx.md'), an older tool's the capital prefix ('…_S-xxxx.md'),
+    # a caller may pass either casing, and only the 10-char body is identity.
     sid_norm = s_id.lower()
     for p in sources_dir.rglob('*.md'):
         m = _FILENAME_SOURCE_ID_RE.search(p.stem)
@@ -2232,7 +2232,7 @@ def process_document(
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
-            f'{file_path.name} already carries an S-id ({existing.upper()}); '
+            f'{file_path.name} already carries an S-id ({fmt_id_display(existing)}); '
             'it looks already processed. Refusing to mint a second ID.'
         )
     if embedded := _document_source_keyword(real_path if real_path is not None else file_path):
@@ -2671,7 +2671,7 @@ def process_photo(
     )
     if existing:
         raise ProcessError(
-            f'{file_path.name} already carries SOURCE: {existing.upper()}; '
+            f'{file_path.name} already carries SOURCE: {fmt_id_display(existing)}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
     existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
@@ -2882,7 +2882,7 @@ def process_photo_group(
         )
         if existing_source:
             raise ProcessError(
-                f'{m.name} already carries SOURCE: {existing_source.upper()}; the set looks '
+                f'{m.name} already carries SOURCE: {fmt_id_display(existing_source)}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
         existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
@@ -3252,7 +3252,7 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
             except (OSError, UnicodeDecodeError):
                 continue
             if alias in text:
-                m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M)
+                m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M | re.I)
                 holder = m.group(1) if m else None
                 break
     where = f'source {fmt_id_display(holder)}' if holder else 'a source in your archive'
@@ -3505,7 +3505,7 @@ def process_bundle(
             existing, _ = _read_existing_source_keyword(item['src'], dry_run)
             if existing:
                 raise ProcessError(
-                    f'{item["src"].name} already carries SOURCE: {existing.upper()}; '
+                    f'{item["src"].name} already carries SOURCE: {fmt_id_display(existing)}; '
                     'the bundle looks partly processed. Attach remaining files with --more '
                     'or remove the stale bundle before processing.'
                 )
@@ -4439,7 +4439,7 @@ def _attach_more_engine(
 
     record_path = _find_record_for_sid(archive_root, sid)
     if record_path is None:
-        raise ProcessError(f'no source record found for {sid.upper()} under sources/.')
+        raise ProcessError(f'no source record found for {fmt_id_display(sid)} under sources/.')
 
     if more_kind is None:
         more_kind = _more_file_kind(archive_root, fha_config, primary_path, more_file,
@@ -4618,7 +4618,7 @@ def _attach_more_engine(
     if existing_doc_sid is not None and existing_doc_sid != sid.lower():
         raise ProcessError(
             f'{more_file.name} already carries a different S-id '
-            f'({existing_doc_sid.upper()}, not {sid.upper()}); it looks filed for '
+            f'({fmt_id_display(existing_doc_sid)}, not {fmt_id_display(sid)}); it looks filed for '
             'another source. Attach it to that source, or rename it, before attaching it here.'
         )
     already_named = existing_doc_sid is not None

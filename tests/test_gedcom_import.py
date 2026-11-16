@@ -253,8 +253,8 @@ class ApplyTestCase(_ArchiveCase):
 
         # Filename grammar: {surname}__{given}_{P-id}.md; no NAME -> unknown__unknown.
         rose_path, rose = by_name['Rose Hartley']
-        self.assertTrue(rose_path.name.startswith('hartley__rose_P-'))
-        self.assertTrue(any(p.name.startswith('unknown__unknown_P-') for p in stubs))
+        self.assertTrue(rose_path.name.startswith('hartley__rose_p-'))
+        self.assertTrue(any(p.name.startswith('unknown__unknown_p-') for p in stubs))
 
         # Provisional dates + heuristic: DEAT-Y person false, 1850 birth false,
         # 1990 birth unknown.
@@ -280,7 +280,7 @@ class ApplyTestCase(_ArchiveCase):
 
     def test_source_record_shape_and_claims(self) -> None:
         result, _out, _err = self._apply()
-        rec_path = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec_path = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rec = read_record(rec_path)
         self.assertEqual(rec['parse_errors'], [])
         meta = rec['meta']
@@ -346,8 +346,8 @@ class ApplyTestCase(_ArchiveCase):
 
     def test_anchors_point_into_the_filed_copy(self) -> None:
         self._apply()
-        rec_path = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
-        filed = next((self.archive / 'documents' / 'gedcom').glob('*_S-*.ged'))
+        rec_path = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
+        filed = next((self.archive / 'documents' / 'gedcom').glob('*_s-*.ged'))
         # Byte-for-byte copy of the original (originals are never modified).
         self.assertEqual(filed.read_bytes(), SMALL.read_bytes())
         filed_lines = filed.read_text(encoding='utf-8').splitlines()
@@ -399,7 +399,7 @@ class ApplyTestCase(_ArchiveCase):
 
         # Accepting ONE relationship claim through the human gate materializes
         # its edge on the next index - the review posture working as designed.
-        rec_path = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec_path = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rel = next(c for c in read_record(rec_path)['claims']
                    if c['type'] == 'relationship')
         rr = claim_mod.run_claim(self.archive, claim_id=rel['id'], status='accepted')
@@ -448,7 +448,7 @@ class RerunGuardTestCase(_ArchiveCase):
         self.assertTrue(any('P-aaaaaaaaaa' in d for d in result.data['duplicates']))
         self.assertIn('merging identities is a human decision', out)
         # Rose still arrived as a NEW stub beside the existing record.
-        stubs = list((self.archive / 'people' / 'stubs').glob('hartley__rose_P-*.md'))
+        stubs = list((self.archive / 'people' / 'stubs').glob('hartley__rose_p-*.md'))
         self.assertEqual(len(stubs), 1)
         self.assertNotIn('P-aaaaaaaaaa', stubs[0].name)
 
@@ -704,7 +704,7 @@ class ContHeadSourTestCase(_ArchiveCase):
     def test_cont_in_head_sour_renders_a_valid_record(self) -> None:
         result, _out, _err = self._run(FIXTURES / 'cont-head.ged', apply=True)
         self.assertTrue(result.data['applied'])
-        rec_path = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec_path = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rec = read_record(rec_path)
         self.assertEqual(rec['parse_errors'], [])              # frontmatter intact
         self.assertEqual(rec['meta']['repository'], 'MegaTree Deluxe Edition')

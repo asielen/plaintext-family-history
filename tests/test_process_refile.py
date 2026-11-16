@@ -197,7 +197,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertFalse(asset.exists())
         moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
         self.assertTrue(moved.is_file(), 'original_filename should be restored')
-        self.assertIn(f'SOURCE: {SID}', store.keywords.get(str(moved), []))
+        self.assertIn(f'SOURCE: {SID.lower()}', store.keywords.get(str(moved), []))
 
         rec = read_record(record)
         self.assertEqual(rec['meta']['files'][0]['file'], 'photos/1880s/campaign-card.jpg')
@@ -295,10 +295,10 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID}.jpg'
+        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID.lower()}.jpg'
         self.assertTrue(moved.is_file(), 'renamed into the {slug}_{S-id} grammar')
         rec = read_record(record)
-        self.assertEqual(rec['meta']['files'][0]['file'], f'documents/photos/portrait_{SID}.jpg')
+        self.assertEqual(rec['meta']['files'][0]['file'], f'documents/photos/portrait_{SID.lower()}.jpg')
         body = record.read_text(encoding='utf-8')
         self.assertIn('previously named portrait.jpg', body)
         # The embedded SOURCE keyword is deliberately NOT stripped.
@@ -314,7 +314,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID}.jpg').is_file())
+        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID.lower()}.jpg').is_file())
 
     def test_photo_to_doc_noninteractive_without_yes_refused(self) -> None:
         self._install_photo_store()
@@ -696,7 +696,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('inventory drift', err)
-        self.assertIn(other_sid, err)
+        self.assertIn(other_sid.lower(), err)
         self.assertTrue(asset.exists(), "another source's photo must never move")
         # Issue #170 finding 3 (round-3 audit): the photo branch of this same
         # conflict used to suggest `fha reconcile`, which cannot fix it -
@@ -787,7 +787,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('inventory drift', err)
-        self.assertIn(other_sid, err)
+        self.assertIn(other_sid.lower(), err)
         self.assertTrue(asset.exists(), 'an ambiguously-marked photo must never move')
         self.assertIn('cannot fix this', err)
         # Codex review, round-6 audit: the fix-by-hand advice must not
@@ -820,7 +820,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         rc, _out, err = self._run_captured(['S-2b3c4d5e6f', '--to', 'photos', '--dest', 'x'])
 
         self.assertEqual(rc, EXIT_WARNINGS)
-        self.assertIn('fha find S-2b3c4d5e6f', err)
+        self.assertIn('fha find s-2b3c4d5e6f', err)
 
     def test_destination_collision_refused(self) -> None:
         self._install_photo_store()
@@ -939,7 +939,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertTrue(asset.exists())
         # ...but the residual keyword is NAMED with a cleanup step, not "clean".
         self.assertNotIn('Nothing was left changed', err)
-        self.assertIn(f'SOURCE: {SID}', err)
+        self.assertIn(f'SOURCE: {SID.lower()}', err)
         self.assertIn('exiftool', err)
 
     def test_refile_refuses_when_destination_root_is_offline(self) -> None:
@@ -1202,9 +1202,9 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID}.jpg'
+        moved = self.archive / 'documents' / 'photos' / f'portrait_{SID.lower()}.jpg'
         self.assertTrue(moved.is_file())
-        self.assertIn(f'documents/photos/portrait_{SID}.jpg',
+        self.assertIn(f'documents/photos/portrait_{SID.lower()}.jpg',
                       record.read_text(encoding='utf-8'))
 
     def test_eof_at_prompt_refuses_with_yes_hint(self) -> None:
@@ -1289,11 +1289,11 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        moved = self.archive / 'documents' / 'photos' / f'portrait-b-back_{SID}.jpg'
+        moved = self.archive / 'documents' / 'photos' / f'portrait-b-back_{SID.lower()}.jpg'
         self.assertTrue(moved.is_file(), 'copy then role suffix, in grammar order')
         rec = read_record(record)
         self.assertEqual(rec['meta']['files'][0]['file'],
-                         f'documents/photos/portrait-b-back_{SID}.jpg')
+                         f'documents/photos/portrait-b-back_{SID.lower()}.jpg')
 
     # -- YAML-hostile paths: round-trip, not corruption ------------------------
 
@@ -1344,7 +1344,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID}.jpg').is_file())
+        self.assertTrue((self.archive / 'documents' / 'letters' / f'portrait_{SID.lower()}.jpg').is_file())
 
     # -- record-surgery refusals -----------------------------------------------
 
@@ -1563,7 +1563,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        moved = self.archive / 'documents' / 'census' / f'portrait_{SID}.jpg'
+        moved = self.archive / 'documents' / 'census' / f'portrait_{SID.lower()}.jpg'
         self.assertTrue(moved.is_file())
         self.assertFalse(record.exists(), 'the record left sources/photos/')
         new_record = self.archive / 'sources' / 'census' / f'portrait_{SID}.md'
@@ -1571,7 +1571,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         rec = read_record(new_record)
         self.assertEqual(rec['meta']['source_type'], 'census')
         self.assertEqual(rec['meta']['files'][0]['file'],
-                         f'documents/census/portrait_{SID}.jpg')
+                         f'documents/census/portrait_{SID.lower()}.jpg')
         self.assertIn('census', out)
         self.assertFalse((self.archive / 'documents' / 'photos').exists())
 
@@ -1598,7 +1598,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
         self.assertTrue((self.archive / 'documents' / 'photos'
-                         / f'portrait_{SID}.jpg').is_file())
+                         / f'portrait_{SID.lower()}.jpg').is_file())
         self.assertTrue(record.is_file(), 'the type did not change, so neither did the record')
 
     def test_unknown_type_refused_before_anything_moves(self) -> None:
@@ -1630,7 +1630,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'documents' / 'census'
-                         / f'sheet_{SID}.jpg').is_file())
+                         / f'sheet_{SID.lower()}.jpg').is_file())
         self.assertTrue(record.is_file(), 'the record stayed in sources/census/')
         self.assertEqual(read_record(record)['meta']['source_type'], 'census')
 
@@ -1663,7 +1663,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertFalse(asset.exists())
         moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
         self.assertTrue(moved.is_file())
-        self.assertEqual(store.keywords[str(moved)], [f'SOURCE: {SID}'])
+        self.assertEqual(store.keywords[str(moved)], [f'SOURCE: {SID.lower()}'])
         self.assertFalse(record.exists())
         new_record = self.archive / 'sources' / 'photos' / f'campaign-card_{SID}.md'
         self.assertTrue(new_record.is_file())

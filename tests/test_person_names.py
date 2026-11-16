@@ -167,7 +167,7 @@ class DuplicateNameTests(unittest.TestCase):
 
     def _assert_refused_once(self, code: int, err: str, first: str) -> None:
         self.assertEqual(code, EXIT_FAILURE)
-        pid = 'P-' + first[:-len('.md')].rsplit('_p-', 1)[1]
+        pid = 'p-' + first[:-len('.md')].rsplit('_p-', 1)[1]
         self.assertIn(
             f'Ada Quillfeather already has a record: {pid} (people/stubs/{first}).', err)
         # `--force` is the human's call, not the agent's next step.
@@ -198,7 +198,7 @@ class DuplicateNameTests(unittest.TestCase):
                         'tier: stub\n---\n', encoding='utf-8')
         _reindex(self.root)
         found = find_people_by_name(self.root, ['Addie Quillfeather'])
-        self.assertEqual([m['id'] for m in found['Addie Quillfeather']], ['P-0000000001'])
+        self.assertEqual([m['id'] for m in found['Addie Quillfeather']], ['p-0000000001'])
 
     def test_dry_run_shows_the_same_refusal(self) -> None:
         _mint_from_names(self.root, ['Ada Quillfeather'])
@@ -245,7 +245,7 @@ class DuplicateNameTests(unittest.TestCase):
         self._hand_named_profile()
         result = person.run_new(self.root, 'Mary Smith')
         self.assertEqual(result.data['status'], 'duplicate-name')
-        self.assertEqual([m['id'] for m in result.data['duplicates']], ['P-0000000011'])
+        self.assertEqual([m['id'] for m in result.data['duplicates']], ['p-0000000011'])
         self.assertEqual(len(_stub_files(self.root)), 1)
 
     def test_hand_named_profile_counts_with_an_index(self) -> None:
@@ -276,7 +276,7 @@ class DuplicateNameTests(unittest.TestCase):
         self.assertGreater((self.root / '.cache' / 'index.sqlite').stat().st_mtime,
                            path.stat().st_mtime)
         found = find_people_by_name(self.root, ['Ada Jones', 'Ada Smith'])
-        self.assertEqual([m['id'] for m in found.get('Ada Jones', [])], ['P-0000000021'])
+        self.assertEqual([m['id'] for m in found.get('Ada Jones', [])], ['p-0000000021'])
         self.assertNotIn('Ada Smith', found)
 
     def test_merged_tombstone_does_not_count(self) -> None:
@@ -427,7 +427,7 @@ class DuplicateNameReviewTests(unittest.TestCase):
         result = person.run_new(self.root, 'Edith Bradford')
         self.assertEqual(result.data['status'], 'duplicate-name')
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn('P-0000000001 Edith Hartley (also known as "Edith Bradford")', text)
+        self.assertIn('p-0000000001 Edith Hartley (also known as "Edith Bradford")', text)
 
     def test_id_less_hand_profile_counts(self) -> None:
         # A hand-made record nobody has minted an id for yet (SPEC §10) is
@@ -469,7 +469,7 @@ class DuplicateNameReviewTests(unittest.TestCase):
             found = find_people_by_name(self.root, ['Ada Quillfeather'])
         finally:
             _lib.read_record = original
-        self.assertEqual([m['id'] for m in found['Ada Quillfeather']], ['P-0000000001'])
+        self.assertEqual([m['id'] for m in found['Ada Quillfeather']], ['p-0000000001'])
 
     def test_stubs_force_without_from_names_is_refused(self) -> None:
         err = io.StringIO()
@@ -542,7 +542,7 @@ class EscapedNameTests(unittest.TestCase):
             'name_variants: ["Ma\\u0142gorzata Cole"]\nliving: unknown\n---\n',
             encoding='utf-8')
         found = find_people_by_name(self.root, ['Małgorzata Cole'])
-        self.assertEqual([m['id'] for m in found['Małgorzata Cole']], ['P-0000000072'])
+        self.assertEqual([m['id'] for m in found['Małgorzata Cole']], ['p-0000000072'])
 
 
 

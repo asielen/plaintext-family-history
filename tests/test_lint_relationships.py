@@ -278,7 +278,7 @@ class ReciprocityW116Tests(unittest.TestCase):
         text = parent_path.read_text(encoding='utf-8')
         self.assertIn('relationships:', text)
         self.assertIn('type: child', text)
-        self.assertIn(CLAIM, text)
+        self.assertIn(CLAIM.lower(), text)
         self.assertTrue(any(str(parent_path) == c for c in result.changed))
         # Re-lint: the mirror now reconciles, so no W116 (and no new W115).
         findings, _ = lint._run_lint_core(root, {})

@@ -80,7 +80,7 @@ class EditHelperTests(unittest.TestCase):
         self.assertFalse(already)
         lines = new.splitlines()
         s = next(i for i, ln in enumerate(lines) if ln.strip() == 'status: accepted')
-        self.assertEqual(lines[s + 1].strip(), 'corroborates: [C-bb22cc33dd]')
+        self.assertEqual(lines[s + 1].strip(), 'corroborates: [c-bb22cc33dd]')
 
     def test_add_link_appends_to_existing_list(self) -> None:
         text = _CLAIMS.replace('  status: accepted\n  reviewed: 2026-01-01',
@@ -88,7 +88,7 @@ class EditHelperTests(unittest.TestCase):
         new, changed, already = confirm._add_link_to_claim(
             text, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
         self.assertTrue(changed)
-        self.assertIn('corroborates: [C-1111111111, C-bb22cc33dd]', new)
+        self.assertIn('corroborates: [C-1111111111, c-bb22cc33dd]', new)
 
     def test_add_link_idempotent(self) -> None:
         text = _CLAIMS.replace('  status: accepted\n  reviewed: 2026-01-01',
@@ -123,10 +123,10 @@ class EditHelperTests(unittest.TestCase):
         new, changed, already = confirm._add_link_to_claim(
             text, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
         self.assertTrue(changed)
-        self.assertIn('corroborates: [C-1111111111, C-bb22cc33dd]  # human-checked', new)
+        self.assertIn('corroborates: [C-1111111111, c-bb22cc33dd]  # human-checked', new)
         # …and the rewritten block still parses, with the link list intact.
         rec = _parse(new)['C-aa11bb22cc']
-        self.assertEqual(rec['corroborates'], ['C-1111111111', 'C-bb22cc33dd'])
+        self.assertEqual(rec['corroborates'], ['C-1111111111', 'c-bb22cc33dd'])
 
     def test_place_block_quotes_yaml_significant_values(self) -> None:
         # A name/hierarchy with YAML-significant text must be quoted so
@@ -209,7 +209,7 @@ class WideIndentEditTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertFalse(already)
         rec = _parse(new)
-        self.assertEqual(rec['C-aa11bb22cc']['corroborates'], ['C-bb22cc33dd'])
+        self.assertEqual(rec['C-aa11bb22cc']['corroborates'], ['c-bb22cc33dd'])
         self.assertEqual(rec['C-bb22cc33dd']['status'], 'suggested')   # sibling intact
 
     def test_add_link_extends_wide_existing_list(self) -> None:
@@ -219,10 +219,10 @@ class WideIndentEditTests(unittest.TestCase):
         new, changed, already = confirm._add_link_to_claim(
             text, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
         self.assertTrue(changed)
-        self.assertIn('    corroborates: [C-1111111111, C-bb22cc33dd]', new)
+        self.assertIn('    corroborates: [C-1111111111, c-bb22cc33dd]', new)
         rec = _parse(new)
         self.assertEqual(rec['C-aa11bb22cc']['corroborates'],
-                         ['C-1111111111', 'C-bb22cc33dd'])
+                         ['C-1111111111', 'c-bb22cc33dd'])
 
     def test_set_scalar_lands_at_the_items_column(self) -> None:
         new, changed = confirm._set_scalar_on_claim(
@@ -295,7 +295,7 @@ class QuotedIdSpanTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertFalse(already)
         rec = _parse(new)
-        self.assertEqual(rec['C-bb22cc33dd']['corroborates'], ['C-cc33dd44ee'])
+        self.assertEqual(rec['C-bb22cc33dd']['corroborates'], ['c-cc33dd44ee'])
         self.assertNotIn('corroborates', rec['C-aa11bb22cc'])
         # the quoted evidence text survives byte-for-byte
         self.assertIn('id: C-bb22cc33dd', rec['C-aa11bb22cc']['notes'])
@@ -450,8 +450,8 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertTrue(result['question_spawned'])
         q = (self.root / 'notes' / 'questions.md').read_text(encoding='utf-8')
-        self.assertIn(CLAIM_A, q)
-        self.assertIn(CLAIM_B, q)
+        self.assertIn(CLAIM_A.lower(), q)
+        self.assertIn(CLAIM_B.lower(), q)
         self._reindex().close()
         lint_result = lint.run_lint(self.root, self.config)
         e009 = [m for m in lint_result.messages if m.code == 'E009']
@@ -547,8 +547,8 @@ class ConfirmArchiveTests(unittest.TestCase):
         result = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['source_id'], 'S-fc3456789d')
-        self.assertRegex(result['source_id'], r'^S-[0-9a-hjkmnp-tv-z]{10}$')
+        self.assertEqual(result['source_id'], 's-fc3456789d')
+        self.assertRegex(result['source_id'], r'^s-[0-9a-hjkmnp-tv-z]{10}$')
         self.assertTrue(result['source'])
 
     def test_cooccur_accept_derives_edge(self) -> None:
@@ -773,7 +773,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(r['status'], 'already')
         self.assertEqual(r.exit_code, EXIT_CLEAN)
         self.assertEqual(r.changed, [])
-        self.assertEqual(r['claim_id'], 'C-ee00000005')
+        self.assertEqual(r['claim_id'], 'c-ee00000005')
         self.assertEqual(src.read_text(encoding='utf-8'), before)
 
     def test_cooccur_nested_persons_report_already(self) -> None:
@@ -931,7 +931,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         result = confirm.run_confirm_place(
             self.root, claim_ids=[c1, c2], name='Marsh Creek', hierarchy='Marsh Creek, Kansas, USA')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['relinked'], [c1, c2])
+        self.assertEqual(result['relinked'], [c1.lower(), c2.lower()])
         lid = result['place_id']
         conn = self._reindex()
         try:
@@ -950,8 +950,8 @@ class ConfirmArchiveTests(unittest.TestCase):
         result = confirm.run_confirm_place(
             self.root, claim_ids=[CLAIM_B], into='L-7c1a9f4e22')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['into'], 'L-7c1a9f4e22')
-        self.assertEqual(result['relinked'], [CLAIM_B])
+        self.assertEqual(result['into'], 'l-7c1a9f4e22')
+        self.assertEqual(result['relinked'], [CLAIM_B.lower()])
 
     def test_place_requires_name_or_into(self) -> None:
         r = confirm.run_confirm_place(self.root, claim_ids=[CLAIM_B])
@@ -991,8 +991,8 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         text = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
         self.assertIn('Found the marriage record', text)
-        self.assertIn(f'[{SOURCE}]', text)
-        self.assertIn(f'[{PERSON_1}]', text)
+        self.assertIn(f'[{SOURCE.lower()}]', text)
+        self.assertIn(f'[{PERSON_1.lower()}]', text)
 
     def test_discovery_dry_run_writes_nothing(self) -> None:
         before = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
@@ -1219,9 +1219,9 @@ class QuotedIdArchiveTests(unittest.TestCase):
             self.root, claim_a=self.TARGET, claim_b=self.FAR, relation='corroborates')
         self.assertEqual(r.exit_code, EXIT_CLEAN)
         one, two = self._claims(self.src_one), self._claims(self.src_two)
-        self.assertEqual(one[self.TARGET]['corroborates'], [self.FAR])
+        self.assertEqual(one[self.TARGET]['corroborates'], [self.FAR.lower()])
         self.assertNotIn('corroborates', one[self.DECOY])
-        self.assertEqual(two[self.FAR]['corroborates'], [self.TARGET])
+        self.assertEqual(two[self.FAR]['corroborates'], [self.TARGET.lower()])
         # the quoted evidence inside the decoy's notes is untouched
         self.assertIn(f'id: {self.TARGET}', one[self.DECOY]['notes'])
 

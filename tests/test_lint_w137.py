@@ -88,7 +88,7 @@ class W137Tests(unittest.TestCase):
         found = self._w137()
         self.assertEqual(len(found), 1)
         msg = found[0].message
-        self.assertIn(f'Claim C-{INTERVIEW[2:-1]}9 (its notes:)', msg)
+        self.assertIn(f'Claim c-{INTERVIEW[2:-1]}9 (its notes:)', msg)
         self.assertIn('photos/1911/ada-1911-back.jpg', msg)
         self.assertIn('fha process "', msg)
         self.assertIn('--type photo', msg)
@@ -116,7 +116,7 @@ class W137Tests(unittest.TestCase):
         self._interview(value='Letter documents/letters/ada-letter.pdf names her sister')
         found = self._w137()
         self.assertEqual(len(found), 1)
-        self.assertIn('Claim C-', found[0].message)
+        self.assertIn('Claim c-', found[0].message)
         self.assertIn('(its value:)', found[0].message)
         self.assertNotIn('--type photo', found[0].message)
 

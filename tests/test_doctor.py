@@ -1437,7 +1437,7 @@ class UnresolvedCompanionOwnerTests(unittest.TestCase):
 
         self.assertIn('unresolved companion owner', report)
         self.assertIn('ghost__missing_research.md', report)
-        self.assertIn('P-zzzzzzzzzz', report)
+        self.assertIn('p-zzzzzzzzzz', report)
         check = self._finding(result)
         self.assertIsNotNone(
             check, 'doctor must report an unresolved_companion_owners finding')
@@ -1601,7 +1601,7 @@ class WrongMainImageTests(unittest.TestCase):
         self._record(self.BUG_ERA)
         result, check, found = self._doctor()
         self.assertEqual(len(found), 1, result.data['lines'])
-        self.assertIn(f'ends in _{self.SID}.md', found[0])
+        self.assertIn(f'ends in _{self.SID.lower()}.md', found[0])
         self.assertNotIn('--fix-ids', found[0])
 
     def test_a_front_named_like_a_document_gets_its_full_path(self) -> None:
@@ -1625,7 +1625,7 @@ class WrongMainImageTests(unittest.TestCase):
         self.assertEqual(len(found), 1, result.data['lines'])
         self.assertIn('the back of the photo (Smith-Farm-01400-back.tif)', found[0])
         self.assertIn('the front scan smith-farm-01400.tif', found[0])
-        command = (f'{doctor._LAUNCHER} source set-primary {self.SID} '
+        command = (f'{doctor._LAUNCHER} source set-primary {self.SID.lower()} '
                    f'--file smith-farm-01400.tif --root "{self.root}"')
         self.assertIn(command, found[0])
         self.assertIsNotNone(check)

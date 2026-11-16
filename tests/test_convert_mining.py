@@ -62,9 +62,9 @@ class ConvertMiningTestCase(unittest.TestCase):
     def test_apply_creates_sources_claims_and_stubs(self) -> None:
         self.assertEqual(self._apply(), EXIT_CLEAN)
 
-        sources = sorted((self.archive / 'sources' / 'interview').glob('*_S-*.md'))
+        sources = sorted((self.archive / 'sources' / 'interview').glob('*_s-*.md'))
         self.assertEqual(len(sources), 2)
-        stubs = sorted((self.archive / 'people' / 'stubs').glob('*_P-*.md'))
+        stubs = sorted((self.archive / 'people' / 'stubs').glob('*_p-*.md'))
         self.assertEqual(len(stubs), 2)
         stub_meta = read_record(stubs[0])['meta']
         self.assertEqual(stub_meta['tier'], 'stub')
@@ -78,7 +78,7 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(rec['meta']['source_type'], 'interview')
 
         # Transcript filed under documents/interviews/ with the S-id, name kept.
-        transcripts = list((self.archive / 'documents' / 'interviews').glob('*_S-*.txt'))
+        transcripts = list((self.archive / 'documents' / 'interviews').glob('*_s-*.txt'))
         self.assertEqual(len(transcripts), 2)
         self.assertEqual(rec['meta']['files'][0]['original_filename'], 'T001.txt')
 
@@ -88,7 +88,7 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertIn('marriage', by_type)
         for c in claims:
             self.assertEqual(c['status'], 'suggested')
-            self.assertTrue(c['id'].startswith('C-'))
+            self.assertTrue(c['id'].startswith('c-'))
         # Earliest==Latest collapses to a single EDTF value.
         self.assertEqual(by_type['birth']['date'], '1890')
         # Update(T###) line merged into the claim notes.
@@ -125,16 +125,16 @@ class ConvertMiningTestCase(unittest.TestCase):
 
     def test_apply_imports_stories_and_questions(self) -> None:
         self._apply()
-        mary = next((self.archive / 'sources' / 'interview').glob('*mary*_S-*.md'))
+        mary = next((self.archive / 'sources' / 'interview').glob('*mary*_s-*.md'))
         body = mary.read_text(encoding='utf-8')
         self.assertIn('## Stories', body)
         self.assertIn('wagon journey', body)
-        self.assertIn('[P-a1a1a1a1a1]', body)            # person resolved to a token
+        self.assertIn('[p-a1a1a1a1a1]', body)            # person resolved to a token
 
         questions = (self.archive / 'notes' / 'questions.md').read_text(encoding='utf-8')
         self.assertIn('## Q: Where exactly was Mary Hartley born?', questions)
         self.assertIn('origin: tool', questions)
-        self.assertIn('S-', questions)                   # source ref mapped to its S-id
+        self.assertIn('s-', questions)                   # source ref mapped to its S-id
 
     def test_blank_claim_cell_skipped_with_warning(self) -> None:
         facts = self.archive / 'mining' / 'facts.txt'
@@ -206,7 +206,7 @@ class ConvertMiningTestCase(unittest.TestCase):
         rc = convert_mining.run_convert(self.archive, self.config, apply=True)
         self.assertEqual(rc, EXIT_WARNINGS)
         mary_copy = next(p for p in sorted(
-            (self.archive / 'documents' / 'interviews').glob('*_S-*.txt'))
+            (self.archive / 'documents' / 'interviews').glob('*_s-*.txt'))
             if 'mary' in p.name.split('_S-')[0])
         self.assertEqual(mary_copy.read_bytes(), raw)            # byte-identical copy
 
@@ -235,8 +235,8 @@ class ConvertMiningTestCase(unittest.TestCase):
         self._apply()
         mapping = (self.archive / '.cache' / 'convert_mapping.csv').read_text(encoding='utf-8')
         self.assertIn('legacy_id,new_id,notes', mapping)
-        self.assertIn('S001,S-', mapping)
-        self.assertIn('Mary Hartley,P-a1a1a1a1a1', mapping)
+        self.assertIn('S001,s-', mapping)
+        self.assertIn('Mary Hartley,p-a1a1a1a1a1', mapping)
 
     def test_apply_refuses_existing_mapping(self) -> None:
         cache = self.archive / '.cache'

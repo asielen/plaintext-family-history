@@ -79,6 +79,7 @@ from _lib import (
     normalize_id,
     optional_scalar,
     parentage_parties,
+    role_meaning,
     parse_filename,
     person_file_kind,
     read_record,
@@ -2006,7 +2007,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # they carry the same roles, and legacy `spouse-of` is caught by the
             # subtype fallback below.
             child_ids, parent_ids = parentage_parties(all_persons)
-            spouse_ids = [p for p, r in all_persons if r == 'spouse']
+            spouse_ids = [p for p, r in all_persons if role_meaning(r) == 'spouse']
 
             if child_ids and parent_ids:
                 _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
@@ -2066,8 +2067,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
                     (('employee', 'employee'), ('employer', 'employer')),
                 ):
-                    a_ids = [p for p, r in all_persons if r == role_a]
-                    b_ids = [p for p, r in all_persons if r == role_b]
+                    a_ids = [p for p, r in all_persons if role_meaning(r) == role_a]
+                    b_ids = [p for p, r in all_persons if role_meaning(r) == role_b]
                     for pa in a_ids:
                         for pb in b_ids:
                             if pa == pb:

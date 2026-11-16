@@ -721,7 +721,7 @@ class ApiRunTests(_ServeCase):
                 break
         self.assertIsNotNone(src)
         text = src.read_text(encoding='utf-8')
-        self.assertIn('place: L-7c1a9f4e22', text)
+        self.assertIn('place: l-7c1a9f4e22', text)
         # The source-as-written wording survives the id edit (SPEC §15:
         # backfilling place: never alters place_text; P2 codex finding,
         # round 4, PR #31 - the old switch-removes-the-other behavior made
@@ -740,7 +740,7 @@ class DuplicateNameMintTests(_ServeCase):
         refused = json.loads(d)
         self.assertFalse(refused['ok'])
         self.assertEqual(refused['data']['status'], 'duplicate-name')
-        self.assertEqual([m['id'] for m in refused['data']['duplicates']], ['P-c4b26bb4bc'])
+        self.assertEqual([m['id'] for m in refused['data']['duplicates']], ['p-c4b26bb4bc'])
         # The page builds its own wording from data['duplicates'] (id, name,
         # path), so the CLI's `--force` sentence never sits beside the button.
         self.assertTrue(all(m.get('path') and m.get('name')
@@ -2398,8 +2398,8 @@ class ReciprocalRelateTests(_ServeCase):
         self.assertIn('--reciprocal', payload['cli_echo'])
         a_text = self._person_file(self.A).read_text(encoding='utf-8')
         b_text = self._person_file(self.B).read_text(encoding='utf-8')
-        self.assertIn(self.B, a_text)
-        self.assertIn(self.A, b_text)
+        self.assertIn(self.B.lower(), a_text)
+        self.assertIn(self.A.lower(), b_text)
         self.assertIn('status: hypothesis', a_text)
         self.assertIn('status: hypothesis', b_text)
 
@@ -2411,7 +2411,7 @@ class ReciprocalRelateTests(_ServeCase):
         self.assertEqual(s, 200)
         self.assertTrue(json.loads(d)['ok'])
         a_text = self._person_file(self.A).read_text(encoding='utf-8')
-        self.assertIn(self.B, a_text)
+        self.assertIn(self.B.lower(), a_text)
         # The target's record is byte-identical - no mirror was written.
         self.assertEqual(self._person_file(self.B).read_bytes(), b_before)
 
@@ -2533,7 +2533,7 @@ class DeathAcceptMarksNotLivingTests(_ServeCase):
         payload = json.loads(d)
         self.assertTrue(payload['ok'], payload['messages'])
         warnings = [m['text'] for m in payload['messages'] if m['level'] == 'warning']
-        self.assertTrue(any(f'fha person set-living {self.ALEX} unknown' in w
+        self.assertTrue(any(f'fha person set-living {self.ALEX.lower()} unknown' in w
                             for w in warnings), payload['messages'])
         self.assertEqual(self._living_in_index(), 'false')
 
@@ -2546,7 +2546,7 @@ class DeathAcceptMarksNotLivingTests(_ServeCase):
         payload = json.loads(d)
         self.assertTrue(payload['ok'], payload['messages'])
         warnings = [m['text'] for m in payload['messages'] if m['level'] == 'warning']
-        self.assertTrue(any(f'fha person set-living {self.ALEX} unknown' in w
+        self.assertTrue(any(f'fha person set-living {self.ALEX.lower()} unknown' in w
                             for w in warnings), payload['messages'])
         self.assertEqual(self._living_in_index(), 'false')
 

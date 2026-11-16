@@ -2299,8 +2299,11 @@ def run_rename(
     # silently skipped without a word).
     stale_companions: list[Path] = []
     skipped_non_generated: list[Path] = []
-    id_suffix = f'_{fmt_id_display(pid)}.md'
-    for candidate in sorted(path.parent.glob(f'*{id_suffix}')):
+    # Matched without regard to case (SPEC §10): a companion an older tool
+    # named `…_P-…` is this person's as surely as one named `…_p-…`.
+    id_suffix = f'_{fmt_id_display(pid)}.md'.lower()
+    for candidate in sorted(p for p in path.parent.iterdir()
+                            if p.is_file() and p.name.lower().endswith(id_suffix)):
         if candidate in (path, old_research_path):
             continue
         if is_generated_file(candidate):
