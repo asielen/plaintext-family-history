@@ -405,7 +405,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    SurvivorAliasMap          - alias map whose person refs resolve to survivors (lint)
 #    index_merge_survivors     - merge_survivor_map read from the index persons table
 #    merged_into_survivor      - the tombstones whose claims now count for one person
-#    restricted_with_survivors - a restricted tombstone keeps its survivor withheld
+#    carry_to_survivors        - a restricted/living tombstone keeps its survivor withheld
+#    living_carried_to_survivors - survivors a living/unknown tombstone holds as living
+#    living_tombstones_of      - the merged records holding one survivor back, for messages
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
 #    transcript_review_state   - has a human checked this transcript against the
 #                                 picture? unreviewed | verified | unmarked | damaged
@@ -5814,14 +5816,21 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     """Whether a person counts as living in shared output, merges followed.
 
     True when the person, or anyone on their `merged_into` chain, is
-    `living: true` or `unknown`, or the chain is broken (`merge_chain`). An id
+    `living: true` or `unknown`, or the chain is broken (`merge_chain`) - or
+    when a record merged into the survivor at its end is (round 4 of #304). An id
     the index does not hold at all is not a person record, and stays False,
     as it always has: the exports' own checks for a dangling id still apply.
     One rule for the exports that share material: packet and wikitree read
     it through here, site through `merge_chain` (gedcom leaves merged
     records out of its export entirely)."""
-    return any((r['living'] or '') in ('true', 'unknown')
-               for r in person_merge_chain(conn, pid))
+    chain = person_merge_chain(conn, pid)
+    if any((r['living'] or '') in ('true', 'unknown') for r in chain):
+        return True
+    # The other direction too (#304 review): a record merged INTO the
+    # survivor at the end of the chain hands him its claims, so its own
+    # living/unknown status governs him as well (`living_carried_to_survivors`).
+    survivor = merge_survivor(chain)
+    return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
 
 
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
@@ -8922,9 +8931,21 @@ def index_merge_survivors(conn: sqlite3.Connection) -> dict[str, str]:
     WikiTree) reads the same map to know which tombstones now speak through a
     survivor, so a restriction on the tombstone still governs (#304 review).
     """
-    rows = conn.execute('SELECT id, status, merged_into FROM persons').fetchall()
-    known = {r[0] for r in rows}
+    # Only the records that carry a pointer are read, and then only the ids
+    # they point at: every gate calls this, some once per person, and an
+    # archive holds thousands of people but few merges.
+    rows = conn.execute(
+        "SELECT id, status, merged_into FROM persons "
+        "WHERE merged_into IS NOT NULL AND merged_into != ''").fetchall()
     pointers = {r[0]: t for r in rows if (t := merge_pointer(r[1], r[2]))}
+    if not pointers:
+        return {}
+    targets = sorted(set(pointers.values()))
+    known: set[str] = set()
+    for i in range(0, len(targets), 500):
+        chunk = targets[i:i + 500]
+        known |= {r[0] for r in conn.execute(
+            f"SELECT id FROM persons WHERE id IN ({','.join('?' * len(chunk))})", chunk)}
     return merge_survivor_map(pointers, known)
 
 
@@ -8934,18 +8955,84 @@ def merged_into_survivor(survivors: dict[str, str], pid: str) -> list[str]:
     return sorted(t for t, s in survivors.items() if s == pid)
 
 
-def restricted_with_survivors(restricted: set[str], survivors: dict[str, str]) -> set[str]:
-    """`restricted` plus the survivor of every restricted tombstone.
+def carry_to_survivors(marked: set[str], survivors: dict[str, str]) -> set[str]:
+    """`marked` plus the survivor of every marked tombstone.
 
     A merge makes two records one person, and `fha index` hands the
-    tombstone's claims to the survivor. A `restricted:` marker on the
-    tombstone - a request to be left out, made under that record - is about
+    tombstone's claims to the survivor. A privacy marker on the tombstone -
+    `restricted:` (a request to be left out, made under that record) or a
+    `living: true|unknown` that keeps someone out of shared output - is about
     the same human, so it must keep governing what those claims publish: the
-    survivor is withheld too. Erring this way costs a page the owner can
-    re-open by moving the marker onto the survivor deliberately; erring the
-    other way publishes what someone asked to keep private.
+    survivor is withheld too, by every gate (#304 review). The strictest
+    status anywhere in the merge wins. Erring this way costs a page the owner
+    can re-open by fixing the tombstone's line deliberately; erring the other
+    way publishes a living person's records, or what someone asked to keep
+    private.
     """
-    return set(restricted) | {survivors[p] for p in restricted if p in survivors}
+    return set(marked) | {survivors[p] for p in marked if p in survivors}
+
+
+# The restriction gates' name for the same rule (round 3).
+restricted_with_survivors = carry_to_survivors
+
+
+def carried_living_message(conn: sqlite3.Connection, pid: str, refusal: str) -> str:
+    """One plain sentence: who is held back as living by which merged record,
+    what that costs (`refusal`), and the hand edit that releases him."""
+    rows = living_tombstones_of(conn, pid)
+    if not rows:
+        # Held back by its own chain instead: a merged_into: that loops or
+        # names nobody has no survivor to read, so it counts as living.
+        return (f'{fmt_id_display(pid)} is merged into a record the tools cannot follow (a '
+                'merged_into: that loops or names nobody), so it counts as living and '
+                f'{refusal}. Run `fha lint` - E020 names the line to fix.')
+    named = ', '.join(f'{fmt_id_display(r["id"])} ({r["path"]}, living: {r["living"]})'
+                      for r in rows)
+    return (f'{fmt_id_display(pid)} is marked as having died, but {named} was merged into '
+            'them and still counts as living, and its records now count for this person - '
+            f'so {refusal}. If they have died, open that file and change its `living:` line '
+            'to `false` by hand (the tools never edit a merged record), then run `fha index` '
+            'and try again.')
+
+
+def living_tombstones_of(conn: sqlite3.Connection, pid: str) -> list[dict]:
+    """The records merged into `pid` that count as living (`true`/`unknown`):
+    [{'id', 'living', 'path'}], sorted - so a refusal or warning can name the
+    exact file whose `living:` line holds the survivor back. The tools never
+    edit a merged record (`set_person_living` refuses one), so the message must
+    point at the file for a hand edit."""
+    out: list[dict] = []
+    for tid in merged_into_survivor(index_merge_survivors(conn), pid):
+        r = conn.execute('SELECT id, living, path FROM persons WHERE id = ?', (tid,)).fetchone()
+        if r is not None and str(r[1] or 'unknown').strip().lower() in ('true', 'unknown'):
+            out.append({'id': r[0], 'living': str(r[1] or 'unknown'), 'path': r[2]})
+    return out
+
+
+def living_carried_to_survivors(conn: sqlite3.Connection) -> dict[str, str]:
+    """{survivor P-id: 'true' | 'unknown'} for every survivor that has a
+    tombstone counting as living (`living: true` or `unknown`) merged into it.
+
+    The strictest value wins: `true` over `unknown`. A survivor whose own
+    record says `living: false` is still held as living in shared output
+    while a record merged into him says otherwise - see `carry_to_survivors`.
+    """
+    survivors = index_merge_survivors(conn)
+    if not survivors:
+        return {}
+    ids = sorted(survivors)
+    out: dict[str, str] = {}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        for tid, living in conn.execute(
+                f"SELECT id, living FROM persons WHERE id IN ({','.join('?' * len(chunk))})",
+                chunk):
+            value = str(living or 'unknown').strip().lower()
+            if value in ('true', 'unknown'):
+                surv = survivors[tid]
+                if out.get(surv) != 'true':
+                    out[surv] = value
+    return out
 
 
 def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:

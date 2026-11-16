@@ -298,5 +298,50 @@ class FindExplainsTheMergeTests(_MergeFixture):
         self.assertNotIn('claims: none\n', text)
 
 
+
+class RelationshipsBlockThroughSurvivorTests(_MergeFixture):
+    """Round 4: a `relationships:` entry naming a merged record reads through
+    the survivor, like the claims - no false W115 for Mary, whose entry still
+    names her son's duplicate (retained) or already names him (updated)."""
+
+    def _mary_block(self, to_pid: str) -> None:
+        _write(self.root / 'people' / 'stubs' / f'mary_cole_{MARY}.md',
+               f'---\nid: {MARY}\nname: Mary Cole\nliving: false\nsex: F\ntier: stub\n'
+               f'relationships:\n  - to: "[[{to_pid}|Thomas]]"\n    type: child\n'
+               f'    claim: "[[{CLAIM}]]"\n---\n\n# Mary Cole\n\n## Biography\n\nx\n')
+        self.source(SRC, _claim(CLAIM, 'birth', [DUP, MARY], {'child': DUP, 'parent': MARY}))
+        self.build()
+
+    def test_retained_reference_to_the_tombstone(self) -> None:
+        self._mary_block(DUP)
+        findings, _reg = self.lint_findings()
+        self.assertEqual([f.message for f in findings if f.code == 'W115'], [])
+
+    def test_updated_reference_to_the_survivor(self) -> None:
+        self._mary_block(THOMAS)
+        findings, _reg = self.lint_findings()
+        self.assertEqual([f.message for f in findings if f.code == 'W115'], [])
+
+
+class UnreadableSurvivorTests(_MergeFixture):
+    """Round 4: a survivor whose file is not UTF-8 is still a person on disk
+    (the index keeps his row from the filename, #267). Lint must not call the
+    merge broken - E020 told him to "restore the record", which invites a
+    second Thomas - nor say the claims are missing from everyone's timeline."""
+
+    def test_no_false_e020_and_w107_says_it_counts(self) -> None:
+        self.source(SRC, _claim(CLAIM, 'birth', [DUP, MARY], {'child': DUP, 'parent': MARY}))
+        surv = next((self.root / 'people').glob(f'*_{THOMAS}.md'))
+        surv.write_bytes(surv.read_text(encoding='utf-8')
+                         .replace('Thomas Hartley', 'Thomas H\u00e4rtley').encode('cp1252'))
+        self.build()
+        self.assertIn((THOMAS,), self.rows('SELECT person_id FROM claim_persons'))
+        findings, _reg = self.lint_findings()
+        self.assertEqual([f.message for f in findings if f.code == 'E020'], [])
+        w107 = [f.message for f in findings if f.code == 'W107' and CLAIM in f.message.lower()]
+        self.assertEqual(len(w107), 1)
+        self.assertIn('already counts', w107[0])
+
+
 if __name__ == '__main__':
     unittest.main()

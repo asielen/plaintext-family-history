@@ -109,5 +109,107 @@ class RestrictedTombstoneGovernsTests(unittest.TestCase):
         self.assertFalse((self.root / 'out').exists())
 
 
+class LivingTombstoneGovernsTests(unittest.TestCase):
+    """Round 4: the same rule for `living:`. A duplicate marked `living: true`
+    (or `unknown`, which counts as living) merged into a deceased survivor
+    hands him its claims, so shared output must keep him out - or a living
+    person's birth record publishes under the dead man's name. A chain
+    (living A -> B -> survivor C) carries it all the way."""
+
+    def _archive(self, living: str, chain: bool = False) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        _write(root / 'fha.yaml', 'roots:\n  documents: documents\n  photos: photos\n')
+        _write(root / 'people' / f'hartley__thomas_{THOMAS}.md',
+               f'---\nid: {THOMAS}\nname: Thomas Hartley\nliving: false\nsex: M\n'
+               'tier: curated\n---\n\n# Thomas Hartley\n\n## Biography\n\nA farmer.\n')
+        middle = 'p-aaaaaaaaa4'
+        first_target = middle if chain else THOMAS
+        _write(root / 'people' / 'stubs' / f'MERGED-INTO-{first_target}__hartley__thos_{DUP}.md',
+               f'---\nid: {DUP}\nname: Thos Hartley\nliving: {living}\ntier: stub\n'
+               f'status: merged\nmerged_into: {first_target}\n---\n\n# Thos Hartley\n')
+        if chain:
+            _write(root / 'people' / 'stubs' / f'MERGED-INTO-{THOMAS}__hartley__t_{middle}.md',
+                   f'---\nid: {middle}\nname: T. Hartley\nliving: false\ntier: stub\n'
+                   f'status: merged\nmerged_into: {THOMAS}\n---\n\n# T. Hartley\n')
+        _write(root / 'people' / 'stubs' / f'cole__mary_{MARY}.md',
+               f'---\nid: {MARY}\nname: Mary Cole\nliving: false\nsex: F\n'
+               'tier: stub\n---\n\n# Mary Cole\n')
+        _write(root / 'sources' / 'vital-records' / f'birth_{SRC}.md',
+               f'---\nid: {SRC}\ntitle: Birth register\nsource_type: vital-record\n'
+               f'citation: "A register."\npeople: [{DUP}]\n---\n\n'
+               '## Claims\n```yaml\n'
+               f'- id: c-ccccccccc1\n  type: birth\n  value: "{SECRET_VALUE}"\n'
+               f'  persons: [{DUP}, {MARY}]\n  roles: {{child: {DUP}, parent: {MARY}}}\n'
+               '  date: 1850-03-02\n  status: accepted\n  confidence: high\n'
+               '  reviewed: 2026-06-10\n```\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(root, {'roots': {'documents': 'documents', 'photos': 'photos'}})
+        return root
+
+    def _check_all(self, root: Path) -> None:
+        out = root / '.cache' / 'site'
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            site.run_site(root, out, linked=False)
+        self.assertFalse((out / 'persons' / f'{THOMAS}.html').exists())
+        for page in out.rglob('*'):
+            if page.is_file() and page.suffix in ('.html', '.json', '.js'):
+                self.assertNotIn(SECRET_VALUE, page.read_text(encoding='utf-8', errors='replace'))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ged = gedcom.run_gedcom(root, MARY, mode='connected')
+        self.assertNotIn('Thomas', ged['text'] or '')
+        self.assertNotIn('1850', ged['text'] or '')
+        self.assertEqual(wikitree.run_wikitree(root, THOMAS)['status'], 'living-subject')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            pk = packet.run_packet(root, THOMAS, root / 'out', no_photos=True)
+        self.assertEqual(pk['status'], 'living-subject', pk.get('messages'))
+
+    def test_living_true_tombstone_keeps_the_survivor_out(self) -> None:
+        root = self._archive('true')
+        self._check_all(root)
+        # And the site says why, naming the merged file to change by hand.
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            res = site.run_site(root, root / '.cache' / 'site2', linked=False)
+        said = ' '.join(str(m) for m in res['messages'])
+        self.assertIn(DUP, said)
+        self.assertIn('living:', said)
+
+    def test_living_unknown_tombstone_keeps_the_survivor_out(self) -> None:
+        self._check_all(self._archive('unknown'))
+
+    def test_a_chain_carries_it_to_the_end(self) -> None:
+        self._check_all(self._archive('true', chain=True))
+
+    def test_include_living_still_opens_gedcom(self) -> None:
+        # The carried status is a living status, not a restriction: the
+        # owner's --include-living still lifts it, as for any living person.
+        root = self._archive('true')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ged = gedcom.run_gedcom(root, MARY, mode='connected', include_living=True)
+        self.assertIn('Thomas', ged['text'] or '')
+
+    def test_a_restricted_name_on_the_tombstone_hides_only_that_name(self) -> None:
+        # Name-variant restriction carries as a redaction of that name, never
+        # as withholding the survivor's whole page.
+        root = self._archive('false')
+        tomb = next((root / 'people' / 'stubs').glob(f'MERGED-INTO-*_{DUP}.md'))
+        tomb.write_text(tomb.read_text(encoding='utf-8').replace(
+            'tier: stub\n', 'tier: stub\nname_variants:\n  - {value: Tommy Secretname, restricted: true}\n'),
+            encoding='utf-8')
+        _write(root / 'people' / 'stubs' / f'cole__mary_{MARY}.md',
+               f'---\nid: {MARY}\nname: Mary Cole\nliving: false\nsex: F\ntier: curated\n---\n\n'
+               f'# Mary Cole\n\n## Biography\n\nMother of [[{THOMAS}|Tommy Secretname]].\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(root, {'roots': {'documents': 'documents', 'photos': 'photos'}})
+        out = root / '.cache' / 'site'
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            site.run_site(root, out, linked=False)
+        self.assertTrue((out / 'persons' / f'{THOMAS}.html').exists())
+        for page in out.rglob('*.html'):
+            self.assertNotIn('Tommy Secretname', page.read_text(encoding='utf-8', errors='replace'),
+                             page)
+
+
 if __name__ == '__main__':
     unittest.main()

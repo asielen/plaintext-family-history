@@ -121,6 +121,7 @@ from _lib import (
     merged_into_survivor,
     normalize_id,
     open_index_db,
+    carried_living_message,
     person_is_living,
     person_merge_chain,
     read_record,
@@ -612,9 +613,15 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     for pid in person_ids:
         hit = _chain_flagged_record(conn, archive_root, pid, on_decode_error=on_decode_error)
         if hit is not None:
-            # The id as linked, with the name and file of the record that
-            # stopped it (the survivor, when an old merged id is linked).
-            flagged.append({'id': normalize_id(pid), 'name': hit['name'], 'path': hit['path']})
+            # The id as linked, named as the person it is (the survivor, when
+            # an old merged id is linked), plus the record that carries the
+            # restriction when that is a different one - a tombstone merged
+            # into the survivor, say (#304 review: the message used to pair
+            # the survivor's id with the tombstone's name).
+            shown = merge_survivor(person_merge_chain(conn, pid)) or hit
+            flagged.append({'id': normalize_id(pid), 'name': shown.get('name') or hit['name'],
+                            'path': hit['path'],
+                            'carrier': hit['id'] if hit['id'] != shown.get('id') else None})
     return flagged
 
 
@@ -1233,11 +1240,15 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'text': None,
                     'messages': [f'{fmt_id_display(pid)} is not curated - wikitree exports curated profiles only.']}
-        if person['living'] in ('true', 'unknown'):
+        # person_is_living follows the merge both ways (#304 review): a
+        # living or unknown record merged into this one counts too.
+        if person['living'] in ('true', 'unknown') or person_is_living(conn, pid):
             return {'status': 'living-subject', 'text': None,
                     'messages': [
                         f'{fmt_id_display(pid)} has living={person["living"]}; '
                         'wikitree refuses living/unknown subjects (external-facing output).'
+                        if person['living'] in ('true', 'unknown') else
+                        carried_living_message(conn, pid, 'wikitree refuses living subjects (external-facing output)')
                     ]}
 
         # The subject's own restriction marker lives in this record, not the
@@ -1402,7 +1413,10 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'the YAML `fha lint` points at - run `fha index`, then export again.')
             if still_restricted:
                 items = ', '.join(
-                    f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'
+                    f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"}'
+                    + (f' - the restriction is on {fmt_id_display(r["carrier"])}, a record '
+                       'merged into them' if r.get('carrier') else '')
+                    + ')'
                     for r in still_restricted
                 )
                 messages.append(

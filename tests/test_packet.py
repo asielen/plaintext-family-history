@@ -596,10 +596,12 @@ class PacketTests(unittest.TestCase):
         self.assertNotIn('Old Duplicate', readme)
 
     def test_duplicate_merged_into_the_subject_is_not_another_person(self):
-        # A stub (living: unknown) folded into the packet's own subject is the
-        # subject; the caution must not list the subject as "another" person.
+        # A stub folded into the packet's own subject is the subject; the
+        # caution must not list the subject as "another" person. (The stub
+        # says `living: false` here: one still `unknown` holds the subject
+        # back as living - test_living_duplicate_merged_into_the_subject.)
         self._seed_person()
-        self._seed_person(pid='p-cccccccccc', name='Stub Of Subject', living='unknown',
+        self._seed_person(pid='p-cccccccccc', name='Stub Of Subject', living='false',
                           surname='Stub')
         self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-aaaaaaaaaa' "
                           "WHERE id = 'p-cccccccccc'")
@@ -611,6 +613,20 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertNotIn('CAUTION: this packet', readme)
+
+    def test_living_duplicate_merged_into_the_subject_holds_the_packet(self):
+        # #304 round 4: a stub still `living: unknown` merged into the subject
+        # hands him its claims, so the packet treats him as living - and the
+        # refusal names the merged file whose line to change.
+        self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Stub Of Subject', living='unknown',
+                          surname='Stub')
+        self.conn.execute("UPDATE persons SET status = 'merged', merged_into = 'p-aaaaaaaaaa' "
+                          "WHERE id = 'p-cccccccccc'")
+        self._commit_fresh()
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'living-subject')
+        self.assertIn('p-cccccccccc', ' '.join(result['messages']))
 
     def test_excluded_source_claims_omitted_from_timeline(self):
         self._seed_person()

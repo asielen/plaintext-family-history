@@ -1716,12 +1716,23 @@ def _check_merge_pointers(registry: Registry, findings: list[Finding],
                 'there is no surviving person and the claims that name it count for no one '
                 'else. Open the records in that chain and point the last merged_into: at '
                 'the one person that is not merged.'))
-        elif current and current not in registry.person_meta:
+        elif current and current not in _known_person_ids(registry):
             findings.append(Finding('E', 'E020', path,
                 f'{shown} is merged into {fmt_id_display(current)}, but no person record has '
                 'that id, so the claims that name it count for no one else. Correct the '
                 f'merged_into: line (find the right person with `fha find`), or restore the '
                 f'record for {fmt_id_display(current)}.'))
+
+
+def _known_person_ids(registry: Registry) -> set[str]:
+    """Every person record on disk: the ones lint read, plus the ones it could
+    not (not UTF-8, frontmatter that will not parse), known by the id in their
+    filename (#68). `fha index` keeps a row for those from the filename too
+    (#267), so a merge pointing at one still resolves there - lint must agree,
+    or it reports a missing survivor and invites the owner to make a second
+    Thomas (#304 review)."""
+    return set(registry.person_meta) | {
+        rid for rid in registry.unread_record_ids if id_type_of(rid) == 'P'}
 
 
 def _registry_merge_survivors(registry: Registry) -> dict[str, str]:
@@ -1738,7 +1749,7 @@ def _registry_merge_survivors(registry: Registry) -> dict[str, str]:
         target = merge_pointer(meta.get('status'), meta.get('merged_into'))
         if target:
             pointers[pid] = target
-    survivors = merge_survivor_map(pointers, set(registry.person_meta))
+    survivors = merge_survivor_map(pointers, _known_person_ids(registry))
     registry._merge_survivors = survivors
     return survivors
 
@@ -2785,9 +2796,16 @@ def _check_relationships_reconciliation(
     derives no edge, so it backs no entry and it asks for none: a block that
     omits "they did not marry" is complete. An entry that cites one anyway gets
     its own wording, because the claim is not the thing that needs fixing."""
+    survivors = getattr(alias_map, 'survivors', None) or {}
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
+            continue
+        if pid in survivors:
+            # A merged record's block is its pre-merge view; its claims now
+            # count for the survivor (SPEC §9), so measuring the block against
+            # them would report drift that is only the merge. W107 lists the
+            # tombstone's leftovers for cleanup instead (#304 review).
             continue
         profile_path = _profile_path_for(registry, pid)
         referenced_cids: set[str] = set()
@@ -2797,7 +2815,10 @@ def _check_relationships_reconciliation(
                 continue
             role = str(entry.get('type', '')).strip().lower()
             other_pid = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
-            other_pid = normalize_id(other_pid) if other_pid else None
+            # `to:` reads through the merge like the claims do (#304 review):
+            # Mary's entry still naming her son's merged duplicate is the same
+            # edge the index derives for the survivor, not a W115.
+            other_pid = through_survivors(normalize_id(other_pid), alias_map) if other_pid else None
             status = str(entry.get('status', '')).strip().lower()
             is_sourced = bool(entry.get('claim') or entry.get('source')) and status != 'hypothesis'
             if not is_sourced:

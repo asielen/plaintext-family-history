@@ -234,6 +234,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     path_to_alias,
+    carried_living_message,
     person_is_living,
     person_merge_chain,
     photoindex_status,
@@ -2543,12 +2544,16 @@ def _packet_payload(
         pid = person['id']
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'packet_dir': None, 'zip_path': None, 'messages': messages}
-        if person['living'] in ('true', 'unknown'):
+        if person['living'] in ('true', 'unknown') or person_is_living(conn, pid):
+            # person_is_living follows the merge both ways (#304 review): a
+            # living or unknown record merged into the subject counts too.
             return {
                 'status': 'living-subject', 'packet_dir': None, 'zip_path': None,
-                'messages': [
+                'messages': messages + [
                     f'{fmt_id_display(pid)} has living={person["living"]}; '
                     'packet exports refuse living/unknown subjects by default.'
+                    if person['living'] in ('true', 'unknown') else
+                    carried_living_message(conn, pid, 'packet exports refuse living subjects by default')
                 ],
             }
 
