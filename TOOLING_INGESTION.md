@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-**Version 1.2 - companion to SPEC.md v1.2 and TOOLING.md v1.2 (versions track the SPEC).**
+**Version 2.0 - companion to SPEC.md v2.0 and TOOLING.md v2.0 (versions track the SPEC).**
 
 This document is a focused expansion of one tool family that the main [`TOOLING.md`](TOOLING.md) only sketches: the **capture / inbox / ingestion** on-ramp. SPEC.md Part III (§12.1) states *what* a source stub is and how assets and records separate; TOOLING.md §13b names the `fha capture` engine; this document specifies *how* the whole intake spine works end to end - the engine, every delivery form that feeds it, and the browser companion in enough detail to build it in any language.
 
