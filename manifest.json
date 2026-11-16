@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c0c9fbc9a7432924afd98b6dcb393ebdab12704a6f96b623cb453980e4e2d4f6",
+      "sha256": "150bcbf196cd9b96db253fb3c048ebbbc5939e5bcc07a3c1c590226f4313323e",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "865aaa826c4f78b276960f6f369169f3f6e2019c3ba4ec2de22941fecc3260e4",
+      "sha256": "42eea3267cd2a8ad695e4b3a40609ffd59128ce4a414ad5c8c1fbfbe25f3c93e",
       "spec_version": "2.1",
       "src": "tools/doctor.py"
     },
@@ -665,7 +665,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "a4cfc24d6a20250da929d32ad4424edc0e3aeb5ef55e6a149322008b29940af5",
+      "sha256": "9466487065c8a47affc7c9de458c4baf15645ddf1f869820b4ccff6396428d19",
       "spec_version": "2.1",
       "src": "tools/photoindex.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "7fc31b02982e0847d03b813c681058f7424c73348db0042932f2dc3ca07898e4",
+      "sha256": "2978af9d77c4cc15c946cf3bdc19f8b2bb73b63f1cf3774f42ef37db633393e6",
       "spec_version": "2.1",
       "src": "tools/process.py"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "e2bf740458a1b5ca98d79be8b5fc460015a10691356871603dbb8542714c7d00",
+      "sha256": "df25aa9bccd408dcb3c9f42fba51cc8ef1c46d357fbf601761631e3204e1096d",
       "spec_version": "2.1",
       "src": "tools/source.py"
     },
@@ -955,13 +955,13 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "eeb79a708b0e0040a8eab6a92608fe10353e5e6063d07cee2312bd5bc4139181",
+      "sha256": "5b5778c6569605782ad63d0fd2b3782c9c4c2955b685c69ace9f76d7cc9e334b",
       "spec_version": "2.1"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "1a181b4bb81d90dc528f1ade66d0021763a2fd2b0c4a86800f7f03ef458a46a0",
+      "sha256": "99bb870a89831bd597336d0eebcdebcf01de8bd593cf30bee6a3fb48e6974c8f",
       "spec_version": "2.1"
     },
     {

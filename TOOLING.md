@@ -569,7 +569,7 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 **Filename parsing algorithm.** Suffixes are stripped in this fixed priority order (implemented in `parse_media_filename`):
 1. Strip `-crop` suffix first → `is_crop = True`. Crop stacks on any other suffix combination.
-2. Attached object (SPEC §13): with any trailing `-back` set aside, if the stem ends in a word from the closed list `cover | folder | mount | envelope | sleeve | note[-N]` (case-insensitive; only `note` takes a number), strip both → `part_kind = "attached"`, `attached = "envelope"` / `"envelope-back"` / `"note-2"`. The list is closed: any other word stays in `base_id`.
+2. Attached object (SPEC §13): with any trailing `-back` or `-front` set aside, if the stem ends in a word from the closed list `cover | folder | mount | envelope | sleeve | note[-N]` (case-insensitive; only `note` takes a number), strip both → `part_kind = "attached"`, `attached = "envelope"` / `"envelope-back"` / `"envelope-front"` / `"note-2"`. The list is closed: any other word stays in `base_id`.
 3. Otherwise strip one part-kind suffix: `-pageN` / `-page-N`, `-negative`, `-back`, `-front`, `-bw`, in that order.
 4. Detect trailing single-letter variant ID - hyphen-letter (`-b`) or letter immediately after a digit (`034b`).
 5. Remaining stem → `base_id`.

@@ -1090,7 +1090,8 @@ def _main_image_rank(parsed) -> int:
 
     0 a plain scan, 1 a front (copy a or none), 2 any other picture-side scan
     (a front or plain scan with a copy letter: 'Reunion-1950s.jpg', print B),
-    3 anything else (a back, negative, crop, page, black-and-white copy) - the
+    3 anything else (a back, negative, crop, page, black-and-white copy),
+    4 something kept with the photo (its envelope, folder, mount, note) - the
     same tiers `_lib.select_variation_primary` picks in, which takes the
     alphabetically-first file of the best tier present. Two files of the same
     tier are an even choice for the filename rule, so a record that names
@@ -1108,6 +1109,8 @@ def _main_image_rank(parsed) -> int:
         return 1
     if parsed.part_kind in ('none', 'front'):
         return 2
+    if parsed.part_kind == 'attached':
+        return 4    # the envelope, folder or note: never above the photo's own scans
     return 3
 
 

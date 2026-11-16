@@ -799,6 +799,19 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(env_back.part_kind, 'attached')
         self.assertEqual(env_back.base_id, 'portrait')
         self.assertEqual(variant_role(env_back), 'envelope-back')
+        # Review: with no plain or front scan, the photo's own scans still
+        # win, whatever the names sort to - a negative kept in its envelope.
+        for group, main in ((['h/x-negative.tif', 'h/x-envelope.tif'], 'h/x-negative.tif'),
+                            (['i/x-crop.tif', 'i/x-cover.tif'], 'i/x-crop.tif'),
+                            (['j/x-page-1.tif', 'j/x-page-2.tif', 'j/x-cover.tif'], 'j/x-page-1.tif')):
+            rows = self._group([(n, None) for n in group])
+            self.assertEqual([n for n in group if rows[n][1]], [main], group)
+
+    def test_both_sides_of_an_envelope_join_the_photo(self) -> None:
+        rows = self._group([('k/x.tif', None), ('k/x-envelope-front.tif', None),
+                            ('k/x-envelope-back.tif', None)])
+        self.assertEqual(len({r[0] for r in rows.values()}), 1, rows)
+        self.assertEqual(rows['k/x-envelope-front.tif'][3], 'envelope-front')
 
     def test_only_the_listed_attached_words_group(self) -> None:
         # #306 keeps #200's lesson: only the closed list groups, and a number

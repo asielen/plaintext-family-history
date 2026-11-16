@@ -7023,20 +7023,24 @@ def parse_media_filename(stem: str) -> ParsedName:
     page_num: int | None = None
     freeform_role: str | None = None
     attached: str | None = None
-    # An attached object, alone or with its own back: '-envelope',
-    # '-envelope-back', '-note-2'. Checked first so '-envelope-back' is the
-    # envelope's back, never the photo's.
-    back_stripped = _BACK_SUFFIX_RE.sub('', remaining)
-    attached_m = _ATTACHED_SUFFIX_RE.search(back_stripped)
+    # An attached object, alone or with one of its own sides: '-envelope',
+    # '-envelope-back', '-envelope-front', '-note-2'. Checked first so
+    # '-envelope-back' is the envelope's back, never the photo's, and both
+    # sides of one envelope land in the photo's group.
+    side = ''
+    unsided = remaining
+    if _BACK_SUFFIX_RE.search(remaining):
+        side, unsided = '-back', _BACK_SUFFIX_RE.sub('', remaining)
+    elif _FRONT_SUFFIX_RE.search(remaining):
+        side, unsided = '-front', _FRONT_SUFFIX_RE.sub('', remaining)
+    attached_m = _ATTACHED_SUFFIX_RE.search(unsided)
+    page_m = None
     if attached_m:
         word = (attached_m.group(1) or attached_m.group(3)).lower()
         num = attached_m.group(2)
-        attached = f'{word}-{num}' if num else word
-        if back_stripped != remaining:
-            attached += '-back'
+        attached = (f'{word}-{num}' if num else word) + side
         part_kind = 'attached'
-        remaining = _ATTACHED_SUFFIX_RE.sub('', back_stripped)
-        page_m = None
+        remaining = _ATTACHED_SUFFIX_RE.sub('', unsided)
     else:
         page_m = _PAGE_SUFFIX_RE.search(remaining)
     if part_kind == 'attached':
@@ -7237,7 +7241,11 @@ def select_variation_primary(members: list, parsed_of) -> object:
         ]
         return min(picture_roots or picture_side,
                    key=lambda m: (parsed_of(m).variant_id or '', m))
-    return min(members)
+    # Anything of the photo's own - a back, a negative, a page, a crop -
+    # beats what was kept with it: a negative stored in its envelope stays
+    # the main image, whatever the names sort to (SPEC §13).
+    own = [m for m in members if parsed_of(m).part_kind != 'attached']
+    return min(own or members)
 
 
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────
