@@ -228,7 +228,7 @@ See [`GETTING_STARTED.md`](GETTING_STARTED.md) for the full walkthrough.
 
 ## Status & roadmap
 
-**Current: `spec v2.0` - milestones 1-11 complete.**
+**Current: `spec v2.1` - milestones 1-11 complete.**
 
 Everything through the intake pipeline, the static-site generator, the
 installer/update tooling, and working-copy mode is
