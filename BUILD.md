@@ -57,7 +57,7 @@ milestone, build the phases in order unless a phase says otherwise.
 
 | Milestone | Layer | Phases | What it builds |
 |---|---|---|---|
-| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W141 (M1.10) |
+| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W143 (M1.10) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | `fha views` timeline / sources-index / draft-queue (M2.1), brackets (M2.2), tree / clean / refresh (M2.3); `fha doctor` (M2.4); `fha find` + `fha search` (M2.5) |
 | 3 | Layer 3 - Photo catalog | M3.1-M3.6 | `fha photoindex` scan and grouping (M3.1), `find` (M3.2), `triage` / `report` (M3.3), `reconcile` / `tag-person` (M3.4), `set-summary` (M3.5), `gallery` (M3.6) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4a | `fha xref` (M4.1); `fha cooccur` (M4.2); `fha find --related` (M4.3); `fha confirm` xref / cooccur / dismiss / place / discovery / draft (M4.4) and `confirm merge` (M4.4a) |
@@ -243,8 +243,7 @@ CREATE TABLE claims(id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT 
   subtype TEXT, date_edtf TEXT, date_min TEXT, date_max TEXT,
   place_id TEXT, place_text TEXT, value TEXT NOT NULL, status TEXT NOT NULL,
   reviewed TEXT, confidence TEXT, information TEXT, evidence TEXT,
-  asset TEXT, anchor TEXT, hypothesis TEXT,
-  significance_override TEXT, significance_reason TEXT,
+  anchor TEXT, hypothesis TEXT,
   negated INTEGER DEFAULT 0, notes TEXT);
 CREATE TABLE claim_persons(claim_id TEXT, person_id TEXT, position INTEGER, role TEXT);
 CREATE TABLE claim_links(claim_id TEXT, rel TEXT, target_id TEXT);
@@ -320,7 +319,7 @@ python -m unittest tests.test_index tests.test_merged_survivor
 **One PR.** New file `tools/lint.py`. Wire `fha lint [--root PATH] [--json]` into `fha.py`,
 plus `fha check` as an alias registered on the same parser (TOOLING §3). This phase ships the
 lint engine and the first ten error codes only; the remaining errors (E011-E020, M1.5), the
-warning codes (W101-W114 in M1.6, W115-W141 in M1.10), and the fix/formatter flags (M1.7) are
+warning codes (W101-W114 in M1.6, W115-W143 in M1.10), and the fix/formatter flags (M1.7) are
 later phases in this same layer.
 
 **Lint is the reference `Result` renderer.** `run_lint` returns a `_lib.Result` (M1.1): each
@@ -344,7 +343,6 @@ one bad file.
 | E005 | p-id appears anywhere but no person record exists for it |
 | E006 | `accepted` claim missing `reviewed` field (disputed/rejected/superseded without it: W139, a warning) |
 | E007 | Claim `type` outside §8.2 vocabulary |
-| E008 | `significance_override` present without `significance_reason` |
 | E009 | `contradicts:` link present but no open question in `notes/questions.md` references both c-ids |
 | E010 | Missing required frontmatter fields: `id`, `type`, `title` (sources); `id`, `name`, `tier`, `living` (persons) |
 
@@ -384,7 +382,8 @@ command (TOOLING §3).
 | E020 | `status: merged` record whose `merged_into:` names no person, or loops (claims stay on the tombstone) |
 
 E016 is unassigned: a claim naming a merged p-id counts for the survivor (SPEC §9) and is
-reported as the W107 warning (M1.6).
+reported as the W107 warning (M1.6). E008 is unassigned: SPEC 2.1 retired the `significance`
+override it checked, and a leftover field is the W143 warning (M1.10).
 
 **E013 parsing detail.** Scan the summary text (H1 to first `## Section`) with `finditer` on
 `**Label:**` pattern - do NOT split by line (inline multi-label form exists). Extract
@@ -544,7 +543,7 @@ Batch moves, the field-edit flags, `--clear` and `fha claim new` extend this ver
 
 ---
 
-### M1.10 - `fha lint` - warning codes (W115-W141)
+### M1.10 - `fha lint` - warning codes (W115-W143)
 
 **One PR** (or one per group below; each code is independent). Extend `tools/lint.py`. No new
 flags beyond the two fix modes M1.7 lists (`--fix-reciprocal`, `--fix-surnames`). Every code
@@ -587,6 +586,7 @@ W115, W126), `_lib.spouse_parties` (W115, W125), `_lib.vital_subjects` (W132),
 | W139 | `disputed`/`rejected`/`superseded` claim with no `reviewed:` date |
 | W140 | Half a merge: `merged_into:` without `status: merged`, or the reverse |
 | W141 | Claim `information`/`evidence`, source `source_class` or person `sex` outside its vocabulary (`_lib` constants; `sex: U` tolerated) |
+| W143 | A source still carrying a retired field (claim `significance`/`significance_reason`/`asset`, file `language`/`digitized`): one line per record, "safe to delete" |
 
 W119, W120, W127 and W129 each have a twin in `fha views brackets` (M2.2, M11.4, M11.7) built
 on the same map. W121 is also surfaced by `fha doctor` and `fha index`, so it fires on the first

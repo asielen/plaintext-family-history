@@ -224,7 +224,7 @@ CODE MAP
                                 and run_claim_new (issue #54)
 
   Accepting a death (#246)
-    _pronouns / _stays_out    - she/her, he/him, they/them from sex:, for plain lines
+    _pronouns / _stays_out    - she/her, he/him, they/them from gender:/sex:, for plain lines
     _effective_claim          - the claim as accepted, with this edit's --type/--persons
     _death_reading_of         - _lib.claim_death_reading for a non-negated death/burial
     _mark_deceased_not_living - THE accept-side step every accept path calls: mark
@@ -283,6 +283,7 @@ from _lib import (
     written_link_display,
     comment_only_names,
     locate_claim_records,
+    person_pronouns,
     record_claims_by_id,
     CLAIM_TYPES,
     CONFIDENCE_VALUES,
@@ -1495,10 +1496,10 @@ def _echo_field_lines(**fields: str | None) -> list[str]:
 # ── Accepting a death: the person is no longer living (#246) ──────────────────
 
 def _pronouns(meta: dict) -> tuple[str, str]:
-    """(she, her) / (he, him) / (they, them), from the record's `sex:` (SPEC §9),
-    so one plain line reads "she stays out", never "her stays out"."""
-    sex = str(meta.get('sex') or '').strip().upper()
-    return {'F': ('she', 'her'), 'M': ('he', 'him')}.get(sex, ('they', 'them'))
+    """(she, her) / (he, him) / (they, them), from `gender:`, else `sex:`
+    (SPEC A.7, `_lib.person_pronouns`), so one plain line reads "she stays
+    out", never "her stays out"."""
+    return person_pronouns(meta)
 
 
 def _stays_out(meta: dict) -> str:

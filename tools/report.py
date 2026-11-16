@@ -231,8 +231,9 @@ def _vitals_gap_pids(findings: list, registry) -> list[str]:
 # The way `_build_snapshot` writes a claim's fingerprint. Bump it whenever
 # that changes, so the next run treats the saved snapshot's fingerprints as
 # a baseline instead of reporting every claim as changed. 2: participants
-# serialized as JSON, every role a person carries (#266).
-CLAIM_FINGERPRINT_VERSION = 2
+# serialized as JSON, every role a person carries (#266). 3: no `asset`
+# (SPEC 2.1 retired the claim field; index schema 13 drops the column).
+CLAIM_FINGERPRINT_VERSION = 3
 
 
 def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
@@ -284,14 +285,14 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
             for k in (
                 'source_id', 'type', 'subtype', 'date_edtf', 'place_id', 'place_text',
                 'value', 'status', 'reviewed', 'confidence', 'information', 'evidence',
-                'asset', 'anchor', 'hypothesis', 'negated', 'notes',
+                'anchor', 'hypothesis', 'negated', 'notes',
             )
         ) + '|persons=' + json.dumps(claim_persons_by_claim.get(r['id'], []))
         for r in conn.execute(
             '''
             SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
                    value, status, reviewed, confidence, information, evidence,
-                   asset, anchor, hypothesis, negated, notes
+                   anchor, hypothesis, negated, notes
             FROM claims
             '''
         )

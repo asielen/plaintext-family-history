@@ -143,14 +143,15 @@ class PacketTests(unittest.TestCase):
         return profile_path
 
     def _seed_source(self, sid, title, *, restricted=0, source_type=None, asset_rel=None,
-                     create_asset=True, persons=('p-aaaaaaaaaa',)):
+                     create_asset=True, persons=('p-aaaaaaaaaa',), publication_ok=None):
         src_path = self.archive_root / 'sources' / 'other' / f'{sid}.md'
         src_path.parent.mkdir(parents=True, exist_ok=True)
         src_path.write_text(f'---\nid: {sid}\ntitle: {title}\n---\n## Claims\n', encoding='utf-8')
         rel = src_path.relative_to(self.archive_root).as_posix()
         self.conn.execute(
-            'INSERT INTO sources(id, title, source_type, restricted, path) VALUES (?,?,?,?,?)',
-            (sid, title, source_type, restricted, rel),
+            'INSERT INTO sources(id, title, source_type, restricted, publication_ok, path) '
+            'VALUES (?,?,?,?,?,?)',
+            (sid, title, source_type, restricted, publication_ok, rel),
         )
         for pid in persons:
             self.conn.execute(
@@ -470,6 +471,45 @@ class PacketTests(unittest.TestCase):
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('Included sources', readme)
         self.assertTrue(any((result['packet_dir'] / 'sources').iterdir()))
+
+    def test_not_for_publication_source_excluded_by_default(self):
+        # SPEC A.6: `rights.publication_ok: false` keeps a source out of every
+        # export exactly as `restricted` does - a cousin's packet must not
+        # carry a scan the archive was told it may not share.
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Studio Portrait', publication_ok=0,
+                          asset_rel='documents/other/portrait_s-1111111111.jpg')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Excluded sources', readme)
+        self.assertIn('s-1111111111', readme)
+        self.assertIn('(not cleared for sharing)', readme)
+        self.assertNotIn('Studio Portrait', readme)
+        self.assertNotIn('Included sources', readme)
+        self.assertFalse((result['packet_dir'] / 'sources').exists())
+
+    def test_not_for_publication_source_opens_like_restricted(self):
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Studio Portrait', publication_ok=0)
+        self._commit_fresh()
+
+        result = packet.run_packet(
+            self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+            no_photos=True, include_restricted=True,
+        )
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Included sources', readme)
+
+    def test_publication_ok_true_is_shared(self):
+        self._seed_person()
+        self._seed_source('s-1111111111', 'Studio Portrait', publication_ok=1)
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Included sources', readme)
 
     def test_ephemera_source_with_only_a_claim_link_still_gathered(self):
         # SPEC #14 (round-3 Codex finding, PR #191 follow-up): an ephemera

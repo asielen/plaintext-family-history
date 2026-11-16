@@ -5858,5 +5858,62 @@ class FormatterSafetyTests(unittest.TestCase):
         self.assertTrue(any('claims block' in m for m in manual))
 
 
+class RetiredFieldsTests(unittest.TestCase):
+    """SPEC 2.1 dropped four fields: a claim's `significance:` override (with
+    `significance_reason:`) and `asset:`, and a file entry's `language:` and
+    `digitized:`. An older record that still carries one is fine to keep - the
+    tools ignore it - so lint says once, gently, that it can be deleted. Never
+    an error: an archive is not broken by an unused line."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'letter').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('root_person: P-1111111111\n', encoding='utf-8')
+        (self.root / 'people' / 'stubs' / 'doe__jane_P-1111111111.md').write_text(
+            _PERSON_MD, encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _lint(self, *, file_extra: str = '', claim_extra: str = '') -> list:
+        src = (
+            '---\nid: S-1111111111\ntitle: Test source\nsource_type: letter\n'
+            'files:\n  - file: documents/letter/x_S-1111111111.md\n    role: transcript\n'
+            + file_extra
+            + '---\n\n## Claims\n\n```yaml\n'
+            '- value: a fact\n  id: C-1111111111\n  type: birth\n'
+            '  persons: [P-1111111111]\n  date: 1870\n'
+            '  status: suggested\n  confidence: high\n'
+            + claim_extra
+            + '```\n'
+        )
+        (self.root / 'sources' / 'letter' / 'test_S-1111111111.md').write_text(src, encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        return findings
+
+    def test_significance_without_reason_is_no_longer_an_error(self) -> None:
+        findings = self._lint(claim_extra='  significance: vital\n')
+        self.assertFalse([f for f in findings if f.code == 'E008'])
+        gentle = [f for f in findings if f.code == 'W143']
+        self.assertEqual(len(gentle), 1)
+        self.assertIn('significance', gentle[0].message)
+        self.assertIn('safe to delete', gentle[0].message)
+
+    def test_each_retired_field_is_named_once_per_record(self) -> None:
+        findings = self._lint(
+            file_extra='    language: de\n    digitized: 2020-01-01\n',
+            claim_extra='  asset: b-back\n  significance: vital\n'
+                        '  significance_reason: why\n')
+        gentle = [f for f in findings if f.code == 'W143']
+        self.assertEqual(len(gentle), 1)
+        for name in ('language', 'digitized', 'asset', 'significance', 'significance_reason'):
+            self.assertIn(f'`{name}`', gentle[0].message)
+
+    def test_a_record_without_them_is_silent(self) -> None:
+        self.assertFalse([f for f in self._lint() if f.code == 'W143'])
+
+
 if __name__ == '__main__':
     unittest.main()

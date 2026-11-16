@@ -18,7 +18,7 @@ import sys
 import tempfile
 import unittest
 import unittest.mock
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -3498,6 +3498,68 @@ class ProcessTestCase(unittest.TestCase):
         hits = find.search_json(self.archive, cfg, 'Quillfeather')
         self.assertTrue(hits, 'the companion text must be searchable after intake')
 
+    def _newspaper_bundle(self, title: str) -> Path:
+        # The shape the browser add-on stages for a Newspapers.com clipping:
+        # every file carries the add-on's generic name, and the notes say
+        # which role each one plays.
+        bundle = self.archive / 'inbox' / 'clipping-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\n'
+            f'title: {title}\n'
+            'source_type: newspaper\n'
+            'files:\n'
+            '  - file: clipping.jpg\n'
+            '    role: clipping\n'
+            '    is_primary: true\n'
+            '  - file: page.jpg\n'
+            '    role: page\n'
+            '  - file: page-snapshot.html\n'
+            '    role: webpage\n'
+            '  - file: clipping-data.json\n'
+            '    role: site-data\n'
+            '---\n'
+            'Clipping notes.\n',
+            encoding='utf-8',
+        )
+        (bundle / 'clipping.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'page.jpg').write_bytes(b'\xff\xd8\xff')
+        (bundle / 'page-snapshot.html').write_text('<html></html>', encoding='utf-8')
+        (bundle / 'clipping-data.json').write_text('{}', encoding='utf-8')
+        return bundle
+
+    def test_bundle_generic_capture_names_take_the_source_title(self) -> None:
+        # 3.11: a folder of `clipping-clipping_s-….jpg` files tells the owner
+        # nothing; each file is named for the source it belongs to instead.
+        self._install_photo_store()
+        bundle = self._newspaper_bundle('Obituary of Mary Hartley')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'newspaper').glob('*_s-*.md'))
+        sid = record.stem.split('_')[-1]
+        names = sorted(PurePosixPath(f['file']).name
+                       for f in read_record(record)['meta']['files'])
+        self.assertEqual(names, sorted([
+            f'obituary-of-mary-hartley-clipping_{sid}.jpg',
+            f'obituary-of-mary-hartley-page_{sid}.jpg',
+            f'obituary-of-mary-hartley-webpage_{sid}.html',
+            f'obituary-of-mary-hartley-site-data_{sid}.json',
+        ]))
+
+    def test_bundle_title_ending_in_the_role_does_not_stutter(self) -> None:
+        self._install_photo_store()
+        bundle = self._newspaper_bundle('Hartley Wedding Clipping')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'newspaper').glob('*_s-*.md'))
+        sid = record.stem.split('_')[-1]
+        names = {PurePosixPath(f['file']).name
+                 for f in read_record(record)['meta']['files']}
+        self.assertIn(f'hartley-wedding-clipping_{sid}.jpg', names)
+        self.assertIn(f'hartley-wedding-clipping-page_{sid}.jpg', names)
+
     def test_bundle_document_filename_includes_copy_hint(self) -> None:
         bundle = self.archive / 'inbox' / 'translation-bundle'
         bundle.mkdir(parents=True)
@@ -4480,6 +4542,89 @@ class PeopleWrittenWithNamesTests(unittest.TestCase):
             self.assertEqual(
                 record_display_names(root, ['P-1111111111', 'P-2222222222', 'L-3333333333']),
                 {'p-1111111111': 'Jane Doe', 'l-3333333333': 'Fairview'})
+
+
+class PhysicalLocationTests(unittest.TestCase):
+    """SPEC A.6: a scan is a copy, and the original may be the evidence a
+    later researcher needs - so `fha process` asks once who keeps it, and
+    records the answer as `physical_location:`. Blank skips; a web capture is
+    never asked (there is no paper original in the family)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        (self.archive / 'inbox').mkdir()
+        self.store = FakePhotoStore()
+        self._saved = {name: getattr(process, name) for name in (
+            '_run_exiftool_read_keywords', '_run_exiftool_embed_source',
+            '_run_exiftool_remove_source', '_prompt', '_stdin_is_interactive')}
+        process._run_exiftool_read_keywords = self.store.read
+        process._run_exiftool_embed_source = self.store.embed
+        process._run_exiftool_remove_source = self.store.remove
+        self.asked: list[str] = []
+        self.answers: list[str] = []
+        process._stdin_is_interactive = lambda: True
+
+        def prompt(message: str) -> str:
+            self.asked.append(message)
+            return self.answers.pop(0) if self.answers else ''
+        process._prompt = prompt
+
+    def tearDown(self) -> None:
+        for name, value in self._saved.items():
+            setattr(process, name, value)
+        self._tmp.cleanup()
+
+    def _process(self, name: str, *extra: str, sidecar: str | None = None) -> dict:
+        scan = self.archive / 'inbox' / name
+        scan.write_bytes(b'\xff\xd8\xff')
+        if sidecar is not None:
+            scan.with_name(scan.stem + '.notes.md').write_text(sidecar, encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = process._standalone_main(
+                [str(scan), '--type', 'letter', *extra, '--root', str(self.archive)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
+        return read_record(record)['meta']
+
+    def test_the_answer_is_recorded_with_the_month(self) -> None:
+        self.answers = ['Aunt Ruth']
+        meta = self._process('grandpas-letter.jpg')
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(meta['physical_location']['holder'], 'Aunt Ruth')
+        self.assertRegex(str(meta['physical_location']['as_of']), r'^\d{4}-\d{2}$')
+
+    def test_blank_skips(self) -> None:
+        meta = self._process('grandpas-letter.jpg')
+        self.assertEqual(len(self.asked), 1)
+        self.assertNotIn('physical_location', meta)
+
+    def test_flag_answers_without_asking(self) -> None:
+        meta = self._process('grandpas-letter.jpg', '--physical-location', 'Sam Rivera')
+        self.assertEqual(self.asked, [])
+        self.assertEqual(meta['physical_location']['holder'], 'Sam Rivera')
+
+    def test_no_one_to_ask_writes_nothing(self) -> None:
+        process._stdin_is_interactive = lambda: False
+        meta = self._process('grandpas-letter.jpg')
+        self.assertEqual(self.asked, [])
+        self.assertNotIn('physical_location', meta)
+
+    def test_a_web_capture_is_not_asked(self) -> None:
+        meta = self._process('census-record.jpg', sidecar=(
+            '---\ntitle: 1880 census\nexternal_links:\n'
+            '  - url: https://example.com/record/1\n---\nCaptured.\n'))
+        self.assertEqual(self.asked, [])
+        self.assertNotIn('physical_location', meta)
+
+    def test_a_typed_note_is_not_asked(self) -> None:
+        note = self.archive / 'inbox' / 'family-notes.txt'
+        note.write_text('notes', encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = process._standalone_main(
+                [str(note), '--type', 'letter', '--root', str(self.archive)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self.asked, [])
 
 
 if __name__ == '__main__':

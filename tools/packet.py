@@ -1279,10 +1279,24 @@ def _source_restricted_value(archive_root: Path, row: sqlite3.Row) -> tuple[obje
     if value in (None, False, '', 'false'):
         if (row['source_type'] or '') == 'dna':
             return 'dna', None
-        if (row['restricted'] or 0):
+        if (row['restricted'] or 0) or _not_for_publication(row):
             return 'true', None
         return None, None
     return value, None
+
+
+def _not_for_publication(row: sqlite3.Row) -> bool:
+    """`rights.publication_ok: false` (SPEC A.6): the archive was told this
+    source may not be shared, so the packet treats it as a plain restriction -
+    left out unless --include-restricted, named in the README by ID only. The
+    index stores the flag three-state; only an explicit false (0) withholds,
+    the same `COALESCE(publication_ok, 1) = 0` rule the site, gedcom and
+    wikitree use."""
+    try:
+        pub = row['publication_ok']
+    except (IndexError, KeyError):
+        return False
+    return pub is not None and int(pub) == 0
 
 
 def _classify_sources(
@@ -1318,7 +1332,7 @@ def _classify_sources(
     placeholders = ','.join('?' * len(source_ids))
     rows = conn.execute(
         f"""
-        SELECT id, title, source_type, restricted, path
+        SELECT id, title, source_type, restricted, publication_ok, path
         FROM sources WHERE id IN ({placeholders})
         ORDER BY title
         """,
@@ -2569,14 +2583,17 @@ def _write_readme(
         # not open would blame the wrong cause, and a README that misreports
         # why something is absent sends the owner looking in the wrong place.
         lines.append(
-            f'\nExcluded sources ({len(excluded_sources)}) - restricted, DNA, or '
-            'unreadable material withheld by default, listed by ID only:\n'
+            f'\nExcluded sources ({len(excluded_sources)}) - restricted, DNA, not '
+            'cleared for sharing, or unreadable material withheld by default, '
+            'listed by ID only:\n'
         )
         for row in excluded_sources:
             if row['id'] in unreadable_source_ids:
                 reason = 'could not be read'
             elif row['source_type'] == 'dna':
                 reason = 'DNA'
+            elif _not_for_publication(row) and not (row['restricted'] or 0):
+                reason = 'not cleared for sharing'
             else:
                 reason = 'restricted'
             lines.append(f'  [{fmt_id_display(row["id"])}] ({reason})\n')
