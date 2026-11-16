@@ -71,6 +71,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    moves the file, handles the rename/keyword at the crossing, and updates the record (preview
    with `--dry-run` first).
 
+   **Who keeps the original?** A scan of something on paper (a letter, a certificate, a page from a
+   family Bible) is a copy; the original may be what a later researcher needs (SPEC A.6). When filing
+   one into the documents root - not a web capture - ask once, plainly: "Who has the original of this
+   now?" Pass the answer as `--physical-location "Aunt Ruth"`; if he does not know or would rather
+   skip, pass nothing. `fha process` asks this itself only at a terminal, never through you.
+
 2. **If the item is a source stub, it seeds the record and is consumed** (SPEC §12.1):
    - A **`*.notes.md` sidecar** or a **bundle folder** carries a hint block (`source_type`, `source_date`,
      `people` name-hints, `files` roles) plus freeform prose. Its frontmatter pre-fills the §14 record;

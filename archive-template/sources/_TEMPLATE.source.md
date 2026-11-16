@@ -36,10 +36,8 @@ places:                    # OPTIONAL - where this source is set
 files:                     # OPTIONAL - the photo or scan this source points at
   - file: documents/put-your-file-here.jpg
     role: primary         # if there's just one file for this source, leave this as "primary"
-    # language: de        # OPTIONAL - the language of THIS file
   # - file: documents/put-your-file-here-translation.md
   #   role: translation   # an English version of a foreign record, filed beside the original
-  #   language: en
   #   derived: true
 
 created: 2026-01-01        # the date you added this (any date is fine)

@@ -1349,6 +1349,30 @@ def _missing_photo_message(file_path_str: str, registry: Registry) -> str:
             f'--dry-run); {roots_hint}')
 
 
+# Fields SPEC 2.1 retired. An older record keeps working with them in place -
+# no tool reads them - so a leftover is one gentle line per record, never an
+# error: the owner deletes it when convenient, or never.
+_RETIRED_CLAIM_FIELDS = ('significance', 'significance_reason', 'asset')
+_RETIRED_FILE_FIELDS = ('language', 'digitized')
+
+
+def _check_retired_fields(meta: dict, claims: list, path: Path,
+                          findings: list[Finding]) -> None:
+    """W143: name, once per source record, any retired field it still carries."""
+    found: list[str] = []
+    for f in (meta.get('files') or []):
+        if isinstance(f, dict):
+            found += [k for k in _RETIRED_FILE_FIELDS if k in f and k not in found]
+    for claim in claims or []:
+        if isinstance(claim, dict):
+            found += [k for k in _RETIRED_CLAIM_FIELDS if k in claim and k not in found]
+    if found:
+        names = ', '.join(f'`{k}`' for k in found)
+        findings.append(Finding('W', 'W143', path,
+            f'This record still carries {names}, which the archive no longer uses '
+            '(SPEC 2.1); nothing reads it, so it is safe to delete those lines.'))
+
+
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
@@ -1598,11 +1622,6 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         # E014: Claim date EDTF check (forgiving: loose-but-clear → W109 suggestion)
         _check_date_value(claim.get('date', ''), 'date', f'Claim {cid}: ', path, findings)
 
-        # E008: Significance override without reason
-        if claim.get('significance') and not claim.get('significance_reason'):
-            findings.append(Finding('E', 'E008', path,
-                f'Claim {cid} has significance override but no significance_reason'))
-
         # W141: the Mills analysis words (SPEC A.3). Optional, so only a word
         # that is present and outside the list is reported; a warning, since
         # the claim still reads - the word is just never recognised.
@@ -1635,6 +1654,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 findings.append(Finding('W', 'W109', path,
                     f'Claim {cid} ({claim_type}) is accepted but has no notes: context - '
                     'add a short notes: line explaining the evidence behind it.'))
+
+    _check_retired_fields(meta, claims, path, findings)
 
     # E011: file inventory checks
     # In working-copy mode absent assets are assumed-present-elsewhere; skip.

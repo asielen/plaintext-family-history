@@ -285,11 +285,8 @@ CREATE TABLE IF NOT EXISTS claims(
   confidence TEXT,
   information TEXT,
   evidence TEXT,
-  asset TEXT,
   anchor TEXT,
   hypothesis TEXT,
-  significance_override TEXT,
-  significance_reason TEXT,
   negated INTEGER DEFAULT 0,
   notes TEXT
 );
@@ -1491,9 +1488,8 @@ def _index_source(
         # than omitting the label the way a truly-absent role already does.
         role = str(f.get('role') or '')
         # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)
-        # file variants; a claim's `asset: b-back` (SPEC §8.4) pins to
-        # exactly this role/copy pair, so the column must carry whatever the
-        # record actually wrote, not a blanket NULL. `optional_scalar`
+        # file variants (which print a file is), so the column must carry
+        # whatever the record actually wrote, not a blanket NULL. `optional_scalar`
         # treats a bare `copy:` (explicit YAML null) the same as an omitted
         # key - both NULL, never the literal text 'None' a plain `str()`
         # would otherwise produce.
@@ -1617,23 +1613,19 @@ def _index_source(
         confidence = optional_scalar(claim.get('confidence'))
         information = optional_scalar(claim.get('information'))
         evidence = optional_scalar(claim.get('evidence'))
-        asset = optional_scalar(claim.get('asset'))
         anchor = optional_scalar(claim.get('anchor'))
         # hypothesis: is a back-pointer id (SPEC §8.4), not free text, so it
         # goes through `_optional_id_ref` (optional_scalar + normalize_id)
         # like `merged_into:`/`superseded_by:` above.
         hypothesis_id = _optional_id_ref(claim.get('hypothesis'))
-        sig_override = optional_scalar(claim.get('significance'))
-        significance_reason = optional_scalar(claim.get('significance_reason'))
         notes = optional_scalar(claim.get('notes'))
 
         conn.execute(
             '''INSERT OR REPLACE INTO claims
                (id, source_id, type, subtype, date_edtf, date_min, date_max,
                 place_id, place_text, value, status, reviewed, confidence,
-                information, evidence, asset, anchor, hypothesis,
-                significance_override, significance_reason, negated, notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                information, evidence, anchor, hypothesis, negated, notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
             (
                 cid, sid,
                 str(claim.get('type', '')),
@@ -1647,11 +1639,8 @@ def _index_source(
                 confidence,
                 information,
                 evidence,
-                asset,
                 anchor,
                 hypothesis_id,
-                sig_override,
-                significance_reason,
                 negated,
                 notes,
             ),

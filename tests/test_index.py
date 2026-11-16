@@ -1617,7 +1617,7 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 12)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 13)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -4803,8 +4803,7 @@ source_type: interview
 
 _CLAIM_OPT_COLUMNS = (
     'date_edtf', 'subtype', 'place_text', 'reviewed', 'confidence',
-    'information', 'evidence', 'asset', 'anchor', 'hypothesis',
-    'significance_override', 'significance_reason', 'notes',
+    'information', 'evidence', 'anchor', 'hypothesis', 'notes',
 )
 
 
@@ -4862,13 +4861,22 @@ class ClaimOptionalFieldsBlankVsOmittedTests(unittest.TestCase):
         self.assertEqual(row['confidence'], 'high')
         self.assertEqual(row['information'], 'primary')
         self.assertEqual(row['evidence'], 'direct')
-        self.assertEqual(row['asset'], 'b-back')
         self.assertEqual(row['anchor'], '00:01:00')
         self.assertEqual(row['hypothesis'], 'h-ccccccccc1')
-        self.assertEqual(row['significance_override'], 'vital')
-        self.assertEqual(row['significance_reason'],
-                          'linchpin of the identification')
         self.assertEqual(row['notes'], 'a note')
+
+    def test_retired_claim_fields_are_not_indexed(self) -> None:
+        # SPEC 2.1 dropped a claim's `asset:` and the `significance:` override
+        # (with its `significance_reason:`): an old record still carrying them
+        # indexes cleanly, and the index keeps no column for them.
+        index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            cols = {r[1] for r in conn.execute('PRAGMA table_info(claims)')}
+        finally:
+            conn.close()
+        for gone in ('asset', 'significance_override', 'significance_reason'):
+            self.assertNotIn(gone, cols)
 
     def test_upsert_matches_full_build(self) -> None:
         index.build_index(self.root, {})

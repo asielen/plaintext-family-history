@@ -793,6 +793,7 @@ reviewing them come after, through the process-source and review-claims skills.
 | `--more` `FILE ROLE` | Attach FILE to the existing source as ROLE[:copy] |
 | `--dest` `SUBPATH` | The folder of your photo library to file a photo into, when filing it out of the inbox - e.g. --dest "Cemetery Visit 2021". Without it the photo is filed at the top of the library. Also applies to the photos of a notes.md bundle folder |
 | `--people` `P-IDS` | Comma-separated P-ids of people in this photo - e.g. "P-de957bcda1,P-ab3c8f0e12". Writes each as a bare keyword in the photo file and populates the source record's people: list. Photos only; use `fha photoindex tag-person` to tag photos already processed. |
+| `--physical-location` `HOLDER` | Who keeps the paper original of a scanned document, e.g. "Aunt Ruth" - recorded on the source with the current month as the date. Without it you are asked when filing a scan (press Enter to skip) |
 | `--variants` `{one,separate}` | When the photo has variations beside it (a back, a second print, a crop), process them as ONE source or as separate sources without being asked - the answer to the [one / separate / skip] question, for scripts and agents |
 | `--dry-run` | Preview without writing |
 

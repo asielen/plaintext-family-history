@@ -4,9 +4,9 @@ and translation/language source fields (gap 5), SPEC §13/§14, chunk 03.
 
 A surname-less filename (leading `__`) is valid grammar; a person filename with
 no `__` sort separator is gentle W117 guidance, never E002; a normal Western
-filename sees neither. A source carrying `original_language:`, per-file
-`language:`, and a `role: translation` derivative lints clean - language fields
-are informational, and `translation` parses as a freeform role like `transcript`.
+filename sees neither. A source carrying `original_language:` and a
+`role: translation` derivative lints clean - the role says a file's language
+(SPEC §14), and `translation` parses as a freeform role like `transcript`.
 Built as tiny temp archives, driven through lint's tool logic directly.
 """
 
@@ -101,14 +101,11 @@ class TranslationLanguageTests(unittest.TestCase):
             'files:\n'
             f'  - file: documents/vital-records/taufbuch-1873_{self.SID}.jpg\n'
             '    role: front\n'
-            '    language: de\n'
             f'  - file: documents/vital-records/taufbuch-1873-transcript_{self.SID}.md\n'
             '    role: transcript\n'
-            '    language: de\n'
             '    derived: true\n'
             f'  - file: documents/vital-records/taufbuch-1873-translation_{self.SID}.md\n'
             '    role: translation\n'
-            '    language: en\n'
             '    derived: true\n'
             '---\n\n## Notes\nA German baptism record with an English translation.\n'
         )
@@ -124,6 +121,8 @@ class TranslationLanguageTests(unittest.TestCase):
         # No inventory-mismatch and no unknown-vocabulary warning for the new role.
         self.assertEqual(_codes(findings, 'E011'), [])
         self.assertEqual(_codes(findings, 'W109'), [])
+        # No per-file `language:` is needed or asked for.
+        self.assertEqual(_codes(findings, 'W143'), [])
 
 
 if __name__ == '__main__':

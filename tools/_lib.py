@@ -1875,6 +1875,35 @@ def format_source_type_error(value: object, *, where: str = 'source_type') -> st
 PERSON_SEX_VALUES: frozenset[str] = frozenset({'M', 'F', 'intersex', 'unknown'})
 
 
+# `gender:` is free text (SPEC A.7); these are the suggested words a pronoun
+# can be read from. Anything else recorded there is honoured by staying
+# neutral, never by falling back to `sex:` and contradicting it.
+_GENDER_SHE = frozenset({'woman', 'female', 'f', 'girl', 'she', 'trans woman', 'transgender woman'})
+_GENDER_HE = frozenset({'man', 'male', 'm', 'boy', 'he', 'trans man', 'transgender man'})
+
+
+def person_pronouns(meta: dict) -> tuple[str, str]:
+    """(she, her) / (he, him) / (they, them) for a person record (SPEC A.7).
+
+    From `gender:` when the record carries one, else from `sex:` (F/M), else
+    neutral - so a sentence a tool writes about someone uses the pronouns the
+    family recorded, and a record that says neither is never guessed at."""
+    gender = str(meta.get('gender') or '').strip().lower()
+    if gender:
+        # The whole phrase ('trans woman'), else its first word, so the way
+        # people often write it - 'she/her', 'He/Him', 'female-identified' -
+        # reads as meant.
+        first = re.split(r'[/\s-]+', gender, maxsplit=1)[0]
+        for word in (gender, first):
+            if word in _GENDER_SHE:
+                return ('she', 'her')
+            if word in _GENDER_HE:
+                return ('he', 'him')
+        return ('they', 'them')
+    sex = str(meta.get('sex') or '').strip().upper()
+    return {'F': ('she', 'her'), 'M': ('he', 'him')}.get(sex, ('they', 'them'))
+
+
 def sex_slot_is_defaulted(sex: object) -> bool:
     """Whether a lone linked parent with this `sex:` value gets a DEFAULTED
     Ahnentafel slot worth a W120 note.
@@ -2253,7 +2282,10 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # those rows under the tombstone: the survivor's timeline, tree and exports
 # miss them, and the privacy gates that follow survivors would be reading
 # rows the index never moved. Tools-only again, so bump to force the rebuild.
-INDEX_SCHEMA_VERSION = 12
+# 13: the claims table drops `asset`, `significance_override` and
+# `significance_reason` (SPEC 2.1 retired the fields). A v12 index still has
+# the columns; bump so `fha index` rebuilds the table in its current shape.
+INDEX_SCHEMA_VERSION = 13
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).

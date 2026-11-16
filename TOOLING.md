@@ -80,6 +80,7 @@ CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 
 **Restriction (all exports).**
 - `restricted` on a source, claim, person or name is excluded from public output. `fha packet` excludes it by default; `--include-restricted` opens plain restrictions; `dna` also needs `--include-dna`; `by-request` has no override. Restricted names resolve internally and redact on export.
+- A source with `rights.publication_ok: false` (SPEC A.6) is left out exactly like a plain `restricted` source, by the index's `publication_ok = 0`: `site`, `gedcom` and `wikitree` withhold it; `packet` withholds it unless `--include-restricted` and names it in the README as "not cleared for sharing".
 - Enforced by ID in `site`, `wikitree`, `packet`, `gedcom`: the person's record, page, tree position, facts and `[[p-id]]` links (shown as the redaction label). Names in free text are not matched.
 - **Privacy carries through a merge** (`_lib.carry_to_survivors`). A tombstone's `restricted:` or explicit `living: true` (`living_carried_to_survivors`) keeps its survivor out of `site`, `packet`, `gedcom` and `wikitree` too: the claims `fha index` hands the survivor are about the same human. A tombstone's `unknown` or missing `living:` carries nothing; the survivor's own `living: false` wins. A refusal names the tombstone file whose `living: true` holds the survivor back (`living_tombstones_of`), since `fha person set-living` on a merged record acts on the survivor.
 - An unreadable `restricted:` marker means restricted (`read_restriction_marker`): non-UTF-8, no or invalid frontmatter, or frontmatter that is not a mapping. `fha index` still keeps such a person's row from the filename's p-id (name `unknown`, `living: unknown`).
@@ -164,7 +165,6 @@ CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
 - `aliases.alias` is lowercased: each record's ID, stems, on-demand c-ids, names and variants - the resolution surface of `find`, `lint`, `normalize-links`.
 - `transcripts_fts`: every `files:` entry with role `transcript`, `transcription` or `extracted-text` that is a `.md`/`.txt` on disk.
 - Lookup indexes are created `IF NOT EXISTS` on every write open, so old caches gain them without a version bump; readers never create them (it would hide staleness). Queries whose order reaches output say `ORDER BY` (often `rowid`).
-- The tool must drop claim columns `asset`, `significance_override`, `significance_reason`; current code still has them.
 - `person_files.kind` must be one of profile, research, timeline, draft-queue (`sources-index` writes no companion, §7); current code still lists `sources-index` in `_lib.COMPANION_KINDS`.
 
 **Relationship derivation** (accepted claims only; edges are pure cache, traversal crosses in-law branches):
@@ -210,7 +210,6 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E005 | E | A person ID is referenced but no person record has it. Fix: `--mint-stubs`. | §9 |
 | E006 | E | An `accepted` claim has no `reviewed:` date. (Other settled verdicts: W139.) | §8.4 |
 | E007 | E | Claim `type` outside the §8.2 vocabulary. | §8.2 |
-| E008 | E | Significance override without a reason. SPEC 2.1 removed the override: this check must go; the code still runs it. | - |
 | E009 | E | A `contradicts:` pair with no open question naming both claim IDs in `notes/questions.md` or a research file. Fix: `--spawn-questions`. | §8.4, §17b |
 | E010 | E | Frontmatter schema failure: a required field missing for the record kind (claims: `id`, `type`, `persons`, `value`, `status`, `confidence`); frontmatter that is not a block of fields; a person file with a missing or empty `---` block. A non-UTF-8 file is W128. | §8.4, §9, §14 |
 | E011 | E | Inventory and disk disagree: a `files:` entry missing on disk; an on-disk file carrying this source's ID (documents filename, or `SOURCE:` keyword on the photos root with `--with-exif`) missing from `files:`; or a `files:` path that resolves outside both roots (checked first). `status: missing-fixture` is silent under `example-archive/` or any `tests` folder and an error elsewhere. Fix: `fha reconcile`, or the named hand edit for a wrong path. | §14 |
@@ -263,6 +262,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W139 | W | A `disputed`, `rejected` or `superseded` claim with no `reviewed:` date. Never back-filled. | §8.4 |
 | W140 | W | Half a merge: `merged_into:` without `status: merged`, or the reverse. | §9 |
 | W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
+| W143 | W | A source record still carrying a field SPEC 2.1 retired: a claim's `significance`, `significance_reason` or `asset`, a `files:` entry's `language` or `digitized`. One line per record naming them: nothing reads them, safe to delete. Never an error. | §8.4, §14 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |
@@ -270,7 +270,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | PL005 | E | A place that is a `within:` target also has its own `within:` (settlement-to-jurisdiction belongs in `history:`). | §15 |
 | PL006 | E | A `within:` value that is not an ID string. | §15 |
 
-E016 is retired: a claim naming a merged person counts for the survivor and is W107.
+E016 is retired: a claim naming a merged person counts for the survivor and is W107. E008 is retired with the `significance` override it checked; a leftover is W143.
 
 **Needs-sourcing backlog** (informational, never moves the exit code): a provisional `birth:`/`death:` (§9) or a `(TODO: import source)` line with no backing accepted claim. An empty `birth:`/`death:` is not listed; `death` is skipped while `living:` is `true` or `unknown`. A `relationships:` entry with no `claim:`/`source:`, or with `status: hypothesis`, is listed the same way.
 
@@ -677,7 +677,8 @@ Non-UTF-8 files are skipped with one warning naming them and how to re-save. Nev
 
 ```
 fha process <file|folder> [--type TYPE --title "…" --slug …] [--variants one|separate]
-            [--dest SUBPATH] [--more FILE ROLE[:copy]] [--people P-ID,…] [--dry-run]
+            [--dest SUBPATH] [--more FILE ROLE[:copy]] [--people P-ID,…]
+            [--physical-location HOLDER] [--dry-run]
 fha process refile <S-id> [--file NAME] --to photos|documents [--type TYPE] [--dest SUBPATH] [--yes] [--dry-run]
 ```
 
@@ -694,15 +695,16 @@ Transactional: a failure undoes every step in reverse order. `--dry-run` prints 
 5. **Group variations** and ask one / separate / skip (or `--variants`).
 6. **Mint** the S-id.
 7. **Copy out of the inbox:** copy (`shutil.copy2`) to the destination, then move the original - never delete - to `inbox/processed/<path inside inbox>`. Applies to the `-back` sibling and `--more` too.
-8. **Name.** Documents root: rename to `{slug}_{S-id}.{ext}`, recording `original_filename`; a file at the documents-root top level goes into `documents/{type}/`; one in a subfolder keeps its place (SPEC §12.1). Photos: never renamed.
-9. **Keyword:** take the `originals_backup:` copy (§13f), then embed `SOURCE: {S-id}` in photos and documents-root TIFF/JPEG/PNG/PDF.
-10. **Scaffold** `sources/{type}/{slug}_{S-id}.md`.
-11. **Consume the stub:** hints become §14 fields, prose goes to `## Notes`, the stub is deleted, a bundle folder dissolves (SPEC §12.1).
-12. **Print** record path, filed paths, kept-original line, follow-ups.
+8. **Name.** Documents root: rename to `{slug}_{S-id}.{ext}`, recording `original_filename`; a file at the documents-root top level goes into `documents/{type}/`; one in a subfolder keeps its place (SPEC §12.1). Photos: never renamed. A bundle's documents are `{slug}[-{copy}][-{role}]_{S-id}.{ext}`: a file with a capture's generic name (`clipping`, `page`, `record`, `page-snapshot`, `record-data`, … or a name that is just its role) takes the source's slug from its title, any other keeps its own; the slug never ends with the role word about to be appended (`hartley-wedding-clipping_…`, not `…-clipping-clipping_…`). New files only; filed files are never renamed for this.
+9. **Who keeps the original.** Filing an image or PDF into the documents root that is not a web capture (its stub names no `external_links`), the tool asks once "Who keeps the original of X?" and writes the answer as `physical_location: {holder, as_of: <this month>}` (SPEC A.6); Enter skips. `--physical-location HOLDER` answers without asking; with no one at the keyboard (no TTY, the workbench) nothing is asked or written. The flag is refused with `--more`, a folder, or a file being filed as a photo.
+10. **Keyword:** take the `originals_backup:` copy (§13f), then embed `SOURCE: {S-id}` in photos and documents-root TIFF/JPEG/PNG/PDF.
+11. **Scaffold** `sources/{type}/{slug}_{S-id}.md`.
+12. **Consume the stub:** hints become §14 fields, prose goes to `## Notes`, the stub is deleted, a bundle folder dissolves (SPEC §12.1).
+13. **Print** record path, filed paths, kept-original line, follow-ups.
 
 ### Scaffold
 
-SPEC §14 order: `id`; `aliases: [s-id, stem]` (stem keeps old `[[stem]]` links working); `title`; `source_type`; `source_date` (if hinted); `source_class` (`authored` for `proof-argument`, else a valid hint, else `original`); `repository` (or `unknown`); `citation` (or title); `people` (`--people`, else `[]`); `restricted: true` (hinted; always `dna`); `provenance`; `external_links`; `files:`; `created`. Body: the §16a purpose block, an empty `## Claims` YAML fence, `## Notes`.
+SPEC §14 order: `id`; `aliases: [s-id, stem]` (stem keeps old `[[stem]]` links working); `title`; `source_type`; `source_date` (if hinted); `source_class` (`authored` for `proof-argument`, else a valid hint, else `original`); `repository` (or `unknown`); `citation` (or title); `people` (`--people`, else `[]`); `restricted: true` (hinted; always `dna`); `provenance`; `external_links`; `physical_location` (step 9); `files:`; `created`. Body: the §16a purpose block, an empty `## Claims` YAML fence, `## Notes`.
 
 - `files:` entry keys in order: `file`, `role`, `copy`, `is_primary`, `original_filename`. Pointer-only sources (§13b) omit `files:`.
 - The main file carries `is_primary: true` and its real role. AI passes are added later as `ai_passes:` frontmatter (SPEC §14).
@@ -1636,7 +1638,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha source clear-keyword <s-id> --keyword … [--replace-with …]` (T C) | Clear or correct one embedded keyword on a source's documents-root file (§3d) - the tool-mediated fix for a stray keyword `fha lint --with-exif` (W131) finds. Removes the EXACT on-file value (case-insensitive match against `--keyword`) from every keyword field; `--replace-with` corrects it - into every keyword field the file takes - instead of just clearing it. `--dry-run`. |
 | `fha lint` (T C) | After any batch of edits; the done-gate. Alias: **`fha check`**. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |
-| `fha process <file\|folder> [--type TYPE] [--dest SUB] [--more FILE ROLE[:copy]]` (T C) | Direct intake without the skill conversation; folder mode triages first. `--dest` picks the photo-library folder for an inbox photo (default: the library's top, said in the output); `--more` attaches a file to an existing source, filed and named with it (§6). |
+| `fha process <file\|folder> [--type TYPE] [--dest SUB] [--more FILE ROLE[:copy]] [--physical-location HOLDER]` (T C) | Direct intake without the skill conversation; folder mode triages first. `--dest` picks the photo-library folder for an inbox photo (default: the library's top, said in the output); `--more` attaches a file to an existing source, filed and named with it (§6); a scanned document asks once who keeps the original (`--physical-location` answers ahead). |
 | `fha process refile <s-id> --to photos\|documents [--file NAME] [--type TYPE] [--dest SUB] [--yes]` (T C) | Fix a filing decision: move one of a source's files ACROSS the asset roots - rename handled at the crossing, `SOURCE:` keyword embedded going into photos, inventory + Notes updated in one transaction. `--type` carries `source_type:` across too, moving the record to `sources/{type}/`; required into documents when the record is still typed `photo`. Photo→documents confirms first (the catalog will see the photo as missing). Within-root moves stay with `fha reconcile`. `--dry-run`. |
 | `fha packet <p-id>` (T C) | "Make grandma's packet." `--include-research/--include-restricted/--include-dna/--no-photos/--dry-run/--overwrite`. |
 | `fha report` (T C) | The raw report, un-narrated. `--full`, `--section`. |

@@ -4640,6 +4640,33 @@ class PersonsEditKeepsCommentsTests(unittest.TestCase):
                       '    - "[[p-aaaaaaaaaa|Anna Smith]]"  # informant, per the clerk\n'
                       '    - "[[p-cccccccccc|Cal]]"\n'
                       '    - "[[p-bbbbbbbbbb|Ben Smith]]"\n', text)
+class PronounsTests(unittest.TestCase):
+    """SPEC A.7: pronouns come from `gender:` when present, else `sex:`, else
+    neutral - so a line about a trans woman recorded `sex: M`, `gender: woman`
+    reads "she", and a record that says neither never guesses."""
+
+    def test_gender_wins_over_sex(self) -> None:
+        self.assertEqual(claim._pronouns({'sex': 'M', 'gender': 'woman'}), ('she', 'her'))
+        self.assertEqual(claim._pronouns({'sex': 'F', 'gender': 'Man'}), ('he', 'him'))
+
+    def test_gender_read_by_its_first_word(self) -> None:
+        self.assertEqual(claim._pronouns({'gender': 'she/her'}), ('she', 'her'))
+        self.assertEqual(claim._pronouns({'gender': 'He/Him'}), ('he', 'him'))
+        self.assertEqual(claim._pronouns({'sex': 'M', 'gender': 'female-identified'}),
+                         ('she', 'her'))
+        self.assertEqual(claim._pronouns({'gender': 'they/them'}), ('they', 'them'))
+
+    def test_unlisted_gender_is_neutral(self) -> None:
+        self.assertEqual(claim._pronouns({'sex': 'F', 'gender': 'non-binary'}),
+                         ('they', 'them'))
+
+    def test_sex_when_no_gender(self) -> None:
+        self.assertEqual(claim._pronouns({'sex': 'F'}), ('she', 'her'))
+        self.assertEqual(claim._pronouns({'sex': 'M', 'gender': ''}), ('he', 'him'))
+
+    def test_neither_is_neutral(self) -> None:
+        self.assertEqual(claim._pronouns({}), ('they', 'them'))
+        self.assertEqual(claim._pronouns({'sex': 'unknown'}), ('they', 'them'))
 
 
 if __name__ == '__main__':

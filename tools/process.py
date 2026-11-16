@@ -89,6 +89,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #  Slug / type derivation
 #    _slugify                  - text → lowercase-hyphenated slug
 #    _derive_slug              - pick the slug from --slug / --title / filename stem
+#    _bundle_file_slug         - a bundle file's slug: the title's for a capture's generic name
 #
 #  Asset classification
 #    _is_under                 - is a path inside a (resolved) root directory?
@@ -330,6 +331,39 @@ def _slugify(text: str) -> str:
     text = (text or '').strip().lower()
     slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
     return slug or 'source'
+
+
+# The names a capture (the browser add-on, `fha capture`) gives the files it
+# stages: they say what a file IS, never which record it belongs to.
+_GENERIC_CAPTURE_STEMS = frozenset({
+    'record', 'page', 'clipping', 'annotated', 'webpage', 'page-snapshot',
+    'record-data', 'photo-data', 'clipping-data', 'site-data', 'photo', 'scan',
+    'screenshot', 'asset', 'document', 'image', 'transcript', 'recording',
+})
+
+
+def _bundle_file_slug(stem: str, role: str, source_slug: str) -> str:
+    """The `{slug}` a bundle's documents-root file is renamed with (SPEC §13).
+
+    A file the capture named generically (`clipping.jpg`, `page.jpg`,
+    `record-data.json`, or any name that is just its role) takes the source's
+    own slug from its title, so the folder reads `obituary-of-mary-hartley-
+    clipping_s-….jpg` rather than `clipping-clipping_s-….jpg`. A name the
+    owner chose is kept. Either way the slug never ends with the role word
+    about to be appended, so a title "Hartley Wedding Clipping" files as
+    `hartley-wedding-clipping_s-….jpg`, not `…-clipping-clipping_…`."""
+    own = _slugify(stem)
+    role_slug = _slugify(role) if role and role != 'primary' else ''
+    generic = (own in _GENERIC_CAPTURE_STEMS
+               or (role_slug and (own == role_slug or own.startswith(f'{role_slug}-'))))
+    # A title that slugs to nothing (`_slugify`'s 'source' fallback, as for a
+    # Cyrillic title) or to the role word itself names no better than the
+    # file's own stem does.
+    title_usable = source_slug not in ('', 'source', role_slug)
+    base = source_slug if generic and title_usable else own
+    if role_slug and base.endswith(f'-{role_slug}'):
+        base = base[:-len(role_slug) - 1]
+    return base
 
 
 def _derive_slug(slug: str | None, title: str | None, file_path: Path) -> str:
@@ -1046,6 +1080,7 @@ def _scaffold_text(
     stem: str | None = None,
     source_class: str | None = None,
     people_names: dict[str, str] | None = None,
+    physical_location: str | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -1067,6 +1102,9 @@ def _scaffold_text(
     be silently dropped when the stub is consumed. `source_class` is honoured
     only as one of original | derivative | authored (anything else falls back
     to the default below), and a proof-argument is always authored.
+
+    `physical_location` is who keeps the paper original of a scan (SPEC
+    A.6), written as `{holder, as_of}` with this month as `as_of`.
 
     `people` is a validated list of P-ids from `--people`; they land in the
     record's `people:` field so `fha index` indexes the photo-to-person link
@@ -1134,6 +1172,10 @@ def _scaffold_text(
             accessed = link.get('accessed') if isinstance(link, dict) else None
             if accessed:
                 lines.append(f'    accessed: {_yaml_inline(str(accessed))}')
+    if physical_location:
+        lines.append('physical_location:')
+        lines.append(f'  holder: {_yaml_inline(physical_location)}')
+        lines.append(f'  as_of: {_today()[:7]}')
     if file_entries:
         lines.append('files:')
         for entry in file_entries:
@@ -2228,6 +2270,8 @@ def process_document(
     report: dict | None = None,
     back_sibling: Path | None = None,
     backup: OriginalBackup | None = None,
+    physical_location: str | None = None,
+    ask_physical_location: bool = False,
 ) -> int:
     """M7.1: rename a documents-root original and scaffold its source record.
 
@@ -2263,6 +2307,10 @@ def process_document(
     the same `originals_backup:` guard as a photo (#252 item 4), and the
     rollback takes it back out. See `_embed_document_keyword` for why a
     keyword that cannot be written warns instead of failing the run.
+
+    `physical_location` (`--physical-location`) names who keeps the paper
+    original; with none given and `ask_physical_location` set (a person at
+    the keyboard), a scan is asked about once - see `_ask_physical_location`.
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
@@ -2339,6 +2387,11 @@ def process_document(
             ),
         )
 
+    holder = str(physical_location or '').strip() or None
+    if (holder is None and ask_physical_location and not dry_run
+            and _is_scan(file_path, sidecar_meta)):
+        holder = _ask_physical_location(file_path)
+
     sid = _mint_one_source_id(archive_root, source_id=source_id)
     if report is not None:
         report['source_id'] = sid
@@ -2403,6 +2456,7 @@ def process_document(
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
         stem=file_path.stem if _slugify(file_path.stem) != final_slug else None,
+        physical_location=holder,
     )
 
     # When the destination changed folders (root-top -> documents/{type}/),
@@ -2425,6 +2479,8 @@ def process_document(
         for target in keyword_targets:
             print(f'[dry-run] Would embed SOURCE: {sid} in {target.name}')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
+        if holder:
+            print(f'[dry-run] Would record that {holder} keeps the original')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
@@ -3507,11 +3563,22 @@ def process_bundle(
                                               or 'attachment')
             )
             copy = hint.get('copy')
-            base = _slugify(asset.stem)
+            base = _bundle_file_slug(asset.stem, role, final_slug)
             suffix = '' if role == 'primary' else f'-{_slugify(role)}'
             if copy:
                 suffix = f'-{_slugify(copy)}{suffix}'
+            # Never two files under one name: a title-named file and one
+            # whose own name is the title slug, or two generic names of one
+            # role, would otherwise land on the same destination and the
+            # second move would overwrite the first scan. Compared without
+            # case, as Windows and macOS see names.
+            taken = {item['dest'].name.lower() for item in plan
+                     if item['kind'] == 'document'}
             new_name = f'{base}{suffix}_{sid}{asset.suffix}'
+            n = 2
+            while new_name.lower() in taken:
+                new_name = f'{base}-{n}{suffix}_{sid}{asset.suffix}'
+                n += 1
             dest = documents_root / _record_subdir(source_type) / new_name
             entry = {'file': path_to_alias(dest, 'documents', fha_config, archive_root),
                      'role': role, 'original_filename': asset.name}
@@ -6237,6 +6304,28 @@ def _rel(path: Path, archive_root: Path) -> str:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+def _is_scan(file_path: Path, sidecar_meta: dict) -> bool:
+    """Whether a document being filed is a scan of something on paper: an
+    image or a PDF, and not a web capture (a stub naming where online it came
+    from has no paper original in the family to ask about)."""
+    if file_path.suffix.lower() not in PHOTO_EXTENSIONS | {'.pdf'}:
+        return False
+    return not (sidecar_meta.get('external_links') or sidecar_meta.get('url')
+                or sidecar_meta.get('asset_elsewhere'))
+
+
+def _ask_physical_location(file_path: Path) -> str | None:
+    """Ask once who keeps the paper original of a scan (SPEC A.6). The
+    answer is a name; Enter (or no answer at all) skips."""
+    try:
+        answer = _prompt(
+            f'Who keeps the original of {file_path.name}? '
+            '(a name, e.g. Aunt Ruth - or press Enter to skip) ').strip()
+    except EOFError:
+        return None
+    return answer or None
+
+
 def _prompt(message: str) -> str:
     """Read one line of interactive input (monkeypatched in tests).
 
@@ -6591,6 +6680,11 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'in the photo file and populates the source record\'s people: '
                         'list. Photos only; use `fha photoindex tag-person` to tag '
                         'photos already processed.')
+    p.add_argument('--physical-location', metavar='HOLDER', dest='physical_location',
+                   help='Who keeps the paper original of a scanned document, e.g. '
+                        '"Aunt Ruth" - recorded on the source with the current month as the date. '
+                        'Without it you are asked when filing a scan '
+                        '(press Enter to skip)')
     p.add_argument('--variants', choices=('one', 'separate'),
                    help='When the photo has variations beside it (a back, a second '
                         'print, a crop), process them as ONE source or as separate '
@@ -6738,6 +6832,16 @@ def _run_process(args: argparse.Namespace) -> int:
             '`fha photoindex tag-person` to add people to already-processed photos.',
             file=sys.stderr,
         )
+        return EXIT_ERRORS
+
+    # --physical-location answers the one question asked when a scanned
+    # document is filed; it names the paper original of a NEW document.
+    physical_location = str(getattr(args, 'physical_location', None) or '').strip() or None
+    if physical_location and (args.more or file_path.is_dir()):
+        print('ERROR: --physical-location records who keeps the original of one '
+              'scanned document as it is filed. For a source that already exists, '
+              'or a folder, add a `physical_location:` to the record by hand '
+              '(holder: and as_of:).', file=sys.stderr)
         return EXIT_ERRORS
 
     variants = getattr(args, 'variants', None)
@@ -6927,6 +7031,11 @@ def _run_process(args: argparse.Namespace) -> int:
                     file_path, archive_root, fha_config,
                     root=resolve_path('documents', fha_config, archive_root),
                     root_label='documents root', doing='processing'))
+            if kind == 'photo' and physical_location:
+                raise ProcessError(
+                    f'--physical-location is for a scanned document, and '
+                    f'{file_path.name} is being filed as a photo. Drop the flag, or '
+                    'pass --type with the kind of record it is to file it as a document.')
             if kind == 'photo':
                 # Tier-1 variation detection (M7.3): a single photo may have
                 # front/back/crop/copy siblings sitting beside it.
@@ -6984,6 +7093,9 @@ def _run_process(args: argparse.Namespace) -> int:
                         real_path=real_path,
                         source_id=source_id_override, report=mint_report,
                         back_sibling=back_sibling,
+                        physical_location=physical_location,
+                        ask_physical_location=(physical_location is None
+                                               and _stdin_is_interactive()),
                     )
         if rc != EXIT_CLEAN and relocate_undo is not None:
             relocate_undo()
