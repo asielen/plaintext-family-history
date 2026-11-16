@@ -6920,8 +6920,14 @@ class ParsedName:
 
     base_id    - the stem with all recognised suffixes stripped; the grouping key.
     variant_id - trailing copy letter ('a', 'b', 'c', …) if present, else None.
-    part_kind  - 'front' | 'back' | 'page' | 'negative' | 'bw' | 'none'.
+    part_kind  - 'front' | 'back' | 'page' | 'negative' | 'bw' | 'attached' | 'none'.
+                 'attached' is something kept with the photo and scanned on
+                 its own - the studio folder, the envelope, a clipped note
+                 (ATTACHED_OBJECT_WORDS). It is never 'back': the back of an
+                 envelope is not the back of the photo.
     page_num   - integer page number when part_kind == 'page', else None.
+    attached   - for part_kind 'attached', the role it files under:
+                 'envelope', 'envelope-back', 'note-2'. Else None.
     freeform_role - the name's last word ('letter-envelope' -> 'envelope') when
                  no recognised suffix or copy letter applies, else None. A
                  LABEL only (`bundle_role`), never split off base_id (#200).
@@ -6933,6 +6939,33 @@ class ParsedName:
     page_num: int | None
     freeform_role: str | None
     is_crop: bool
+    attached: str | None = None
+
+
+# Things kept WITH a photo and scanned on their own (SPEC §13): the studio
+# folder whose imprint dates the portrait, the envelope it was kept in, a note
+# clipped to it. Each groups with the photo, so whoever looks at the portrait
+# also sees the folder that says where it was taken. A closed list on purpose:
+# any other trailing word stays part of the photo's name, so
+# 'smith-farm-01400' is never read as photo 'smith' with role 'farm-01400'.
+ATTACHED_OBJECT_WORDS: tuple[str, ...] = (
+    'cover', 'folder', 'mount', 'envelope', 'note', 'sleeve',
+)
+# Only a note is numbered ('-note-2': two slips clipped to one photo). A
+# number after any other word is the photo's own ('album-cover-0012' is
+# photo 12 of an album called "cover"), so it is left alone.
+_ATTACHED_SUFFIX_RE = re.compile(
+    r'[-_](?:(note)(?:[-_](\d+))?|('
+    + '|'.join(w for w in ATTACHED_OBJECT_WORDS if w != 'note') + r'))$', re.I)
+
+
+def is_attached_role(role: str | None) -> bool:
+    """True when a variant role names an attached object ('envelope',
+    'envelope-back', 'note-2', 'cover-crop'), which sorts after the photo's
+    own back and is never the photo's main image."""
+    if not role:
+        return False
+    return role.split('-', 1)[0].lower() in ATTACHED_OBJECT_WORDS
 
 
 _CROP_SUFFIX_RE = re.compile(r'[-_]crop$', re.I)
@@ -6989,8 +7022,26 @@ def parse_media_filename(stem: str) -> ParsedName:
     part_kind = 'none'
     page_num: int | None = None
     freeform_role: str | None = None
-    page_m = _PAGE_SUFFIX_RE.search(remaining)
-    if page_m:
+    attached: str | None = None
+    # An attached object, alone or with its own back: '-envelope',
+    # '-envelope-back', '-note-2'. Checked first so '-envelope-back' is the
+    # envelope's back, never the photo's.
+    back_stripped = _BACK_SUFFIX_RE.sub('', remaining)
+    attached_m = _ATTACHED_SUFFIX_RE.search(back_stripped)
+    if attached_m:
+        word = (attached_m.group(1) or attached_m.group(3)).lower()
+        num = attached_m.group(2)
+        attached = f'{word}-{num}' if num else word
+        if back_stripped != remaining:
+            attached += '-back'
+        part_kind = 'attached'
+        remaining = _ATTACHED_SUFFIX_RE.sub('', back_stripped)
+        page_m = None
+    else:
+        page_m = _PAGE_SUFFIX_RE.search(remaining)
+    if part_kind == 'attached':
+        pass
+    elif page_m:
         part_kind = 'page'
         page_num = int(page_m.group(1))
         remaining = _PAGE_SUFFIX_RE.sub('', remaining)
@@ -7028,6 +7079,7 @@ def parse_media_filename(stem: str) -> ParsedName:
     return ParsedName(
         base_id=remaining, variant_id=variant_id, part_kind=part_kind,
         page_num=page_num, freeform_role=freeform_role, is_crop=is_crop,
+        attached=attached,
     )
 
 
@@ -7068,6 +7120,8 @@ def variant_role(parsed: ParsedName) -> str | None:
     """
     if parsed.part_kind == 'page':
         base = f'page-{parsed.page_num}'
+    elif parsed.part_kind == 'attached':
+        base = parsed.attached
     elif parsed.part_kind != 'none':
         base = parsed.part_kind
     else:

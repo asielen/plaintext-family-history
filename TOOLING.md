@@ -569,11 +569,12 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 **Filename parsing algorithm.** Suffixes are stripped in this fixed priority order (implemented in `parse_media_filename`):
 1. Strip `-crop` suffix first → `is_crop = True`. Crop stacks on any other suffix combination.
-2. Strip part-kind suffix: `-negative` checked before `-back` / `-front` / `-pageN`.
-3. Detect trailing single-letter variant ID - hyphen-letter (`-b`) or letter immediately after a digit (`034b`).
-4. Remaining stem → `base_id`.
+2. Attached object (SPEC §13): with any trailing `-back` set aside, if the stem ends in a word from the closed list `cover | folder | mount | envelope | sleeve | note[-N]` (case-insensitive; only `note` takes a number), strip both → `part_kind = "attached"`, `attached = "envelope"` / `"envelope-back"` / `"note-2"`. The list is closed: any other word stays in `base_id`.
+3. Otherwise strip one part-kind suffix: `-pageN` / `-page-N`, `-negative`, `-back`, `-front`, `-bw`, in that order.
+4. Detect trailing single-letter variant ID - hyphen-letter (`-b`) or letter immediately after a digit (`034b`).
+5. Remaining stem → `base_id`.
 
-Result: `ParsedName(base_id, variant_id, part_kind, page_num, is_crop)` where `part_kind` ∈ `"front" | "back" | "page" | "negative" | "none"`. **Semantics:** `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it marks a scan of the physical film or glass-plate negative; in the grouper it is always stored at the stem level regardless of any variant letter (a negative is source material for the root image, not a print variant). `-crop` marks a derivative detail image (zoomed text, face close-up); crops are stored in dedicated `_crop` slots alongside their parent scan and supplied as supplementary AI context, never treated as independent primary images. A missing `-page1` is never inferred by the parser - if a group contains explicit `-pageN` siblings, the grouper may promote an untagged file to page 1, but the parser itself never does this.
+Result: `ParsedName(base_id, variant_id, part_kind, page_num, freeform_role, is_crop, attached)` where `part_kind` ∈ `"front" | "back" | "page" | "negative" | "bw" | "attached" | "none"`. An attached object's role is its `attached` value (plus `-crop`); it is never `back`, so an envelope's back is not counted as the photo's. In choosing a group's primary and ordering its members, attached objects come after the photo's own scans, back included. **Semantics:** `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it marks a scan of the physical film or glass-plate negative; in the grouper it is always stored at the stem level regardless of any variant letter (a negative is source material for the root image, not a print variant). `-crop` marks a derivative detail image (zoomed text, face close-up); crops are stored in dedicated `_crop` slots alongside their parent scan and supplied as supplementary AI context, never treated as independent primary images. A missing `-page1` is never inferred by the parser - if a group contains explicit `-pageN` siblings, the grouper may promote an untagged file to page 1, but the parser itself never does this.
 
 **Multi-image batch types.** When a folder contains multiple images for one source, classify the set before processing:
 

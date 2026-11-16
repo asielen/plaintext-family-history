@@ -1160,6 +1160,8 @@ def _is_photos_alias(alias: str | None) -> bool:
 
 def _what_the_file_is(parsed) -> str:
     """A plain description of a non-main scan, for messages: 'the back'."""
+    if parsed.part_kind == 'attached':
+        return f"the photo's {parsed.attached.replace('-', ' ')}"
     if parsed.part_kind == 'back':
         return 'the back of the photo'
     if parsed.part_kind == 'negative':

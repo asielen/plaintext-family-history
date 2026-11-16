@@ -1113,6 +1113,8 @@ def _main_image_rank(parsed) -> int:
 
 def _what_the_scan_is(parsed) -> str:
     """A plain description of a scan that should not be the main image."""
+    if parsed.part_kind == 'attached':
+        return f"the photo's {parsed.attached.replace('-', ' ')}"
     if parsed.part_kind == 'back':
         return 'the back of the photo'
     if parsed.part_kind == 'negative':

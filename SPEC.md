@@ -672,7 +672,8 @@ The deliberate style difference - person files underscored, source files hyphena
 - Copies: `b`, `c`, `negative`….
 - `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`), marking supplementary detail images, never independent sources.
 - `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN`: it is the physical film or glass-plate source material for the root image.
-- Suffix parsing priority: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; the remaining stem is the base id (see `TOOLING.md` §6 for the full algorithm).
+- **Things kept with the photo** and scanned on their own group with it, so whoever looks at the portrait also sees the studio folder whose imprint says where it was taken. Only these words do it, as the name's last word in any capitals: `-cover` (a studio folder's or album's cover), `-folder` (a studio folder, inside or out), `-mount` (the card mount, scanned apart from the print), `-envelope` (the envelope or sleeve it was kept in), `-sleeve` (a negative or print sleeve), `-note` or `-note-N` (a note clipped or stuck to it). Each may be followed by `-back` and `-crop` (`-envelope-back` is the envelope's back, never the photo's). They sort after the photo's own back and are never its main image. Any other trailing word is part of the photo's name. Writing on the photo itself is still `-back`; a loose letter that came with it is its own item.
+- Suffix parsing priority: `-crop` stripped first; then a kept-with word, with any `-back` after it; else the part-kind (`-pageN`, `-negative`, `-back`, `-front`, `-bw`); then a trailing copy letter. The remaining stem is the base id (see `TOOLING.md` §6 for the full algorithm).
 
 ### Person files
 
