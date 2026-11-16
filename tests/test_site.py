@@ -1421,6 +1421,30 @@ class PersonPageTests(_Base):
         self.assertNotIn('Secret hunch', standalone)             # dropped from the shared build
         self.assertNotIn('private -->', standalone)              # no raw marker leak
 
+    def test_fencing_a_drafts_last_paragraph_keeps_the_whole_draft_off_the_site(self):
+        # Round-1 review of #305: a fence around a draft's last paragraph,
+        # marker included, erased the marker before the draft pass, and the
+        # draft's first paragraph was published as accepted prose.
+        body = ('# P\n## Biography\nHuman text.\n<!-- AI-ACCEPTED 2026-06-01 -->\n\n'
+                'DRAFT-PARA-1.\n\n<!-- private -->\nDRAFT-PARA-2.\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x -->\n<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'P', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Human text.', html)
+        self.assertNotIn('DRAFT-PARA-1', html)
+        self.assertNotIn('DRAFT-PARA-2', html)
+
+    def test_nested_private_fence_stays_off_the_shared_site(self):
+        body = ('# P\n## Research Notes\nPublic note.\n\n<!-- private -->\nouter\n'
+                '<!-- private -->\ninner\n<!-- /private -->\nOUTER-TAIL-SECRET\n'
+                '<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'P', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('Public note.', html)
+        self.assertNotIn('OUTER-TAIL-SECRET', html)
+
     def test_cp1252_person_record_in_linked_mode_degrades_and_names_the_cause(self):
         # Linked mode skips `prepare()`'s privacy pre-pass (standalone-only),
         # so this is the one mode where the page-building reads themselves -
@@ -4667,6 +4691,21 @@ class DiscoveriesTests(_Base):
         self.assertNotIn('An unreviewed draft lead.', html)
         self.assertNotIn('AI-DRAFT', html)
 
+    def test_private_fence_opened_above_a_draft_stays_off_discoveries(self):
+        # The draft pass ran first here and cut back to the entry heading,
+        # taking the fence opener with it - the fenced text after the draft
+        # was then published.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        self._write_discoveries(
+            '# Discoveries Log\n\n## 2026-06-01\nA published finding.\n\n'
+            '## 2026-06-02\n<!-- private -->\nSECRET-A\n\nA draft lead.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x -->\n\nSECRET-B\n<!-- /private -->\n')
+        self._run(linked=False)
+        html = self._read('discoveries.html')
+        self.assertIn('A published finding.', html)
+        for hidden in ('SECRET-A', 'SECRET-B', 'A draft lead.'):
+            self.assertNotIn(hidden, html)
+
     def test_damaged_draft_marker_withholds_discoveries(self):
         # Fail closed: an unterminated marker withholds the whole page rather
         # than leaking half-parsed draft text or a raw marker.
@@ -4680,6 +4719,20 @@ class DiscoveriesTests(_Base):
 
 
 class HomePageTests(_Base):
+    def test_private_fence_opened_above_a_draft_stays_off_the_homepage(self):
+        # Same ordering hazard as discoveries: drafts were stripped first.
+        self._seed_person('p-aaaaaaaaaa', 'Dan')
+        home = self.archive_root / 'notes' / 'home.md'
+        home.parent.mkdir(parents=True, exist_ok=True)
+        home.write_text(
+            'Welcome.\n\n## Our family\n<!-- private -->\nSECRET-A\n\nDraft intro.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x -->\n\nSECRET-B\n<!-- /private -->\n',
+            encoding='utf-8')
+        self._run(linked=False)
+        html = self._read('index.html')
+        for hidden in ('SECRET-A', 'SECRET-B', 'Draft intro.'):
+            self.assertNotIn(hidden, html)
+
     def test_surname_az_index(self):
         self._seed_person('p-aaaaaaaaaa', 'Thomas Hartley', surname='Hartley')
         self._seed_person('p-bbbbbbbbbb', 'James Bradford', surname='Bradford')

@@ -220,10 +220,10 @@ from _lib import (
     # the README draft count only, so the count can never drift from what
     # strip_unaccepted_drafts actually cut. The strip itself is the public API.
     _AI_DRAFT_MARK_RE,
-    # Same reasoning for the private-fence grammar: imported for the README
-    # count and a no-op check only; the cut itself is apply_private_fence.
-    _PRIVATE_BLOCK_RE,
+    # Same reasoning for the private-fence marker: imported for the no-op
+    # check only; the cut itself is apply_private_fence.
     _PRIVATE_MARK_RE,
+    PERSON_BODY_SECTIONS_TEXT,
     CLAIMS_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -233,6 +233,8 @@ from _lib import (
     Result,
     apply_private_fence,
     configure_utf8_stdout,
+    count_private_fences,
+    extract_token_ids,
     fmt_id_display,
     is_placeholder_name,
     is_working_copy,
@@ -922,6 +924,15 @@ def _redact_profile_text(
     return text[:fm_start] + fm_text + text[fm_end:], removed
 
 
+# The template's own example fence (in the Research Notes placeholder) is
+# scaffolding, not a note the genealogist wrote: when he fills the section in
+# around it, the example is still dropped, but the README must not tell him
+# "1 note you marked private was left out" for it.
+_TEMPLATE_FENCE_EXAMPLE = PERSON_BODY_SECTIONS_TEXT[
+    PERSON_BODY_SECTIONS_TEXT.index('<!-- private -->'):
+    PERSON_BODY_SECTIONS_TEXT.index('<!-- /private -->') + len('<!-- /private -->')]
+
+
 def _drop_private_fences(text: str) -> tuple[str, int]:
     """Withhold prose the genealogist fenced off with `<!-- private -->` ...
     `<!-- /private -->` from a record copy about to leave the archive.
@@ -942,15 +953,23 @@ def _drop_private_fences(text: str) -> tuple[str, int]:
     all is returned untouched - not even blank-line tidying - so an
     ordinary record still ships as a byte-identical copy.
 
-    Returns (new_text, fenced_blocks_withheld) for the README's plain count.
+    Any AI-DRAFT/AI-ACCEPTED marker a dropped fence held is left in place
+    (`keep_ai_markers`): on the profile the draft pass that follows needs the
+    marker to withhold a draft whose last paragraph was fenced (round-1
+    review of #305), and a research file or source record keeps its drafts
+    by design, so its draft caution must still see them.
+
+    Returns (new_text, fenced_blocks_withheld) for the README's plain count,
+    not counting the template's own example fence.
     """
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
     if not _PRIVATE_MARK_RE.search(body):
         return text, 0
-    count = len(_PRIVATE_BLOCK_RE.findall(body))
-    return text[:body_start] + apply_private_fence(body, drop=True), count
+    count = count_private_fences(body, ignore=_TEMPLATE_FENCE_EXAMPLE)
+    return (text[:body_start]
+            + apply_private_fence(body, drop=True, keep_ai_markers=True), count)
 
 
 def _strip_emptied_sections(text: str) -> str:
@@ -1313,7 +1332,8 @@ def _classify_sources(
 
 
 def _other_named_persons(
-    conn: sqlite3.Connection, included_source_ids: list[str], pid: str
+    conn: sqlite3.Connection, included_source_ids: list[str], pid: str,
+    excluded_claim_ids: set[str] | None = None,
 ) -> list[sqlite3.Row]:
     """
     Return living/unknown persons (other than pid) named by an included
@@ -1321,25 +1341,42 @@ def _other_named_persons(
     (TOOLING §8: "any *other* person ... with living: true is named in a
     README caution"). living: unknown counts as living throughout, and a
     merged duplicate of a living person counts as that person (#237).
+
+    A claim the packet withholds (`excluded_claim_ids`) names nobody: the
+    caution exists to warn about what the relative will READ, and naming a
+    living person whose only tie is a withheld restricted claim would put
+    that tie in the README instead. Callers pass only the sources that ship.
     """
     if not included_source_ids:
         return []
+    excluded = excluded_claim_ids or set()
     placeholders = ','.join('?' * len(included_source_ids))
-    rows = conn.execute(
+    claim_rows = conn.execute(
         f"""
-        SELECT DISTINCT p.id, p.name
-        FROM persons p
+        SELECT cp.claim_id AS claim_id, p.id, p.name
+        FROM claim_persons cp
+        JOIN claims c ON cp.claim_id = c.id
+        JOIN persons p ON p.id = cp.person_id
+        WHERE p.id != ? AND c.source_id IN ({placeholders})
+        """,
+        [pid] + included_source_ids,
+    ).fetchall()
+    people_rows = conn.execute(
+        f"""
+        SELECT p.id, p.name FROM persons p
         WHERE p.id != ? AND p.id IN (
-            SELECT cp.person_id FROM claim_persons cp
-            JOIN claims c ON cp.claim_id = c.id
-            WHERE c.source_id IN ({placeholders})
-            UNION
             SELECT person_id FROM source_people WHERE source_id IN ({placeholders})
         )
-        ORDER BY p.name
         """,
-        [pid] + included_source_ids + included_source_ids,
+        [pid] + included_source_ids,
     ).fetchall()
+    by_id: dict[str, sqlite3.Row] = {}
+    for r in claim_rows:
+        if normalize_id(str(r['claim_id'])) not in excluded:
+            by_id.setdefault(r['id'], r)
+    for r in people_rows:
+        by_id.setdefault(r['id'], r)
+    rows = sorted(by_id.values(), key=lambda r: (r['name'] or ''))
     return _living_caution_people(conn, rows, pid)
 
 
@@ -1366,29 +1403,37 @@ def _living_caution_people(conn: sqlite3.Connection, rows, pid: str) -> list[dic
 
 
 def _citation_named_persons(
-    conn: sqlite3.Connection, copied_paths: set[str], pid: str
+    conn: sqlite3.Connection, copied_files: list[Path], pid: str
 ) -> list[sqlite3.Row]:
     """
-    Return living/unknown persons (other than pid) named by a bare `[P-id]`
-    citation token anywhere in the packet's copied .md files (profile,
-    research note, included source records) - catches a living person
-    mentioned only in prose, with no `claim_persons`/`source_people` row,
-    that `_other_named_persons` would otherwise miss. Merges are followed
-    the same way (#237).
+    Return living/unknown persons (other than pid) named by a `[[P-id]]` /
+    `[P-id]` token in the packet's copied .md records (profile, research
+    note, included source records) - catches a living person mentioned only
+    in prose, with no `claim_persons`/`source_people` row, that
+    `_other_named_persons` would otherwise miss. Merges are followed the
+    same way (#237).
+
+    Read from the COPIES as written into the packet, never from the index's
+    citations of the originals: a relative the genealogist mentioned only
+    inside a `<!-- private -->` fence is not in the copy, and naming them -
+    with their ID - in the README caution would publish the very tie he
+    fenced off (round-1 review of #305). A copy that cannot be read is
+    skipped; it was written by this build a moment ago.
     """
-    if not copied_paths:
+    ids: set[str] = set()
+    for f in copied_files:
+        try:
+            ids.update(t for t in extract_token_ids(f.read_text(encoding='utf-8'))
+                       if t.startswith('p-'))
+        except (OSError, UnicodeError):
+            continue
+    ids.discard(pid)
+    if not ids:
         return []
-    placeholders = ','.join('?' * len(copied_paths))
+    placeholders = ','.join('?' * len(ids))
     rows = conn.execute(
-        f"""
-        SELECT DISTINCT p.id, p.name
-        FROM persons p
-        WHERE p.id != ? AND p.id IN (
-            SELECT token FROM citations WHERE kind = 'P' AND path IN ({placeholders})
-        )
-        ORDER BY p.name
-        """,
-        [pid] + list(copied_paths),
+        f"SELECT id, name FROM persons WHERE id IN ({placeholders}) ORDER BY name",
+        sorted(ids),
     ).fetchall()
     return _living_caution_people(conn, rows, pid)
 
@@ -2706,17 +2751,6 @@ def _packet_payload(
                 (pid,),
             ).fetchone()
 
-        # Caution list combines structured-data matches now, and gets
-        # extended with prose-citation and photo-only matches further below
-        # - the dict stays open until just before the README is written so
-        # every source can contribute without re-sorting repeatedly.
-        copied_md_paths = {person['path']} | {r['path'] for r in included_rows}
-        if research_row is not None:
-            copied_md_paths.add(research_row['path'])
-        other_named_by_id = {r['id']: r for r in _other_named_persons(conn, list(included_ids), pid)}
-        for r in _citation_named_persons(conn, copied_md_paths, pid):
-            other_named_by_id.setdefault(r['id'], r)
-
         files_by_source, missing_assets = _resolve_source_files(
             conn, archive_root, fha_config, list(included_ids)
         )
@@ -2734,6 +2768,14 @@ def _packet_payload(
             include_restricted=include_restricted, include_dna=include_dna,
         )
         unsafe_source_ids = {sid for sid, mode in copy_plan.items() if mode == 'unsafe'}
+
+        # Caution list combines structured-data matches now - only from the
+        # sources and claims that actually ship - and gets extended with
+        # prose-citation (read from the written copies) and photo-only
+        # matches further below; the dict stays open until just before the
+        # README is written so every source can contribute.
+        other_named_by_id = {r['id']: r for r in _other_named_persons(
+            conn, sorted(included_ids - unsafe_source_ids), pid, excluded_claim_ids)}
 
         # A generational suffix (Jr, Sr, II, III, IV, V) is never the
         # surname (issue #78, the same #53 rule every other consumer
@@ -2895,19 +2937,23 @@ def _packet_payload(
                     # redaction and no `## Sources` region to drop, which is
                     # exactly what a research file needs (still an
                     # UNREDACTED copy otherwise - see the caution below).
-                    research_included = _copy_source_with_scaffolding_stripped(
+                    research_copy = _copy_source_with_scaffolding_stripped(
                         research_path, profile_dir,
                         messages=messages, redaction_notes=redaction_notes,
-                    ) is not None
+                    )
+                    research_included = research_copy is not None
                     if research_included:
                         # Research stays a byte copy (round-2 scope decision:
                         # working notes, not publication prose), so a draft
                         # marker inside travels with it - detect it for the
-                        # README caution. A byte sniff, not a parse:
-                        # 'AI-DRAFT' is ASCII, and an unreadable file just
+                        # README caution. Sniffed in the COPY, not the
+                        # original: a draft that sat inside a dropped
+                        # `<!-- private -->` fence did not travel, and the
+                        # README must not warn of it. A byte sniff, not a
+                        # parse: 'AI-DRAFT' is ASCII; an unreadable copy just
                         # forgoes the caution it could not verify.
                         try:
-                            research_draft_caution = b'AI-DRAFT' in research_path.read_bytes()
+                            research_draft_caution = b'AI-DRAFT' in research_copy.read_bytes()
                         except OSError:
                             research_draft_caution = False
                 elif research_path is not None:
@@ -3112,6 +3158,15 @@ def _packet_payload(
                                 other_named_by_id.setdefault(row['id'], row)
                 finally:
                     pconn.close()
+
+            # Prose mentions, from the records as they were written into the
+            # packet - after every redaction pass, so a fenced-off mention
+            # names no one.
+            copied_records = sorted(
+                f for sub in ('profile', 'sources') if (packet_dir / sub).is_dir()
+                for f in (packet_dir / sub).rglob('*.md') if f.is_file())
+            for r in _citation_named_persons(conn, copied_records, pid):
+                other_named_by_id.setdefault(r['id'], r)
 
             # README.txt
             other_named = sorted(other_named_by_id.values(), key=lambda r: r['name'])

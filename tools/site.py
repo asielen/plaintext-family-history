@@ -252,6 +252,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     apply_private_fence,
+    withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
     claim_is_own_vital,
     vital_pick_key,
@@ -6329,10 +6330,14 @@ class _SiteBuilder:
         # which is exactly the ordering hazard this capture exists to avoid.
         research_as_written = (_extract_section(body, 'Research Notes') or '').strip()
         dp = not self.linked
+        # keep_ai_markers: the draft pass below runs per section on this
+        # fenced text, and a fence around a draft's last paragraph must not
+        # take the draft's end marker with it - that published the draft's
+        # earlier paragraphs as accepted prose (round-1 review of #305).
         if body:
-            body = apply_private_fence(body, drop=dp)
+            body = apply_private_fence(body, drop=dp, keep_ai_markers=True)
         if stories:
-            stories = apply_private_fence(stories, drop=dp)
+            stories = apply_private_fence(stories, drop=dp, keep_ai_markers=True)
         # A section that holds NOTHING but its own scaffold placeholder text
         # was never actually filled in by a human - render it exactly like an
         # empty section, not like real content (#125). Without this, a
@@ -7986,19 +7991,20 @@ class _SiteBuilder:
         # prose (_person_prose): the standalone site is external output, so a
         # draft must never leak here. Fail closed on a damaged marker - withhold
         # the whole page rather than emit half-parsed draft text or a raw marker.
-        text, problem = strip_unaccepted_drafts(text)
+        #
+        # The `<!-- private -->` fence is resolved in the same pass, over the
+        # WHOLE file before splitting into entry chunks (otherwise an opener
+        # above a `##` heading is stranded in the previous chunk and the entry
+        # it fences keeps only its closer). The two used to run drafts-first,
+        # which cut a draft back to its heading - fence opener included - and
+        # published the fenced text after the draft (round-1 review of #305).
+        text, problem = withhold_private_and_drafts(text, drop_private=not self.linked)
         if problem is not None:
             self.messages.append(
                 'WARNING: a draft marker in notes/discoveries.md is damaged '
                 f'({problem}) - the discoveries page is withheld from the site.')
             self._discoveries = ('', [])
             return self._discoveries
-        # Apply the `<!-- private -->` fence to the WHOLE file before splitting
-        # into entry chunks. Otherwise an opener that sits above a `##` heading
-        # gets stranded in the previous chunk, and the entry it was meant to
-        # fence keeps only the trailing `<!-- /private -->` - leaking through
-        # the teaser and the discoveries page on standalone builds.
-        text = apply_private_fence(text, drop=not self.linked)
         lines = text.replace('\r\n', '\n').split('\n')
         # Drop a single leading H1 (the page supplies its own title).
         if lines and lines[0].startswith('# '):
@@ -9059,7 +9065,11 @@ class _SiteBuilder:
                     # Fail-closed on `<!-- AI-DRAFT ... -->`: unaccepted drafts
                     # must not slip into the homepage prose, and a damaged marker
                     # withholds the whole intro rather than leak partial draft.
-                    body, problem = strip_unaccepted_drafts(body)
+                    # The private fence goes in the same pass (drafts-first
+                    # cut a fence opener away with the draft and published the
+                    # fenced text after it - round-1 review of #305).
+                    body, problem = withhold_private_and_drafts(
+                        body, drop_private=not self.linked)
                     if problem is not None:
                         self.messages.append(
                             'WARNING: a draft marker in notes/home.md is damaged '

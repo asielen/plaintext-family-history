@@ -1455,6 +1455,50 @@ class WikitreePrivateFenceTests(unittest.TestCase):
             self.assertNotIn(hidden, r['text'])
         self.assertIn('A told story.', r['text'])
 
+    def test_fencing_a_drafts_last_paragraph_keeps_the_whole_draft_out(self):
+        # Round-1 review P1: fencing the last paragraph of an unaccepted
+        # draft, marker included, erased the marker and published the
+        # draft's first paragraph to the wiki as if it were accepted.
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n'
+            '<!-- AI-ACCEPTED 2026-06-01 claude-x - v1 (accepted 2026-06-20) -->\n\n'
+            'DRAFT-PARA-1 he probably deserted the army.\n\n'
+            '<!-- private -->\nDRAFT-PARA-2.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v2 -->\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('He was born in 1875', r['text'])
+        self.assertNotIn('DRAFT-PARA-1', r['text'])
+        self.assertNotIn('DRAFT-PARA-2', r['text'])
+
+    def test_whole_section_wrapped_around_the_template_example_stays_private(self):
+        # He wraps his whole Research Notes in a fence, leaving the template's
+        # own example fence inside it. Everything up to HIS closer is private.
+        tmpl = _lib.PERSON_BODY_SECTIONS_TEXT
+        rn = tmpl.index('## Research Notes\n') + len('## Research Notes\n')
+        ff = tmpl.index('## Friends & Family')
+        body = (tmpl[:rn] + '<!-- private -->\n' + tmpl[rn:ff].rstrip('\n')
+                + '\n\nCousin Ruth (living) may be his daughter - NESTED-SECRET.\n'
+                '<!-- /private -->\n\n' + tmpl[ff:])
+        self._write_profile(body.replace(
+            'Write their story', 'He was born in 1875 [S-0000000001]. Write their story'))
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('NESTED-SECRET', r['text'])
+        self.assertNotIn('private -->', r['text'])
+
+    def test_plain_nested_fence_stays_private(self):
+        self._write_profile(
+            '## Biography\n'
+            'He was born in 1875 [S-0000000001].\n\n'
+            '<!-- private -->\nouter\n<!-- private -->\ninner\n<!-- /private -->\n'
+            'OUTER-TAIL-SECRET\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertNotIn('OUTER-TAIL-SECRET', r['text'])
+        self.assertNotIn('inner', r['text'])
+
     def test_all_private_section_exports_like_an_unwritten_one(self):
         self._write_profile(
             '## Biography\n'

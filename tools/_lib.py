@@ -8873,26 +8873,135 @@ def transcript_text_is_unchecked(text: str) -> bool:
 # A general `<!-- private -->…<!-- /private -->` fence hides author-marked prose
 # (research hunches, notes touching living kin) from any shared/standalone output
 # while keeping it in the `--linked` working preview. Companion to
-# strip_unaccepted_drafts; usable on every publication path.
+# strip_unaccepted_drafts; usable on every publication path - and on any path
+# that ALSO strips drafts, use withhold_private_and_drafts, which runs the two
+# in the one order that cannot leak.
 _PRIVATE_MARK_RE = re.compile(r'<!--\s*/?\s*private\s*-->', re.I)
-_PRIVATE_BLOCK_RE = re.compile(
-    r'<!--\s*private\s*-->.*?(?:<!--\s*/\s*private\s*-->|\Z)', re.S | re.I)
+# The same markers with the slash captured, for the depth-counting scan.
+_PRIVATE_TOKEN_RE = re.compile(r'<!--\s*(/?)\s*private\s*-->', re.I)
+# Any complete AI provenance marker, either state.
+_AI_ANY_MARK_RE = re.compile(r'<!--\s*AI-(?:DRAFT|ACCEPTED)\b.*?-->', re.S)
 
 
-def apply_private_fence(text: str, *, drop: bool) -> str:
+def _private_fence_spans(text: str) -> list[tuple[int, int]]:
+    """The outermost fenced spans of `text`, as `[opener start, closer end)`.
+
+    Depth-counted, not paired first-opener-to-first-closer: a genealogist who
+    wraps a whole section in a fence while the template's own example fence is
+    still inside it has written `open … open … close … close`, and everything
+    up to the SECOND closer is what he meant to hide. Pairing on the first
+    closer (a non-greedy regex) published the tail after it. Fail closed both
+    ways: an opener never closed runs to the end of the text, and a closer
+    with no opener hides nothing (it is just a stray marker, removed)."""
+    spans: list[tuple[int, int]] = []
+    depth = 0
+    start = 0
+    for m in _PRIVATE_TOKEN_RE.finditer(text):
+        if m.group(1):
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0:
+                spans.append((start, m.end()))
+        else:
+            if depth == 0:
+                start = m.start()
+            depth += 1
+    if depth:
+        spans.append((start, len(text)))
+    return spans
+
+
+def _ai_markers_kept_from(fenced: str, before: str) -> str:
+    """What a dropped fence leaves behind for a draft stripper run after it:
+    at most one AI-DRAFT marker, never anything the genealogist wrote.
+
+    Why anything is left at all: an unaccepted draft's extent is found from
+    its END marker back to the previous boundary. Fence the last paragraph of
+    a multi-paragraph draft, marker included, and deleting the marker with the
+    fence leaves the draft's earlier paragraphs (outside the fence) looking
+    like ordinary prose - published (round-1 review of #305). Keeping that
+    marker keeps the draft's extent what it was in the original text.
+
+    Only the fence's FIRST AI marker can reach outside it - every later one
+    ends a block that starts at an earlier marker inside the same fence - and
+    only an AI-DRAFT one withholds anything. It is kept only when `before`
+    (the text already kept, back to its last boundary) still holds prose for
+    it to withhold; otherwise it would be a dangling marker that withholds
+    nothing yet still trips a "draft inside" caution. A marker word that is
+    NOT part of a complete marker is kept as a bare word, so the stripper
+    sees the same damage it would have seen without the fence and refuses
+    rather than guess."""
+    kept = ''
+    first = _AI_ANY_MARK_RE.search(fenced)
+    if first is not None and _AI_DRAFT_MARK_RE.match(first.group(0)):
+        tail = before
+        for m in _AI_BLOCK_BOUNDARY_RE.finditer(before):
+            tail = before[m.end():]
+        if _PRIVATE_MARK_RE.sub('', tail).strip():
+            kept = first.group(0)
+    rest = _AI_ANY_MARK_RE.sub('', fenced)
+    if 'AI-DRAFT' in rest or 'AI-ACCEPTED' in rest:
+        kept = (kept + '\nAI-DRAFT') if kept else 'AI-DRAFT'
+    return kept
+
+
+def apply_private_fence(text: str, *, drop: bool, keep_ai_markers: bool = False) -> str:
     """Resolve `<!-- private -->…<!-- /private -->` fences in prose.
 
     `drop=True` (a public/standalone build) removes the fenced content entirely;
     `drop=False` (the linked working preview) keeps the content but strips the
     marker comments so they never render as stray blank lines. FAIL-CLOSED: an
     unterminated `<!-- private -->` (no closing marker) drops to the end of the
-    text rather than risk publishing what was meant to stay hidden."""
+    text rather than risk publishing what was meant to stay hidden, and nested
+    fences count depth (see `_private_fence_spans`).
+
+    `keep_ai_markers=True` (with `drop=True`) leaves any AI-DRAFT/AI-ACCEPTED
+    marker a dropped fence contained in its place, for a draft stripper that
+    runs next - see `_ai_markers_kept_from`. Use `withhold_private_and_drafts`
+    rather than passing it by hand."""
     if '<!--' not in text:
         return text
-    if drop:
-        text = _PRIVATE_BLOCK_RE.sub('', text)
-    text = _PRIVATE_MARK_RE.sub('', text)
-    return _BLANK_RUN_RE.sub('\n\n', text) if drop else text
+    if not drop:
+        return _PRIVATE_MARK_RE.sub('', text)
+    out: list[str] = []
+    pos = 0
+    for s_, e_ in _private_fence_spans(text):
+        out.append(text[pos:s_])
+        if keep_ai_markers:
+            out.append(_ai_markers_kept_from(text[s_:e_], ''.join(out)))
+        pos = e_
+    out.append(text[pos:])
+    text = _PRIVATE_MARK_RE.sub('', ''.join(out))
+    return _BLANK_RUN_RE.sub('\n\n', text)
+
+
+def withhold_private_and_drafts(text: str, *, drop_private: bool) -> tuple[str, str | None]:
+    """Both publication-time exclusions - `<!-- private -->` fences and
+    unaccepted AI drafts - resolved so that neither erases what the other
+    needs. Returns `(text, problem)` exactly like `strip_unaccepted_drafts`.
+
+    Either order on its own leaks. Drafts first: a draft is cut back to the
+    previous heading, which swallows a fence OPENER sitting above the draft and
+    strands the fenced text after the draft with only its closer - published.
+    Fences first: a fence around a draft's last paragraph deletes the draft's
+    end marker, so the draft's earlier paragraphs read as accepted prose -
+    published. So the fence goes first but leaves the AI markers it held, and
+    the draft stripper then sees every draft at its original extent."""
+    text = apply_private_fence(text, drop=drop_private, keep_ai_markers=True)
+    return strip_unaccepted_drafts(text)
+
+
+def count_private_fences(text: str, *, ignore: str | None = None) -> int:
+    """How many outermost private fences `text` holds - the "N notes you
+    marked private were left out" count a packet README gives. `ignore` is a
+    fenced text (compared with whitespace collapsed) not to count: the
+    template's own example block is scaffolding, not a note he wrote."""
+    def _norm(t: str) -> str:
+        return ' '.join(_PRIVATE_MARK_RE.sub(' ', t).split())
+    skip = _norm(ignore) if ignore else None
+    return sum(1 for a, b in _private_fence_spans(text)
+               if skip is None or _norm(text[a:b]) != skip)
 
 
 # ── GENERATED-file ownership ──────────────────────────────────────────────────
