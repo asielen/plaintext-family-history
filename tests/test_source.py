@@ -269,8 +269,8 @@ class SourceNoteRefusalTests(unittest.TestCase):
         result = source.run_source_note(self.root, 'S-zzzzzzzzzz', text='x')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find S-zzzzzzzzzz')
-        self.assertIn('fha find S-zzzzzzzzzz', result.messages[0].text)
+        self.assertEqual(result.messages[0].next_step, 'fha find s-zzzzzzzzzz')
+        self.assertIn('fha find s-zzzzzzzzzz', result.messages[0].text)
 
     def test_missing_sources_dir_is_also_not_found(self) -> None:
         empty_root = Path(tempfile.mkdtemp()) / 'arc'
@@ -509,7 +509,7 @@ class SourceNoteCliTests(unittest.TestCase):
         rc, out, _ = self._run(
             ['source', 'note', 'S-zzzzzzzzzz', '--text', 'x', '--root', str(self.root)])
         self.assertEqual(rc, 1)
-        self.assertIn('fha find S-zzzzzzzzzz', out)
+        self.assertIn('fha find s-zzzzzzzzzz', out)
 
 
 if __name__ == '__main__':

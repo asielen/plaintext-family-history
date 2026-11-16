@@ -110,7 +110,7 @@ class TreeEdgeNatureTests(unittest.TestCase):
             conn.close()
         natures = {e['to']: e['genetic'] for e in data['edges']}
         self.assertIn('genetic', data['edges'][0])              # contract field present
-        self.assertTrue(natures.get('P-bbbbbbbbbb'))           # biological father
+        self.assertTrue(natures.get('p-bbbbbbbbbb'))           # biological father
         self.assertFalse(natures.get('P-cccccccccc'))          # adoptive father drawn distinctly
 
 

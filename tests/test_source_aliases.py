@@ -137,7 +137,7 @@ class MoreAcceptsARetiredIdTests(InboxFilingTestCase):
         other = self._put(self.inbox / 'Letters' / 'tax-receipt.pdf', b'%PDF-1.4 other')
         rc, _out, err = self._run(str(other), '--type', 'letter', '--slug', 'tax-receipt')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        other_filed = next((self.docs / 'letter').glob('tax-receipt_S-*.pdf'))
+        other_filed = next((self.docs / 'letter').glob('tax-receipt_s-*.pdf'))
         other_sid = other_filed.stem.split('_')[-1]
         text = record.read_text(encoding='utf-8')
         record.write_text(text.replace(f'aliases: [{sid}, ', f'aliases: [{sid}, {other_sid}, ', 1),

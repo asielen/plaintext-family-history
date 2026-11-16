@@ -363,7 +363,7 @@ class SetPrimaryRefusalTests(unittest.TestCase):
         result = source.run_source_set_primary(self.root, 'S-zzzzzzzzzz', file='x.tif')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[-1].next_step, 'fha find S-zzzzzzzzzz')
+        self.assertEqual(result.messages[-1].next_step, 'fha find s-zzzzzzzzzz')
 
 
 class SetPrimaryCliTests(unittest.TestCase):

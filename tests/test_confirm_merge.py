@@ -426,7 +426,7 @@ class MergeHelperTests(unittest.TestCase):
         new, changed = confirm._rewrite_person_list_value(
             f'[{MERGED}, {SURVIVOR}]', MERGED.lower(), SURVIVOR.lower(), {}, token_re)
         self.assertTrue(changed)
-        self.assertEqual(new, f'[{SURVIVOR}]')
+        self.assertEqual(new, f'[{SURVIVOR.lower()}]')
 
     def test_rewrite_list_value_pins_a_name_alias(self) -> None:
         token_re = confirm._person_token_re(MERGED.lower())
@@ -434,7 +434,7 @@ class MergeHelperTests(unittest.TestCase):
         new, changed = confirm._rewrite_person_list_value(
             '["[[Tommy]]"]', MERGED.lower(), SURVIVOR.lower(), alias_map, token_re)
         self.assertTrue(changed)
-        self.assertEqual(new, f'["[[{SURVIVOR}|Tommy]]"]')
+        self.assertEqual(new, f'["[[{SURVIVOR.lower()}|Tommy]]"]')
 
     def test_rewrite_ref_item_escapes_a_quote_in_the_display_name(self) -> None:
         # Sweep of PR #30's YAML-quoting review fixes: `display` comes from
@@ -446,12 +446,12 @@ class MergeHelperTests(unittest.TestCase):
         token_re = confirm._person_token_re(MERGED.lower())
         survivor_disp = confirm.fmt_id_display(SURVIVOR.lower())
         new = confirm._rewrite_ref_item('[[Tommy "Slim" Hartley]]', token_re, survivor_disp)
-        self.assertEqual(new, f'"[[{SURVIVOR}|Tommy \\"Slim\\" Hartley]]"')
+        self.assertEqual(new, f'"[[{SURVIVOR.lower()}|Tommy \\"Slim\\" Hartley]]"')
         # And the result is genuinely valid YAML, not just accepted by this
         # codebase's own hand-rolled text scanners.
         import yaml
         parsed = yaml.safe_load(f'x: [{new}]')
-        self.assertEqual(parsed['x'], [f'[[{SURVIVOR}|Tommy "Slim" Hartley]]'])
+        self.assertEqual(parsed['x'], [f'[[{SURVIVOR.lower()}|Tommy "Slim" Hartley]]'])
 
     def test_render_scalar_round_trips_a_restricted_mapping(self) -> None:
         # read_record coerces booleans to 'true'; the fold must write the real
@@ -570,7 +570,7 @@ class MergeArchiveTests(unittest.TestCase):
         self.survivor_path = self.root / 'people' / '040 Thomas' / 'hartley__thomas_edward_P-aaaaaaaaaa.md'
         self.merged_path = self.root / 'people' / 'stubs' / 'hartley__thos_P-bbbbbbbbbb.md'
         self.tombstone_path = self.root / 'people' / 'stubs' / \
-            'MERGED-INTO-P-aaaaaaaaaa__hartley__thos_P-bbbbbbbbbb.md'
+            'MERGED-INTO-p-aaaaaaaaaa__hartley__thos_P-bbbbbbbbbb.md'
         self.other_path = self.root / 'people' / 'connections' / 'webb__nancy_P-cccccccccc.md'
         self.source_path = self.root / 'sources' / 'other' / 'test-notes_S-eeeeeeeeee.md'
 
@@ -631,27 +631,27 @@ class MergeArchiveTests(unittest.TestCase):
         # Claims: every status relinked; no reference to the merged id remains.
         claims = {c['id']: c for c in read_record(self.source_path)['claims']}
         source_text = self.source_path.read_text(encoding='utf-8')
-        self.assertNotIn(MERGED, source_text)
-        self.assertEqual(claims['C-ff00000002']['persons'], ['P-aaaaaaaaaa'])
-        self.assertEqual(claims['C-ff00000003']['persons'], ['[[P-aaaaaaaaaa]]'])
-        self.assertEqual(claims['C-ff00000004']['persons'][0], '[[P-aaaaaaaaaa|Thos. Hartley]]')
-        self.assertEqual(claims['C-ff00000005']['persons'], ['[[P-aaaaaaaaaa|Tommy]]'])
+        self.assertNotIn(MERGED.lower(), source_text.lower())
+        self.assertEqual(claims['C-ff00000002']['persons'], ['p-aaaaaaaaaa'])
+        self.assertEqual(claims['C-ff00000003']['persons'], ['[[p-aaaaaaaaaa]]'])
+        self.assertEqual(claims['C-ff00000004']['persons'][0], '[[p-aaaaaaaaaa|Thos. Hartley]]')
+        self.assertEqual(claims['C-ff00000005']['persons'], ['[[p-aaaaaaaaaa|Tommy]]'])
         # survivor-already-listed dedupe (persons and roles)
-        self.assertEqual(claims['C-ff00000006']['persons'], ['P-aaaaaaaaaa'])
-        self.assertEqual(claims['C-ff00000007']['roles']['witness'], ['P-aaaaaaaaaa'])
+        self.assertEqual(claims['C-ff00000006']['persons'], ['p-aaaaaaaaaa'])
+        self.assertEqual(claims['C-ff00000007']['roles']['witness'], ['p-aaaaaaaaaa'])
         self.assertEqual(claims['C-ff00000008']['persons'], ['P-aaaaaaaaaa'])
         self.assertEqual(claims['C-ff00000008']['roles']['associate'], ['P-aaaaaaaaaa'])
         self.assertEqual(result['relinked_claims'], 7)
 
         # Source frontmatter people: repointed, display kept.
         speople = read_record(self.source_path)['meta']['people']
-        self.assertEqual(speople[0], '[[P-aaaaaaaaaa|Thos. Hartley]]')
+        self.assertEqual(speople[0], '[[p-aaaaaaaaaa|Thos. Hartley]]')
 
         # Other profile: relationships target repointed; prose untouched.
         otext = self.other_path.read_text(encoding='utf-8')
         orec = read_record(self.other_path)
         targets = [str(e['to']) for e in orec['meta']['relationships']]
-        self.assertNotIn(MERGED, ' '.join(targets))
+        self.assertNotIn(MERGED.lower(), ' '.join(targets).lower())
         self.assertIn('Nancy knew [[P-bbbbbbbbbb|Thos. Hartley]] from church.', otext)
         self.assertEqual(result['relinked_profiles'], 2)
 
@@ -671,7 +671,7 @@ class MergeArchiveTests(unittest.TestCase):
         warnings = ' | '.join(m.text for m in result.messages if m.level == 'warning')
         self.assertIn('Hartley-1', warnings)
         self.assertIn('Hartley-2', warnings)
-        self.assertIn('C-ff00000008', warnings)
+        self.assertIn('c-ff00000008', warnings)
         self.assertIn('sibling', warnings)     # the skipped survivor-self edge
 
     def test_sibling_claims_and_records_byte_untouched(self) -> None:
@@ -716,20 +716,20 @@ class MergeArchiveTests(unittest.TestCase):
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r['status'], 'merged')
         msg = ' '.join(m.text for m in r.messages)
-        self.assertIn(f'fha confirm draft {SURVIVOR}', msg)
+        self.assertIn(f'fha confirm draft {SURVIVOR.lower()}', msg)
         self.assertEqual(self.tombstone_path.read_bytes(), before)
         self.assertEqual(r.changed, [])
 
     def test_accept_draft_names_the_find_step_when_pointer_is_broken(self) -> None:
         run_merge(self.root)
         text = self.tombstone_path.read_text(encoding='utf-8')
-        text = text.replace(f'merged_into: {SURVIVOR}', 'merged_into: nowhere')
+        text = text.replace(f'merged_into: {SURVIVOR.lower()}', 'merged_into: nowhere')
         text += '\n<!-- AI-DRAFT 2026-07-10 model=test -->\ndrafted prose\n'
         self.tombstone_path.write_text(text, encoding='utf-8')
         r = confirm.run_accept_draft(self.root, person_id=MERGED)
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r['status'], 'merged')
-        self.assertIn(f'fha find {MERGED}', ' '.join(m.text for m in r.messages))
+        self.assertIn(f'fha find {MERGED.lower()}', ' '.join(m.text for m in r.messages))
 
     # Companion views ------------------------------------------------------------
 
@@ -868,7 +868,7 @@ class MergeArchiveTests(unittest.TestCase):
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r['status'], 'merged-survivor')
         msg = ' '.join(m.text for m in r.messages)
-        self.assertIn(SURVIVOR, msg)   # the chain's final survivor is named
+        self.assertIn(SURVIVOR.lower(), msg)   # the chain's final survivor is named
 
     def test_refuses_remerge_into_a_different_survivor(self) -> None:
         run_merge(self.root)
@@ -1058,14 +1058,14 @@ class ExampleArchiveMergeTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)   # no conflicts here
 
         tombstone = self.root / 'people' / 'stubs' / \
-            f'MERGED-INTO-{THOMAS}__hartley__thos_e_{DUP_STUB_ID}.md'
+            f'MERGED-INTO-{THOMAS.lower()}__hartley__thos_e_{DUP_STUB_ID}.md'
         self.assertTrue(tombstone.exists())
 
         # The claim followed the identity: it now names Thomas.
         src = read_record(self.root / 'sources' / 'other'
                           / f'merge-check-ledger_{DUP_SOURCE_ID}.md')
         claim = {c['id']: c for c in src['claims']}[DUP_CLAIM_ID]
-        self.assertEqual(claim['persons'], [THOMAS])
+        self.assertEqual(claim['persons'], [THOMAS.lower()])
 
         self.index.build_index(self.root, self.config)
         after = self._lint_codes()

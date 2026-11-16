@@ -454,7 +454,7 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('Excluded sources', readme)
-        self.assertIn('S-1111111111', readme)
+        self.assertIn('s-1111111111', readme)
         self.assertNotIn('Included sources', readme)
         self.assertFalse((result['packet_dir'] / 'sources').exists())
 
@@ -567,7 +567,7 @@ class PacketTests(unittest.TestCase):
         self.assertIn('CAUTION', readme)
         # Named as the survivor: the duplicate's own name may be a former
         # name the survivor marked restricted (#237 audit).
-        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertIn('Still Living [p-bbbbbbbbbb]', readme)
         self.assertNotIn('Old Duplicate', readme)
 
     def _seed_merged_living(self):
@@ -592,7 +592,7 @@ class PacketTests(unittest.TestCase):
 
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertIn('Still Living [p-bbbbbbbbbb]', readme)
         self.assertNotIn('Old Duplicate', readme)
 
     def test_duplicate_merged_into_the_subject_is_not_another_person(self):
@@ -1092,7 +1092,7 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir)
         self.assertEqual(result['status'], 'ok', result['messages'])
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertIn('Still Living [P-bbbbbbbbbb]', readme)
+        self.assertIn('Still Living [p-bbbbbbbbbb]', readme)
         self.assertNotIn('Old Duplicate', readme)
 
     def test_merged_alias_sources_still_gathered(self):

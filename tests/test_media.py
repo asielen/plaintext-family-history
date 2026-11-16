@@ -203,7 +203,7 @@ class DedupeCoverageInvariantTests(unittest.TestCase):
         self.assertEqual(result.exit_code, media.DEDUPE_DUPLICATE)
         entry = result.data['results'][0]
         self.assertTrue(entry.get('already_filed'))
-        self.assertEqual(entry['duplicates'][0]['source_id'], 'S-0000000001')
+        self.assertEqual(entry['duplicates'][0]['source_id'], 's-0000000001')
 
     def test_a_narrower_media_root_cannot_answer_the_same_question(self):
         """Removing the folder that would hide the twin must not read as clean."""
@@ -296,7 +296,7 @@ class DedupeHappyPathTests(unittest.TestCase):
 class SourceIdInTests(unittest.TestCase):
     def test_extracts_the_s_id_from_a_processed_filename(self):
         self.assertEqual(
-            media.source_id_in('hartley-1998-06-14_S-0000000001.m4a'), 'S-0000000001')
+            media.source_id_in('hartley-1998-06-14_S-0000000001.m4a'), 's-0000000001')
 
     def test_a_photo_root_filename_carries_no_id(self):
         self.assertIsNone(media.source_id_in('portrait_1880.jpg'))

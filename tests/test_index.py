@@ -3849,6 +3849,107 @@ class MultiRoleRuleTests(unittest.TestCase):
         self.assertEqual(social_parties(pairs, 'friend'), ['p-a', 'p-b'])
 
 
+class KinRoleSynonymTests(unittest.TestCase):
+    """SPEC §8.3 "Synonyms": a birth certificate transcribed as `mother:` and
+    `father:` (or a relationship claim written `son:`/`husband:`/`wife:`) is
+    the same fact as `parent:`/`child:`/`spouse:`, and must reach the family
+    tree the same way. Before this, the words were silently ignored and the
+    parents never appeared on the child's page.
+
+    Rule level first (the one fold every role rule reads), then the index."""
+
+    def test_mother_and_father_read_as_parent(self) -> None:
+        pairs = [('p-c', 'child'), ('p-m', 'mother'), ('p-f', 'Father')]
+        self.assertEqual(parentage_parties(pairs), (['p-c'], ['p-m', 'p-f']))
+
+    def test_son_and_daughter_read_as_child(self) -> None:
+        self.assertEqual(parentage_parties([('p-s', 'son'), ('p-f', 'parent')]),
+                         (['p-s'], ['p-f']))
+        self.assertEqual(parentage_parties([('p-d', 'daughter'), ('p-m', 'mother')]),
+                         (['p-d'], ['p-m']))
+
+    def test_husband_and_wife_read_as_spouse(self) -> None:
+        pairs = [('p-h', 'husband'), ('p-w', 'wife'), ('p-x', 'parent')]
+        self.assertEqual(spouse_parties(pairs), ['p-h', 'p-w'])
+
+    def test_a_birth_subject_written_daughter_is_her_own_birth(self) -> None:
+        pairs = [('p-d', 'daughter'), ('p-m', 'mother'), ('p-i', 'informant')]
+        self.assertEqual(vital_subjects('birth', pairs), ['p-d'])
+
+    def test_a_descriptive_role_derives_nothing(self) -> None:
+        # `grandparent:` places the person and builds no edge.
+        self.assertEqual(parentage_parties([('p-c', 'child'), ('p-g', 'grandparent')]),
+                         ([], []))
+
+    def _build(self, ctype: str, roles: str, persons: list) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        for pid, name in _BIRTH_NAMES.items():
+            _write(root / 'people' / f'p_{pid}.md',
+                   f'---\nid: {pid}\nname: {name}\nliving: false\n---\n\n# {name}\n')
+        _write(root / 'sources' / 's_s-8888888888.md',
+               '---\nid: S-8888888888\ntitle: Certificate\n'
+               'source_type: vital-record\n---\n\n'
+               '## Claims\n```yaml\n'
+               f'- value: "a {ctype}"\n  id: C-1111111111\n  type: {ctype}\n'
+               f'  persons: [{", ".join(persons)}]\n  status: accepted\n'
+               '  reviewed: 2026-01-01\n  confidence: high\n  date: 1902-04-17\n'
+               + roles + '```\n')
+        index.build_index(root, {})
+        return root
+
+    @staticmethod
+    def _edges(root: Path) -> set:
+        conn = sqlite3.connect(str(root / '.cache' / 'index.sqlite'))
+        try:
+            return {tuple(r) for r in conn.execute(
+                'SELECT person_id, rel, other_id FROM relationships')}
+        finally:
+            conn.close()
+
+    def test_birth_claim_with_mother_and_father_reaches_the_tree(self) -> None:
+        root = self._build('birth', (
+            f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+            f'    mother: [{_BIRTH_MOTHER}]\n    father: [{_BIRTH_FATHER}]\n'),
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
+        c, f, m = (_BIRTH_CHILD.lower(), _BIRTH_FATHER.lower(), _BIRTH_MOTHER.lower())
+        self.assertEqual(self._edges(root), {
+            (c, 'parent', f), (f, 'child', c), (c, 'parent', m), (m, 'child', c)})
+
+    def test_relationship_claim_with_son_and_father_reaches_the_tree(self) -> None:
+        root = self._build('relationship', (
+            '  subtype: biological\n'
+            f'  roles:\n    son: [{_BIRTH_CHILD}]\n    father: [{_BIRTH_FATHER}]\n'),
+            [_BIRTH_CHILD, _BIRTH_FATHER])
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})
+
+    def test_relationship_claim_with_husband_and_wife_is_a_marriage(self) -> None:
+        root = self._build('relationship', (
+            f'  roles:\n    husband: [{_BIRTH_FATHER}]\n    wife: [{_BIRTH_MOTHER}]\n'),
+            [_BIRTH_FATHER, _BIRTH_MOTHER])
+        f, m = _BIRTH_FATHER.lower(), _BIRTH_MOTHER.lower()
+        self.assertEqual(self._edges(root), {(f, 'spouse', m), (m, 'spouse', f)})
+
+    def test_relationship_claim_with_a_capitalised_spouse_key_is_a_marriage(self) -> None:
+        # The same fold reads `Spouse:` as `spouse:`; the relationship branch
+        # used to compare the raw word and drop it.
+        root = self._build('relationship', (
+            f'  roles:\n    Spouse: [{_BIRTH_FATHER}, {_BIRTH_MOTHER}]\n'),
+            [_BIRTH_FATHER, _BIRTH_MOTHER])
+        f, m = _BIRTH_FATHER.lower(), _BIRTH_MOTHER.lower()
+        self.assertEqual(self._edges(root), {(f, 'spouse', m), (m, 'spouse', f)})
+
+    def test_birth_claim_with_a_grandparent_builds_no_edge_to_her(self) -> None:
+        root = self._build('birth', (
+            f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+            f'    parent: [{_BIRTH_FATHER}]\n    grandparent: [{_BIRTH_MOTHER}]\n'),
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})
+
+
 class SocialPartiesRuleTests(unittest.TestCase):
     """`_lib.social_parties` directly (#118)."""
 

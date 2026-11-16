@@ -450,7 +450,7 @@ class NormalizeLinksTornWriteTests(SurvivesTornWriteMixin, unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         after = self.profile.read_bytes()
         # The one intended edit landed...
-        self.assertIn(b'[[S-aaaaaaaaaa]]', after)
+        self.assertIn(b'[[s-aaaaaaaaaa]]', after)
         # ...and it is the ONLY change: every line still ends CRLF, and no
         # lone LF was introduced.
         self.assertNotIn(b'\n', after.replace(b'\r\n', b''))

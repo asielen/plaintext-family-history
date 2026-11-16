@@ -283,7 +283,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         self.assertTrue(out.exists())
         text = out.read_text(encoding='utf-8')
         self.assertIn('[Page 1]', text)
@@ -294,7 +294,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(entry['role'], 'extracted-text')
         self.assertIn(entry['derived'], (True, 'true'))
         self.assertEqual(entry['file'],
-                         f'documents/book/county-history-extracted-text_{SID}.md')
+                         f'documents/book/county-history-extracted-text_{SID.lower()}.md')
         # the original is byte-untouched
         self.assertEqual(self.pdf.read_bytes(), _minimal_pdf(
             ['Hartley arrived 1854', 'He farmed Marsh Creek']))
@@ -305,7 +305,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['pages_with_text'], 2)
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         text = out.read_text(encoding='utf-8')
         self.assertIn('[Page 2]\n(no text layer on this page - read it with vision)', text)
         self.assertTrue(any('no text layer on: 2' in m.text for m in result.messages))
@@ -317,7 +317,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result['status'], 'no-text')
         self.assertFalse(
-            (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
+            (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').exists())
         self.assertTrue(any('scanned-image' in m.text for m in result.messages))
         # the record's inventory gained nothing
         self.assertEqual(len(read_record(self.record)['meta']['files']), 1)
@@ -354,7 +354,7 @@ class SourceExtractTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data.get('error_pages'), [2])
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         self.assertTrue(out.exists())                    # the good page is kept
         text = out.read_text(encoding='utf-8')
         self.assertIn('Good page one', text)
@@ -389,7 +389,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result['status'], 'extract-error')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertFalse(
-            (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
+            (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').exists())
         self.assertTrue(any('FAILED on every selected' in m.text for m in result.messages))
         self.assertFalse(any('scanned-image' in m.text for m in result.messages))
         self.assertEqual(len(read_record(self.record)['meta']['files']), 1)
@@ -404,7 +404,7 @@ class SourceExtractTests(unittest.TestCase):
         # Then a valid subset extracts just those pages.
         result = self._run(pages='2-3')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         text = out.read_text(encoding='utf-8')
         self.assertNotIn('[Page 1]', text)
         self.assertIn('[Page 2]', text)
@@ -425,7 +425,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'dry-run')
         self.assertFalse(
-            (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
+            (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').exists())
         self.assertEqual(self.record.read_text(encoding='utf-8'), before)
         self.assertTrue(any('[dry-run]' in m.text for m in result.messages))
 
@@ -499,7 +499,7 @@ class SourceExtractTests(unittest.TestCase):
         self._two_copies()
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         text = out.read_text(encoding='utf-8')
         self.assertIn('Own scan text', text)
         self.assertNotIn('FamilySearch copy text', text)
@@ -509,7 +509,7 @@ class SourceExtractTests(unittest.TestCase):
         self._two_copies()
         result = self._run(copy_label='FamilySearch')     # capitals do not matter
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        out = self.pdf.parent / f'hartley-familysearch-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'hartley-familysearch-extracted-text_{SID.lower()}.md'
         text = out.read_text(encoding='utf-8')
         self.assertIn('FamilySearch copy text', text)
         self.assertNotIn('Own scan text', text)
@@ -575,7 +575,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         joined = ' '.join(m.text for m in result.messages)
         self.assertIn('ancestry', joined)
-        self.assertIn(f'fha source extract {SID} --copy familysearch', joined)
+        self.assertIn(f'fha source extract {SID.lower()} --copy familysearch', joined)
         self.assertEqual(self.record.read_text(encoding='utf-8'), before)
         self.assertFalse(list(self.pdf.parent.glob('*extracted-text*')))
 
@@ -595,7 +595,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         joined = ' '.join(m.text for m in result.messages)
         self.assertIn('none of its PDFs carries a copy: label', joined)
-        self.assertIn(f'`fha source extract {SID}`', joined)
+        self.assertIn(f'`fha source extract {SID.lower()}`', joined)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_every_primary_labelled_refuses_naming_copy(self) -> None:
@@ -607,7 +607,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         joined = ' '.join(m.text for m in result.messages)
-        self.assertIn(f'fha source extract {SID} --copy b', joined)
+        self.assertIn(f'fha source extract {SID.lower()} --copy b', joined)
         self.assertIn('(b, c)', joined)
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
@@ -625,7 +625,7 @@ class SourceExtractTests(unittest.TestCase):
             code = args.func(args)
         self.assertEqual(code, EXIT_CLEAN, out.getvalue())
         self.assertTrue((self.pdf.parent /
-                         f'hartley-familysearch-extracted-text_{SID}.md').exists())
+                         f'hartley-familysearch-extracted-text_{SID.lower()}.md').exists())
 
     # -- #281: a text layer whose words run together ---------------------------
 
@@ -633,7 +633,7 @@ class SourceExtractTests(unittest.TestCase):
     def test_squeezed_ocr_layer_keeps_its_word_spaces(self) -> None:
         self.pdf.write_bytes(_minimal_pdf([_raw(SQUEEZED_STREAM)], base_font='Times-Roman'))
         result = self._run()
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         text = out.read_text(encoding='utf-8')
         if 'Thomas Hartley, son of Edward' in text:
             self.assertEqual(result.exit_code, EXIT_CLEAN,
@@ -661,7 +661,7 @@ class SourceExtractTests(unittest.TestCase):
                   '(County History of Marsh Creek) Tj\n3 Tr 60 Tz\n' + body + 'ET')
         self.pdf.write_bytes(_minimal_pdf([_raw(stream)], base_font='Times-Roman'))
         result = self._run()
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('County History of Marsh Creek', text)
         self.assertIn(SQUASHED_LINE, text)            # the rotated body is kept
@@ -731,7 +731,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertTrue(any('page(s) 1' in w and 'fha find --text' in w
                             and 'could not recover the spaces' in w for w in warnings),
                         warnings)
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         head, _, body = text.partition('[Page 1]')
         self.assertIn('Words run together on page(s) 1', head)
@@ -798,7 +798,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run_with_reader(reader)
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         self.assertEqual(result.data['layout_pages'], [1])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Thomas Hartley, son of Edward, b. May 9, 1854, came also '
                       'from Marsh Creek\n', text)
@@ -819,7 +819,7 @@ class SourceExtractTests(unittest.TestCase):
     def _assert_plain_dump(self, result) -> None:
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         self.assertEqual(result.data['squashed_pages'], [])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertNotIn('Words run together', text)
 
@@ -860,7 +860,7 @@ class SourceExtractTests(unittest.TestCase):
         self.pdf.write_bytes(_minimal_pdf(
             [_raw('BT /F1 11 Tf 3 Tr 85 Tz\n' + body + 'ET')], base_font='Times-Roman'))
         result = self._run()
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('eighteen hundred fifty', text)
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
@@ -882,7 +882,7 @@ class SourceExtractTests(unittest.TestCase):
             [_raw('BT /F1 11 Tf 3 Tr 60 Tz\n' + body + 'ET')], base_font='Times-Roman'))
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Thomas Hartley, son of Edward', text)
 
@@ -901,7 +901,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.data['pdftotext_pages'], [1])
         self.assertNotIn('layout', calls)
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Thomas Hartley, son of Edward', text)
 
@@ -943,7 +943,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.data['layout_pages'], [1])
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('son of', text)
         self.assertNotIn('sonofEdw', text)
@@ -975,7 +975,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.data['layout_pages'], [1], [m.text for m in result.messages])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Abbott 12, 340', text)
         # Ordinary pages of numbers and ordinals do not trigger at all.
@@ -1134,7 +1134,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertIn('changed their order', warnings)
         self.assertNotIn('could not recover the spaces', warnings)
         self.assertIn('pdftotext', warnings)            # names the optional reader
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         # the column-by-column default reading is kept, never the interleaved one
         self.assertIn('ThomasHartley,sonofEdward', text)
@@ -1148,7 +1148,7 @@ class SourceExtractTests(unittest.TestCase):
             result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         self.assertEqual(result.data['pdftotext_pages'], [1])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Thomas Hartley, son of Edward', text)
         self.assertIn('Mary Ann Brown, daughter of Josiah', text)
@@ -1181,7 +1181,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         self.assertEqual(result.data['layout_pages'], [1])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('Angus McDonald married Mary MacArthur', text)
         self.assertIn('DeWitt and VanBuren families', text)
@@ -1233,7 +1233,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         self.assertEqual(sorted(result.data['layout_pages']
                                 + result.data['pdftotext_pages']), [1, 2])
-        text = (self.pdf.parent / f'county-history-extracted-text_{SID}.md').read_text(
+        text = (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').read_text(
             encoding='utf-8')
         self.assertIn('1. John Hartley, b. 3 May 1821; d. 4 Jun 1861;', text)
         self.assertIn('Abbott, J., 12, 15, Ames, R., 45, 48,', text)
@@ -1304,7 +1304,7 @@ class SourceExtractTests(unittest.TestCase):
         self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
         (self.pdf.parent / second).write_bytes(_minimal_pdf(['Copy b text']))
         self.assertEqual(self._run(copy_label='b').exit_code, EXIT_CLEAN)
-        self.assertTrue((self.pdf.parent / f'scan2-b-extracted-text_{SID}.md').exists())
+        self.assertTrue((self.pdf.parent / f'scan2-b-extracted-text_{SID.lower()}.md').exists())
 
     # -- #281 review: what a second reading may change ---------------------------
 
@@ -1446,7 +1446,7 @@ class SourceExtractTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self.record.read_bytes(), before)      # restored/untouched
         self.assertFalse(
-            (self.pdf.parent / f'county-history-extracted-text_{SID}.md').exists())
+            (self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md').exists())
         self.assertTrue(any('rolled back' in m.text for m in result.messages))
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
@@ -1461,7 +1461,7 @@ class SourceExtractTests(unittest.TestCase):
         import _lib
         self.pdf.write_bytes(_minimal_pdf(['Some text']))
         record_before = self.record.read_bytes()
-        out = self.pdf.parent / f'county-history-extracted-text_{SID}.md'
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
         real_replace = _lib.os.replace
 
         def failing_replace(src, dst, *a, **k):
@@ -1516,7 +1516,7 @@ class SourceExtractTests(unittest.TestCase):
         entry = read_record(self.record)['meta']['files'][-1]
         self.assertEqual(entry['role'], 'extracted-text')
         self.assertEqual(entry['file'],
-                         f'documents/book/county-history-extracted-text_{SID}.md')
+                         f'documents/book/county-history-extracted-text_{SID.lower()}.md')
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_malformed_yaml_record_refuses_naming_lint_not_no_pdf(self) -> None:

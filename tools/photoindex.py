@@ -3792,8 +3792,10 @@ def apply_tag_person(
 
     `person_id` must already be normalized (lowercase) by the caller - see
     `run_tag_person_plan`. The embedded keyword text uses the canonical
-    'P-' + lowercase-id form regardless of the casing the human typed, so a
-    later scan's `_PID_KEYWORD_RE` match and this call agree on one spelling.
+    all-lowercase form, prefix included (`p-3kq9v8x2m1`, SPEC §10),
+    regardless of the casing the human typed. A scan's `_PID_KEYWORD_RE`
+    reads any casing, so a capital-prefix keyword an older tool wrote still
+    counts, and `already_tagged` (a LOWER() match) never writes it twice.
 
     Each candidate is written and cached independently: a failed write on one
     photo never discards the cache update for photos that did succeed.
@@ -3831,7 +3833,7 @@ def apply_tag_person(
         )
     if not candidates:
         return Result(data={'tagged': [], 'failed': []})
-    keyword = 'P-' + person_id.split('-', 1)[1]
+    keyword = normalize_id(person_id)
     if backup is None:
         backup = OriginalBackup(archive_root, fha_config)
         backup.announce()

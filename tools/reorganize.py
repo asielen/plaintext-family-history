@@ -296,7 +296,12 @@ def _machine_generated_names(slug: str, display_sid: str, entry: dict, ext: str)
     original_filename = entry.get('original_filename')
     if original_filename:
         bases.add(_slugify(Path(str(original_filename)).stem))
-    return {f'{base}{suffix}_{display_sid}{ext}' for base in bases}
+    # A file an older `fha process` filed carries the capital-prefix spelling
+    # (`_S-2b3c…`); today's carries `_s-2b3c…` (SPEC §10). Both are a machine's
+    # name, never a human rename.
+    sid = display_sid.lower()
+    sids = {sid, sid[:1].upper() + sid[1:]}
+    return {f'{base}{suffix}_{s}{ext}' for base in bases for s in sids}
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -662,15 +667,12 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
                 f'{rec_path.name}: the record filename does not carry an S-id - '
                 'skipped (`fha lint` flags this separately).')
             continue
-        # Two forms, deliberately kept apart: `rec_sid` (fully lowercase) is
-        # for EQUALITY checks against `_filename_has_source_id`'s own
-        # lowercased return; `display_sid` (capital prefix, e.g. 'S-2b3c...')
-        # is the `fmt_id_display` convention every OTHER filename/folder
-        # `fha` constructs already uses (process_refile's own `new_name`) -
-        # reusing the fully-lowercased form to NAME a folder would produce
-        # `thing_s-2b3c...` next to every other tool's `thing_S-2b3c...`.
+        # One form for both jobs since SPEC §10 made every ID all lowercase:
+        # `rec_sid` is compared against `_filename_has_source_id`'s lowercased
+        # return AND names the folder (`thing_s-2b3c...`), the same spelling
+        # `fmt_id_display` gives every other filename fha writes.
         rec_sid = m.group(1).lower()
-        display_sid = m.group(1)[0].upper() + m.group(1)[1:].lower()
+        display_sid = fmt_id_display(rec_sid)
         slug = rec_stem[:m.start()]
 
         # Identity guard (P1 audit finding, PR #188): `rec_sid` above comes
@@ -750,10 +752,10 @@ def _plan(archive_root: Path, fha_config: dict, documents_root: Path,
 
             filename_sid = _filename_has_source_id(abs_path)
             if filename_sid != rec_sid:
-                carried = filename_sid.upper() if filename_sid else 'no source id at all'
+                carried = fmt_id_display(filename_sid) if filename_sid else 'no source id at all'
                 problems.append(
                     f"{rec_path.name}: {alias}'s own filename carries {carried}, not "
-                    f'{rec_sid.upper()} - this looks like inventory drift, not a plain '
+                    f'{display_sid} - this looks like inventory drift, not a plain '
                     'reorganize candidate. Fix it by hand, then re-run. Not touched.')
                 continue
 

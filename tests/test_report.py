@@ -408,20 +408,20 @@ class ReportTests(unittest.TestCase):
         md = result['markdown']
 
         self.assertIn('Claims newly accepted', md)
-        self.assertIn('C-1111111111', md)
+        self.assertIn('c-1111111111', md)
         self.assertIn('Profiles newly vital-complete', md)
         self.assertIn('Test Person', md)
         self.assertIn('No vitals gaps for curated persons.', md)
         self.assertIn('Source Two', md)
         self.assertIn('1 suggested claim(s)', md)
         self.assertIn('New sources (1):', md)
-        self.assertIn('S-2222222222', md)
+        self.assertIn('s-2222222222', md)
         self.assertIn('New claims (1):', md)
-        self.assertIn('C-2222222222', md)
+        self.assertIn('c-2222222222', md)
         self.assertIn('Changed claims (1):', md)
         # The answerable-questions proposal should cite the now-accepted claim.
         self.assertIn('now accepted', md)
-        self.assertIn('answered [S-1111111111]', md)
+        self.assertIn('answered [s-1111111111]', md)
 
     def test_unchanged_second_run_has_no_new_discoveries(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
@@ -509,7 +509,7 @@ class ReportTests(unittest.TestCase):
         # Windows list2cmdline), so a fixed string here would be right on
         # only one of them.
         self.assertIn(
-            'fha confirm place C-6666666661 C-6666666662 C-6666666663 '
+            'fha confirm place c-6666666661 c-6666666662 c-6666666663 '
             f'--name={shell_quote("Topeka, Kansas")}',
             md,
         )
@@ -551,7 +551,7 @@ class ReportTests(unittest.TestCase):
         argv = shlex.split(command)
         self.assertEqual(
             argv[:5],
-            ['fha', 'confirm', 'place', 'C-7777777771', 'C-7777777772'],
+            ['fha', 'confirm', 'place', 'c-7777777771', 'c-7777777772'],
         )
         name_arg = next(a for a in argv if a.startswith('--name='))
         self.assertEqual(name_arg, '--name=The "Old Manse", Springfield')
@@ -850,11 +850,11 @@ class ReportTests(unittest.TestCase):
             conn.close()
 
         self.assertIn(
-            '- Test Person [P-aaaaaaaaaa] - County probate index: worth re-running (stale nil search)',
+            '- Test Person [p-aaaaaaaaaa] - County probate index: worth re-running (stale nil search)',
             lines,
         )
         self.assertIn(
-            '- Test Person [P-aaaaaaaaaa] - Newspaper archive: already searched 2020-01-01',
+            '- Test Person [p-aaaaaaaaaa] - Newspaper archive: already searched 2020-01-01',
             lines,
         )
 
@@ -1112,7 +1112,7 @@ class PlaceTextEscalationTests(unittest.TestCase):
         self._write_cluster_source('S-9000000006', 'Warsaw, Poland', 20)
         result = report.run_report(self.archive_root, {}, full=True)
         md = result['markdown']
-        self.assertIn('--into=L-baba9801fa', md)
+        self.assertIn('--into=l-baba9801fa', md)
         self.assertNotIn('--name=', md)
 
     def test_escalation_banner_says_not_linked_not_unregistered_when_already_registered(
@@ -1178,8 +1178,8 @@ class PlaceTextEscalationTests(unittest.TestCase):
         result = report.run_report(self.archive_root, {}, full=True)
         md = result['markdown']
         self.assertIn('MULTIPLE registered places', md)
-        self.assertIn('L-aaaaaaaaaa', md)
-        self.assertIn('L-bbbbbbbbbb', md)
+        self.assertIn('l-aaaaaaaaaa', md)
+        self.assertIn('l-bbbbbbbbbb', md)
         self.assertIn('fha places lint', md)
         self.assertNotIn('--name=', md)
         # Issue #166 finding 1: the old text here spliced in the literal,
@@ -1199,12 +1199,12 @@ class PlaceTextEscalationTests(unittest.TestCase):
         for command in into_commands:
             argv = shlex.split(command)
             self.assertEqual(argv[:3], ['fha', 'confirm', 'place'])
-            self.assertTrue(argv[-1].startswith('--into=L-'))
+            self.assertTrue(argv[-1].startswith('--into=l-'))
             seen_targets.add(argv[-1].split('=', 1)[1])
             # Every claim in the 20-claim cluster is still named, exactly
             # like the exact/near-match and no-match branches already do.
             self.assertEqual(len(argv) - 4, 20)   # fha, confirm, place, --into= bracket the ids
-        self.assertEqual(seen_targets, {'L-aaaaaaaaaa', 'L-bbbbbbbbbb'})
+        self.assertEqual(seen_targets, {'l-aaaaaaaaaa', 'l-bbbbbbbbbb'})
 
     def test_escalation_banner_flags_ambiguous_match_without_asserting_unregistered(
         self,
@@ -1337,13 +1337,13 @@ class PlaceTextGroupLineAmbiguousMatchTests(unittest.TestCase):
         }
         line = report._place_text_group_line(self.archive_root, self._group(), match=match)
         for pid in ('L-aaaaaaaaaa', 'L-bbbbbbbbbb'):
-            command = f'fha confirm place C-1111111111 C-2222222222 --into={pid}'
+            command = f'fha confirm place c-1111111111 c-2222222222 --into={pid}'
             self.assertIn(f'`{command}`', line)
             # Genuinely a complete, shell-splittable command naming every
             # claim id in the cluster - not a fragment or a sample.
             self.assertEqual(
                 shlex.split(command),
-                ['fha', 'confirm', 'place', 'C-1111111111', 'C-2222222222', f'--into={pid}'])
+                ['fha', 'confirm', 'place', 'c-1111111111', 'c-2222222222', f'--into={pid}'])
         self.assertIn('fha places lint', line)   # the registry-hygiene pointer stays too
 
     def test_three_way_tie_still_gives_one_command_each(self) -> None:
@@ -1664,11 +1664,11 @@ class PromotionCandidatesTests(unittest.TestCase):
         # Direct-line bucket offers the verb.
         self.assertIn('Direct-line ancestors still filed as stubs (1)', body)
         self.assertIn('Pa Person', body)
-        self.assertIn(f'fha person promote {self.PA}', body)
+        self.assertIn(f'fha person promote {self.PA.lower()}', body)
         # #80: the claim-heavy non-direct stub is now offered the verb too.
         self.assertIn('Frank S. Woodbury', body)
         self.assertIn('6 accepted claims and no curated profile', body)
-        self.assertIn(f'fha person promote {self.FRIEND} --into connections/', body)
+        self.assertIn(f'fha person promote {self.FRIEND.lower()} --into connections/', body)
 
     def test_threshold_reads_fha_yaml(self) -> None:
         cfg = self._build(
