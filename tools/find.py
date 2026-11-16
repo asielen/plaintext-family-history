@@ -76,6 +76,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_date_order_sql,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -579,7 +580,7 @@ def _find_place(
         LEFT JOIN claim_persons cp ON c.id = cp.claim_id
         WHERE c.place_id = ?
         GROUP BY c.id
-        ORDER BY c.date_min
+        ORDER BY """ + claim_date_order_sql('c') + """
         """,
         (lid,)
     ).fetchall()
@@ -1718,7 +1719,7 @@ def _related_place(
     if date_bounds:
         sql += ' AND ' + _overlap_clause('c.date_min', 'c.date_max')
         params += [date_bounds[1], date_bounds[0]]
-    sql += ' GROUP BY c.id ORDER BY c.date_min'
+    sql += ' GROUP BY c.id ORDER BY ' + claim_date_order_sql('c')
     claim_rows = conn.execute(sql, params).fetchall()
 
     if claim_rows:

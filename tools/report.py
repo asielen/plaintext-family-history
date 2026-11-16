@@ -128,6 +128,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_date_order_sql,
     claim_role_pairs,
     format_date_spread,
     configure_utf8_stdout,
@@ -453,7 +454,7 @@ def _section_review_queue(conn) -> list[str]:
     for row in sources:
         claims = conn.execute(
             "SELECT id, type, value FROM claims WHERE source_id=? AND status='suggested' "
-            'ORDER BY date_min',
+            'ORDER BY ' + claim_date_order_sql(''),
             (row['sid'],),
         ).fetchall()
         lines.append(
