@@ -5215,6 +5215,9 @@ def _fmt_claims_block(block: list[str], fixes: list[str], manual: list[str]) -> 
     """`value` first and lowercase IDs in one fenced claims block."""
     parts = _fmt_items(block)
     if parts is None:
+        if any(ln.strip() for ln in block):
+            manual.append('the claims block does not open with a claim (a comment or other '
+                          'line comes first), so the formatter skipped it')
         return block
     lead, items = parts
     moved = ids = stuck = False
@@ -5260,6 +5263,21 @@ def _fmt_claims_block(block: list[str], fixes: list[str], manual: list[str]) -> 
     return out
 
 
+def _fmt_fence(ln: str, fence):
+    """The fence state after line `ln`: None outside a fenced block, else
+    (char, length) of the fence that opened it. A fence closes only on the
+    same character, at least as long, with nothing after it (CommonMark), so
+    a ```` block can hold ``` lines."""
+    m = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', ln)
+    if fence is None:
+        if m and not (m.group(1)[0] == '`' and '`' in m.group(2)):
+            return (m.group(1)[0], len(m.group(1)))
+        return None
+    if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip():
+        return None
+    return fence
+
+
 def _fmt_sections(body: list[str]):
     """Split a body into (preamble, sections) at `## ` headings outside
     fenced blocks. Each section is `[name, lines]`."""
@@ -5267,13 +5285,9 @@ def _fmt_sections(body: list[str]):
     sections: list[list] = []
     in_fence = None
     for ln in body:
-        fm = _FMT_FENCE_RE.match(ln)
-        if fm:
-            if in_fence is None:
-                in_fence = fm.group(1)
-            elif ln.strip().startswith(in_fence):
-                in_fence = None
-        if in_fence is None and ln.startswith('## '):
+        was = in_fence
+        in_fence = _fmt_fence(ln, in_fence)
+        if was is None and in_fence is None and ln.startswith('## '):
             sections.append([ln[3:].strip(), [ln]])
             continue
         (sections[-1][1] if sections else pre).append(ln)
@@ -5328,26 +5342,41 @@ def _fmt_section_order(body: list[str], kind: str, fixes: list[str],
 
 
 def _fmt_blank_lines(body: list[str], fixes: list[str]) -> list[str]:
-    """Collapse runs of blank lines to one, outside fenced blocks."""
+    """Collapse runs of blank lines to one - but only between paragraphs.
+    Blank lines are content inside a fenced block, an HTML comment (an
+    AI-DRAFT note, a GENERATED region and what lies between its markers) and
+    indented code, so those are left exactly as written."""
     out: list[str] = []
-    in_fence = None
+    fence = None
+    comment = False
+    generated = False
     blank = 0
     changed = False
+    last_text = ''
     for ln in body:
-        fm = _FMT_FENCE_RE.match(ln)
-        if in_fence is None and not ln.strip():
+        protected = fence is not None or comment or generated
+        if not ln.strip():
             blank += 1
-            if blank > 1:
+            if (blank > 1 and not protected
+                    and not last_text.startswith(('    ', '\t'))):
                 changed = True
                 continue
-        else:
-            blank = 0
-        if fm:
-            if in_fence is None:
-                in_fence = fm.group(1)
-            elif ln.strip().startswith(in_fence):
-                in_fence = None
+            out.append(ln)
+            continue
+        blank = 0
+        last_text = ln
         out.append(ln)
+        was_fence = fence
+        fence = _fmt_fence(ln, fence)
+        if was_fence is None and fence is None:
+            if '<!-- GENERATED-BEGIN' in ln:
+                generated = True
+            if '<!-- GENERATED-END' in ln:
+                generated = False
+            if ln.rfind('<!--') > ln.rfind('-->'):
+                comment = True
+            elif comment and '-->' in ln:
+                comment = False
     if changed:
         fixes.append('extra blank lines between paragraphs or sections')
     return out
@@ -5362,13 +5391,31 @@ def format_record_text(text: str, kind: str) -> tuple[str, list[str], list[str]]
     manual: list[str] = []
     if kind not in ('source', 'person'):
         return text, fixes, manual
+    original = text
+    bom = text.startswith('\ufeff')     # kept, the way the readers tolerate it
+    if bom:
+        text = text[1:]
     lines = text.split('\n')
     final_nl = text.endswith('\n')
     if final_nl:
         lines.pop()
     body_start = 0
-    if lines and lines[0] == '---':
+    if lines and lines[0].rstrip() == '---':
         close = next((k for k in range(1, len(lines)) if lines[k] == '---'), None)
+        header_ok = lines[0] == '---' and close is not None
+        if header_ok:
+            try:
+                meta = _fmt_load('\n'.join(lines[1:close]))
+                header_ok = meta is None or isinstance(meta, dict)
+            except Exception:
+                header_ok = False
+        if not header_ok:
+            # The tools cannot read this header, so nothing in the file is
+            # touched: what looks like body may be the header's own text.
+            manual.append('the frontmatter is not opened and closed by lines holding only '
+                          '---, or does not read as YAML, so the formatter left this file '
+                          'alone; fix the header by hand, then run --format-check again')
+            return original, [], manual
         if close is not None:
             fm = lines[1:close]
             new_fm = _fmt_frontmatter(fm, kind, fixes)
@@ -5398,7 +5445,7 @@ def format_record_text(text: str, kind: str) -> tuple[str, list[str], list[str]]
         if 'extra blank lines at the end of the file' not in fixes:
             fixes.append('extra blank lines at the end of the file')
     out = '\n'.join(head + body) + ('\n' if (final_nl or head or body) else '')
-    return out, fixes, manual
+    return ('\ufeff' + out if bom else out), fixes, manual
 
 
 def _fmt_kind(path: Path, archive_root: Path | None) -> str:

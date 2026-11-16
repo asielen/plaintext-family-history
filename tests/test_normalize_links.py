@@ -209,7 +209,7 @@ class NamesBesideIdsTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.archive = _make_archive(Path(self._tmp.name))
         (self.archive / 'people').mkdir()
-        for pid, name in (('P-1111111111', 'Margaret Cole'),
+        for pid, name in (('P-1111111111', 'Margaret Cole\nname_variants: [Maggie]'),
                           ('P-2222222222', 'Thomas Hartley'),
                           ('P-3333333333', 'unknown')):
             (self.archive / 'people' / f'x__y_{pid}.md').write_text(
@@ -227,6 +227,8 @@ class NamesBesideIdsTests(unittest.TestCase):
             '  - "[[p-2222222222|Tom Hartley]]"\n'
             '  - P-3333333333\n'
             '  - "[[Nobody Known]]"\n'
+            '  - P-1111111111  # the woman at back left, per Aunt Ruth 1972 letter\n'
+            '  - "[[Maggie]]"\n'
             'places: [L-4444444444]\n'
             '---\n'
             '\n'
@@ -235,7 +237,9 @@ class NamesBesideIdsTests(unittest.TestCase):
             '- value: farmer\n'
             '  id: c-6666666666\n'
             '  type: occupation\n'
-            '  persons: [P-2222222222, P-1111111111]\n'
+            '  persons:\n'
+            '    - P-2222222222  # informant, per the clerk\n'
+            '    - P-1111111111  # Margaret Cole\n'
             '  roles: {child: P-2222222222}\n'
             '  place: L-4444444444\n'
             '  status: suggested\n'
@@ -258,9 +262,11 @@ class NamesBesideIdsTests(unittest.TestCase):
         self.assertIn(
             'people:\n'
             '  - "[[p-1111111111|Margaret Cole]]"\n'      # comment form settled
-            '  - "[[p-2222222222|Thomas Hartley]]"\n'     # stale display refreshed
+            '  - "[[p-2222222222|Tom Hartley]]"\n'        # a written display is kept
             '  - p-3333333333\n'                          # no usable name: bare ID
             '  - "[[Nobody Known]]"\n'                    # unresolved: left as written
+            '  - "[[p-1111111111|Margaret Cole]]"  # the woman at back left, per Aunt Ruth 1972 letter\n'
+            '  - "[[p-1111111111|Maggie]]"\n'              # the human's own name kept as display
             'places:\n'
             '  - "[[l-4444444444|Fairview]]"\n', text)
         self.assertNotIn('# Margaret Cole', text)
@@ -269,7 +275,7 @@ class NamesBesideIdsTests(unittest.TestCase):
         text = self._run()
         self.assertIn(
             '  persons:\n'
-            '    - "[[p-2222222222|Thomas Hartley]]"\n'
+            '    - "[[p-2222222222|Thomas Hartley]]"  # informant, per the clerk\n'
             '    - "[[p-1111111111|Margaret Cole]]"\n'
             '  roles: {child: P-2222222222}\n'
             '  place: L-4444444444\n', text)

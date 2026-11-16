@@ -4610,5 +4610,37 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
         self.assertEqual(again['status'], 'already-done')
 
 
+class PersonsEditKeepsCommentsTests(unittest.TestCase):
+    """A `--persons` edit never loses a note a person wrote beside a
+    persons: entry; a comment that only repeats the person's name (the old
+    `P-id  # Name` form) is dropped, since the name now sits in the link."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        text = self.source.read_text(encoding='utf-8').replace(
+            "  type: death\n  persons: [P-aaaaaaaaaa]\n",
+            "  type: death\n  persons:\n    - P-aaaaaaaaaa  # informant, per the clerk\n"
+            "    - \"[[P-cccccccccc|Cal]]\"  # Cal Smith\n")
+        self.source.write_text(text, encoding='utf-8')
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_person(self.root, 'P-bbbbbbbbbb', 'Ben Smith')
+        _write_person(self.root, 'P-cccccccccc', 'Cal Smith')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_note_kept_name_comment_dropped_display_kept(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd',
+                                 persons=['P-aaaaaaaaaa', 'P-cccccccccc', 'P-bbbbbbbbbb'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn('  persons:\n'
+                      '    - "[[p-aaaaaaaaaa|Anna Smith]]"  # informant, per the clerk\n'
+                      '    - "[[p-cccccccccc|Cal]]"\n'
+                      '    - "[[p-bbbbbbbbbb|Ben Smith]]"\n', text)
+
+
 if __name__ == '__main__':
     unittest.main()

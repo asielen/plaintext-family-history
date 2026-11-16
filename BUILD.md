@@ -2611,7 +2611,8 @@ refused (exit 2). Three rewrites toward the stable, ID-carrying form:
 - a resolved human stem or name in prose → `[[s-…|stem]]` / `[[p-…|Name]]` (the human's text
   kept as display);
 - a source's `people:` / `places:` and a claim's `persons:`, in any written form → one
-  `- "[[p-…|Name]]"` line per entry, the name read from the record (SPEC §8.7, §14).
+  `- "[[p-…|Name]]"` line per entry (SPEC §8.7, §14): a display or `# note` a person wrote is
+  kept; the record's name is added only where there is no display.
 
 A stem is never dropped (it stays in the record's `aliases:`, which lets the old link keep
 resolving), and a record's missing self-alias is added (lint W111). An ambiguous name (W113) is

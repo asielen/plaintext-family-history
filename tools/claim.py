@@ -278,6 +278,10 @@ from _lib import (
     link_list_lines,
     record_display_names,
     yaml_link_item,
+    strip_link_wrapper,
+    split_yaml_comment,
+    written_link_display,
+    comment_only_names,
     locate_claim_records,
     record_claims_by_id,
     CLAIM_TYPES,
@@ -1372,14 +1376,44 @@ def _apply_claim_review(
         # `- "[[p-…|Name]]"` lines are spliced in under it.
         persons_idx, _persons_kind, _ = find_key('persons')
         before_len = len(item)
+        # What a person wrote on the old list is kept: a note in a trailing
+        # comment (one that only repeats the name is dropped - the name now
+        # sits in the link), and a display name they chose for an entry.
+        written: dict[str, tuple[str | None, str]] = {}
+        head_comment = ''
+        if persons_idx is not None:
+            old_lines = item[persons_idx:_value_span_end(persons_idx)]
+            after = old_lines[0].split(':', 1)[1] if ':' in old_lines[0] else ''
+            if after.strip():
+                head_comment = split_yaml_comment(after.strip())[1]
+            for ln in old_lines[1:]:
+                m = re.match(r'^\s*-\s+(.*)$', ln)
+                if not m:
+                    continue
+                raw, comment = split_yaml_comment(m.group(1))
+                try:
+                    entry = yaml.safe_load(raw)
+                except yaml.YAMLError:
+                    continue
+                target = strip_link_wrapper(str(entry)) if not isinstance(entry, list) \
+                    else strip_link_wrapper('[[' + ' '.join(map(str, entry)) + ']]')
+                if is_valid_id(target):
+                    written[normalize_id(target)] = (written_link_display(entry), comment)
         if persons_idx is not None:
             key_pos = set_scalar('persons', '', insert_after=persons_idx)
         else:
             key_pos = set_scalar('persons', '', insert_after=insert_pos)
-        item[key_pos] = item[key_pos].rstrip()
+        item[key_pos] = item[key_pos].rstrip() + (f'  {head_comment}' if head_comment else '')
         child = ' ' * (len(key_indent) + 2)
-        entries = [f'{child}- {yaml_link_item(p, (person_names or {}).get(normalize_id(p)))}'
-                   for p in persons]
+        entries = []
+        for p in persons:
+            pid = normalize_id(p)
+            display, comment = written.get(pid, (None, ''))
+            record_name = (person_names or {}).get(pid)
+            if comment and comment_only_names(comment, record_name, display):
+                comment = ''
+            entries.append(f'{child}- {yaml_link_item(p, display or record_name)}'
+                           + (f'  {comment}' if comment else ''))
         item[key_pos + 1:key_pos + 1] = entries
         if persons_idx is not None:
             # The list can grow or shrink against what it replaced: any

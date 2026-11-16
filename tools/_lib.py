@@ -8848,6 +8848,53 @@ def link_list_lines(key: str, ids: Iterable[str], names: dict[str, str] | None,
     return out
 
 
+def split_yaml_comment(rest: str) -> tuple[str, str]:
+    """`value  # note` -> (`value`, `# note`), read the YAML way: the comment
+    starts at the first ` #` whose left side still parses to the whole value
+    (so a `#` inside a quoted name is not mistaken for one). No comment: ''."""
+    def load(text):
+        try:
+            return safe_load_yaml(text)
+        except Exception:
+            return _UNPARSED_YAML
+    whole = load(rest)
+    for m in re.finditer(r'\s#', rest):
+        head = rest[:m.start()]
+        if load(head) == whole:
+            return head.rstrip(), rest[m.start():].strip()
+    return rest.rstrip(), ''
+
+
+_UNPARSED_YAML = object()
+
+
+def written_link_display(item: object) -> str | None:
+    """The name a person wrote in a link entry, if any: `Maggie` for
+    `[[p-…|Maggie]]` or `[[Maggie]]`; None for a bare ID or `[[p-…]]`.
+    Tools keep it - a display a human chose is never replaced."""
+    if isinstance(item, list):           # an unquoted [[X]] reads as a nested list
+        item = '[[' + ' '.join(str(x) for x in item) + ']]'
+    if not isinstance(item, str):
+        return None
+    m = re.match(r'^\[\[([^\]|]*)(?:\|([^\]]*))?\]\]$', item.strip())
+    if not m:
+        return None
+    display = m.group(2) if m.group(2) is not None else m.group(1).split('#', 1)[0]
+    display = display.strip()
+    if not display or is_valid_id(display):
+        return None
+    return _usable_link_name(display)
+
+
+def comment_only_names(comment: str, *names: object) -> bool:
+    """True when a trailing `# …` comment just repeats one of `names` (the
+    old `P-id  # Name` form) - the name now sits in the link, so the comment
+    can go. Any other comment is a person's note and is kept."""
+    text = ' '.join(comment.lstrip('#').split()).casefold()
+    return bool(text) and any(
+        n is not None and text == ' '.join(str(n).split()).casefold() for n in names)
+
+
 def record_display_names(archive_root: str | Path, ids: Iterable[str]) -> dict[str, str]:
     """`{lowercase id: name}` for the person and place IDs given, read from
     the person records under people/ and from places/places.yaml (the files

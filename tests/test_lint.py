@@ -5813,5 +5813,50 @@ class FormatterRunLintTests(unittest.TestCase):
         self.assertIn('Would fix formatting: census_S-AB12CD34EF.md', result.data['progress'])
 
 
+class FormatterSafetyTests(unittest.TestCase):
+    """Review of PR #319: the formatter never loses human text - not inside a
+    header it could not find, a comment, a generated region, or code."""
+
+    def _fmt(self, text: str):
+        return lint.format_record_text(text, 'source')
+
+    def test_bom_header_is_read_and_kept(self) -> None:
+        text = ('\ufeff---\ntitle: A\nid: S-1111111111\ncitation: |\n  one\n\n\n  two\n---\n\n'
+                '## Claims\n')
+        out, fixes, _ = self._fmt(text)
+        self.assertTrue(out.startswith('\ufeff---\nid: s-1111111111\ntitle: A\n'))
+        self.assertIn('citation: |\n  one\n\n\n  two\n---\n', out)
+
+    def test_unreadable_header_skips_the_file_and_says_so(self) -> None:
+        for text in (
+            '---\nid: s-1111111111\ncitation: |\n  one\n\n\n  two\n--- \n\nA.\n\n\nB.\n',
+            '---\nid: s-1111111111\ncitation: |\n  one\n\n\n  two\n\nA.\n\n\nB.\n',
+            '---\nid: s-1111111111\ntitle: [unclosed\n---\n\nA.\n\n\nB.\n',
+        ):
+            with self.subTest(text=text):
+                out, fixes, manual = self._fmt(text)
+                self.assertEqual(out, text)
+                self.assertEqual(fixes, [])
+                self.assertEqual(len(manual), 1)
+                self.assertIn('frontmatter', manual[0])
+
+    def test_blank_lines_kept_where_they_are_content(self) -> None:
+        body = ('<!-- a note\n\n\nstill the note -->\n\n'
+                '<!-- GENERATED-BEGIN sources-index -->\nx\n\n\ny\n<!-- GENERATED-END sources-index -->\n\n'
+                'Para.\n\n    code line\n\n\n    more code\n\n'
+                '````\n```\n\n\n```\n````\n')
+        text = '---\nid: s-1111111111\n---\n\n## Notes\n' + body
+        out, fixes, _ = self._fmt(text)
+        self.assertEqual(out, text)
+        self.assertEqual(fixes, [])
+
+    def test_claims_block_opening_with_a_comment_is_reported(self) -> None:
+        text = ('---\nid: s-1111111111\n---\n\n## Claims\n```yaml\n# drafted by hand\n'
+                '- id: C-1111111111\n  value: x\n```\n')
+        out, _, manual = self._fmt(text)
+        self.assertEqual(out, text)
+        self.assertTrue(any('claims block' in m for m in manual))
+
+
 if __name__ == '__main__':
     unittest.main()

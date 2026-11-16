@@ -30,14 +30,17 @@ An AMBIGUOUS name (two "John Smith"s) is never guessed - it is reported and left
 exactly as written for the human (or Obsidian autocomplete) to pin to an ID.
 
 Two more settle the lists a reader scans to see who a record is about to
-the written form SPEC §8.7 and §14 give them, refreshing a display name that
-went stale after a rename:
+the written form SPEC §8.7 and §14 give them:
   (d) a source's frontmatter `people:` / `places:` - whatever form they were
-      written in (`P-…  # Name`, a bare ID, `[[Ken Smith]]`, an old display)
-      → one `- "[[p-…|Name]]"` line per entry, the name read from the record
+      written in (`P-…  # Name`, a bare ID, `[[Ken Smith]]`)
+      → one `- "[[p-…|Name]]"` line per entry
   (e) a claim's `persons:` → the same one-per-line `- "[[p-…|Name]]"` form
-A record with no usable name is written as its bare ID, never guessed; an
-entry that does not resolve is left as written. Nothing else in the claims
+Nothing a person wrote is lost: a display they chose (`[[p-…|Maggie]]`,
+`[[Maggie]]`) is kept, the record's name is added only where there is none,
+and a trailing `# note` stays on its line - only a comment that just repeats
+the person's name (the old `P-id  # Name` form) goes, since the name now sits
+in the link. A record with no usable name is written as its bare ID, never
+guessed; an entry that does not resolve is left as written. Nothing else in the claims
 ```yaml block is touched - `roles:` and `place:` stay bare IDs (SPEC §8.7).
 
 Follows the headless-core Result contract: `run_normalize_links` computes and
@@ -69,6 +72,9 @@ from _lib import (
     fmt_id_display,
     format_yaml_dependency_error,
     yaml_link_item,
+    split_yaml_comment,
+    written_link_display,
+    comment_only_names,
     id_type_of,
     is_generated_file,
     is_placeholder_name,
@@ -266,16 +272,7 @@ def _yaml_value(text: str):
         return _UNPARSED
 
 
-def _split_comment(rest: str) -> tuple[str, str]:
-    """`value  # note` -> (`value`, `# note`), read the YAML way: the comment
-    starts at the first ` #` whose left side still parses to the whole value
-    (so a `#` inside a quoted name is not mistaken for one)."""
-    whole = _yaml_value(rest)
-    for m in re.finditer(r'\s#', rest):
-        head = rest[:m.start()]
-        if _yaml_value(head) == whole:
-            return head.rstrip(), rest[m.start():].strip()
-    return rest.rstrip(), ''
+_split_comment = split_yaml_comment
 
 
 def _resolve_list_item(item, want: str, alias_map: dict[str, str]) -> str | None:
@@ -334,10 +331,17 @@ def _settle_list_segment(
     for item, comment in zip(items, comments):
         rid = _resolve_list_item(item, want, alias_map)
         if rid:
-            name = names.get(rid)
+            # A display a person wrote (`[[p-…|Maggie]]`, `[[Maggie]]`) is
+            # kept; the record's name is added only where there is none.
+            written = written_link_display(item)
+            name = written or names.get(rid)
             rendered = yaml_link_item(rid, name)
-            if name and rendered.startswith('"'):
-                comment = ''             # the name now sits in the link itself
+            # A comment is a person's note and stays - unless it only
+            # repeats the person's name (the old `P-id  # Name` form).
+            if comment and rendered.startswith('"') and (
+                    comment_only_names(comment, names.get(rid), written)
+                    or resolve_ref(' '.join(comment.lstrip('#').split()), alias_map) == rid):
+                comment = ''
         elif isinstance(item, list):
             rendered = json.dumps('[[' + ' '.join(str(x) for x in item) + ']]', ensure_ascii=False)
         elif isinstance(item, str):
@@ -544,9 +548,9 @@ def run_normalize_links(
     records = _scan_records(archive_root, on_decode_error=on_decode_error)
     alias_map = build_alias_map(records)
     clashes = alias_clashes(records)
-    # The display each people:/places:/persons: entry is settled to: the
-    # record's own current name, so a renamed person's old display is
-    # refreshed. A record with no usable name is written as its bare ID.
+    # The display added to a people:/places:/persons: entry that has none:
+    # the record's own name (a display a person wrote is always kept). A
+    # record with no usable name is written as its bare ID.
     names = {r['id']: ' '.join(str(r['name']).split()) for r in records
              if r.get('name') and not is_placeholder_name(r['name'])
              and r['id'][:2] in ('p-', 'l-')}

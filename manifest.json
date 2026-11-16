@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "e9f734bac447d27f3c75eb12c52db955a6309808022d65fbcfa05b1e25f1f319",
+      "sha256": "687b82a8e200f8f2d99ecdfa00269c0128d54b0fc7375147f7fdd6e6c8072f49",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "5de7847210c8660995c109a81f836be66599b5a8c5e85a0bcfd1b73a80dea010",
+      "sha256": "9062ae2d1c8e1d0fc64fd7836083b41ccdbca335ed0d3f4f86203cf8eb1fd2ca",
       "spec_version": "2.1",
       "src": "tools/claim.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "a31df71cfeaee2abcac56ba224e6cc0fbdbb002b096edd8030b8a30b2fca8095",
+      "sha256": "7b78f35d33d2bf8893cb67f096e61075141f084c8512d24d8a3e9e746a2cfc44",
       "spec_version": "2.1",
       "src": "tools/lint.py"
     },
@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "ed050c55e067639fa905caaa7a378b6d5b3e7905db35dbeb4d8146b48cce7c3f",
+      "sha256": "be4143bf62618c6cab5ae8bf85d30aa198d71e0536f69fd7426d6d71282a66ba",
       "spec_version": "2.1",
       "src": "tools/normalize_links.py"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "0a833982e5744a5bd44518fbccc4539becd26c24e4237abeff332f5358e31271",
+      "sha256": "d46afd939ae3fccbce5ae2d71e430ae49d0be128726733c2a35723d2360d41e8",
       "spec_version": "2.1"
     },
     {
