@@ -106,7 +106,20 @@ def _section(path: str, parser: argparse.ArgumentParser, summary: str | None,
     return out
 
 
+def _portable(text: str) -> str:
+    """Help texts that name the running interpreter (an install hint built
+    from sys.executable, as every dependency message is) would make the file
+    differ per machine; the reference says plain `python` instead."""
+    for path in {sys.executable, os.path.realpath(sys.executable)}:
+        text = text.replace(f'"{path}"', 'python').replace(path, 'python')
+    return text
+
+
 def render() -> str:
+    return _portable(_render())
+
+
+def _render() -> str:
     os.environ['COLUMNS'] = '100'       # argparse wraps by terminal width
     sys.path.insert(0, str(ROOT / 'tools'))
     import fha

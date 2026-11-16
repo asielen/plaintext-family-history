@@ -1510,7 +1510,7 @@ record file - this only rewrites. Preview first with --dry-run.
 Dump a source PDF's embedded text layer into a derived companion file.
 
 ```text
-Reads the source's PDF (its primary file, or the only PDF it lists; when a second digitization is attached as primary:LABEL, the one without a label unless --copy names another) and writes the embedded text layer, page by page, into a [Page N]-labeled companion the assistant can mine like a transcript - seconds instead of reading hundreds of pages by eye. The PDF itself is never touched. Needs the pypdf helper package ("C:\Program Files\Python314\python.exe" -m pip install pypdf).
+Reads the source's PDF (its primary file, or the only PDF it lists; when a second digitization is attached as primary:LABEL, the one without a label unless --copy names another) and writes the embedded text layer, page by page, into a [Page N]-labeled companion the assistant can mine like a transcript - seconds instead of reading hundreds of pages by eye. The PDF itself is never touched. Needs the pypdf helper package (python -m pip install pypdf).
 ```
 
 | Argument | What it does |
