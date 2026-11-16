@@ -129,6 +129,23 @@ exists to catch.
   person. Genealogically a baptism/burial is strong evidence of the vital; the
   check could treat them as partial satisfaction (or emit a softer note).
 
+## 5. Unbuilt tool ideas (moved from TOOLING.md)
+
+- **WikiTree importer.** Legacy profiles become draft sources, claim date/place
+  hints, `external_ids` and profile scaffolds, all `suggested`.
+- **Citation assistant.** Match uncited profile sentences to accepted claims and
+  suggest `[[s-…]]` insertions as a diff.
+- **Auto-anchor refinement** for `fha convert-mining` output.
+- **Model-assisted photo triage scoring** for `fha photoindex triage`.
+- **`fha process` vision pass.** Group photo variations whose filenames are
+  unrelated (scan001/scan002 as front/back) by looking at the images.
+- **`fha stubs` names from claims.** Derive a stub's name from claim values
+  instead of `unknown__unknown`.
+- **Accept an AI transcript.** A verb that flips a checked transcript's AI-DRAFT
+  marker so it loses the `[unchecked AI transcript]` label.
+- **`fha doctor --fixity`.** Optional checksum verification for bit rot, without
+  making checksums part of the research model.
+
 ---
 
 ## 5. Deferred fixes
