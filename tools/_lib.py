@@ -935,6 +935,11 @@ def role_near_miss(role: Any) -> str | None:
     for target in _NEAR_MISS_TARGETS:
         if _one_edit_apart(word, target):
             return target
+    # A transposed kin word (`mohter:`, `fahter:`, `huband:`) is meant as the
+    # role that kin word names.
+    for synonym, meaning in CLAIM_ROLE_SYNONYMS.items():
+        if len(synonym) >= 4 and _one_edit_apart(word, synonym):
+            return meaning
     return None
 
 
@@ -2216,7 +2221,12 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # PR #285). A v9 index holds slug spellings ("Winiewska", "Vii") that every
 # export and the site's A-Z read, so bump to force the rebuild (same
 # rationale as v8/v9).
-INDEX_SCHEMA_VERSION = 10
+# 11: kin synonyms (`mother:`, `son:`, `wife:` …) now derive like `parent:`,
+# `child:`, `spouse:` (`_lib.role_meaning`, SPEC §8.3). A v10 index's
+# `relationships` rows were derived without them, so a claim written with
+# `mother:` has no parent edge until a rebuild - the same tools-only change
+# v8/v9 describe, so bump to force it.
+INDEX_SCHEMA_VERSION = 11
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
