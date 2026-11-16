@@ -34,8 +34,8 @@ Thomas Hartley and Thos. Hartley get entered twice?"
   `fha confirm merge` — dry-run preview first, then live — never by hand-editing records. The skill
   supplies the judgment and the human's reason; the tool performs SPEC §9 exactly; the skill invents
   nothing.
-- **Merged persons are never referenced anew** — post-merge, lint must show no new **E016** (a new claim on
-  a merged P-id) or **W107** (direct reference to a merged person).
+- **Merged persons are never referenced anew** — post-merge, lint must show no new **W107** (a claim or
+  a prose link still naming a merged P-id - it counts for the survivor, but it is cleanup left undone).
 
 ## Flow
 
@@ -80,7 +80,7 @@ Thomas Hartley and Thos. Hartley get entered twice?"
    **persists forever**, never deleted), the folds (name variants — restricted mapping forms preserved —
    external IDs, `relationships:` entries, deduped, with the tombstone's frontmatter stripped of what
    folded and its `aliases:` reduced to the bare P-id), and the relinks — every claim naming `P-old`
-   *whatever its status* (E016 has no status filter), other profiles' `relationships:` edges (stale ones
+   *whatever its status* (W107 lists claims of every status), other profiles' `relationships:` edges (stale ones
    trip W115), and source `people:` lists. Loose *prose* `[[P-old]]` mentions are deliberately left; they
    resolve *through* `merged_into` and appear on lint's W107 gradual-cleanup list — expected, not an error.
    **Heed the verb's warnings — they are yours to judge, not suppress:**
@@ -91,7 +91,7 @@ Thomas Hartley and Thos. Hartley get entered twice?"
      tool warns and proceeds (the decision was the human's), but re-open the conversation if this is news;
    - a *W115 heads-up* means the survivor's opted-in `relationships:` block should now apply relinked
      accepted kin claims — add those entries with the human.
-   **Never create a new claim on the merged P-id** (that is exactly E016).
+   **Never create a new claim on the merged P-id** (that is exactly what W107 reports).
 
 4b. **On a confirmed SPLIT (conflation) — reassign deliberately (SPEC §9).** Splitting an identity is
    research judgment, so it stays guided:
@@ -113,8 +113,8 @@ Thomas Hartley and Thos. Hartley get entered twice?"
    (If the survivor is a stub, skip `timeline`/`draft-queue` — stubs carry no companion views for
    those, SPEC §16 — but still run `sources-index`: #76 deliberately works on a stub too, so the
    relinked sources show up in its `## Sources` section right away rather than waiting on promotion.)
-   Confirm **no new E016** (no claim references the merged person directly as a fresh write), **no new
-   W107 regression** beyond the expected gradual-cleanup list, and **no new W115** (a `relationships:`
+   Confirm **no new W107** beyond the expected gradual-cleanup list (no claim names the merged person
+   directly - the relink moved every one - and only the loose prose mentions remain), and **no new W115** (a `relationships:`
    entry stranded on the tombstone, or a folded kin edge missing from the survivor's block). Report plainly ("merged the duplicate stub
    into Thomas's record; his file is now the one home, the old one is kept as a tombstone, and nothing new
    points at the dead ID").
@@ -126,7 +126,7 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 - Evidence for **and against** is laid out before any proposal.
 - The merge write is `fha confirm merge`'s alone (SPEC §9 exactly: tombstone rename, four fields, folds,
   relinks) — always dry-run first; the skill never hand-edits a merge and invents no mechanics.
-- Post-merge lint is clean of **new** E016/W107/W115; merged files are renamed-and-kept, never deleted.
+- Post-merge lint is clean of **new** W107/W115; merged files are renamed-and-kept, never deleted.
 - Any record ID written into prose (a split note on a record, a reason narrated into `## Notes`) is
   `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured fields and tool arguments
   (_STANDARD.md §11).
@@ -135,6 +135,6 @@ Thomas Hartley and Thos. Hartley get entered twice?"
 
 - A merge/split proposal in a session on `example-archive` lays out the neighborhood evidence and **waits
   for explicit human confirmation** before any write.
-- Post-merge, `fha lint --root example-archive` shows no new **E016/W107/W115** and still exits 1 with only
+- Post-merge, `fha lint --root example-archive` shows no new **W107/W115** and still exits 1 with only
   the documented baseline warnings (`_STANDARD.md` §9).
 - No `merged_into` is set without an explicit human decision in the transcript.

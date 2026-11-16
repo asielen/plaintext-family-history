@@ -134,5 +134,21 @@ class ArchiveTemplateAnchoringTests(unittest.TestCase):
             'the root inbox/ staging folder must still be gitignored')
 
 
+
+class CaptureLogMergesByUnionTests(unittest.TestCase):
+    """Two machines that each captured between syncs both append to
+    notes/capture-log.jsonl; the archive template must let git keep both
+    lines instead of stopping the pull on a conflict (#304 review)."""
+
+    def test_template_marks_the_capture_log_merge_union(self) -> None:
+        text = (ROOT / 'archive-template' / '.gitattributes').read_text(encoding='utf-8')
+        rule = [ln for ln in text.splitlines() if ln.startswith('notes/capture-log.jsonl')]
+        self.assertEqual(len(rule), 1, rule)
+        self.assertIn('merge=union', rule[0])
+        # Only the machine-written log: a file people edit must never union-merge.
+        unions = [ln for ln in text.splitlines()
+                  if 'merge=union' in ln and not ln.lstrip().startswith('#')]
+        self.assertEqual(unions, rule)
+
 if __name__ == '__main__':
     unittest.main()

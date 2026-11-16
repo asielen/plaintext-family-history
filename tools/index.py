@@ -50,6 +50,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_role_pairs,
+    read_capture_log_lines,
+    index_merge_survivors,
     join_claim_roles,
     configure_utf8_stdout,
     SIGNIFICANCE,
@@ -135,8 +137,10 @@ configure_utf8_stdout()
 #    _optional_id_ref        - one optional id-reference field (merged_into:/
 #                              superseded_by:/hypothesis:) → normalized id | None
 #                              (composes _lib.optional_scalar + normalize_id)
+#    _merge_survivors        - persons table → {merged P-id: survivor} (SPEC §9)
 #    _index_source           - one source .md → sources + claims + claim_persons
 #                              + claim_links + source_files + source_people
+#                              (a merged person's refs land on the survivor)
 #    _index_notes            - notes/*.md → notes_fts
 #                              + search_log (notes/research-log.md)
 #    _index_citations        - all .md → citations (token → file + line)
@@ -1318,6 +1322,18 @@ def _optional_id_ref(value: object) -> str | None:
     return normalize_id(optional_scalar(value)) or None
 
 
+def _merge_survivors(conn: sqlite3.Connection) -> dict[str, str]:
+    """{merged P-id: survivor P-id} from the persons already indexed.
+
+    Persons are indexed before any source on the full build, and are unchanged
+    on a `--source` upsert, so both paths read the same pointers here and keep
+    row-for-row equivalence. The rule (`status: merged` plus `merged_into:`,
+    chains followed, loops and dangling pointers stop) is
+    `_lib.index_merge_survivors`, the same map every privacy gate reads.
+    """
+    return index_merge_survivors(conn)
+
+
 def _index_source(
     conn: sqlite3.Connection,
     path: Path,
@@ -1327,8 +1343,16 @@ def _index_source(
     on_parse_error=None,
     on_decode_error=None,
     rec: dict | None = None,
+    survivors: dict[str, str] | None = None,
 ) -> None:
     """Index one source markdown file.
+
+    `survivors` ({merged P-id: survivor}, `_merge_survivors`) is applied to
+    every person this source names - its claims' `persons:`/`roles:` and its
+    frontmatter `people:` - so a record filed against a duplicate before the
+    merge counts for the survivor in every timeline, tree edge, page and
+    export that reads these rows (SPEC §9). The file itself is untouched;
+    lint's W107 lists the old reference for gradual cleanup.
 
     `alias_map`, when supplied, resolves name-first frontmatter link fields
     (`people:`/`places:`) - e.g. `people: ["[[Ken Smith]]"]` → the matching
@@ -1435,7 +1459,9 @@ def _index_source(
     # People listed on the source - the human graph surface (frontmatter
     # cross-links). Entries may be bare P-ids or name-first `[[Ken Smith]]`
     # links; resolve each to a canonical P-id via the alias map.
-    for pid in _resolve_link_field(meta.get('people'), alias_map):
+    survivors = survivors or {}
+    for pid in dict.fromkeys(survivors.get(p, p)
+                             for p in _resolve_link_field(meta.get('people'), alias_map)):
         conn.execute(
             'INSERT INTO source_people(source_id, person_id) VALUES (?,?)',
             (sid, pid),
@@ -1638,16 +1664,25 @@ def _index_source(
             # matches the same resolved P-id its persons: entry produces.
             for role_name, role_val in roles_map.items():
                 role_pids = {
-                    rid for r in link_field_refs(role_val)
+                    survivors.get(rid, rid) for r in link_field_refs(role_val)
                     for rid in [resolve_typed_ref(r, alias_map, want='P')]
                     if rid
                 }
                 resolved_roles.append((str(role_name), role_pids))
 
+        # One row per PERSON, at the first place they are named: a claim
+        # naming both a tombstone and its survivor (or one person by ID and
+        # by name) is still one person, and two rows made `fha find` count
+        # the claim twice for him (#304 review).
+        written: set[str] = set()
         for pos, p_raw in enumerate(link_field_refs(claim.get('persons'))):
             ppid = resolve_typed_ref(p_raw, alias_map, want='P')
             if not ppid:
                 continue   # inert note-link: unknown/ambiguous name, no garbage row
+            ppid = survivors.get(ppid, ppid)
+            if ppid in written:
+                continue
+            written.add(ppid)
             # Every role this person carries, not just the first one listed:
             # the mother who was also the informant is a parent too (#266).
             role = join_claim_roles(rn for rn, pids in resolved_roles if ppid in pids)
@@ -1738,48 +1773,44 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
                        on_decode_error=None) -> None:
-    """Re-ingest `.cache/capture_log.jsonl` rows into search_log.
+    """Re-ingest the capture log (`notes/capture-log.jsonl`, SPEC §16b) into search_log.
 
     `fha capture` writes a search_log row directly into index.sqlite for
     immediate freshness, but a full rebuild drops and recreates search_log
     from scratch (`_drop_tables`) - without this, that row would vanish on the
-    next `fha index` run. capture.py also always appends the same row to this
-    jsonl file, so re-ingesting it here makes every capture survive a reindex
+    next `fha index` run. capture.py also always appends the same row to the
+    capture log, so re-ingesting it here makes every capture survive a reindex
     regardless of whether the index existed at capture time.
+
+    An archive that has not captured since the log moved out of `.cache/`
+    still has its history at `.cache/capture_log.jsonl`; `_lib.read_capture_log_lines`
+    reads both, oldest first, so none of it drops out of "already searched"
+    before the next capture carries the file across. The index never moves
+    the file itself - it is the human's record, and the writer owns the move.
+    A file that is not UTF-8 is the ONLY record of the captures in it
+    (`_drop_tables` clears search_log every build and this replays it), so it
+    is named through `on_decode_error` rather than decoded away in silence.
     """
-    capture_log_path = archive_root / '.cache' / 'capture_log.jsonl'
-    if capture_log_path.exists():
+    lines = read_capture_log_lines(archive_root, on_decode_error)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
         try:
-            lines = capture_log_path.read_text(encoding='utf-8').splitlines()
-        except OSError:
-            lines = []
-        except UnicodeDecodeError:
-            # capture_log.jsonl is the ONLY record of captures made before this
-            # index existed (`_drop_tables` clears search_log every build and
-            # this replays it), so decoding it away silently loses that history
-            # for good rather than until the next run.
-            if on_decode_error is not None:
-                on_decode_error(capture_log_path)
-            lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            conn.execute(
-                '''INSERT INTO search_log
-                   (date, person_id, question, repository, collection, terms, result, source_id, path)
-                   VALUES (?,?,?,?,?,?,?,?,?)''',
-                (
-                    entry.get('date', ''), None, entry.get('question', ''),
-                    entry.get('repository', ''), entry.get('collection', ''),
-                    entry.get('terms', ''), entry.get('result', ''), None,
-                    entry.get('path', ''),
-                ),
-            )
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        conn.execute(
+            '''INSERT INTO search_log
+               (date, person_id, question, repository, collection, terms, result, source_id, path)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                entry.get('date', ''), None, entry.get('question', ''),
+                entry.get('repository', ''), entry.get('collection', ''),
+                entry.get('terms', ''), entry.get('result', ''), None,
+                entry.get('path', ''),
+            ),
+        )
 
 
 def _index_citations(
@@ -2284,6 +2315,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # map, which reads a fully-populated table and NEEDS the filter to
             # build this same map (see _resolve_map_from_aliases).
             link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
+            survivors = _merge_survivors(conn)
 
             # Sources
             sources_root = archive_root / 'sources'
@@ -2291,7 +2323,8 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             if sources_root.exists():
                 for path in walk_files(sources_root, suffix='.md', on_error=on_error):
                     _index_source(conn, path, archive_root, fha_config,
-                                  link_alias_map, on_parse_error, on_decode_error)
+                                  link_alias_map, on_parse_error, on_decode_error,
+                                  survivors=survivors)
                     source_count += 1
             if verbose:
                 print(f'  indexed {source_count} source files')
@@ -2608,7 +2641,7 @@ def upsert_source(
             # row-for-row equivalence contract, round-2 finding 8).
             link_alias_map = _resolve_map_from_aliases(conn, record_types=('P', 'L'))
             _index_source(conn, found, archive_root, fha_config, link_alias_map,
-                          on_parse_error, rec=rec)
+                          on_parse_error, rec=rec, survivors=_merge_survivors(conn))
             # Re-scan citations for the re-indexed source file (resolving stems),
             # with the map refreshed to include this source's reinserted stems.
             _index_citations_for_file(

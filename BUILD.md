@@ -289,7 +289,7 @@ one bad file.
 | E003 | Filename ID suffix ≠ frontmatter `id` |
 | E004 | Any `[token]`, `persons:`, `place:`, `corroborates/contradicts` target not found |
 | E005 | P-id appears anywhere but no person record exists for it |
-| E006 | `accepted` claim missing `reviewed` field |
+| E006 | `accepted` claim missing `reviewed` field (disputed/rejected/superseded without it: W139, a warning) |
 | E007 | Claim `type` outside §8.2 vocabulary |
 | E008 | `significance_override` present without `significance_reason` |
 | E009 | `contradicts:` link present but no open question in `notes/questions.md` references both C-ids |
@@ -322,7 +322,8 @@ command (TOOLING §3).
 | E013 | Summary block `**Born/Died/Married/Parents/Children:**` citations don't match accepted claims |
 | E014 | Non-EDTF date value (validate against `edtf_bounds` regex) |
 | E015 | `type: relationship` claim missing `roles:` map |
-| E016 | New claim references a P-id whose record has `merged_into` set |
+| ~~E016~~ | Retired - a claim naming a merged P-id counts for the survivor (SPEC §9) and is reported under W107 |
+| E020 | `status: merged` record whose `merged_into:` names no person, or loops (claims stay on the tombstone) |
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` |
 | E018 | `AGENTS.md` or skills reference deprecated commands or contradict locked rules |
 
@@ -360,7 +361,7 @@ invocation (TOOLING §3).
 | W104 | Summary block line with no supporting accepted claim |
 | W105 | Hand-edits under a GENERATED header (deferred - detection requires mtime tracking; check is a no-op) |
 | W106 | Accepted claim missing Mills analysis fields |
-| W107 | Direct reference to a merged person |
+| W107 | Direct reference to a merged person - a prose link, or a claim's `persons:` (counts for the survivor meanwhile) |
 | W108 | `README.md` older than last `SPEC.md` change |
 | W109 | Non-vital accepted claim missing `notes` context; also catch-all for unrecognized `source_type` |
 | W110 | Ahnentafel placement issue (requires `root_person` in `fha.yaml`) |
@@ -1046,7 +1047,7 @@ fha confirm merge <P-merged> --into <P-survivor> --reason "<why>" [--dry-run] [-
 
 SPEC §9 fully defined the merge write - four tombstone fields, the `MERGED-INTO-P-survivor__`
 rename grammar, the folds, resolve-through-pointer - and the read side already existed (lint
-E016/W107 and the tombstone filename grammar, `merged_into` in the index, packet/site chain
+W107 and the tombstone filename grammar, `merged_into` in the index, packet/site chain
 resolution), but nothing *performed* it; the merge-identities skill hand-edited per SPEC §9 as a
 documented owner-approved interim. This verb is the deterministic owner: in one
 plan-fully-in-memory-then-apply pass (undo journal; any failure rolls the whole archive back) it
@@ -1061,7 +1062,7 @@ plan-fully-in-memory-then-apply pass (undo journal; any failure rolls the whole 
    `aliases:` to the bare P-id;
 3. **renames** it to `MERGED-INTO-P-survivor__<original-filename>` - LAST, after every content
    write; the file persists forever;
-4. **relinks** every claim's `persons:`/`roles:` across ALL statuses (E016 has no status filter;
+4. **relinks** every claim's `persons:`/`roles:` across ALL statuses (W107 lists claims of every status;
    bare, `[[P-id]]`, `[[P-id|Name]]`, and resolving-name forms; survivor-already-listed deduped;
    per-file re-parse guard - a file that cannot be rewritten safely is a refusal naming it, with
    zero writes anywhere), other profiles' `relationships:` targets, and source `people:` lists.
@@ -1079,7 +1080,7 @@ Tests: `tests/test_confirm_merge.py`.
 ```sh
 fha confirm merge P-mmmmmmmmmm --into P-ssssssssss --reason "same person" --dry-run --root example-archive  # full-diff preview, zero writes
 fha confirm merge P-mmmmmmmmmm --into P-ssssssssss --reason "same person" --root example-archive            # tombstone renamed-and-kept
-fha index --root example-archive && fha lint --root example-archive   # no E016, no new W115/W107
+fha index --root example-archive && fha lint --root example-archive   # no new W115/W107
 ```
 
 ---

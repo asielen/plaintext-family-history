@@ -4450,5 +4450,119 @@ class ClearFieldReviewTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
 
 
+class ReviewedByStampTests(unittest.TestCase):
+    """SPEC §8.4: `reviewed_by:` says who made the review decision - `human`,
+    which a tool recording the decision writes by default, or a researcher's
+    name. Before this, `fha claim` wrote only the date, so no claim the tools
+    reviewed ever said a person had decided it."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claim(self, cid: str) -> dict:
+        claims = read_record(self.source)['claims']
+        return {str(c['id']).lower(): c for c in claims}[cid.lower()]
+
+    def _claim_lines(self, cid: str) -> list[str]:
+        lines = self.source.read_text(encoding='utf-8').splitlines()
+        start = next(i for i, ln in enumerate(lines) if cid.lower() in ln.lower())
+        out = []
+        for ln in lines[start:]:
+            if ln.startswith('- ') and out:
+                break
+            if ln.startswith('```'):
+                break
+            out.append(ln.strip())
+        return out
+
+    def test_a_status_move_stamps_reviewed_by_human_right_after_reviewed(self) -> None:
+        for status in ('accepted', 'disputed', 'rejected', 'needs-review', 'superseded'):
+            with self.subTest(status=status):
+                self.source.write_text(_CLAIM_BLOCK, encoding='utf-8')
+                result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status=status)
+                self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+                self.assertEqual(self._claim('C-aa11bb22cc').get('reviewed_by'), 'human')
+                lines = self._claim_lines('C-aa11bb22cc')
+                keys = [ln.split(':', 1)[0] for ln in lines]
+                self.assertEqual(keys[keys.index('reviewed') + 1], 'reviewed_by')
+                # The sibling claim is untouched.
+                self.assertNotIn('reviewed_by', self._claim('C-bb22cc33dd'))
+
+    def test_reviewed_by_override_names_the_researcher(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted',
+                                 reviewed_by='Ruth Cole')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        self.assertEqual(self._claim('C-aa11bb22cc')['reviewed_by'], 'Ruth Cole')
+
+    def test_reviewed_by_without_status_is_refused(self) -> None:
+        before = self.source.read_bytes()
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value='x',
+                                 reviewed_by='Ruth Cole')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_a_field_only_edit_never_adds_reviewed_by(self) -> None:
+        claim.run_claim(self.root, claim_id='C-aa11bb22cc', value='Anna born 1880')
+        self.assertNotIn('reviewed_by', self._claim('C-aa11bb22cc'))
+
+    def test_a_rerun_the_record_already_meets_does_not_back_fill(self) -> None:
+        # An older accepted claim, written before reviewed_by existed: running
+        # the same accept again (same date) is already-done, not a back-fill.
+        text = _CLAIM_BLOCK.replace(
+            '  status: suggested\n  confidence: high',
+            '  status: accepted\n  reviewed: 2026-01-02\n  confidence: high', 1)
+        self.source.write_text(text, encoding='utf-8')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted',
+                                 reviewed='2026-01-02')
+        self.assertEqual(result.data['status'], 'already-done')
+        self.assertEqual(self.source.read_text(encoding='utf-8'), text)
+
+    def test_a_batch_stamps_every_claim(self) -> None:
+        result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd'],
+                                       status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        for cid in ('C-aa11bb22cc', 'C-bb22cc33dd'):
+            self.assertEqual(self._claim(cid).get('reviewed_by'), 'human')
+
+    def test_claim_new_accepted_stamps_it_and_suggested_does_not(self) -> None:
+        accepted = claim.run_claim_new(self.root, source_id='S-1111111111',
+                                       claim_type='residence', value='Lived in Topeka')
+        self.assertEqual(accepted.exit_code, EXIT_CLEAN, accepted.messages)
+        self.assertEqual(self._claim(accepted.data['claim_id']).get('reviewed_by'), 'human')
+        lines = self._claim_lines(accepted.data['claim_id'])
+        keys = [ln.split(':', 1)[0] for ln in lines]
+        self.assertEqual(keys[keys.index('reviewed') + 1], 'reviewed_by')
+
+        drafted = claim.run_claim_new(self.root, source_id='S-1111111111',
+                                      claim_type='residence', value='Lived in Salina',
+                                      status='suggested')
+        self.assertEqual(drafted.exit_code, EXIT_CLEAN, drafted.messages)
+        self.assertNotIn('reviewed_by', self._claim(drafted.data['claim_id']))
+        self.assertNotIn('reviewed', self._claim(drafted.data['claim_id']))
+
+    def test_claim_new_suggested_refuses_a_reviewer_name(self) -> None:
+        before = self.source.read_bytes()
+        result = claim.run_claim_new(self.root, source_id='S-1111111111',
+                                     claim_type='residence', value='Lived in Salina',
+                                     status='suggested', reviewed_by='Ruth Cole')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_bytes(), before)
+
+    def test_cli_flag_reaches_the_record(self) -> None:
+        import fha
+        (self.root / 'fha.yaml').write_text(
+            'roots:' + chr(10) + '  documents: documents' + chr(10), encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['claim', 'C-aa11bb22cc', '--status', 'accepted',
+                           '--reviewed-by', 'Ruth Cole', '--root', str(self.root)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(self._claim('C-aa11bb22cc')['reviewed_by'], 'Ruth Cole')
+
+
 if __name__ == '__main__':
     unittest.main()

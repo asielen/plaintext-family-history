@@ -45,7 +45,7 @@ THE SEVEN WRITE-BACKS
                step-05 claim review (`fha claim … --status accepted`), which is
                the only place "the human accepts" lives. `--accept` is the
                escape hatch for a human who is treating this confirm *as* the
-               review (it stamps `reviewed:` like `fha claim` does).
+               review (it stamps `reviewed:` and `reviewed_by: human` like `fha claim` does).
   dismiss    - record a co-occurrence pair in `notes/cooccur_dismissed.json`,
                the tombstone `fha cooccur` reads to stop re-proposing a pair.
                Nothing else writes NEW dismissals to this file; this is its
@@ -71,8 +71,8 @@ THE SEVEN WRITE-BACKS
                fold its name variants / external ids / relationships into the
                survivor, delete its GENERATED companion views (timeline /
                sources-index / draft-queue - the survivor's views carry that
-               life now), and relink every claim (ALL statuses - lint E016 has no
-               status filter) plus other records' `relationships:`/`people:`
+               life now), and relink every claim (ALL statuses - lint W107 lists
+               claims of every status) plus other records' `relationships:`/`people:`
                references from the merged P-id to the survivor. Prose `[[P-…]]`
                mentions are deliberately left for lint W107's gradual-cleanup
                list (counted and reported). The judgment half - is this really
@@ -154,6 +154,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    LIVING_VALUES,
+    normalize_living,
     locate_claim_records,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -481,8 +483,14 @@ def _add_link_to_claim(
                                  before_text=text), True, False
 
 
-def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tuple[str, bool]:
+def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str,
+                         after_key: str | None = None) -> tuple[str, bool]:
     """Set a single scalar key (e.g. `place: L-id`) on one claim item in place.
+
+    A key the claim does not have yet is inserted after the item's own `id:`
+    line - or, when `after_key` names a key the claim has, right after that
+    line, so `reviewed:` follows `status:` and `reviewed_by:` follows
+    `reviewed:`, the order `fha claim` writes (#304 review).
 
     The edit lands at the item's OWN key column (`claim_item_key_indent`), not
     an assumed base+2, so a claim written `-   value: …` (keys at column 4)
@@ -516,8 +524,16 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
         # block scalar - landing there would split the human's quoted
         # evidence). The span was found via that same line, so it exists.
         own = _own_id_key_line(lines, start, end, base_indent)
-        id_idx = own[0] if own is not None else start
-        lines.insert(id_idx + 1, f'{key_indent}{key}: {value}')
+        anchor_idx = own[0] if own is not None else start
+        if after_key is not None:
+            after_dash = re.compile(r'^' + re.escape(base_indent) + r'-\s+'
+                                    + re.escape(after_key) + r':')
+            after_re = re.compile(r'^' + re.escape(key_indent) + re.escape(after_key) + r':')
+            for idx in range(start, end):
+                if after_dash.match(lines[idx]) or after_re.match(lines[idx]):
+                    anchor_idx = idx
+                    break
+        lines.insert(anchor_idx + 1, f'{key_indent}{key}: {value}')
 
     trailing = '\n' if text.endswith('\n') else ''
     expect = value if key == 'status' else None
@@ -904,7 +920,10 @@ def run_confirm_cooccur(
             try:
                 before = read_text_exact(source_path)
                 after, _ok = _set_scalar_on_claim(before, ex_id, 'status', 'accepted')
-                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp)
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp,
+                                                  after_key='status')
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed_by', 'human',
+                                                  after_key='reviewed')
             except _EditRefused as e:
                 return _fail(result, 'refused',
                              f'{ex_disp} in {source_path}: {e} Nothing was written.')
@@ -1039,7 +1058,10 @@ def _relationship_claim_lines(
         f'  status: {status}',
     ]
     if status == 'accepted' and reviewed:
+        # The human said yes to this tie at this prompt: record who decided
+        # beside when (SPEC §8.4), exactly as `fha claim` does.
         lines.append(f'  reviewed: {reviewed}')
+        lines.append('  reviewed_by: human')
     lines += [
         '  confidence: medium',
         '  information: secondary',
@@ -1915,7 +1937,7 @@ def _relink_claims_in_source(
     """Relink every claim in one source's ## Claims block, ALL statuses.
 
     Returns (new_text, edited_claim_ids, both_named_relationship_claim_ids).
-    E016 fires on ANY claim referencing a merged person - suggested, accepted,
+    W107 fires on ANY claim referencing a merged person - suggested, accepted,
     disputed, rejected, superseded, needs-review alike - so no status is
     skipped. Spans are rewritten bottom-up so earlier spans' line indexes stay
     valid when a duplicate list item is dropped.
@@ -1926,7 +1948,7 @@ def _relink_claims_in_source(
     rewritten block is re-parsed and must show the same claim count, the same
     id in every position, and NO remaining reference resolving to the merged
     person - so a form the line-level rewriter missed becomes a refusal
-    naming the file instead of a silent leftover E016.
+    naming the file instead of a silent leftover W107.
 
     Raises `_EditRefused` on any of those failures; the caller refuses the
     whole merge with nothing written.
@@ -2157,7 +2179,7 @@ def _fm_parse_problem(text: str) -> str | None:
 _MERGE_SURVIVOR_KEYS = frozenset(
     {'name_variants', 'aliases', 'external_ids', 'relationships'})
 _MERGE_TOMBSTONE_KEYS = _MERGE_SURVIVOR_KEYS | frozenset(
-    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier'})
+    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier', 'living'})
 
 
 def _merge_fm_problem(
@@ -2930,6 +2952,18 @@ def run_confirm_merge(
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_into', ps_disp)
         tombstone_text = _set_fm_scalar(tombstone_text, 'merge_reason', _yaml_inline(reason))
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_date', _today())
+        # The same person: where the tombstone said nothing about being alive
+        # (`unknown`, the default every new stub is minted with, or no line)
+        # and the survivor is recorded as dead, the tombstone says so too, so
+        # it never keeps a dead ancestor out of shared output. Only `false` is
+        # copied: a living survivor is already withheld on his own record, and
+        # a copied `true` would keep hiding him after he dies and is marked
+        # `living: false`, until someone hand-edits the merged file. An
+        # explicit `living: true` on the tombstone stays: it is someone's word.
+        merged_living = normalize_living(merged_meta.get('living'))
+        survivor_living = normalize_living(survivor_meta.get('living'))
+        if merged_living in (None, 'unknown') and survivor_living == 'false':
+            tombstone_text = _set_fm_scalar(tombstone_text, 'living', survivor_living)
         problem = _merge_fm_problem(merged_before, tombstone_text,
                                     _MERGE_TOMBSTONE_KEYS)
     except _EditRefused as e:

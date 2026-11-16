@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-**Version 1.2 - companion to SPEC.md v1.2 and TOOLING.md v1.2 (versions track the SPEC).**
+**Version 2.0 - companion to SPEC.md v2.0 and TOOLING.md v2.0 (versions track the SPEC).**
 
 This document is a focused expansion of one tool family that the main [`TOOLING.md`](TOOLING.md) only sketches: the **capture / inbox / ingestion** on-ramp. SPEC.md Part III (§12.1) states *what* a source stub is and how assets and records separate; TOOLING.md §13b names the `fha capture` engine; this document specifies *how* the whole intake spine works end to end - the engine, every delivery form that feeds it, and the browser companion in enough detail to build it in any language.
 
@@ -48,7 +48,7 @@ HTML arrives on **stdin** (`… | fha capture`) or from an `--asset` that is its
 2. **Extracts citation fields** - title, `source_type`, `citation`, `repository`, `source_date`, `external_links`, and the **person names the page lists**. Explicit `--title`/`--type`/`--date` always override the scrape (the human's word wins); `--type` is validated against the controlled `source_type` vocabulary so a typo surfaces now, not as an unprocessable stub later.
 3. **Renders the stub** - a `{slug}.notes.md` whose *light, optional* frontmatter carries the recovered citation fields and whose body is the visible text or the human's notes. `people:` here is a list of **names** (a hint the processing pass reconciles against the index), never resolved `P-id`s - a stub has none yet.
 4. **Stages the asset** beside the stub, sharing the stub's basename so they pair (SPEC §12.1 lone-sidecar rule). Collisions are detected before any overwrite.
-5. **Writes a research-log entry** - capture is itself a logged search (SPEC §16), so `fha report`'s "already searched here" annotation sees it immediately: a `search_log` row when the index exists, also appended to `.cache/capture_log.jsonl` as an ephemeral write-behind supplement (the `search_log` row is the durable record; the cache file is disposable).
+5. **Writes a research-log entry** - capture is itself a logged search (SPEC §16), so `fha report`'s "already searched here" annotation sees it immediately: a `search_log` row when the index exists, and always appended to `notes/capture-log.jsonl` (SPEC §16b) - the durable record, which `fha index` reads back into `search_log` on every rebuild and which `fha backup` and git keep because it lives under `notes/`, not `.cache/`. An archive still holding the pre-move `.cache/capture_log.jsonl` keeps it in "already searched" (the index reads both files) until the next capture carries its lines across, in order and without doubling, removes the old file and says so. Both paths are index freshness inputs (a line synced from another machine stales the index until `fha index` replays it), and a capture that also wrote its own `search_log` row patches the stored manifest so it does not stale a fresh index. A line is never glued onto a final line that lacks its newline, and the archive template's `.gitattributes` marks the file `merge=union` so two machines' captures merge without a conflict (an existing archive must add that line by hand - `.gitattributes` is skeleton, which `fha update-tools` never rewrites).
 
 ### 2.2 Recipes are data, not code
 

@@ -92,6 +92,9 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    index_merge_survivors,
+    living_carried_to_survivors,
+    restricted_with_survivors,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -935,6 +938,16 @@ def _gedcom_payload(
 
     try:
         persons = _load_persons(conn)
+        # A tombstone that says `living: true` hands its claims to the
+        # survivor (SPEC §9), so the survivor is held as living too (#304:
+        # only an explicit true carries): every `living` check below,
+        # redaction and --include-living alike, then reads the merged truth.
+        _rank = {'false': 0, 'unknown': 1, 'true': 2}
+        for surv, carried in living_carried_to_survivors(conn).items():
+            row = persons.get(surv)
+            if row is not None and _rank.get(carried, 1) > _rank.get(
+                    str(row['living'] or 'unknown').lower(), 1):
+                persons[surv] = {**dict(row), 'living': carried}
 
         if not all_persons and pid not in persons:
             return {'status': 'not-found', 'text': None, 'messages': messages,
@@ -948,6 +961,20 @@ def _gedcom_payload(
         unreadable_persons: list[str] = []
         unreadable_sources: list[tuple[str, str]] = []   # (source id, path)
         restricted_persons = _restricted_person_ids(archive_root, persons, unreadable_persons)
+        # A restricted record merged into someone still governs: the index
+        # gave its claims to the survivor (SPEC §9), so the survivor's name and
+        # facts are withheld too (#304 review).
+        # `persons` holds no tombstones, so their own markers are read here.
+        survivors = index_merge_survivors(conn)
+        tombstones = {
+            r['id']: r for r in conn.execute(
+                'SELECT id, path FROM persons WHERE id IN (%s)' % ','.join('?' * len(survivors)),
+                sorted(survivors)).fetchall()
+        } if survivors else {}
+        restricted_persons = restricted_with_survivors(
+            restricted_persons | _restricted_person_ids(archive_root, tombstones,
+                                                        unreadable_persons),
+            survivors)
         restricted_sources = _restricted_source_ids(conn, archive_root, unreadable_sources)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
 

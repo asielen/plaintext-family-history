@@ -30,8 +30,9 @@ Two extraction layers:
 `--title` / `--type` / `--date` always override whatever a recipe (or the
 generic pass) inferred - the human's explicit word wins. Capture also writes a
 research-log entry (capture is itself a logged search, closing the §16 loop):
-into the live index's `search_log` when an index exists, else appended to
-`.cache/capture_log.jsonl`.
+into the live index's `search_log` when an index exists, and always appended
+to `notes/capture-log.jsonl` (SPEC §16b - the durable copy `fha index` reads
+back, kept under notes/ so backups and git carry it).
 
 A third mode, `fha capture --path PATH`, has nothing to do with web pages: it
 registers a file (most often a photo) that must stay exactly where it is - the
@@ -64,7 +65,7 @@ library (the project adds no dependency before Jinja2 in M8).
 #    _unique_stub_stem         - collision-free {stem} for the stub (+ its asset)
 #
 #  Research log
-#    _write_capture_log        - search_log row (index present) or capture_log.jsonl
+#    _write_capture_log        - notes/capture-log.jsonl line (+ search_log row if indexed)
 #
 #  Top-level + CLI
 #    run_capture               - read HTML, choose recipe, write stub + asset + log
@@ -119,16 +120,21 @@ from _lib import (
     EXIT_WARNINGS,
     SOURCE_TYPES,
     FhaConfigError,
+    capture_log_paths,
     Result,
     configure_utf8_stdout,
     format_edtf_error,
+    migrate_capture_log,
     format_source_type_error,
+    index_manifest_path,
+    read_path_manifest,
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
     read_record,
     resolve_path,
     resolve_root_arg,
+    update_path_manifest,
     write_text_exact_atomic,
 )
 
@@ -683,29 +689,59 @@ def _write_capture_log(
     result: str,
     stub_rel: str,
 ) -> str:
-    """Record the capture as a research-log search (§16): index row + jsonl.
+    """Record the capture as a research-log search (§16): jsonl line + index row.
 
     Capture is itself a logged search, so `fha report`'s "already searched"
-    annotation can see it the moment it lands. The row always appends to
-    `.cache/capture_log.jsonl` first - that file is the durable record `fha
-    index` re-ingests into `search_log` on every full rebuild (which drops and
-    recreates that table from scratch), so a capture survives a reindex even
-    though the table itself doesn't persist it. When `.cache/index.sqlite`
-    already exists, the row is *also* written straight into its `search_log`
-    table (`person_id`/`source_id` are null - a stub has no resolved person
-    and no S-id yet) so `fha report` sees it immediately, without waiting for
-    the next rebuild. Returns 'index' or 'jsonl' for the caller's status line
-    (favoring 'index' when both succeed); a logging failure is reported but
-    never fails the capture (the stub is already safely written).
+    annotation can see it the moment it lands. The line always appends to
+    `notes/capture-log.jsonl` first (SPEC §16b) - that file is the durable
+    record `fha index` re-ingests into `search_log` on every full rebuild
+    (which drops and recreates that table from scratch), and it lives under
+    notes/ rather than `.cache/` so `fha backup` and git keep it: losing it
+    would lose every "already searched there" the human has built up. An
+    archive still holding the old `.cache/capture_log.jsonl` has it carried
+    across first (`_lib.migrate_capture_log`), and the move is announced.
+    When `.cache/index.sqlite` already exists, the row is *also* written
+    straight into its `search_log` table (`person_id`/`source_id` are null -
+    a stub has no resolved person and no S-id yet) so `fha report` sees it
+    immediately, without waiting for the next rebuild. Returns 'index' or
+    'jsonl' for the caller's status line (favoring 'index' when both
+    succeed); a logging failure is reported but never fails the capture (the
+    stub is already safely written).
     """
     cache_dir = archive_root / '.cache'
     db_path = cache_dir / 'index.sqlite'
+    log_path, legacy_path = capture_log_paths(archive_root)
     row = (date, None, question, repository, collection, terms, result, None, stub_rel)
+
+    # Was the index up to date with the log BEFORE this capture touched it?
+    # Only then may the capture mark the log as read afterwards: a line synced
+    # in from another machine must keep the index stale until `fha index`
+    # replays it (#304 review).
+    log_was_indexed = db_path.exists() and _capture_log_is_indexed(
+        archive_root, log_path, legacy_path)
+
+    if migrate_capture_log(archive_root):
+        print(f'Moved your capture history from {_rel(legacy_path, archive_root)} to '
+              f'{_rel(log_path, archive_root)}, where backups and git keep it '
+              f'(the old copy is gone; every line is in the new file).')
 
     jsonl_ok = False
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with open(cache_dir / 'capture_log.jsonl', 'a', encoding='utf-8') as f:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # A file last saved by hand or by a git merge may not end in a
+        # newline; appending straight on would glue this search onto the
+        # last one and the index would read neither (#304 review).
+        needs_break = False
+        try:
+            if log_path.stat().st_size:
+                with open(log_path, 'rb') as tail:
+                    tail.seek(-1, os.SEEK_END)
+                    needs_break = tail.read(1) != b'\n'
+        except FileNotFoundError:
+            pass
+        with open(log_path, 'a', encoding='utf-8', newline='') as f:
+            if needs_break:
+                f.write('\n')
             f.write(json.dumps({
                 'date': date, 'question': question, 'repository': repository,
                 'collection': collection, 'terms': terms, 'result': result,
@@ -713,7 +749,7 @@ def _write_capture_log(
             }, ensure_ascii=False) + '\n')
         jsonl_ok = True
     except OSError as e:
-        print(f'WARNING: could not write capture_log.jsonl: {e}', file=sys.stderr)
+        print(f'WARNING: could not write {_rel(log_path, archive_root)}: {e}', file=sys.stderr)
 
     if db_path.exists():
         try:
@@ -730,12 +766,63 @@ def _write_capture_log(
                 conn.commit()
             finally:
                 conn.close()
+            # The capture log is a freshness input (SPEC 16b: an index that has
+            # not read it is missing searches). This capture just put its own
+            # line in the index, so record the log as read - otherwise every
+            # capture would make `fha doctor` call a correct index stale.
+            if jsonl_ok and log_was_indexed:
+                _mark_capture_log_indexed(archive_root, log_path, legacy_path)
             return 'index'
         except Exception as e:  # noqa: BLE001
             print(f'WARNING: could not write search_log row ({e})'
                   + (' (still logged to jsonl)' if jsonl_ok else ''), file=sys.stderr)
 
     return 'jsonl' if jsonl_ok else 'none'
+
+
+def _capture_log_is_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> bool:
+    """True when the index's stored manifest records both capture-log paths
+    exactly as they are on disk now (same mtime, or absent on both sides) -
+    i.e. every line in them is already in `search_log`. A missing or
+    unreadable manifest is False: nothing proves the index read the log."""
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    if stored is None:
+        return False
+    for path in (log_path, legacy_path):
+        rel = _rel(path, archive_root)
+        try:
+            current = path.stat().st_mtime
+        except OSError:
+            current = None
+        if stored.get(rel) != current:
+            return False
+    return True
+
+
+def _mark_capture_log_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> None:
+    """Patch the index's path manifest for the capture log this run just wrote.
+
+    `fha index` lists both capture-log paths among the files it read, so a
+    log changed behind its back reads as stale. A capture that also wrote its
+    row straight into `search_log` has kept the index exactly as current as
+    the file, the same contract `index.upsert_source` keeps for one source.
+    The legacy key is dropped when the old file is gone (carried across).
+    Called only when `_capture_log_is_indexed` held before this capture's
+    append - so the one new line is the capture's own row, never a synced line
+    the index has not seen. Best effort: a failure here only costs one "run
+    fha index" suggestion.
+    """
+    updates: dict[str, float | None] = {}
+    for path in (log_path, legacy_path):
+        rel = _rel(path, archive_root)
+        try:
+            updates[rel] = path.stat().st_mtime
+        except OSError:
+            updates[rel] = None
+    try:
+        update_path_manifest(index_manifest_path(archive_root), updates)
+    except Exception:  # noqa: BLE001 - never fail a capture over cache bookkeeping
+        pass
 
 
 # ── Top-level ─────────────────────────────────────────────────────────────────
@@ -946,7 +1033,7 @@ def run_capture(
         print(f'[dry-run] Would stage stub {_rel(stub_path, archive_root)}')
         if asset_dest is not None:
             print(f'[dry-run] Would copy asset {_rel(asset_dest, archive_root)}')
-        print('[dry-run] Would log the search in the index or .cache/capture_log.jsonl')
+        print('[dry-run] Would log the search in notes/capture-log.jsonl (and the index, if built)')
         return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
 
     try:
@@ -991,7 +1078,7 @@ def run_capture(
     if log_sink == 'index':
         print('Logged the search in the index (search_log)')
     elif log_sink == 'jsonl':
-        print('Logged the search in .cache/capture_log.jsonl')
+        print('Logged the search in notes/capture-log.jsonl')
     changed = [str(stub_path)]
     if asset_dest is not None:
         changed.append(str(asset_dest))
@@ -1299,7 +1386,7 @@ def _ingest_bundle_folder(
         print(f'[dry-run]   notes.md')
         for _, dest_name, role in planned:
             print(f'[dry-run]   {dest_name}  (role: {role})')
-        print('[dry-run] Would log the search in the index or .cache/capture_log.jsonl')
+        print('[dry-run] Would log the search in notes/capture-log.jsonl (and the index, if built)')
         return Result(exit_code=EXIT_CLEAN, data={'status': 'dry-run', 'recipe': recipe_name})
 
     try:
@@ -1340,7 +1427,7 @@ def _ingest_bundle_folder(
     if log_sink == 'index':
         print('Logged the search in the index (search_log)')
     elif log_sink == 'jsonl':
-        print('Logged the search in .cache/capture_log.jsonl')
+        print('Logged the search in notes/capture-log.jsonl')
 
     changed = [str(folder / 'notes.md')]
     changed += [str(folder / dest_name) for _, dest_name, _ in planned]

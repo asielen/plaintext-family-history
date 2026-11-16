@@ -118,9 +118,12 @@ from _lib import (
     fmt_id_display,
     id_type_of,
     is_valid_id,
+    index_merge_survivors,
     merge_survivor,
+    merged_into_survivor,
     normalize_id,
     open_index_db,
+    carried_living_message,
     person_is_living,
     person_merge_chain,
     read_record,
@@ -612,9 +615,15 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     for pid in person_ids:
         hit = _chain_flagged_record(conn, archive_root, pid, on_decode_error=on_decode_error)
         if hit is not None:
-            # The id as linked, with the name and file of the record that
-            # stopped it (the survivor, when an old merged id is linked).
-            flagged.append({'id': normalize_id(pid), 'name': hit['name'], 'path': hit['path']})
+            # The id as linked, named as the person it is (the survivor, when
+            # an old merged id is linked), plus the record that carries the
+            # restriction when that is a different one - a tombstone merged
+            # into the survivor, say (#304 review: the message used to pair
+            # the survivor's id with the tombstone's name).
+            shown = merge_survivor(person_merge_chain(conn, pid)) or hit
+            flagged.append({'id': normalize_id(pid), 'name': shown.get('name') or hit['name'],
+                            'path': hit['path'],
+                            'carrier': hit['id'] if hit['id'] != shown.get('id') else None})
     return flagged
 
 
@@ -675,6 +684,34 @@ def _chain_flagged_record(conn: sqlite3.Connection, archive_root: Path, pid: str
                 cache[rec['id']] = flagged
         if flagged:
             return rec
+    chain = person_merge_chain(conn, pid)
+    if chain:
+        return _merged_record_flagged(conn, archive_root, chain[-1]['id'],
+                                      on_decode_error=on_decode_error, cache=cache)
+    return None
+
+
+def _merged_record_flagged(conn: sqlite3.Connection, archive_root: Path, pid: str, *,
+                           on_decode_error=None, cache: dict | None = None) -> dict | None:
+    """The first record MERGED INTO `pid` whose file is flagged, or None.
+
+    `fha index` hands a tombstone's claims to its survivor (SPEC §9), so a
+    `restricted:` marker on the tombstone - the same person's request, made
+    under the old record - must still withhold the survivor, or those claims
+    would publish under the survivor's name (#304 review). The map is
+    `_lib.index_merge_survivors`, the one the index wrote the claims with."""
+    for tid in merged_into_survivor(index_merge_survivors(conn), pid):
+        row = conn.execute('SELECT id, name, path FROM persons WHERE id = ?', (tid,)).fetchone()
+        if row is None or not row['path']:
+            continue
+        if cache is not None and tid in cache:
+            flagged = cache[tid]
+        else:
+            flagged = _person_record_flagged(archive_root, row['path'], on_decode_error)
+            if cache is not None:
+                cache[tid] = flagged
+        if flagged:
+            return {'id': row['id'], 'name': row['name'], 'path': row['path']}
     return None
 
 
@@ -1205,11 +1242,15 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'text': None,
                     'messages': [f'{fmt_id_display(pid)} is not curated - wikitree exports curated profiles only.']}
-        if person['living'] in ('true', 'unknown'):
+        # person_is_living follows the merge both ways (#304 review): a
+        # record merged into this one that says `living: true` counts too.
+        if person['living'] in ('true', 'unknown') or person_is_living(conn, pid):
             return {'status': 'living-subject', 'text': None,
                     'messages': [
                         f'{fmt_id_display(pid)} has living={person["living"]}; '
                         'wikitree refuses living/unknown subjects (external-facing output).'
+                        if person['living'] in ('true', 'unknown') else
+                        carried_living_message(conn, pid, 'wikitree refuses living subjects (external-facing output)')
                     ]}
 
         # The subject's own restriction marker lives in this record, not the
@@ -1324,6 +1365,18 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                         f'{fmt_id_display(pid)} is restricted; WikiTree is public-facing and '
                         'has no opt-in. Remove the restriction or export a different person.'
                     ]}
+        merged_hit = _merged_record_flagged(conn, archive_root, pid,
+                                            on_decode_error=note_undecodable)
+        if merged_hit is not None:
+            return {'status': 'restricted-subject', 'text': None,
+                    'messages': [
+                        f'{fmt_id_display(merged_hit["id"])} ({merged_hit["path"]}) was merged into '
+                        f'{fmt_id_display(pid)} and is restricted (or could not be read to '
+                        'check), and its records now count for this person - so WikiTree, '
+                        'which is public-facing with no opt-in, will not publish them. If the '
+                        'restriction no longer applies, remove it from that record, run '
+                        '`fha index`, then export again.'
+                    ]}
 
         restricted_refs = _restricted_source_refs(conn, archive_root, body,
                                                   on_decode_error=note_undecodable)
@@ -1382,7 +1435,10 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'the YAML `fha lint` points at - run `fha index`, then export again.')
             if still_restricted:
                 items = ', '.join(
-                    f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'
+                    f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"}'
+                    + (f' - the restriction is on {fmt_id_display(r["carrier"])}, a record '
+                       'merged into them' if r.get('carrier') else '')
+                    + ')'
                     for r in still_restricted
                 )
                 messages.append(

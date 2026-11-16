@@ -4,7 +4,7 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
 
   fha claim <C-id> [<C-id> ...]
                    --status accepted|disputed|rejected|needs-review|superseded
-                   [--reviewed DATE] [--value "…"] [--date EDTF]
+                   [--reviewed DATE] [--reviewed-by NAME] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id] [--place-text TEXT]
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
                    [--information primary|secondary|undetermined]
@@ -18,7 +18,8 @@ claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8
                 [--confidence high|medium|low]
                 [--information primary|secondary|undetermined]
                 [--evidence direct|indirect|negative] [--anchor TEXT]
-                [--notes TEXT] [--keep-living] [--dry-run] [--root PATH]
+                [--notes TEXT] [--reviewed-by NAME] [--keep-living] [--dry-run]
+                [--root PATH]
 
 Two verbs share one file because both are surgical `## Claims` block writers on
 an existing source record, and the second (`new`) was built by lifting the
@@ -62,8 +63,14 @@ logic is needed for this field specifically.
 human satisfies that contract by *directing* this tool - the editing method does
 not matter, only that the decision is theirs. So `--status accepted` always
 writes a `reviewed:` stamp: the explicit `--reviewed DATE` when given, otherwise
-today (forgiving, since a human is at the keyboard). The tool never accepts on
-its own. `disputed` / `rejected` / `superseded` change status rather than
+today (forgiving, since a human is at the keyboard) - and beside it
+`reviewed_by: human` (SPEC §8.4: who made the decision; `--reviewed-by NAME`
+records a researcher's name instead, when the archive has several). `fha claim
+new` stamps the same pair on a claim it mints `accepted`, and neither on one it
+mints `suggested` - that is the AI's draft, not a decision. A claim written
+before this keeps whatever it had: nothing back-fills `reviewed_by:`, so an
+older claim without it simply does not say who decided. The tool never accepts
+on its own. `disputed` / `rejected` / `superseded` change status rather than
 deleting, so the research trail is preserved - `disputed` marks a claim that is
 actively contested (e.g. a `contradicts:` standoff) rather than settled either
 way, distinct from a `rejected` claim the reviewer has ruled out.
@@ -934,12 +941,30 @@ def _quote_still_open(text: str, quote: str) -> bool:
     return True
 
 
+def _reviewed_by_problem(name: str) -> str | None:
+    """Why `--reviewed-by NAME` cannot be written, or None when it can.
+
+    It is one plain value on one line of the claim (SPEC §8.4 - `human`, or a
+    researcher's name), so a blank name or one spanning lines is refused
+    rather than written as something nobody could read back.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        return ('--reviewed-by needs a name, e.g. --reviewed-by "Ruth Cole" - or leave it '
+                'out to record the decision as "human".')
+    if '\n' in cleaned or '\r' in cleaned:
+        return ('--reviewed-by must be a single line - just the reviewer\'s name, '
+                'e.g. --reviewed-by "Ruth Cole".')
+    return None
+
+
 def _apply_claim_review(
     text: str,
     claim_id: str,
     *,
     status: str | None = None,
     reviewed: str | None = None,
+    reviewed_by: str | None = None,
     value: str | None = None,
     date: str | None = None,
     type_: str | None = None,
@@ -970,7 +995,8 @@ def _apply_claim_review(
     to anchor where any NEW keys land (a claim always has one; 0, the item's
     own first line, is the safe fallback if it somehow does not). `reviewed`
     is only ever passed together with `status` - the caller enforces that, so
-    this function does not need to.
+    this function does not need to. `reviewed_by` (SPEC §8.4, who made the
+    decision) rides with it and lands on the line right after `reviewed:`.
 
     `place`/`place_text` are independent keys (SPEC §15: the normalized link
     and the source-as-written wording legally coexist - elevation backfills
@@ -1253,7 +1279,8 @@ def _apply_claim_review(
     # index is computed (the 2026-07 stale-anchor corruption came from
     # deleting AFTER anchors were fixed).
     touched = {k for k, v in (
-        ('status', status), ('reviewed', reviewed), ('value', value), ('date', date),
+        ('status', status), ('reviewed', reviewed), ('reviewed_by', reviewed_by),
+        ('value', value), ('date', date),
         ('type', type_), ('place', place), ('place_text', place_text),
         ('persons', persons), ('confidence', confidence), ('information', information),
         ('evidence', evidence), ('anchor', anchor), ('notes', notes),
@@ -1297,6 +1324,9 @@ def _apply_claim_review(
     insert_pos = status_idx
     if reviewed is not None:
         insert_pos = set_scalar('reviewed', reviewed, insert_after=status_idx)
+    if reviewed_by is not None:
+        insert_pos = set_scalar('reviewed_by', _yaml_inline(reviewed_by),
+                                insert_after=insert_pos)
     if date is not None:
         date_idx, date_kind, _ = find_key('date')
         if date_idx is not None:
@@ -1518,7 +1548,7 @@ def _mark_deceased_not_living(
       - a negated claim (SPEC §8.6, "we looked and this death did not
         happen") changes nobody.
     A merged record (SPEC §9 tombstone) is skipped, not followed: the claim
-    should name the surviving record (lint E016), and the warning gives the
+    should name the surviving record (lint W107), and the warning gives the
     `set-living` command for the survivor rather than guessing.
 
     `keep_living` (`--keep-living`) accepts without touching any flag.
@@ -1587,7 +1617,7 @@ def _mark_deceased_not_living(
             result.add('warning',
                        f'{name} ({shown_pid}) was merged into another record, so '
                        f'{cid} should name the surviving record instead (`fha lint` '
-                       'lists it as E016). Nobody was marked as no longer living; '
+                       'lists it as W107). Nobody was marked as no longer living; '
                        f'if this is the same person, run {where}.')
             continue
         def _left_alone(found: str | None) -> None:
@@ -1753,6 +1783,7 @@ def run_claim(
     claim_id: str,
     status: str | None = None,
     reviewed: str | None = None,
+    reviewed_by: str | None = None,
     value: str | None = None,
     date: str | None = None,
     claim_type: str | None = None,
@@ -1815,7 +1846,12 @@ def run_claim(
     `reviewed:` is stamped only together with a `status` move, exactly as
     before - passing `reviewed` without `status` is refused rather than
     silently ignored, so a human is never left wondering why a date they typed
-    did not land. `claim_type == 'relationship'` is refused (see
+    did not land. `reviewed_by:` (SPEC §8.4) rides with every such stamp:
+    `human` unless `reviewed_by` names someone (`--reviewed-by`), and the same
+    refusal without `status`. The one exception is a rerun that changes
+    nothing - the claim already has that status and that `reviewed:` date -
+    which stays `already-done` rather than back-filling `reviewed_by:` onto a
+    decision this call did not make. `claim_type == 'relationship'` is refused (see
     `_claim_type_problem`); `place`/`place_text` are independent keys (SPEC
     §15) - each sets only its own, never removing the other, and both may be
     given together; `persons` REPLACES the whole
@@ -1914,6 +1950,16 @@ def run_claim(
                      '--reviewed only takes effect together with --status (it stamps the '
                      'review date on the status you are setting). Add --status, or drop '
                      '--reviewed if you are only editing another field.')
+    if reviewed_by is not None and status is None:
+        return _fail(result, 'failed',
+                     '--reviewed-by only takes effect together with --status (it records '
+                     'who made the review decision you are setting). Add --status, or drop '
+                     '--reviewed-by if you are only editing another field.')
+    if reviewed_by is not None:
+        problem = _reviewed_by_problem(reviewed_by)
+        if problem is not None:
+            return _fail(result, 'failed', problem)
+        reviewed_by = reviewed_by.strip()
 
     if claim_type is not None:
         problem = _claim_type_problem(claim_type)
@@ -1963,6 +2009,16 @@ def run_claim(
     record_path, claim = found
     before_status = str(claim.get('status') or '')
     result.data['before_status'] = before_status
+
+    # Who decided (SPEC §8.4): `human` by default on every status move. A
+    # rerun the record already meets - same status, same reviewed: date - is
+    # left as it is, so an older claim never gains a reviewed_by: it never had.
+    if status is not None and reviewed_by is None:
+        rerun = (before_status.strip().lower() == status
+                 and str(claim.get('reviewed') or '').strip() == reviewed)
+        if not rerun:
+            reviewed_by = 'human'
+    result.data['reviewed_by'] = reviewed_by
     result.data['source'] = str(record_path)
 
     # `--persons` REPLACES the whole persons: list, and this file never
@@ -2043,7 +2099,7 @@ def run_claim(
 
     try:
         new_text, changed = _apply_claim_review(
-            text, cid, status=status, reviewed=reviewed,
+            text, cid, status=status, reviewed=reviewed, reviewed_by=reviewed_by,
             value=value, date=normalized_date, type_=claim_type,
             place=place_display, place_text=place_text, persons=persons_norm,
             confidence=confidence, information=information, evidence=evidence,
@@ -2103,6 +2159,7 @@ def run_claim(
     # every key it clears must be gone, and no other claim may move at all.
     set_keys = {k for k, v in (
         ('status', status), ('reviewed', reviewed if status is not None else None),
+        ('reviewed_by', reviewed_by if status is not None else None),
         ('value', value), ('date', normalized_date), ('type', claim_type),
         ('place', place_display), ('place_text', place_text), ('persons', persons_norm),
         ('confidence', confidence), ('information', information),
@@ -2287,6 +2344,7 @@ def run_claim_batch(
     claim_ids: list[str],
     status: str | None = None,
     reviewed: str | None = None,
+    reviewed_by: str | None = None,
     value: str | None = None,
     date: str | None = None,
     claim_type: str | None = None,
@@ -2402,6 +2460,7 @@ def run_claim_batch(
         # preserved so existing callers see no difference.
         single = run_claim(
             archive_root, claim_id=deduped[0], status=status, reviewed=reviewed,
+            reviewed_by=reviewed_by,
             value=value, date=date, claim_type=claim_type, place=place,
             place_text=place_text, persons=persons, confidence=confidence,
             information=information, evidence=evidence, anchor=anchor, notes=notes,
@@ -2452,6 +2511,10 @@ def run_claim_batch(
             return _fail(result, 'failed',
                          f'--reviewed {reviewed!r} is not a calendar date. Use YYYY-MM-DD, '
                          f'e.g. {_today()}.')
+    if reviewed_by is not None:
+        problem = _reviewed_by_problem(reviewed_by)
+        if problem is not None:
+            return _fail(result, 'failed', problem + ' Nothing was changed.')
 
     # All-or-nothing gate, part 1: every id must LOOK like a claim id before
     # anything is touched, so a typo refuses the batch, not half of it.
@@ -2507,7 +2570,7 @@ def run_claim_batch(
     claims_read: dict[str, tuple[dict, dict]] = {}
     for cid in ids:
         sub = run_claim(archive_root, claim_id=cid, status=status,
-                        reviewed=reviewed, dry_run=dry_run,
+                        reviewed=reviewed, reviewed_by=reviewed_by, dry_run=dry_run,
                         _record_hint=located[cid][0], _pending=pending,
                         _in_batch=True, _claims_read=claims_read)
         result.data['results'].append(sub.data)
@@ -2644,6 +2707,8 @@ def run_claim_batch(
         applied_set = set(applied)
         not_done = [fmt_id_display(c) for c in ids if fmt_id_display(c) not in applied_set]
         reviewed_part = f' --reviewed {reviewed}' if reviewed else ''
+        if reviewed_by is not None:
+            reviewed_part += f' --reviewed-by "{reviewed_by.strip()}"'
         # --keep-living rides along too: a recovery command that dropped it
         # would mark the people the human chose to keep private (#250 review).
         if keep_living:
@@ -2710,7 +2775,7 @@ def _render_new_claim_lines(
     persons: list[str], date: str | None, place: str | None, place_text: str | None,
     subtype: str | None, status: str, reviewed: str | None, confidence: str,
     negated: bool = False, information: str | None = None, evidence: str | None = None,
-    anchor: str | None = None, notes: str | None = None,
+    anchor: str | None = None, notes: str | None = None, reviewed_by: str | None = None,
 ) -> list[str]:
     """Build the YAML lines for one brand-new claim item (SPEC §8.4 field order).
 
@@ -2729,8 +2794,9 @@ def _render_new_claim_lines(
     issue) rather than moving to its SPEC-illustrated spot - the two cases
     (an explicit `--evidence`, an implicit one from `--negated`) render
     through the same line, so there is only one slot to place. `anchor`
-    lands right after `evidence`, and `notes` lands in its SPEC-illustrated
-    slot, right after `reviewed`.
+    lands right after `evidence`, `reviewed_by` (who decided, SPEC §8.4) right
+    after the `reviewed` date it belongs to, and `notes` in its
+    SPEC-illustrated slot after those.
 
     `confidence` is always written: SPEC §8.5 marks it required on every claim
     (lint E010, the same required set as `persons`), and the same section
@@ -2776,6 +2842,8 @@ def _render_new_claim_lines(
         lines.append(f'  anchor: {_yaml_inline(anchor)}')
     if status == 'accepted' and reviewed:
         lines.append(f'  reviewed: {reviewed}')
+        if reviewed_by:
+            lines.append(f'  reviewed_by: {_yaml_inline(reviewed_by)}')
     if notes:
         lines.append(f'  notes: {_yaml_inline(notes)}')
     return lines
@@ -2802,6 +2870,7 @@ def run_claim_new(
     dry_run: bool = False,
     claim_id: str | None = None,
     keep_living: bool = False,
+    reviewed_by: str | None = None,
 ) -> Result:
     """Mint a brand-new claim onto an existing source's `## Claims` block.
 
@@ -2849,7 +2918,9 @@ def run_claim_new(
     field-only edit needs no status move at all): here a human typing this
     command IS the review gate AGENTS.md requires, so directing this tool at
     the default needs no extra ceremony - `reviewed:` is stamped to today
-    automatically. An AI caller is bound by the same AGENTS.md contract to
+    automatically, with `reviewed_by: human` beside it (or the name given as
+    `reviewed_by`, SPEC §8.4). A `suggested` claim gets neither: it is a
+    draft awaiting that decision, and `reviewed_by` is refused with it. An AI caller is bound by the same AGENTS.md contract to
     pass `status='suggested'` explicitly; this function cannot tell who is
     calling it, so the default assumes the human case and lets an automated
     caller opt out.
@@ -2904,6 +2975,16 @@ def run_claim_new(
                      f'{status!r} is not a status `fha claim new` can mint at. Use one of: '
                      f'{", ".join(NEW_CLAIM_STATUSES)}. (Review moves a claim on to disputed/'
                      'rejected/needs-review/superseded later, with `fha claim <C-id> --status …`.)')
+    if reviewed_by is not None:
+        if status != 'accepted':
+            return _fail(result, 'failed',
+                         '--reviewed-by records who accepted the claim, and a suggested '
+                         'claim has not been reviewed yet. Drop --reviewed-by, or mint it '
+                         'accepted (the default) if this is your decision.')
+        problem = _reviewed_by_problem(reviewed_by)
+        if problem is not None:
+            return _fail(result, 'failed', problem)
+        reviewed_by = reviewed_by.strip()
 
     if negated and evidence is not None and evidence != 'negative':
         return _fail(result, 'refused',
@@ -2973,6 +3054,8 @@ def run_claim_new(
                    'Pass --confidence high|medium|low to override.')
 
     reviewed = _today() if status == 'accepted' else None
+    if status == 'accepted' and reviewed_by is None:
+        reviewed_by = 'human'
     if negated:
         result.add('info',
                    f'Minting a confirmed ABSENCE (SPEC §8.6): this records that the {claim_type} '
@@ -2983,7 +3066,7 @@ def run_claim_new(
         cid, claim_type, value, persons=persons_norm, date=normalized_date,
         place=place, place_text=place_text, subtype=subtype, status=status, reviewed=reviewed,
         confidence=confidence, negated=negated, information=information, evidence=evidence,
-        anchor=anchor, notes=notes,
+        anchor=anchor, notes=notes, reviewed_by=reviewed_by,
     )
 
     try:
@@ -3120,6 +3203,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
         claim_ids=list(args.claim_ids),
         status=getattr(args, 'status', None),
         reviewed=getattr(args, 'reviewed', None),
+        reviewed_by=getattr(args, 'reviewed_by', None),
         value=getattr(args, 'value', None),
         date=getattr(args, 'date', None),
         claim_type=getattr(args, 'claim_type', None),
@@ -3170,6 +3254,7 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
         notes=getattr(args, 'notes', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
         keep_living=bool(getattr(args, 'keep_living', False)),
+        reviewed_by=getattr(args, 'reviewed_by', None),
     )
     for msg in result.messages:
         stream = sys.stderr if msg.level == 'error' else sys.stdout
@@ -3190,6 +3275,11 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--reviewed', metavar='DATE',
                    help='Review date (YYYY-MM-DD); defaults to today. Only takes effect '
                         'together with --status.')
+    p.add_argument('--reviewed-by', metavar='NAME', dest='reviewed_by',
+                   help='Who made this review decision, written as reviewed_by: on the '
+                        'claim (SPEC §8.4). Defaults to "human"; give a name when several '
+                        'researchers share the archive. Only takes effect together with '
+                        '--status.')
     p.add_argument('--value', metavar='TEXT',
                    help='Optionally correct the claim value (single-line scalar only).')
     p.add_argument('--date', metavar='EDTF',
@@ -3294,6 +3384,10 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
                         'died as no longer living (living: false), so shared exports and '
                         'the site can include them. Pass this to accept the claim and leave '
                         'their living flag as it is.')
+    p.add_argument('--reviewed-by', metavar='NAME', dest='reviewed_by',
+                   help='Who accepted the claim, written as reviewed_by: (SPEC §8.4). '
+                        'Defaults to "human" on an accepted claim; give a name when several '
+                        'researchers share the archive. Refused with --status suggested.')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.add_argument('--dry-run', action='store_true', dest='dry_run',
                    help='Preview the claim block that would be appended, without writing.')

@@ -1340,6 +1340,42 @@ class WikitreeUnfilledSectionTests(unittest.TestCase):
         self.assertNotIn('== Stories ==', text)
 
 
+
+class MergedRestrictedLinkNamingTests(unittest.TestCase):
+    """Round 4: a profile linking a survivor whose merged duplicate is
+    restricted is refused, and the refusal names the survivor (not the
+    duplicate's name beside his id) and says which record is restricted."""
+
+    def test_message_names_survivor_and_carrier(self) -> None:
+        import contextlib, io, tempfile
+        import index as index_mod
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+
+        def w(rel, text):
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding='utf-8')
+        w('fha.yaml', 'roots:\n  documents: documents\n')
+        w('people/cole__mary_p-aaaaaaaaa3.md',
+          '---\nid: p-aaaaaaaaa3\nname: Mary Cole\nliving: false\nsex: F\ntier: curated\n---\n\n'
+          '# Mary Cole\n\n## Biography\n\nMother of [[p-aaaaaaaaa1|Thomas]].\n')
+        w('people/hartley__thomas_p-aaaaaaaaa1.md',
+          '---\nid: p-aaaaaaaaa1\nname: Thomas Hartley\nliving: false\nsex: M\ntier: stub\n---\n\n# T\n')
+        w('people/stubs/MERGED-INTO-p-aaaaaaaaa1__hartley__thos_p-aaaaaaaaa2.md',
+          '---\nid: p-aaaaaaaaa2\nname: Thos Hartley\nliving: false\ntier: stub\n'
+          'restricted: by-request\nstatus: merged\nmerged_into: p-aaaaaaaaa1\n---\n\n# D\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index_mod.build_index(root, {'roots': {'documents': 'documents'}})
+        res = wikitree.run_wikitree(root, 'p-aaaaaaaaa3')
+        self.assertEqual(res['status'], 'restricted-people')
+        text = ' '.join(res['messages'])
+        self.assertIn('p-aaaaaaaaa1 (Thomas Hartley', text)
+        self.assertIn('p-aaaaaaaaa2', text)
+        self.assertNotIn('(Thos Hartley', text)
+
+
 class WikitreePrivateFenceTests(unittest.TestCase):
     """The profile template promises that prose wrapped in `<!-- private -->`
     ... `<!-- /private -->` stays "out of a shared copy". WikiTree is the most

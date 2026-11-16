@@ -34,7 +34,7 @@ mutation plus a rename), so the coverage here is deliberately thorough:
   named), the tombstone's `tier:` is stripped so refresh does not regrow
   them, dry-run previews the deletions, rollback restores them;
 - an end-to-end pass against a copy of `example-archive` proving the
-  post-merge archive lints with no E016/W115 and no new W107.
+  post-merge archive lints with no W115 and no new W107 (claims included).
 
 Fixtures only (AGENTS_TOOLING §5): a synthetic mini-archive for the surgical
 assertions (fast, byte-precise) and a temp copy of `example-archive` for the
@@ -561,6 +561,51 @@ class MergeGuardTests(unittest.TestCase):
             (0, 4))
 
 
+class MergeTombstoneLivingTests(unittest.TestCase):
+    """#304 round 5 backstop: the tombstone `fha confirm merge` writes says
+    what the survivor says about being alive when it said nothing itself
+    (`unknown`, the stub default, or no line) - so an ordinary stub merge
+    leaves nothing that could hold a dead ancestor back as living. An
+    explicit `living: true` on the merged record is someone's word and stays."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = build_archive(Path(self._tmp.name))
+        self.merged_path = self.root / 'people' / 'stubs' / 'hartley__thos_P-bbbbbbbbbb.md'
+        self.tombstone_path = (self.root / 'people' / 'stubs'
+                               / 'MERGED-INTO-p-aaaaaaaaaa__hartley__thos_P-bbbbbbbbbb.md')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _merge_with(self, living_line: str) -> str:
+        text = self.merged_path.read_text(encoding='utf-8')
+        self.merged_path.write_text(text.replace('living: false\n', living_line), encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok', [m.text for m in result.messages])
+        return str(read_record(self.tombstone_path)['meta'].get('living')).lower()
+
+    def test_unknown_takes_the_survivors_value(self) -> None:
+        self.assertEqual(self._merge_with('living: unknown\n'), 'false')
+
+    def test_a_missing_line_takes_the_survivors_value(self) -> None:
+        self.assertEqual(self._merge_with(''), 'false')
+
+    def test_an_explicit_true_stays(self) -> None:
+        self.assertEqual(self._merge_with('living: true\n'), 'true')
+
+    def test_a_living_survivors_true_is_not_copied(self) -> None:
+        # A cousin alive at the merge dies later and is marked `living: false`.
+        # A `true` copied onto the tombstone would keep hiding him, and only a
+        # hand edit of the merged file would release him. Only `false` copies.
+        survivor = next(p for p in (self.root / 'people').rglob('*_P-aaaaaaaaaa.md')
+                        if not p.name.startswith('MERGED-INTO'))
+        text = survivor.read_text(encoding='utf-8')
+        self.assertIn('living: false\n', text)
+        survivor.write_text(text.replace('living: false\n', 'living: true\n'), encoding='utf-8')
+        self.assertEqual(self._merge_with('living: unknown\n'), 'unknown')
+
+
 # ── The synthetic-archive matrix ─────────────────────────────────────────────────
 
 class MergeArchiveTests(unittest.TestCase):
@@ -1015,7 +1060,7 @@ A fixture source so the merged stub has a claim to relink.
 
 class ExampleArchiveMergeTests(unittest.TestCase):
     """The acceptance bar: a verb-enacted merge on (a copy of) example-archive
-    leaves lint with no E016, no W115 regression, and no new W107."""
+    leaves lint with no W115 regression and no new W107."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1069,10 +1114,9 @@ class ExampleArchiveMergeTests(unittest.TestCase):
 
         self.index.build_index(self.root, self.config)
         after = self._lint_codes()
-        # E016: no claim may reference the merged person. W107: nothing new was
-        # left pointing at it. W115: the relationships reconciliation is no
-        # worse than the baseline.
-        self.assertEqual(after.get('E016', 0), 0)
+        # W107: nothing new was left pointing at the merged person - no claim
+        # (the old E016, now part of W107) and no prose mention. W115: the
+        # relationships reconciliation is no worse than the baseline.
         self.assertEqual(after.get('W107', 0), baseline.get('W107', 0))
         self.assertEqual(after.get('W115', 0), baseline.get('W115', 0))
         self.assertEqual(after.get('E005', 0), baseline.get('E005', 0))

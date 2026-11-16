@@ -61,6 +61,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     file_name_surname_mismatch,
+    merge_pointer,
+    merge_survivor_map,
+    SurvivorAliasMap,
+    through_survivors,
     person_surname,
     set_surname_line,
     recorded_surname,
@@ -624,10 +628,10 @@ def _resolve_person_ref(ref: str, alias_map: dict[str, str] | None) -> str | Non
     helper index.py now consumes - so lint and the index agree on which persons
     a claim names (lint keeps this local copy until the K4 consolidation wave)."""
     if id_type_of(ref):
-        return normalize_id(ref)
+        return through_survivors(normalize_id(ref), alias_map)
     resolved = resolve_ref(ref, alias_map) if alias_map else None
     if resolved and id_type_of(resolved) == 'P':
-        return resolved
+        return through_survivors(resolved, alias_map)
     return None
 
 
@@ -1263,7 +1267,7 @@ def _process_person_file(path: Path, registry: Registry,
     # Collect token refs from body
     _collect_token_refs(rec['body'], path, registry)
 
-    # E016: merged_into field
+    # merged_into: the survivor id counts as a known record (W107 resolves through it)
     merged_into = normalize_id(str(meta.get('merged_into', '')))
     if merged_into:
         registry.all_record_ids.setdefault(merged_into, path)
@@ -1533,6 +1537,18 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         if status == 'accepted' and not reviewed:
             findings.append(Finding('E', 'E006', path,
                 f'Accepted claim {cid} missing reviewed date'))
+        # W139: SPEC 8.4 asks for the date on every settled verdict, not only
+        # accepted. A warning rather than E006's error: an archive kept for
+        # years holds many disputed or rejected claims marked before the rule
+        # said so, nothing reads the date to decide anything, and an error
+        # would stop every lint-gated step over a missing note of when.
+        elif (status in ('disputed', 'rejected', 'superseded')
+              and not str(claim.get('reviewed') or '').strip()):
+            findings.append(Finding('W', 'W139', path,
+                f'Claim {cid} is {status} but has no reviewed: date saying when that was '
+                f'decided. Add `reviewed: YYYY-MM-DD` under its status: line (the day it '
+                f'was decided, if you know it), or run `fha claim {cid} --status {status}` '
+                f'to record it as decided today.'))
 
         # E019: status / confidence must come from their controlled vocabularies
         # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
@@ -1640,6 +1656,104 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 _PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
 
 
+def _check_merge_pointers(registry: Registry, findings: list[Finding],
+                          survivors: dict[str, str]) -> None:
+    """E020 / W140: a merge record the tools cannot follow.
+
+    E020 - a tombstone (`status: merged`) whose `merged_into:` names nobody, or
+    whose chain of merges comes back round to itself. `fha index` then leaves
+    every claim naming it where it is (SPEC §9: a broken pointer must never
+    move evidence onto nobody), so the survivor's timeline and tree are
+    missing them and nothing else says so - an error, naming the line to fix.
+
+    W140 - one half of a merge without the other: `merged_into:` on a record
+    not marked `status: merged`, or `status: merged` with no `merged_into:`.
+    The tools move claims only on a finished tombstone (`_lib.merge_pointer`),
+    so the record's claims stay where they are; the warning says which line
+    is missing so the merge can be finished or undone deliberately.
+    """
+    for pid, meta in sorted(registry.person_meta.items()):
+        path = (registry.person_profile_paths.get(pid) or [registry.all_record_ids.get(pid, Path(pid))])[0]
+        shown = fmt_id_display(pid)
+        status_merged = str(meta.get('status') or '').strip().lower() == 'merged'
+        raw_target = normalize_id(str(meta.get('merged_into') or '').strip())
+        if status_merged != bool(raw_target):
+            if raw_target:
+                findings.append(Finding('W', 'W140', path,
+                    f'{shown} has merged_into: {fmt_id_display(raw_target)} but is not marked '
+                    '`status: merged`, so the tools still treat it as its own person and its '
+                    'claims stay on it. If the merge is real, finish it with `fha confirm merge '
+                    f'{shown} --into {fmt_id_display(raw_target)} --reason "..."`; if not, '
+                    'delete the merged_into: line.'))
+            else:
+                findings.append(Finding('W', 'W140', path,
+                    f'{shown} is marked `status: merged` but has no merged_into: line saying '
+                    'who it was merged into, so its claims count for no one else. Add '
+                    '`merged_into: <survivor P-id>` (find the survivor with `fha find`), or '
+                    'remove the status: merged line if it was not merged.'))
+            continue
+        if not status_merged or pid in survivors:
+            continue
+        # A finished tombstone that does not resolve: find out why, for the message.
+        seen = [pid]
+        current = raw_target
+        reason = 'missing'
+        while True:
+            if current in seen:
+                reason = 'loop'
+                break
+            nxt_meta = registry.person_meta.get(current)
+            if nxt_meta is None:
+                break
+            seen.append(current)
+            current = merge_pointer(nxt_meta.get('status'), nxt_meta.get('merged_into'))
+            if not current:
+                break   # an unfinished link further along: W140 names it
+        if reason == 'loop':
+            chain = ' -> '.join(fmt_id_display(p) for p in seen + [current])
+            findings.append(Finding('E', 'E020', path,
+                f'{shown} is merged into a chain that comes back to itself ({chain}), so '
+                'there is no surviving person and the claims that name it count for no one '
+                'else. Open the records in that chain and point the last merged_into: at '
+                'the one person that is not merged.'))
+        elif current and current not in _known_person_ids(registry):
+            findings.append(Finding('E', 'E020', path,
+                f'{shown} is merged into {fmt_id_display(current)}, but no person record has '
+                'that id, so the claims that name it count for no one else. Correct the '
+                f'merged_into: line (find the right person with `fha find`), or restore the '
+                f'record for {fmt_id_display(current)}.'))
+
+
+def _known_person_ids(registry: Registry) -> set[str]:
+    """Every person record on disk: the ones lint read, plus the ones it could
+    not (not UTF-8, frontmatter that will not parse), known by the id in their
+    filename (#68). `fha index` keeps a row for those from the filename too
+    (#267), so a merge pointing at one still resolves there - lint must agree,
+    or it reports a missing survivor and invites the owner to make a second
+    Thomas (#304 review)."""
+    return set(registry.person_meta) | {
+        rid for rid in registry.unread_record_ids if id_type_of(rid) == 'P'}
+
+
+def _registry_merge_survivors(registry: Registry) -> dict[str, str]:
+    """{merged P-id: survivor} from the person records - the registry twin of
+    `index._merge_survivors`, through the same `_lib.merge_survivor_map` rule.
+
+    Computed once per lint pass (Pass 2 runs after every record is read, and
+    the person set does not change after that) and kept on the registry."""
+    cached = getattr(registry, '_merge_survivors', None)
+    if cached is not None:
+        return cached
+    pointers: dict[str, str] = {}
+    for pid, meta in registry.person_meta.items():
+        target = merge_pointer(meta.get('status'), meta.get('merged_into'))
+        if target:
+            pointers[pid] = target
+    survivors = merge_survivor_map(pointers, _known_person_ids(registry))
+    registry._merge_survivors = survivors
+    return survivors
+
+
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     """parent_pid → {child_pid: {nature, …}} from the claims that derive parentage.
 
@@ -1677,7 +1791,13 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     string it carries, and a `birth` claim normally carries no subtype at all,
     which reads as genetic - exactly what the SQLite twin's
     `COALESCE(LOWER(c.subtype), '')` does with the same claim.
+
+    A parent or child who is a merged record (SPEC §9 tombstone) is read as
+    the survivor (`_registry_merge_survivors`), as the index writes
+    `claim_persons`: a birth filed against the duplicate before the merge
+    still puts the survivor's parents in the tree.
     """
+    survivors = _registry_merge_survivors(registry)
     edges: dict[str, dict[str, set[str]]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
@@ -1693,6 +1813,8 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
             child_ids, parent_ids = _claim_parentage_pids(claim, registry.alias_map)
             if not child_ids or not parent_ids:
                 continue
+            child_ids = {survivors.get(p, p) for p in child_ids}
+            parent_ids = {survivors.get(p, p) for p in parent_ids}
             subtype = str(claim.get('subtype', '')).strip().lower()
             for cpid in sorted(child_ids):
                 for ppid in sorted(parent_ids):
@@ -2674,9 +2796,16 @@ def _check_relationships_reconciliation(
     derives no edge, so it backs no entry and it asks for none: a block that
     omits "they did not marry" is complete. An entry that cites one anyway gets
     its own wording, because the claim is not the thing that needs fixing."""
+    survivors = getattr(alias_map, 'survivors', None) or {}
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
+            continue
+        if pid in survivors:
+            # A merged record's block is its pre-merge view; its claims now
+            # count for the survivor (SPEC §9), so measuring the block against
+            # them would report drift that is only the merge. W107 lists the
+            # tombstone's leftovers for cleanup instead (#304 review).
             continue
         profile_path = _profile_path_for(registry, pid)
         referenced_cids: set[str] = set()
@@ -2686,7 +2815,10 @@ def _check_relationships_reconciliation(
                 continue
             role = str(entry.get('type', '')).strip().lower()
             other_pid = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
-            other_pid = normalize_id(other_pid) if other_pid else None
+            # `to:` reads through the merge like the claims do (#304 review):
+            # Mary's entry still naming her son's merged duplicate is the same
+            # edge the index derives for the survivor, not a W115.
+            other_pid = through_survivors(normalize_id(other_pid), alias_map) if other_pid else None
             status = str(entry.get('status', '')).strip().lower()
             is_sourced = bool(entry.get('claim') or entry.get('source')) and status != 'hypothesis'
             if not is_sourced:
@@ -2780,7 +2912,15 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # persons:/roles: reference below resolves through it, and the fix modes
     # + needs-sourcing backlog (which run after this pass) reuse it so their
     # view of "which persons does this claim name" matches the checks'.
-    alias_map = build_alias_map(_alias_records(registry))
+    #
+    # It is a SurvivorAliasMap: a persons:/roles: entry naming a merged record
+    # reads as the survivor (SPEC §9), in every pairing rule (parentage,
+    # spouses, vital subjects, roles), exactly as `fha index` writes
+    # `claim_persons` - so lint never reports a tree the index did not build
+    # (#304 review: `roles: {child: <tombstone>}` beside `persons: [<survivor>]`
+    # used to drop the child and raise a false E013).
+    alias_map = SurvivorAliasMap(build_alias_map(_alias_records(registry)),
+                                 _registry_merge_survivors(registry))
     registry.alias_map = alias_map
 
     # Alias-layer maintenance + integrity (self-alias, name/stem clashes).
@@ -3481,6 +3621,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                                 profile_pid=pid, children_of=children_of)
 
     # W101: vitals gaps for curated people
+    survivors = _registry_merge_survivors(registry)
     for pid in registry.person_profile_paths:
         meta = registry.person_meta.get(pid, {})
         if str(meta.get('tier', '')) != 'curated':
@@ -3508,6 +3649,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             negated = c.get('negated') in (True, 'true')
             persons_with_roles = resolve_claim_persons_with_roles(c, registry.alias_map)
             subjects = vital_subjects(ctype, persons_with_roles)
+            if subjects is not None:
+                subjects = [survivors.get(q, q) for q in subjects]
             if subjects is not None and pid not in subjects:
                 continue   # named on the claim but not its actual subject - asserts nothing about pid's own vitals
             if ctype == 'marriage' and negated:
@@ -3593,16 +3736,46 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_died_but_living(registry, findings, alias_map)
     _check_file_name_surnames(registry, findings)
 
-    # E016: new claims referencing a merged person
+    # W107 (claims): a claim still naming a merged person. Once an error
+    # (E016, retired): SPEC §9 has the tools count such a claim for the
+    # survivor everywhere - timelines, the tree, pages, exports - so nothing
+    # is lost while the pointer resolves. It stays on the gradual-cleanup list
+    # beside the prose mentions below. A pointer that does NOT resolve leaves
+    # the claim on its tombstone, so the message must not say otherwise:
+    # those records get E020, and their claims say they are stuck.
+    survivors = _registry_merge_survivors(registry)
+    raw_map = dict(alias_map)   # names as written, not read through survivors
+    _check_merge_pointers(registry, findings, survivors)
     for pid, meta in registry.person_meta.items():
-        if str(meta.get('status', '')) == 'merged':
-            for sid, claims in registry.source_claims.items():
-                src_path = registry.source_paths.get(sid, Path(sid))
-                for claim in claims:
-                    if pid in _claim_person_ids(claim, alias_map):
-                        findings.append(Finding('E', 'E016', src_path,
-                            f'Claim {claim.get("id","?")} references merged person {pid} '
-                            f'(merged into {meta.get("merged_into","?")})'))
+        if not merge_pointer(meta.get('status'), meta.get('merged_into')):
+            continue
+        shown = fmt_id_display(pid)
+        target = survivors.get(pid)
+        for sid, claims in registry.source_claims.items():
+            src_path = registry.source_paths.get(sid, Path(sid))
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                named = set(_claim_person_ids(claim, raw_map))
+                roles = claim.get('roles')
+                if isinstance(roles, dict):
+                    for role in roles:
+                        named |= _role_pids(claim, role, raw_map)
+                if pid not in named:
+                    continue
+                if target:
+                    t = fmt_id_display(target)
+                    msg = (f'Claim {claim.get("id","?")} names {shown}, a record merged into '
+                           f'{t}. It already counts for {t} on timelines, the tree and '
+                           f'exports; when convenient, change {shown} to {t} in its '
+                           'persons:/roles: for gradual cleanup')
+                else:
+                    msg = (f'Claim {claim.get("id","?")} names {shown}, a merged record whose '
+                           'merged_into: does not lead to a person (see E020), so this claim '
+                           f'still counts only for {shown} and is missing from everyone '
+                           'else\'s timeline and tree. Fix the merge first, then change '
+                           f'{shown} here to the surviving person\'s id')
+                findings.append(Finding('W', 'W107', src_path, msg))
 
     # W107: direct [token] references to merged persons (gradual cleanup)
     for pid, meta in registry.person_meta.items():
@@ -3664,7 +3837,7 @@ def _check_died_but_living(
     roles), nor does one whose `roles:` names somebody missing from its
     `persons:` (W133) or a name that resolves to nobody, and a negated claim ("this death did not happen") names nobody
     either. Only `accepted` claims count: a suggested one is not yet a fact.
-    A merged record is skipped - E016 already asks for the claim to name the
+    A merged record is skipped - W107 already asks for the claim to name the
     survivor. One finding per person, naming the first such claim.
     """
     first_claim: dict[str, tuple[str, str, bool]] = {}
@@ -4497,14 +4670,19 @@ def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
     came from without a second lookup.  Claims don't carry source_id in their
     own YAML dict - it lives on the source record that contains them.
     Persons resolve via registry.alias_map, so a claim naming this person by
-    `[[Name]]` counts toward their vitals/summary exactly like a bare P-id.
+    `[[Name]]` counts toward their vitals/summary exactly like a bare P-id -
+    and through `merged_into` (SPEC §9), so a claim still naming a record
+    merged into this person counts for them too, as it does on the timeline
+    the index builds; otherwise W101 would ask for a birth the survivor's
+    own timeline already shows.
     """
+    survivors = _registry_merge_survivors(registry)
     result = []
     for sid, claims in registry.source_claims.items():
         for claim in claims:
             if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
                 continue
-            if pid in _claim_person_ids(claim, registry.alias_map):
+            if pid in {survivors.get(q, q) for q in _claim_person_ids(claim, registry.alias_map)}:
                 result.append({**claim, '_source_id': sid})
     return result
 

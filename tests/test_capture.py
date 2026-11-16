@@ -11,6 +11,7 @@ Run: python -m unittest tests.test_capture -v   (from the repo root)
 import contextlib
 import io
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -82,8 +83,10 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Body text here.', rec['body'])
         self.assertNotIn('ignored', rec['body'])            # script body dropped
 
-        # No index present → entry lands in the jsonl fallback.
-        log = self.archive / '.cache' / 'capture_log.jsonl'
+        # No index present -> entry lands in the capture log, under notes/
+        # (SPEC §16b) so backups and git keep it - never in .cache/.
+        log = self.archive / 'notes' / 'capture-log.jsonl'
+        self.assertFalse((self.archive / '.cache' / 'capture_log.jsonl').exists())
         self.assertTrue(log.exists())
         self.assertIn('example.com', log.read_text(encoding='utf-8'))
 
@@ -109,7 +112,103 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIsNone(rows[0][3])                        # no S-id at capture time
         # Always also appended to the jsonl (durability across a search_log
         # drop/rebuild), even though the index row already exists.
-        self.assertTrue((cache / 'capture_log.jsonl').exists())
+        self.assertTrue((self.archive / 'notes' / 'capture-log.jsonl').exists())
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+
+    def test_a_log_without_a_final_newline_is_not_glued_onto(self) -> None:
+        # A file last saved by hand or by a git merge may not end in a
+        # newline; the next capture must start its own line, or neither
+        # search would ever reach "already searched" (#304 review).
+        notes = self.archive / 'notes'
+        notes.mkdir()
+        (notes / 'capture-log.jsonl').write_bytes(b'{"question": "earlier"}')
+        self._capture('<html><title>Later</title></html>', url='https://x.test/later')
+        lines = (notes / 'capture-log.jsonl').read_bytes().split(b'\n')
+        self.assertEqual(json.loads(lines[0])['question'], 'earlier')
+        self.assertEqual(json.loads(lines[1])['question'], 'Later')
+
+    def test_a_capture_keeps_a_fresh_index_fresh_and_a_synced_line_stales_it(self) -> None:
+        # The capture log is a freshness input: lines that arrive another way
+        # (a git pull from a second machine) mean "already searched" is short
+        # until the next fha index. But a capture writes its own row straight
+        # into the index, so it must not make a fresh index read stale.
+        import index
+        from _lib import record_manifest_is_stale
+        self._capture('<html><title>First</title></html>', url='https://x.test/1')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        self.assertFalse(record_manifest_is_stale(self.archive))
+        self._capture('<html><title>Second</title></html>', url='https://x.test/2')
+        self.assertFalse(record_manifest_is_stale(self.archive))
+        log = self.archive / 'notes' / 'capture-log.jsonl'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(json.dumps({'question': 'from the other machine'}) + '\n')
+        future = log.stat().st_mtime + 5
+        os.utime(log, (future, future))
+        self.assertTrue(record_manifest_is_stale(self.archive))
+
+    def test_a_local_capture_does_not_hide_a_synced_line(self) -> None:
+        # Round 4: a line pulled in from another machine, then a capture here.
+        # The capture may not mark the whole log as read - the synced line is
+        # still missing from the index, so the index must stay stale until
+        # fha index replays it, and then search_log must hold it.
+        import index
+        import sqlite3
+        from _lib import record_manifest_is_stale
+        self._capture('<html><title>First</title></html>', url='https://x.test/1')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        log = self.archive / 'notes' / 'capture-log.jsonl'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(json.dumps({'question': 'from the other machine'}) + '\n')
+        future = log.stat().st_mtime + 5
+        os.utime(log, (future, future))
+        self._capture('<html><title>Local</title></html>', url='https://x.test/2')
+        self.assertTrue(record_manifest_is_stale(self.archive))
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        self.assertFalse(record_manifest_is_stale(self.archive))
+        conn = sqlite3.connect(str(self.archive / '.cache' / 'index.sqlite'))
+        try:
+            got = [r[0] for r in conn.execute('SELECT question FROM search_log')]
+        finally:
+            conn.close()
+        self.assertIn('from the other machine', got)
+        self.assertIn('Local', got)
+
+    def test_old_cache_capture_log_is_carried_into_notes_once(self) -> None:
+        # An archive upgraded from before SPEC §16b still has its search
+        # history in .cache/, which backup skips. The first capture moves it
+        # to notes/ - old lines first, in order, never twice - and says so.
+        cache = self.archive / '.cache'
+        cache.mkdir()
+        old_lines = [json.dumps({'date': '2020-01-0%d' % i, 'question': 'old %d' % i})
+                     for i in (1, 2)]
+        (cache / 'capture_log.jsonl').write_text(
+            ''.join(ln + '\n' for ln in old_lines), encoding='utf-8')
+        # A half-finished earlier move: the new file already holds line 1.
+        notes = self.archive / 'notes'
+        notes.mkdir()
+        (notes / 'capture-log.jsonl').write_text(old_lines[0] + '\n', encoding='utf-8')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._capture('<html><title>New</title></html>', url='https://n.test/p')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Moved your capture history', out.getvalue())
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        lines = (notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[:2], old_lines)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(json.loads(lines[2])['question'], 'New')
+
+        # A second capture appends and announces nothing.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._capture('<html><title>Again</title></html>', url='https://n.test/q')
+        self.assertNotIn('Moved your capture history', out.getvalue())
+        self.assertEqual(
+            len((notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()), 4)
 
     def test_flag_overrides_and_unknown_type_refused(self) -> None:
         html = '<html><title>Original</title></html>'

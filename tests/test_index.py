@@ -648,7 +648,7 @@ class IndexNotesResearchLogTests(unittest.TestCase):
 
 
 class IndexCaptureLogTests(unittest.TestCase):
-    """`.cache/capture_log.jsonl` rows must re-populate search_log on rebuild
+    """Capture-log rows (`notes/capture-log.jsonl`, SPEC §16b) must re-populate search_log on rebuild
     (a full rebuild drops and recreates the table, so a row `fha capture`
     wrote directly into index.sqlite would otherwise be lost)."""
 
@@ -663,9 +663,9 @@ class IndexCaptureLogTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_capture_log_jsonl_rows_ingested(self) -> None:
-        cache = self.archive_root / '.cache'
-        cache.mkdir(parents=True)
-        (cache / 'capture_log.jsonl').write_text(
+        notes = self.archive_root / 'notes'
+        notes.mkdir(parents=True)
+        (notes / 'capture-log.jsonl').write_text(
             json.dumps({
                 'date': '2024-01-01', 'question': 'Captured page',
                 'repository': 'site.test', 'collection': '', 'terms': '',
@@ -683,14 +683,31 @@ class IndexCaptureLogTests(unittest.TestCase):
         self.assertIsNone(rows[0]['person_id'])
         self.assertIsNone(rows[0]['source_id'])
 
+    def test_legacy_cache_capture_log_still_read_and_never_moved(self) -> None:
+        # Not yet carried across (no capture since the upgrade): its searches
+        # stay in "already searched", oldest first, and the index - which
+        # never moves a file of the human's - leaves both files as they were.
+        cache = self.archive_root / '.cache'
+        cache.mkdir(parents=True)
+        notes = self.archive_root / 'notes'
+        notes.mkdir(parents=True)
+        (cache / 'capture_log.jsonl').write_text(
+            json.dumps({'date': '2020-01-01', 'question': 'old'}) + '\n', encoding='utf-8')
+        (notes / 'capture-log.jsonl').write_text(
+            json.dumps({'date': '2024-01-01', 'question': 'new'}) + '\n', encoding='utf-8')
+        index._index_capture_log(self.conn, self.archive_root)
+        rows = self.conn.execute('SELECT question FROM search_log ORDER BY rowid').fetchall()
+        self.assertEqual([r['question'] for r in rows], ['old', 'new'])
+        self.assertTrue((cache / 'capture_log.jsonl').exists())
+
     def test_absent_capture_log_does_not_crash(self) -> None:
         index._index_capture_log(self.conn, self.archive_root)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
     def test_malformed_capture_log_line_skipped(self) -> None:
-        cache = self.archive_root / '.cache'
-        cache.mkdir(parents=True)
-        (cache / 'capture_log.jsonl').write_text('not json\n', encoding='utf-8')
+        notes = self.archive_root / 'notes'
+        notes.mkdir(parents=True)
+        (notes / 'capture-log.jsonl').write_text('not json\n', encoding='utf-8')
         index._index_capture_log(self.conn, self.archive_root)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
@@ -828,12 +845,12 @@ class FullRebuildClearsStaleRowsTests(unittest.TestCase):
 
     def test_capture_log_row_survives_full_rebuild(self) -> None:
         # A `fha capture` run writes the row straight into index.sqlite *and*
-        # to capture_log.jsonl. Simulate just the jsonl half here (the part
-        # that must outlive a rebuild) and confirm build_index's drop+rebuild
-        # of search_log re-ingests it rather than losing it.
+        # to notes/capture-log.jsonl. Simulate just the jsonl half here (the
+        # part that must outlive a rebuild) and confirm build_index's
+        # drop+rebuild of search_log re-ingests it rather than losing it.
         cache_dir = self.archive_root / '.cache'
-        cache_dir.mkdir(parents=True)
-        (cache_dir / 'capture_log.jsonl').write_text(
+        (self.archive_root / 'notes').mkdir(parents=True, exist_ok=True)
+        (self.archive_root / 'notes' / 'capture-log.jsonl').write_text(
             json.dumps({
                 'date': '2024-01-01', 'question': 'Captured page',
                 'repository': 'site.test', 'collection': '', 'terms': '',
@@ -1569,7 +1586,7 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 11)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 12)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1753,6 +1770,38 @@ class IndexSchemaVersionV11BumpTests(unittest.TestCase):
         self.assertEqual(status, 'old-schema')
 
     def test_open_index_db_refuses_the_stale_v10_cache(self) -> None:
+        self.assertIsNone(open_index_db(
+            self.root, ('persons', 'sources', 'claims'), strict=True))
+
+
+class IndexSchemaVersionV12BumpTests(unittest.TestCase):
+    """A claim naming a merged person is now written under the survivor
+    (SPEC §9, #304). A v11 cache keeps those rows under the tombstone - off
+    the survivor's timeline and tree - and updating the tools touches no
+    record file, so only the schema bump makes every index-reading tool
+    refuse that cache until `fha index` runs."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL.replace("'7'", "'11'")
+                           .replace('user_version=7', 'user_version=11'))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v11_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v11_cache(self) -> None:
         self.assertIsNone(open_index_db(
             self.root, ('persons', 'sources', 'claims'), strict=True))
 
@@ -3113,6 +3162,13 @@ class UndecodableFileBuildTests(unittest.TestCase):
                       '\n'.join(m.text for m in result.messages))
 
     def test_an_undecodable_capture_log_is_reported(self) -> None:
+        self._cp1252('notes/capture-log.jsonl')
+        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
+        self.assertEqual(1, result.exit_code)
+        self.assertIn('capture-log.jsonl',
+                      '\n'.join(m.text for m in result.messages))
+
+    def test_an_undecodable_legacy_capture_log_is_reported(self) -> None:
         self._cp1252('.cache/capture_log.jsonl')
         result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
         self.assertEqual(1, result.exit_code)

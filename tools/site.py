@@ -270,7 +270,11 @@ from _lib import (
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
+    index_merge_survivors,
     merge_chain,
+    carried_living_message,
+    living_carried_to_survivors,
+    restricted_with_survivors,
     merge_survivor,
     normalize_id,
     open_index_db,
@@ -3997,6 +4001,7 @@ class _SiteBuilder:
         # claim_persons rows twenty times. None means the claim never said.
         self._vital_subjects: dict[str, list[str] | None] = {}
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
+        self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
@@ -4147,6 +4152,7 @@ class _SiteBuilder:
             redacted_ids = {pid for pid, row in self.person_meta.items()
                             if self._person_is_redacted(row)}
             self._warn_broken_merge_chains()
+            self._warn_carried_living()
         self.conn.create_function('fha_person_redacted', 1,
                                   lambda pid: pid in redacted_ids, deterministic=True)
 
@@ -4328,6 +4334,19 @@ class _SiteBuilder:
                     value = v.get('value')
                     if value:
                         self.restricted_names.setdefault(pid, set()).add(str(value).strip().lower())
+        # A restricted record merged into someone else still governs: the
+        # index hands its claims to the survivor (SPEC §9), so the survivor
+        # is withheld too, or those claims would publish under his name
+        # (#304 review). Same map the index used (`index_merge_survivors`).
+        survivors = index_merge_survivors(self.conn)
+        self.restricted_persons = restricted_with_survivors(self.restricted_persons, survivors)
+        # A restricted name variant on a tombstone (a deadname) is redacted
+        # wherever it would show for the survivor too - its display only, never
+        # the survivor's whole page: a private former name is not a request to
+        # be left out.
+        for tid, sid_ in survivors.items():
+            if tid in self.restricted_names:
+                self.restricted_names.setdefault(sid_, set()).update(self.restricted_names[tid])
         for sid, row in self.source_meta.items():
             if row['restricted'] or not row['path']:
                 continue   # index-restricted sources are already handled
@@ -4991,7 +5010,18 @@ class _SiteBuilder:
         on it is. Every redaction decision in this file comes through here,
         so the photo gates (`_is_living_tagged_photo`, `_photo_is_public`,
         the photo strips) and every name and link follow it the same way."""
-        return any(self._person_row_is_redacted(r) for r in self._merge_chain(row))
+        chain = self._merge_chain(row)
+        if any(self._person_row_is_redacted(r) for r in chain):
+            return True
+        # And the other way (#304 review): the index hands every record
+        # merged INTO the survivor its claims, so a tombstone that says
+        # `living: true` keeps the survivor out too (`living_carried_to_survivors`).
+        survivor = merge_survivor(chain)
+        if survivor is None:
+            return False
+        if self._living_carried is None:
+            self._living_carried = set(living_carried_to_survivors(self.conn))
+        return survivor['id'] in self._living_carried
 
     def _person_row_is_redacted(self, row: sqlite3.Row) -> bool:
         """The redaction rule for one record on its own, merges not followed."""
@@ -5019,6 +5049,20 @@ class _SiteBuilder:
         survivor; the row itself is returned, and redaction has already kept
         that person out of a shared build."""
         return merge_survivor(self._merge_chain(row)) or row
+
+    def _warn_carried_living(self) -> None:
+        """Say which deceased people this build kept out because a record
+        merged into them says `living: true`, and which line releases them.
+
+        A dead ancestor shown as "Living Person" for no visible reason is a
+        dead end (the same reasoning as `_warn_broken_merge_chains`); the
+        tools refuse to edit a merged record, so the message names the file."""
+        for sid_ in sorted(living_carried_to_survivors(self.conn)):
+            row = self.person_meta.get(sid_)
+            if row is None or self._person_row_is_redacted(row):
+                continue   # withheld on his own account; nothing to explain
+            self.messages.append('WARNING: ' + carried_living_message(
+                self.conn, sid_, f'this site shows them as "{_LIVING_LABEL}" with no page'))
 
     def _warn_broken_merge_chains(self) -> None:
         """Say which people this build kept out because their merge record is

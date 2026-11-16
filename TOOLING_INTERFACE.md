@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *AI-interface* side of the archive - the workbench harness configuration and the workflow skills that turn `fha` tools into a genealogy-aware research assistant. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-**Version 1.2 - companion to SPEC.md v1.2 and TOOLING.md v1.2 (versions track the SPEC).**
+**Version 2.0 - companion to SPEC.md v2.0 and TOOLING.md v2.0 (versions track the SPEC).**
 
 This document is a focused expansion of one layer that the main [`TOOLING.md`](TOOLING.md) only sketches: the **harness + skills** layer that sits *on top of* the deterministic `fha` tool suite. TOOLING.md specifies the tools (schemas, algorithms, command shapes); this document specifies the AI interface that drives them - the workbench configuration that makes any conforming harness genealogy-aware, and the workflow skills that orchestrate `fha` calls plus model judgment into the everyday research loop.
 
@@ -82,7 +82,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.2 Further skills (frontier-tier candidates)
 
-- `merge-identities` - "same person" / "two people" judgment. Frontier-tier: cheap to attempt, expensive to get wrong. Reads the candidate neighborhood (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation; the mechanical write is the deterministic tool's job, never the skill's silent action. A `merged_into` person is never directly referenced again (lint E016/W107).
+- `merge-identities` - "same person" / "two people" judgment. Frontier-tier: cheap to attempt, expensive to get wrong. Reads the candidate neighborhood (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation; the mechanical write is the deterministic tool's job, never the skill's silent action. A `merged_into` person is never directly referenced again (lint W107 lists any left; it counts for the survivor meanwhile, SPEC §9).
 - `place-research` - "fill in this place's history." Loose citations are acceptable here (place context is narrative scaffolding, not vital fact); drafts dated `history:` entries and place notes, links `[[L-…]]`, and proposes registry entries for `fha confirm place` to write.
 
 ### 2.3 Usability-review skills (2026-07)

@@ -47,7 +47,7 @@ external_links:
     accessed: "{date}"
 ```
 Body: visible text (strip tags, ~2000 chars). `--asset FILE`: copy alongside stub. Write
-research-log entry to `search_log` (via index if present; `.cache/capture_log.jsonl` fallback).
+research-log entry to `search_log` (via index if present) and always to `notes/capture-log.jsonl` (SPEC §16b; a legacy `.cache/capture_log.jsonl` is carried across on the first capture).
 
 **Done when:**
 ```sh
