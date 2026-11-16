@@ -977,6 +977,12 @@
       "spec_version": "2.1"
     },
     {
+      "path": "docs/DESIGN_RATIONALE.md",
+      "category": "operating",
+      "sha256": "06ae685106f5925af412a559bbed6148e1cdcac9efdf8881641ff5c2b5d16fbd",
+      "spec_version": "2.1"
+    },
+    {
       "path": "docs/FAQ.md",
       "category": "operating",
       "sha256": "8e2447476980797c4ae4e9a4f8b1b42371cbe91a077a78e80e07aac6f38a28b6",

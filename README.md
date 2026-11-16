@@ -179,7 +179,8 @@ plaintext-family-history/
 ├── docs/                ← the rest of the owner's manual
 │   ├── SETUP_FROM_ZIP.md
 │   ├── GLOSSARY.md
-│   └── FAQ.md
+│   ├── FAQ.md
+│   └── DESIGN_RATIONALE.md
 ├── archive-template/    ← skeleton + copy-paste record templates (+ fha.yaml) to start your own (private) archive
 ├── example-archive/     ← a small, fully fictional worked example (+ its own fha.yaml)
 ├── quickstart-template/ ← blank by-hand starter kit — plain files, no tools required, open in any text editor
@@ -215,6 +216,7 @@ See [`GETTING_STARTED.md`](GETTING_STARTED.md) for the full walkthrough.
 | **[GETTING_STARTED.md](GETTING_STARTED.md)** | A practical first-session walkthrough. |
 | **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | Every term and ID type defined. |
 | **[docs/FAQ.md](docs/FAQ.md)** | Why files, why not a database, why AI, how durable is this really. |
+| **[docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md)** | Why the archive is shaped this way: for each design topic, what we do, why, and what was rejected. Read it before changing a rule. |
 
 ## Design principles
 

@@ -181,6 +181,86 @@ another patch:
 This applies to the scope of the work as well as to the code: do not widen a fix into
 neighbouring problems the issue did not ask about. File them as follow-up issues instead.
 
+### Why the design is the way it is
+
+Before changing a rule, read its entry in
+[`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md): what we do, why, and what was
+rejected. A proposal that reopens a rejected option names the new information that
+justifies it. A design decision made during a build that the rationale doc does not
+yet explain is added there, in the present tense, in the same change.
+
+---
+
+## Maintainer practice
+
+How work on this repo is organised, so several agents (or people) can work at once
+without stepping on each other.
+
+**Ranking what to fix.** Silent wrongness first: a confident wrong answer with no error
+text (a false fact on a page a reader will trust) outranks a loud failure. Then data
+loss, then corrupted derived state, then misfiled-but-recoverable, then friction, then
+missing convenience. Breadth (every archive vs one command's output) and testability
+break ties. Check an issue's stated root cause against the source before ranking or
+building it.
+
+**Named verbs over a general setter.** Person edits are separate verbs
+(`set-living`, `set-sex`, `set-profile-photo`, `rename`), not one `person set FIELD
+VALUE`. Each verb carries its own preview and filing logic (a rename moves a file and
+reuses the promotion filing), which a generic field setter could not.
+
+**Worktrees.**
+
+- One worktree per agent. Two agents never share a checkout.
+- Fetch the remote before every dispatch and every verification, and confirm the local
+  default branch equals the remote tip.
+- Parallel work collides on files, not on topics. Before dispatching several agents,
+  map which files each one touches; tasks that land in different functions of one file
+  merge cleanly, but agree a merge order so rebases run one way.
+- Verify an agent's branch in a fresh worktree of that branch: rerun the tests and,
+  where possible, reproduce the bug before and after the fix. Remove throwaway
+  worktrees and fixtures afterwards.
+
+**The install manifest.**
+
+- After changing any file that ships into an archive, regenerate `manifest.json` with
+  `python tools/scaffold.py write-manifest --repo .`. Never hand-edit it, and never
+  resolve a merge conflict in it by hand: regenerate it on the merged tree.
+- Manifest checksums are compared against git's committed blobs, never the working
+  tree, because a CRLF checkout would make the check circular
+  (`tests/test_scaffold.py`, `ManifestChecksumMatchesGitBlobTests`). That test fails
+  until the change is committed and passes after. Files pinned `eol=crlf` (the `.cmd`
+  launchers) correctly carry a CRLF checksum.
+
+**Running tests.**
+
+- Run test modules one at a time (`python -m unittest tests.test_X`); whole-suite
+  discovery is unreliable here. Run long suites (serve, subprocess) in the background.
+- Before calling a failure pre-existing, reproduce it on a clean worktree of the
+  default branch.
+- After a batch of merges, rerun the full suite on the default branch itself.
+- Take the next free lint code and the `example-archive` warning baseline from the live
+  tree, not from notes.
+- In fixtures that write CRLF bodies on Windows, open the file with `newline=''`.
+
+**Exit codes (all tools).** The constants live in `_lib.py` (`EXIT_CLEAN` ...
+`EXIT_FAILURE`). This states the convention as the code follows it; TOOLING §1's
+one-line summary is the short form.
+
+- `0` clean. `1` it ran, but something is worth reading (warnings, or "not found" in a
+  lookup). `2` errors in the archive, or input the tool's own checks refused. `3` the
+  tool could not run, or rolled back a write. A command uses only the codes it can
+  produce; read a code against that command's table in `tools/README.md`.
+- Python's argument parser also exits `2` on a mistyped command line, and prints a
+  `usage:` block; a tool's own `2` or `3` prints `ERROR: …`. An unknown command is `2`.
+  An unexpected crash is `3`, with a hint to run `fha doctor` or `--debug`.
+- "Already done" and "just did it" both exit `0`. Whether anything changed is in
+  `Result.changed` or the JSON, not the exit code.
+- A `[y/N]` prompt that reads end-of-input is a decline: exit `0`, nothing written.
+- `--dry-run` runs the same checks as a live run, so its exit code previews the live
+  one. Output-target guards (`packet`, `site`, `backup`) refuse even in preview.
+- Detectors (`xref`, `cooccur`, `places candidates`) exit `0` whatever they find.
+- `--json` writes only the JSON document to stdout; caveats and banners go to stderr.
+
 ---
 
 ## Coding standards (tool-building mode)
