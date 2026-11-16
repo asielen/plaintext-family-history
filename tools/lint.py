@@ -7,7 +7,7 @@ lint.py - fha lint: verify the archive against the spec.
                                      documents-root person keywords (W131) (slow)
   fha lint --json                    Machine-readable JSON output
   fha lint --format-check            Check formatting without fixing
-  fha lint --format-write            Apply conservative formatting fixes (frontmatter normalization deferred)
+  fha lint --format-write            Apply the formatter: key order, lowercase IDs, value first, blank lines, section order
   fha lint --mint-stubs              Create missing person stubs (E005 set)
   fha lint --spawn-questions         Append questions for E009 contradictions
   fha lint --fix-ids                 Complete hand-authored id-less records AND
@@ -273,7 +273,8 @@ configure_utf8_stdout()
 #                                    pass - see its docstring)
 #
 #  Format checks / fix modes
-#    _check_format               - W109: final newline, CRLF line endings
+#    format_record_text          - the formatter: key order, ID case, value first, blank lines, section order
+#    _check_format               - W109: what --format-write would change (read-only)
 #    _fix_format                 - apply conservative format fixes
 #    _file_newline               - the file's own newline style, for inserted lines
 #                                   (byte-preserving IO itself is _lib's
@@ -4943,25 +4944,538 @@ def _check_roots_change(archive_root: Path, fha_config: dict, findings: list[Fin
 
 # ── Format check ─────────────────────────────────────────────────────────────
 
+# The formatter (SPEC Part IV "Formatter", TOOLING §3): conservative
+# normalization so thousands of records read alike - the same key order, IDs
+# in lowercase, `value` leading every claim, sections in their usual order,
+# no stray blank lines, one final newline. It works on the text line by line
+# (a YAML round-trip would drop every comment a human wrote in a header), and
+# it never rewrites a word of prose: it only moves whole lines, whole keys and
+# whole sections, and drops extra blank lines. Each rewritten header or
+# claims block is parsed again and compared with the original; when the two
+# do not read as the same data the change is abandoned and the file is left
+# as it was.
+
+# SPEC §9: the person frontmatter key order, then the Appendix A extensions.
 _FRONTMATTER_KEY_ORDER_PERSONS = [
-    'id', 'aliases', 'name', 'name_variants', 'face_tags', 'sex', 'living',
-    'no_known_marriages', 'no_known_children', 'external_ids', 'created', 'tier',
+    'id', 'aliases', 'name', 'surname', 'name_variants', 'name_at_birth',
+    'married_name', 'also_known_as', 'face_tags', 'profile_photo', 'sex',
+    'living', 'birth', 'birth_place', 'death', 'death_place', 'tags',
+    'restricted', 'relationships', 'created', 'tier',
+    'no_known_marriages', 'no_known_children', 'gender', 'external_ids',
 ]
+# SPEC §14: the source frontmatter key order, then the Appendix A extensions.
 _FRONTMATTER_KEY_ORDER_SOURCES = [
     'id', 'aliases', 'title', 'source_type', 'source_date', 'source_class',
-    'repository', 'citation', 'external_links', 'people', 'places', 'restricted',
-    'provenance', 'rights', 'physical_location', 'files', 'created',
+    'subtype', 'original_language', 'repository', 'citation', 'people', 'places',
+    'restricted', 'provenance', 'external_links', 'files', 'ai_passes', 'created',
+    'rights', 'physical_location', 'tested_person', 'provider', 'test_type',
 ]
+# SPEC §14: each `files:` entry's keys.
+_FILES_KEY_ORDER = ['file', 'role', 'copy', 'is_primary', 'original_filename']
+# SPEC §8.4: `value` first in every claim; the rest keep their order.
+_CLAIM_KEY_ORDER = ['value']
+# Frontmatter / claim fields that hold IDs (SPEC §10: written lowercase). Free
+# text - titles, citations, notes, values - is never touched.
+_FM_ID_FIELDS = {'id', 'aliases', 'people', 'places', 'merged_into'}
+_RELATIONSHIP_ID_SUBKEYS = ('to', 'claim', 'source')
+_CLAIM_ID_FIELDS = {'id', 'persons', 'roles', 'place', 'corroborates',
+                    'contradicts', 'hypothesis'}
+# SPEC §14 / §16: the usual `##` section order.
+_SOURCE_SECTION_ORDER = ['Claims', 'Stories', 'Notes']
+_PERSON_SECTION_ORDER = ['Sources', 'Biography', 'Stories', 'Research Notes',
+                         'Friends & Family']
+
+_FMT_KEY_RE = re.compile(r'([A-Za-z_][\w-]*)\s*:(?:\s|$)')
+_FMT_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+_FMT_YAML_FENCE_RE = re.compile(r'^\s*```\s*ya?ml\s*$')
+_FMT_POINTING_RE = re.compile(r'\b(above|below)\b', re.I)
 
 
-def _check_format(path: Path, findings: list[Finding], on_decode_error=None) -> None:
-    """Conservative format checks.
+def _fmt_lower_ids(line: str) -> str:
+    return ID_RE.sub(lambda m: m.group(0).lower(), line)
+
+
+def _fmt_segment(lines: list[str], col: int):
+    """Split a block mapping whose keys sit at column `col` into
+    `(entries, trailing)`: each entry is `[key, lines]` - the comment lines
+    just above the key, the key line and its value lines. Blank lines between
+    keys are dropped. Returns None when the text is not plainly that shape
+    (a key in a form this reads by line cannot place), so nothing is moved."""
+    entries: list[list] = []
+    pending: list[str] = []
+    cur = None
+    for ln in lines:
+        if not ln.strip():
+            if cur is not None:
+                cur[1].append(ln)
+            continue
+        ind = len(ln) - len(ln.lstrip(' '))
+        if ind < col:
+            return None
+        if ind > col:
+            if cur is None:
+                return None
+            cur[1].append(ln)
+            continue
+        rest = ln[col:]
+        if rest.startswith('#'):
+            if cur is not None:
+                _fmt_strip_trailing_blanks(cur[1])
+            pending.append(ln)
+            cur = None
+            continue
+        if rest.startswith('- ') or rest == '-':
+            if cur is None or pending:
+                return None
+            cur[1].append(ln)
+            continue
+        m = _FMT_KEY_RE.match(rest)
+        if not m:
+            return None
+        if cur is not None:
+            _fmt_strip_trailing_blanks(cur[1])
+        cur = [m.group(1), pending + [ln]]
+        pending = []
+        entries.append(cur)
+    if cur is not None:
+        _fmt_strip_trailing_blanks(cur[1])
+    keys = [e[0] for e in entries]
+    if len(keys) != len(set(keys)):
+        return None                       # a repeated key: YAML keeps the last
+    return entries, pending
+
+
+def _fmt_strip_trailing_blanks(lines: list[str]) -> None:
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+
+def _fmt_order(entries: list[list], order: list[str]) -> list[list]:
+    """Known keys in `order`, then unknown keys in their own order."""
+    rank = {k: i for i, k in enumerate(order)}
+    known = sorted((e for e in entries if e[0] in rank), key=lambda e: rank[e[0]])
+    return known + [e for e in entries if e[0] not in rank]
+
+
+def _fmt_items(lines: list[str]):
+    """Split a block sequence's lines into items: `(lead, items)` where each
+    item is the lines from one `- ` at the sequence's column up to the next.
+    Returns None when the lines do not open with an item."""
+    first = next((ln for ln in lines if ln.strip()), None)
+    if first is None:
+        return None
+    m = re.match(r'^(\s*)-(\s+|$)', first)
+    if not m:
+        return None
+    col = len(m.group(1))
+    lead: list[str] = []
+    items: list[list[str]] = []
+    for ln in lines:
+        ind = len(ln) - len(ln.lstrip(' '))
+        if ln.strip() and ind == col and re.match(r'-(\s|$)', ln[col:]):
+            items.append([ln])
+        elif items:
+            items[-1].append(ln)
+        else:
+            lead.append(ln)
+    return lead, items
+
+
+def _fmt_reorder_item(item: list[str], order: list[str]) -> list[str] | None:
+    """One sequence item (a mapping) with its keys put in `order`. None when
+    it already is, or holds a comment or an inner blank line this cannot
+    carry along safely."""
+    trailing: list[str] = []
+    body = list(item)
+    while body and not body[-1].strip():
+        trailing.insert(0, body.pop())
+    m = re.match(r'^(\s*-\s+)(\S.*)$', body[0]) if body else None
+    if not m or not _FMT_KEY_RE.match(m.group(2)):
+        return None
+    if any(not ln.strip() or ln.lstrip().startswith('#') for ln in body):
+        return None
+    dash = m.group(1)
+    col = len(dash)
+    seg = _fmt_segment([' ' * col + body[0][col:]] + body[1:], col)
+    if seg is None or seg[1]:
+        return None
+    entries = seg[0]
+    ordered = _fmt_order(entries, order)
+    if [e[0] for e in ordered] == [e[0] for e in entries]:
+        return None
+    out = [ln for e in ordered for ln in e[1]]
+    out[0] = dash + out[0][col:]
+    return out + trailing
+
+
+def _fmt_canon(value, id_fields: set[str], top: bool = True):
+    """A parsed header or claims block, with the IDs of the ID fields
+    lowercased - what a reformatted copy must still read as."""
+    def lower(v):
+        if isinstance(v, str):
+            return _fmt_lower_ids(v)
+        if isinstance(v, list):
+            return [lower(x) for x in v]
+        if isinstance(v, dict):
+            return {k: lower(x) for k, x in v.items()}
+        return v
+
+    def rel(v):
+        if isinstance(v, list):
+            return [{k: (lower(x) if k in _RELATIONSHIP_ID_SUBKEYS else x)
+                     for k, x in e.items()} if isinstance(e, dict) else e for e in v]
+        return v
+
+    if isinstance(value, list):
+        return [_fmt_canon(v, id_fields, False) for v in value]
+    if isinstance(value, dict):
+        return {k: (lower(v) if k in id_fields else rel(v) if k == 'relationships' else v)
+                for k, v in value.items()}
+    return value
+
+
+def _fmt_load(text: str):
+    """Parse for the before/after comparison. Both sides go through the same
+    parser, so libyaml's speed is safe to take directly here (the few spots
+    where it reads differently from PyYAML would read the same way on both
+    sides); without libyaml, or on any libyaml failure, PyYAML decides."""
+    loader = getattr(yaml, 'CSafeLoader', None)
+    if loader is not None:
+        try:
+            return yaml.load(text, Loader=loader)
+        except Exception:
+            pass
+    return safe_load_yaml(text)
+
+
+def _fmt_same_data(before: str, after: str, id_fields: set[str]) -> bool:
+    try:
+        a = _fmt_load(before)
+        b = _fmt_load(after)
+    except Exception:
+        return False
+    return _fmt_canon(a, id_fields) == _fmt_canon(b, id_fields)
+
+
+def _fmt_frontmatter(fm: list[str], kind: str, fixes: list[str]) -> list[str]:
+    """Key order, `files:` entry order and ID case in one header."""
+    order = _FRONTMATTER_KEY_ORDER_SOURCES if kind == 'source' else _FRONTMATTER_KEY_ORDER_PERSONS
+    seg = _fmt_segment(fm, 0)
+    if seg is None:
+        return fm
+    entries, trailing = seg
+    notes: list[str] = []
+    for e in entries:
+        key, lines = e
+        if key in _FM_ID_FIELDS:
+            new = [_fmt_lower_ids(ln) if not ln.lstrip().startswith('#') else ln for ln in lines]
+        elif key == 'relationships':
+            sub = re.compile(r'^\s*(?:-\s+)?(?:' + '|'.join(_RELATIONSHIP_ID_SUBKEYS) + r')\s*:')
+            new = [_fmt_lower_ids(ln) if sub.match(ln) else ln for ln in lines]
+        else:
+            new = lines
+        if new != lines:
+            e[1] = new
+            if 'IDs' not in notes:
+                notes.append('IDs')
+        if key == 'files' and kind == 'source':
+            head_at = next(i for i, ln in enumerate(e[1]) if _FMT_KEY_RE.match(ln))
+            parts = _fmt_items(e[1][head_at + 1:])
+            if parts:
+                lead, items = parts
+                changed = False
+                for i, item in enumerate(items):
+                    reordered = _fmt_reorder_item(item, _FILES_KEY_ORDER)
+                    if reordered is not None:
+                        items[i] = reordered
+                        changed = True
+                if changed:
+                    e[1] = e[1][:head_at + 1] + lead + [ln for it in items for ln in it]
+                    notes.append('files')
+    ordered = _fmt_order(entries, order)
+    if [e[0] for e in ordered] != [e[0] for e in entries]:
+        notes.append('order')
+    out = [ln for e in ordered for ln in e[1]] + [ln for ln in trailing if ln.strip()]
+    if out == fm:
+        return fm
+    if not _fmt_same_data('\n'.join(fm), '\n'.join(out), _FM_ID_FIELDS):
+        return fm
+    if 'order' in notes:
+        fixes.append('frontmatter keys are not in the standard order')
+    if 'files' in notes:
+        fixes.append('files: entries do not list their keys in the standard order')
+    if 'IDs' in notes:
+        fixes.append('IDs in the frontmatter are written in capitals (the tools write them lowercase)')
+    if not notes:
+        fixes.append('blank lines inside the frontmatter')
+    return out
+
+
+def _fmt_claims_block(block: list[str], fixes: list[str], manual: list[str]) -> list[str]:
+    """`value` first and lowercase IDs in one fenced claims block."""
+    parts = _fmt_items(block)
+    if parts is None:
+        if any(ln.strip() for ln in block):
+            manual.append('the claims block does not open with a claim (a comment or other '
+                          'line comes first), so the formatter skipped it')
+        return block
+    lead, items = parts
+    moved = ids = stuck = False
+    new_items: list[list[str]] = []
+    for item in items:
+        reordered = _fmt_reorder_item(item, _CLAIM_KEY_ORDER)
+        if reordered is not None:
+            item = reordered
+            moved = True
+        else:
+            first = re.match(r'^\s*-\s+(\S.*)$', item[0])
+            if first and not first.group(1).startswith('value') and any(
+                    re.match(r'^\s*value\s*:', ln) for ln in item[1:]):
+                stuck = True
+        m = re.match(r'^(\s*-\s+)', item[0])
+        col = len(m.group(1)) if m else 2
+        # Each line belongs to the claim key above it at the item's own key
+        # column (a block scalar's text sits deeper, so `notes:` owns it);
+        # only the lines of an ID field have their IDs lowercased.
+        owner = None
+        lowered = []
+        for idx, ln in enumerate(item):
+            ind = len(ln) - len(ln.lstrip(' '))
+            if idx == 0 or (ln.strip() and ind <= col):
+                km = _FMT_KEY_RE.match(ln[col:]) if ind <= col or idx == 0 else None
+                owner = km.group(1) if km else None
+            lowered.append(_fmt_lower_ids(ln) if owner in _CLAIM_ID_FIELDS
+                           and not ln.lstrip().startswith('#') else ln)
+        if lowered != item:
+            ids = True
+            item = lowered
+        new_items.append(item)
+    out = lead + [ln for it in new_items for ln in it]
+    if out != block and not _fmt_same_data('\n'.join(block), '\n'.join(out), _CLAIM_ID_FIELDS):
+        return block
+    if moved:
+        fixes.append('a claim does not open with its value: line')
+    if ids and out != block:
+        fixes.append('IDs in the claims are written in capitals (the tools write them lowercase)')
+    if stuck:
+        manual.append('a claim does not open with its value: line, and it holds a comment or '
+                      'blank line, so the formatter leaves it for you to move by hand')
+    return out
+
+
+def _fmt_fence(ln: str, fence):
+    """The fence state after line `ln`: None outside a fenced block, else
+    (char, length) of the fence that opened it. A fence closes only on the
+    same character, at least as long, with nothing after it (CommonMark), so
+    a ```` block can hold ``` lines."""
+    m = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', ln)
+    if fence is None:
+        if m and not (m.group(1)[0] == '`' and '`' in m.group(2)):
+            return (m.group(1)[0], len(m.group(1)))
+        return None
+    if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip():
+        return None
+    return fence
+
+
+def _fmt_sections(body: list[str]):
+    """Split a body into (preamble, sections) at `## ` headings outside
+    fenced blocks. Each section is `[name, lines]`."""
+    pre: list[str] = []
+    sections: list[list] = []
+    in_fence = None
+    for ln in body:
+        was = in_fence
+        in_fence = _fmt_fence(ln, in_fence)
+        if was is None and in_fence is None and ln.startswith('## '):
+            sections.append([ln[3:].strip(), [ln]])
+            continue
+        (sections[-1][1] if sections else pre).append(ln)
+    return pre, sections
+
+
+def _fmt_balanced(lines: list[str]) -> bool:
+    text = '\n'.join(lines)
+    return (text.count('<!--') == text.count('-->')
+            and text.count('<!-- private -->') == text.count('<!-- /private -->'))
+
+
+def _fmt_section_order(body: list[str], kind: str, fixes: list[str],
+                       manual: list[str]) -> list[str]:
+    order = _SOURCE_SECTION_ORDER if kind == 'source' else _PERSON_SECTION_ORDER
+    pre, sections = _fmt_sections(body)
+    names = [s[0] for s in sections]
+    known = [n for n in names if n in order]
+    rank = {k: i for i, k in enumerate(order)}
+    if known == sorted(known, key=rank.get):
+        return body
+    label = ', '.join(order)
+    # Whole sections move only when nothing is in doubt: every heading is
+    # one of the usual ones, or one of the owner's own that already sits
+    # after all of them (it stays there, in its place at the end); no heading
+    # repeats; no comment or private fence opens in one section and closes
+    # in another; and no prose points "above" or "below", which a move
+    # would quietly make wrong ("see Research Notes above").
+    last_known = max(i for i, n in enumerate(names) if n in rank)
+    safe = (len(set(names)) == len(names)
+            and all(n in rank for n in names[:last_known + 1])
+            and _fmt_balanced(pre) and all(_fmt_balanced(s[1]) for s in sections)
+            and not any(ln.startswith('# ') for s in sections for ln in s[1])
+            and not any(_FMT_POINTING_RE.search(ln) for s in sections for ln in s[1]))
+    if not safe:
+        manual.append(f'the ## sections are not in the usual order ({label}); the '
+                      'formatter leaves them for you to move by hand, because a section '
+                      'of your own among them, a repeated heading, an open comment or '
+                      'a "see above/below" in the text makes moving them unsafe')
+        return body
+    ordered = (sorted(sections[:last_known + 1], key=lambda s: rank[s[0]])
+               + sections[last_known + 1:])
+    out = list(pre)
+    for i, sec in enumerate(ordered):
+        lines = list(sec[1])
+        _fmt_strip_trailing_blanks(lines)
+        if out and out[-1].strip():
+            out.append('')
+        out += lines
+    fixes.append(f'the ## sections are not in the usual order ({label})')
+    return out
+
+
+def _fmt_blank_lines(body: list[str], fixes: list[str]) -> list[str]:
+    """Collapse runs of blank lines to one - but only between paragraphs.
+    Blank lines are content inside a fenced block, an HTML comment (an
+    AI-DRAFT note, a GENERATED region and what lies between its markers) and
+    indented code, so those are left exactly as written."""
+    out: list[str] = []
+    fence = None
+    comment = False
+    generated = False
+    blank = 0
+    changed = False
+    last_text = ''
+    for ln in body:
+        protected = fence is not None or comment or generated
+        if not ln.strip():
+            blank += 1
+            if (blank > 1 and not protected
+                    and not last_text.startswith(('    ', '\t'))):
+                changed = True
+                continue
+            out.append(ln)
+            continue
+        blank = 0
+        last_text = ln
+        out.append(ln)
+        was_fence = fence
+        fence = _fmt_fence(ln, fence)
+        if was_fence is None and fence is None:
+            if '<!-- GENERATED-BEGIN' in ln:
+                generated = True
+            if '<!-- GENERATED-END' in ln:
+                generated = False
+            if ln.rfind('<!--') > ln.rfind('-->'):
+                comment = True
+            elif comment and '-->' in ln:
+                comment = False
+    if changed:
+        fixes.append('extra blank lines between paragraphs or sections')
+    return out
+
+
+def format_record_text(text: str, kind: str) -> tuple[str, list[str], list[str]]:
+    """Format one record's text (LF line endings). `kind` is 'source',
+    'person' (a profile) or anything else (left alone apart from the final
+    newline). Returns `(new_text, fixes, manual)`: what `--format-write`
+    changes, and what it reports but leaves for a human."""
+    fixes: list[str] = []
+    manual: list[str] = []
+    if kind not in ('source', 'person'):
+        return text, fixes, manual
+    original = text
+    bom = text.startswith('\ufeff')     # kept, the way the readers tolerate it
+    if bom:
+        text = text[1:]
+    lines = text.split('\n')
+    final_nl = text.endswith('\n')
+    if final_nl:
+        lines.pop()
+    body_start = 0
+    if lines and lines[0].rstrip() == '---':
+        close = next((k for k in range(1, len(lines)) if lines[k] == '---'), None)
+        header_ok = lines[0] == '---' and close is not None
+        if header_ok:
+            try:
+                meta = _fmt_load('\n'.join(lines[1:close]))
+                header_ok = meta is None or isinstance(meta, dict)
+            except Exception:
+                header_ok = False
+        if not header_ok:
+            # The tools cannot read this header, so nothing in the file is
+            # touched: what looks like body may be the header's own text.
+            manual.append('the frontmatter is not opened and closed by lines holding only '
+                          '---, or does not read as YAML, so the formatter left this file '
+                          'alone; fix the header by hand, then run --format-check again')
+            return original, [], manual
+        if close is not None:
+            fm = lines[1:close]
+            new_fm = _fmt_frontmatter(fm, kind, fixes)
+            lines = ['---'] + new_fm + lines[close:]
+            body_start = len(new_fm) + 2
+    head, body = lines[:body_start], lines[body_start:]
+    if kind == 'source':
+        pre, sections = _fmt_sections(body)
+        for sec in sections:
+            if sec[0] != 'Claims':
+                continue
+            sl = sec[1]
+            start = next((i for i, ln in enumerate(sl) if _FMT_YAML_FENCE_RE.match(ln)), None)
+            if start is None:
+                break
+            end = next((i for i in range(start + 1, len(sl))
+                        if re.match(r'^\s*```\s*$', sl[i])), None)
+            if end is None:
+                break
+            sec[1] = sl[:start + 1] + _fmt_claims_block(sl[start + 1:end], fixes, manual) + sl[end:]
+            break
+        body = pre + [ln for s in sections for ln in s[1]]
+    body = _fmt_section_order(body, kind, fixes, manual)
+    body = _fmt_blank_lines(body, fixes)
+    while body and not body[-1].strip():
+        body.pop()
+        if 'extra blank lines at the end of the file' not in fixes:
+            fixes.append('extra blank lines at the end of the file')
+    out = '\n'.join(head + body) + ('\n' if (final_nl or head or body) else '')
+    return ('\ufeff' + out if bom else out), fixes, manual
+
+
+def _fmt_kind(path: Path, archive_root: Path | None) -> str:
+    """'source' for a source record, 'person' for a person profile, else ''."""
+    parts = path.parts
+    if archive_root is not None:
+        try:
+            parts = path.relative_to(archive_root).parts
+        except ValueError:
+            return ''
+    if not parts or parts[0] not in ('sources', 'people') or is_template_file(path):
+        return ''
+    parsed = parse_filename(path)
+    if not parsed:
+        return ''
+    if parts[0] == 'sources' and parsed.get('id_type') == 'S':
+        return 'source'
+    if parts[0] == 'people' and parsed.get('id_type') == 'P' and not parsed.get('is_companion'):
+        return 'person'
+    return ''
+
+
+def _check_format(path: Path, findings: list[Finding], on_decode_error=None,
+                  archive_root: Path | None = None) -> None:
+    """Report what `--format-write` would change in one file (read-only).
 
     `on_decode_error` (see `_lib.read_text_or_report`) is the caller's W128
     recorder: a file `--format-check`/`--format-write` cannot decode as UTF-8
     is skipped here exactly like a missing file always was - it is simply not
-    checked for a final newline or CRLF endings this run - rather than
-    crashing the whole format pass (#68).
+    checked this run - rather than crashing the whole format pass (#68).
     """
     text = read_text_or_report(path, on_decode_error=on_decode_error)
     if text is None:
@@ -4975,14 +5489,25 @@ def _check_format(path: Path, findings: list[Finding], on_decode_error=None) -> 
     if '\r\n' in text:
         findings.append(Finding('W', 'W109', path, 'File uses CRLF line endings'))
 
+    kind = _fmt_kind(path, archive_root)
+    if kind:
+        _new, fixes, manual = format_record_text(text.replace('\r\n', '\n'), kind)
+        for what in fixes:
+            findings.append(Finding('W', 'W109', path,
+                                    f'Formatting: {what} - `fha lint --format-write` tidies it'))
+        for what in manual:
+            findings.append(Finding('W', 'W109', path, f'Formatting: {what}'))
+
 
 def _fix_format(
     path: Path,
     progress: list[str],
     changed: list[str],
     dry_run: bool = False,
+    archive_root: Path | None = None,
 ) -> None:
-    """Apply conservative formatting fixes: CRLF→LF and ensure trailing newline.
+    """Apply the formatter to one file: CRLF→LF, a final newline, and - for a
+    source record or person profile - `format_record_text`.
 
     Per the structured-result contract (run_* does not print), the per-file
     progress line goes into `progress` for `_cmd_lint` to render, and a real
@@ -5013,6 +5538,9 @@ def _fix_format(
         # `_check_format` call in the same loop recorded it).
         return
     fixed = text.replace('\r\n', '\n')
+    kind = _fmt_kind(path, archive_root)
+    if kind:
+        fixed, _fixes, _manual = format_record_text(fixed, kind)
     if fixed and not fixed.endswith('\n'):
         fixed += '\n'
     if fixed != text:
@@ -5120,9 +5648,11 @@ def run_lint(
         on_decode_error = registry.note_undecodable
         for path in archive_root.rglob('*.md'):
             if '.cache' not in path.parts and not is_template_file(path):
-                _check_format(path, findings, on_decode_error=on_decode_error)
+                _check_format(path, findings, on_decode_error=on_decode_error,
+                              archive_root=archive_root)
                 if format_write:
-                    _fix_format(path, progress, changed, dry_run=dry_run)
+                    _fix_format(path, progress, changed, dry_run=dry_run,
+                                archive_root=archive_root)
 
     # Fix modes (each respects --dry-run via its own parameter)
     if mint_stubs:

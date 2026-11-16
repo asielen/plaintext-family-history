@@ -204,6 +204,8 @@ from _lib import (
     PHOTO_EXTENSIONS,
     SOURCE_PURPOSE_BLOCK,
     SOURCE_TYPES,
+    link_list_lines,
+    record_display_names,
     BackupRefused,
     EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES,
     ExiftoolUnavailableError,
@@ -1043,6 +1045,7 @@ def _scaffold_text(
     people: list[str] | None = None,
     stem: str | None = None,
     source_class: str | None = None,
+    people_names: dict[str, str] | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -1111,9 +1114,10 @@ def _scaffold_text(
     citation_text = citation if citation else title
     lines += [f'  {line}' for line in (citation_text.splitlines() or [''])]
     if people:
-        lines.append('people:')
-        for pid in people:
-            lines.append(f'  - {_yaml_inline(pid)}')
+        # Names beside the IDs (SPEC §14): `"[[p-…|Name]]"`, so the record
+        # says who is in it without the tools; a person with no name on
+        # record is written as the bare ID rather than a guess.
+        lines += link_list_lines('people', people, people_names)
     else:
         lines.append('people: []')
     if restricted:
@@ -2741,6 +2745,7 @@ def process_photo(
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         people=people or None,
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
+        people_names=record_display_names(archive_root, people or []),
     )
 
     if dry_run:
@@ -2964,6 +2969,7 @@ def process_photo_group(
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         people=people or None,
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
+        people_names=record_display_names(archive_root, people or []),
     )
 
     if dry_run:

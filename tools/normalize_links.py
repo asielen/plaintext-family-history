@@ -29,8 +29,19 @@ Three rewrites, all toward the stable, rename-proof, ID-carrying form:
 An AMBIGUOUS name (two "John Smith"s) is never guessed - it is reported and left
 exactly as written for the human (or Obsidian autocomplete) to pin to an ID.
 
-The claims ```yaml block and bare-ID frontmatter lists are NEVER touched: those
-are structured data, not prose (SPEC §8/§14 - "the claims block stays bare").
+Two more settle the lists a reader scans to see who a record is about to
+the written form SPEC §8.7 and §14 give them:
+  (d) a source's frontmatter `people:` / `places:` - whatever form they were
+      written in (`P-…  # Name`, a bare ID, `[[Ken Smith]]`)
+      → one `- "[[p-…|Name]]"` line per entry
+  (e) a claim's `persons:` → the same one-per-line `- "[[p-…|Name]]"` form
+Nothing a person wrote is lost: a display they chose (`[[p-…|Maggie]]`,
+`[[Maggie]]`) is kept, the record's name is added only where there is none,
+and a trailing `# note` stays on its line - only a comment that just repeats
+the person's name (the old `P-id  # Name` form) goes, since the name now sits
+in the link. A record with no usable name is written as its bare ID, never
+guessed; an entry that does not resolve is left as written. Nothing else in the claims
+```yaml block is touched - `roles:` and `place:` stay bare IDs (SPEC §8.7).
 
 Follows the headless-core Result contract: `run_normalize_links` computes and
 returns a `Result`; `_cmd_normalize_links` renders it and returns the exit code.
@@ -40,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import sys
 from pathlib import Path
 
@@ -59,8 +71,15 @@ from _lib import (
     build_alias_map,
     fmt_id_display,
     format_yaml_dependency_error,
+    yaml_link_item,
+    split_yaml_comment,
+    written_link_display,
+    comment_only_names,
     id_type_of,
     is_generated_file,
+    is_placeholder_name,
+    strip_link_wrapper,
+    yaml_inline,
     is_template_file,
     load_fha_yaml,
     normalize_id,
@@ -238,10 +257,227 @@ def _rewrite_frontmatter(
     return new_fm, total_edits, all_ambiguous
 
 
+# ── Settling people:/places:/persons: to "[[id|Name]]" ───────────────────────
+
+_LINK_LIST_WANT = {'people': 'P', 'places': 'L', 'persons': 'P'}
+_ITEM_LINE_RE = re.compile(r'^(\s*)-\s+(.*)$')
+_UNPARSED = object()
+
+
+def _yaml_value(text: str):
+    """`text` parsed as YAML, or `_UNPARSED` when it does not parse."""
+    try:
+        return safe_load_yaml(text)
+    except Exception:
+        return _UNPARSED
+
+
+_split_comment = split_yaml_comment
+
+
+def _resolve_list_item(item, want: str, alias_map: dict[str, str]) -> str | None:
+    """The lowercase ID one people:/places:/persons: entry names, or None.
+    An ID is kept as written (never redirected to a merge survivor - that is
+    `fha confirm merge`'s job); a name resolves through the alias map."""
+    if isinstance(item, list):           # an unquoted [[X]] reads as a nested list
+        item = '[[' + ' '.join(str(x) for x in item) + ']]'
+    if item is None or isinstance(item, dict):
+        return None
+    target = strip_link_wrapper(str(item))
+    if not target:
+        return None
+    if id_type_of(target):
+        rid = normalize_id(target)
+    else:
+        rid = resolve_ref(target, alias_map)
+    if rid and id_type_of(rid) == want:
+        return normalize_id(rid)
+    return None
+
+
+def _settle_list_segment(
+    seg: list[str], key: str, col: int, head_prefix: str,
+    alias_map: dict[str, str], names: dict[str, str],
+) -> list[str] | None:
+    """Rewrite one `key:` segment (its key line plus continuation lines) to
+    the one-per-line `- "[[id|Name]]"` form. Returns None to leave it alone:
+    it does not parse, is empty, or holds a comment this rewrite could not
+    keep in its place."""
+    want = _LINK_LIST_WANT[key]
+    head = seg[0]
+    after = head[head.index(':', len(head_prefix)) + 1:]
+    inline, head_comment = _split_comment(after.strip()) if after.strip() else ('', '')
+    if any(ln.strip().startswith('#') for ln in seg[1:]):
+        return None
+    body = [ln[col:] if ln[:col].strip() == '' else ln for ln in seg[1:]]
+    parsed = _yaml_value('\n'.join([f'{key}: {inline}'] + body))
+    if parsed is _UNPARSED or not isinstance(parsed, dict):
+        return None
+    value = parsed.get(key)
+    if value in (None, [], ''):
+        return None
+    items = value if isinstance(value, list) else [value]
+    comments: list[str] = [''] * len(items)
+    if not inline:
+        item_lines = [ln for ln in seg[1:] if ln.strip()]
+        if len(item_lines) == len(items) and all(_ITEM_LINE_RE.match(ln) for ln in item_lines):
+            comments = [_split_comment(_ITEM_LINE_RE.match(ln).group(2))[1] for ln in item_lines]
+        elif any('#' in ln for ln in item_lines):
+            return None                  # cannot place its comments: leave it
+    elif '#' in inline and not isinstance(value, list):
+        return None
+    pad = ' ' * col
+    out = [f'{head_prefix}{key}:' + (f'  {head_comment}' if head_comment else '')]
+    for item, comment in zip(items, comments):
+        rid = _resolve_list_item(item, want, alias_map)
+        if rid:
+            # A display a person wrote (`[[p-…|Maggie]]`, `[[Maggie]]`) is
+            # kept; the record's name is added only where there is none.
+            written = written_link_display(item)
+            name = written or names.get(rid)
+            rendered = yaml_link_item(rid, name)
+            # A comment is a person's note and stays - unless it only
+            # repeats the person's name (the old `P-id  # Name` form).
+            if comment and rendered.startswith('"') and (
+                    comment_only_names(comment, names.get(rid), written)
+                    or resolve_ref(' '.join(comment.lstrip('#').split()), alias_map) == rid):
+                comment = ''
+        elif isinstance(item, list):
+            rendered = json.dumps('[[' + ' '.join(str(x) for x in item) + ']]', ensure_ascii=False)
+        elif isinstance(item, str):
+            rendered = json.dumps(item, ensure_ascii=False) if item.startswith('[') else yaml_inline(item)
+        else:
+            return None
+        out.append(f'{pad}  - {rendered}' + (f'  {comment}' if comment else ''))
+    return None if out == seg else out
+
+
+def _segment_end(lines: list[str], start: int, col: int) -> int:
+    """Exclusive end of the value lines owned by the key at `lines[start]`
+    (key column `col`): deeper-indented lines, `- ` items at the key's own
+    column, and blank lines between them."""
+    j = start + 1
+    end = j
+    while j < len(lines):
+        ln = lines[j]
+        if not ln.strip():
+            j += 1
+            continue
+        ind = len(ln) - len(ln.lstrip(' '))
+        if ind > col or (ind == col and ln.lstrip(' ').startswith('- ')):
+            j += 1
+            end = j
+            continue
+        break
+    return end
+
+
+def _settle_frontmatter_lists(fm_lines: list[str], alias_map, names) -> tuple[list[str], int]:
+    """people:/places: in one frontmatter (its lines, fences excluded)."""
+    out = list(fm_lines)
+    edits = 0
+    i = 0
+    while i < len(out):
+        m = re.match(r'^(people|places)\s*:', out[i])
+        if not m:
+            i += 1
+            continue
+        end = _segment_end(out, i, 0)
+        new = _settle_list_segment(out[i:end], m.group(1), 0, '', alias_map, names)
+        if new is not None:
+            out[i:end] = new
+            edits += 1
+            end = i + len(new)
+        i = end
+    return out, edits
+
+
+_PERSONS_KEY_RE = re.compile(r'^(\s*(?:-\s+)?)persons\s*:')
+
+
+def _settle_claims_block(block: list[str], alias_map, names) -> tuple[list[str], int]:
+    """persons: in one fenced claims block. The rewrite is kept only when the
+    block still reads as the same claims naming the same people, so a
+    `persons:` line quoted inside a `notes:` block scalar is never edited."""
+    out = list(block)
+    edits = 0
+    i = 0
+    while i < len(out):
+        m = _PERSONS_KEY_RE.match(out[i])
+        if not m:
+            i += 1
+            continue
+        col = len(m.group(1))
+        end = _segment_end(out, i, col)
+        new = _settle_list_segment(out[i:end], 'persons', col, m.group(1), alias_map, names)
+        if new is not None:
+            out[i:end] = new
+            edits += 1
+            end = i + len(new)
+        i = end
+    if not edits:
+        return block, 0
+    before = _yaml_value('\n'.join(block))
+    after = _yaml_value('\n'.join(out))
+    if not (isinstance(before, list) and isinstance(after, list) and len(before) == len(after)):
+        return block, 0
+
+    def people(claim: dict) -> list:
+        raw = claim.get('persons')
+        return [_resolve_list_item(x, 'P', alias_map) or x
+                for x in (raw if isinstance(raw, list) else [raw])]
+
+    for a, b in zip(before, after):
+        if not (isinstance(a, dict) and isinstance(b, dict)) or set(a) != set(b):
+            return block, 0
+        if any(a[k] != b[k] for k in a if k != 'persons') or people(a) != people(b):
+            return block, 0
+    return out, edits
+
+
+def settle_link_lists(text: str, alias_map: dict[str, str],
+                      names: dict[str, str]) -> tuple[str, int]:
+    """Settle a record's people:/places: and its claims' persons: (rewrites
+    (d) and (e) of the module docstring). The record's line endings are kept."""
+    crlf = '\r\n' in text
+    lines = text.replace('\r\n', '\n').split('\n')
+    edits = 0
+    body_start = 0
+    if lines and lines[0].lstrip('﻿') == '---':
+        close = next((k for k in range(1, len(lines)) if lines[k] == '---'), None)
+        if close is not None:
+            new_fm, e = _settle_frontmatter_lists(lines[1:close], alias_map, names)
+            if e:
+                lines[1:close] = new_fm
+                edits += e
+                close = 1 + len(new_fm)
+            body_start = close + 1
+    i = body_start
+    while i < len(lines):
+        if re.match(r'^\s*```\s*ya?ml\s*$', lines[i]):
+            j = next((k for k in range(i + 1, len(lines))
+                      if re.match(r'^\s*```\s*$', lines[k])), None)
+            if j is None:
+                break
+            new_block, e = _settle_claims_block(lines[i + 1:j], alias_map, names)
+            if e:
+                lines[i + 1:j] = new_block
+                edits += e
+                j = i + 1 + len(new_block)
+            i = j + 1
+            continue
+        i += 1
+    if not edits:
+        return text, 0
+    out = '\n'.join(lines)
+    return (out.replace('\n', '\r\n') if crlf else out), edits
+
+
 def normalize_text(
     text: str,
     alias_map: dict[str, str],
     clashes: dict[str, list[str]],
+    names: dict[str, str] | None = None,
 ) -> tuple[str, int, list[str]]:
     """Normalize one record's text, region by region:
 
@@ -251,6 +487,9 @@ def normalize_text(
       - body prose: name-link upgrade + legacy single-bracket upgrade, but NOT
         inside ```fenced``` blocks - the claims YAML stays bare.
     """
+    settled = 0
+    if names is not None:
+        text, settled = settle_link_lists(text, alias_map, names)
     fm = FRONT_RE.match(text)
     if fm:
         fm_text, body = text[:fm.end()], text[fm.end():]
@@ -259,7 +498,7 @@ def normalize_text(
         new_fm, body, e_fm, a_fm = '', text, 0, []
 
     out: list[str] = []
-    edits = e_fm
+    edits = e_fm + settled
     ambiguous = list(a_fm)
     for i, part in enumerate(_FENCE_RE.split(body)):
         if i % 2 == 1:          # odd parts are fenced blocks - structured data
@@ -309,6 +548,12 @@ def run_normalize_links(
     records = _scan_records(archive_root, on_decode_error=on_decode_error)
     alias_map = build_alias_map(records)
     clashes = alias_clashes(records)
+    # The display added to a people:/places:/persons: entry that has none:
+    # the record's own name (a display a person wrote is always kept). A
+    # record with no usable name is written as its bare ID.
+    names = {r['id']: ' '.join(str(r['name']).split()) for r in records
+             if r.get('name') and not is_placeholder_name(r['name'])
+             and r['id'][:2] in ('p-', 'l-')}
 
     result = Result()
     result.data['diffs'] = {}
@@ -340,7 +585,7 @@ def run_normalize_links(
             # file_recorder` documents.
             on_decode_error(path)
             continue
-        new_text, edits, ambiguous = normalize_text(original, alias_map, clashes)
+        new_text, edits, ambiguous = normalize_text(original, alias_map, clashes, names)
         rel = str(path.relative_to(archive_root)).replace('\\', '/')
 
         for name in ambiguous:
@@ -451,7 +696,9 @@ def _cmd_normalize_links(args: argparse.Namespace) -> int:
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Tidy the citations and cross-links in your prose to the archive's [[ ]] form.
+Tidy the citations and cross-links in your prose to the archive's [[ ]] form,
+and write each source's people:/places: and each claim's persons: one per line
+with the name beside the ID, so a record says who it is about.
 
   fha normalize-links            Preview the rewrites (dry run - writes nothing)
   fha normalize-links --write    Apply them, showing the same diff

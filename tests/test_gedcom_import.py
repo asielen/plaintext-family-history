@@ -1327,5 +1327,21 @@ class ExplicitSurnameRoundTripTestCase(_ArchiveCase):
         self.assertFalse(any('\nsurname:' in s for s in stubs))
 
 
+class PersonsWrittenWithNamesTests(unittest.TestCase):
+    """D6 / SPEC §8.7: imported claims name their people one per line,
+    `- "[[p-…|Name]]"`; roles: stays bare IDs."""
+
+    def test_render_claim(self) -> None:
+        claim = gedcom_import._Claim(
+            cid='c-1111111111', claim_type='relationship', value='parent of',
+            persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'], date=None, place_text=None,
+            confidence='medium', anchor='line 4',
+            roles={'child': 'p-aaaaaaaaaa', 'parent': ['p-bbbbbbbbbb']})
+        lines = gedcom_import._render_claim(claim, {'p-aaaaaaaaaa': 'Ann', 'p-bbbbbbbbbb': 'Bo'})
+        self.assertEqual(lines[3:6], ['  persons:', '    - "[[p-aaaaaaaaaa|Ann]]"',
+                                      '    - "[[p-bbbbbbbbbb|Bo]]"'])
+        self.assertIn('    child: p-aaaaaaaaaa', lines)
+
+
 if __name__ == '__main__':
     unittest.main()

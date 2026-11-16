@@ -460,13 +460,18 @@ python -m unittest tests.test_lint tests.test_provisional_vitals   # each W code
 
 E011 has no fix flag: re-tying a moved file is `fha reconcile` (M11.1), which E011's message names.
 
-**Formatter** (`--format-check` / `--format-write`): final-newline and CRLF line-ending hygiene.
-`--format-write` applies what `--format-check` reports. Never rewrites prose. Link normalization
-is the separate `fha normalize-links` (M13.2), deliberately not part of the formatter.
+**Formatter** (`--format-check` / `--format-write`): LF endings and one final newline on every
+`.md`; on source records and person profiles also frontmatter key order (SPEC §14 / §9, unknown keys
+after), `files:` entry key order, lowercase IDs in ID fields, `value` first in each claim, blank-line
+runs collapsed outside fences, and whole-section moves into the §14 / §16 order when nothing is in
+doubt (else reported). Line-based, so comments survive; a rewritten block must parse back to the
+same data. `--format-write` applies what `--format-check` reports. Never rewrites prose. Link
+normalization is the separate `fha normalize-links` (M13.2), deliberately not part of the formatter.
 
 **Done when:**
 ```sh
-fha lint --root example-archive --format-check  # exits without crash
+fha lint --root example-archive --format-check  # reports, writes nothing
+fha lint --root <scratch-archive> --format-write # a second --format-check finds nothing
 fha lint --root example-archive --mint-stubs --dry-run  # previews stub creation, writes nothing
 fha lint --root example-archive --spawn-questions --dry-run
 python -m unittest tests.test_lint tests.test_graduation   # --fix-ids takes a by-hand archive to IDs
@@ -2605,12 +2610,14 @@ refused (exit 2). Three rewrites toward the stable, ID-carrying form:
 - a single-bracket `[s-…]` prose cite → `[[s-…]]`;
 - a resolved human stem or name in prose → `[[s-…|stem]]` / `[[p-…|Name]]` (the human's text
   kept as display);
-- a resolved frontmatter name-link `people: ["[[Ken Smith]]"]` → `["[[p-…|Ken Smith]]"]`.
+- a source's `people:` / `places:` and a claim's `persons:`, in any written form → one
+  `- "[[p-…|Name]]"` line per entry (SPEC §8.7, §14): a display or `# note` a person wrote is
+  kept; the record's name is added only where there is no display.
 
 A stem is never dropped (it stays in the record's `aliases:`, which lets the old link keep
 resolving), and a record's missing self-alias is added (lint W111). An ambiguous name (W113) is
-reported and left as written. The `## Claims` yaml block and bare-ID frontmatter lists are never
-touched.
+reported and left as written. In the `## Claims` yaml block only `persons:` is touched; `roles:`
+and `place:` stay bare IDs.
 
 **Done when:**
 ```sh
