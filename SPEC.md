@@ -443,7 +443,8 @@ family_archive/              ← the root (default name; rename freely - nothing
     processed/               ←   originals of items already filed, kept for a look before deleting
   ── machinery and disposable output (never the truth) ──
   .fha/                      ← the vendored tools and site design; refreshed by `fha update-tools`
-  .cache/                    ← tool caches (index.sqlite, photos.sqlite), rebuilt from the records
+  .cache/                    ← tool caches (index.sqlite, photos.sqlite), rebuilt from the records;
+                                 leave it to the tools
   generated/                 ← built output (the site, standalone views, galleries); regenerable
 ```
 
@@ -761,7 +762,7 @@ for profile Stories sections)
 
 Tools write the frontmatter keys in the order shown above (`id`, `aliases`, `title`, `source_type`, `source_date`, `source_class`, `repository`, `citation`, `people`, …, `files`, `created`); a reader must not depend on order.
 
-The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. A single-file source's one entry is `role: primary`. A photo source marks its main image with `is_primary: true` on exactly one entry (a single photo's one entry carries both); `fha source set-primary` moves that mark between photos. A documents-root source carries no `is_primary`: its `role: primary` entry is the main file.
+The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. A single-file source's one entry is `role: primary`. A photo source marks its main image with `is_primary: true` on exactly one entry (a single photo's one entry carries both); `fha source set-primary` moves that mark between photos. A documents-root source carries no `is_primary` unless an inbox bundle's notes set one: its `role: primary` entry is the main file.
 Each file may carry an optional `status:` - omitted means present; **`missing-fixture`** marks a deliberately absent placeholder, allowed **only** under `example-archive/` and `tests/fixtures/` (warning-level there); a `missing` file in a real archive is an error.
 For documents-root files the link has three carriers (filename, inventory, and the embedded `SOURCE:` keyword where the format holds metadata - TIFF, JPEG, PNG, PDF); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
