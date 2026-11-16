@@ -2990,6 +2990,25 @@ class ProcessTestCase(unittest.TestCase):
         self.assertIn('Edith Hartley', text)
         self.assertIn('unreconciled', text)
 
+    def test_sidecar_site_person_id_reaches_the_notes_not_the_source_fields(self) -> None:
+        # A captured Find a Grave memorial knows his memorial id. A source has
+        # no external_ids (SPEC A.7 puts it on the person), so the id rides in
+        # the notes, named with the person, until he is linked.
+        asset = self.archive / 'documents' / 'census' / 'memorial.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'memorial.notes.md'
+        sidecar.write_text(
+            '---\ntitle: Memorial\npeople:\n  - Calvin Hartley\n'
+            'external_ids:\n  findagrave: "900000001"\n---\nPage text.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
+        rec = read_record(record)
+        self.assertNotIn('external_ids', rec['meta'])
+        self.assertIn('(Calvin Hartley): findagrave: 900000001', rec['body'])
+
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')
         self.assertEqual(process._slugify('   '), 'source')

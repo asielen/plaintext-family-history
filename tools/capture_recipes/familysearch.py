@@ -259,7 +259,10 @@ def extract(html: str, url: str | None) -> dict:
         # erase the date with it (PR #214 review, Codex 4500491554).
         description = meta_content(page, 'og:description')
         cut = collection if collection and collection.strip() != (description or '').strip() else None
-        source_date = hints['source_date'] or _description_date(description, cut)
+        # A derivative (index) record is never dated by its event (record_hints).
+        source_date = hints['source_date'] or (
+            None if hints['source_class'] == 'derivative'
+            else _description_date(description, cut))
         source_type = hints['source_type'] or source_type_from_text(f'{collection} {title}', 'website')
     else:
         source_date = harvest_date(

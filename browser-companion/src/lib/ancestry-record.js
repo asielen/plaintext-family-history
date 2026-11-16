@@ -363,7 +363,8 @@ const ANC_FINDAGRAVE_RE = /\bfind\s*a\s*grave\b/i;
 //               year, else the collection's one year when it names exactly one;
 //               never a year of a range, closed or open ("Death Index,
 //               1940-1997" or "Obituary Collection, 1930-Current" says when
-//               the collection runs, not when she died);
+//               the collection runs, not when she died); always null for a
+//               derivative record, which was made later than its event;
 //   sourceClass 'derivative' for an index (a compiled list, not the record
 //               itself) or Find a Grave, else null (filing's default, original).
 function recordHints(collection, dateOf) {
@@ -404,6 +405,9 @@ function recordHints(collection, dateOf) {
   if (!sourceDate && !census && years.length === 1 && !isRange) sourceDate = years[0];
 
   const sourceClass = findagrave || /\bindex(es)?\b/i.test(c) ? 'derivative' : null;
+  // A derivative record (an index entry, a memorial) is never dated by the
+  // event it reports: it was made later, on a day the page does not give.
+  if (sourceClass === 'derivative') sourceDate = null;
   return { sourceType, sourceDate, sourceClass };
 }
 

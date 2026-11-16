@@ -238,7 +238,7 @@ test('ancHints on the two fixture pages: census, and a 1957 death in a 1940-1997
     { sourceType: 'census', sourceDate: '1880', sourceClass: null });
   const death = readRecord('ancestry-record-death-index', DEATH_URL);
   assert.deepStrictEqual(anc.ancHints(death.record, death.fields),
-    { sourceType: 'vital-record', sourceDate: '1957-01-07', sourceClass: 'derivative' });
+    { sourceType: 'vital-record', sourceDate: null, sourceClass: 'derivative' }); // an index: never dated by the death
 });
 
 test('ancTitle: the person and collection, unless the human typed a title', () => {

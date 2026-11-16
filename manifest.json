@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "d52389d76fe76d1e435232bd98ebb6412262dbd9c4f22d52632dd648e219367c",
+      "sha256": "816ca9546b45176025662ded67a05b3e7ec131ddf24886c8259331dc217fa99a",
       "spec_version": "2.1",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "60aed4674d61d61b41d0e587d7c765ca35554abeb9089c5d2796ae8576fabd42",
+      "sha256": "83df968a9c2bc891e577c39f4a6da6577991db35fb42edf8a46617080ee4b83b",
       "spec_version": "2.1",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "c71cbcac63af6197269685e4b00b2b0a8e0c6bbeabf265c171c5eb7623b1d89b",
+      "sha256": "07cfed1d49ad239310e6182d2bdb8a9ad39c3fa696cf06d592a5782cbc08ef3a",
       "spec_version": "2.1",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -294,7 +294,7 @@
     {
       "path": ".fha/browser-companion/src/lib/findagrave-record.js",
       "category": "operating",
-      "sha256": "6a771fc44c79e8c69a34cc1317d24909030b2ba415cfb5f53ce905e0a1d28b16",
+      "sha256": "004e324d2d0e2e56e7ef2d67039a83818d4e9ff6ecc2c9f35ff2dc94ee61f38d",
       "spec_version": "2.1",
       "src": "browser-companion/src/lib/findagrave-record.js"
     },
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "4fa899ffa55ead9ae5eb7f35201be27467a6141e90bd3295b77a6e09a8fee8e8",
+      "sha256": "2541a1dee59a4c0f2b80a2ffc0c919bf7a9d10f9fbd86dbd749e42c036b78ba0",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "49cb19ba3c9adca223080b45e1c60aa7a7f8d3bff74fdab9b08a693aec45cb93",
+      "sha256": "92af896d00c15fe60771e3780f2eb01587bd98bfcaa6c5a2289bb3e17ef66314",
       "spec_version": "2.1",
       "src": "tools/capture.py"
     },
@@ -518,7 +518,7 @@
     {
       "path": ".fha/tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "5f10c0d3371d08eb08ddd2d2d45b80585bfeb0bfb951568b2b149e31587a1e5d",
+      "sha256": "ca003adb8dad088d757419e822ddf5b0024a3c4b26e3687bee99400f841b4c0f",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/_common.py"
     },
@@ -532,14 +532,14 @@
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "91e8e8d2b43414a5a0dae4e6e3a898cc376cccc86e77302e39a07eeabf76b7b3",
+      "sha256": "68b18daf5fba76f225cb31818b166f320fb0fac77c24f82d80297628bbe59fbc",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/familysearch.py"
     },
     {
       "path": ".fha/tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "ad55ae2603b94647bfbb17d9f9274739dad55f9260aa9e59426336c78cdbbb1d",
+      "sha256": "961cec32592119d55823441692b3e613b2810b8ffdac659ab0f821481bd164c4",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/findagrave.py"
     },
@@ -623,7 +623,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "1e9e2400d9183efe1ccb029be895aacf61130260744bca9f9566c4c6aa59c6cf",
+      "sha256": "e7bb958c773f2ae4768c1d96e90e83f59883e9b36654110d017bc5f63e09798a",
       "spec_version": "2.1",
       "src": "tools/index.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "b07f218f4572842ee5929c24b02ea0cf83b283cd0b105d5b4dc3edf73a058d43",
+      "sha256": "0c9e06ad22fa681c7b1a680e21dd6b1ead8b748a0f37db41ca6a9591985a695b",
       "spec_version": "2.1",
       "src": "tools/process.py"
     },
@@ -924,7 +924,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "563b7f559dfbe3dacb6e6b6847f8568d2f4e23be4ed0221c62fb3de4fdddb9e0",
+      "sha256": "fd78b0517e18ede915dc701a34a56919d1aa97bf852716a7f867e4fa0c35fcfb",
       "spec_version": "2.1",
       "src": "archive-template/.gitignore"
     },
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "264c0e1dc04e3931395d4d00dfe4cddacfc2648419e27eeea70b8bf4e1bdb080",
+      "sha256": "4302fc892c17c938079713f8a58558d1a4ed379d69790bd2691c85c0638ff98b",
       "spec_version": "2.1"
     },
     {

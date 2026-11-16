@@ -18,10 +18,11 @@ Two layouts:
 
 What the memorial says about itself (TI-066): the shared `record_hints` rule
 over collection "Find a Grave" - a website (a volunteer's compilation from the
-stone, records and family knowledge, not a vital record), derivative, dated by
-the memorial's own death. Find a Grave gives no burial date, and a burial is
-known only to be on or after the death (TI-068), so none is made up; the
-birth never dates a memorial.
+stone, records and family knowledge, not a vital record), derivative, and
+so undated: the memorial was made long after the death it records, on a day
+the page does not give (SPEC §14 - `source_date` is the date of the source
+itself). The birth and death dates stay in the stub's text, where they become
+claims.
 
 The Seen It add-on's injected badges are stripped first (TI-067).
 """
@@ -343,7 +344,7 @@ def extract(html: str, url: str | None) -> dict:
             if member not in people:
                 people.append(member)
 
-    # The memorial is dated by its death, never by the birth (TI-066).
+    # The memorial is a derivative record: never dated by the death or birth.
     hints = record_hints('Find a Grave', lambda word: death if word == 'Death' else None)
     lifespan = f'{birth or "?"}–{death or "?"}' if (birth or death) else None
 

@@ -1796,6 +1796,18 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     if names:
         hint = 'Captured people mentioned on source page (unreconciled): ' + ', '.join(names)
         body = f'{body}\n\n{hint}' if body else hint
+    # `fha capture` notes the site's own id when the page was one person's
+    # page (a Find a Grave memorial, a tree profile). A source has no
+    # `external_ids:` (SPEC A.7 puts it on the person), so the id rides in
+    # the notes until that person is linked.
+    ext = meta.get('external_ids')
+    if isinstance(ext, dict) and ext:
+        ids = ', '.join(f'{k}: {v}' for k, v in ext.items() if str(v).strip())
+        if ids:
+            who = f' ({names[0]})' if names else ''
+            hint = (f'Site id of the person this page is about{who}: {ids} - '
+                    "add it to that person's external_ids when you link them.")
+            body = f'{body}\n\n{hint}' if body else hint
     return meta, body
 
 

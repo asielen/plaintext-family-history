@@ -252,7 +252,7 @@ test('prefill on a memorial starts from what the memorial says; its gallery page
   assert.strictEqual(r.prefill.findagraveMemorial, true);
   assert.strictEqual(r.prefill.recipeHint, 'findagrave');
   assert.strictEqual(r.prefill.title, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
-  assert.strictEqual(r.prefill.sourceDate, '1918-01-04');
+  assert.strictEqual(r.prefill.sourceDate, null); // a memorial is never dated by the death
   assert.strictEqual(r.prefill.sourceType, 'website');
   assert.strictEqual(r.prefill.repository, 'Find a Grave');
   assert.deepStrictEqual(r.prefill.people,
@@ -274,7 +274,7 @@ test('the memorial is read from the page, with its hints and title', async () =>
   const info = await page.ask({ action: 'findagraveMemorialInfo', today: '2026-11-06' });
   assert.strictEqual(info.ok, true);
   assert.strictEqual(info.record.name, 'Calvin George Hartley');
-  assert.deepStrictEqual(info.hints, { sourceType: 'website', sourceDate: '1918-01-04', sourceClass: 'derivative' });
+  assert.deepStrictEqual(info.hints, { sourceType: 'website', sourceDate: null, sourceClass: 'derivative' });
   assert.strictEqual(info.title, 'Calvin George Hartley (1842-1918) - Find a Grave memorial');
   assert.match(info.citation, /accessed 2026-11-06\)/);
   assert.strictEqual(page.calls.length, 0, 'reading the memorial asks nothing of the network');

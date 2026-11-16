@@ -178,14 +178,14 @@ test('her FamilySearch login is in nothing the capture saves', async () => {
   assert.ok(p.service.calls.every((c) => !c.auth || /^https:\/\/www\.familysearch\.org\//.test(c.url)));
 });
 
-test('TI-066: a death-index entry files as a vital record dated by the death, marked derivative', async () => {
+test('TI-066: a death-index entry files as a vital record, undated (not by the death), marked derivative', async () => {
   const p = await open(ETHEL);
   assert.match(p.$('asset-status').textContent, /no image: there is no image for it on FamilySearch/);
   await p.capture();
   const cap = p.written[0].captureJson;
   assert.strictEqual(cap.title, 'Ethel Hartley - California Death Index, 1940-1997');
   assert.strictEqual(cap.source_type, 'vital-record');
-  assert.strictEqual(cap.source_date, '1957-01-07'); // not 1940
+  assert.strictEqual(cap.source_date, undefined); // not the death, not 1940
   assert.strictEqual(cap.source_class, 'derivative');
   assert.strictEqual((await recordData(p.written[0])).record.imageSaved, false);
 });

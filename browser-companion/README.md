@@ -360,9 +360,9 @@ memorial's own gallery pages (`…/photo?page=N`, at most 20,
 - **Hints** (the shared `recordHints` rule, collection "Find a Grave"):
   `source_type: website` (a volunteer's compilation, not a vital record - SPEC
   §8.5 would otherwise default its claims to high confidence),
-  `source_class: derivative`, and `source_date` the memorial's own death date -
-  Find a Grave gives no burial date and a burial is known only to be on or
-  after the death, so none is invented, and the birth never dates it.
+  `source_class: derivative`, and no `source_date`: the memorial was made
+  long after the death, on a day the page does not give, so neither the death
+  nor the birth dates it (SPEC §14 - the date of the source itself).
 - Each photo in `record-data.json` carries `file` (or null with
   `same_image_as`, `error` or `skipped`); a photo already saved in the sitting
   or reported by the Seen It add-on (`fagphoto:{photoId}`, from a saved file

@@ -916,21 +916,26 @@ def _index_hypotheses_block(
 
 def _index_research_log_block(
     conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
+    *, whole_file: bool = False,
 ) -> None:
-    """Parse `## Research Log` entries from a research file (or notes/research-log.md)
-    body and insert rows into search_log.
+    """Parse research-log entries and insert rows into search_log.
 
-    notes/research-log.md (SPEC §16) isn't specified to require the
-    `## Research Log` heading the way a person research file does - it may
-    just be a bare list of entries.  Fall back to treating the whole body as
-    the section when no heading is present, so either shape works.
+    A person research file keeps its searches in its `## Research Log`
+    section (falling back to the whole body when it has none). The archive's
+    own `notes/research-log.md` (SPEC §17c) is ALL log - `whole_file=True` -
+    so every list entry counts under whatever headings the human grouped
+    them by (`## Hartley line`), and an entry `fha capture` appends at the
+    end of the file is read even when an `## Ideas` section comes before it.
     """
-    section = _extract_section_body(body, 'Research Log')
-    if not section.strip():
-        section = body
-    if not section.strip():
-        return
-    for entry in _parse_md_list_blocks(section):
+    if whole_file:
+        # One chunk per heading, so the list parser (which stops at a
+        # heading) sees every entry in the file.
+        sections = re.split(r'(?m)^#{1,6}\s.*$', body)
+    else:
+        section = _extract_section_body(body, 'Research Log')
+        sections = [section if section.strip() else body]
+    entries = [e for s in sections if s.strip() for e in _parse_md_list_blocks(s)]
+    for entry in entries:
         date = _strip_quotes(entry.get('date', ''))
         if not date:
             continue
@@ -1768,25 +1773,21 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
             content = ''
         if content.strip():
             rel_path = str(research_log_path.relative_to(archive_root))
-            _index_research_log_block(conn, content, None, rel_path)
+            _index_research_log_block(conn, content, None, rel_path, whole_file=True)
 
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
                        on_decode_error=None) -> None:
-    """Re-ingest the capture log (`notes/capture-log.jsonl`, SPEC §16b) into search_log.
+    """Read the old capture logs into search_log.
 
-    `fha capture` writes a search_log row directly into index.sqlite for
-    immediate freshness, but a full rebuild drops and recreates search_log
-    from scratch (`_drop_tables`) - without this, that row would vanish on the
-    next `fha index` run. capture.py also always appends the same row to the
-    capture log, so re-ingesting it here makes every capture survive a reindex
-    regardless of whether the index existed at capture time.
-
-    An archive that has not captured since the log moved out of `.cache/`
-    still has its history at `.cache/capture_log.jsonl`; `_lib.read_capture_log_lines`
-    reads both, oldest first, so none of it drops out of "already searched"
-    before the next capture carries the file across. The index never moves
-    the file itself - it is the human's record, and the writer owns the move.
+    `fha capture` now logs each capture in `notes/research-log.md` (read by
+    `_index_notes`). Archives from before that still hold earlier captures as
+    JSON lines in `notes/capture-log.jsonl` and `.cache/capture_log.jsonl`;
+    nothing writes those files any more, but a full rebuild drops search_log
+    (`_drop_tables`), so they are replayed here or those searches would drop
+    out of "already searched". `_lib.read_capture_log_lines` reads both,
+    oldest first. The index never moves or rewrites them - they are the
+    human's record.
     A file that is not UTF-8 is the ONLY record of the captures in it
     (`_drop_tables` clears search_log every build and this replays it), so it
     is named through `on_decode_error` rather than decoded away in silence.
@@ -2332,7 +2333,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Notes FTS
             _index_notes(conn, archive_root, on_error, on_decode_error)
 
-            # Capture log (durability: survives a search_log drop/rebuild)
+            # Old capture logs (read-only; new captures are in research-log.md)
             _index_capture_log(conn, archive_root, on_decode_error)
 
             # Citation scan - the full alias map now includes source stems, so a
