@@ -3019,7 +3019,7 @@ def run_confirm_merge(
     result.data['renamed_to'] = str(dest)
 
     if both_named_claims:
-        ids = ', '.join(dict.fromkeys(both_named_claims))
+        ids = ', '.join(dict.fromkeys(fmt_id_display(c) for c in both_named_claims))
         result.add('warning',
                    f'Relationship claim(s) {ids} recorded an edge between these '
                    'two people - evidence they may be two different people. '

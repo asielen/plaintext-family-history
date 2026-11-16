@@ -102,8 +102,8 @@ class InboxFilingTestCase(unittest.TestCase):
         rc, _out, err = self._run(str(self.inbox / 'Letters' / 'scan-0412.pdf'),
                                   '--type', 'letter', '--slug', 'postcard-from-aunt-1908')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next((self.docs / 'letter').glob('postcard-from-aunt-1908_S-*.pdf'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        primary = next((self.docs / 'letter').glob('postcard-from-aunt-1908_s-*.pdf'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         return primary, record, primary.stem.split('_')[-1]
 
     def _files_entries(self, record: Path) -> list[dict]:
@@ -227,7 +227,7 @@ class MoreNamingTests(InboxFilingTestCase):
         photo = self._put(self.inbox / 'IMG_0420.jpg', JPEG)
         rc, _out, err = self._run(str(photo), '--title', 'Wedding portrait')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        record = next((self.archive / 'sources' / 'photos').glob('wedding-portrait_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('wedding-portrait_s-*.md'))
         sid = record.stem.split('_')[-1]
         note = self._put(self.docs / 'photos' / 'my-notes.md', b'# notes\n')
 
@@ -244,7 +244,7 @@ class MoreNamingTests(InboxFilingTestCase):
         audio = self._put(folder / 'hartley-1998-wedding.m4a', b'audio')
         rc, _out, err = self._run(str(audio), '--type', 'interview', '--slug', 'hartley-1998')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('hartley-1998_S-*.m4a'))
+        primary = next(folder.glob('hartley-1998_s-*.m4a'))
         sid = primary.stem.split('_')[-1]
         farm = self._put(folder / 'hartley-1998-farm.m4a', b'audio 2')
 
@@ -296,7 +296,7 @@ class BackScanCandidateTests(InboxFilingTestCase):
         rc, _out, err = self._run(str(front), '--type', 'letter')
 
         self.assertEqual(rc, EXIT_CLEAN, err)
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         entries = self._files_entries(record)
         self.assertEqual([e['role'] for e in entries], ['primary', 'back'])
         self.assertEqual(entries[1]['original_filename'], 'box-001-back.tif')
@@ -317,7 +317,7 @@ class BackScanCandidateTests(InboxFilingTestCase):
         rc, _out, err = self._run(str(front), '--type', 'letter')
 
         self.assertEqual(rc, EXIT_CLEAN, err)
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         self.assertEqual(len(self._files_entries(record)), 1)
         self.assertTrue(note.is_file())
         self.assertEqual(list(self.docs.rglob('*.md')), [])
@@ -381,7 +381,7 @@ class PhotoDestTests(InboxFilingTestCase):
 
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertEqual(self._files(self.photos), ['C/x.jpg'])
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(self._files_entries(record)[0]['file'], 'photos/C/x.jpg')
         self.assertTrue((self.inbox / 'processed' / 'A' / 'B' / 'x.jpg').is_file())
         self.assertNotIn('top of your photo library', out)
@@ -543,7 +543,7 @@ class ReviewFollowupTests(InboxFilingTestCase):
         audio = self._put(folder / 'hartley-1998-audio.m4a', b'audio')
         rc, _out, err = self._run(str(audio), '--type', 'interview', '--slug', 'hartley-1998-audio')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('hartley-1998-audio_S-*.m4a'))
+        primary = next(folder.glob('hartley-1998-audio_s-*.m4a'))
         sid = primary.stem.split('_')[-1]
         whisper = self._put(folder / 'hartley-1998.md', b'# Whisper transcript\n')
         rc, _out, err = self._run(str(primary), '--more', str(whisper), 'whisper-transcript')
@@ -560,7 +560,7 @@ class ReviewFollowupTests(InboxFilingTestCase):
         rc, out, err = self._run(str(self.photos / 'C' / 'x.jpg'), '--more', str(back), 'back')
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertEqual(self._files(self.photos), ['C/x-back.jpg', 'C/x.jpg'])
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(self._files_entries(record)[1]['file'], 'photos/C/x-back.jpg')
         self.assertNotIn('top of your photo library', out)
 
@@ -796,7 +796,7 @@ class SecondReviewTests(InboxFilingTestCase):
         audio = self._put(folder / 'h98-audio.m4a', b'audio')
         rc, _out, err = self._run(str(audio), '--type', 'interview', '--slug', 'h98-audio')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('h98-audio_S-*.m4a'))
+        primary = next(folder.glob('h98-audio_s-*.m4a'))
         sid = primary.stem.split('_')[-1]
         for name, role in (('h98-farm.m4a', 'audio'), ('h98-school.m4a', 'audio'),
                            ('h98-farm.md', 'whisper-transcript'),
@@ -862,7 +862,7 @@ class SecondReviewTests(InboxFilingTestCase):
         front = self._put(self.inbox / 'card.jpg', JPEG)
         rc, _out, err = self._run(str(front))
         self.assertEqual(rc, EXIT_CLEAN, err)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         for name in ('notes.md', 'notes.txt', 'scan.pdf'):
             with self.subTest(name=name):
                 stray = self._put(self.photos / name, b'%PDF-1.4' if name.endswith('.pdf') else b'text')
@@ -916,9 +916,9 @@ class IntakeDefaultsTests(InboxFilingTestCase):
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
         self.assertEqual(self._files(self.photos), [])
-        filed = list((self.docs / 'letter').glob('card-01_S-*.tif'))
+        filed = list((self.docs / 'letter').glob('card-01_s-*.tif'))
         self.assertEqual(len(filed), 1)
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['source_type'], 'letter')
 
     def test_an_explicit_type_beats_the_default(self) -> None:
@@ -942,14 +942,14 @@ class IntakeDefaultsTests(InboxFilingTestCase):
             '---\nsource_type: census\n---\n', encoding='utf-8')
         rc, _out, err = self._run(str(card))
         self.assertEqual(rc, EXIT_CLEAN, err)
-        self.assertEqual(len(list((self.docs / 'census').glob('card-04_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'census').glob('card-04_s-*.tif'))), 1)
 
     def test_a_triage_folder_is_left_out_before_matching(self) -> None:
         self._set_yaml(self.RULE + 'inbox_triage_dirs: [review]\n')
         card = self._put(self.inbox / 'review' / 'Postcards' / 'card-05.tif', TIFF)
         rc, out, err = self._run(str(card))
         self.assertEqual(rc, EXIT_CLEAN, err)
-        self.assertEqual(len(list((self.docs / 'letter').glob('card-05_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-05_s-*.tif'))), 1)
 
     def test_more_attachment_takes_the_default(self) -> None:
         self._set_yaml(self.RULE)
@@ -961,7 +961,7 @@ class IntakeDefaultsTests(InboxFilingTestCase):
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
         self.assertNotIn('card-back-scan.tif', self._files(self.photos))
-        self.assertEqual(len(list(self.docs.rglob('*-back_S-*.tif'))), 1)
+        self.assertEqual(len(list(self.docs.rglob('*-back_s-*.tif'))), 1)
 
     def test_a_bundle_takes_the_default(self) -> None:
         self._set_yaml(self.RULE)
@@ -972,7 +972,7 @@ class IntakeDefaultsTests(InboxFilingTestCase):
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn("type letter from intake_defaults 'Postcards/**'", out)
         self.assertEqual(self._files(self.photos), [])
-        self.assertEqual(len(list((self.archive / 'sources' / 'letter').glob('*_S-*.md'))), 1)
+        self.assertEqual(len(list((self.archive / 'sources' / 'letter').glob('*_s-*.md'))), 1)
 
     def test_an_inbox_folder_of_records_is_not_told_type_photo(self) -> None:
         self._set_yaml(self.RULE)
@@ -994,7 +994,7 @@ class IntakeDefaultsTests(InboxFilingTestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             res = process.run_process(ns)
         self.assertTrue(res.ok)
-        self.assertEqual(len(list((self.docs / 'letter').glob('card-07_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-07_s-*.tif'))), 1)
 
     def test_a_malformed_rule_warns_and_files_as_before(self) -> None:
         self._set_yaml('intake_defaults:\n'
@@ -1070,14 +1070,14 @@ class NestedInboxTests(unittest.TestCase):
         rc, out, err = self._run(str(card))
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn("type letter from intake_defaults", out)
-        self.assertEqual(len(list((self.docs / 'letter').glob('card-01_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('card-01_s-*.tif'))), 1)
 
         note = self.inbox / 'note.txt'
         note.write_bytes(b'a typed note')
         rc, _out, err = self._run(str(note), '--type', 'letter')
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertNotIn('exiftool', err.lower())
-        self.assertEqual(len(list((self.docs / 'letter').glob('note_S-*.txt'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('note_s-*.txt'))), 1)
         self.assertEqual(self._library_outside_inbox(), [])
 
     def test_dest_inside_nested_inbox_is_refused(self) -> None:
@@ -1096,7 +1096,7 @@ class NestedInboxTests(unittest.TestCase):
         scan.write_bytes(JPEG)
         rc, _out, err = self._run(str(scan), '--type', 'letter')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        sid = next((self.docs / 'letter').glob('scan_S-*.jpg')).stem.split('_')[-1]
+        sid = next((self.docs / 'letter').glob('scan_s-*.jpg')).stem.split('_')[-1]
         for dest in ('_inbox', '_inbox/processed'):
             with self.subTest(refile=dest):
                 out, err_io = io.StringIO(), io.StringIO()
@@ -1107,7 +1107,7 @@ class NestedInboxTests(unittest.TestCase):
                 self.assertNotEqual(rc, EXIT_CLEAN)
                 self.assertIn('your inbox, not part of your photo library',
                               out.getvalue() + err_io.getvalue())
-                self.assertEqual(len(list((self.docs / 'letter').glob('scan_S-*.jpg'))), 1)
+                self.assertEqual(len(list((self.docs / 'letter').glob('scan_s-*.jpg'))), 1)
 
     def test_parked_original_under_processed_is_refused_nested(self) -> None:
         kept = self.inbox / 'processed' / 'A' / 'x.txt'
@@ -1123,13 +1123,13 @@ class NestedInboxTests(unittest.TestCase):
         letter.write_bytes(PDF)
         rc, _out, err = self._run(str(letter), '--type', 'letter')
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next((self.docs / 'letter').glob('letter_S-*.pdf'))
+        primary = next((self.docs / 'letter').glob('letter_s-*.pdf'))
         page = self.inbox / 'p2.tif'
         page.write_bytes(TIFF)
         rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertEqual(self._library_outside_inbox(), [])
-        self.assertEqual(len(list((self.docs / 'letter').glob('letter-page-2_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('letter-page-2_s-*.tif'))), 1)
 
 
 class ThirdReviewTests(InboxFilingTestCase):
@@ -1154,7 +1154,7 @@ class ThirdReviewTests(InboxFilingTestCase):
                 rc, out, err = self._run(str(card))
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 self.assertIn('intake_defaults', out)
-                self.assertEqual(len(list((self.docs / 'letter').glob(f'card-{i}_S-*.tif'))), 1)
+                self.assertEqual(len(list((self.docs / 'letter').glob(f'card-{i}_s-*.tif'))), 1)
 
     def test_nested_double_star_matches_below_the_top_only(self) -> None:
         self._rule('**/Postcards/**')
@@ -1162,7 +1162,7 @@ class ThirdReviewTests(InboxFilingTestCase):
         top = self._put(self.inbox / 'Postcards' / 'b.tif', TIFF)
         rc, _out, err = self._run(str(deep))
         self.assertEqual(rc, EXIT_CLEAN, err)
-        self.assertEqual(len(list((self.docs / 'letter').glob('a_S-*.tif'))), 1)
+        self.assertEqual(len(list((self.docs / 'letter').glob('a_s-*.tif'))), 1)
         rc, _out, err = self._run(str(top))
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertIn('b.tif', self._files(self.photos))  # documented: top-level not matched
@@ -1195,11 +1195,11 @@ class ThirdReviewTests(InboxFilingTestCase):
         self.assertEqual(rc, EXIT_CLEAN, err)
         if 'intake_defaults' in out:
             # Applied at bundle level, said, and the record agrees.
-            record = next((self.archive / 'sources').rglob('*_S-*.md'))
+            record = next((self.archive / 'sources').rglob('*_s-*.md'))
             self.assertEqual(read_record(record)['meta']['source_type'], 'letter')
         else:
             self.assertEqual(self._files(self.photos), ['front.tif'])
-            record = next((self.archive / 'sources').rglob('*_S-*.md'))
+            record = next((self.archive / 'sources').rglob('*_s-*.md'))
             self.assertEqual(read_record(record)['meta']['source_type'], 'photo')
 
     def test_bundle_intake_line_names_the_folder(self) -> None:
@@ -1227,7 +1227,7 @@ class ThirdReviewTests(InboxFilingTestCase):
         pdf = self._put(self.inbox / 'Scans' / 'deed.pdf', PDF)
         rc, _out, err = self._run(str(pdf))
         self.assertEqual(rc, EXIT_CLEAN, err)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         self.assertNotEqual(read_record(record)['meta']['source_type'], 'photo')
 
     def test_video_and_recording_sessions_keep_topics(self) -> None:
@@ -1238,7 +1238,7 @@ class ThirdReviewTests(InboxFilingTestCase):
                 rc, _out, err = self._run(str(audio), '--type', 'interview',
                                           '--slug', f's9{suffix}')
                 self.assertEqual(rc, EXIT_CLEAN, err)
-                primary = next(folder.glob(f's9{suffix}_S-*.{ext}'))
+                primary = next(folder.glob(f's9{suffix}_s-*.{ext}'))
                 sid = primary.stem.split('_')[-1]
                 for name, role in ((f's9-farm.{ext}', suffix.strip('-')),
                                    (f's9-school.{ext}', suffix.strip('-')),
@@ -1341,7 +1341,7 @@ class FourthReviewTests(InboxFilingTestCase):
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 self.assertIn(f"{folder.name}: type letter from intake_defaults 'Postcards/**'", out)
                 self.assertEqual(self._files(self.photos), [])
-                self.assertEqual(len(list((self.docs / 'letter').glob(f'*_S-*.jpg'))),
+                self.assertEqual(len(list((self.docs / 'letter').glob(f'*_s-*.jpg'))),
                                  1 if folder.name == 'b1' else 2)
 
     def test_dest_whose_files_photos_ignore_skips_is_refused(self) -> None:

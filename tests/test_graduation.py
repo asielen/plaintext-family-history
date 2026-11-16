@@ -70,10 +70,10 @@ class QuickstartGraduationTests(unittest.TestCase):
         self.assertEqual(self.after_result.data['mintable'], [])
 
     def test_records_renamed_to_spec_grammar(self) -> None:
-        people = [p.name for p in self.root.rglob('rivera__samuel_P-*.md')]
+        people = [p.name for p in self.root.rglob('rivera__samuel_p-*.md')]
         self.assertEqual(len(people), 1, people)
         sources = [p.name for p in
-                   (self.root / 'sources').glob('sam-rivera-birth-certificate_S-*.md')]
+                   (self.root / 'sources').glob('sam-rivera-birth-certificate_s-*.md')]
         self.assertEqual(len(sources), 1, sources)
 
     def test_every_claim_has_a_minted_id(self) -> None:
@@ -102,7 +102,7 @@ class QuickstartGraduationTests(unittest.TestCase):
                 recs.append({'id': meta['id'], 'name': meta.get('name'),
                              'aliases': meta.get('aliases') or []})
         amap = build_alias_map(recs)
-        sam_pid = read_record(next(self.root.rglob('rivera__samuel_P-*.md')))['meta']['id']
+        sam_pid = read_record(next(self.root.rglob('rivera__samuel_p-*.md')))['meta']['id']
         self.assertEqual(amap.get('sam rivera'), str(sam_pid).lower())
         self.assertIn('sam rivera birth certificate', amap)
 
@@ -112,7 +112,7 @@ class QuickstartGraduationTests(unittest.TestCase):
         # relationship claim's roles derive real parent/child edges.
         index.build_index(self.root, {})
         sam_pid = str(read_record(
-            next(self.root.rglob('rivera__samuel_P-*.md')))['meta']['id']).lower()
+            next(self.root.rglob('rivera__samuel_p-*.md')))['meta']['id']).lower()
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         try:
             joined = conn.execute(

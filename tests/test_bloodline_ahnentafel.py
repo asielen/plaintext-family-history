@@ -346,7 +346,7 @@ class RootAnchorW127TwinTests(unittest.TestCase):
         v = self._views_w127(root, BIOP.lower())
         self.assertEqual(len(v), 1)
         self.assertIn('W127', v[0]['msg'])
-        self.assertIn(KID, v[0]['msg'])
+        self.assertIn(KID.lower(), v[0]['msg'])
 
     def test_both_backends_are_silent_at_the_youngest_generation(self) -> None:
         # Anchored at Ann, who has no children - the correct anchor.

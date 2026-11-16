@@ -140,7 +140,7 @@ from _lib import (
     couple_folder_prefix,    # position → the even couple-folder number,
     extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
-    fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx),
+    fmt_id_display,       # the one ID form tools write and show: all lowercase,
     bracket_given_name,      # default child token, title-aware - shared with lint W103,
     reconcile_bracket_entries,   # keeps a still-true hand-written child token (W103),
     format_w120_message,  # the W120 wording - shared with lint so the twins agree,
@@ -635,7 +635,25 @@ def _html_out_path(archive_root: Path, md_out_path: Path, stem: str | None = Non
     """
     out_dir = archive_root / 'generated' / 'views'
     out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir / f'{stem or md_out_path.stem}.html'
+    return _existing_spelling(out_dir / f'{stem or md_out_path.stem}.html')
+
+
+def _existing_spelling(target: Path) -> Path:
+    """`target`, or the file already beside it whose name differs only in
+    capitals - an older fha named views with a capital id prefix (`…_P-…`)
+    and now writes `…_p-…` (SPEC §10). Regenerating that file in place,
+    rather than writing a twin beside it on a case-sensitive disk, keeps one
+    view per person and keeps the hand-made-file guard looking at the real
+    file."""
+    if target.exists():
+        return target
+    try:
+        for existing in target.parent.iterdir():
+            if existing.name.lower() == target.name.lower():
+                return existing
+    except OSError:
+        pass
+    return target
 
 
 def _format_precheck(fmt: str, allowed: tuple[str, ...]) -> Result | None:
@@ -785,10 +803,11 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
     stem = profile_path.stem   # e.g. hartley__thomas_edward_P-de957bcda1
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)
     base = re.sub(r'_[PSCLH]-[0-9a-hjkmnp-tv-z]{10}$', '', stem, flags=re.I)
-    # Filename convention: P-id uses uppercase type prefix. `view_` (#77) sorts
-    # after both the bare profile and `_research_`, so the three generated
-    # companions sort together, below the two human-facing files.
-    return profile_path.parent / f'{base}_view_{kind}_{fmt_id_display(person_id)}.md'
+    # Filename convention: the id is written all lowercase (SPEC §10). `view_`
+    # (#77) sorts after both the bare profile and `_research_`, so the three
+    # generated companions sort together, below the two human-facing files.
+    return _existing_spelling(
+        profile_path.parent / f'{base}_view_{kind}_{fmt_id_display(person_id)}.md')
 
 
 def _format_sid(source_id: str) -> str:
@@ -3533,8 +3552,8 @@ def _edge_to_json_dict(edge: dict) -> dict:
     """Convert an internal edge dict to the TOOLING §7 JSON edge schema.
 
     dates.start / dates.end are populated only for spouse edges; all other
-    relationship types use null per TOOLING §7.  The claim_id and P-ids get
-    their type prefix uppercased for output consistency.
+    relationship types use null per TOOLING §7.  The claim_id and P-ids are
+    written in the one all-lowercase ID form (SPEC §10).
     """
     is_spouse = edge['type'] == 'spouse'
     return {

@@ -393,8 +393,8 @@ class RunClaimTests(unittest.TestCase):
         # holding source is filed under, alongside the kept-for-compat path.
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='accepted')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['source_id'], 'S-1111111111')
-        self.assertRegex(result['source_id'], r'^S-[0-9a-hjkmnp-tv-z]{10}$')
+        self.assertEqual(result['source_id'], 's-1111111111')
+        self.assertRegex(result['source_id'], r'^s-[0-9a-hjkmnp-tv-z]{10}$')
         self.assertEqual(result['source'], str(self.source))
 
     def test_accept_defaults_reviewed_to_today_not_refused(self) -> None:
@@ -900,7 +900,7 @@ class RunClaimNewTests(unittest.TestCase):
         rec = self._claims()[cid]
         self.assertEqual(rec['type'], 'occupation')
         self.assertEqual(rec['value'], 'Bookkeeper, Plains Junction Railroad')
-        self.assertEqual(rec['persons'], ['P-aaaaaaaaaa'])
+        self.assertEqual(rec['persons'], ['p-aaaaaaaaaa'])
         self.assertEqual(str(rec['date']), '1874')
         self.assertEqual(rec['status'], 'accepted')
         self.assertEqual(str(rec['reviewed']), claim._today())
@@ -994,7 +994,7 @@ class RunClaimNewTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result['status'], 'not-found')
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn('P-zzzzzzzzzz', text)
+        self.assertIn('p-zzzzzzzzzz', text)
         self.assertIn('fha person new', text)
         self.assertIn('fha stubs --from-names', text)
         self.assertEqual(len(read_record(self.source)['claims']), 2)
@@ -1054,7 +1054,7 @@ class RunClaimNewTests(unittest.TestCase):
             value='Lived somewhere', place='L-baba9801fa', place_text='Topeka')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         text = self.source.read_text(encoding='utf-8')
-        self.assertIn('place: L-baba9801fa', text)
+        self.assertIn('place: l-baba9801fa', text)
         self.assertIn('place_text: Topeka', text)
 
     def test_appends_after_existing_claims_with_one_blank_line(self) -> None:
@@ -1176,7 +1176,7 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
             place_text='Topeka, Kansas')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()[result['claim_id']]
-        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(str(rec['place']), 'l-baba9801fa')
         self.assertEqual(rec['place_text'], 'Topeka, Kansas')   # unaltered, SPEC §15
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('matched the registered place', text)
@@ -1208,7 +1208,7 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
             place_text='Topeka County, Kansas')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()[result['claim_id']]
-        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(str(rec['place']), 'l-baba9801fa')
 
     def test_case_and_whitespace_noise_still_matches_exactly(self) -> None:
         result = claim.run_claim_new(
@@ -1217,7 +1217,7 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
             place_text='  topeka,   KANSAS  ')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()[result['claim_id']]
-        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(str(rec['place']), 'l-baba9801fa')
 
     def test_near_match_is_not_auto_attached_but_is_noted(self) -> None:
         # Word order differs ("Kansas, Topeka" vs the registered "Topeka,
@@ -1258,7 +1258,7 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
             place='L-9e2210ab44', place_text='Topeka, Kansas')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()[result['claim_id']]
-        self.assertEqual(str(rec['place']), 'L-9e2210ab44')
+        self.assertEqual(str(rec['place']), 'l-9e2210ab44')
         text = ' '.join(m.text for m in result.messages)
         self.assertNotIn('matched the registered place', text)
 
@@ -1450,7 +1450,7 @@ class FieldExtensionApplyTests(unittest.TestCase):
                     persons=['P-bbbbbbbbbb', 'P-cccccccccc'])
                 self.assertTrue(changed)
                 claims = read_record_from_text(new)
-                self.assertEqual(claims[0]['persons'], ['P-bbbbbbbbbb', 'P-cccccccccc'])
+                self.assertEqual(claims[0]['persons'], ['p-bbbbbbbbbb', 'p-cccccccccc'])
 
     def test_place_text_edit_preserves_the_place_link(self) -> None:
         # SPEC §15: the two place keys are independent facts. Rewording the
@@ -1528,7 +1528,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
                 self.assertTrue(changed)
                 claims = read_record_from_text(new)
                 self.assertEqual(len(claims), 1)
-                self.assertEqual(claims[0]['persons'], ['P-cccccccccc'])
+                self.assertEqual(claims[0]['persons'], ['p-cccccccccc'])
                 self.assertEqual(claims[0]['status'], 'suggested')  # untouched
                 # No orphaned `- P-…` line survives from the old block list.
                 self.assertNotIn('- P-aaaaaaaaaa', new)
@@ -1546,7 +1546,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
         claims = read_record_from_text(new)
         self.assertEqual(len(claims), 1)
         c = claims[0]
-        self.assertEqual(c['persons'], ['P-cccccccccc'])
+        self.assertEqual(c['persons'], ['p-cccccccccc'])
         self.assertEqual(str(c['date']), '1880')
         self.assertEqual(c['confidence'], 'low')  # untouched, still readable
         self.assertEqual(c['status'], 'suggested')
@@ -1570,7 +1570,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
             result = claim.run_claim(root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
             self.assertEqual(result.exit_code, EXIT_CLEAN)
             rec = {c['id']: c for c in read_record(source)['claims']}
-            self.assertEqual(rec['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+            self.assertEqual(rec['C-aa11bb22cc']['persons'], ['p-bbbbbbbbbb'])
         finally:
             tmp.cleanup()
 
@@ -1677,7 +1677,7 @@ class RunClaimFieldEditTests(unittest.TestCase):
     def test_persons_replaces_the_whole_list(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._claims()['C-aa11bb22cc']['persons'], ['P-bbbbbbbbbb'])
+        self.assertEqual(self._claims()['C-aa11bb22cc']['persons'], ['p-bbbbbbbbbb'])
 
     def test_unresolvable_person_refused(self) -> None:
         before = self.source.read_text(encoding='utf-8')
@@ -1706,7 +1706,7 @@ class RunClaimFieldEditTests(unittest.TestCase):
                                  place='L-baba9801fa', place_text='Topeka')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         c = self._claims()['C-aa11bb22cc']
-        self.assertEqual(str(c['place']), 'L-baba9801fa')
+        self.assertEqual(str(c['place']), 'l-baba9801fa')
         self.assertEqual(c['place_text'], 'Topeka')
 
     def test_reviewed_without_status_refused(self) -> None:
@@ -1783,7 +1783,7 @@ class PersonsReplaceRolesGuardTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result['status'], 'refused')
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn(self.DEAD, text)
+        self.assertIn(self.DEAD.lower(), text)
         self.assertIn('W133', text)
         self.assertIn('#126', text)
         # Nothing written.
@@ -1794,15 +1794,15 @@ class PersonsReplaceRolesGuardTests(unittest.TestCase):
         result = claim.run_claim(
             self.root, claim_id='C-3333333333', persons=[self.DEAD, self.OTHER])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._claims()['C-3333333333']['persons'], [self.DEAD, self.OTHER])
+        self.assertEqual(self._claims()['C-3333333333']['persons'], [self.DEAD.lower(), self.OTHER.lower()])
 
     def test_multiple_orphaned_targets_are_all_named(self) -> None:
         self._write(f'  roles:\n    deceased: [{self.DEAD}]\n    witness: [{self.OTHER}]\n')
         result = claim.run_claim(self.root, claim_id='C-3333333333', persons=[self.WIDOW])
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn(self.DEAD, text)
-        self.assertIn(self.OTHER, text)
+        self.assertIn(self.DEAD.lower(), text)
+        self.assertIn(self.OTHER.lower(), text)
 
     def test_empty_roles_dict_is_unaffected(self) -> None:
         self._write('  roles: {}\n')
@@ -1871,7 +1871,7 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
             self.root, claim_id='C-aa11bb22cc', place_text='Topeka, Kansas')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()['C-aa11bb22cc']
-        self.assertEqual(str(rec['place']), 'L-baba9801fa')
+        self.assertEqual(str(rec['place']), 'l-baba9801fa')
         self.assertEqual(rec['place_text'], 'Topeka, Kansas')
         text = ' '.join(m.text for m in result.messages)
         self.assertIn('matched the registered place', text)
@@ -1980,7 +1980,7 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
             self.root, claim_id='C-bb22cc33dd', place_text='Topeka, Kansas')
         self.assertEqual(second.exit_code, EXIT_CLEAN)
         rec = self._claims()['C-bb22cc33dd']
-        self.assertEqual(str(rec['place']), 'L-9e2210ab44')   # untouched
+        self.assertEqual(str(rec['place']), 'l-9e2210ab44')   # untouched
         self.assertEqual(rec['place_text'], 'Topeka, Kansas')
         text = ' '.join(m.text for m in second.messages)
         self.assertNotIn('matched the registered place', text)
@@ -1991,7 +1991,7 @@ class RunClaimFieldEditPlaceResolutionTests(unittest.TestCase):
             place='L-9e2210ab44', place_text='Topeka, Kansas')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()['C-aa11bb22cc']
-        self.assertEqual(str(rec['place']), 'L-9e2210ab44')
+        self.assertEqual(str(rec['place']), 'l-9e2210ab44')
 
 
 # ── Batch status moves (TOOLING §3b amendment): run_claim_batch ─────────────────
@@ -2090,7 +2090,7 @@ class RunClaimBatchTests(unittest.TestCase):
                                        status='accepted', reviewed='2026-07-20')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
-        self.assertEqual(result['applied'], list(self.BOTH))
+        self.assertEqual(result['applied'], [c.lower() for c in self.BOTH])
         rec = self._claims()
         for cid in self.BOTH:
             self.assertEqual(rec[cid]['status'], 'accepted')
@@ -2157,7 +2157,7 @@ class RunClaimBatchTests(unittest.TestCase):
         self.assertEqual(self.source.read_text(encoding='utf-8'), before)
         self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'suggested')
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn('C-0000000000', text)
+        self.assertIn('c-0000000000', text)
         self.assertTrue(any(m.next_step and 'fha find' in m.next_step
                             for m in result.messages))
 
@@ -2180,7 +2180,7 @@ class RunClaimBatchTests(unittest.TestCase):
         self.assertEqual(self.source.read_text(encoding='utf-8'), before)
         text = ' '.join(m.text for m in result.messages)
         for cid in self.BOTH:
-            self.assertIn(cid, text)
+            self.assertIn(cid.lower(), text)
         self.assertIn('[dry-run]', text)
         # One closing trailer for the whole batch, not one per claim.
         trailers = [m for m in result.messages if 'Re-run without --dry-run' in m.text]
@@ -2191,7 +2191,7 @@ class RunClaimBatchTests(unittest.TestCase):
             self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd', 'C-AA11BB22CC'],
             status='accepted')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['applied'], list(self.BOTH))
+        self.assertEqual(result['applied'], [c.lower() for c in self.BOTH])
         self.assertEqual(len(result['results']), 2)
         rec = self._claims()
         for cid in self.BOTH:
@@ -2205,7 +2205,7 @@ class RunClaimBatchTests(unittest.TestCase):
         result = claim.run_claim_batch(
             self.root, claim_ids=['C-aa11bb22cc', 'C-aa11bb22cc'], status='accepted')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['claim_id'], 'C-aa11bb22cc')
+        self.assertEqual(result['claim_id'], 'c-aa11bb22cc')
         self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'accepted')
         self.assertIn('more than once', result.messages[0].text)
 
@@ -2231,7 +2231,7 @@ class RunClaimBatchTests(unittest.TestCase):
                                        status='rejected')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
-        self.assertEqual(result['claim_id'], 'C-aa11bb22cc')
+        self.assertEqual(result['claim_id'], 'c-aa11bb22cc')
         self.assertEqual(result['before_status'], 'suggested')
         self.assertEqual(self._claims()['C-aa11bb22cc']['status'], 'rejected')
 
@@ -2272,13 +2272,13 @@ class RunClaimBatchTests(unittest.TestCase):
             self.root, claim_ids=['C-dd44ee55ff', 'C-ee55ff66gh'],
             status='accepted')
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['applied'], ['C-dd44ee55ff'])
+        self.assertEqual(result['applied'], ['c-dd44ee55ff'])
         text = ' '.join(m.text for m in result.messages)
-        self.assertIn('Stopped at C-ee55ff66gh', text)
-        self.assertIn('1 of 2 claims applied (C-dd44ee55ff)', text)
+        self.assertIn('Stopped at c-ee55ff66gh', text)
+        self.assertIn('1 of 2 claims applied (c-dd44ee55ff)', text)
         # The finish command carries ONLY the unapplied ids.
-        self.assertIn('`fha claim C-ee55ff66gh --status accepted`', text)
-        self.assertNotIn('fha claim C-dd44ee55ff', text)
+        self.assertIn('`fha claim c-ee55ff66gh --status accepted`', text)
+        self.assertNotIn('fha claim c-dd44ee55ff', text)
         claims = read_record(dup)['claims']
         self.assertEqual(claims[0]['status'], 'accepted')     # applied stays applied
         self.assertEqual(claims[1]['status'], 'suggested')    # refused stays untouched
@@ -2299,7 +2299,7 @@ class RunClaimBatchTests(unittest.TestCase):
         self.assertIn('nothing was written (dry-run)', text)
         self.assertNotIn('claims applied', text)
         self.assertIn(
-            '`fha claim C-dd44ee55ff C-ee55ff66gh --status accepted '
+            '`fha claim c-dd44ee55ff c-ee55ff66gh --status accepted '
             '--reviewed 2026-07-20 --dry-run`', text)
 
     def test_empty_id_list_is_a_plain_refusal(self) -> None:
@@ -2384,11 +2384,11 @@ class OneWritePerRecordTests(unittest.TestCase):
         self.assertEqual(writes, [self.first])
         self.assertEqual(self.first.read_bytes(), expected)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result['applied'], list(self.a))
+        self.assertEqual(result['applied'], [c.lower() for c in self.a])
         self.assertEqual(result.changed, [str(self.first)])
         text = '\n'.join(m.text for m in result.messages)
         for cid in self.a:
-            self.assertIn(f'Set {cid}: status suggested -> accepted (reviewed 2026-07-20)', text)
+            self.assertIn(f'Set {cid.lower()}: status suggested -> accepted (reviewed 2026-07-20)', text)
 
     def test_a_failed_write_on_the_second_record_keeps_the_first(self) -> None:
         # Ids interleave the two records: both of the first record's claims
@@ -2402,7 +2402,7 @@ class OneWritePerRecordTests(unittest.TestCase):
         self.assertEqual(writes, [self.first, self.second])
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result['status'], 'failed')
-        self.assertEqual(result['applied'], [self.a[0], self.a[1]])
+        self.assertEqual(result['applied'], [self.a[0].lower(), self.a[1].lower()])
         self.assertEqual(result.changed, [str(self.first)])
         first = self._status(self.first)
         self.assertEqual((first[self.a[0]], first[self.a[1]], first[self.a[2]]),
@@ -2413,9 +2413,9 @@ class OneWritePerRecordTests(unittest.TestCase):
         text = '\n'.join(m.text for m in result.messages)
         self.assertIn(f'cannot write {self.second}', text)
         self.assertIn('Access is denied', text)
-        self.assertIn(f'Stopped at {self.b[0]}: 2 of 3 claims applied '
-                      f'({self.a[0]}, {self.a[1]}), the rest left as they were', text)
-        self.assertIn(f'`fha claim {self.b[0]} --status accepted --reviewed 2026-07-20`', text)
+        self.assertIn(f'Stopped at {self.b[0].lower()}: 2 of 3 claims applied '
+                      f'({self.a[0].lower()}, {self.a[1].lower()}), the rest left as they were', text)
+        self.assertIn(f'`fha claim {self.b[0].lower()} --status accepted --reviewed 2026-07-20`', text)
         # Only claims whose record really was written say "Set".
         self.assertNotIn(f'Set {self.b[0]}', text)
 
@@ -2428,10 +2428,10 @@ class OneWritePerRecordTests(unittest.TestCase):
             result = claim.run_claim_batch(self.root, claim_ids=ids, status='rejected')
         self.assertEqual(writes, [self.first, self.second])   # never reached the third
         self.assertEqual(third.read_bytes(), before_third)
-        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual(result['applied'], [self.a[0].lower()])
         self.assertEqual([d['status'] for d in result['results']],
                          ['ok', 'failed', 'not-written'])
-        self.assertIn(f'`fha claim {self.b[0]} {c[0]} --status rejected`',
+        self.assertIn(f'`fha claim {self.b[0].lower()} {c[0].lower()} --status rejected`',
                       ' '.join(m.text for m in result.messages))
 
     def _edit_meanwhile(self, path: Path, after_calls: int):
@@ -2468,7 +2468,7 @@ class OneWritePerRecordTests(unittest.TestCase):
         msgs = '\n'.join(m.text for m in result.messages)
         self.assertIn(f'{self.first} was changed by something else', msgs)
         self.assertIn('nothing in it was changed by this batch', msgs)
-        self.assertIn(f'`fha claim {self.a[0]} {self.a[1]} --status accepted '
+        self.assertIn(f'`fha claim {self.a[0].lower()} {self.a[1].lower()} --status accepted '
                       '--reviewed 2026-07-20`', msgs)
         # The rerun it names finishes the job and keeps the note.
         again = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.a[1]],
@@ -2482,13 +2482,13 @@ class OneWritePerRecordTests(unittest.TestCase):
         with self._edit_meanwhile(self.second, after_calls=2):
             result = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.b[0]],
                                            status='accepted', reviewed='2026-07-20')
-        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual(result['applied'], [self.a[0].lower()])
         self.assertEqual(result.changed, [str(self.first)])
         self.assertEqual(self._status(self.first)[self.a[0]], 'accepted')
         self.assertIn('A NOTE TYPED MEANWHILE', self.second.read_text(encoding='utf-8'))
         self.assertEqual(self._status(self.second)[self.b[0]], 'suggested')
         self.assertEqual([d['status'] for d in result['results']], ['ok', 'failed'])
-        self.assertIn(f'Stopped at {self.b[0]}: 1 of 2 claims applied ({self.a[0]})',
+        self.assertIn(f'Stopped at {self.b[0].lower()}: 1 of 2 claims applied ({self.a[0].lower()})',
                       ' '.join(m.text for m in result.messages))
 
     def test_a_record_resaved_in_cp1252_meanwhile_stops_plainly(self) -> None:
@@ -2511,17 +2511,17 @@ class OneWritePerRecordTests(unittest.TestCase):
             result = claim.run_claim_batch(self.root, claim_ids=[self.a[0], self.b[0]],
                                            status='accepted', reviewed='2026-07-20')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
-        self.assertEqual(result['applied'], [self.a[0]])
+        self.assertEqual(result['applied'], [self.a[0].lower()])
         self.assertEqual(result.changed, [str(self.first)])
         self.assertEqual(self._status(self.first)[self.a[0]], 'accepted')
         self.assertIn(b'Ren\xe9e visited', self.second.read_bytes())   # left exactly as saved
         msgs = '\n'.join(m.text for m in result.messages)
-        self.assertIn(f'Set {self.a[0]}: status suggested -> accepted', msgs)
+        self.assertIn(f'Set {self.a[0].lower()}: status suggested -> accepted', msgs)
         self.assertIn(f'{self.second} was changed by something else', msgs)
         self.assertIn('It also is not saved as UTF-8 text', msgs)
         self.assertIn('W128', msgs)
-        self.assertIn(f'Stopped at {self.b[0]}: 1 of 2 claims applied ({self.a[0]})', msgs)
-        self.assertIn(f'`fha claim {self.b[0]} --status accepted --reviewed 2026-07-20`', msgs)
+        self.assertIn(f'Stopped at {self.b[0].lower()}: 1 of 2 claims applied ({self.a[0].lower()})', msgs)
+        self.assertIn(f'`fha claim {self.b[0].lower()} --status accepted --reviewed 2026-07-20`', msgs)
 
     def test_a_record_that_will_not_decode_when_edited_is_a_plain_refusal(self) -> None:
         # The same encoding change landing between finding the claim and
@@ -2603,13 +2603,13 @@ class BatchRerunIsANoOpTests(unittest.TestCase):
         self.assertEqual(os.stat(self.source).st_mtime, self.OLD)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(result['status'], 'ok')
-        self.assertEqual(result['applied'], list(self.BOTH))   # done, not failed
+        self.assertEqual(result['applied'], [c.lower() for c in self.BOTH])   # done, not failed
         self.assertEqual([d['status'] for d in result['results']],
                          ['already-done', 'already-done'])
         self.assertEqual(result.changed, [])
         text = '\n'.join(m.text for m in result.messages)
         for cid in self.BOTH:
-            self.assertIn(f'{cid}: already accepted (reviewed 2026-07-20)', text)
+            self.assertIn(f'{cid.lower()}: already accepted (reviewed 2026-07-20)', text)
         self.assertIn('All 2 claims were already accepted with that review date', text)
         self.assertNotIn('fha index', text)
 
@@ -2618,7 +2618,7 @@ class BatchRerunIsANoOpTests(unittest.TestCase):
                         reviewed='2026-07-20')
         result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
                                        status='accepted', reviewed='2026-07-20')
-        self.assertEqual(result['applied'], list(self.BOTH))
+        self.assertEqual(result['applied'], [c.lower() for c in self.BOTH])
         self.assertEqual([d['status'] for d in result['results']], ['already-done', 'ok'])
         self.assertEqual(result.changed, [str(self.source)])
         rec = {c['id']: c for c in read_record(self.source)['claims']}
@@ -3524,7 +3524,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         self.assertIn(str(self.ada), result.changed)
         self.assertIn('Ada Hartley is now marked as no longer living', self._text(result))
         self.assertIn('may now include her', self._text(result))
-        self.assertEqual(result['marked_not_living'], [_ADA])
+        self.assertEqual(result['marked_not_living'], [_ADA.lower()])
 
     def test_deceased_role_marks_only_the_deceased(self) -> None:
         _death_source(self.root, _claim_item(
@@ -3554,7 +3554,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn('Thomas Hartley', warnings[0])
         self.assertIn('marked as living', warnings[0])
-        self.assertIn(f'fha person set-living {_THOMAS} false', warnings[0])
+        self.assertIn(f'fha person set-living {_THOMAS.lower()} false', warnings[0])
 
     def test_multi_person_burial_with_no_roles_marks_nobody_and_warns(self) -> None:
         _death_source(self.root, _claim_item('C-aa11bb22cc', 'burial',
@@ -3578,7 +3578,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         result = self._accept('C-aa11bb22cc')
         self.assertEqual(self._living(self.ada), 'unknown')
         self.assertEqual(self._living(self.john), 'unknown')
-        self.assertIn(f'fha person set-living {_ADA} false', self._text(result))
+        self.assertIn(f'fha person set-living {_ADA.lower()} false', self._text(result))
 
     def test_negated_death_marks_nobody(self) -> None:
         # "We searched and Ada did not die then" says nobody died. Mary's
@@ -3631,7 +3631,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         self.assertEqual(self._living(self.mary), 'false')
         self.assertEqual(self._living(self.john), 'unknown')
         self.assertEqual(self._text(result).count('Ada Hartley is now marked'), 1)
-        self.assertEqual(sorted(result['marked_not_living']), [_ADA, _MARY])
+        self.assertEqual(sorted(result['marked_not_living']), [_ADA.lower(), _MARY.lower()])
 
     def test_dry_run_writes_nothing_and_says_what_would_happen(self) -> None:
         _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA)
@@ -3657,7 +3657,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         result = self._accept('C-aa11bb22cc')
         self.assertEqual(self.old.read_bytes(), before)
         self.assertEqual(self._living(self.ada), 'unknown')
-        self.assertIn(f'fha person set-living {_ADA} false', self._text(result))
+        self.assertIn(f'fha person set-living {_ADA.lower()} false', self._text(result))
 
     def test_a_name_link_beside_an_id_marks_nobody(self) -> None:
         # Without the index "[[John Hartley]]" cannot be resolved here, and
@@ -3766,7 +3766,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
                 self.assertEqual(self._living(self.mary), 'false')
                 warnings = [m.text for m in result.messages if m.level == 'warning']
                 self.assertEqual(len(warnings), 1, self._text(result))
-                self.assertIn(f'fha person set-living {pid} unknown', warnings[0])
+                self.assertIn(f'fha person set-living {pid.lower()} unknown', warnings[0])
 
     def test_un_accepting_names_only_people_still_marked(self) -> None:
         # Ada was kept private (--keep-living), Mary was marked: rejecting
@@ -3778,7 +3778,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
         result = claim.run_claim_batch(self.root, claim_ids=['C-aa11bb22cc', 'C-bb22cc33dd'],
                                        status='rejected')
         self.assertNotIn(f'set-living {_ADA}', self._text(result))
-        self.assertIn(f'fha person set-living {_MARY} unknown', self._text(result))
+        self.assertIn(f'fha person set-living {_MARY.lower()} unknown', self._text(result))
 
     # 3. A claim that was already accepted never marks anyone: a rerun must
     # not undo an earlier --keep-living.
@@ -3874,7 +3874,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
                 warnings = [m.text for m in result.messages if m.level == 'warning']
                 self.assertEqual(len(warnings), 1, self._text(result))
                 self.assertIn('as the one who died', warnings[0])
-                self.assertIn(f'fha person set-living {pid} unknown', warnings[0])
+                self.assertIn(f'fha person set-living {pid.lower()} unknown', warnings[0])
         self.assertEqual(self._living(self.ada), 'false')
         self.assertEqual(self._living(self.john), 'false')
         self.assertEqual(self._living(self.mary), 'unknown')   # newly named: not marked
@@ -3886,7 +3886,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
         self.assertEqual([m for m in result.messages if m.level == 'warning'], [])
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc',
                                  persons=[_ADA, _JOHN])   # now unscoped: Ada dropped
-        self.assertIn(f'fha person set-living {_ADA} unknown', self._text(result))
+        self.assertIn(f'fha person set-living {_ADA.lower()} unknown', self._text(result))
 
     # 10. Compare-and-set: a `living: true` saved after the accept looked at
     # the record (another editor, another session) is never overwritten.
@@ -3939,7 +3939,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
                              ('C-bb22cc33dd', {'claim_type': 'residence'}, _JOHN)):
             with self.subTest(kw=kw):
                 result = claim.run_claim(self.root, claim_id=cid, status='rejected', **kw)
-                self.assertIn(f'fha person set-living {pid} unknown', self._text(result))
+                self.assertIn(f'fha person set-living {pid.lower()} unknown', self._text(result))
         self.assertEqual(self._living(self.mary), 'unknown')
 
     # 13. "they are still marked", never "they is".

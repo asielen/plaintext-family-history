@@ -287,7 +287,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(asset), '--date', 'about 1880'])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['source_date'], '1880~')
 
     def _install_photo_store(self) -> FakePhotoStore:
@@ -382,10 +382,10 @@ class ProcessTestCase(unittest.TestCase):
 
         # Original is renamed in place (gone under old name, present with _S-id).
         self.assertFalse(original.exists())
-        renamed = list((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         self.assertEqual(len(renamed), 1)
 
-        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['source_type'], 'census')
@@ -407,7 +407,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(original), '--type', 'census', '--title', tricky])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         rec = read_record(record)  # would raise / mis-parse without quoting
         self.assertEqual(rec['meta']['title'], tricky)
 
@@ -441,7 +441,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(sidecar.exists())  # stub deleted after success
 
-        records = list((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)  # source_type hint routed it to letter/
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['title'], 'A Letter Home')
@@ -457,8 +457,8 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(sidecar.exists())
         self.assertFalse(asset.exists())
-        self.assertEqual(list((self.archive / 'documents' / 'census').glob('diary.notes*_S-*.md')), [])
-        renamed = list((self.archive / 'documents' / 'census').glob('diary-page_S-*.txt'))
+        self.assertEqual(list((self.archive / 'documents' / 'census').glob('diary.notes*_s-*.md')), [])
+        renamed = list((self.archive / 'documents' / 'census').glob('diary-page_s-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_document_asset_relocated_out_of_inbox(self) -> None:
@@ -478,7 +478,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(parked.read_text(encoding='utf-8'), 'inbox body')
         # Owner decision 2026-07-22: an inbox single files into documents/{type}/
         # (default 'other'), never flat at the documents root top level.
-        renamed = list((self.archive / 'documents' / 'other').glob('note_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('note_s-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_root_top_document_files_into_type_subfolder(self) -> None:
@@ -492,11 +492,11 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(asset), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())
-        renamed = list((self.archive / 'documents' / 'census').glob('deed_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'census').glob('deed_s-*.txt'))
         self.assertEqual(len(renamed), 1)
         # The record's inventory alias carries the subfolder path.
-        record = next((self.archive / 'sources' / 'census').glob('deed_S-*.md'))
-        self.assertIn('documents/census/deed_S-', record.read_text(encoding='utf-8'))
+        record = next((self.archive / 'sources' / 'census').glob('deed_s-*.md'))
+        self.assertIn('documents/census/deed_s-', record.read_text(encoding='utf-8'))
 
     def test_sidecar_and_companion_relocated_out_of_inbox(self) -> None:
         # The `fha capture --asset` case: a stub + its companion both staged in
@@ -514,9 +514,9 @@ class ProcessTestCase(unittest.TestCase):
         self._assert_inbox_holds_only_processed()
         self.assertTrue(self._parked_path(asset).is_file())
         self.assertTrue(self._parked_path(sidecar).is_file())
-        renamed = list((self.archive / 'documents' / 'other').glob('newspaper-clipping_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('newspaper-clipping_s-*.txt'))
         self.assertEqual(len(renamed), 1)
-        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        records = list((self.archive / 'sources').rglob('*_s-*.md'))
         self.assertEqual(len(records), 1)
 
     def test_inbox_relocation_honors_sidecar_source_type_hint(self) -> None:
@@ -534,9 +534,9 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(self._parked_path(asset).is_file())
         self.assertTrue(self._parked_path(sidecar).is_file())
         self.assertEqual(list((self.archive / 'photos').glob('census*')), [])
-        renamed = list((self.archive / 'documents' / 'census').glob('census_S-*.jpg'))
+        renamed = list((self.archive / 'documents' / 'census').glob('census_s-*.jpg'))
         self.assertEqual(len(renamed), 1)
-        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
 
     def test_inbox_relocation_rolled_back_on_downstream_refusal(self) -> None:
@@ -696,10 +696,10 @@ class ProcessTestCase(unittest.TestCase):
         text = out.getvalue()
         self.assertIn('[dry-run] Would copy scan.jpg out of inbox/ into photos/', text)
         self.assertIn('parking the original at inbox/processed/scan.jpg', text)
-        self.assertIn('[dry-run] Would mint S-', text)
-        self.assertIn('Would embed SOURCE: S-', text)
+        self.assertIn('[dry-run] Would mint s-', text)
+        self.assertIn('Would embed SOURCE: s-', text)
         self.assertIn('in scan.jpg (no rename)', text)
-        self.assertIn('Would scaffold sources/photos/scan_S-', text)
+        self.assertIn('Would scaffold sources/photos/scan_s-', text)
         self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
         self.assertEqual(store.keywords, {})  # no embed attempted anywhere
 
@@ -721,7 +721,7 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         text = out.getvalue()
-        self.assertIn('Would scaffold sources/photos/reunion-portrait_S-', text)
+        self.assertIn('Would scaffold sources/photos/reunion-portrait_s-', text)
         self.assertIn('Would delete stub scan.notes.md', text)
         self.assertTrue(sidecar.exists())  # preview only - stub untouched
 
@@ -763,17 +763,17 @@ class ProcessTestCase(unittest.TestCase):
         preview = out.getvalue()
         self.assertRegex(
             preview,
-            r'Would rename record\.jpg -> documents[\/]census[\/]fairview-census-page_S-')
-        self.assertIn('Would scaffold sources/census/fairview-census-page_S-', preview)
+            r'Would rename record\.jpg -> documents[\/]census[\/]fairview-census-page_s-')
+        self.assertIn('Would scaffold sources/census/fairview-census-page_s-', preview)
         self.assertIn('Would delete stub record.notes.md', preview)
         self.assertEqual(self._snapshot_tree(self.archive), before)  # zero writes
 
         # The live run then does exactly what the preview said (S-id aside).
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
-        records = list((self.archive / 'sources' / 'census').glob('fairview-census-page_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('fairview-census-page_s-*.md'))
         self.assertEqual(len(records), 1)
-        renamed = list((self.archive / 'documents' / 'census').glob('fairview-census-page_S-*.jpg'))
+        renamed = list((self.archive / 'documents' / 'census').glob('fairview-census-page_s-*.jpg'))
         self.assertEqual(len(renamed), 1)
         self.assertFalse(sidecar.exists())  # stub consumed, as previewed
 
@@ -811,7 +811,7 @@ class ProcessTestCase(unittest.TestCase):
         moved = self.archive / 'photos' / 'portrait_1880.jpg'
         self.assertTrue(moved.exists())
         self.assertEqual(store.read(moved), store.read(sibling))
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         self.assertEqual(len(read_record(records[0])['meta']['files']), 2)
 
@@ -826,7 +826,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_FAILURE)
         # Original restored to its pre-run name; nothing left half-done.
         self.assertTrue(original.exists())
-        self.assertEqual(list((self.archive / 'documents' / 'census').glob('*_S-*.txt')), [])
+        self.assertEqual(list((self.archive / 'documents' / 'census').glob('*_s-*.txt')), [])
 
     def test_document_refuses_unknown_source_type(self) -> None:
         original = self.archive / 'documents' / 'census' / 'mystery.txt'
@@ -866,9 +866,9 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(photo.exists())  # NEVER renamed
         kws = store.read(photo)
         self.assertEqual(len(kws), 1)
-        self.assertTrue(kws[0].startswith('SOURCE: S-'))
+        self.assertTrue(kws[0].startswith('SOURCE: s-'))
 
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['source_type'], 'photo')
@@ -921,7 +921,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertFalse(sidecar.exists())
         self.assertTrue(photo.exists())
         self.assertEqual(len(store.read(photo)), 1)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertIn('Back says taken in Denver', record.read_text(encoding='utf-8'))
 
     def test_photo_record_write_failure_rolls_back_keyword(self) -> None:
@@ -940,7 +940,7 @@ class ProcessTestCase(unittest.TestCase):
         front = self.archive / 'photos' / '1880' / 'card.jpg'
         front.write_bytes(b'\xff\xd8\xff')
         self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
 
         back = self.archive / 'photos' / '1880' / 'card-back.jpg'
         back.write_bytes(b'\xff\xd8\xff')
@@ -963,7 +963,7 @@ class ProcessTestCase(unittest.TestCase):
         front = self.archive / 'photos' / '1880' / 'card2.jpg'
         front.write_bytes(b'\xff\xd8\xff')
         self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         original_record_text = record.read_text(encoding='utf-8')
         record.write_text('no frontmatter here\n', encoding='utf-8')
 
@@ -1041,7 +1041,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         outside = self.archive / 'stray-page2.txt'
         outside.write_text('p2', encoding='utf-8')
@@ -1059,7 +1059,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         page2 = self.archive / 'documents' / 'census' / 'pagex2.txt'
         page2.write_text('p2', encoding='utf-8')
@@ -1149,7 +1149,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1)]), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         looping = self.archive / 'documents' / 'census' / 'looping-page2.txt'
         looping.write_text('p2', encoding='utf-8')
@@ -1175,7 +1175,7 @@ class ProcessTestCase(unittest.TestCase):
         kit.write_text('x', encoding='utf-8')
         rc = self._run([str(kit), '--type', 'dna'])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'dna').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'dna').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['restricted'], 'true')
 
@@ -1196,7 +1196,7 @@ class ProcessTestCase(unittest.TestCase):
         )
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['repository'], 'county archive')
         self.assertEqual(rec['meta']['source_date'], '1900~')
@@ -1221,7 +1221,7 @@ class ProcessTestCase(unittest.TestCase):
         argument.write_text('x', encoding='utf-8')
         rc = self._run([str(argument), '--type', 'proof-argument'])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'proofs').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'proofs').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['source_class'], 'authored')
 
@@ -1237,7 +1237,7 @@ class ProcessTestCase(unittest.TestCase):
             sidecar.write_text(f'---\n{front}---\nbody\n', encoding='utf-8')
             rc = self._run([str(asset)])
             self.assertEqual(rc, EXIT_CLEAN)
-            record = next(p for p in (self.archive / 'sources').rglob('*_S-*.md')
+            record = next(p for p in (self.archive / 'sources').rglob('*_s-*.md')
                           if read_record(p)['meta']['title'] == f'Class hint {i}')
             self.assertEqual(read_record(record)['meta']['source_class'], want, hint)
 
@@ -1248,7 +1248,7 @@ class ProcessTestCase(unittest.TestCase):
         sidecar.write_text('---\nsource_class: derivative\n---\nbody\n', encoding='utf-8')
         rc = self._run([str(argument), '--type', 'proof-argument'])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'proofs').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'proofs').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['source_class'], 'authored')
 
     def test_path_to_alias_normalizes_dotdot_external_root(self) -> None:
@@ -1269,8 +1269,8 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'unreadable1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         record.unlink()
         record.mkdir()  # read_text() on a directory raises IsADirectoryError (OSError)
 
@@ -1320,7 +1320,7 @@ class ProcessTestCase(unittest.TestCase):
         )
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['parse_errors'], [])
         self.assertIn('Line one of the citation.', rec['meta']['citation'])
@@ -1331,7 +1331,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'page1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed1.stem.split('_')[-1]
 
         page2 = self.archive / 'documents' / 'census' / 'page2.txt'
@@ -1349,7 +1349,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'page1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed1.stem.split('_')[-1]
 
         loose = self.archive / 'documents' / 'loose-page.txt'
@@ -1396,7 +1396,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(primary)])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
         self.assertEqual(len(files), 3)
         self.assertEqual(files['x-00100.jpg']['role'], 'primary')
@@ -1421,13 +1421,13 @@ class ProcessTestCase(unittest.TestCase):
 
         self.assertFalse(primary.exists())
         self.assertFalse(back.exists())  # not left on disk unrecorded
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[0]['role'], 'primary')
         self.assertEqual(files[1]['role'], 'back')
         self.assertEqual(files[1]['original_filename'], 'x-00200-back.pdf')
-        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_S-*.pdf'))
+        attached_back = list((self.archive / 'documents' / 'census').glob('*-back_s-*.pdf'))
         self.assertEqual(len(attached_back), 1)
 
     def test_document_back_sibling_auto_attached_from_inbox(self) -> None:
@@ -1447,7 +1447,7 @@ class ProcessTestCase(unittest.TestCase):
         self._assert_inbox_holds_only_processed()
         self.assertTrue(self._parked_path(primary).is_file())
         self.assertTrue(self._parked_path(back).is_file())
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'back')
@@ -1466,7 +1466,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
 
         self.assertTrue(back.exists())  # left untouched, not auto-pulled
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
@@ -1604,7 +1604,7 @@ class ProcessTestCase(unittest.TestCase):
         back.write_text('back', encoding='utf-8')
 
         self.assertEqual(self._run([str(front), '--type', 'census']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed.stem.split('_')[-1]
 
         rc = self._run([str(renamed), '--more', str(back), 'back'])
@@ -1617,7 +1617,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(self._parked_path(back).is_file())
         attached = list((self.archive / 'documents' / 'census').glob(f'*back*_{sid}.txt'))
         self.assertEqual(len(attached), 1)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'back')
@@ -1634,7 +1634,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
         filed_front = self.archive / 'photos' / 'inbox-front.jpg'
         self.assertTrue(filed_front.exists())
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
 
         rc = self._run([str(filed_front), '--more', str(back), 'back'])
         self.assertEqual(rc, EXIT_CLEAN)
@@ -1656,8 +1656,8 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'unreadable1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         record.unlink()
         record.mkdir()  # read_text() on a directory raises OSError
 
@@ -1678,7 +1678,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'convention1.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed1.stem.split('_')[-1]
 
         # Named on the archive's own recommended companion convention BEFORE
@@ -1689,7 +1689,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue(pre_named.exists())  # no rename
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'transcript')
@@ -1699,7 +1699,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'convention2.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         other = self.archive / 'documents' / 'census' / 'other-transcript_S-zzzzzzzzzz.md'
         other.write_text('x', encoding='utf-8')
@@ -1717,7 +1717,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'convention4.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed1.stem.split('_')[-1]
 
         pre_named = self.archive / 'documents' / 'census' / f'convention4-transcript_{sid}.md'
@@ -1725,7 +1725,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc1 = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
         self.assertEqual(rc1, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(read_record(record)['meta']['files']), 2)
 
         rc2 = self._run([str(renamed1), '--more', str(pre_named), 'transcript'])
@@ -1740,7 +1740,7 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'convention5.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
         sid = renamed1.stem.split('_')[-1]
 
         pre_named = self.archive / 'documents' / 'census' / f'convention5-transcript_{sid}.md'
@@ -1751,7 +1751,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc2 = self._run([str(renamed1), '--more', str(pre_named), 'attachment'])
         self.assertEqual(rc2, EXIT_ERRORS)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)  # unchanged - no second entry
 
@@ -1763,11 +1763,11 @@ class ProcessTestCase(unittest.TestCase):
         page1 = self.archive / 'documents' / 'census' / 'convention6.txt'
         page1.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         rc = self._run([str(renamed1), '--more', str(renamed1), 'attachment'])
         self.assertEqual(rc, EXIT_ERRORS)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 1)
 
@@ -1784,15 +1784,15 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'main-record.txt'
         primary.write_text('front', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('main-record*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('main-record*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
 
         original_more = self.archive / 'documents' / 'census' / 'replacement.txt'
         original_more.write_text('original page 2', encoding='utf-8')
         rc = self._run([str(renamed), '--more', str(original_more), 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
         # #278: named for the source, not for the scan it came in as.
-        attached = next((self.archive / 'documents' / 'census').glob('main-record-page-2_S-*.txt'))
+        attached = next((self.archive / 'documents' / 'census').glob('main-record-page-2_s-*.txt'))
         self.assertEqual(len(read_record(record)['meta']['files']), 2)
 
         # The listed file goes missing from disk (deleted, an external drive
@@ -1824,15 +1824,15 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'main-record2.txt'
         primary.write_text('front', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('main-record2*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('main-record2*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
 
         more_file = self.archive / 'documents' / 'census' / 'sidepage.txt'
         more_file.write_text('page 2', encoding='utf-8')
         rc = self._run([str(renamed), '--more', str(more_file), 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
         # #278: named for the source, not for the scan it came in as.
-        attached = next((self.archive / 'documents' / 'census').glob('main-record2-page-2_S-*.txt'))
+        attached = next((self.archive / 'documents' / 'census').glob('main-record2-page-2_s-*.txt'))
 
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -1853,7 +1853,7 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'convention7.txt'
         primary.write_text('p1', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'census']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         (self.archive / 'inbox').mkdir()
         page2 = self.archive / 'inbox' / 'page-2.jpg'
@@ -1863,9 +1863,9 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
 
         self.assertEqual(list((self.archive / 'photos').rglob('page-2*')), [])
-        attached = list((self.archive / 'documents' / 'census').glob('*page-2*_S-*.jpg'))
+        attached = list((self.archive / 'documents' / 'census').glob('*page-2*_s-*.jpg'))
         self.assertEqual(len(attached), 1)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[1]['role'], 'page-2')
@@ -2287,8 +2287,8 @@ class ProcessTestCase(unittest.TestCase):
         primary.write_text('Dear cousin,', encoding='utf-8')
         rc = self._run([str(primary), '--type', 'letter'])
         self.assertEqual(rc, EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('family-letter*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
         self.assertNotIn('restricted', read_record(record)['meta'])  # unrestricted to start
 
         (self.archive / 'inbox').mkdir()
@@ -2307,7 +2307,7 @@ class ProcessTestCase(unittest.TestCase):
         # library, where this DNA-restriction fix does not reach.
         self.assertEqual(list((self.archive / 'photos').rglob('*ancestrydna*')), [])
         # #278: named for the source; the kit's own name is its original_filename.
-        attached = list((self.archive / 'documents' / 'census').glob('family-letter-attachment_S-*'))
+        attached = list((self.archive / 'documents' / 'census').glob('family-letter-attachment_s-*'))
         self.assertEqual(len(attached), 1)
 
         # packet.py's OWN decision function agrees this now reads as the
@@ -2326,8 +2326,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'dry-letter.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('dry-letter*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('dry-letter*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         (self.archive / 'inbox').mkdir()
         kit = self.archive / 'inbox' / 'dry-kit.txt'
@@ -2351,8 +2351,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'family-letter2.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('family-letter2*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter2*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         (self.archive / 'inbox').mkdir()
         kit = self.archive / 'inbox' / 'kit2.txt'
@@ -2361,7 +2361,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
         self.assertEqual(rc, EXIT_CLEAN)
         attached = next((self.archive / 'documents' / 'census').glob(
-            'family-letter2-attachment_S-*.txt'))  # #278: named for the source
+            'family-letter2-attachment_s-*.txt'))  # #278: named for the source
         self.assertEqual(read_record(record)['meta']['restricted'], 'dna')
 
         # Simulate a pre-fix record: strip restricted: back out by hand, as
@@ -2394,8 +2394,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'family-letter3.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('family-letter3*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('family-letter3*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         # Hand-author a valid multiline `restricted:` block scalar into the
         # freshly scaffolded record, as a human editing the record directly
@@ -2438,8 +2438,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'plain-letter.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('plain-letter*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('plain-letter*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         (self.archive / 'inbox').mkdir()
         extra = self.archive / 'inbox' / 'plain-page-2.txt'
@@ -2467,8 +2467,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'refuse-letter.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('refuse-letter*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('refuse-letter*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         (self.archive / 'inbox').mkdir()
         kit = self.archive / 'inbox' / 'refuse-kit.txt'
@@ -2511,7 +2511,7 @@ class ProcessTestCase(unittest.TestCase):
         front = self.archive / 'photos' / '1880' / 'dna-card.jpg'
         front.write_bytes(b'\xff\xd8\xff')
         self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
 
         kit = self.archive / 'photos' / '1880' / 'dna-card-kit.jpg'
         kit.write_bytes(b'\xff\xd8\xff')
@@ -2548,8 +2548,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'refuse-doc.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('refuse-doc*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('refuse-doc*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         kit = self.archive / 'documents' / 'census' / 'refuse-kit.txt'
         kit.write_text('data', encoding='utf-8')
@@ -2598,8 +2598,8 @@ class ProcessTestCase(unittest.TestCase):
         primary = self.archive / 'documents' / 'census' / 'inbox-refuse.txt'
         primary.write_text('Dear cousin,', encoding='utf-8')
         self.assertEqual(self._run([str(primary), '--type', 'letter']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('inbox-refuse*_S-*.txt'))
-        record = next((self.archive / 'sources' / 'letter').glob('*_S-*.md'))
+        renamed = next((self.archive / 'documents' / 'census').glob('inbox-refuse*_s-*.txt'))
+        record = next((self.archive / 'sources' / 'letter').glob('*_s-*.md'))
 
         (self.archive / 'inbox').mkdir()
         kit = self.archive / 'inbox' / 'inbox-refuse-kit.txt'
@@ -2733,7 +2733,7 @@ class ProcessTestCase(unittest.TestCase):
         finally:
             os.chdir(old_cwd)
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertTrue(rec['meta']['files'][0]['file'].startswith('documents/census/'))
 
@@ -2821,7 +2821,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(sidecar.exists())  # stub consumed
 
-        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        records = list((self.archive / 'sources').rglob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['title'], 'Deed Held at County Courthouse')
@@ -2873,7 +2873,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(sidecar.exists())  # stub consumed
 
-        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        records = list((self.archive / 'sources').rglob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['title'], 'Grandma Wedding Photo')
@@ -2896,7 +2896,7 @@ class ProcessTestCase(unittest.TestCase):
         )
         rc = self._run([str(sidecar)])
         self.assertEqual(rc, EXIT_CLEAN)
-        rec = read_record(next((self.archive / 'sources').rglob('*_S-*.md')))
+        rec = read_record(next((self.archive / 'sources').rglob('*_s-*.md')))
         self.assertIn("Mentioned in Aunt Sue's 2019 email.", rec['meta']['provenance'])
         self.assertIn("on Dad's laptop", rec['meta']['provenance'])
 
@@ -2915,7 +2915,7 @@ class ProcessTestCase(unittest.TestCase):
                          '--slug', 'cli-slug'])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'newspaper').glob('cli-slug_S-*.md'))
+        record = next((self.archive / 'sources' / 'newspaper').glob('cli-slug_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['title'], 'CLI Title')
 
@@ -2945,7 +2945,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(sidecar), '--type', 'dna'])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'dna').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'dna').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertTrue(rec['meta']['restricted'])
 
@@ -2959,7 +2959,7 @@ class ProcessTestCase(unittest.TestCase):
         )
         rc = self._run([str(sidecar)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['source_date'], '1880-06')
 
     def test_document_normalizes_month_name_sidecar_source_date(self) -> None:
@@ -2970,7 +2970,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['source_date'], '1880-06')
 
     def test_sidecar_people_hint_surfaces_in_notes(self) -> None:
@@ -2984,7 +2984,7 @@ class ProcessTestCase(unittest.TestCase):
         )
         rc = self._run([str(asset)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         text = record.read_text(encoding='utf-8')
         self.assertIn('Calvin Hartley', text)
         self.assertIn('Edith Hartley', text)
@@ -3015,15 +3015,32 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
 
         kws = store.read(photo)
-        self.assertIn('P-de957bcda1', kws)
-        self.assertIn('P-ab3c8f0e12', kws)
-        self.assertTrue(any(kw.startswith('SOURCE: S-') for kw in kws))
+        self.assertIn('p-de957bcda1', kws)
+        self.assertIn('p-ab3c8f0e12', kws)
+        self.assertTrue(any(kw.startswith('SOURCE: s-') for kw in kws))
 
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         rec = read_record(record)
         people = rec['meta'].get('people', [])
-        self.assertIn('P-de957bcda1', people)
-        self.assertIn('P-ab3c8f0e12', people)
+        self.assertIn('p-de957bcda1', people)
+        self.assertIn('p-ab3c8f0e12', people)
+
+    def test_photo_people_does_not_twin_an_uppercase_tag_already_on_the_photo(self) -> None:
+        # A photo an older tool (or Lightroom) tagged `P-de957bcda1` already
+        # names him; writing `p-de957bcda1` beside it would show two tags for
+        # one person in every photo program, written into the original.
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        photo = self.archive / 'photos' / '1880' / 'tagged-before.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        store.keywords[str(photo.resolve())] = ['P-de957bcda1']
+        store.keywords[str(photo)] = ['P-de957bcda1']
+
+        rc = self._run([str(photo), '--people', 'P-de957bcda1'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        person_tags = [kw for kw in store.read(photo)
+                       if kw.lower() == 'p-de957bcda1']
+        self.assertEqual(person_tags, ['P-de957bcda1'])
 
     def test_photo_people_dry_run_shows_people_without_writing(self) -> None:
         store = self._install_photo_store()
@@ -3035,7 +3052,7 @@ class ProcessTestCase(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             rc = self._run([str(photo), '--people', 'P-de957bcda1', '--dry-run'])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('P-de957bcda1', out.getvalue())
+        self.assertIn('p-de957bcda1', out.getvalue())
         self.assertEqual(store.read(photo), [])
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
@@ -3174,7 +3191,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue(photo.exists())  # NEVER renamed
         self.assertEqual(len(store.read(photo)), 1)
-        records = list((self.archive / 'sources' / 'photos').glob('ferrotype_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('ferrotype_s-*.md'))
         self.assertEqual(len(records), 1)
 
     def test_variation_one_makes_single_record_with_two_files(self) -> None:
@@ -3189,7 +3206,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(store.read(front)), 1)
         self.assertEqual(store.read(front), store.read(back))
 
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         files = read_record(records[0])['meta']['files']
         self.assertEqual(len(files), 2)
@@ -3206,7 +3223,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(front)])
         self.assertEqual(rc, EXIT_CLEAN)
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 2)
         # Two distinct S-ids, one per photo.
         self.assertNotEqual(store.read(front)[0], store.read(back)[0])
@@ -3276,7 +3293,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(d)])
         self.assertEqual(rc, EXIT_CLEAN)
         # The pair became one 2-file record; the reunion became its own record.
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 2)
         self.assertEqual(len(store.read(front)), 1)
         self.assertEqual(store.read(front), store.read(back))
@@ -3316,7 +3333,7 @@ class ProcessTestCase(unittest.TestCase):
         # Bundle folder dissolved.
         self.assertFalse(bundle.exists())
         # One record covering both assets.
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['title'], 'The Reunion')
@@ -3330,7 +3347,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(store.read(moved_photo)), 1)
         # Document renamed + filed under the documents root (same plural subdir
         # mapping the photo record uses).
-        docs = list((self.archive / 'documents' / 'photos').glob('caption*_S-*.txt'))
+        docs = list((self.archive / 'documents' / 'photos').glob('caption*_s-*.txt'))
         self.assertEqual(len(docs), 1)
 
     def test_bundle_refuses_already_processed_photo_before_moves(self) -> None:
@@ -3346,7 +3363,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue((bundle / 'caption.txt').exists())
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
         self.assertFalse((self.archive / 'photos' / 'reunion.jpg').exists())
-        self.assertEqual(list((self.archive / 'documents' / 'photos').glob('*_S-*.txt')), [])
+        self.assertEqual(list((self.archive / 'documents' / 'photos').glob('*_s-*.txt')), [])
 
     def test_bundle_includes_notes_named_assets(self) -> None:
         bundle = self.archive / 'inbox' / 'interview-bundle'
@@ -3361,7 +3378,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(bundle)])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(bundle.exists())
-        record = next((self.archive / 'sources' / 'interview').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'interview').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
         filed = [f['file'] for f in files]
@@ -3390,7 +3407,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(bundle)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'interview').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'interview').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         by_original = {item['original_filename']: item for item in files}
         self.assertEqual(by_original['oral-history.mp3']['role'], 'recording')
@@ -3412,7 +3429,7 @@ class ProcessTestCase(unittest.TestCase):
         (bundle / 'portrait.jpg').write_bytes(b'\xff\xd8\xff')
         (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
         self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
         self.assertEqual(files['portrait.jpg']['role'], 'primary')
         self.assertIn(files['portrait.jpg']['is_primary'], (True, 'true'))
@@ -3431,7 +3448,7 @@ class ProcessTestCase(unittest.TestCase):
         (bundle / 'portrait-front.jpg').write_bytes(b'\xff\xd8\xff')
         (bundle / 'portrait-envelope.jpg').write_bytes(b'\xff\xd8\xff')
         self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
         self.assertIn(files['portrait-front.jpg']['is_primary'], (True, 'true'))
         self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
@@ -3452,7 +3469,7 @@ class ProcessTestCase(unittest.TestCase):
         (bundle / 'record-extracted-text.txt').write_text(
             'The parcel adjoins Quillfeather Creek.', encoding='utf-8')
         self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         roles = {f['original_filename']: f['role'] for f in read_record(record)['meta']['files']}
         self.assertEqual(roles['record-extracted-text.txt'], 'extracted-text')
         cfg = load_fha_yaml(self.archive)
@@ -3482,7 +3499,7 @@ class ProcessTestCase(unittest.TestCase):
 
         rc = self._run([str(bundle)])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'land-record').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'land-record').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         sid = record.stem.split('_')[-1]
         self.assertEqual(files[0]['copy'], 'b')
@@ -3499,7 +3516,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(bundle)])
         self.assertEqual(rc, EXIT_CLEAN)
 
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         rec = read_record(record)
         self.assertEqual(rec['meta']['source_type'], 'photo')
         self.assertTrue((self.archive / 'photos' / 'front.jpg').exists())
@@ -3623,7 +3640,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(asset.exists())  # relocated out of inbox and renamed
-        renamed = list((self.archive / 'documents' / 'other').glob('scan-note_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('scan-note_s-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_cwd_hit_wins_over_archive_root_candidate(self) -> None:
@@ -3663,7 +3680,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
             rc = self._run(['inbox/photo-note.txt'])
 
         self.assertEqual(rc, EXIT_CLEAN)
-        renamed = list((self.archive / 'documents' / 'other').glob('photo-note_S-*.txt'))
+        renamed = list((self.archive / 'documents' / 'other').glob('photo-note_s-*.txt'))
         self.assertEqual(len(renamed), 1)
 
     def test_both_miss_error_names_both_searched_locations(self) -> None:
@@ -3695,7 +3712,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
         self.assertIn('Would copy scan-note.txt out of inbox/', out.getvalue())
         self.assertTrue(asset.exists())
         self.assertEqual(list((self.archive / 'documents').glob('*.txt')), [])
-        self.assertEqual(list((self.archive / 'sources').rglob('*_S-*.md')), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*_s-*.md')), [])
 
     def test_more_file_shares_the_forgiving_lookup(self) -> None:
         # --more's file argument resolves through the same door: a both-ways
@@ -3705,7 +3722,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
         page1.write_text('p1', encoding='utf-8')
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
@@ -3719,7 +3736,7 @@ class InputPathResolutionTestCase(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             rc = self._run([str(renamed), '--more', 'documents/census/page2.txt', 'page-2'])
         self.assertEqual(rc, EXIT_CLEAN)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(read_record(record)['meta']['files']), 2)
 
 
@@ -3779,7 +3796,7 @@ class SourceIdOverrideTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         sid = result.data['source_id']
         self.assertTrue(sid and sid.upper().startswith('S-'))
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['id'].lower(), sid.lower())
 
     def test_document_apply_reuses_the_previewed_minted_source_id(self) -> None:
@@ -3793,7 +3810,7 @@ class SourceIdOverrideTests(unittest.TestCase):
             self._args(original, source_type='census', source_id=previewed))
         self.assertEqual(live.exit_code, EXIT_CLEAN)
         self.assertEqual(live.data['source_id'], previewed)
-        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
 
     def test_pointer_only_apply_reuses_the_previewed_minted_source_id(self) -> None:
@@ -3810,7 +3827,7 @@ class SourceIdOverrideTests(unittest.TestCase):
         live = process.run_process(self._args(sidecar, source_id=previewed))
         self.assertEqual(live.exit_code, EXIT_CLEAN)
         self.assertEqual(live.data['source_id'], previewed)
-        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        record = next((self.archive / 'sources').rglob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
 
     def test_photo_apply_reuses_the_previewed_minted_source_id(self) -> None:
@@ -3823,7 +3840,7 @@ class SourceIdOverrideTests(unittest.TestCase):
         live = process.run_process(self._args(photo, source_id=previewed))
         self.assertEqual(live.exit_code, EXIT_CLEAN)
         self.assertEqual(live.data['source_id'], previewed)
-        record = next((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(read_record(record)['meta']['id'].lower(), previewed.lower())
 
     def test_source_id_override_rejects_a_malformed_id(self) -> None:
@@ -3872,7 +3889,7 @@ class SourceIdOverrideTests(unittest.TestCase):
         page1.write_text('p1', encoding='utf-8')
         filed = process.run_process(self._args(page1, source_type='census'))
         self.assertEqual(filed.exit_code, EXIT_CLEAN)
-        renamed = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        renamed = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
 
         page2 = self.archive / 'documents' / 'census' / 'page2.txt'
         page2.write_text('p2', encoding='utf-8')
@@ -4153,9 +4170,9 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(scan.exists())
-        filed = list((self.archive / 'documents' / 'census').glob('*_S-*.jpg'))
+        filed = list((self.archive / 'documents' / 'census').glob('*_s-*.jpg'))
         self.assertEqual(len(filed), 1, 'the scan belongs under the documents root')
-        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(records), 1, 'the record belongs under sources/census/')
         self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
         self.assertFalse((self.archive / 'sources' / 'photos').exists())
@@ -4184,7 +4201,7 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'photos' / 'portrait.jpg').is_file())
-        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         self.assertEqual(read_record(records[0])['meta']['source_type'], 'photo')
 
@@ -4196,9 +4213,9 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(
-            len(list((self.archive / 'documents' / 'land-record').glob('deed_S-*.pdf'))), 1)
+            len(list((self.archive / 'documents' / 'land-record').glob('deed_s-*.pdf'))), 1)
         self.assertEqual(
-            len(list((self.archive / 'sources' / 'land-record').glob('deed_S-*.md'))), 1)
+            len(list((self.archive / 'sources' / 'land-record').glob('deed_s-*.md'))), 1)
 
     def test_photo_type_on_an_image_is_unchanged(self) -> None:
         photo = self.archive / 'inbox' / 'portrait.jpg'
@@ -4237,9 +4254,9 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(
-            len(list((self.archive / 'documents' / 'newspaper').glob('page_S-*.jpg'))), 1)
+            len(list((self.archive / 'documents' / 'newspaper').glob('page_s-*.jpg'))), 1)
         self.assertEqual(
-            len(list((self.archive / 'sources' / 'newspaper').glob('*_S-*.md'))), 1)
+            len(list((self.archive / 'sources' / 'newspaper').glob('*_s-*.md'))), 1)
         self._assert_photos_root_untouched(renames)
 
     # -- a file already living in the photo library ---------------------------
@@ -4257,7 +4274,7 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue(scan.is_file(), 'the photo library is never rearranged')
-        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
         self.assertIn('refile', out)
@@ -4279,9 +4296,9 @@ class TypeFlagRoutingTests(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertFalse(bundle.exists(), 'the bundle folder dissolves')
-        filed = sorted(p.name for p in (self.archive / 'documents' / 'census').glob('*_S-*.jpg'))
+        filed = sorted(p.name for p in (self.archive / 'documents' / 'census').glob('*_s-*.jpg'))
         self.assertEqual(len(filed), 2, filed)
-        records = list((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
         self._assert_photos_root_untouched(renames)
@@ -4297,7 +4314,7 @@ class TypeFlagRoutingTests(unittest.TestCase):
             rc = self._run([str(bundle), '--type', 'newspaper'])
 
         self.assertEqual(rc, EXIT_CLEAN)
-        records = list((self.archive / 'sources' / 'newspaper').glob('*_S-*.md'))
+        records = list((self.archive / 'sources' / 'newspaper').glob('*_s-*.md'))
         self.assertEqual(len(records), 1)
         self._assert_photos_root_untouched(renames)
 
@@ -4312,7 +4329,7 @@ class TypeFlagRoutingTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertTrue((self.archive / 'photos' / 'front.jpg').is_file())
         self.assertEqual(
-            len(list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))), 1)
+            len(list((self.archive / 'sources' / 'photos').glob('*_s-*.md'))), 1)
 
 
 class ExiftoolReadOnlyRetryTests(unittest.TestCase):

@@ -498,7 +498,7 @@ class SetSexTests(unittest.TestCase):
         result = person.run_set_sex(self.root, 'P-dddddddddd', 'F')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'merged')
-        self.assertIn('fha person set-sex P-cccccccccc F', result.messages[0].text)
+        self.assertIn('fha person set-sex p-cccccccccc F', result.messages[0].text)
         self.assertEqual(path.read_bytes(), before)
 
     def test_cli_round_trip_via_fha(self) -> None:
@@ -642,8 +642,8 @@ class SetLivingRefusalTests(unittest.TestCase):
         result = person.run_set_living(self.root, 'P-zzzzzzzzzz', 'false')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
-        self.assertIn('fha find P-zzzzzzzzzz', result.messages[0].text)
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
+        self.assertIn('fha find p-zzzzzzzzzz', result.messages[0].text)
 
     def test_merged_tombstone_names_survivor(self) -> None:
         tomb = (
@@ -661,7 +661,7 @@ class SetLivingRefusalTests(unittest.TestCase):
         result = person.run_set_living(self.root, 'P-dddddddddd', 'true')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'merged')
-        self.assertIn('fha person set-living P-cccccccccc true', result.messages[0].text)
+        self.assertIn('fha person set-living p-cccccccccc true', result.messages[0].text)
         self.assertEqual(path.read_bytes(), before)
 
     def test_hand_edited_merged_status_casing_still_refused(self) -> None:
@@ -686,7 +686,7 @@ class SetLivingRefusalTests(unittest.TestCase):
             result = person.run_set_living(self.root, 'P-dddddddddd', 'true')
             self.assertEqual(result.exit_code, EXIT_FAILURE, status_line)
             self.assertEqual(result.data['status'], 'merged', status_line)
-            self.assertIn('P-cccccccccc', result.messages[0].text)
+            self.assertIn('p-cccccccccc', result.messages[0].text)
             self.assertEqual(path.read_bytes(), before, status_line)
             path.unlink()
 
@@ -1175,7 +1175,7 @@ class NewTests(unittest.TestCase):
             encoding='utf-8')
         result = person.run_new(self.root, 'Claim Named', person_id=pid)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(result.data['person_id'], pid)
+        self.assertEqual(result.data['person_id'], pid.lower())
         path = Path(result.data['path'])
         self.assertTrue(path.exists())
         self.assertEqual(read_record(path)['meta']['id'].lower(), pid.lower())
@@ -1257,7 +1257,7 @@ class RelateTests(unittest.TestCase):
         self.assertEqual(result.changed, [str(self.curated)])
         text = self.curated.read_text(encoding='utf-8')
         self.assertIn('relationships:\n', text)
-        self.assertIn('  - to: "[[P-bbbbbbbbbb|Margaret Cole]]"\n', text)
+        self.assertIn('  - to: "[[p-bbbbbbbbbb|Margaret Cole]]"\n', text)
         self.assertIn('    type: parent\n', text)
         self.assertIn('    status: hypothesis\n', text)
         self.assertNotIn('subtype:', text)   # omitted when not given
@@ -1299,7 +1299,7 @@ class RelateTests(unittest.TestCase):
         lines = new_text.split('\n')
         idx_first = next(i for i, l in enumerate(lines) if 'P-1111111111' in l)
         idx_second = next(i for i, l in enumerate(lines) if 'P-2222222222' in l)
-        idx_new = next(i for i, l in enumerate(lines) if 'P-3333333333' in l)
+        idx_new = next(i for i, l in enumerate(lines) if 'p-3333333333' in l)
         idx_created = next(i for i, l in enumerate(lines) if l.startswith('created:'))
         # The new entry lands after BOTH existing entries and before created:.
         self.assertLess(idx_first, idx_second)
@@ -1327,7 +1327,7 @@ class RelateTests(unittest.TestCase):
         self.curated.write_text(new_text, encoding='utf-8')
         meta = read_record(self.curated)['meta']
         rel = meta['relationships'][0]
-        self.assertEqual(rel['to'], '[[P-4444444444|Anna "Annie" Smith]]')
+        self.assertEqual(rel['to'], '[[p-4444444444|Anna "Annie" Smith]]')
         self.assertEqual(rel['type'], 'sibling')
 
     def test_idempotent_duplicate(self) -> None:
@@ -1347,7 +1347,7 @@ class RelateTests(unittest.TestCase):
         stub_text = self.stub.read_text(encoding='utf-8')
         self.assertIn('type: parent', curated_text)
         self.assertIn('type: child', stub_text)
-        self.assertIn(f'[[{CURATED_PID}|Thomas Hartley]]', stub_text)
+        self.assertIn(f'[[{CURATED_PID.lower()}|Thomas Hartley]]', stub_text)
 
     def test_reciprocal_second_write_failure_rolls_back_the_first(self) -> None:
         # P2 codex finding (PR #30): the reciprocal write used to write the
@@ -1453,27 +1453,27 @@ class RelateTests(unittest.TestCase):
         result = person.run_relate(self.root, 'P-zzzzzzzzzz', 'parent', TARGET_PID)
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
 
     def test_missing_target_exit1_next_step(self) -> None:
         result = person.run_relate(self.root, CURATED_PID, 'parent', 'P-zzzzzzzzzz')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
 
     def test_merged_tombstone_owner_side_refused(self) -> None:
         _mk_merged_tombstone(self.root)
         result = person.run_relate(self.root, 'P-dddddddddd', 'parent', TARGET_PID)
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'merged')
-        self.assertIn(CURATED_PID, result.messages[0].text)
+        self.assertIn(CURATED_PID.lower(), result.messages[0].text)
 
     def test_merged_tombstone_target_side_refused(self) -> None:
         _mk_merged_tombstone(self.root)
         result = person.run_relate(self.root, CURATED_PID, 'parent', 'P-dddddddddd')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'merged')
-        self.assertIn(CURATED_PID, result.messages[0].text)
+        self.assertIn(CURATED_PID.lower(), result.messages[0].text)
 
     def test_crlf_file_round_trips_with_endings_intact(self) -> None:
         crlf = CURATED.replace('\n', '\r\n')
@@ -1618,7 +1618,7 @@ class EstimateTests(unittest.TestCase):
         result = person.run_estimate(self.root, 'P-zzzzzzzzzz', birth='1870')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
 
     def test_merged_tombstone_refused(self) -> None:
         _mk_merged_tombstone(self.root)
@@ -1825,7 +1825,7 @@ class EditTests(unittest.TestCase):
         result = person.run_edit(self.root, 'P-zzzzzzzzzz', 'biography', text='x')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
 
     def test_merged_tombstone_refused(self) -> None:
         _mk_merged_tombstone(self.root)
@@ -1948,7 +1948,7 @@ class NoteTests(unittest.TestCase):
         result = person.run_note(self.root, 'P-zzzzzzzzzz', 'research', 'x')
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find P-zzzzzzzzzz')
+        self.assertEqual(result.messages[0].next_step, 'fha find p-zzzzzzzzzz')
 
     def test_merged_tombstone_refused(self) -> None:
         _mk_merged_tombstone(self.root)
@@ -3103,7 +3103,7 @@ class RenameTests(unittest.TestCase):
         res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
         self.assertEqual(res.exit_code, EXIT_FAILURE)
         self.assertEqual(res.data['status'], 'merged')
-        self.assertIn(survivor, res.messages[-1].text)
+        self.assertIn(survivor.lower(), res.messages[-1].text)
 
 
 class SkillInventoryDocsTests(unittest.TestCase):

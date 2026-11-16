@@ -238,10 +238,10 @@ class NormalizeLinksTests(unittest.TestCase):
     def test_write_applies_canonical_forms(self):
         nl.run_normalize_links(self.root, {}, write=True)
         text = self.src.read_text(encoding='utf-8')
-        self.assertIn('[[S-1111111111]]', text)                          # (a) legacy upgraded
-        self.assertIn('[[S-1111111111|grandmas-album]]', text)           # (b) stem, display kept
-        self.assertIn('[[P-de957bcda1|Ken Smith]]', text)                # (c) name → ID|name
-        self.assertIn('people: ["[[P-de957bcda1|Ken Smith]]"]', text)    # frontmatter settled
+        self.assertIn('[[s-1111111111]]', text)                          # (a) legacy upgraded
+        self.assertIn('[[s-1111111111|grandmas-album]]', text)           # (b) stem, display kept
+        self.assertIn('[[p-de957bcda1|Ken Smith]]', text)                # (c) name → ID|name
+        self.assertIn('people: ["[[p-de957bcda1|Ken Smith]]"]', text)    # frontmatter settled
 
     def test_claims_block_bare_ids_never_touched(self):
         nl.run_normalize_links(self.root, {}, write=True)

@@ -52,7 +52,7 @@ class IdMintBoundsTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_CLEAN)
             ids = [ln for ln in out.splitlines() if ln.strip()]
             self.assertEqual(len(ids), 3)
-            self.assertTrue(all(i.startswith('P-') for i in ids))
+            self.assertTrue(all(i.startswith('p-') for i in ids))
 
     def test_n_at_cap_mints(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,3 +65,43 @@ class IdMintBoundsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class LowercaseIdsTests(unittest.TestCase):
+    """SPEC §10: every tool writes an ID all lowercase, prefix included
+    (`p-3kq9v8x2m1`), and reads any casing. Before this, minting wrote
+    `P-…` and every message, filename and keyword the tools wrote showed the
+    capital prefix, so the owner's records carried two spellings of one ID."""
+
+    def test_minted_ids_are_all_lowercase(self) -> None:
+        import _lib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            for prefix in ('P', 's', 'C', 'l', 'H'):
+                with self.subTest(prefix=prefix):
+                    for new_id in _lib.mint_ids(prefix, 5, root):
+                        self.assertEqual(new_id, new_id.lower())
+                        self.assertTrue(new_id.startswith(prefix.lower() + '-'))
+                        self.assertTrue(_lib.is_valid_id(new_id))
+
+    def test_fha_id_mint_prints_lowercase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                rc = fha.main(['id', 'mint', 'S', '-n', '2', '--root', str(root)])
+            self.assertEqual(rc, EXIT_CLEAN)
+            ids = [ln.strip() for ln in out.getvalue().splitlines() if ln.strip()]
+            self.assertEqual(len(ids), 2)
+            self.assertTrue(all(i.startswith('s-') and i == i.lower() for i in ids))
+
+    def test_displayed_ids_are_all_lowercase(self) -> None:
+        from _lib import fmt_id_display
+        self.assertEqual(fmt_id_display('p-3kq9v8x2m1'), 'p-3kq9v8x2m1')
+        # An ID typed with capitals (an older tool's filename, a human) is
+        # shown in the one canonical form.
+        self.assertEqual(fmt_id_display('P-3KQ9V8X2M1'), 'p-3kq9v8x2m1')
+        self.assertEqual(fmt_id_display('S-7n4hp0wztb'), 's-7n4hp0wztb')
+        self.assertEqual(fmt_id_display(''), '')

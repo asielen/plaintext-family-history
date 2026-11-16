@@ -220,7 +220,7 @@ class LintForgivingDateTests(unittest.TestCase):
         # A well-formed L-id that resolves to nothing is a broken link, not a
         # forgiving case - integrity matters, so it stays E004.
         findings = self._lint('1870', place_line='place: L-cccccccccc')
-        e004 = [f for f in findings if f.code == 'E004' and 'L-cccccccccc' in f.message]
+        e004 = [f for f in findings if f.code == 'E004' and 'l-cccccccccc' in f.message]
         self.assertTrue(e004)
 
 
@@ -424,7 +424,7 @@ class NeverMintableTests(unittest.TestCase):
             self.assertEqual(p.read_bytes(), content, f'{p} was modified')
         # The genuine hand-authored record still minted and renamed as before.
         couple = self.root / 'people' / '010 James Brooks + Dorothy Hill'
-        minted = [p.name for p in couple.glob('brooks__james_P-*.md')]
+        minted = [p.name for p in couple.glob('brooks__james_p-*.md')]
         self.assertEqual(len(minted), 1, sorted(p.name for p in couple.iterdir()))
 
 
@@ -781,7 +781,7 @@ class FixIdsRenamesSuffixedNamesTests(unittest.TestCase):
             '---\nname: Roy Eugene Dodson Jr\nliving: false\n---\n\n'
             '# Roy Eugene Dodson Jr\n', encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = [p.name for p in (self.root / 'people').glob('dodson__roy_eugene_jr_P-*.md')]
+        minted = [p.name for p in (self.root / 'people').glob('dodson__roy_eugene_jr_p-*.md')]
         self.assertEqual(len(minted), 1,
                           sorted(p.name for p in (self.root / 'people').iterdir()))
 
@@ -794,8 +794,8 @@ class FixIdsRenamesSuffixedNamesTests(unittest.TestCase):
             '# Roy Eugene Dodson Jr\n', encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
         people_dir = self.root / 'people'
-        father = list(people_dir.glob('dodson__roy_eugene_P-*.md'))
-        son = list(people_dir.glob('dodson__roy_eugene_jr_P-*.md'))
+        father = list(people_dir.glob('dodson__roy_eugene_p-*.md'))
+        son = list(people_dir.glob('dodson__roy_eugene_jr_p-*.md'))
         self.assertEqual(len(father), 1, sorted(p.name for p in people_dir.iterdir()))
         self.assertEqual(len(son), 1, sorted(p.name for p in people_dir.iterdir()))
 
@@ -824,7 +824,7 @@ class FixIdsBlankNameFallsBackToFilenameTests(unittest.TestCase):
         (self.root / 'people' / 'Mystery Person.md').write_text(
             '---\nname:\nliving: false\n---\n\n# Mystery Person\n', encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('*_P-*.md'))
+        minted = list((self.root / 'people').glob('*_p-*.md'))
         self.assertEqual(len(minted), 1,
                           sorted(p.name for p in (self.root / 'people').iterdir()))
         self.assertNotIn('none', minted[0].name.lower())
@@ -1134,8 +1134,8 @@ class PlaceholderIdTests(unittest.TestCase):
     def test_fix_ids_replaces_placeholders_and_file_lints_clean(self) -> None:
         lint.run_lint(self.root, {}, fix_ids=True)
 
-        minted_people = list((self.root / 'people').glob('hartley__thomas_P-*.md'))
-        minted_sources = list((self.root / 'sources').glob('1880-census_S-*.md'))
+        minted_people = list((self.root / 'people').glob('hartley__thomas_p-*.md'))
+        minted_sources = list((self.root / 'sources').glob('1880-census_s-*.md'))
         self.assertEqual(len(minted_people), 1)
         self.assertEqual(len(minted_sources), 1)
 
@@ -1175,7 +1175,7 @@ class PlaceholderIdTests(unittest.TestCase):
                           if f.code == 'E002' and 'hartley__thomas' in f.path], [])
         e003 = [f for f in findings if f.code == 'E003' and 'placeholder' in f.message]
         self.assertEqual(len(e003), 1)
-        self.assertIn('P-5555555555', e003[0].message)
+        self.assertIn('p-5555555555', e003[0].message)
         self.assertNotIn(target.name, {p.name for p, _ in reg.idless_records})
 
     def test_placeholder_claim_id_in_real_source_is_e010_not_e002(self) -> None:
@@ -2001,7 +2001,7 @@ class AliasMergeTests(unittest.TestCase):
         (self.root / 'people' / 'Grandpa Bob.md').write_text(
             _TEMPLATE_COPY_PERSON, encoding='utf-8')
         result = lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         self.assertIn('grandpa-bob', aliases)
@@ -2019,7 +2019,7 @@ class AliasMergeTests(unittest.TestCase):
                 '  - grandpa-bob\n'
                 '  - "Grandpa Bob"'), encoding='utf-8')
         result = lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         self.assertEqual(aliases.count('grandpa-bob'), 1)   # no duplicates minted
@@ -2032,7 +2032,7 @@ class AliasMergeTests(unittest.TestCase):
             '---\nname: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
             encoding='utf-8')
         result = lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         self.assertIn('grandpa-bob', aliases)
@@ -2046,7 +2046,7 @@ class AliasMergeTests(unittest.TestCase):
             'name: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
             encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         self.assertIn('grandpa-bob', aliases)
@@ -2059,7 +2059,7 @@ class AliasMergeTests(unittest.TestCase):
                 '  - P-__________   # paste the same code here too\n  - Bobby'),
             encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         # New entries land AFTER the existing hand entries, keeping their order.
@@ -2073,7 +2073,7 @@ class AliasMergeTests(unittest.TestCase):
             '---\nname: Grandpa Bob\nliving: false\naliases:\n- old bob\n---\n\n# Grandpa Bob\n',
             encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         meta = read_record(minted[0])['meta']   # read_record parses the YAML - a
         aliases = meta.get('aliases') or []      # corrupt block would raise/empty
@@ -2089,7 +2089,7 @@ class AliasMergeTests(unittest.TestCase):
             'name: Grandpa Bob\nliving: false\n---\n\n# Grandpa Bob\n',
             encoding='utf-8')
         lint.run_lint(self.root, {}, fix_ids=True)
-        minted = list((self.root / 'people').glob('bob__grandpa_P-*.md'))
+        minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
         self.assertIn('[[Old Name]]', aliases)   # the embedded wikilink intact
@@ -2109,7 +2109,7 @@ class AliasMergeTests(unittest.TestCase):
                 lambda *a, **k: ('---\n: : broken\n- x\n bad:\n---\n\nbody\n', True)):
             result = lint.run_lint(self.root, {}, fix_ids=True)
         # Nothing minted, original untouched, and the refusal names the file.
-        self.assertEqual(list((self.root / 'people').glob('bob__grandpa_P-*.md')), [])
+        self.assertEqual(list((self.root / 'people').glob('bob__grandpa_p-*.md')), [])
         self.assertEqual((self.root / 'people' / 'Grandpa Bob.md').read_text(encoding='utf-8'), before)
         self.assertTrue(any('refused to mint' in l for l in result.data['progress']),
                         result.data['progress'])
@@ -2176,7 +2176,7 @@ class DirectLineStubW119Tests(unittest.TestCase):
         self.assertEqual(f.severity, 'W')
         self.assertIn('research lead, not a defect', f.message)
         self.assertIn('fha views brackets --fix-promote', f.message)
-        self.assertIn(f'fha person promote {self.PA}', f.message)
+        self.assertIn(f'fha person promote {self.PA.lower()}', f.message)
 
     def test_curated_record_parked_in_stubs_still_flagged(self) -> None:
         # A half promotion (tier flipped by hand, never moved) is still W119.
@@ -2388,7 +2388,7 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
         text = w122[0].message
         # Plain language for a non-technical genealogist: the reading is
         # correct, the rename is named, and keeping the name is allowed.
-        self.assertIn('hartley__marie_P-3kq9v8x2m1.md', text)
+        self.assertIn('hartley__marie_p-3kq9v8x2m1.md', text)
         self.assertIn('timeline', text)
         for jargon in ('frontmatter', 'companion', 'kind slot', 'parse'):
             self.assertNotIn(jargon, text.lower())
@@ -2611,7 +2611,7 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         # The next-step rule: the message names what to do, in commands that
         # exist. `fha source transcribe` does not.
         self.assertIn('1 accepted claim(s)', found[0].message)
-        self.assertIn(_W124_SID, found[0].message)
+        self.assertIn(_W124_SID.lower(), found[0].message)
         self.assertIn('fha source extract', found[0].message)
         self.assertIn('--more', found[0].message)
         self.assertNotIn('fha source transcribe', found[0].message)
@@ -2783,7 +2783,7 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertIn('names 6 people', f.message)
         self.assertIn('which two of them were the couple', f.message)
         self.assertIn('fha relate', f.message)
-        self.assertIn('spouse: [P-', f.message)
+        self.assertIn('spouse: [p-', f.message)
         # The repair must never be "delete the parents from persons:".
         self.assertIn('Leave everyone in persons:', f.message)
 
@@ -2882,7 +2882,7 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertNotIn('which two of them', msg)
         self.assertIn('a parent', msg)
         self.assertIn('no marriage is recorded between them', msg)
-        self.assertIn('spouse: [P-', msg)
+        self.assertIn('spouse: [p-', msg)
 
     def test_two_person_divorce_with_a_contradictory_role_warns(self) -> None:
         roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
@@ -2980,8 +2980,8 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # Says what is wrong, what it costs, and the concrete repair.
         self.assertIn('names 3 people', f.message)
         self.assertIn('fha relate', f.message)
-        self.assertIn('child: [P-', f.message)
-        self.assertIn('parent: [P-', f.message)
+        self.assertIn('child: [p-', f.message)
+        self.assertIn('parent: [p-', f.message)
         # The repair must never be "delete the parents from persons:".
         self.assertIn('Leave everyone in persons:', f.message)
 
@@ -3010,13 +3010,14 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         msg = w[0].message
         # The wording has to fit THIS shape: the claim HAS said who was born.
         self.assertIn('says who was born', msg)
-        self.assertIn('parent: [P-', msg)
+        self.assertIn('parent: [p-', msg)
 
     # -- #260: a map that places everyone has said all its record says --------
     # A warning nothing can clear without inventing a role teaches the owner
     # to skip W126 altogether, real cases included. SPEC §8.3 now reports a
-    # child-naming map only when it leaves someone unplaced: no role, or a role
-    # word outside the section's closed list.
+    # child-naming map only when it leaves someone unplaced: a person with no
+    # role at all. Any word places a person - a word outside the closed list
+    # is a descriptive role (`grandparent:`, `sibling:`) that derives nothing.
 
     def test_child_and_associate_with_everyone_placed_is_clean(self) -> None:
         # An interview: "Aunt Clara was born in 1896", naming the relative
@@ -3055,20 +3056,74 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # Names who is still unplaced, and offers both ways to place them.
         self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (no role given)', msg)
         self.assertNotIn(lint.fmt_id_display(self.CHILD) + ' (', msg)
-        self.assertIn('parent: [P-', msg)
+        self.assertIn('parent: [p-', msg)
         self.assertIn('informant:', msg)
 
-    def test_child_with_mother_typo_still_warns(self) -> None:
-        # `mother:` reads as correct to whoever wrote it, and no tool reads a
-        # parent out of it. This is the shape the list exists to keep catching.
+    def test_child_with_mother_word_is_a_parent_and_clean(self) -> None:
+        # SPEC §8.3 "Synonyms": `mother:` reads exactly as `parent:`. The
+        # transcription that says "mother" is right as written - the parent
+        # link is built and there is nothing to warn about.
         roles = (f'  roles:\n    child: [{self.CHILD}]\n'
                  f'    mother: [{self.MOTHER}]\n')
-        w = self._w126(self._build(persons=[self.CHILD, self.MOTHER],
-                                   roles_block=roles))
+        root = self._build(persons=[self.CHILD, self.MOTHER], roles_block=roles)
+        self.assertEqual(self._w126(root), [])
+
+    def test_every_kin_synonym_reads_as_its_role(self) -> None:
+        for word, meaning in sorted(lint.CLAIM_ROLE_SYNONYMS.items()):
+            with self.subTest(word=word):
+                claim = {'persons': [self.CHILD, self.MOTHER],
+                         'roles': {word: [self.MOTHER]}}
+                self.assertEqual(
+                    lint._claim_all_roles_by_person(claim),
+                    {lint.normalize_id(self.MOTHER): [meaning]})
+
+    def test_descriptive_roles_place_the_person(self) -> None:
+        # A grandparent named on the certificate is placed; nothing derives
+        # from her, and nothing asks the owner to call her a parent.
+        for word in ('grandparent', 'sibling', 'godparent', 'Registrant'):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.MOTHER}]\n')
+                root = self._build(persons=[self.CHILD, self.MOTHER],
+                                   roles_block=roles)
+                self.assertEqual(self._w126(root), [])
+
+    def test_a_misspelt_or_plural_parent_line_still_warns(self) -> None:
+        # `parents:` and `parnet:` are what a person types meaning `parent:`.
+        # Read as descriptive roles they would place the parents and derive
+        # nothing, so the parents would silently never reach the tree.
+        for word in ('parents', 'parnet', 'Parents', 'praent', 'mothers', 'fathers',
+                     'mohter', 'fahter'):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.FATHER}, {self.MOTHER}]\n')
+                w = self._w126(self._build(roles_block=roles))
+                self.assertEqual(len(w), 1, w)
+                self.assertIn('looks like `parent:`', w[0].message)
+
+    def test_descriptive_role_beside_an_unroled_person_still_warns(self) -> None:
+        # The person with no role at all is the one the claim left unsaid.
+        roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                 f'    grandparent: [{self.MOTHER}]\n')
+        w = self._w126(self._build(roles_block=roles))
         self.assertEqual(len(w), 1)
         msg = w[0].message
-        self.assertIn('`mother:`, which is not a role word', msg)
-        self.assertIn('parent: [P-', msg)
+        self.assertIn(f'{lint.fmt_id_display(self.FATHER)} (no role given)', msg)
+        self.assertNotIn(lint.fmt_id_display(self.MOTHER) + ' (', msg)
+
+    def test_relationship_claim_with_son_and_father_backs_the_entry(self) -> None:
+        # The person-record cross-check reads the same synonyms the index does.
+        claim = {'status': 'accepted', 'type': 'relationship',
+                 'subtype': 'biological',
+                 'persons': [self.CHILD, self.FATHER],
+                 'roles': {'son': [self.CHILD], 'father': [self.FATHER]}}
+        c, f = lint.normalize_id(self.CHILD), lint.normalize_id(self.FATHER)
+        self.assertTrue(lint._claim_backs_edge(claim, c, f, 'parent'))
+        self.assertTrue(lint._claim_backs_edge(claim, f, c, 'child'))
+        self.assertEqual(lint._person_reconcilable_role_label(claim, c), 'parent')
+        self.assertEqual(lint._claim_subtype_norm(
+            {'roles': {'daughter': [self.CHILD], 'mother': [self.MOTHER]}}),
+            'biological')
 
     # -- #266: a person carries every role they are listed under ----------------
     # The index used to read each person's FIRST role key only, so a mother
@@ -3151,35 +3206,30 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertEqual(self._w126(self._build(
             persons=[self.CHILD, self.FATHER], roles_block=roles)), [])
 
-    def test_mother_word_after_informant_still_warns(self) -> None:
-        w = self._hidden_parent_w126(
+    def test_mother_word_after_informant_is_a_parent(self) -> None:
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    informant: [{self.MOTHER}]\n    mother: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (under `mother:`, '
-                      'which is not a role word', w[0].message)
+            f'    informant: [{self.MOTHER}]\n    mother: [{self.MOTHER}]\n'), [])
 
     def test_mother_and_father_words_name_both_parents(self) -> None:
-        w = self._w126(self._build(roles_block=(
+        claim = {'persons': [self.CHILD, self.FATHER, self.MOTHER],
+                 'roles': {'child': [self.CHILD], 'informant': [self.MOTHER],
+                           'mother': [self.MOTHER], 'father': [self.FATHER]}}
+        self.assertEqual(lint._claim_parentage_pids(claim),
+                         ({lint.normalize_id(self.CHILD)},
+                          {lint.normalize_id(self.MOTHER),
+                           lint.normalize_id(self.FATHER)}))
+        self.assertEqual(self._w126(self._build(roles_block=(
             f'  roles:\n    child: [{self.CHILD}]\n'
             f'    informant: [{self.MOTHER}]\n    mother: [{self.MOTHER}]\n'
-            f'    father: [{self.FATHER}]\n')))
-        self.assertEqual(len(w), 1)
-        msg = w[0].message
-        self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (under `mother:`', msg)
-        self.assertIn(f'{lint.fmt_id_display(self.FATHER)} (under `father:`', msg)
+            f'    father: [{self.FATHER}]\n'))), [])
 
-    def test_stray_word_on_the_child_never_asks_her_to_be_a_parent(self) -> None:
-        # The only unplaced person is the one born: the repair is to fix that
-        # line, never to list her as somebody's parent.
-        w = self._hidden_parent_w126(
+    def test_descriptive_word_on_the_child_places_her(self) -> None:
+        # A second, descriptive word beside her `child:` line is not a typo to
+        # repair: she is the person born, and the informant is placed too.
+        self.assertEqual(self._hidden_parent_w126(
             f'  roles:\n    child: [{self.CHILD}]\n'
-            f'    registrant: [{self.CHILD}]\n    informant: [{self.MOTHER}]\n')
-        self.assertEqual(len(w), 1)
-        msg = w[0].message
-        self.assertIn('`registrant:`', msg)
-        self.assertNotIn('If they are the parents', msg)
-        self.assertNotIn('put the `parent:` line first', msg)
+            f'    registrant: [{self.CHILD}]\n    informant: [{self.MOTHER}]\n'), [])
 
     def test_parent_written_before_informant_derives_and_is_clean(self) -> None:
         # The control: `parent:` first, so the index builds the link and
@@ -3214,13 +3264,29 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         words = set(re.findall(r'`([a-z_]+)`', listed))
         self.assertEqual(words, set(lint.CLAIM_ROLE_WORDS))
 
+    def test_role_synonyms_match_spec(self) -> None:
+        # The same drift guard for SPEC §8.3's "Synonyms" paragraph: each
+        # "`word` and `word` as `role`" phrase there is one entry in
+        # _lib.CLAIM_ROLE_SYNONYMS, and nothing else is.
+        spec = (Path(__file__).resolve().parent.parent / 'SPEC.md').read_text(
+            encoding='utf-8')
+        para = next(line for line in spec.splitlines()
+                    if line.startswith('**Synonyms.**'))
+        pairs = re.findall(r'`([a-z_]+)` and `([a-z_]+)` as `([a-z_]+)`', para)
+        self.assertTrue(pairs)
+        spec_map = {w: role for a, b, role in pairs for w in (a, b)}
+        self.assertEqual(spec_map, dict(lint.CLAIM_ROLE_SYNONYMS))
+        # A synonym stands for a role word, and is never one itself.
+        self.assertLessEqual(set(spec_map.values()), set(lint.CLAIM_ROLE_WORDS))
+        self.assertFalse(set(spec_map) & set(lint.CLAIM_ROLE_WORDS))
+
     def test_parent_role_alone_warns_and_asks_who_was_born(self) -> None:
         roles = f'  roles:\n    parent: [{self.FATHER}, {self.MOTHER}]\n'
         w = self._w126(self._build(roles_block=roles))
         self.assertEqual(len(w), 1)
         msg = w[0].message
         self.assertIn('does not say who was born', msg)
-        self.assertIn('child: [P-', msg)
+        self.assertIn('child: [p-', msg)
 
     def test_suggested_claim_does_not_warn(self) -> None:
         # Derivation reads accepted claims only, so a suggested claim has cost
@@ -3349,7 +3415,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertIn('C-2222222222', f.message)
         self.assertIn('names 3 people', f.message)
         self.assertIn('died', f.message)
-        self.assertIn('spouse: [P-', f.message)
+        self.assertIn('spouse: [p-', f.message)
 
     def test_two_person_burial_without_roles_warns(self) -> None:
         w = self._w132(self._build(ctype='burial', persons=[self.A, self.B]))
@@ -3362,7 +3428,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn('names 3 people', w[0].message)
         self.assertIn('who was baptized', w[0].message)
-        self.assertIn('child: [P-', w[0].message)
+        self.assertIn('child: [p-', w[0].message)
 
     def test_single_person_death_claim_is_clean(self) -> None:
         # The legacy single-subject shape (vital_subjects case 2, answers
@@ -3611,7 +3677,7 @@ class OrphanedRoleTargetW133Tests(unittest.TestCase):
         self.assertEqual(f.severity, 'W')
         self.assertIn('C-3333333333', f.message)
         self.assertIn('deceased', f.message)
-        self.assertIn(self.DEAD, f.message)
+        self.assertIn(self.DEAD.lower(), f.message)
         self.assertIn('persons:', f.message)
 
     def test_the_underlying_derivation_still_misreads_the_survivor(self) -> None:
@@ -3656,7 +3722,7 @@ class OrphanedRoleTargetW133Tests(unittest.TestCase):
             ctype='relationship', persons=[self.WIDOW], roles_block=roles))
         self.assertEqual(len(w), 1)
         self.assertIn('parent', w[0].message)
-        self.assertIn(self.DEAD, w[0].message)
+        self.assertIn(self.DEAD.lower(), w[0].message)
 
     def test_multiple_orphaned_targets_each_warn(self) -> None:
         roles = (f'  roles:\n    deceased: [{self.DEAD}]\n'
@@ -3780,8 +3846,8 @@ class RootPersonHasChildW127Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         f = w[0]
         self.assertEqual(f.severity, 'W')
-        self.assertIn(self.ROOT, f.message)
-        self.assertIn(self.CHILD, f.message)
+        self.assertIn(self.ROOT.lower(), f.message)
+        self.assertIn(self.CHILD.lower(), f.message)
         self.assertIn('12.2', f.message)
         self.assertIn('--realign', f.message)
         self.assertEqual(Path(str(f.path)).name, 'fha.yaml')
@@ -3848,7 +3914,7 @@ class RootPersonHasChildW127Tests(unittest.TestCase):
         # parentage evidence an archive ever holds.
         w = self._w127(self._build(claim_type='birth'))
         self.assertEqual(len(w), 1)
-        self.assertIn(self.CHILD, w[0].message)
+        self.assertIn(self.CHILD.lower(), w[0].message)
 
     def test_a_role_naming_someone_outside_persons_does_not_warn(self) -> None:
         # `persons:` is who the claim is about (SPEC §8.3), and the indexer
@@ -3865,14 +3931,12 @@ class RootPersonHasChildW127Tests(unittest.TestCase):
 
     def test_a_nameless_root_person_is_named_by_its_id(self) -> None:
         # `name:` present but empty parses to None. Formatting it would
-        # address a person as "None" in a message about her own family, and a
-        # bare lowercase p-id would look like a different kind of thing from
-        # the P-ids in every other message.
+        # address a person as "None" in a message about her own family; the
+        # id is shown in the one lowercase form every message uses (SPEC §10).
         w = self._w127(self._build(root_name=None))
         self.assertEqual(len(w), 1)
         self.assertNotIn('None', w[0].message)
-        self.assertNotIn(self.ROOT.lower(), w[0].message)
-        self.assertIn(self.ROOT, w[0].message)
+        self.assertIn(self.ROOT.lower(), w[0].message)
 
     def test_the_named_fix_reindexes_before_realigning(self) -> None:
         # Editing root_person edits fha.yaml, which is part of the index
@@ -4424,7 +4488,7 @@ class SpawnQuestionsRefsTests(unittest.TestCase):
         q = (self.root / 'notes' / 'questions.md').read_text(encoding='utf-8')
         # The issue's own regression-test spec, verbatim: refs contains both
         # C-ids, and the heading does not echo the --spawn-questions error.
-        self.assertIn('refs: [C-1111111111, C-2222222222]', q)
+        self.assertIn('refs: [c-1111111111, c-2222222222]', q)
         heading_line = [ln for ln in q.splitlines() if ln.startswith('## Q:')][0]
         self.assertNotIn('--spawn-questions', heading_line)
         # The claims' own value: text makes a far better heading than the
@@ -4782,7 +4846,7 @@ class StrayPersonKeywordW131Tests(unittest.TestCase):
         self.assertEqual(len(w131), 1, w131)
         msg = w131[0].message
         self.assertIn('Margaret Hartley', msg)
-        self.assertIn(self.SID, msg)
+        self.assertIn(self.SID.lower(), msg)
         self.assertIn('fha source clear-keyword', msg)
 
     def test_keyword_naming_a_listed_person_is_silent(self) -> None:
@@ -5134,7 +5198,7 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         found = self._w135(root)
         self.assertEqual(len(found), 1)
         # The fix keeps each person once, in first-seen order.
-        self.assertIn(f'fha claim {self.CID} --persons {self.ALICE},{self.BOB}`',
+        self.assertIn(f'fha claim {self.CID.lower()} --persons {self.ALICE.lower()},{self.BOB.lower()}`',
                       found[0].message)
 
     def test_an_unresolved_name_beside_the_repeat_gets_the_hand_edit_fix(self) -> None:
@@ -5176,7 +5240,7 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         self.assertTrue(result.ok, result.messages)
         text = (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').read_text(
             encoding='utf-8')
-        self.assertIn(f'persons: [{self.ALICE}, {self.BOB}]', text)
+        self.assertIn(f'persons: [{self.ALICE.lower()}, {self.BOB.lower()}]', text)
         self.assertEqual(self._w135(root), [])
 
 
@@ -5239,7 +5303,7 @@ class DiedButLivingW136Tests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn('Ada Hartley', found[0].message)
         self.assertIn('C-aa11bb22cc', found[0].message)
-        self.assertIn(f'fha person set-living {self.ADA} false', found[0].message)
+        self.assertIn(f'fha person set-living {self.ADA.lower()} false', found[0].message)
 
     def test_living_true_reads_as_the_stronger_conflict(self) -> None:
         self._person(self.ADA, 'Ada Hartley', 'true')
@@ -5248,7 +5312,7 @@ class DiedButLivingW136Tests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn('marked as living (living: true)', found[0].message)
         self.assertIn('One of the two is wrong', found[0].message)
-        self.assertIn(f'fha person set-living {self.ADA} false', found[0].message)
+        self.assertIn(f'fha person set-living {self.ADA.lower()} false', found[0].message)
 
     def test_living_false_is_silent(self) -> None:
         self._person(self.ADA, 'Ada Hartley', 'false')

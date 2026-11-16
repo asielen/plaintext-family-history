@@ -68,7 +68,8 @@ from _lib import (
     fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
-    CLAIM_ROLE_WORDS,
+    CLAIM_ROLE_SYNONYMS,   # SPEC §8.3's two role lists, re-exported so the
+    CLAIM_ROLE_WORDS,      # tests check lint's view of them against SPEC
     CLAIM_TYPES,
     COMPANION_KINDS,
     CROCKFORD_ALPHA,
@@ -107,7 +108,8 @@ from _lib import (
     photos_ignore_matcher,
     photos_ignore_patterns,
     photo_reconcile_route,
-    clean_role_word,
+    role_meaning,
+    role_near_miss,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
@@ -1185,8 +1187,8 @@ def _process_person_file(path: Path, registry: Registry,
             # sort under a surname wants `{surname}__{given}_P-…`.
             findings.append(Finding('W', 'W117', path,
                 f'Person filename {path.name} has no "__" sort separator. The sort '
-                f'name goes before "__" ({{surname}}__{{given}}_P-…); for someone with '
-                f'no surname, lead with the double underscore (__{stem.split("_")[0]}_P-…). '
+                f'name goes before "__" ({{surname}}__{{given}}_p-…); for someone with '
+                f'no surname, lead with the double underscore (__{stem.split("_")[0]}_p-…). '
                 f'Rename if it should sort under a surname; otherwise this is fine.'))
         else:
             findings.append(Finding('E', 'E002', path,
@@ -2135,7 +2137,7 @@ def _check_direct_line_stubs(
         # that would otherwise str()-convert to the literal text 'None' and
         # show as "None (Ahnentafel N) is a direct-line ancestor..." below.
         name = str(meta.get('name') or pid)
-        display_pid = pid[0].upper() + pid[1:]
+        display_pid = fmt_id_display(pid)
         findings.append(Finding('W', 'W119', profile,
             f'{name} (Ahnentafel {pos}) is a direct-line ancestor still filed '
             'as a stub - a research lead, not a defect; when you are ready to '
@@ -2338,6 +2340,25 @@ def _role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) 
     return out
 
 
+def _pids_in_role(claim: dict, meaning: str,
+                  alias_map: dict[str, str] | None = None) -> set[str]:
+    """Normalised P-ids the claim lists under ANY key that means `meaning`.
+
+    A transcribed certificate says `mother:` and `father:`, and SPEC §8.3
+    reads those exactly as `parent:` (`_lib.role_meaning`), so asking "who is
+    the parent here" must read all three keys - and `Parent:` - the way
+    `fha index` does. `_role_pids` stays the one-key reader for checks that
+    report on a key as it was written (W133)."""
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return set()
+    out: set[str] = set()
+    for key in roles:
+        if role_meaning(key) == meaning:
+            out |= _role_pids(claim, key, alias_map)
+    return out
+
+
 def _entry_subtype(entry: dict) -> str:
     """The nature an entry asserts. An unqualified parent/child edge is
     `biological` by default (SPEC §8.2); other types have no default."""
@@ -2354,8 +2375,11 @@ def _claim_subtype_norm(claim: dict) -> str:
     st = str(claim.get('subtype', '')).strip().lower()
     if st and st not in ('child-of', 'spouse-of'):
         return st
-    roles = claim.get('roles') or {}
-    if roles.get('child') and roles.get('parent'):
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return ''
+    meanings = {role_meaning(k) for k, v in roles.items() if v}
+    if {'child', 'parent'} <= meanings:
         return 'biological'
     return ''
 
@@ -2376,14 +2400,16 @@ def _claim_all_roles_by_person(
 
     Roles the claim never mentions are simply absent - a person with no role is
     a person the claim said nothing about, which is a different thing from a
-    person it placed somewhere other than the couple.
+    person it placed somewhere other than the couple. Each key is read by its
+    meaning (`_lib.role_meaning`), so `mother:` comes back as `parent`, as the
+    index's rules read it.
     """
     roles = claim.get('roles')
     if not isinstance(roles, dict):
         return {}   # `roles: [parent, child]` names nobody; not a crash, just empty
     out: dict[str, list[str]] = {}
     for role_name in roles:
-        norm = clean_role_word(role_name).lower()
+        norm = role_meaning(role_name)
         for pid in _role_pids(claim, role_name, alias_map):
             keys = out.setdefault(pid, [])
             if norm not in keys:
@@ -2530,9 +2556,9 @@ def _claim_backs_edge(
     if ctype != 'relationship' or not pair:
         return False
     owner_role, other_role = pair
-    if owner_pid not in _role_pids(claim, owner_role, alias_map):
+    if owner_pid not in _pids_in_role(claim, owner_role, alias_map):
         return False
-    if other_pid is not None and other_pid not in _role_pids(claim, other_role, alias_map):
+    if other_pid is not None and other_pid not in _pids_in_role(claim, other_role, alias_map):
         return False
     return True
 
@@ -2573,11 +2599,11 @@ def _person_reconcilable_role_label(
         return None
     if ctype != 'relationship':
         return None
-    if pid in _role_pids(claim, 'child', alias_map):
+    if pid in _pids_in_role(claim, 'child', alias_map):
         return 'parent'     # the person is a child → their entry names a parent
-    if pid in _role_pids(claim, 'parent', alias_map):
+    if pid in _pids_in_role(claim, 'parent', alias_map):
         return 'child'
-    if pid in _role_pids(claim, 'spouse', alias_map):
+    if pid in _pids_in_role(claim, 'spouse', alias_map):
         return 'spouse'
     return None
 
@@ -3036,7 +3062,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'were the couple, so {cost}{where_they_go}'
                             'Leave everyone in persons: (a certificate names the parents '
                             'too, and that is right) and add a roles: map naming the '
-                            'pair - `roles:` then an indented `spouse: [P-…, P-…]` line.'))
+                            'pair - `roles:` then an indented `spouse: [p-…, p-…]` line.'))
                     else:
                         # Exactly two people, and the claim placed one of them
                         # somewhere other than the couple. It HAS said which two
@@ -3055,7 +3081,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'2 people, but its roles: map calls {elsewhere} rather than '
                             f'a spouse, so {cost}{where_they_go}'
                             'If these two were the couple, name them both - `roles:` then '
-                            'an indented `spouse: [P-…, P-…]` line. If they were not, the '
+                            'an indented `spouse: [p-…, p-…]` line. If they were not, the '
                             'couple is missing from persons: - add them there.'))
 
             # W126: an accepted birth claim that names other people and gets no
@@ -3073,18 +3099,17 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # The condition starts from the derivation rule, as in W125: two
             # or more distinct persons named, and no parent edge derived. That
             # covers every shape the silence takes - no roles: map, a map
-            # naming a child and leaving someone else unroled, a map naming
-            # parents and nobody born, and a map whose role words are outside
-            # the SPEC vocabulary (`mother:`, `father:`), which is the shape a
-            # person-count test would miss and the one most likely to look
-            # correct to whoever wrote it.
+            # naming a child and leaving someone else unroled, and a map
+            # naming parents and nobody born. (`mother:` and `father:` are
+            # not a silence: SPEC §8.3 reads them as `parent:`.)
             # One shape is NOT a silence (#260, SPEC §8.3): a map that names
-            # the child and places everyone else under a recognised role word
-            # (_lib.CLAIM_ROLE_WORDS) - the child and the informant, or two
-            # people's own births copied off their son's certificate, which
-            # names no parents of theirs. That claim has said all its record
-            # says, and a warning nothing can clear without inventing a role
-            # only teaches the owner to skip past W126's real cases.
+            # the child and gives everyone else some role - the child and the
+            # informant, a grandparent written `grandparent:` (a descriptive
+            # role: it places her and derives nothing), or two people's own
+            # births copied off their son's certificate, which names no
+            # parents of theirs. That claim has said all its record says, and
+            # a warning nothing can clear without inventing a role only
+            # teaches the owner to skip past W126's real cases.
             # Distinct PERSONS, not persons: entries: a bare P-id and a
             # name-link for one baby are two entries and one person, and one
             # person is not a parentage to ask about.
@@ -3117,31 +3142,34 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         # is unplaced the map is whole and there is nothing to
                         # ask (#260) - the child arm alone has this exit.
                         # Placement reads EVERY key a person is listed under,
-                        # as the index does (#266). A person is unplaced when
-                        # (1) the claim gives them no role, (2) ANY of their
-                        # keys is outside the SPEC list - the `mother:` written
-                        # after `informant:` is still a typo the tree cannot
-                        # read - or (3) any of their keys is `parent`: this arm
-                        # only runs when no parent edge was derived, and a
-                        # `parent:` listing always derives one unless the same
-                        # person is also the `child:` (nobody is their own
-                        # parent, so the index reads them as the child only).
-                        # A child who ALSO carries a recognised role - the
-                        # adult registering her own delayed birth as informant,
-                        # a twin who reported it - is placed: the index reads
-                        # her as a child, and warning would ask her to delete
-                        # a true fact.
+                        # by its meaning, as the index does (#266; `mother:`
+                        # is `parent`). A person is unplaced when (1) the
+                        # claim gives them no role, or (2) any of their keys
+                        # means `parent`: this arm only runs when no parent
+                        # edge was derived, and a parent listing always
+                        # derives one unless the same person is also the
+                        # child (nobody is their own parent, so the index
+                        # reads them as the child only). Any other word
+                        # places them - SPEC §8.3's descriptive roles
+                        # (`grandparent:`, `sibling:`) included, since the
+                        # record said who they were. A child who ALSO
+                        # carries another role - the adult registering her
+                        # own delayed birth as informant, a twin who reported
+                        # it - is placed: the index reads her as a child, and
+                        # warning would ask her to delete a true fact.
 
                         def _unplaced_reason(pid: str) -> str | None:
                             keys = all_roles.get(pid, [])
                             if not keys:
                                 return 'no role given'
+                            for key in keys:
+                                meant = role_near_miss(key)
+                                if meant:
+                                    return (f'under `{key}:`, which looks like '
+                                            f'`{meant}:` written another way - the archive '
+                                            'reads it as a description only')
                             if 'parent' in keys:
                                 return 'listed both as the person born and as a parent'
-                            off_list = [k for k in keys if k not in CLAIM_ROLE_WORDS]
-                            if off_list:
-                                return (f'under `{off_list[0]}:`, which is not a '
-                                        f'role word the archive reads')
                             return None
 
                         reasons = {pid: _unplaced_reason(pid) for pid in distinct}
@@ -3152,13 +3180,6 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                                 for pid in unplaced)
                             self_parent = any('parent' in all_roles.get(pid, [])
                                               for pid in unplaced)
-                            # The child herself can only be here for an
-                            # off-list word beside her `child:` line; the
-                            # parent repair is never offered for her.
-                            stray_on_child = any(
-                                'child' in all_roles.get(pid, [])
-                                and 'parent' not in all_roles.get(pid, [])
-                                for pid in unplaced)
                             others = any('child' not in all_roles.get(pid, [])
                                          for pid in unplaced)
                             findings.append(Finding('W', 'W126', src_path,
@@ -3173,17 +3194,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                                    'take them off whichever of the `child:` and '
                                    '`parent:` lines is wrong. ' if self_parent else '')
                                 + ('If they are the parents, add them to the roles: '
-                                   'map - an indented `parent: [P-…, P-…]` line beside '
+                                   'map - an indented `parent: [p-…, p-…]` line beside '
                                    'the `child:` one (`parent:` covers a mother and a '
                                    'father alike). If they are not, give each one the '
                                    'part they played instead - an `informant:`, '
                                    '`witness:`, `midwife:` or `physician:` line - and '
-                                   'this note clears.' if others else '')
-                                + ((' ' if others else '')
-                                   + 'For the person born, change the unreadable line '
-                                   'to a role word the archive reads (`informant:`, '
-                                   '`witness:`, ...) or remove it.'
-                                   if stray_on_child else '')))
+                                   'this note clears.' if others else '')))
                     elif role_parents:
                         # The mirror: the parents are marked and nobody is
                         # marked as born. The subject is not positional either.
@@ -3193,7 +3209,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         findings.append(Finding('W', 'W126', src_path,
                             f'{head} and {marked}, but does not say who was born, '
                             f'so no parent link is recorded{where_it_goes}'
-                            'Add an indented `child: [P-…]` line to the roles: map '
+                            'Add an indented `child: [p-…]` line to the roles: map '
                             'naming the person this record is the birth of.'))
                     else:
                         # The reporter's shape: a certificate of live birth,
@@ -3205,8 +3221,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'{where_it_goes}'
                             'Leave everyone in persons: (a birth record names the '
                             'parents too, and that is right) and add a roles: map - '
-                            '`roles:` then indented `child: [P-…]` and '
-                            '`parent: [P-…, P-…]` lines.'))
+                            '`roles:` then indented `child: [p-…]` and '
+                            '`parent: [p-…, p-…]` lines.'))
 
             # W126, the self-parent variant (#266 review): a claim that lists one
             # person under both `child:` and `parent:` and still derives a
@@ -3359,9 +3375,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {claim.get("id","?")} (type: baptism) names '
                             f'{len(distinct)} people but does not say who was '
                             f'baptized{where_it_goes}'
-                            'Add a roles: map - an indented `child: [P-…]` line '
+                            'Add a roles: map - an indented `child: [p-…]` line '
                             'naming who was baptized (and, if useful, `parent: '
-                            '[P-…, P-…]` for the parents alongside).'))
+                            '[p-…, p-…]` for the parents alongside).'))
                     else:
                         # death/burial: `roles: deceased:` (SPEC §8.3, #173
                         # follow-up) names the subject(s) directly - the
@@ -3377,12 +3393,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {claim.get("id","?")} (type: {claim_type}) names '
                             f'{len(distinct)} people but does not say which of them '
                             f'{verb}{where_it_goes}'
-                            f'Add a roles: map - either `deceased: [P-…]` naming '
+                            f'Add a roles: map - either `deceased: [p-…]` naming '
                             f'directly who {verb} (list more than one id if they '
                             f'{verb} together), or leave the person who {verb} '
                             'unroled and name who everyone else is instead - '
-                            '`spouse: [P-…]`, `child: [P-…]`, `parent: [P-…]`, or '
-                            '`witness: [P-…]`.'))
+                            '`spouse: [p-…]`, `child: [p-…]`, `parent: [p-…]`, or '
+                            '`witness: [p-…]`.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't
@@ -3593,7 +3609,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
         if str(meta.get('status', '')) == 'merged':
             if pid in registry.token_refs:
                 target = meta.get('merged_into', '?')
-                display_pid = pid[0].upper() + pid[1:]  # P-xxxx: uppercase type prefix only
+                display_pid = fmt_id_display(pid)
                 for ref_path, ref_line in registry.token_refs[pid][:5]:
                     findings.append(Finding('W', 'W107', ref_path,
                         f'[{display_pid}] at line {ref_line} references merged person '

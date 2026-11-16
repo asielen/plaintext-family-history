@@ -238,6 +238,7 @@ from _lib import (
     open_index_db,
     resolve_root_arg,
     claim_role_pairs,
+    role_meaning,
     spouse_parties,
     vital_subjects,
 )
@@ -763,7 +764,7 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
                 # never pair the informant-and-parent claim with a plain
                 # parent one, and would split two claims that listed the same
                 # roles in a different order.
-                roles = [str(r).strip().lower() if r else None
+                roles = [role_meaning(r) if r else None
                          for _p, r in claim_role_pairs(
                              [(person_id, claim_role.get((cid, person_id)))])]
                 others = [p for p in claim_persons.get(cid, []) if p != person_id]

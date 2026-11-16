@@ -211,8 +211,8 @@ class IdlessRecordTests(_LintBase):
         self._run(fix_ids=True, dry_run=False)
         people = sorted(p.name for p in (self.root / 'people').glob('*.md'))
         sources = sorted(p.name for p in (self.root / 'sources').glob('*.md'))
-        self.assertTrue(any(n.startswith('smith__john_P-') for n in people), people)
-        self.assertTrue(any(n.startswith('grandmas-letter_S-') for n in sources), sources)
+        self.assertTrue(any(n.startswith('smith__john_p-') for n in people), people)
+        self.assertTrue(any(n.startswith('grandmas-letter_s-') for n in sources), sources)
         # The slugs survive as aliases, so the old [[grandmas-letter]] link resolves.
         recs = []
         for p in list((self.root / 'people').glob('*.md')) + list((self.root / 'sources').glob('*.md')):

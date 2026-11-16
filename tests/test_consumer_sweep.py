@@ -41,7 +41,7 @@ def _write(path: Path, text: str) -> None:
 
 class ViewsFormattingTests(unittest.TestCase):
     def test_format_sid_is_double_bracket(self):
-        self.assertEqual(views._format_sid('s-1111111111'), '[[S-1111111111]]')
+        self.assertEqual(views._format_sid('s-1111111111'), '[[s-1111111111]]')
 
     def test_place_with_lid_is_clickable(self):
         conn = sqlite3.connect(':memory:')
@@ -51,7 +51,7 @@ class ViewsFormattingTests(unittest.TestCase):
         # place_text present + an L-id → linked, text preserved as display.
         self.assertEqual(
             views._place_label('Fairview, Ohio', 'l-1111111111', conn),
-            '[[L-1111111111|Fairview, Ohio]]',
+            '[[l-1111111111|Fairview, Ohio]]',
         )
         # free place_text, no L-id → plain.
         self.assertEqual(views._place_label('Somewhere', None, conn), 'Somewhere')
@@ -93,7 +93,7 @@ class WikitreeDisplayTests(unittest.TestCase):
         text = self._render_body('Married [[P-0000000002|Mary Jones]] in 1900 [[S-0000000002]].')
         self.assertIn('[[Jones-99|Mary Jones]]', text)        # display used as link text
         self.assertNotIn('Mary Jones Mary Jones', text)       # not doubled
-        self.assertIn('<ref name="S-0000000002"/>', text)     # source → ref
+        self.assertIn('<ref name="s-0000000002"/>', text)     # source → ref
 
     def test_preceding_name_still_folds_for_bare_token(self):
         text = self._render_body('Married Mary Jones [[P-0000000002]] in 1900.')

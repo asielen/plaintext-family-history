@@ -93,7 +93,7 @@ class IngestTestCase(unittest.TestCase):
                                   slug=None, source_date=None, more=None, people=None, dry_run=False)
         with mock.patch('sys.stdout', new_callable=io.StringIO):
             self.assertEqual(process.run_process(args).exit_code, EXIT_CLEAN)
-        record = read_record(next((self.archive / 'sources').rglob('*_S-*.md')))
+        record = read_record(next((self.archive / 'sources').rglob('*_s-*.md')))
         primary = [f for f in record['meta']['files'] if f.get('is_primary')]
         self.assertEqual(len(primary), 1)
         self.assertIn('grave-1', primary[0]['file'])

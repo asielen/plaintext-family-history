@@ -231,7 +231,7 @@ class HtmlFormatMatrixTests(_ViewsHtmlBase):
             self.assertEqual(len(res.changed), 1, kind)
             out = Path(res.changed[0])
             self.assertEqual(out.parent, self._gen_dir(), kind)
-            self.assertEqual(out.name, f'hartley__cur_view_{kind}_{PID}.html', kind)
+            self.assertEqual(out.name, f'hartley__cur_view_{kind}_{PID.lower()}.html', kind)
             text = out.read_text(encoding='utf-8')
             lines = text.splitlines()
             # Convention 1: marker is line 1, doctype comes after it.
@@ -293,7 +293,7 @@ class HtmlContentTests(_ViewsHtmlBase):
         self.assertIn('<h2>Unreviewed</h2>', text)            # suggested claims
         self.assertIn('&amp; baptized', text)                 # & escaped
         self.assertIn('Fairview &lt;Kansas&gt;', text)        # <> escaped
-        self.assertIn('<span class="cite">S-1111111111</span>', text)
+        self.assertIn('<span class="cite">s-1111111111</span>', text)
 
     def test_banner_and_masthead_present_in_every_view(self):
         for runner, kind in self._runners():
@@ -516,7 +516,7 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         orig_write = views.write_generated_file
 
         def fail_only_for_pid(out_path, *args, **kwargs):
-            if PID in str(out_path):
+            if PID.lower() in str(out_path).lower():
                 raise GeneratedFileParentMissing(out_path)
             return orig_write(out_path, *args, **kwargs)
 
@@ -532,7 +532,7 @@ class WriteErrorHandlingTests(_ViewsHtmlBase):
         self.assertEqual(len(res.changed), 1)
         self.assertTrue(Path(res.changed[0]).name.startswith('second__person_view_timeline'))
         self.assertIn('WARNING', err.getvalue())
-        self.assertIn(PID, err.getvalue())
+        self.assertIn(PID.lower(), err.getvalue())
         # ...and the batch says so in its exit code: nine of ten files written
         # is not a clean run, the same way one skipped person is not on the
         # single-person path.
@@ -624,12 +624,12 @@ class RefreshFormatTests(_ViewsHtmlBase):
         gen_names = sorted(p.name for p in self._gen_dir().iterdir())
         self.assertEqual(gen_names, [
             f'{COUPLE_DIR}_sources-index.html',
-            f'hartley__cur_view_draft-queue_{PID}.html',
-            f'hartley__cur_view_timeline_{PID}.html',
+            f'hartley__cur_view_draft-queue_{PID.lower()}.html',
+            f'hartley__cur_view_timeline_{PID.lower()}.html',
         ])
         self.assertTrue((self.profile.parent / 'sources-index.md').exists())
         self.assertTrue(
-            (self.profile.parent / f'hartley__cur_view_timeline_{PID}.md').exists())
+            (self.profile.parent / f'hartley__cur_view_timeline_{PID.lower()}.md').exists())
         self.assertIn('## Sources', self.profile.read_text(encoding='utf-8'))
 
     def test_refresh_html_writes_only_html(self):
@@ -639,7 +639,7 @@ class RefreshFormatTests(_ViewsHtmlBase):
         # index write at all on an html-only pass - #76); couple folder: 1 html.
         self.assertEqual(res.data.get('count'), 3)
         self.assertFalse(
-            (self.profile.parent / f'hartley__cur_view_timeline_{PID}.md').exists())
+            (self.profile.parent / f'hartley__cur_view_timeline_{PID.lower()}.md').exists())
         self.assertFalse((self.profile.parent / 'sources-index.md').exists())
         # And the profile's own body is untouched by an html-only refresh.
         self.assertNotIn('## Sources', self.profile.read_text(encoding='utf-8'))

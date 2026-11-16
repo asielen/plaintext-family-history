@@ -1144,7 +1144,7 @@ def run_reconcile(
             for sid, aliases in sorted(unlisted.items()):
                 shown = ', '.join(sorted(aliases))
                 result.add('warning',
-                           f'{shown} carries {sid.upper()} but that record does not list it - '
+                           f'{shown} carries {fmt_id_display(sid)} but that record does not list it - '
                            'attach it with `fha process <primary-file> --more FILE role`, '
                            'or add a files: entry to the record.')
 

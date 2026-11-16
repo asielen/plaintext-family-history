@@ -91,7 +91,7 @@ class _Base(unittest.TestCase):
         return rc, out.getvalue(), err.getvalue()
 
     def _records(self, kind: str = 'census') -> list[Path]:
-        return sorted((self.archive / 'sources' / kind).glob('*_S-*.md'))
+        return sorted((self.archive / 'sources' / kind).glob('*_s-*.md'))
 
 
 class DocumentKeywordTests(_Base):
@@ -108,7 +108,7 @@ class DocumentKeywordTests(_Base):
                                           '--type', 'census'])
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 renamed = list((self.archive / 'documents' / 'census').glob(
-                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                    f'{Path(name).stem}_s-*{Path(name).suffix}'))
                 self.assertEqual(len(renamed), 1)
                 if expect:
                     self.assertEqual(store.embed_calls, renamed)
@@ -124,14 +124,14 @@ class DocumentKeywordTests(_Base):
         scan.write_bytes(b'x')
         rc, out, _err = self._run([str(scan), '--type', 'census', '--dry-run'])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertRegex(out, r'Would embed SOURCE: S-\w+ in scan_S-\w+\.tif')
+        self.assertRegex(out, r'Would embed SOURCE: s-\w+ in scan_s-\w+\.tif')
         self.assertEqual(store.embed_calls, [])
         self.assertTrue(scan.exists())
         self.assertEqual(self._records(), [])
         # The live run does what the preview said, to the same-named file.
         rc, live, _err = self._run([str(scan), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertRegex(live, r'Embedded SOURCE: S-\w+ in scan_S-\w+\.tif')
+        self.assertRegex(live, r'Embedded SOURCE: s-\w+ in scan_s-\w+\.tif')
 
     def test_without_exiftool_the_document_is_still_filed_with_a_plain_warning(self) -> None:
         store = self._install_store()
@@ -164,7 +164,7 @@ class DocumentKeywordTests(_Base):
         (folder / 'sheet-back.jpg').write_bytes(b'x')
         rc, _out, err = self._run([str(folder / 'sheet.jpg'), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        self.assertEqual(sorted(p.name.split('_S-')[0] for p in store.embed_calls),
+        self.assertEqual(sorted(p.name.split('_s-')[0] for p in store.embed_calls),
                          ['sheet', 'sheet-back'])
 
     def test_a_bundle_document_gets_the_keyword(self) -> None:
@@ -189,8 +189,8 @@ class DocumentKeywordTests(_Base):
         store.keywords[str(scan)] = ['SOURCE: S-a1b2c3d4e5']
         rc, _out, err = self._run([str(scan), '--type', 'census'])
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
-        self.assertIn('fha find S-a1b2c3d4e5', err)
+        self.assertIn('already carries SOURCE: s-a1b2c3d4e5', err)
+        self.assertIn('fha find s-a1b2c3d4e5', err)
         self.assertTrue(scan.exists())
         self.assertEqual(self._records(), [])
 
@@ -208,7 +208,7 @@ class DocumentKeywordTests(_Base):
         store.keywords[str(scan)] = [f'SOURCE: {sid}']
         rc, _out, err = self._run([str(scan), '--type', 'letter'])
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn(f'fha process refile {sid} --to documents --type letter', err)
+        self.assertIn(f'fha process refile {sid.lower()} --to documents --type letter', err)
 
     def test_more_refuses_a_scan_that_belongs_to_another_source(self) -> None:
         # #253 review / Codex: the main path refused this renamed scan, but
@@ -219,14 +219,14 @@ class DocumentKeywordTests(_Base):
         (folder / 'will.pdf').write_bytes(b'x')
         rc, _out, err = self._run([str(folder / 'will.pdf'), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('will_S-*.pdf'))
+        primary = next(folder.glob('will_s-*.pdf'))
         stray = folder / 'census 1910 (synced).tif'
         stray.write_bytes(b'x')
         store.keywords[str(stray)] = ['SOURCE: S-a1b2c3d4e5']
         store.embed_calls.clear()
         rc, _out, err = self._run([str(primary), '--more', str(stray), 'page'])
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertIn('already carries SOURCE: s-a1b2c3d4e5', err)
         self.assertIn('two sources', err)
         self.assertTrue(stray.exists(), 'not renamed')
         self.assertEqual(store.embed_calls, [])
@@ -241,7 +241,7 @@ class DocumentKeywordTests(_Base):
         store.keywords[str(bundle / 'letter.pdf')] = ['SOURCE: S-a1b2c3d4e5']
         rc, _out, err = self._run([str(bundle)])
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertIn('already carries SOURCE: s-a1b2c3d4e5', err)
         self.assertTrue((bundle / 'letter.pdf').exists())
         self.assertEqual(store.embed_calls, [])
 
@@ -259,7 +259,7 @@ class DocumentKeywordTests(_Base):
                 rc, _out, err = self._run([str(folder / 'record.jpg'), '--type', 'census'] + extra)
                 self.assertEqual(rc, EXIT_ERRORS)
                 self.assertIn('record-back.jpg (the back scan beside it) already carries '
-                              'SOURCE: S-a1b2c3d4e5', err)
+                              'SOURCE: s-a1b2c3d4e5', err)
         self.assertTrue((folder / 'record.jpg').exists())
         self.assertTrue((folder / 'record-back.jpg').exists())
         self.assertEqual(store.embed_calls, [])
@@ -274,7 +274,7 @@ class DocumentKeywordTests(_Base):
         store.keywords[str(inbox / 'record-back.jpg')] = ['SOURCE: S-a1b2c3d4e5']
         rc, _out, err = self._run([str(inbox / 'record.jpg'), '--type', 'census'])
         self.assertEqual(rc, EXIT_ERRORS)
-        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err)
+        self.assertIn('already carries SOURCE: s-a1b2c3d4e5', err)
         self.assertTrue((inbox / 'record.jpg').exists(), 'the primary went back to the inbox')
         self.assertTrue((inbox / 'record-back.jpg').exists())
         self.assertEqual(store.embed_calls, [])
@@ -319,7 +319,7 @@ class DocumentKeywordTests(_Base):
             rc = process._standalone_main(['refile', sid, '--to', 'photos', '--dest', '1911',
                                            '--type', 'photo', '--root', str(self.archive)])
         self.assertNotEqual(rc, EXIT_CLEAN)
-        self.assertIn('already carries SOURCE: S-a1b2c3d4e5', err.getvalue())
+        self.assertIn('already carries SOURCE: s-a1b2c3d4e5', err.getvalue())
         self.assertTrue(scan.exists(), 'nothing moved')
         self.assertEqual(store.embed_calls, [])
 
@@ -329,14 +329,14 @@ class DocumentKeywordTests(_Base):
         (folder / 'will.pdf').write_bytes(b'x')
         rc, _out, err = self._run([str(folder / 'will.pdf'), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('will_S-*.pdf'))
+        primary = next(folder.glob('will_s-*.pdf'))
         (folder / 'codicil.tif').write_bytes(b'x')
         store.embed_calls.clear()
         rc, out, err = self._run([str(primary), '--more', str(folder / 'codicil.tif'), 'codicil'])
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertEqual(len(store.embed_calls), 1)
         # #278: named for the source it joins, `{slug}-{role}_{S-id}`.
-        self.assertTrue(store.embed_calls[0].name.startswith('will-codicil_S-'))
+        self.assertTrue(store.embed_calls[0].name.startswith('will-codicil_s-'))
 
 
 @unittest.skipUnless(EXIFTOOL, 'exiftool is not installed - these run on a machine that has it')
@@ -353,7 +353,7 @@ class RealDocumentKeywordTests(_Base):
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 self.assertNotIn('WARNING', err)
                 renamed = next((self.archive / 'documents' / 'census').glob(
-                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                    f'{Path(name).stem}_s-*{Path(name).suffix}'))
                 sid = renamed.stem.rsplit('_', 1)[1]
                 got = read_fields(renamed)
                 holding = [tag for tag, vals in got.items() if f'SOURCE: {sid}' in vals]
@@ -365,7 +365,7 @@ class RealDocumentKeywordTests(_Base):
         scan = write_fixture(self.archive / 'documents' / 'census' / 'sheet.tif')
         rc, _out, err = self._run([str(scan), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        processed = next((self.archive / 'documents' / 'census').glob('sheet_S-*.tif'))
+        processed = next((self.archive / 'documents' / 'census').glob('sheet_s-*.tif'))
         renamed = processed.with_name('sheet (1).tif')
         processed.rename(renamed)
         rc, _out, err = self._run([str(renamed), '--type', 'census'])
@@ -392,7 +392,7 @@ class RealDocumentKeywordTests(_Base):
         primary = write_fixture(folder / 'will.tif')
         rc, _out, err = self._run([str(primary), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('will_S-*.tif'))
+        primary = next(folder.glob('will_s-*.tif'))
         sid = primary.stem.rsplit('_', 1)[1]
         page = write_fixture(folder / 'will page 2.tif')
         import subprocess
@@ -417,7 +417,7 @@ class RealDocumentKeywordTests(_Base):
         primary = write_fixture(folder / 'will.tif')
         rc, _out, err = self._run([str(primary), '--type', 'census'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        primary = next(folder.glob('will_S-*.tif'))
+        primary = next(folder.glob('will_s-*.tif'))
         sid = primary.stem.rsplit('_', 1)[1]
         page = write_fixture(folder / 'page3.tif')
         import subprocess
@@ -425,7 +425,7 @@ class RealDocumentKeywordTests(_Base):
                         f'-XMP-dc:Subject=SOURCE: {sid.upper()}', str(page)], check=True)
         rc, _out, err = self._run([str(primary), '--more', str(page), 'page'])
         self.assertEqual(rc, EXIT_CLEAN, err)
-        attached = next(folder.glob('will-page_S-*.tif'))  # #278: named for the source
+        attached = next(folder.glob('will-page_s-*.tif'))  # #278: named for the source
         for tag, values in read_fields(attached).items():
             self.assertEqual(values, [f'SOURCE: {sid}'], tag)
 

@@ -724,6 +724,21 @@ def _run_exiftool_embed_source(
                                    backup=backup, command='fha process')
 
 
+def _carries_own_source_keyword(file_path: Path, s_id: str) -> bool:
+    """True when the file already holds `SOURCE: {s_id}` in any letter case.
+
+    IDs are matched without regard to case (SPEC §10), and a file an older
+    tool keyworded says `SOURCE: S-…`. A read that fails answers False, so the
+    caller writes the keyword as it always did."""
+    try:
+        existing = _run_exiftool_read_keywords(file_path)
+    except RuntimeError:
+        return False
+    want = s_id.strip().lower()
+    return any((m := _SOURCE_KEYWORD_RE.match(str(kw).strip()))
+               and m.group(1).lower() == want for kw in existing or [])
+
+
 def _run_exiftool_remove_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
     *, backup: OriginalBackup,
@@ -1148,9 +1163,9 @@ def _find_record_for_sid(archive_root: Path, s_id: str) -> Path | None:
     sources_dir = archive_root / 'sources'
     if not sources_dir.is_dir():
         return None
-    # Match the S-id case-insensitively: filenames carry the uppercase-prefix
-    # form ('…_S-xxxx.md') but a caller may pass either casing, and only the
-    # 10-char body is identity.
+    # Match the S-id case-insensitively: today's filenames carry the lowercase
+    # form ('…_s-xxxx.md'), an older tool's the capital prefix ('…_S-xxxx.md'),
+    # a caller may pass either casing, and only the 10-char body is identity.
     sid_norm = s_id.lower()
     for p in sources_dir.rglob('*.md'):
         m = _FILENAME_SOURCE_ID_RE.search(p.stem)
@@ -2232,7 +2247,7 @@ def process_document(
     """
     if existing := _filename_has_source_id(file_path):
         raise ProcessError(
-            f'{file_path.name} already carries an S-id ({existing.upper()}); '
+            f'{file_path.name} already carries an S-id ({fmt_id_display(existing)}); '
             'it looks already processed. Refusing to mint a second ID.'
         )
     if embedded := _document_source_keyword(real_path if real_path is not None else file_path):
@@ -2671,11 +2686,13 @@ def process_photo(
     )
     if existing:
         raise ProcessError(
-            f'{file_path.name} already carries SOURCE: {existing.upper()}; '
+            f'{file_path.name} already carries SOURCE: {fmt_id_display(existing)}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
-    existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-    new_people = [p for p in (people or []) if p not in existing_pids]
+    # Case-blind: a photo an older tool tagged `P-…` already names the person,
+    # and a lowercase `p-…` beside it would show two tags for one person.
+    existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+    new_people = [p for p in (people or []) if normalize_id(p) not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(on_disk)
@@ -2882,11 +2899,12 @@ def process_photo_group(
         )
         if existing_source:
             raise ProcessError(
-                f'{m.name} already carries SOURCE: {existing_source.upper()}; the set looks '
+                f'{m.name} already carries SOURCE: {fmt_id_display(existing_source)}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
-        existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-        per_member_new_people[m] = [p for p in (people or []) if p not in existing_pids]
+        existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+        per_member_new_people[m] = [p for p in (people or [])
+                                    if normalize_id(p) not in existing_pids]
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     ordered = [primary] + [m for m in members if m != primary]
@@ -3252,7 +3270,7 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
             except (OSError, UnicodeDecodeError):
                 continue
             if alias in text:
-                m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M)
+                m = re.search(r'^id:\s*["\']?(S-[0-9a-z]{10})', text, re.M | re.I)
                 holder = m.group(1) if m else None
                 break
     where = f'source {fmt_id_display(holder)}' if holder else 'a source in your archive'
@@ -3505,7 +3523,7 @@ def process_bundle(
             existing, _ = _read_existing_source_keyword(item['src'], dry_run)
             if existing:
                 raise ProcessError(
-                    f'{item["src"].name} already carries SOURCE: {existing.upper()}; '
+                    f'{item["src"].name} already carries SOURCE: {fmt_id_display(existing)}; '
                     'the bundle looks partly processed. Attach remaining files with --more '
                     'or remove the stale bundle before processing.'
                 )
@@ -4439,7 +4457,7 @@ def _attach_more_engine(
 
     record_path = _find_record_for_sid(archive_root, sid)
     if record_path is None:
-        raise ProcessError(f'no source record found for {sid.upper()} under sources/.')
+        raise ProcessError(f'no source record found for {fmt_id_display(sid)} under sources/.')
 
     if more_kind is None:
         more_kind = _more_file_kind(archive_root, fha_config, primary_path, more_file,
@@ -4618,7 +4636,7 @@ def _attach_more_engine(
     if existing_doc_sid is not None and existing_doc_sid != sid.lower():
         raise ProcessError(
             f'{more_file.name} already carries a different S-id '
-            f'({existing_doc_sid.upper()}, not {sid.upper()}); it looks filed for '
+            f'({fmt_id_display(existing_doc_sid)}, not {fmt_id_display(sid)}); it looks filed for '
             'another source. Attach it to that source, or rename it, before attaching it here.'
         )
     already_named = existing_doc_sid is not None
@@ -5883,6 +5901,12 @@ def process_refile(
                     f'WARNING: keywords are not supported for {src.suffix} files, '
                     f'so the SOURCE: {sid} keyword was not embedded in {new_name}. '
                     'The record\'s files: inventory still carries the identity.')
+            elif _carries_own_source_keyword(dest_path, sid):
+                # An older fha already wrote this source's keyword, perhaps as
+                # `SOURCE: S-…`. Writing the lowercase spelling beside it would
+                # show one source twice in every photo program, so the file
+                # is left as it is: it already names its source.
+                pass
             else:
                 try:
                     err = _run_exiftool_embed_source(

@@ -860,7 +860,7 @@ class PlaceSetNoteTests(unittest.TestCase):
         result = places.run_place_set(self.root, 'L-bbbbbbbbbb', coords='1, 2')
         self.assertEqual(result.exit_code, 1)
         self.assertEqual(result.data['status'], 'not-found')
-        self.assertEqual(result.messages[0].next_step, 'fha find L-bbbbbbbbbb')
+        self.assertEqual(result.messages[0].next_step, 'fha find l-bbbbbbbbbb')
 
     def test_dry_run_writes_nothing_and_shows_diff(self) -> None:
         before = self.registry.read_bytes()

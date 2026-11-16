@@ -1209,7 +1209,7 @@ class SkillDocTestCase(unittest.TestCase):
                     [str(primary), '--type', 'interview', '--slug', f'{stem}-audio',
                      '--root', str(archive)])
             self.assertEqual(rc, 0)
-            renamed = next(interviews.glob(f'{stem}-audio_S-*.m4a'))
+            renamed = next(interviews.glob(f'{stem}-audio_s-*.m4a'))
             sid = renamed.stem.split('_')[-1]
 
             whisper = interviews / f'{stem}.md'

@@ -237,30 +237,30 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
     def test_exact_match_on_name(self) -> None:
         m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
         self.assertEqual(m['tier'], 'exact')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
         self.assertEqual(m['name'], 'Topeka, Kansas')
         self.assertIsNone(m['ambiguous_ids'])
 
     def test_exact_match_is_case_and_whitespace_insensitive(self) -> None:
         m = match_place_text_to_registry(self.root, '  topeka,   KANSAS  ')
         self.assertEqual(m['tier'], 'exact')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
 
     def test_exact_match_on_alt_name(self) -> None:
         m = match_place_text_to_registry(self.root, 'Topeka County, Kansas')
         self.assertEqual(m['tier'], 'exact')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
         self.assertEqual(m['name'], 'Topeka County, Kansas')
 
     def test_near_match_on_word_order_is_not_exact(self) -> None:
         m = match_place_text_to_registry(self.root, 'Kansas, Topeka')
         self.assertEqual(m['tier'], 'near')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
 
     def test_near_match_on_expanded_abbreviation(self) -> None:
         m = match_place_text_to_registry(self.root, 'Topeka Co, Kansas')
         self.assertEqual(m['tier'], 'near')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
 
     def test_genuine_miss_is_none(self) -> None:
         m = match_place_text_to_registry(self.root, 'Wichita, Kansas')
@@ -304,7 +304,7 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         # report.py) that wants to say WHICH places clash instead of
         # silently falling through to a mint recommendation (Codex review,
         # PR #142 follow-up finding 2).
-        self.assertEqual(m['ambiguous_ids'], ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'])
+        self.assertEqual(m['ambiguous_ids'], ['l-aaaaaaaaaa', 'l-bbbbbbbbbb'])
 
     def test_ambiguous_near_tie_also_refuses_to_guess(self) -> None:
         _write_registry(
@@ -315,7 +315,7 @@ class MatchPlaceTextToRegistryTests(unittest.TestCase):
         # with that same token set has two equally-plausible near matches.
         m = match_place_text_to_registry(self.root, 'Topeka Kansas')
         self.assertIsNone(m['tier'])
-        self.assertEqual(m['ambiguous_ids'], ['L-aaaaaaaaaa', 'L-bbbbbbbbbb'])
+        self.assertEqual(m['ambiguous_ids'], ['l-aaaaaaaaaa', 'l-bbbbbbbbbb'])
 
     def test_malformed_registry_degrades_to_no_match_not_a_crash(self) -> None:
         _write_registry(self.root, 'not_a_list: true\n')
@@ -391,7 +391,7 @@ class MatchPlaceTextToRegistryPreparsedRegistryTests(unittest.TestCase):
             rows = [{'id': 'L-cccccccccc', 'name': 'Topeka, Kansas'}]
             m = match_place_text_to_registry(root, 'Topeka, Kansas', registry=(rows, None))
             self.assertEqual(m['tier'], 'exact')
-            self.assertEqual(m['place_id'], 'L-cccccccccc')
+            self.assertEqual(m['place_id'], 'l-cccccccccc')
         finally:
             empty_tmp.cleanup()
 
@@ -414,7 +414,7 @@ class MatchPlaceTextToRegistryPreparsedRegistryTests(unittest.TestCase):
         # pass `registry` at all.
         m = match_place_text_to_registry(self.root, 'Topeka, Kansas')
         self.assertEqual(m['tier'], 'exact')
-        self.assertEqual(m['place_id'], 'L-baba9801fa')
+        self.assertEqual(m['place_id'], 'l-baba9801fa')
 
 
 class ClusterKeySharedWithPlacesTests(unittest.TestCase):
