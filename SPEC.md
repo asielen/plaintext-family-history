@@ -335,7 +335,8 @@ profile_photo: hartley-portrait-1895.jpg   # optional; the person's main portrai
                                  # gate as the photo strip: a portrait that co-depicts a living person,
                                  # or whose source is withheld, is dropped from public output (§19).
 sex: M                           # optional; birth-assigned where a record states it; M | F | intersex | unknown
-                                 #   (U is read as unknown)
+                                 #   (an older `U` is tolerated but read as not recorded;
+                                 #   write `unknown` to say it is not known)
 living: false                    # required; true | false | unknown - drives export redaction (§19)
 birth: 1840~                     # optional PROVISIONAL estimate (unsourced); EDTF; superseded by a
 birth_place: Easton, New York    #   birth/death claim. Linter tracks these toward a source.
@@ -442,7 +443,7 @@ family_archive/              ← the root (default name; rename freely - nothing
     processed/               ←   originals of items already filed, kept for a look before deleting
   ── machinery and disposable output (never the truth) ──
   .fha/                      ← the vendored tools and site design; refreshed by `fha update-tools`
-  .cache/                    ← disposable caches (index.sqlite, photos.sqlite); delete freely
+  .cache/                    ← tool caches (index.sqlite, photos.sqlite), rebuilt from the records
   generated/                 ← built output (the site, standalone views, galleries); regenerable
 ```
 
@@ -657,7 +658,7 @@ The deliberate style difference - person files underscored, source files hyphena
 | `annotated` | that page with the item boxed - a capture-time derivative, never the newspaper |
 | `{kind}-N` | a grave memorial's photos, numbered per kind: `grave-1`, `person-1`, `family-1`, `document-1`, `flowers-1`, `cemetery-1`, `other-1`, `photo-1` |
 
-**A text role makes a source searchable.** A source is searchable by its words only when one of its files carries a text role - `transcript` (or `transcription`) or `extracted-text` - and is a text file. A source whose evidence is only images, scans or recordings is invisible to text search until such a companion is attached.
+**A text role makes a source searchable.** A source is searchable by its words only when one of its files carries a text role - `transcript` (or `transcription`) or `extracted-text` - or is itself a text file (`.md`, `.txt`). A source whose evidence is only images, scans or recordings is invisible to text search until such a companion is attached.
 
 **Copies and derivatives.**
 
@@ -712,7 +713,7 @@ external_links:               # optional: where the evidence is online
 files:                        # inventory: roles + provenance
   - file: photos/1880/Hartley-6084-1.jpg          # PHOTOS ROOT: never renamed
     role: front                                   #   identity = SOURCE: keyword + this inventory
-    is_primary: true          # the source's main image; exactly one entry carries it
+    is_primary: true          # photos only: the source's main image; exactly one entry carries it
     language: en              # optional; the language of THIS file
     date: 1880-11~             # optional EDTF; THIS file's own date, for a source whose files
                                #   weren't all created the same day
@@ -760,7 +761,7 @@ for profile Stories sections)
 
 Tools write the frontmatter keys in the order shown above (`id`, `aliases`, `title`, `source_type`, `source_date`, `source_class`, `repository`, `citation`, `people`, …, `files`, `created`); a reader must not depend on order.
 
-The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. A single-file source's one entry is `role: primary` with `is_primary: true`; a source with several files marks its main image with `is_primary: true` on exactly one entry (`fha source set-primary` moves it).
+The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. A single-file source's one entry is `role: primary`. A photo source marks its main image with `is_primary: true` on exactly one entry (a single photo's one entry carries both); `fha source set-primary` moves that mark between photos. A documents-root source carries no `is_primary`: its `role: primary` entry is the main file.
 Each file may carry an optional `status:` - omitted means present; **`missing-fixture`** marks a deliberately absent placeholder, allowed **only** under `example-archive/` and `tests/fixtures/` (warning-level there); a `missing` file in a real archive is an error.
 For documents-root files the link has three carriers (filename, inventory, and the embedded `SOURCE:` keyword where the format holds metadata - TIFF, JPEG, PNG, PDF); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
@@ -773,7 +774,7 @@ Tooling verifies the carriers agree.
 - Omitted, a file is undated at the per-file level and the page falls back to `source_date:` alone.
 - When a source's files carry genuinely different dates and `source_date:` is a single point, giving `source_date:` an EDTF interval (`1916-02/1916-06`) is the recommended zero-code fallback (CHEATSHEET.md) rather than leaving the page with no date signal at all.
 
-The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[p-…|Name]]` / `[[l-…|Name]]` form by the tools. The claims block (§8) instead requires **bare** IDs - `persons: [p-…]`, `place: l-…` - because it is structured data in a fenced block; links live in the frontmatter, not the claims (§8.7). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
+The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[p-…|Name]]` / `[[l-…|Name]]` form by the tools. The claims block (§8) is structured data in a fenced block, and its links are not clickable there; its written forms are §8.7's (`persons:` as pinned links with the name beside them, `roles:` and `place:` as bare IDs). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
 
 **Source type vocabulary** (controlled, expandable by spec change - same pattern as claim types): `census` · `vital-record` · `newspaper` · `photo` · `interview` · `letter` · `military-record` · `land-record` · `probate` · `directory` · `dna` · `book` · `website` · `artifact` · `proof-argument` · `ephemera` · `other` (+ free-text `subtype` when nothing fits). A passenger list, naturalization or other immigration record that is not itself a vital record is `other` with `subtype: immigration`.
 
@@ -903,9 +904,9 @@ Three HTML-comment markers change what happens to prose when it is published. Th
 
 - **`<!-- AI-DRAFT … -->`** marks prose an AI drafted that no human has accepted. The marker sits at the **end** of the span it covers; the span begins at the previous AI marker of either kind or the previous `#`/`##` heading, whichever is nearer. The text inside the marker is free provenance (model, date, task). Publication drops the whole span, marker included. In a transcript companion, one `AI-DRAFT` marker anywhere says the text is an unreviewed machine reading of the images.
 - **`<!-- AI-ACCEPTED … -->`** is the same marker after a human accepted the span (`fha confirm draft` rewrites it in place, appending `(accepted DATE)`, so the provenance is kept). Publication keeps the prose and drops the marker. In a transcript with no `AI-DRAFT` marker left, it says a human checked the text against the images; a transcript with neither marker makes no claim either way.
-- **`<!-- private -->` … `<!-- /private -->`** fences prose that stays in the working archive: a shared or standalone build drops the fenced text, and the linked working preview keeps it.
+- **`<!-- private -->` … `<!-- /private -->`** fences prose that stays in the working archive: a shared (standalone) `fha site` build drops the fenced text, and the linked working preview keeps it. The fence is a site rule; other exports (`fha packet`, `fha wikitree`) do not read it, so prose that must never leave the archive belongs under `restricted` (§19), not only inside a fence.
 
-All three fail closed. A damaged AI marker (an unterminated `<!-- AI-DRAFT`, a stray marker word) withholds the whole prose section rather than risk publishing a draft, and an unterminated `<!-- private -->` hides everything to the end of the section.
+All three fail closed. A damaged AI marker (an unterminated `<!-- AI-DRAFT`, a stray marker word) withholds all of that person's published prose rather than risk publishing a draft: the site drops Biography, Stories and Research Notes, and `fha packet` and `fha wikitree` refuse the profile. An unterminated `<!-- private -->` hides everything after it in the file.
 
 ## 17. Notes (general research)
 
@@ -914,7 +915,7 @@ Person-specific research lives in that person's research file, never here.
 
 - `notes/research/` - working notes spanning people or topics.
 - `notes/narratives/` - formal multi-person write-ups; every factual claim cites a source or is explicitly marked context/speculation; exportable.
-- `notes/questions.md` - single file of general open questions. Format per question: an `## Q:` heading, then one markdown list line per field - `- origin:` (`human` | `tool` | `agent` - machine questions are marked at birth), `- status:` (`open` · `answered [[s-xxxx]]` · `resolved` · `closed (not pursuing)`; `answered` and `resolved` mean the same and either may carry the link that settled it), `- refs:` (a bracketed list of the related IDs or `[[ ]]` links), and `- context:` with dated, origin-attributed findings indented beneath it and appended over time. The `- ` at the start of each field line is part of the format: tools find the fields by it. Closing without an answer is a legitimate, recordable research outcome. Tooling may propose answers/closures and append context; status changes require human confirmation.
+- `notes/questions.md` - single file of general open questions. Format per question: an `## Q:` heading, then one markdown list line per field - `- origin:` (`human` | `tool` | `agent` - machine questions are marked at birth), `- status:` (`open` · `answered [[s-xxxx]]` · `resolved` · `closed (not pursuing)`; `answered` and `resolved` mean the same and either may carry the link that settled it), `- refs:` (a bracketed list of bare IDs, `[p-…, c-…]`), and `- context:` with dated, origin-attributed findings indented beneath it and appended over time. The `- ` at the start of each field line is part of the format: tools find the fields by it. Closing without an answer is a legitimate, recordable research outcome. Tooling may propose answers/closures and append context; status changes require human confirmation.
 
 Notes connect to the core elements through ID links in their text, and linked frontmatter `persons:` / `sources:` / `places:` lists. **A script reading only the IDs those links resolve to must be able to reconstruct every connection** - the bare ID is the load-bearing part; the double brackets are durable plain-text delimiters, and the editor's *resolution and graphing* of them is front-end sugar, never load-bearing.
 
@@ -945,7 +946,7 @@ The AI photo-categorization pipeline (separately documented) is a curation-layer
 Embedded metadata is part of the durable layer - it travels with the bytes.
 Integration rules:
 
-1. **Date mapping is bidirectional.** Photo metadata cannot hold partial dates, so a photo's date is two parts: the **digits** live in EXIF `DateTimeOriginal` (a forced full `YYYY-MM-DD`, rule 2), and a keyword **`DATE: {pattern}`** says how much of them to believe. The pattern is letters only - `Y`, then optionally `M`, then optionally `D`, each followed by `!` confident, `~` best guess, or `?`/nothing unknown; trailing time letters (`H`, `M`, `S`) are allowed and ignored. Building the date stops at the first component that is unknown, so a pattern with no confident or best-guess component gives no date. Only a photo carrying a `DATE:` keyword has an archive date: its presence is what says a human reviewed it, since EXIF alone is often the scan's own date. A `DATE:` keyword holding digits (`DATE: 1880`) is not this grammar and gives no date; tools report how many photos carry one.
+1. **Date mapping is bidirectional.** Photo metadata cannot hold partial dates, so a photo's date is two parts: the **digits** live in EXIF `DateTimeOriginal` (a forced full `YYYY-MM-DD`, rule 2), and a keyword **`DATE: {pattern}`** says how much of them to believe. The pattern is letters only - `Y`, then optionally `M`, then optionally `D`, each followed by `!` confident, `~` best guess, or `?`/nothing unknown; trailing time letters (`H`, `M`, `S`) are allowed and ignored. Building the date stops at the first component that is unknown, so a pattern with no confident or best-guess component gives no date; a best-guess year followed by a confident month (`Y~M!`) also gives none, since EDTF cannot say it. Only a photo carrying a `DATE:` keyword has an archive date: its presence is what says a human reviewed it, since EXIF alone is often the scan's own date. A `DATE:` keyword holding digits (`DATE: 1880`) is not this grammar and gives no date; tools report how many photos carry one.
 
    | Keyword pattern | EDTF |
    |---|---|
