@@ -68,7 +68,7 @@ The agentic CLI harness (§1) is one front door onto the archive. `fha serve` is
 
 **Privacy is unchanged.** The read side is the **linked** view (real archive paths, unredacted - a local owner preview, TOOLING §12) and never leaves the machine. Sharing outward still goes through `fha site --standalone` (or the `share-and-export` skill); the workbench adds a front end onto that command, not a second export surface.
 
-Flags, security model and test coverage: `tools/README.md`'s "fha serve - implementation status" and TOOLING §17.
+Flags: `docs/COMMANDS.md` (`fha serve`). Tests: `tests/test_serve.py`.
 
 ---
 

@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "6c550f22afee03b2c95cccec3e7f50ecd7614d8a68c96d6b4192221b2fbb9874",
+      "sha256": "b186cb615820de3f5025582ce78761c64a3815278b54275470872b95d17fe2b4",
       "spec_version": "2.1",
       "src": "tools/README.md"
     },
@@ -931,7 +931,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "9b2e9e77942455b6b4195828d091f1877f096cc2e75e359b1977870cedba879b",
+      "sha256": "c0461934e43991e4cdb38eb61f4dacbc5260cca47ecf1276dba8a6bbcdf14aeb",
       "spec_version": "2.1"
     },
     {
@@ -961,7 +961,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "ac0da6473b444c05d920c9d62c5925a787d38ffb7f460156e79818d6299c7d88",
+      "sha256": "51360cb1724b9da03f2720ee154d1e01554ddb71b8ac00d06036f5e0d1dd9edc",
       "spec_version": "2.1"
     },
     {

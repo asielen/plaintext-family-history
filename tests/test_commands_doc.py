@@ -64,9 +64,11 @@ class LintCatalogueTests(unittest.TestCase):
         emitted |= set(code_re.findall((ROOT / 'tools' / 'places.py').read_text(encoding='utf-8')))
         tooling = (ROOT / 'TOOLING.md').read_text(encoding='utf-8')
         tabled = set(re.findall(r'^\|\s*`?((?:E|W|PL)\d{3})`?\s*\|', tooling, re.M))
+        # A row may keep a code that is reserved but never emitted, saying so.
+        reserved = set(re.findall(r'^\|\s*`?((?:E|W|PL)\d{3})`?\s*\|.*(?:no-op|retired)', tooling, re.M))
         self.assertTrue(tabled, 'TOOLING.md has no lint table rows')
         self.assertEqual(sorted(emitted - tabled), [], 'codes the linter emits but TOOLING does not list')
-        self.assertEqual(sorted(tabled - emitted), [], 'codes TOOLING lists but the linter never emits')
+        self.assertEqual(sorted(tabled - emitted - reserved), [], 'codes TOOLING lists but the linter never emits')
 
 
 class PresentTenseTests(unittest.TestCase):
