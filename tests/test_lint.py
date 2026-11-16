@@ -6040,16 +6040,22 @@ class SourceRecordFormTests(unittest.TestCase):
         # A pointer-only source lists no files at all.
         self.assertNotIn('W145', self._codes(''))
 
-    def test_no_main_file_warns(self) -> None:
-        # A lone file is the one to open, marked or not; two unmarked files
-        # leave a reader guessing.
+    def test_no_main_file_is_quiet(self) -> None:
+        # Records written before SPEC 2.1 (thousands of capture bundles) mark
+        # no file at all; that is legal, and a reader opens the first file.
         self.assertNotIn('W145', self._codes(
             'files:\n  - file: documents/other/note.txt\n    role: original\n'))
-        codes = self._codes('files:\n  - file: documents/other/note.txt\n    role: page-1\n'
-                            '  - file: documents/other/note-2.txt\n    role: page-2\n')
+        self.assertNotIn('W145', self._codes(
+            'files:\n  - file: documents/other/note.txt\n    role: page-1\n'
+            '  - file: documents/other/note-2.txt\n    role: page-2\n'))
+
+    def test_a_stray_role_primary_beside_is_primary_is_named(self) -> None:
+        codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'
+                            '  - file: documents/other/b.txt\n    role: primary\n')
         self.assertEqual(len(codes.get('W145', [])), 1, codes)
-        self.assertEqual(codes['W145'][0].severity, 'W')
-        self.assertIn('is_primary: true', codes['W145'][0].message)
+        msg = codes['W145'][0].message
+        self.assertIn('documents/other/b.txt', msg)
+        self.assertIn('role: primary', msg)
 
     def test_two_main_files_warn(self) -> None:
         codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'

@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "ccc68b59d4418bb7244ec2a8d2d668c6c9b8a37f5e9b81cb8aa72a3a31abf78e",
+      "sha256": "f4da59174b78d975716d0402f17850f343fc6b8714cc487ecfd1466da06a47f7",
       "spec_version": "2.1"
     },
     {
@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "d52389d76fe76d1e435232bd98ebb6412262dbd9c4f22d52632dd648e219367c",
+      "sha256": "816ca9546b45176025662ded67a05b3e7ec131ddf24886c8259331dc217fa99a",
       "spec_version": "2.1",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -224,14 +224,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "60aed4674d61d61b41d0e587d7c765ca35554abeb9089c5d2796ae8576fabd42",
+      "sha256": "83df968a9c2bc891e577c39f4a6da6577991db35fb42edf8a46617080ee4b83b",
       "spec_version": "2.1",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "c71cbcac63af6197269685e4b00b2b0a8e0c6bbeabf265c171c5eb7623b1d89b",
+      "sha256": "07cfed1d49ad239310e6182d2bdb8a9ad39c3fa696cf06d592a5782cbc08ef3a",
       "spec_version": "2.1",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -294,7 +294,7 @@
     {
       "path": ".fha/browser-companion/src/lib/findagrave-record.js",
       "category": "operating",
-      "sha256": "6a771fc44c79e8c69a34cc1317d24909030b2ba415cfb5f53ce905e0a1d28b16",
+      "sha256": "004e324d2d0e2e56e7ef2d67039a83818d4e9ff6ecc2c9f35ff2dc94ee61f38d",
       "spec_version": "2.1",
       "src": "browser-companion/src/lib/findagrave-record.js"
     },
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "5e03fb3bc3284999514fb90a90969702ef5cbf4e389451daa34a68222af5febb",
+      "sha256": "bd9e92e4290e4049ea6245ec163da44f3f6323e5df3fb91837af6c003fa92032",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "a633ee48a8e35053b4566f48bafef90eccac85b25081d9afc3fe83122374df80",
+      "sha256": "acf489b5c883a3c20cf1847fe0ba55c7eef3374381ee122a6233d532f8e49176",
       "spec_version": "2.1",
       "src": "tools/capture.py"
     },
@@ -518,7 +518,7 @@
     {
       "path": ".fha/tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "5f10c0d3371d08eb08ddd2d2d45b80585bfeb0bfb951568b2b149e31587a1e5d",
+      "sha256": "ca003adb8dad088d757419e822ddf5b0024a3c4b26e3687bee99400f841b4c0f",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/_common.py"
     },
@@ -532,14 +532,14 @@
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "91e8e8d2b43414a5a0dae4e6e3a898cc376cccc86e77302e39a07eeabf76b7b3",
+      "sha256": "68b18daf5fba76f225cb31818b166f320fb0fac77c24f82d80297628bbe59fbc",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/familysearch.py"
     },
     {
       "path": ".fha/tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "ad55ae2603b94647bfbb17d9f9274739dad55f9260aa9e59426336c78cdbbb1d",
+      "sha256": "961cec32592119d55823441692b3e613b2810b8ffdac659ab0f821481bd164c4",
       "spec_version": "2.1",
       "src": "tools/capture_recipes/findagrave.py"
     },
@@ -553,21 +553,21 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "081916ad8d29effc4a3e2e31563d3ab67e8428375f776af66f3533972ddf31f8",
+      "sha256": "9062ae2d1c8e1d0fc64fd7836083b41ccdbca335ed0d3f4f86203cf8eb1fd2ca",
       "spec_version": "2.1",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "ec0b6d9406c53ebb22bf9b9e63bc10a3839d053527d9d7d13e942d5d072b0062",
+      "sha256": "46c256c1cfd2798da6ef825a7aa275847dfd8bf6907206d3d1f7a5f298e1ec9f",
       "spec_version": "2.1",
       "src": "tools/confirm.py"
     },
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "cb94b94d9bfa25171515178cd2a40719a51f0b96a3700f598a91e38597acb6fd",
+      "sha256": "a8d5277ca184b970564ff774297ebdea486f71267ffaed5f72a280e05531489d",
       "spec_version": "2.1",
       "src": "tools/convert_mining.py"
     },
@@ -595,7 +595,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "7e9116f120be51038fecca35b553a20c0f1afe88eb0bd01f6d70555bbb943ee1",
+      "sha256": "ffe729cdbd3bf44764041703c346884053e7a71a7ebf37a8a481c4961e2d73d3",
       "spec_version": "2.1",
       "src": "tools/find.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "34deee5b4571e770e16e919d6b781cb45da51f3dd3bc694e466e1cd558257ab2",
+      "sha256": "77f964300dd859a445e338ca572eeb2fb063afea530b09a48563642b862b93c3",
       "spec_version": "2.1",
       "src": "tools/gedcom_import.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "302b62d479047409c110defefe72f386ca0869710291aabadb24ce65d9804632",
+      "sha256": "05adee26509041652d2d5a3d8099d4fcdfce5394cdda2a243559072bfda1cbb1",
       "spec_version": "2.1",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "cb1821cfcc55a95ca9d1a525c4f0580ffbc0fc95a6bb82e6c3ffc60b7c5c7c87",
+      "sha256": "e6576619ce3e2b5e85a9dd5b4fe2bf62a7bb1b0c8770fbbd527911fcafb5e2d2",
       "spec_version": "2.1",
       "src": "tools/lint.py"
     },
@@ -644,7 +644,7 @@
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "f5913436eb8b318acf1c6348e2ea513c72963b013aff6321ee9147e8d654c137",
+      "sha256": "be4143bf62618c6cab5ae8bf85d30aa198d71e0536f69fd7426d6d71282a66ba",
       "spec_version": "2.1",
       "src": "tools/normalize_links.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "a976a901b48564440370f48ee829f421f8afce2e2d5ffa7bd5f1020f040d9782",
+      "sha256": "6910ac5fd63b1e96874863d3846dd781694b3c0fbd0976c07c5260bae4dfd33c",
       "spec_version": "2.1",
       "src": "tools/process.py"
     },
@@ -924,7 +924,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "563b7f559dfbe3dacb6e6b6847f8568d2f4e23be4ed0221c62fb3de4fdddb9e0",
+      "sha256": "fd78b0517e18ede915dc701a34a56919d1aa97bf852716a7f867e4fa0c35fcfb",
       "spec_version": "2.1",
       "src": "archive-template/.gitignore"
     },
@@ -961,13 +961,13 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "392ae2956f50675028d8ae81f9cc7ee3a0e8db4d39cf36d183fbbe3d6db9a771",
+      "sha256": "095664edb047b144ae1a86a224eedb85ea9ad1899606d9ebf1ac7ae040eba139",
       "spec_version": "2.1"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "7cd6da2821fe60626bae446ca5a74d7b2578d88d2a05db45df5cc323b6d0d92d",
+      "sha256": "268fb1e2276fef83d017a46d8b5c2de8a329f0e7229e5f24a4412599e5f2b357",
       "spec_version": "2.1"
     },
     {

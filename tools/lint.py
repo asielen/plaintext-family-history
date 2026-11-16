@@ -1444,30 +1444,31 @@ def _check_ai_passes(meta: dict, path: Path, findings: list[Finding]) -> None:
 
 
 def _check_main_file_mark(meta: dict, path: Path, findings: list[Finding]) -> None:
-    """W145: a source whose `files:` does not mark exactly one main file
-    (SPEC §14 `is_primary: true` - the file a reader opens first). An older
-    record's `role: primary` still names it, and an older second copy marked
-    the same way but labelled with `copy:` is not counted. A warning: every
-    file is still listed and found; only which to open first is unclear."""
+    """W145: a source whose `files:` marks more than one main file (SPEC §14
+    `is_primary: true` - the file a reader opens first). An older record's
+    `role: primary` still counts as a mark, except on a second copy labelled
+    with `copy:`. A record marking no file is not reported: records written
+    before SPEC 2.1 often mark none, and a reader opens the first file. A
+    warning: every file is still listed and found; only which to open first
+    is unclear."""
     files = meta.get('files')
     if not isinstance(files, list):
         return
     entries = [e for e in files if isinstance(e, dict) and e.get('file')]
-    if not entries:
-        return
-    marked = [e for e in entries if flag_true(e.get('is_primary'))]
-    if not marked:
-        marked = [e for e in entries
-                  if files_entry_is_main(e) and not str(e.get('copy') or '').strip()]
-    if len(marked) == 1:
-        return
-    if not marked and len(entries) == 1:
-        return      # its one file is the one to open; nothing is unclear
-    if not marked:
+    flagged = [e for e in entries if flag_true(e.get('is_primary'))]
+    stray = [e for e in entries
+             if e not in flagged and 'is_primary' not in e
+             and str(e.get('role') or '').strip().lower() == 'primary'
+             and not str(e.get('copy') or '').strip()]
+    if flagged and stray:
+        shown = ', '.join(str(e.get('file')) for e in stray)
         findings.append(Finding('W', 'W145', path,
-            'no file is marked as this source\'s main file. Add `is_primary: true` '
-            'under the one a reader should open first (a photo\'s front, a '
-            'letter\'s first page) in files: (SPEC §14).'))
+            f'{flagged[0].get("file")} is marked `is_primary: true`, but `role: primary` '
+            f'is still on {shown}, which also calls it the main file. Delete that '
+            '`role: primary` line (SPEC §14).'))
+        return
+    marked = flagged or stray
+    if len(marked) <= 1:
         return
     shown = ', '.join(str(e.get('file')) for e in marked)
     findings.append(Finding('W', 'W145', path,
