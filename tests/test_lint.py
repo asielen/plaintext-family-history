@@ -2908,8 +2908,8 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertEqual(self._w125(root), [])
 
     def test_list_form_roles_does_not_crash_lint(self) -> None:
-        # `roles: [spouse, spouse]` is the shorthand lint's OWN E015 message
-        # suggests. It names no person, so it cannot scope the couple (W125
+        # `roles: [spouse, spouse]` is a shorthand people write by hand (lint's E015
+        # message once suggested it). It names no person, so it cannot scope the couple (W125
         # still fires), but it must never raise: a traceback on the human's
         # screen is always a defect (AGENTS.md - "Who you serve").
         w = self._w125(self._build(roles_block='  roles: [spouse, spouse]\n'))
@@ -3100,6 +3100,33 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
                 w = self._w126(self._build(roles_block=roles))
                 self.assertEqual(len(w), 1, w)
                 self.assertIn('looks like `parent:`', w[0].message)
+
+    def test_a_misspelt_or_plural_role_on_a_relationship_claim_warns(self) -> None:
+        # SPEC §8.3: on a relationship claim too, `parents:` or `parnet:` is
+        # somebody meaning `parent:`. Read as a description it keeps the
+        # parent out of the tree, and the roles: map is present so E015 is
+        # quiet - without this the loss is silent.
+        for word, meant in (('parents', 'parent'), ('parnet', 'parent'),
+                            ('chlid', 'child'), ('Mothers', 'parent')):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.FATHER}]\n')
+                w = self._w126(self._build(ctype='relationship',
+                                           persons=[self.CHILD, self.FATHER],
+                                           roles_block=roles))
+                self.assertEqual(len(w), 1, w)
+                self.assertIn(f'`{word}:`', w[0].message)
+                self.assertIn(f'looks like `{meant}:`', w[0].message)
+                self.assertIn(lint.fmt_id_display(self.FATHER), w[0].message)
+
+    def test_a_relationship_claim_with_true_or_descriptive_roles_is_quiet(self) -> None:
+        for word in ('parent', 'mother', 'sibling', 'grandparent'):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.FATHER}]\n')
+                self.assertEqual(self._w126(self._build(
+                    ctype='relationship', persons=[self.CHILD, self.FATHER],
+                    roles_block=roles)), [])
 
     def test_descriptive_role_beside_an_unroled_person_still_warns(self) -> None:
         # The person with no role at all is the one the claim left unsaid.
@@ -5463,6 +5490,119 @@ class SettledVerdictReviewedDateTests(unittest.TestCase):
         codes = self._codes('accepted', None)
         self.assertIn('E006', codes)
         self.assertNotIn('W139', codes)
+
+    def test_a_blank_reviewed_line_on_an_accepted_claim_is_e006(self) -> None:
+        # `reviewed:` with nothing after it is YAML null. It must read as
+        # absent for E006 exactly as it does for W139, not as the text 'None'.
+        self.assertIn('E006', self._codes('accepted', ''))
+        self.assertIn('E006', self._codes('accepted', '"  "'))
+        self.assertNotIn('E006', self._codes('accepted', '2026-01-02'))
+
+
+class RelationshipRolesShapeE015Tests(unittest.TestCase):
+    """E015: a relationship claim's `roles:` must be a map naming each
+    person's part (SPEC §8.3). A list such as `roles: [parent, child]` names
+    nobody, so the claim derives no edge - the same loss as no roles at all."""
+
+    SID = 's-7bbbbbbbb1'
+    KID = 'p-7bbbbbbbb1'
+    DAD = 'p-7bbbbbbbb2'
+
+    def _e015(self, roles_block: str) -> list:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        for pid, name in ((self.KID, 'Ann Cole'), (self.DAD, 'Ben Cole')):
+            (root / 'people' / 'stubs' / f'cole__{name.split()[0].lower()}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nliving: false\ntier: stub\n---\n\n'
+                f'# {name}\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        (root / 'sources' / 'other' / f'note_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: A note\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n'
+            f'- value: "Ben is Ann\'s father"\n  id: c-7bbbbbbbb1\n  type: relationship\n'
+            f'  persons: [{self.KID}, {self.DAD}]\n  status: suggested\n'
+            f'  confidence: low\n  notes: x.\n{roles_block}```\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'E015']
+
+    def test_missing_roles_names_the_map_form(self) -> None:
+        e = self._e015('')
+        self.assertEqual(len(e), 1)
+        self.assertIn('child:', e[0].message)
+        self.assertIn('parent:', e[0].message)
+        self.assertNotIn('[parent, child]', e[0].message)
+
+    def test_list_form_roles_is_e015(self) -> None:
+        e = self._e015('  roles: [parent, child]\n')
+        self.assertEqual(len(e), 1, e)
+        self.assertIn('child:', e[0].message)
+
+    def test_scalar_roles_is_e015(self) -> None:
+        self.assertEqual(len(self._e015('  roles: parent\n')), 1)
+
+    def test_a_map_is_quiet(self) -> None:
+        self.assertEqual(self._e015(
+            f'  roles:\n    child: {self.KID}\n    parent: [{self.DAD}]\n'), [])
+
+
+class VocabularyWordW141Tests(unittest.TestCase):
+    """W141: a word outside a closed vocabulary that lint did not check before
+    - claim `information` / `evidence` (SPEC A.3), source `source_class`
+    (§14, A.3), person `sex` (§9). A warning, not an error: the record still
+    reads, but the word is ignored by every tool that looks for the real one.
+    An older `sex: U` is tolerated (read as not recorded)."""
+
+    SID = 's-7cccccccc1'
+    PID = 'p-7cccccccc1'
+
+    def _w141(self, *, sex: str | None = 'F', source_class: str | None = 'original',
+              information: str | None = 'primary', evidence: str | None = 'direct') -> list:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        sex_line = f'sex: {sex}\n' if sex is not None else ''
+        (root / 'people' / 'stubs' / f'cole__mary_{self.PID}.md').write_text(
+            f'---\nid: {self.PID}\nname: Mary Cole\n{sex_line}living: false\n'
+            'tier: stub\n---\n\n# Mary Cole\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        cls_line = f'source_class: {source_class}\n' if source_class is not None else ''
+        info_line = f'  information: {information}\n' if information is not None else ''
+        ev_line = f'  evidence: {evidence}\n' if evidence is not None else ''
+        (root / 'sources' / 'other' / f'note_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: A note\nsource_type: other\n{cls_line}---\n\n'
+            '## Claims\n```yaml\n'
+            f'- value: "Mary lived in Salina"\n  id: c-7cccccccc1\n  type: residence\n'
+            f'  persons: [{self.PID}]\n  status: accepted\n  reviewed: 2026-01-02\n'
+            f'  confidence: low\n{info_line}{ev_line}  notes: x.\n```\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code == 'W141']
+
+    def test_valid_words_and_absent_fields_are_quiet(self) -> None:
+        self.assertEqual(self._w141(), [])
+        self.assertEqual(self._w141(sex=None, source_class=None,
+                                    information=None, evidence=None), [])
+        for sex in ('M', 'F', 'intersex', 'unknown', 'U'):
+            with self.subTest(sex=sex):
+                self.assertEqual(self._w141(sex=sex), [])
+
+    def test_each_misspelt_word_warns_with_the_valid_list(self) -> None:
+        cases = (
+            ({'information': 'primry'}, 'information', 'primary, secondary, undetermined'),
+            ({'evidence': 'direkt'}, 'evidence', 'direct, indirect, negative'),
+            ({'source_class': 'orignal'}, 'source_class', 'original, derivative, authored'),
+            ({'sex': 'male'}, 'sex', 'F, M, intersex, unknown'),
+        )
+        for kwargs, field, valid in cases:
+            with self.subTest(field=field):
+                w = self._w141(**kwargs)
+                self.assertEqual(len(w), 1, w)
+                self.assertEqual(w[0].severity, 'W')
+                self.assertIn(field, w[0].message)
+                self.assertIn(repr(next(iter(kwargs.values()))), w[0].message)
+                self.assertIn(valid, w[0].message)
 
 
 if __name__ == '__main__':

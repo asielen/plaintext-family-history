@@ -88,6 +88,10 @@ from _lib import (
     PROVISIONAL_VITAL_FIELDS,
     SIGNIFICANCE,
     SOURCE_TYPES,
+    EVIDENCE_VALUES,
+    INFORMATION_VALUES,
+    PERSON_SEX_VALUES,
+    SOURCE_CLASS_VALUES,
     mint_ids,
     TOKEN_RE,
     VITAL_TYPES,
@@ -725,6 +729,17 @@ def _id_near_miss(ref: str) -> tuple[str | None, str] | None:
     return None
 
 
+def _vocab_finding(path: Path, what: str, field: str, value: object,
+                   valid: tuple[str, ...] | list[str]) -> Finding:
+    """W141: a word outside one of the small closed vocabularies (claim
+    `information` / `evidence`, source `source_class`, person `sex`). A
+    warning: the record still reads, but every tool that looks for the real
+    word passes this one by, so the analysis it records is lost."""
+    return Finding('W', 'W141', path,
+        f'{what} has {field}: {str(value)!r}, which the tools do not recognise. '
+        f'Use one of: {", ".join(valid)}.')
+
+
 def _near_miss_text(ref: str, near: tuple[str | None, str]) -> str:
     """One phrase describing a near-miss ref, e.g.
     `'P-de957bcda' looks like a person code but is 9 character(s)...`."""
@@ -1263,6 +1278,12 @@ def _process_person_file(path: Path, registry: Registry,
             if field not in meta or meta[field] == '':
                 findings.append(Finding('E', 'E010', path,
                     f'Person profile missing required field: {field!r}'))
+        # W141: sex outside SPEC §9's vocabulary. An older `U` is tolerated:
+        # it reads as not recorded, the same as leaving the line out.
+        sex = meta.get('sex')
+        if sex not in (None, '') and str(sex).strip() not in PERSON_SEX_VALUES | {'U'}:
+            findings.append(_vocab_finding(path, 'Person record', 'sex', sex,
+                                           sorted(PERSON_SEX_VALUES)))
 
     # Collect token refs from body
     _collect_token_refs(rec['body'], path, registry)
@@ -1421,6 +1442,10 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     if source_type and source_type not in SOURCE_TYPES:
         findings.append(Finding('W', 'W109', path,
             format_source_type_error(source_type)))
+    source_class = meta.get('source_class')
+    if source_class not in (None, '') and str(source_class).strip() not in SOURCE_CLASS_VALUES:
+        findings.append(_vocab_finding(path, 'Source', 'source_class', source_class,
+                                       SOURCE_CLASS_VALUES))
 
     # W134 (#191 follow-up, #114): source_type: ephemera requires people: to
     # stay strictly empty (SPEC §14) - it is the one source_type whose entire
@@ -1532,11 +1557,15 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 '(for anything else, use type: event or note with a free-text subtype:).'))
 
         # E006: accepted claim must have reviewed
+        # A blank `reviewed:` line is YAML null and reads as absent here, as it
+        # does for W139 - not as the text 'None'.
         status = str(claim.get('status', ''))
-        reviewed = str(claim.get('reviewed', ''))
+        reviewed = str(claim.get('reviewed') or '').strip()
         if status == 'accepted' and not reviewed:
             findings.append(Finding('E', 'E006', path,
-                f'Accepted claim {cid} missing reviewed date'))
+                f'Accepted claim {cid} has no reviewed: date saying when it was accepted. '
+                f'Add `reviewed: YYYY-MM-DD` under its status: line, or run '
+                f'`fha claim {cid} --status accepted` to record it as accepted today.'))
         # W139: SPEC 8.4 asks for the date on every settled verdict, not only
         # accepted. A warning rather than E006's error: an archive kept for
         # years holds many disputed or rejected claims marked before the rule
@@ -1570,11 +1599,27 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             findings.append(Finding('E', 'E008', path,
                 f'Claim {cid} has significance override but no significance_reason'))
 
-        # E015: relationship claim must have roles
-        if claim_type == 'relationship' and not claim.get('roles'):
+        # W141: the Mills analysis words (SPEC A.3). Optional, so only a word
+        # that is present and outside the list is reported; a warning, since
+        # the claim still reads - the word is just never recognised.
+        for field, valid in (('information', INFORMATION_VALUES),
+                             ('evidence', EVIDENCE_VALUES)):
+            word = claim.get(field)
+            if word not in (None, '') and str(word).strip() not in valid:
+                findings.append(_vocab_finding(path, f'Claim {cid}', field, word, valid))
+
+        # E015: a relationship claim must have a roles: MAP (SPEC §8.3). A list
+        # such as `roles: [parent, child]` names nobody, so like a missing map
+        # it puts no one in the tree.
+        roles = claim.get('roles')
+        if claim_type == 'relationship' and not (isinstance(roles, dict) and roles):
+            problem = ('is missing its roles: map' if not roles else
+                       'has a roles: line that is not a map of role to person')
             findings.append(Finding('E', 'E015', path,
-                f'Claim {cid} (type: relationship) is missing its roles: field - add roles: '
-                'naming each person\'s part (e.g. roles: [parent, child] or [spouse, spouse]).'))
+                f'Claim {cid} (type: relationship) {problem}, so it puts no one in the '
+                'family tree. Write roles: on its own line, then one indented line per '
+                'part naming who plays it, e.g. `child: p-…` and `parent: [p-…]` '
+                '(or `spouse: [p-…, p-…]`).'))
 
         # W109: accepted claim missing notes when it's substantive OR a low-confidence vital
         sig = SIGNIFICANCE.get(claim_type, 'incidental')
@@ -2448,8 +2493,8 @@ def _role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) 
     the quickstart's form), so role matching agrees with _claim_person_ids.
 
     A hand-written `roles:` is not always the mapping the schema asks for -
-    E015's own message suggests the shorthand `roles: [parent, child]`, and a
-    list carries no person to resolve. Treat any non-mapping as "no roles
+    a hand-written list such as `roles: [parent, child]` (E015 reports it on a
+    relationship claim) carries no person to resolve. Treat any non-mapping as "no roles
     given" rather than letting `.get` raise: a lint pass must never hand the
     human a traceback over a hand-edit it can simply read as empty."""
     roles = claim.get('roles')
@@ -3384,6 +3429,29 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             'parent, so the archive reads them as the child only and '
                             'their `parent:` listing records nothing. Take them off '
                             'whichever of the `child:` and `parent:` lines is wrong.'))
+
+            # W126, the misspelt-role variant on a relationship claim (SPEC §8.3
+            # "Role words"): `parents:` or `parnet:` is someone meaning
+            # `parent:`, but it reads as a description and derives nothing.
+            # The map is present, so E015 is quiet, and unlike a birth claim
+            # nobody is left unroled - without this the parent never reaches
+            # the tree and nothing says why. Same near-miss rule as the birth
+            # arm above (`_lib.role_near_miss`).
+            roles_map = claim.get('roles')
+            if claim_type == 'relationship' and derives_edges and isinstance(roles_map, dict):
+                for key in roles_map:
+                    meant = role_near_miss(key)
+                    if not meant:
+                        continue
+                    pids = _role_pids(claim, key, alias_map)
+                    who = (', '.join(fmt_id_display(pid) for pid in sorted(pids))
+                           or 'nobody the archive can find')
+                    findings.append(Finding('W', 'W126', src_path,
+                        f'Claim {claim.get("id","?")} (type: relationship) lists {who} '
+                        f'under `{key}:`, which looks like `{meant}:` written another '
+                        'way - the archive reads it as a description only, so no link '
+                        'is recorded for them and they will be missing from the family '
+                        f'tree. Rename the line to `{meant}:`.'))
 
             # W132: an accepted-or-needs-review death/burial/baptism claim
             # naming 2+ people with NO roles: map at all - the zero-role-signal
