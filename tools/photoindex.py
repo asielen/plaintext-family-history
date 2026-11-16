@@ -265,6 +265,7 @@ from _lib import (
     newest_person_record_mtime,
     normalize_date,
     normalize_id,
+    is_attached_role,
     parse_media_filename,
     path_to_alias,
     person_profile_manifest_keys,
@@ -2263,7 +2264,10 @@ def _gallery_group_dict(
     caption = (caption_val or title or '').strip()
 
     chips: list[dict] = []
-    for member in member_rows:
+    # The photo's own scans first, then what was kept with it (the folder,
+    # the envelope, a note): a reader sees the back before the envelope.
+    ordered = sorted(member_rows, key=lambda m: is_attached_role(m['variant_role']))
+    for member in ordered:
         if member['path'] == primary_path:
             continue
         chips.append({

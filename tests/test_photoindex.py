@@ -768,6 +768,69 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(rows['d/portrait-front.jpg'][1], 1)
         self.assertEqual(rows['d/portrait-envelope.jpg'][1], 0)
 
+    def test_a_studio_folder_scanned_on_its_own_joins_its_portrait(self) -> None:
+        # #306: the studio folder carries the photographer's imprint - real
+        # evidence of where and when the portrait was taken - but it formed
+        # its own group, so nothing looking at the portrait saw it.
+        rows = self._group([('box/210409-box-florence-044.tif', None),
+                            ('box/210409-box-florence-044-back.tif', None),
+                            ('box/210409-box-florence-044-cover.tif', None),
+                            ('w/woodbury-harry-034.tif', None),
+                            ('w/woodbury-harry-034-envelope.tif', None),
+                            ('w/woodbury-harry-034-envelope-back.tif', None),
+                            ('w/woodbury-harry-034-note-2-crop.tif', None)])
+        florence = [n for n in rows if 'florence' in n]
+        self.assertEqual(len({rows[n][0] for n in florence}), 1, rows)
+        self.assertEqual(rows['box/210409-box-florence-044.tif'][1], 1)
+        self.assertEqual(rows['box/210409-box-florence-044-cover.tif'][3], 'cover')
+        harry = [n for n in rows if 'harry' in n]
+        self.assertEqual(len({rows[n][0] for n in harry}), 1, rows)
+        self.assertEqual(rows['w/woodbury-harry-034.tif'][1], 1)
+        self.assertEqual(rows['w/woodbury-harry-034-envelope-back.tif'][3], 'envelope-back')
+        self.assertEqual(rows['w/woodbury-harry-034-note-2-crop.tif'][3], 'note-2-crop')
+
+    def test_an_attached_object_is_never_main_image_or_the_photos_back(self) -> None:
+        # #306: with no plain scan, the photo's own back still beats the
+        # envelope, and an envelope's back never counts as the photo's back.
+        rows = self._group([('g/portrait-envelope.jpg', None),
+                            ('g/portrait-back.jpg', None)])
+        self.assertEqual(rows['g/portrait-back.jpg'][1], 1)
+        env_back = parse_media_filename('portrait-envelope-back')
+        self.assertEqual(env_back.part_kind, 'attached')
+        self.assertEqual(env_back.base_id, 'portrait')
+        self.assertEqual(variant_role(env_back), 'envelope-back')
+        # Review: with no plain or front scan, the photo's own scans still
+        # win, whatever the names sort to - a negative kept in its envelope.
+        for group, main in ((['h/x-negative.tif', 'h/x-envelope.tif'], 'h/x-negative.tif'),
+                            (['i/x-crop.tif', 'i/x-cover.tif'], 'i/x-crop.tif'),
+                            (['j/x-page-1.tif', 'j/x-page-2.tif', 'j/x-cover.tif'], 'j/x-page-1.tif')):
+            rows = self._group([(n, None) for n in group])
+            self.assertEqual([n for n in group if rows[n][1]], [main], group)
+
+    def test_both_sides_of_an_envelope_join_the_photo(self) -> None:
+        rows = self._group([('k/x.tif', None), ('k/x-envelope-front.tif', None),
+                            ('k/x-envelope-back.tif', None)])
+        self.assertEqual(len({r[0] for r in rows.values()}), 1, rows)
+        self.assertEqual(rows['k/x-envelope-front.tif'][3], 'envelope-front')
+
+    def test_only_the_listed_attached_words_group(self) -> None:
+        # #306 keeps #200's lesson: only the closed list groups, and a number
+        # after anything but '-note' is the photo's own.
+        for stem in ('smith-farm-01400', 'album-cover-0012', 'grandma-scrapbook'):
+            with self.subTest(stem=stem):
+                parsed = parse_media_filename(stem)
+                self.assertEqual(parsed.part_kind, 'none')
+                self.assertEqual(parsed.base_id, stem)
+        upper = parse_media_filename('Portrait-MOUNT')
+        self.assertEqual((upper.base_id, upper.attached), ('Portrait', 'mount'))
+
+    def test_attached_roles_are_told_from_the_photos_own(self) -> None:
+        # #306: the gallery sorts chips on this, so the back reads before the envelope.
+        for role in ('envelope', 'envelope-back', 'note-2', 'cover-crop', 'Sleeve'):
+            self.assertTrue(photoindex.is_attached_role(role), role)
+        for role in (None, '', 'back', 'back-crop', 'page-2', 'negative', 'notes'):
+            self.assertFalse(photoindex.is_attached_role(role), role)
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

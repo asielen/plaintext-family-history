@@ -2015,6 +2015,8 @@ def _batch_type(members: list[Path]) -> tuple[str, str]:
         return 'C', 'multi-page document set'
     if any(p.is_crop for p in parsed) and any(not p.is_crop for p in parsed):
         return 'D', 'helper crops of a parent image'
+    if any(p.part_kind == 'attached' for p in parsed):
+        return 'B', 'one photo and what was kept with it (folder, envelope, note)'
     if any(p.part_kind in ('front', 'back') for p in parsed):
         return 'B', 'front/back of one physical item'
     return 'A', 'variant scans of one image'
