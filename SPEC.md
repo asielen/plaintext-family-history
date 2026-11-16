@@ -132,7 +132,7 @@ Other modes keep their own surfaces: chat projects for thought-partnership, head
 | **Source** | An evidence-bearing item: a record, document, photo-as-evidence, interview, letter, clipping. | `s-` id |
 | **Claim** | A single sourced assertion - a date, place, relationship, event, attribute. The heart of traceability. | `c-` id |
 | **Place** | A location referenced by claims. | `l-` id |
-| **Working answer** | A question the researcher has answered with a guess but not yet proved - never a fact. It is the same entry as the question, with the guess written in (§17). | `h-` id, added when the guess is |
+| **Working answer** | A question the researcher has answered with a guess but not yet proved - never a fact. It is the same entry as the question, with the guess written in (§17). | `h-` id, given when the guess is written in |
 | **Asset** | An actual file on disk (photo, scan, recording, transcript). | **Shares its source's `s-` id** once processed - carried in the filename (documents) or embedded keyword (photos); *no ID before processing* |
 
 **Assets share their source's identity.** All files of a processed source - fronts, backs, copy B, negatives, pages, transcripts - are *copies and facets of one piece of evidence*, so they all carry the source's ID - in their filenames for documents-root files (§13), in embedded keywords for photos-root files (§20, never renamed).
@@ -171,7 +171,7 @@ suggested → accepted | disputed | rejected | superseded
 
 Nothing reaches `accepted` without human review.
 AI-generated claims always enter at `suggested`. `superseded` claims are kept, pointing forward via `notes`.
-A reviewer who has looked at a claim and cannot yet settle it leaves it `suggested` and writes the `reviewed:` date: a dated suggested claim reads "checked, still open," an undated one "not yet looked at." (A source that says something only weakly is the other axis: `accepted` + low confidence, §8.5. A guess no source states is not a claim at all; it is a working answer, §17.)
+A reviewer who has looked at a claim and cannot yet settle it leaves it `suggested` and writes the `reviewed:` date. So a suggested claim with a `reviewed:` date has been looked at and is still open; one with no date has not been looked at yet. (A source that says something only weakly is the other axis: `accepted` + low confidence, §8.5. A guess no source states is not a claim at all; it is a working answer, §17.)
 
 **significance** - *how much it defines a complete record*.
 Set by the claim's type (§8.2), never per claim.
@@ -373,7 +373,7 @@ The person record is identity, flags, and prose; sourced facts live with evidenc
 
 A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[p-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private - a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19); it is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
 
-The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[c-…]]` or `source: [[s-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a guess you are building on before you can cite it (step 3 of the research ladder, §17). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
+The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[c-…]]` or `source: [[s-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a guess you are building on before you can cite it (step 3 of the research ladder, §17a). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
 
 Two parents of differing nature sit side by side as equally valid edges - a biological and an adoptive father, a gestational and a genetic and an intended mother - never a contradiction. The claim stays canonical: delete the block and a reindex rebuilds every sourced edge from claims, while the unsourced guesses stay here. The linter records the reciprocal edge on the other person automatically (a `child` edge here implies a `parent` edge there, pointing at the same claim) and offers to add a missing mirror rather than asking you to write both ends by hand.
 
@@ -861,7 +861,7 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 (the incidental long tail, each linking its source)
 
 ## Research Notes
-(hunches, leads, brick walls - see §16b; questions go in §17's entry form)
+(hunches, leads, brick walls - see §16b; a question goes in the research file or `notes/questions.md`, §17b)
 
 ## Friends & Family
 (non-relative connections and context - the FAN club)
@@ -915,8 +915,8 @@ Everything not yet proved climbs one ladder, written in one place: the question 
 3. **Build on it** - research may continue past a guess. A guessed relationship may be entered on the person's `relationships:` with `status: hypothesis` (§9), so the tree can be followed past it; the tree and the site draw it as a guess, and exports leave it out.
 4. **Settle** - one of three ways:
    - a source says it: process the source, and its claim carries the fact like any other;
-   - the pieces add up: write the reasoning as a proof-argument source (§14) whose claim cites the evidence;
-   - it is wrong: the entry is marked `abandoned` and kept, so the same guess is not made again.
+   - the pieces add up: write the reasoning as a proof-argument source - a short write-up of why the evidence, taken together, proves it (§14) - whose claim cites the evidence;
+   - it is wrong: the guess is ruled out. Its lines leave the entry and one dated `context:` line records it (`ruled out h-…: Daniel Cole - his daughter Margaret died in 1852`), so the same guess is not made again. The question stays open for the next guess, which gets a new `h-` id.
 
 **Weak source or working answer?** If anyone or anything other than the researcher says it - a family story, an index entry, another researcher's tree - it is a source, processed with a low-confidence claim (§8.5). If only the researcher says it, it is a working answer. A guess is never a claim, since a claim requires a source.
 
@@ -938,9 +938,9 @@ An entry is an `## Q:` heading, then one markdown list line per field. The `- ` 
 ```
 
 - `origin:` - `human` | `tool` | `agent`; machine questions are marked at birth.
-- `status:` - `open` · `answered [[s-…]]` · `resolved` · `closed (not pursuing)` · `abandoned`. `answered` and `resolved` mean the same, and either may carry the link that settled it; `abandoned` says the guess proved wrong. Closing without an answer is a legitimate, recordable research outcome.
+- `status:` - `open` · `answered [[s-…]]` · `resolved` · `closed (not pursuing)`. `answered` and `resolved` mean the same, and either may carry the link that settled it. Closing without an answer is a legitimate, recordable research outcome. The status is the question's; a guess that proved wrong is recorded in `context:` (§17a), not here.
 - `refs:` - a bracketed list of bare IDs, `[p-…, c-…]`, naming who and what the question is about.
-- `id:`, `guess:`, `basis:`, `verify:` - present once the question has a working answer (rung 2). The `h-` id is added with the guess and never changes.
+- `id:`, `guess:`, `basis:`, `verify:` - present once the question has a working answer (step 2 of the ladder). The `h-` id is added with the guess and never changes or is reused; the people in `refs:` are the people the working answer is about.
 - `context:` - dated, origin-attributed findings indented beneath it and appended over time.
 
 Tooling may propose answers and closures and append context; status changes require human confirmation.
@@ -953,14 +953,14 @@ Tooling may propose answers and closures and append context; status changes requ
 
 ```markdown
 - date: 2026-06-12
-  question: "[[h-4f20aa91c3]] Margaret Cole's parents"
+  question: "[[h-4f20aa91c3]] parents of [[p-cd795c61e0|Margaret Cole]]"
   repository: Ancestry
   collection: "Kansas State Census, 1875"
   terms: "Hartley, Breton Co."
   result: nil
 ```
 
-One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person - a person ID there makes the search count for that person); `repository`; `collection`; `terms`; `result` (`nil` | `found [[s-…]]` | `partial (note)`). `fha capture` appends exactly this shape, one entry per capture.
+One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person - a person ID there makes the search count for that person); `repository`; `collection`; `terms`; `result` (`nil` | `found [[s-…]]` | `partial (note)` | `staged inbox/…` - captured into the inbox, not yet processed). `fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
 
 Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first** - "already searched (date)" is surfaced before any lead is proposed.
 
@@ -1090,7 +1090,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 
 # Appendix A - Optional extensions
 
-Every field here is valid and fully defined, and most archives never use any of them. A record without them is complete; a reader can skip this appendix until a record carries one. Each extension keeps the meaning it would have in the core.
+Every field here is valid and fully defined, and most archives never use any of them. (There is no A.1: section numbers here never change, so a reference to one stays right.) A record without them is complete; a reader can skip this appendix until a record carries one. Each extension keeps the meaning it would have in the core.
 
 ### A.2 Confirmed absences (negative facts)
 
