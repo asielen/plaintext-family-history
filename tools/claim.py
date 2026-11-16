@@ -275,6 +275,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    link_list_lines,
+    record_display_names,
+    yaml_link_item,
     locate_claim_records,
     record_claims_by_id,
     CLAIM_TYPES,
@@ -977,6 +980,7 @@ def _apply_claim_review(
     anchor: str | None = None,
     notes: str | None = None,
     clear: tuple[str, ...] = (),
+    person_names: dict[str, str] | None = None,
 ) -> tuple[str, bool]:
     """Surgically set any of status/reviewed/value/date/type/place/persons/
     confidence/information/evidence/anchor/notes on one claim, and remove the
@@ -1362,21 +1366,29 @@ def _apply_claim_review(
         else:
             insert_pos = set_scalar('place_text', _yaml_inline(place_text), insert_after=insert_pos)
     if persons is not None:
-        rendered_persons = '[' + ', '.join(fmt_id_display(p) for p in persons) + ']'
+        # Written one person per line with the name beside the ID (SPEC
+        # §8.7): the key line goes in through set_scalar (which replaces any
+        # old flow or block value, continuation lines and all), then the
+        # `- "[[p-…|Name]]"` lines are spliced in under it.
         persons_idx, _persons_kind, _ = find_key('persons')
+        before_len = len(item)
         if persons_idx is not None:
-            before_len = len(item)
-            set_scalar('persons', rendered_persons, insert_after=persons_idx)
-            # A block-style persons: list collapses to one flow-style line here,
-            # shrinking `item`. `insert_pos` may already point past this key (e.g.
-            # a newly-inserted --date landed right after status, which can sit
-            # below a block-style persons: in file order) - shift it by the same
-            # delta or confidence's fallback insert below lands short.
+            key_pos = set_scalar('persons', '', insert_after=persons_idx)
+        else:
+            key_pos = set_scalar('persons', '', insert_after=insert_pos)
+        item[key_pos] = item[key_pos].rstrip()
+        child = ' ' * (len(key_indent) + 2)
+        entries = [f'{child}- {yaml_link_item(p, (person_names or {}).get(normalize_id(p)))}'
+                   for p in persons]
+        item[key_pos + 1:key_pos + 1] = entries
+        if persons_idx is not None:
+            # The list can grow or shrink against what it replaced: any
+            # insert_pos already past this key shifts by the same amount.
             delta = len(item) - before_len
             if delta and insert_pos > persons_idx:
                 insert_pos += delta
         else:
-            insert_pos = set_scalar('persons', rendered_persons, insert_after=insert_pos)
+            insert_pos = key_pos + len(entries)
     if confidence is not None:
         conf_idx, _conf_kind, _ = find_key('confidence')
         if conf_idx is not None:
@@ -2104,6 +2116,8 @@ def run_claim(
             place=place_display, place_text=place_text, persons=persons_norm,
             confidence=confidence, information=information, evidence=evidence,
             anchor=anchor, notes=notes, clear=to_clear,
+            person_names=(record_display_names(archive_root, persons_norm)
+                          if persons_norm else None),
         )
     except _ClaimEditRefused as e:
         result.ok = False
@@ -2776,6 +2790,7 @@ def _render_new_claim_lines(
     subtype: str | None, status: str, reviewed: str | None, confidence: str,
     negated: bool = False, information: str | None = None, evidence: str | None = None,
     anchor: str | None = None, notes: str | None = None, reviewed_by: str | None = None,
+    person_names: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the YAML lines for one brand-new claim item (SPEC §8.4 field order).
 
@@ -2822,7 +2837,9 @@ def _render_new_claim_lines(
     if negated:
         lines.append('  negated: true')
     if persons:
-        lines.append('  persons: [' + ', '.join(fmt_id_display(p) for p in persons) + ']')
+        # One person per line with the name beside the ID (SPEC §8.7), so
+        # the claim says who it is about to a reader without the tools.
+        lines += link_list_lines('persons', persons, person_names, indent='  ')
     if date:
         lines.append(f'  date: {yaml_edtf(date)}')
     if place:
@@ -3067,6 +3084,7 @@ def run_claim_new(
         place=place, place_text=place_text, subtype=subtype, status=status, reviewed=reviewed,
         confidence=confidence, negated=negated, information=information, evidence=evidence,
         anchor=anchor, notes=notes, reviewed_by=reviewed_by,
+        person_names=record_display_names(archive_root, persons_norm or []),
     )
 
     try:

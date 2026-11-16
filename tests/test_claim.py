@@ -92,6 +92,13 @@ created: 2026-06-01
 '''
 
 
+def _pids(persons) -> list:
+    """A claim's persons: as lowercase IDs, whatever written form (a bare ID
+    or the `[[p-…|Name]]` link the tools write, SPEC §8.7)."""
+    from _lib import link_field_refs
+    return [r.lower() for r in link_field_refs(persons)]
+
+
 def _write_source(archive_root: Path) -> Path:
     path = archive_root / 'sources' / 'other' / 'test-source_S-1111111111.md'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -900,7 +907,7 @@ class RunClaimNewTests(unittest.TestCase):
         rec = self._claims()[cid]
         self.assertEqual(rec['type'], 'occupation')
         self.assertEqual(rec['value'], 'Bookkeeper, Plains Junction Railroad')
-        self.assertEqual(rec['persons'], ['p-aaaaaaaaaa'])
+        self.assertEqual(_pids(rec['persons']), ['p-aaaaaaaaaa'])
         self.assertEqual(str(rec['date']), '1874')
         self.assertEqual(rec['status'], 'accepted')
         self.assertEqual(str(rec['reviewed']), claim._today())
@@ -1450,7 +1457,7 @@ class FieldExtensionApplyTests(unittest.TestCase):
                     persons=['P-bbbbbbbbbb', 'P-cccccccccc'])
                 self.assertTrue(changed)
                 claims = read_record_from_text(new)
-                self.assertEqual(claims[0]['persons'], ['p-bbbbbbbbbb', 'p-cccccccccc'])
+                self.assertEqual(_pids(claims[0]['persons']), ['p-bbbbbbbbbb', 'p-cccccccccc'])
 
     def test_place_text_edit_preserves_the_place_link(self) -> None:
         # SPEC §15: the two place keys are independent facts. Rewording the
@@ -1528,7 +1535,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
                 self.assertTrue(changed)
                 claims = read_record_from_text(new)
                 self.assertEqual(len(claims), 1)
-                self.assertEqual(claims[0]['persons'], ['p-cccccccccc'])
+                self.assertEqual(_pids(claims[0]['persons']), ['p-cccccccccc'])
                 self.assertEqual(claims[0]['status'], 'suggested')  # untouched
                 # No orphaned `- P-…` line survives from the old block list.
                 self.assertNotIn('- P-aaaaaaaaaa', new)
@@ -1546,7 +1553,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
         claims = read_record_from_text(new)
         self.assertEqual(len(claims), 1)
         c = claims[0]
-        self.assertEqual(c['persons'], ['p-cccccccccc'])
+        self.assertEqual(_pids(c['persons']), ['p-cccccccccc'])
         self.assertEqual(str(c['date']), '1880')
         self.assertEqual(c['confidence'], 'low')  # untouched, still readable
         self.assertEqual(c['status'], 'suggested')
@@ -1570,7 +1577,7 @@ class PersonsBlockStyleRegressionTests(unittest.TestCase):
             result = claim.run_claim(root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
             self.assertEqual(result.exit_code, EXIT_CLEAN)
             rec = {c['id']: c for c in read_record(source)['claims']}
-            self.assertEqual(rec['C-aa11bb22cc']['persons'], ['p-bbbbbbbbbb'])
+            self.assertEqual(_pids(rec['C-aa11bb22cc']['persons']), ['p-bbbbbbbbbb'])
         finally:
             tmp.cleanup()
 
@@ -1677,7 +1684,7 @@ class RunClaimFieldEditTests(unittest.TestCase):
     def test_persons_replaces_the_whole_list(self) -> None:
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', persons=['P-bbbbbbbbbb'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._claims()['C-aa11bb22cc']['persons'], ['p-bbbbbbbbbb'])
+        self.assertEqual(_pids(self._claims()['C-aa11bb22cc']['persons']), ['p-bbbbbbbbbb'])
 
     def test_unresolvable_person_refused(self) -> None:
         before = self.source.read_text(encoding='utf-8')
@@ -1794,7 +1801,7 @@ class PersonsReplaceRolesGuardTests(unittest.TestCase):
         result = claim.run_claim(
             self.root, claim_id='C-3333333333', persons=[self.DEAD, self.OTHER])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._claims()['C-3333333333']['persons'], [self.DEAD.lower(), self.OTHER.lower()])
+        self.assertEqual(_pids(self._claims()['C-3333333333']['persons']), [self.DEAD.lower(), self.OTHER.lower()])
 
     def test_multiple_orphaned_targets_are_all_named(self) -> None:
         self._write(f'  roles:\n    deceased: [{self.DEAD}]\n    witness: [{self.OTHER}]\n')
@@ -4562,6 +4569,45 @@ class ReviewedByStampTests(unittest.TestCase):
                            '--reviewed-by', 'Ruth Cole', '--root', str(self.root)])
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(self._claim('C-aa11bb22cc')['reviewed_by'], 'Ruth Cole')
+
+
+class PersonsWrittenWithNamesTests(unittest.TestCase):
+    """D6 / SPEC §8.7: `fha claim new` and a `--persons` edit write the
+    claim's people one per line with the name beside the ID, read from the
+    person record - so the claim says who it is about without the tools. A
+    person whose record has no usable name is written as the bare ID."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.source = _write_source(self.root)
+        _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
+        _write_person(self.root, 'P-bbbbbbbbbb', 'unknown')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_claim_new(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Fairview', persons=['P-aaaaaaaaaa', 'P-bbbbbbbbbb'],
+            status='suggested')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn('  persons:\n    - "[[p-aaaaaaaaaa|Anna Smith]]"\n    - p-bbbbbbbbbb\n', text)
+
+    def test_persons_edit_replaces_the_list(self) -> None:
+        result = claim.run_claim(self.root, claim_id='C-bb22cc33dd',
+                                 persons=['P-bbbbbbbbbb', 'P-aaaaaaaaaa'])
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn('  type: death\n  persons:\n    - p-bbbbbbbbbb\n'
+                      '    - "[[p-aaaaaaaaaa|Anna Smith]]"\n  status: suggested\n', text)
+        # The other claim is untouched, and the edit reads back as the IDs.
+        self.assertIn('  type: birth\n  persons: [P-aaaaaaaaaa]\n', text)
+        again = claim.run_claim(self.root, claim_id='C-bb22cc33dd',
+                                persons=['P-bbbbbbbbbb', 'P-aaaaaaaaaa'])
+        self.assertEqual(again['status'], 'already-done')
 
 
 if __name__ == '__main__':

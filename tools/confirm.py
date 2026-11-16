@@ -155,6 +155,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     LIVING_VALUES,
+    link_list_lines,
+    record_display_names,
     normalize_living,
     locate_claim_records,
     EXIT_CLEAN,
@@ -983,6 +985,7 @@ def run_confirm_cooccur(
     result.data['claim_id'] = fmt_id_display(cid)
     item_lines = _relationship_claim_lines(
         cid, pa, pb, subtype, claim_status, reviewed,
+        names=record_display_names(archive_root, [pa, pb]),
     )
 
     try:
@@ -1037,6 +1040,7 @@ def run_confirm_cooccur(
 
 def _relationship_claim_lines(
     cid: str, pa: str, pb: str, subtype: str, status: str, reviewed: str | None,
+    names: dict[str, str] | None = None,
 ) -> list[str]:
     """Build the YAML lines for one minted social `relationship` claim.
 
@@ -1052,7 +1056,8 @@ def _relationship_claim_lines(
         f'  id: {fmt_id_display(cid)}',
         '  type: relationship',
         f'  subtype: {subtype}',
-        f'  persons: [{a_disp}, {b_disp}]',
+        # persons: names beside the IDs, one per line (SPEC §8.7); roles: bare.
+        *link_list_lines('persons', [pa, pb], names, indent='  '),
         '  roles:',
         f'    {subtype}: [{a_disp}, {b_disp}]',
         f'  status: {status}',

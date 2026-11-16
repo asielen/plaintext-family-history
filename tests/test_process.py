@@ -3040,7 +3040,8 @@ class ProcessTestCase(unittest.TestCase):
 
         record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         rec = read_record(record)
-        people = rec['meta'].get('people', [])
+        from _lib import link_field_refs
+        people = [r.lower() for r in link_field_refs(rec['meta'].get('people', []))]
         self.assertIn('p-de957bcda1', people)
         self.assertIn('p-ab3c8f0e12', people)
 
@@ -4450,6 +4451,35 @@ class ExiftoolReadOnlyRetryTests(unittest.TestCase):
     def test_ordinary_stderr_is_passed_through_unchanged(self) -> None:
         raw = 'Error: some unrelated exiftool failure'
         self.assertEqual(process._format_exiftool_tmp_error(raw, self.photo), raw)
+
+
+class PeopleWrittenWithNamesTests(unittest.TestCase):
+    """D6 / SPEC §14: a new source record's people: says who is in it -
+    `- "[[p-…|Name]]"`, the name read from the person record - and a person
+    with no name on record is written as the bare ID, never a guess."""
+
+    def test_scaffold_writes_names_beside_ids(self) -> None:
+        text = process._scaffold_text(
+            'S-1111111111', 'Portrait', 'photo', [], notes_body=None,
+            people=['P-1111111111', 'P-2222222222'],
+            people_names={'p-1111111111': 'Jane Doe'})
+        self.assertIn('people:\n  - "[[p-1111111111|Jane Doe]]"\n  - p-2222222222\n', text)
+
+    def test_names_come_from_the_person_records(self) -> None:
+        from _lib import record_display_names
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'people' / 'stubs').mkdir(parents=True)
+            (root / 'people' / 'stubs' / 'doe__jane_P-1111111111.md').write_text(
+                '---\nid: P-1111111111\nname: Jane Doe\nliving: false\n---\n', encoding='utf-8')
+            (root / 'people' / 'stubs' / 'x__y_P-2222222222.md').write_text(
+                '---\nid: P-2222222222\nname: unknown\nliving: unknown\n---\n', encoding='utf-8')
+            (root / 'places').mkdir()
+            (root / 'places' / 'places.yaml').write_text(
+                '- id: L-3333333333\n  name: Fairview\n', encoding='utf-8')
+            self.assertEqual(
+                record_display_names(root, ['P-1111111111', 'P-2222222222', 'L-3333333333']),
+                {'p-1111111111': 'Jane Doe', 'l-3333333333': 'Fairview'})
 
 
 if __name__ == '__main__':

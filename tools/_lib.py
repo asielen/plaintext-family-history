@@ -8799,6 +8799,109 @@ def link_field_refs(value: Any) -> list[str]:
     return refs
 
 
+# ── Names beside IDs: the written form of people:/places:/persons: ────────────
+#
+# A source's `people:` and `places:` and a claim's `persons:` are what a
+# genealogist reads to see who a record is about. Written as bare IDs they say
+# nothing without the tools; written `"[[p-…|Margaret Cole]]"` they read at a
+# glance and still link by the ID (SPEC §8.7, §14). Every tool that writes one
+# of those lists goes through these helpers, so they all write the same form.
+# The name comes from the person record (or places.yaml) - never guessed: a
+# record with no usable name is written as its bare ID.
+
+def _usable_link_name(name: object) -> str | None:
+    """The name, tidied to one line, when it can sit inside `[[id|…]]`;
+    else None (no name, a placeholder like `unknown`, or characters that
+    would break the link)."""
+    if name is None or isinstance(name, (dict, list)):
+        return None
+    text = ' '.join(str(name).split())
+    if is_placeholder_name(text) or any(ch in text for ch in ('|', '[', ']')):
+        return None
+    return text
+
+
+def link_entry(rid: str, name: object = None) -> str:
+    """`[[p-…|Name]]` for an ID with a usable name, else the bare lowercase ID."""
+    shown = fmt_id_display(str(rid).strip())
+    display = _usable_link_name(name)
+    return f'[[{shown}|{display}]]' if display else shown
+
+
+def yaml_link_item(rid: str, name: object = None) -> str:
+    """One list item's YAML text: `"[[p-…|Name]]"` (quoted, so YAML reads a
+    string, not a nested list) or the bare ID when there is no usable name."""
+    entry = link_entry(rid, name)
+    if entry.startswith('[['):
+        return json.dumps(entry, ensure_ascii=False)   # JSON strings are YAML double-quoted scalars
+    return entry
+
+
+def link_list_lines(key: str, ids: Iterable[str], names: dict[str, str] | None,
+                    indent: str = '') -> list[str]:
+    """`key:` and one `- "[[id|Name]]"` line per ID, at `indent` (the key's own
+    column). `names` maps lowercase IDs to names (`record_display_names`)."""
+    names = names or {}
+    out = [f'{indent}{key}:']
+    for rid in ids:
+        out.append(f'{indent}  - {yaml_link_item(rid, names.get(normalize_id(str(rid))))}')
+    return out
+
+
+def record_display_names(archive_root: str | Path, ids: Iterable[str]) -> dict[str, str]:
+    """`{lowercase id: name}` for the person and place IDs given, read from
+    the person records under people/ and from places/places.yaml (the files
+    are the truth; the index may be stale). An ID with no record, or whose
+    record has no name, is simply absent - the caller writes it bare."""
+    root = Path(archive_root)
+    wanted = {normalize_id(str(i)) for i in ids if is_valid_id(str(i))}
+    names: dict[str, str] = {}
+    want_people = {i for i in wanted if i.startswith('p-')}
+    want_places = {i for i in wanted if i.startswith('l-')}
+    people_dir = root / 'people'
+    if want_people and people_dir.is_dir():
+        for path in people_dir.rglob('*.md'):
+            parsed = parse_filename(path)
+            if not parsed or parsed.get('id_type') != 'P' or parsed.get('is_companion'):
+                continue
+            pid = normalize_id(parsed['id_str'])
+            if pid not in want_people or pid in names:
+                continue
+            meta = _person_frontmatter_all(path)
+            if meta and normalize_id(str(meta.get('id') or pid)) == pid:
+                name = _usable_link_name(meta.get('name'))
+                if name:
+                    names[pid] = name
+    if want_places:
+        places, _err = read_places_registry(root)
+        for place in places:
+            lid = normalize_id(str(place.get('id') or ''))
+            if lid in want_places:
+                name = _usable_link_name(place.get('name'))
+                if name:
+                    names[lid] = name
+    return names
+
+
+def _person_frontmatter_all(path: Path) -> dict | None:
+    """One file's frontmatter mapping, read up to the closing `---` only."""
+    lines: list[str] = []
+    try:
+        with open(path, encoding='utf-8-sig', newline='') as fh:
+            if fh.readline().rstrip('\r\n') != '---':
+                return None
+            for line in fh:
+                if line.rstrip('\r\n') == '---':
+                    break
+                lines.append(line)
+            else:
+                return None
+        meta = safe_load_yaml(''.join(lines))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    return meta if isinstance(meta, dict) else None
+
+
 def _record_alias_strings(rec: dict) -> list[str]:
     """Every string that should resolve to a record: its ID, its `aliases:`
     entries, and (people/places) the display `name` plus name/alt variants.

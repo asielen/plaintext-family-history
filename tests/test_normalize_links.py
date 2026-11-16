@@ -199,5 +199,100 @@ class NormalizeLinksUndecodableTests(unittest.TestCase):
         self.assertIn('not saved as UTF-8', warnings)
 
 
+class NamesBesideIdsTests(unittest.TestCase):
+    """D6 / SPEC §8.7, §14: `fha normalize-links` settles a source's people:/
+    places: and its claims' persons: to one `- "[[id|Name]]"` line per entry,
+    so the record says who it is about without the tools - and refreshes a
+    display that went stale after a rename."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive = _make_archive(Path(self._tmp.name))
+        (self.archive / 'people').mkdir()
+        for pid, name in (('P-1111111111', 'Margaret Cole'),
+                          ('P-2222222222', 'Thomas Hartley'),
+                          ('P-3333333333', 'unknown')):
+            (self.archive / 'people' / f'x__y_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nliving: false\n---\n', encoding='utf-8')
+        (self.archive / 'places').mkdir()
+        (self.archive / 'places' / 'places.yaml').write_text(
+            '- id: L-4444444444\n  name: Fairview\n', encoding='utf-8')
+        self.record = self.archive / 'sources' / 'other' / 'census_S-5555555555.md'
+        self.record.write_text(
+            '---\n'
+            'id: S-5555555555\n'
+            'title: Census\n'
+            'people:\n'
+            '  - P-1111111111  # Margaret Cole\n'
+            '  - "[[p-2222222222|Tom Hartley]]"\n'
+            '  - P-3333333333\n'
+            '  - "[[Nobody Known]]"\n'
+            'places: [L-4444444444]\n'
+            '---\n'
+            '\n'
+            '## Claims\n'
+            '```yaml\n'
+            '- value: farmer\n'
+            '  id: c-6666666666\n'
+            '  type: occupation\n'
+            '  persons: [P-2222222222, P-1111111111]\n'
+            '  roles: {child: P-2222222222}\n'
+            '  place: L-4444444444\n'
+            '  status: suggested\n'
+            '  notes: |\n'
+            '    persons: [P-2222222222] is quoted here, not a key\n'
+            '```\n'
+            '\n'
+            '## Notes\n'
+            'Prose with P-1111111111 stays as written.\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self) -> str:
+        normalize_links.run_normalize_links(self.archive, {}, write=True)
+        return self.record.read_text(encoding='utf-8')
+
+    def test_people_and_places_written_with_names(self) -> None:
+        text = self._run()
+        self.assertIn(
+            'people:\n'
+            '  - "[[p-1111111111|Margaret Cole]]"\n'      # comment form settled
+            '  - "[[p-2222222222|Thomas Hartley]]"\n'     # stale display refreshed
+            '  - p-3333333333\n'                          # no usable name: bare ID
+            '  - "[[Nobody Known]]"\n'                    # unresolved: left as written
+            'places:\n'
+            '  - "[[l-4444444444|Fairview]]"\n', text)
+        self.assertNotIn('# Margaret Cole', text)
+
+    def test_claim_persons_one_per_line_roles_and_place_stay_bare(self) -> None:
+        text = self._run()
+        self.assertIn(
+            '  persons:\n'
+            '    - "[[p-2222222222|Thomas Hartley]]"\n'
+            '    - "[[p-1111111111|Margaret Cole]]"\n'
+            '  roles: {child: P-2222222222}\n'
+            '  place: L-4444444444\n', text)
+        self.assertIn('    persons: [P-2222222222] is quoted here, not a key\n', text)
+        self.assertIn('Prose with P-1111111111 stays as written.', text)
+
+    def test_second_run_changes_nothing(self) -> None:
+        self._run()
+        result = normalize_links.run_normalize_links(self.archive, {}, write=False)
+        self.assertEqual(result.data['files_changed'], 0)
+
+    def test_readers_see_the_same_people(self) -> None:
+        from _lib import read_record, link_field_refs, resolve_claim_persons_with_roles
+        before = read_record(self.record)
+        self._run()
+        after = read_record(self.record)
+        norm = lambda refs: [r.lower() for r in refs]
+        self.assertEqual(norm(link_field_refs(before['meta']['people']))[:3],
+                         norm(link_field_refs(after['meta']['people']))[:3])
+        self.assertEqual(
+            [p for p, _ in resolve_claim_persons_with_roles(before['claims'][0])],
+            [p for p, _ in resolve_claim_persons_with_roles(after['claims'][0])])
+
+
 if __name__ == '__main__':
     unittest.main()

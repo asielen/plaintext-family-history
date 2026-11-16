@@ -89,12 +89,14 @@ import re
 import shutil
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    link_list_lines,
+    record_display_names,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -566,6 +568,9 @@ class ConversionPlan:
     questions: list[dict]             # rendered question dicts
     mapping_rows: list[tuple[str, str, str]]
     warnings: list[str]
+    # {lowercase P-id: name} for writing `"[[p-…|Name]]"` (SPEC §8.7, §14):
+    # the person record's own name, or the name a new stub is minted with.
+    person_names: dict[str, str] = field(default_factory=dict)
 
 
 def _read_text(path: Path, warnings: list[str] | None = None) -> str:
@@ -822,9 +827,17 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             stub_people.append(person)
             stubbed_pids.add(normalize_id(person.pid))
 
+    people_all = resolver.all_people()
+    person_names = record_display_names(
+        archive_root, [p.pid for p in people_all if not p.needs_stub])
+    for person in people_all:
+        if person.needs_stub:
+            person_names.setdefault(normalize_id(person.pid), person.name)
+
     return ConversionPlan(
         archive_root=archive_root, sources=built_sources, stub_people=stub_people,
         questions=rendered_questions, mapping_rows=mapping_rows, warnings=warnings,
+        person_names=person_names,
     )
 
 
@@ -835,7 +848,7 @@ def scan_person_record_pids(archive_root: Path) -> set[str]:
 
 # ── Rendering ──────────────────────────────────────────────────────────────────
 
-def _render_claim(claim: _Claim) -> list[str]:
+def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[str]:
     """Render one suggested claim as block-style YAML lines for the ## Claims fence."""
     lines = [
         f'- value: {_yaml_inline(claim.value)}',
@@ -844,7 +857,7 @@ def _render_claim(claim: _Claim) -> list[str]:
     ]
     if claim.subtype:
         lines.append(f'  subtype: {_yaml_inline(claim.subtype)}')
-    lines.append(f'  persons: [{", ".join(claim.persons)}]')
+    lines += link_list_lines('persons', claim.persons, names, indent='  ')
     if claim.date:
         # Quote through the YAML emitter so a bare year ('1890') stays a string
         # rather than parsing back as an int (and a '~'/'/' EDTF stays literal).
@@ -861,9 +874,8 @@ def _render_claim(claim: _Claim) -> list[str]:
     return lines
 
 
-def _render_source_record(source: _Source) -> str:
+def _render_source_record(source: _Source, names: dict[str, str] | None = None) -> str:
     """Render a source record's full text (frontmatter + claims + notes + stories)."""
-    people_inline = f'[{", ".join(source.people)}]' if source.people else '[]'
     outputs = ['source-record', 'suggested-claims']
     if source.stories:
         outputs.append('stories')
@@ -876,7 +888,8 @@ def _render_source_record(source: _Source) -> str:
         'repository: family interview',
         'citation: >',
         f'  {source.title} (oral-history interview; imported from legacy mining {source.legacy_id}).',
-        f'people: {people_inline}',
+        *(link_list_lines('people', source.people, names) if source.people
+          else ['people: []']),
     ]
     if source.transcript_src.is_file():
         lines += [
@@ -895,7 +908,7 @@ def _render_source_record(source: _Source) -> str:
     for i, claim in enumerate(source.claims):
         if i:
             lines.append('')
-        lines += _render_claim(claim)
+        lines += _render_claim(claim, names)
     lines.append('```')
     lines += [
         '',
@@ -1063,7 +1076,7 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
         for s in plan.sources:
             if s.transcript_src.is_file():
                 copy_new(s.transcript_src, s.doc_dest_path)
-            write_new(_record_path(root, s), _render_source_record(s))
+            write_new(_record_path(root, s), _render_source_record(s, plan.person_names))
 
         # 4) Questions appended to notes/questions.md.
         if plan.questions:

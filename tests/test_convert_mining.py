@@ -509,5 +509,19 @@ class ReversedLegacyDateTests(unittest.TestCase):
         self.assertEqual([m for m in result.messages if m.code == 'E014'], [])
 
 
+class PersonsWrittenWithNamesTests(unittest.TestCase):
+    """D6 / SPEC §8.7: converted claims name their people one per line,
+    `- "[[p-…|Name]]"`."""
+
+    def test_render_claim(self) -> None:
+        claim = convert_mining._Claim(
+            cid='c-1111111111', legacy_source='S001', value='farmer',
+            claim_type='occupation', subtype=None, persons=['p-aaaaaaaaaa'],
+            date=None, place_text=None, confidence='low', anchor=None, notes=None)
+        lines = convert_mining._render_claim(claim, {'p-aaaaaaaaaa': 'Mary Hartley'})
+        self.assertIn('  persons:', lines)
+        self.assertIn('    - "[[p-aaaaaaaaaa|Mary Hartley]]"', lines)
+
+
 if __name__ == '__main__':
     unittest.main()

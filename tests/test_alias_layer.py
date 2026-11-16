@@ -241,12 +241,14 @@ class NormalizeLinksTests(unittest.TestCase):
         self.assertIn('[[s-1111111111]]', text)                          # (a) legacy upgraded
         self.assertIn('[[s-1111111111|grandmas-album]]', text)           # (b) stem, display kept
         self.assertIn('[[p-de957bcda1|Ken Smith]]', text)                # (c) name → ID|name
-        self.assertIn('people: ["[[p-de957bcda1|Ken Smith]]"]', text)    # frontmatter settled
+        self.assertIn('people:\n  - "[[p-de957bcda1|Ken Smith]]"\n', text)   # frontmatter settled (D6)
 
-    def test_claims_block_bare_ids_never_touched(self):
+    def test_claim_persons_settled_to_names_beside_ids(self):
+        # SPEC §8.7: persons: one per line, the name beside the ID.
         nl.run_normalize_links(self.root, {}, write=True)
         text = self.src.read_text(encoding='utf-8')
-        self.assertIn('persons: [P-de957bcda1]', text)                   # still bare
+        self.assertIn('  persons:\n    - "[[p-de957bcda1|Ken Smith]]"\n', text)
+        self.assertIn('- id: C-aaaaaaaaaa\n  type: residence\n', text)   # the rest untouched
 
     def test_human_stem_is_never_dropped(self):
         nl.run_normalize_links(self.root, {}, write=True)

@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import confirm
 import cooccur
 from _lib import (
+    link_field_refs,
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml, normalize_id, read_record,
 )
 
@@ -660,7 +661,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         matches = [
             c for c in read_record(src)['claims']
             if c.get('type') == 'relationship' and c.get('subtype') == 'friend'
-            and pair <= {str(p).lower() for p in (c.get('persons') or [])}
+            and pair <= {r.lower() for r in link_field_refs(c.get('persons') or [])}
         ]
         self.assertEqual(len(matches), 1)
 
@@ -755,7 +756,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         matches = [
             c for c in read_record(src)['claims']
             if c.get('type') == 'relationship' and c.get('subtype') == 'friend'
-            and pair <= {str(p).lower() for p in (c.get('persons') or [])}
+            and pair <= {r.lower() for r in link_field_refs(c.get('persons') or [])}
         ]
         self.assertEqual(sorted(str(c.get('status')) for c in matches),
                          ['rejected', 'suggested'])
@@ -1413,6 +1414,19 @@ class ClaimValueByIdBlankValueTests(unittest.TestCase):
             '- id: C-6000000003\n  value: something\n  type: note\n'
             '  persons: [P-1111111111]\n  status: suggested\n')
         self.assertIsNone(confirm._claim_value_by_id(path, 'c-9999999999'))
+
+
+class CooccurClaimNamesTests(unittest.TestCase):
+    """D6 / SPEC §8.7: a confirmed social tie's claim names both people one
+    per line with their names beside the IDs; roles: stays bare IDs."""
+
+    def test_persons_written_with_names(self) -> None:
+        lines = confirm._relationship_claim_lines(
+            'C-1111111111', 'P-aaaaaaaaaa', 'P-bbbbbbbbbb', 'neighbor', 'suggested', None,
+            names={'p-aaaaaaaaaa': 'Ann Lee'})
+        text = '\n'.join(lines)
+        self.assertIn('  persons:\n    - "[[p-aaaaaaaaaa|Ann Lee]]"\n    - p-bbbbbbbbbb\n', text)
+        self.assertIn('    neighbor: [p-aaaaaaaaaa, p-bbbbbbbbbb]', text)
 
 
 if __name__ == '__main__':

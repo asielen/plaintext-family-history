@@ -5267,7 +5267,13 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         self.assertTrue(result.ok, result.messages)
         text = (root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md').read_text(
             encoding='utf-8')
-        self.assertIn(f'persons: [{self.ALICE.lower()}, {self.BOB.lower()}]', text)
+        # Written one per line with the name beside the ID (SPEC §8.7, D6).
+        from _lib import read_record, link_field_refs
+        rec = read_record(root / 'sources' / 'notes' / f'rec_{self.SID.lower()}.md')
+        persons = link_field_refs(rec['claims'][0]['persons'])
+        self.assertEqual([p.lower() for p in persons],
+                         [self.ALICE.lower(), self.BOB.lower()])
+        self.assertIn('  persons:\n    - ', text)
         self.assertEqual(self._w135(root), [])
 
 
@@ -5603,6 +5609,208 @@ class VocabularyWordW141Tests(unittest.TestCase):
                 self.assertIn(field, w[0].message)
                 self.assertIn(repr(next(iter(kwargs.values()))), w[0].message)
                 self.assertIn(valid, w[0].message)
+
+
+# ── Formatter (`--format-check` / `--format-write`, SPEC Part IV) ───────────
+
+_MESSY_SOURCE = '''---
+title: Census of Fairview
+id: S-AB12CD34EF   # minted by hand
+# who is in it:
+people:
+  - P-1111111111  # Jane Doe
+custom_note: kept after the known keys
+source_type: census
+
+aliases: [S-AB12CD34EF]
+files:
+  - role: page-1
+    file: documents/census/Fairview_S-AB12CD34EF.jpg
+    is_primary: true
+created: 2026-01-01
+another_own_key: also kept
+---
+
+> Purpose block.
+
+## Notes
+Prose naming S-AB12CD34EF and P-1111111111   stays exactly as written.
+Second line with trailing spaces for a hard break.\x20\x20
+
+
+## Claims
+```yaml
+- id: C-1111111111
+  type: residence
+  persons: [P-1111111111]
+  value: Lived in Fairview
+  status: suggested
+  notes: |
+    Quoted text P-1111111111 in notes stays as written.
+
+
+- value: Already first
+  id: c-2222222222
+  type: occupation
+  persons: [p-1111111111]
+  status: suggested
+```
+
+
+
+'''
+
+
+class FormatterTests(unittest.TestCase):
+    """The formatter makes thousands of records read alike - key order,
+    lowercase IDs, `value` first, sections in order, no stray blank lines -
+    without ever changing a word a genealogist wrote."""
+
+    def _fmt(self, text: str, kind: str = 'source'):
+        return lint.format_record_text(text, kind)
+
+    def test_idempotent(self) -> None:
+        once, fixes, _ = self._fmt(_MESSY_SOURCE)
+        self.assertTrue(fixes)
+        twice, fixes2, manual2 = self._fmt(once)
+        self.assertEqual(twice, once)
+        self.assertEqual(fixes2, [])
+        self.assertEqual(manual2, [])
+
+    def test_frontmatter_key_order_and_comments_kept(self) -> None:
+        out, _, _ = self._fmt(_MESSY_SOURCE)
+        fm = out.split('---\n')[1]
+        self.assertEqual(
+            fm,
+            'id: s-ab12cd34ef   # minted by hand\n'
+            'aliases: [s-ab12cd34ef]\n'
+            'title: Census of Fairview\n'
+            'source_type: census\n'
+            '# who is in it:\n'
+            'people:\n'
+            '  - p-1111111111  # Jane Doe\n'
+            'files:\n'
+            '  - file: documents/census/Fairview_S-AB12CD34EF.jpg\n'   # a filename: never touched
+            '    role: page-1\n'
+            '    is_primary: true\n'
+            'created: 2026-01-01\n'
+            'custom_note: kept after the known keys\n'
+            'another_own_key: also kept\n')
+
+    def test_prose_is_byte_identical(self) -> None:
+        out, _, _ = self._fmt(_MESSY_SOURCE)
+        self.assertIn('> Purpose block.\n', out)
+        self.assertIn('Prose naming S-AB12CD34EF and P-1111111111   stays exactly as written.\n'
+                      'Second line with trailing spaces for a hard break.  \n', out)
+        self.assertIn('    Quoted text P-1111111111 in notes stays as written.\n', out)
+
+    def test_claims_value_first_and_ids_lowercase(self) -> None:
+        out, fixes, _ = self._fmt(_MESSY_SOURCE)
+        self.assertIn('```yaml\n- value: Lived in Fairview\n  id: c-1111111111\n  type: residence\n'
+                      '  persons: [p-1111111111]\n  status: suggested\n', out)
+        self.assertIn('a claim does not open with its value: line', fixes)
+        # The blank lines between claims sit inside the fence: left alone.
+        self.assertIn('stays as written.\n\n\n- value: Already first', out)
+
+    def test_sections_in_order_and_blank_lines(self) -> None:
+        out, fixes, _ = self._fmt(_MESSY_SOURCE)
+        body = out.split('\n---\n', 1)[1]
+        self.assertLess(body.index('## Claims'), body.index('## Notes'))
+        self.assertNotIn('\n\n\n', body.replace('stays as written.\n\n\n- value', ''))
+        self.assertTrue(out.endswith('for a hard break.  \n'))     # one final newline
+        self.assertIn('the ## sections are not in the usual order (Claims, Stories, Notes)', fixes)
+
+    def test_own_section_at_the_end_stays_there(self) -> None:
+        text = ('---\nid: s-1111111111\n---\n\n## Notes\nA note.\n\n## Claims\n```yaml\n```\n\n'
+                '## AI Passes\n- 2026\n')
+        out, _, manual = self._fmt(text)
+        self.assertEqual(manual, [])
+        self.assertEqual(out, '---\nid: s-1111111111\n---\n\n## Claims\n```yaml\n```\n\n'
+                              '## Notes\nA note.\n\n## AI Passes\n- 2026\n')
+
+    def test_section_move_in_doubt_is_reported_not_done(self) -> None:
+        for text in (
+            # a heading of the owner's own between the usual ones
+            '---\nid: s-1111111111\n---\n\n## Notes\nA.\n\n## Mine\nB.\n\n## Claims\n',
+            # prose that points at another section's position
+            '---\nid: s-1111111111\n---\n\n## Notes\nSee the claims below.\n\n## Claims\n',
+            # a private fence that spans two sections
+            '---\nid: s-1111111111\n---\n\n## Notes\n<!-- private -->\nA.\n\n## Claims\n'
+            '<!-- /private -->\n',
+        ):
+            with self.subTest(text=text):
+                out, fixes, manual = self._fmt(text)
+                self.assertEqual(out, text)
+                self.assertEqual(len(manual), 1)
+                self.assertIn('by hand', manual[0])
+
+    def test_person_profile_order_and_relationship_ids(self) -> None:
+        text = ('---\nname: Jane Doe\nid: P-1111111111\nliving: false\nrelationships:\n'
+                '  - to: "[[P-2222222222|John Doe]]"\n    type: parent\n'
+                '    note: Named P-2222222222 in the will\ntier: stub\n---\n\n# Jane Doe\n\n'
+                '## Biography\nShe lived.\n\n## Sources\n')
+        out, _, _ = self._fmt(text, 'person')
+        self.assertTrue(out.startswith('---\nid: p-1111111111\nname: Jane Doe\nliving: false\n'
+                                       'relationships:\n  - to: "[[p-2222222222|John Doe]]"\n'))
+        self.assertIn('    note: Named P-2222222222 in the will\n', out)   # free text kept
+        self.assertLess(out.index('## Sources'), out.index('## Biography'))
+
+    def test_unsafe_frontmatter_left_alone(self) -> None:
+        # A repeated key: YAML keeps the last one, so moving keys could change
+        # which value wins - the header is left exactly as written.
+        text = '---\ntitle: A\nid: s-1111111111\ntitle: B\n---\n\n## Claims\n'
+        out, fixes, _ = self._fmt(text)
+        self.assertEqual(out, text)
+        self.assertEqual(fixes, [])
+
+    def test_other_files_untouched(self) -> None:
+        self.assertEqual(self._fmt('a\n\n\n\nb', 'other'), ('a\n\n\n\nb', [], []))
+
+
+class FormatterRunLintTests(unittest.TestCase):
+    """`--format-check` only reports (read-only); `--format-write` applies the
+    same changes, after which the check is clean."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('archive_name: t\n', encoding='utf-8')
+        (self.root / 'sources' / 'census').mkdir(parents=True)
+        (self.root / 'notes').mkdir()
+        self.rec = self.root / 'sources' / 'census' / 'census_S-AB12CD34EF.md'
+        self.rec.write_bytes(_MESSY_SOURCE.encode('utf-8'))
+        self.note = self.root / 'notes' / 'scratch.md'
+        self.note.write_bytes(b'Free notes\n\n\n\nkept as they are\n')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _w109(self, result) -> list[str]:
+        return [m.text for m in result.messages if getattr(m, 'code', None) == 'W109']
+
+    def test_check_is_read_only_and_reports(self) -> None:
+        before = self.rec.read_bytes()
+        result = lint.run_lint(self.root, {}, format_check=True)
+        self.assertEqual(self.rec.read_bytes(), before)
+        self.assertEqual(result.changed, [])
+        texts = ' '.join(m.text for m in result.messages)
+        self.assertIn('frontmatter keys are not in the standard order', texts)
+        self.assertIn('fha lint --format-write', texts)
+
+    def test_write_then_check_is_clean(self) -> None:
+        lint.run_lint(self.root, {}, format_write=True)
+        self.assertEqual(self.rec.read_text(encoding='utf-8'),
+                         lint.format_record_text(_MESSY_SOURCE, 'source')[0])
+        self.assertEqual(self.note.read_bytes(), b'Free notes\n\n\n\nkept as they are\n')
+        result = lint.run_lint(self.root, {}, format_check=True)
+        texts = [m.text for m in result.messages if 'Formatting:' in m.text]
+        self.assertEqual(texts, [])
+
+    def test_write_dry_run_writes_nothing(self) -> None:
+        before = self.rec.read_bytes()
+        result = lint.run_lint(self.root, {}, format_write=True, dry_run=True)
+        self.assertEqual(self.rec.read_bytes(), before)
+        self.assertIn('Would fix formatting: census_S-AB12CD34EF.md', result.data['progress'])
 
 
 if __name__ == '__main__':

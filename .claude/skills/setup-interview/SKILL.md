@@ -260,7 +260,10 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
        id: C-xxxxxxxxxx
        type: relationship
        subtype: biological   # or adoptive/step/foster/social, per what he actually described
-       persons: [P-child, P-parentA, P-parentB]
+       persons:                # one per line, the name beside the code (SPEC §8.7)
+         - "[[p-child|Child Name]]"
+         - "[[p-parentA|Parent A Name]]"
+         - "[[p-parentB|Parent B Name]]"
        roles:
          child: P-child
          parent: [P-parentA, P-parentB]
@@ -278,7 +281,9 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
      - value: <Him> and <Spouse> are married
        id: C-xxxxxxxxxx
        type: marriage
-       persons: [P-him, P-spouse]
+       persons:
+         - "[[p-him|His Name]]"
+         - "[[p-spouse|Spouse Name]]"
        roles:
          spouse: [P-him, P-spouse]
        status: suggested

@@ -95,6 +95,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    link_list_lines,
+    normalize_id,
     stub_slug_name,
     surname_frontmatter_line,
     fold_accents,
@@ -1502,7 +1504,7 @@ def _person_stub_text(stub: _PersonStub, today: str) -> str:
     return '\n'.join(lines)
 
 
-def _render_claim(claim: _Claim) -> list[str]:
+def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[str]:
     """Render one suggested claim as block-style YAML for the ## Claims fence."""
     lines = [
         f'- value: {_yaml_inline(claim.value)}',
@@ -1511,7 +1513,8 @@ def _render_claim(claim: _Claim) -> list[str]:
     ]
     if claim.subtype:
         lines.append(f'  subtype: {_yaml_inline(claim.subtype)}')
-    lines.append(f'  persons: [{", ".join(claim.persons)}]')
+    # persons: one per line, the name beside the ID (SPEC §8.7); roles: bare.
+    lines += link_list_lines('persons', claim.persons, names, indent='  ')
     if claim.roles:
         lines.append('  roles:')
         for role, who in claim.roles.items():
@@ -1567,10 +1570,11 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         '## Claims',
         '```yaml',
     ]
+    names = {normalize_id(st.pid): st.name for st in plan.stubs if st.name}
     for i, claim in enumerate(plan.claims):
         if i:
             lines.append('')
-        lines += _render_claim(claim)
+        lines += _render_claim(claim, names)
     lines.append('```')
     lines += [
         '',
