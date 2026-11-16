@@ -1464,7 +1464,7 @@ class PacketTests(unittest.TestCase):
 
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertIn('Cousin Ruth [P-cccccccccc]', readme)
+        self.assertIn('Cousin Ruth [p-cccccccccc]', readme)
 
     def test_fence_opened_above_a_heading_keeps_his_last_biography_paragraph(self):
         # Round-2 review of #305: a fence opened above `## Research Notes`
@@ -1515,7 +1515,7 @@ class PacketTests(unittest.TestCase):
 
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertIn('Cousin Ruth [P-cccccccccc]', readme)
+        self.assertIn('Cousin Ruth [p-cccccccccc]', readme)
         self.assertNotIn('Aunt May', readme)
 
     def test_ambiguous_name_link_is_not_guessed(self):
@@ -1554,7 +1554,7 @@ class PacketTests(unittest.TestCase):
         result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
         self.assertTrue((result['packet_dir'] / 'files' / 'aunt.jpg').exists())
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertIn('Aunt May [P-cccccccccc]', readme)
+        self.assertIn('Aunt May [p-cccccccccc]', readme)
 
     def test_research_draft_caution_ignores_a_draft_only_inside_a_fence(self):
         # The draft went out with the fence, so warning the relative about
