@@ -3547,6 +3547,42 @@ class ProcessTestCase(unittest.TestCase):
             f'obituary-of-mary-hartley-site-data_{sid}.json',
         ]))
 
+    def test_bundle_never_files_two_files_under_one_name(self) -> None:
+        # PR #322 review: `clipping.jpg` (generic, so it takes the title) and
+        # `obit.jpg` (its own name) both came out `obit-attachment_S.jpg` -
+        # on POSIX the second move silently overwrote the first scan.
+        self._install_photo_store()
+        bundle = self.archive / 'inbox' / 'obit-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Obit\nsource_type: newspaper\nfiles:\n'
+            '  - file: a.pdf\n    is_primary: true\n---\nNotes.\n', encoding='utf-8')
+        (bundle / 'a.pdf').write_bytes(b'%PDF-1.4')
+        (bundle / 'clipping.jpg').write_bytes(b'\xff\xd8\xff clipping')
+        (bundle / 'obit.jpg').write_bytes(b'\xff\xd8\xff obit')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'newspaper').glob('*_s-*.md'))
+        files = read_record(record)['meta']['files']
+        names = [PurePosixPath(f['file']).name for f in files]
+        self.assertEqual(len(names), 3)
+        self.assertEqual(len({n.lower() for n in names}), 3, names)
+        filed = list((self.archive / 'documents' / 'newspaper').glob('*.jpg'))
+        self.assertEqual(sorted(p.read_bytes() for p in filed),
+                         [b'\xff\xd8\xff clipping', b'\xff\xd8\xff obit'])
+
+    def test_bundle_title_with_no_usable_slug_keeps_the_file_name(self) -> None:
+        # A title that slugs to nothing (Cyrillic) or to the role word itself
+        # gives no better name than the file's own.
+        self.assertEqual(process._bundle_file_slug('scan-1', 'page', 'source'), 'scan-1')
+        self.assertEqual(process._bundle_file_slug('page', 'page', 'source'), 'page')
+        self.assertEqual(process._bundle_file_slug('record', 'clipping', 'clipping'),
+                         'record')
+        self.assertEqual(process._bundle_file_slug('clipping', 'clipping', 'clipping'),
+                         'clipping')
+        self.assertEqual(process._bundle_file_slug('page', 'page', 'obit'), 'obit')
+
     def test_bundle_title_ending_in_the_role_does_not_stutter(self) -> None:
         self._install_photo_store()
         bundle = self._newspaper_bundle('Hartley Wedding Clipping')

@@ -356,7 +356,11 @@ def _bundle_file_slug(stem: str, role: str, source_slug: str) -> str:
     role_slug = _slugify(role) if role and role != 'primary' else ''
     generic = (own in _GENERIC_CAPTURE_STEMS
                or (role_slug and (own == role_slug or own.startswith(f'{role_slug}-'))))
-    base = source_slug if generic else own
+    # A title that slugs to nothing (`_slugify`'s 'source' fallback, as for a
+    # Cyrillic title) or to the role word itself names no better than the
+    # file's own stem does.
+    title_usable = source_slug not in ('', 'source', role_slug)
+    base = source_slug if generic and title_usable else own
     if role_slug and base.endswith(f'-{role_slug}'):
         base = base[:-len(role_slug) - 1]
     return base
@@ -2384,7 +2388,8 @@ def process_document(
         )
 
     holder = str(physical_location or '').strip() or None
-    if holder is None and ask_physical_location and not dry_run             and _is_scan(file_path, sidecar_meta):
+    if (holder is None and ask_physical_location and not dry_run
+            and _is_scan(file_path, sidecar_meta)):
         holder = _ask_physical_location(file_path)
 
     sid = _mint_one_source_id(archive_root, source_id=source_id)
@@ -3562,12 +3567,18 @@ def process_bundle(
             suffix = '' if role == 'primary' else f'-{_slugify(role)}'
             if copy:
                 suffix = f'-{_slugify(copy)}{suffix}'
+            # Never two files under one name: a title-named file and one
+            # whose own name is the title slug, or two generic names of one
+            # role, would otherwise land on the same destination and the
+            # second move would overwrite the first scan. Compared without
+            # case, as Windows and macOS see names.
+            taken = {item['dest'].name.lower() for item in plan
+                     if item['kind'] == 'document'}
             new_name = f'{base}{suffix}_{sid}{asset.suffix}'
-            if any(item['kind'] == 'document' and item['dest'].name == new_name
-                   for item in plan):
-                # Two generic names landing on one title-based name (two
-                # `record.jpg`-style files of one role): keep each file's own.
-                new_name = f'{_slugify(asset.stem)}{suffix}_{sid}{asset.suffix}'
+            n = 2
+            while new_name.lower() in taken:
+                new_name = f'{base}-{n}{suffix}_{sid}{asset.suffix}'
+                n += 1
             dest = documents_root / _record_subdir(source_type) / new_name
             entry = {'file': path_to_alias(dest, 'documents', fha_config, archive_root),
                      'role': role, 'original_filename': asset.name}

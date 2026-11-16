@@ -4649,6 +4649,13 @@ class PronounsTests(unittest.TestCase):
         self.assertEqual(claim._pronouns({'sex': 'M', 'gender': 'woman'}), ('she', 'her'))
         self.assertEqual(claim._pronouns({'sex': 'F', 'gender': 'Man'}), ('he', 'him'))
 
+    def test_gender_read_by_its_first_word(self) -> None:
+        self.assertEqual(claim._pronouns({'gender': 'she/her'}), ('she', 'her'))
+        self.assertEqual(claim._pronouns({'gender': 'He/Him'}), ('he', 'him'))
+        self.assertEqual(claim._pronouns({'sex': 'M', 'gender': 'female-identified'}),
+                         ('she', 'her'))
+        self.assertEqual(claim._pronouns({'gender': 'they/them'}), ('they', 'them'))
+
     def test_unlisted_gender_is_neutral(self) -> None:
         self.assertEqual(claim._pronouns({'sex': 'F', 'gender': 'non-binary'}),
                          ('they', 'them'))

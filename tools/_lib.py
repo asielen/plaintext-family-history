@@ -1890,10 +1890,15 @@ def person_pronouns(meta: dict) -> tuple[str, str]:
     family recorded, and a record that says neither is never guessed at."""
     gender = str(meta.get('gender') or '').strip().lower()
     if gender:
-        if gender in _GENDER_SHE:
-            return ('she', 'her')
-        if gender in _GENDER_HE:
-            return ('he', 'him')
+        # The whole phrase ('trans woman'), else its first word, so the way
+        # people often write it - 'she/her', 'He/Him', 'female-identified' -
+        # reads as meant.
+        first = re.split(r'[/\s-]+', gender, maxsplit=1)[0]
+        for word in (gender, first):
+            if word in _GENDER_SHE:
+                return ('she', 'her')
+            if word in _GENDER_HE:
+                return ('he', 'him')
         return ('they', 'them')
     sex = str(meta.get('sex') or '').strip().upper()
     return {'F': ('she', 'her'), 'M': ('he', 'him')}.get(sex, ('they', 'them'))
