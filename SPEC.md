@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-**Version 2.0 - 2026-11-15**
+**Version 2.1 - 2026-11-16**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -113,7 +113,7 @@ AI is potentially the most powerful layer of this system and the most dangerous 
 
 1. **AI suggestions are not facts.** Every AI-derived assertion enters the claim lifecycle at `status: suggested` and reaches `accepted` only through human review. AI-written text is marked as AI wherever it is stored (keywords, marker blocks - §16c); human-written content is never overwritten. The review gate is the human's *decision*, not any one editing method: a tool may perform the actual status change deterministically, but it does so only because a human directed it. Whatever issues that confirmation - a typed instruction, a click - is the gate; the tool never moves a claim to `accepted` on its own.
 2. **AI sessions are an interface, never memory.** No conversation, chat history, or agent state is ever the store of record. Anything worth keeping is written into the archive in the formats of this spec, where it is reviewable, diffable, and durable.
-3. **Extraction is indexing, not preservation.** Originals (transcripts especially) are preserved verbatim in the archive, so AI mining can be selective and can be *re-run* anytime as models improve. Each extraction pass over a source is recorded in that source's record (model, date).
+3. **Extraction is indexing, not preservation.** Originals (transcripts especially) are preserved verbatim in the archive, so AI mining can be selective and can be *re-run* anytime as models improve. Each extraction pass over a source is recorded in that source's frontmatter `ai_passes:` list (who, when, what - §14).
 4. AI tooling passes the archive test like everything else.
 
 The day-to-day research workbench is an **agentic CLI harness opened on the archive root** - an AI that reads and edits the files directly, runs the `fha` tools as its hands, and sits beside a plain text editor so human and AI work the same files in the same place. **Claude Code is the current operating choice; it is not a required one.** Vendor lock-in is prevented structurally: the harness configuration lives in open formats at the archive root (`AGENTS.md` as the canonical agent instructions, with `CLAUDE.md` deferring to it; skills in the portable SKILL.md standard), no harness-only state is ever load-bearing, and any agent harness honoring the contract above is an acceptable drop-in.
@@ -132,7 +132,7 @@ Other modes keep their own surfaces: chat projects for thought-partnership, head
 | **Source** | An evidence-bearing item: a record, document, photo-as-evidence, interview, letter, clipping. | `s-` id |
 | **Claim** | A single sourced assertion - a date, place, relationship, event, attribute. The heart of traceability. | `c-` id |
 | **Place** | A location referenced by claims. | `l-` id |
-| **Hypothesis** | An unsourced placeholder belief under investigation - a guess, never a fact. Lives in a `## Hypotheses` section of a profile or research file (§16b). | `h-` id |
+| **Working answer** | A question the researcher has answered with a guess but not yet proved - never a fact. It is the same entry as the question, with the guess written in (§17). | `h-` id, given when the guess is written in |
 | **Asset** | An actual file on disk (photo, scan, recording, transcript). | **Shares its source's `s-` id** once processed - carried in the filename (documents) or embedded keyword (photos); *no ID before processing* |
 
 **Assets share their source's identity.** All files of a processed source - fronts, backs, copy B, negatives, pages, transcripts - are *copies and facets of one piece of evidence*, so they all carry the source's ID - in their filenames for documents-root files (§13), in embedded keywords for photos-root files (§20, never renamed).
@@ -146,10 +146,10 @@ IDs are assigned at processing, on need - the processing path (§4) applied to i
 - **`c-` ids** are the *assertion unit*, used almost entirely by tooling and active research: claim-to-claim links (`corroborates`, `contradicts`, supersession), review tracking and backlogs, the linter's cross-checks (summary block ↔ accepted claims), generated timelines, and the rare precision citation `[[c-…]]` for one disputed assertion. Readers never need them; the system does.
 - **`p-` ids** make people unambiguously linkable across name changes, spelling variants, and duplicate names - in claims' `persons:` lists, in profile cross-links, in photo keywords (§20) - which is why a human-typed name resolves to a person only when it is unambiguous, and a shared name (two `John Smith`s) is pinned to its ID.
 - **`l-` ids** keep places stable across renamings and spelling variants in claims.
-- **`h-` ids** give hypotheses stable handles for the report (tracking across sessions), question references, and the discovery join ("a hypothesis from 2024 verified today"). **An h-id never converts to a c-id** - IDs are immutable and typed for life. Verification mints a *new* claim from the found source; the hypothesis records `verified → c-…` (the claim may point back, Appendix A.4); both persist.
+- **`h-` ids** give working answers a stable handle: `fha find h-…` locates one, the report counts the open ones per person, and a claim that settles one may point back to it (Appendix A.4). **An h-id never converts to a c-id** - IDs are immutable and typed for life. Settling a working answer mints a *new* claim from the source that proves it; the entry records the source that settled it (§17), and both persist.
 
 Relationships and events are not separate object types - they are **claim types** (§8.2), sourced like any other fact.
-Organizations are claim values, not a dedicated record type: an organization's name lives in a claim's `value` (grouping by organization is Appendix A.5), never in an `Org-` record. A person's **membership** in one - a tribe, a military unit, a lodge, an employer, a church - is a structured `relationship` claim (`subtype: member-of` or `employer`, §8.2), sourced like any fact or held as a hypothesis until it is, so the belonging edge is queryable while the organization stays a value.
+Organizations are claim values, not a dedicated record type: an organization's name lives in a claim's `value` (grouping by organization is Appendix A.5), never in an `Org-` record. A person's **membership** in one - a tribe, a military unit, a lodge, an employer, a church - is a structured `relationship` claim (`subtype: member-of` or `employer`, §8.2), sourced like any fact or held as a working answer until it is, so the belonging edge is queryable while the organization stays a value.
 
 ## 8. Claims
 
@@ -166,15 +166,15 @@ Controlled vocabulary (§8.2).
 The fact-safety lifecycle:
 
 ```
-suggested → needs-review → accepted | disputed | rejected | superseded
+suggested → accepted | disputed | rejected | superseded
 ```
 
 Nothing reaches `accepted` without human review.
 AI-generated claims always enter at `suggested`. `superseded` claims are kept, pointing forward via `notes`.
-`needs-review` is both the waypoint and a legitimate resting verdict: a reviewer who has looked and cannot yet settle a claim *parks* it there, and the `reviewed:` date records when - so a dated needs-review claim reads "checked, still open," never "not yet looked at." (Tentative-but-building-on-it is the other axis: `accepted` + low confidence, §8.5.)
+A reviewer who has looked at a claim and cannot yet settle it leaves it `suggested` and writes the `reviewed:` date. So a suggested claim with a `reviewed:` date has been looked at and is still open; one with no date has not been looked at yet. (A source that says something only weakly is the other axis: `accepted` + low confidence, §8.5. A guess no source states is not a claim at all; it is a working answer, §17.)
 
 **significance** - *how much it defines a complete record*.
-Set by the claim's type (§8.2). A per-claim override is an extension (Appendix A.1); a tool resolves `claim.significance if set, else SIGNIFICANCE[claim.type]`.
+Set by the claim's type (§8.2), never per claim.
 
 ### 8.2 Type vocabulary and significance table
 
@@ -183,7 +183,7 @@ This table is ours and editable; editing it is a spec change (see Governance), n
 | Significance | Types | Role |
 |---|---|---|
 | **vital** | `birth`, `death`, `marriage` (+ `baptism`, `burial` where they stand in for vital records) | Defines completeness: a person's record is complete when each applicable vital type has ≥1 `accepted` claim. *Applicability:* `death` is inapplicable while `living: true|unknown`; `marriage` is satisfied by a `no_known_marriages` flag or a `negated: true` marriage claim (Appendix A.2) - a confirmed absence counts complete, not missing. |
-| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`. *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor` - the latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as hypotheses. Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. |
+| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`. *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor` - the latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as working answers (§17). Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. |
 | **incidental** | `event`, `note` | Preserved, never scored - anecdotes, one-off moments. `subtype` free text carries detail. |
 
 The vocabulary is mostly closed: new normalized types are added here deliberately; everything else lands in `event`/`note` + `subtype`, so no fact ever stalls for lack of a category.
@@ -241,8 +241,8 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   confidence: high               # required; high | medium | low (§8.5). Tooling defaults by
                                  #   source_type (vital-record → high) and asks only when unclear
   reviewed: 2026-06-10           # date of the human decision. Required on accepted, disputed,
-                                 #   rejected and superseded; optional on needs-review (a dated
-                                 #   needs-review means "looked at, still open", §8.1)
+                                 #   rejected and superseded; optional on suggested (a dated
+                                 #   suggested claim means "looked at, still open", §8.1)
   reviewed_by: human             # optional; who made that decision - `human`, which a tool
                                  #   recording the decision writes by default, or a researcher's name when the archive
                                  #   has several. Never guessed: an older claim without it simply
@@ -276,8 +276,7 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   corroborates: [c-xxxxxxxxxx]   # this claim independently supports those
   contradicts: [c-xxxxxxxxxx]    # conflict - tooling spawns an open question
   # ---- optional extensions (Appendix A) ----
-  # negated (A.2) · information, evidence (A.3) · asset, hypothesis (A.4) ·
-  # value_org (A.5) · significance, significance_reason (A.1)
+  # negated (A.2) · information, evidence (A.3) · hypothesis (A.4) · value_org (A.5)
 ```
 
 **Evidence a claim rests on is a source.** A photo or scan that a claim rests on, or that a record refers to as evidence, must have a source ID. When the evidence is in a photo - an inscription, a caption on the mount, a sign or a date visible in the image - the claim lives on that photo's own source record (processed `--type photo`, a front and its back as one source), with a transcript of what is written on it attached. A claim on another source that only *reports* the photo (an interview where someone reads the inscription aloud) stays where it is as a secondary reading, linked to the photo's claim with `corroborates:`. Prose that points at a photo or scan as evidence cites `[[s-…]]`, never a bare photos-root or documents-root path: a path breaks silently when a library is reorganised, and only a source can hold the evidence's citation, analysis fields and transcript. Tooling warns on a path no source owns.
@@ -287,7 +286,7 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
 Status is *review state*; confidence is *evidence quality* - **required on every claim**.
 A hearsay claim can be `accepted` (as what was said) while remaining `low` confidence (as what happened).
 Rubric: `high` = first-person/primary with specific date and place, ideally corroborated · `medium` = single source with moderate specificity · `low` = hearsay, vague time/place, or unresolved speaker. **Tooling defaults confidence from `source_type`** (vital-record → high, census/newspaper → medium, interview hearsay → low) and only asks the human when the source class is ambiguous; the human can always override.
-Tentative identification ("a John Smith who may be ours") is expressed as low confidence + a hypothesis, never a separate mechanism.
+Tentative identification ("a John Smith who may be ours") is expressed as low confidence + a working answer (§17), never a separate mechanism.
 
 The full evidence-analysis vocabulary of the field (Mills, *Evidence Explained*) is an optional extension: Appendix A.3.
 
@@ -361,7 +360,7 @@ relationships:                   # optional; the working surface where relations
                                  #   write, required for the entry to count complete. No link = a belief.
   - to: "[[Walter Doe]]"         # an unsourced belief: jotted before evidence is filed
     type: parent                 #   linter lists it as needing a source, never rejects it
-    status: hypothesis           #   honestly marked as not yet a fact (§16)
+    status: hypothesis           #   a working answer built on: drawn as a guess, never exported (§17)
 created: 2026-06-10
 tier: curated                    # stub | curated
 # ---- optional extensions (Appendix A) ----
@@ -374,9 +373,9 @@ The person record is identity, flags, and prose; sourced facts live with evidenc
 
 A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[p-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private - a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19); it is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
 
-The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[c-…]]` or `source: [[s-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a belief you hold before you can cite it, listed as needing a source, never an error. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
+The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[c-…]]` or `source: [[s-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a guess you are building on before you can cite it (step 3 of the research ladder, §17a). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
 
-Two parents of differing nature sit side by side as equally valid edges - a biological and an adoptive father, a gestational and a genetic and an intended mother - never a contradiction. The claim stays canonical: delete the block and a reindex rebuilds every sourced edge from claims, while the unsourced beliefs live here as hypotheses always have. The linter records the reciprocal edge on the other person automatically (a `child` edge here implies a `parent` edge there, pointing at the same claim) and offers to add a missing mirror rather than asking you to write both ends by hand.
+Two parents of differing nature sit side by side as equally valid edges - a biological and an adoptive father, a gestational and a genetic and an intended mother - never a contradiction. The claim stays canonical: delete the block and a reindex rebuilds every sourced edge from claims, while the unsourced guesses stay here. The linter records the reciprocal edge on the other person automatically (a `child` edge here implies a `parent` edge there, pointing at the same claim) and offers to add a missing mirror rather than asking you to write both ends by hand.
 
 ## 10. Identifiers
 
@@ -462,8 +461,8 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/home.md` - the site homepage's introduction, plain markdown written by the human (or drafted by an AI and accepted); `fha site` shows it when present.
 - `notes/discoveries.md` - the log of research wins, appended by `fha confirm discovery`.
 - `notes/cooccur_dismissed.json` - pairs of people the human has said are *not* connected, written by `fha confirm dismiss`, so the report stops suggesting them.
-- `notes/research-log.md` - the cross-person research log (§16b).
-- `notes/capture-log.jsonl` - one line per browser capture, written by `fha capture` (§16b).
+- `notes/research-log.md` - the research log: every search, by hand or by `fha capture` (§17).
+- `notes/questions.md` - open questions and working answers (§17).
 
 Each is optional; a missing file means "nothing recorded yet".
 
@@ -654,7 +653,6 @@ The deliberate style difference - person files underscored, source files hyphena
 
 | Role | Meaning |
 |---|---|
-| `primary` | the main file of a source with one file |
 | `front`, `back` | the two faces of a photo, card or page |
 | `page-N` | the Nth page of a multi-page document |
 | `clipping` | a cut newspaper item |
@@ -722,8 +720,7 @@ external_links:               # optional: where the evidence is online
 files:                        # inventory: roles + provenance
   - file: photos/1880/Hartley-6084-1.jpg          # PHOTOS ROOT: never renamed
     role: front                                   #   identity = SOURCE: keyword + this inventory
-    is_primary: true          # photos only: the source's main image; exactly one entry carries it
-    language: en              # optional; the language of THIS file
+    is_primary: true          # the source's main file; exactly one entry carries it
     date: 1880-11~             # optional EDTF; THIS file's own date, for a source whose files
                                #   weren't all created the same day
   - file: photos/1880/Hartley-6084-1-back.jpg
@@ -733,15 +730,15 @@ files:                        # inventory: roles + provenance
   - file: documents/interviews/…-transcript_s-….md  # DOCUMENTS ROOT: renamed at processing
     role: transcript
     original_filename: hartley-interview.txt   # the name it had before processing renamed it
-    language: en              # the transcription's language (verbatim, as written)
     derived: true             # hand-corrected derivative; an original in its own right
   - file: documents/interviews/…-translation_s-….md
     role: translation         # an English rendering of a non-English original
-    language: en
     derived: true             # a derivative, an original in its own right
+ai_passes:                    # present once an AI has extracted from this source (AI contract rule 3)
+  - {date: 2026-06-11, by: claude-opus-4, task: claims}
 created: 2026-06-10
 # ---- optional extensions (Appendix A) ----
-# rights, physical_location, files[].digitized (A.6) ·
+# rights, physical_location (A.6) ·
 # tested_person, provider, test_type on DNA sources (A.8)
 ---
 
@@ -751,12 +748,6 @@ created: 2026-06-10
 
 ## Claims
 (fenced YAML block - §8.4 schema)
-
-## AI Passes
-(optional - present only once a pass has run; structured yaml block:
-`- {date, model, harness, task, outputs: […]}` - one entry per extraction
-pass, AI contract rule 3; who reviewed a claim is recorded on the claim,
-`reviewed` / `reviewed_by`, never on the pass)
 
 ## Other headings
 (optional; a human may add any `##` section of their own - tools read the
@@ -770,14 +761,16 @@ for profile Stories sections)
 (free prose: context, verification TODOs)
 ```
 
-Tools write the frontmatter keys in the order shown above (`id`, `aliases`, `title`, `source_type`, `source_date`, `source_class`, `repository`, `citation`, `people`, …, `files`, `created`); a reader must not depend on order.
+Tools write the frontmatter keys in the order shown above (`id`, `aliases`, `title`, `source_type`, `source_date`, `source_class`, `repository`, `citation`, `people`, …, `files`, `ai_passes`, `created`); a reader must not depend on order.
 
-The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. A single-file source's one entry is `role: primary`. A photo source marks its main image with `is_primary: true` on exactly one entry (a single photo's one entry carries both); `fha source set-primary` moves that mark between photos. A documents-root source carries no `is_primary` unless an inbox bundle's notes set one: its `role: primary` entry is the main file.
+**AI passes.** `ai_passes:` records each time an AI read this source to extract from it - AI contract rule 3, so a later reader knows what was mined, by what, and when, and can re-run it with a better model. One entry per pass: `date`, `by` (the model, and the harness when it matters), `task` (`claims`, `transcript`, `stories`, or a short phrase), and an optional `note`. A tool or skill appends the entry when the pass ends; a human never has to. Who *accepted* a claim is recorded on the claim (`reviewed`, `reviewed_by`, §8.4), never on the pass.
+
+The `files:` inventory documents roles and provenance for humans. Each entry's keys are written `file`, `role`, `copy`, `is_primary`, `original_filename`, then any others. **The main file.** Exactly one entry carries `is_primary: true`: the file a reader should open first (a photo's front, a letter's first page, a single-file source's one file). It is the only way a record says which file is main; `role:` says what a file *is* (`front`, `page-2`, `transcript`) and is omitted when there is nothing to say. `fha source set-primary` moves the mark.
 Each file may carry an optional `status:` - omitted means present; **`missing-fixture`** marks a deliberately absent placeholder, allowed **only** under `example-archive/` and `tests/fixtures/` (warning-level there); a `missing` file in a real archive is an error.
 For documents-root files the link has three carriers (filename, inventory, and the embedded `SOURCE:` keyword where the format holds metadata - TIFF, JPEG, PNG, PDF); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
 
-**Languages.** A source may carry an optional `original_language:` (the language of the evidence), and each `files:` entry an optional `language:` (the language of that file); a translated rendering is filed as a `role: translation` derivative beside the original, the same way a corrected transcript is. Language codes follow BCP-47 / ISO-639 (`de`, `en`, `la`) and are informational, never hard-validated.
+**Languages.** A source whose evidence is not in English carries `original_language:` (BCP-47 / ISO-639: `de`, `la`). It tells a reader the original needs reading in that language, says which language a `transcript` is written in (a transcript is always in the original language), and marks the source as wanting a `translation` - an English rendering filed as a derivative beside the original, the same way a corrected transcript is. A file's role says its language, so `files:` entries carry none.
 
 **Per-file dates.** Each `files:` entry may carry an optional `date:` (EDTF) - that file's own date, distinct from the source's own `source_date:` - for a source whose files are facets of one piece of evidence (§7) but were not all created on the same day: a multi-page letter written across several sittings, a ledger whose entries span months. It is optional and human-paced, never required, even when a source has more than one dated file.
 
@@ -821,10 +814,11 @@ Claims always reference the single l-id (recording the source's wording in the c
   coords: [39.5631, -95.1216]        # lat, lon - the identity anchor; tooling backfills
   hierarchy: Fairview, Breton County, Kansas, USA   # modern hierarchy
   alt_names: [Fairview City]
-  notes: optional free text - brief place history; LOOSE citations (Wikipedia) are
-         acceptable here, places are reference data, not genealogical conclusions
+  notes: Laid out in 1855 on the Kansas River; county seat from 1857.   # optional
   # ---- optional extensions (Appendix A.9): history, within ----
 ```
+
+`notes:` is optional and written only when there is something to say about the place: a brief history, with loose citations (Wikipedia) acceptable, since places are reference data, not genealogical conclusions. A new place carries none.
 
 Most addresses never become places at all - they live as `place_text` on claims.
 A micro-place (house, address, cemetery, church, building) earns an l-record by the processing path like everything else: when it recurs and matters (the family home across decades of claims; the cemetery holding six relatives). **Recurrence is detected, not remembered:** the report surfaces unlinked `place_text` values that cluster past a threshold (and photo-GPS clusters near no known place) as place candidates; confirmed elevation mints the l-id and guides per-claim backfill of `place:` - `place_text` itself is never altered.
@@ -838,7 +832,7 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 | File (`{surname}__{given}…`) | Nature |
 |---|---|
 | `…_p-xxxx.md` | **Profile** - the "hand this to grandma" document. One shape at either tier: a stub and a curated profile scaffold the same sections (§9); only the folder and the `tier:` flag differ, and how much of the body a human has filled in. |
-| `…_research_p-xxxx.md` | **OPTIONAL working file** - Open Questions, Hypotheses, Research Log, plus a `## Research Notes` of its own. An escape valve (§16b) for when the profile's own `## Research Notes` section outgrows itself; most people never have one on disk. |
+| `…_research_p-xxxx.md` | **OPTIONAL working file** - this person's open questions and working answers (§17) and a `## Research Notes` of its own. It exists only once something is written in it (§16b); most people never have one. |
 | `…_view_timeline_p-xxxx.md` | **Generated** from claims, EDTF-sorted. Never hand-edited. |
 | `…_view_draft-queue_p-xxxx.md` | **Generated** uncited-claim backlog; consumed by write-biography. Never hand-edited. |
 
@@ -867,7 +861,7 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 (the incidental long tail, each linking its source)
 
 ## Research Notes
-(open questions, leads, brick walls - see §16b)
+(hunches, leads, brick walls - see §16b; a question goes in the research file or `notes/questions.md`, §17b)
 
 ## Friends & Family
 (non-relative connections and context - the FAN club)
@@ -885,28 +879,9 @@ Every document a tool writes or scaffolds - a profile, a source record, a genera
 
 ### 16b. `## Research Notes` and the optional research file
 
-Every profile carries its own `## Research Notes` section (above) - open questions, hunches, and brick walls, the lightweight default home for working notes on this person. Most people never need more than that section gives them, so `fha person new`, `fha stubs`, and `fha person promote` do not create a separate research file by default; it is an **optional escape valve**, which a human copies from `archive-template/people/_TEMPLATE.research.md` by hand (or an opt-in tool path creates) once a person's research genuinely outgrows one section's worth of room.
+Every profile carries its own `## Research Notes` section (above) - free prose for hunches, leads and brick walls, the lightweight default home for working notes on this person.
 
-When a research file does exist, its body is: `## Research Notes`, `## Open Questions`, `## Hypotheses`, `## Research Log` - the overflow desk, not a duplicate of the profile's section. A person with both keeps the profile's `## Research Notes` as the short version and moves active working notes into the research file as they grow; the profile section is never required to stay empty, and tooling never reconciles the two against each other.
-
-**The research log** records searches performed - including empty ones - so no collection is fruitlessly re-searched, and so "reasonably exhaustive" is demonstrable.
-Entries are **dated** (collections grow; a nil from 2024 is worth re-running in 2027) and **primarily tool-fed**: the capture flow, mining passes, and executed `research-next` plans log themselves; manual entries are welcome but never a required ritual.
-**Search history is optional.** The hand-kept log (`notes/research-log.md` and the research files' `## Research Log`) and the capture log (`notes/capture-log.jsonl`, one line per capture, which tools read as one search each) are useful when present - they let a tool say "already searched on (date)" before proposing a lead - and never needed to understand or operate the archive. Being durable records, they live under `notes/`, never in `.cache/`.
-Format:
-```yaml
-- date: 2026-06-12
-  question: "[[h-…]] / [Q ref] / free text objective"
-  repository: Ancestry
-  collection: "Kansas State Census, 1875"
-  terms: "Hartley, Breton Co."
-  result: nil          # nil | found [[s-xxxx]] | partial (note)
-```
-Multi-person/locality searches log to `notes/research-log.md` with the same format. `research-next` and the report **check the log first** - "already searched (date)" is surfaced before any lead is proposed.
-
-**Hypotheses are where unsourced placeholder beliefs live** - a guess is never a claim (claims require sources by definition). They are written under a `## Hypotheses` heading, in the person's research file or directly in the profile itself (a stub has no research file, and "is this the same man as that other stub?" is a stub-shaped question); tools read both.
-Each entry is a markdown list item: a `- id: h-…` line, then the other fields on two-space-indented lines below it, ending at a blank line.
-Structure per hypothesis: `id:` (`h-` per §10), `hypothesis:` (the belief), `basis:` (reasoning/context), `verify:` (what evidence would settle it), `origin:` (`human` | `agent`), `status:` (`open` · `verified → c-xxxx` · `abandoned`).
-On verification, the found source yields a real claim and the hypothesis records the pointer - the guess's life preserved.
+A research file holds what outgrows that: `## Research Notes` (the overflow desk, not a duplicate of the profile's section) and `## Open Questions` (this person's questions and working answers, in the §17b entry form). **It exists only once something is written in it.** No tool scaffolds an empty one: `fha person new`, `fha stubs` and `fha person promote` never create it, and a tool that writes this person's first question or overflow note creates the file at that moment. A research file holding nothing but its scaffold is clutter and may be deleted. A person with both keeps the profile's `## Research Notes` as the short version; tooling never reconciles the two.
 
 The `## Sources` section is never hand-maintained; it is generated from cited claims (§21b).
 
@@ -920,16 +895,76 @@ Three HTML-comment markers change what happens to prose when it is published. Th
 
 All three fail closed, and drafts and fences are judged together on the text as written, so neither can hide the other's boundary. A damaged AI marker (an unterminated `<!-- AI-DRAFT`, a stray marker word) anywhere in a person's record withholds all of that person's published prose rather than risk publishing a draft: the site drops Biography, Stories and Research Notes, and `fha packet` and `fha wikitree` refuse the profile. An unterminated `<!-- private -->` hides everything after it.
 
-## 17. Notes (general research)
+## 17. Notes and the research ladder
 
 `notes/` is the **general** workspace - research strategy, todos, surname studies, multi-person narratives.
-Person-specific research lives in that person's research file, never here.
 
 - `notes/research/` - working notes spanning people or topics.
 - `notes/narratives/` - formal multi-person write-ups; every factual claim cites a source or is explicitly marked context/speculation; exportable.
-- `notes/questions.md` - single file of general open questions. Format per question: an `## Q:` heading, then one markdown list line per field - `- origin:` (`human` | `tool` | `agent` - machine questions are marked at birth), `- status:` (`open` · `answered [[s-xxxx]]` · `resolved` · `closed (not pursuing)`; `answered` and `resolved` mean the same and either may carry the link that settled it), `- refs:` (a bracketed list of bare IDs, `[p-…, c-…]`), and `- context:` with dated, origin-attributed findings indented beneath it and appended over time. The `- ` at the start of each field line is part of the format: tools find the fields by it. Closing without an answer is a legitimate, recordable research outcome. Tooling may propose answers/closures and append context; status changes require human confirmation.
+- `notes/questions.md` - the questions and working answers that span people or concern no one person (§17b). A question about one person may instead live under `## Open Questions` in that person's research file (§16b); the format is the same and tools read both.
+- `notes/research-log.md` - the research log (§17c).
 
 Notes connect to the core elements through ID links in their text, and linked frontmatter `persons:` / `sources:` / `places:` lists. **A script reading only the IDs those links resolve to must be able to reconstruct every connection** - the bare ID is the load-bearing part; the double brackets are durable plain-text delimiters, and the editor's *resolution and graphing* of them is front-end sugar, never load-bearing.
+
+### 17a. The research ladder
+
+Everything not yet proved climbs one ladder, written in one place: the question entry (§17b).
+
+1. **Question** - something not known. "Who were Margaret Cole's parents?"
+2. **Working answer** - the same entry, with a guess, the reason for it, and what would settle it. A guess is not a separate object: answering a question without proof is adding those lines, and the entry gains an `h-` id so it can be referred to.
+3. **Build on it** - research may continue past a guess. A guessed relationship may be entered on the person's `relationships:` with `status: hypothesis` (§9), so the tree can be followed past it; the tree and the site draw it as a guess, and exports leave it out.
+4. **Settle** - one of three ways:
+   - a source says it: process the source, and its claim carries the fact like any other;
+   - the pieces add up: write the reasoning as a proof-argument source - a short write-up of why the evidence, taken together, proves it (§14) - whose claim cites the evidence;
+   - it is wrong: the guess is ruled out. Its lines leave the entry and one dated `context:` line records it (`ruled out h-…: Daniel Cole - his daughter Margaret died in 1852`), so the same guess is not made again. The question stays open for the next guess, which gets a new `h-` id.
+
+**Weak source or working answer?** If anyone or anything other than the researcher says it - a family story, an index entry, another researcher's tree - it is a source, processed with a low-confidence claim (§8.5). If only the researcher says it, it is a working answer. A guess is never a claim, since a claim requires a source.
+
+### 17b. The question entry
+
+An entry is an `## Q:` heading, then one markdown list line per field. The `- ` at the start of each field line is part of the format: tools find the fields by it.
+
+```markdown
+## Q: Who were Margaret Cole's parents?
+- origin: human
+- status: open
+- refs: [p-cd795c61e0]
+- id: h-4f20aa91c3
+- guess: Daniel Cole and Ruth Ames of Easton, New York
+- basis: the only Cole household in Easton in 1850 with a Margaret of the right age
+- verify: Margaret's death certificate, or Daniel Cole's will
+- context:
+  - 2026-06-12 (human): 1850 census checked; Margaret, 9, in Daniel's household
+```
+
+- `origin:` - `human` | `tool` | `agent`; machine questions are marked at birth.
+- `status:` - `open` · `answered [[s-…]]` · `resolved` · `closed (not pursuing)`. `answered` and `resolved` mean the same, and either may carry the link that settled it. Closing without an answer is a legitimate, recordable research outcome. The status is the question's; a guess that proved wrong is recorded in `context:` (§17a), not here.
+- `refs:` - a bracketed list of bare IDs, `[p-…, c-…]`, naming who and what the question is about.
+- `id:`, `guess:`, `basis:`, `verify:` - present once the question has a working answer (step 2 of the ladder). The `h-` id is added with the guess and never changes or is reused; the people in `refs:` are the people the working answer is about.
+- `context:` - dated, origin-attributed findings indented beneath it and appended over time.
+
+Tooling may propose answers and closures and append context; status changes require human confirmation.
+
+**What belongs here.** A question is written down when a person asks it, or when two claims conflict (a `contradicts:` pair, §8.4). A gap a tool can compute - no birth date, no parents, no source for a provisional date - is never written as a question: `fha report` shows it fresh every time, and a written copy would only go stale.
+
+### 17c. The research log
+
+`notes/research-log.md` records searches performed - including empty ones - so no collection is fruitlessly re-searched, and so "reasonably exhaustive" is demonstrable. It is the one search log: hand searches, executed `research-next` plans and every `fha capture` append to it.
+
+```markdown
+- date: 2026-06-12
+  question: "[[h-4f20aa91c3]] parents of [[p-cd795c61e0|Margaret Cole]]"
+  repository: Ancestry
+  collection: "Kansas State Census, 1875"
+  terms: "Hartley, Breton Co."
+  result: nil
+```
+
+One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person - a person ID there makes the search count for that person); `repository`; `collection`; `terms`; `result` (`nil` | `found [[s-…]]` | `partial (note)` | `staged inbox/…` - captured into the inbox, not yet processed). `fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
+
+Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first** - "already searched (date)" is surfaced before any lead is proposed.
+
+**Search history is optional.** The log is useful when present and never needed to understand or operate the archive. Being a durable record, it lives under `notes/`, never in `.cache/`.
 
 ## 18. Citations and linking
 
@@ -1001,7 +1036,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` - it is as live as the last `fha index` run.
 - Biography, Stories, and Research Notes prose are read from the curated person `.md` file directly. Friends & Family, by contrast, is *not* read as prose: that page section is independently derived from relationship claims (§9), the same as every other structured-data section - a human's own free text under the profile's `## Friends & Family` heading is for the working archive, not the site.
-- The generated `.md` views (timeline, draft-queue), and the couple-folder `sources-index.md`, are research artifacts for the agent; `fha site` does not read them - nor does it read a profile's own inline `## Sources` region (§21b): the per-person source list on a site page is built independently from the index, like every other structured section.
+- The generated `.md` views (timeline, draft-queue) are research artifacts for the agent; `fha site` does not read them - nor does it read a profile's own inline `## Sources` region (§21b): the per-person source list on a site page is built independently from the index, like every other structured section.
 - The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
@@ -1034,7 +1069,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **ID mint** | Generate spec-conformant IDs with existence checking; batch capable. |
 | **Stub minter** | Create person stubs in bulk from claims that reference unresolved people. |
 | **Processing assistant** | Given a file or folder: mint s-id, mark identity (documents: rename, plus the keyword where the format holds metadata; photos: keyword only - never rename under Lightroom), scaffold the source record; folder mode triages candidates first. |
-| **View generators** | Per-person timelines; each person's own inline `## Sources` region plus a per-couple-folder `sources-index.md`; refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
+| **View generators** | Per-person timelines; each person's own inline `## Sources` region (a couple folder has no separate sources index: its two profiles already list their sources); refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
 | **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges) - at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only - never the corpus, never re-imported as truth. |
 | **GEDCOM importer** | File a *foreign* GEDCOM (an Ancestry download, another program's export) as ONE source record whose every assertion enters as a `suggested` claim with a line anchor, plus a person stub per individual (provisional vitals, safe `living:` defaults). Plan-then-apply with a one-shot re-run guard and full rollback; the archive's own export is refused (one-way bridge, no round-trip); duplicates are reported, never auto-merged. Writes only forms §8/§9/§14 already define - no schema additions. |
@@ -1055,16 +1090,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 
 # Appendix A - Optional extensions
 
-Every field here is valid and fully defined, and most archives never use any of them. A record without them is complete; a reader can skip this appendix until a record carries one. Each extension keeps the meaning it would have in the core.
-
-### A.1 Significance override (claims)
-
-A per-claim `significance` field wins over the §8.2 table and **must** carry a `significance_reason` (one line). Overrides are rare by design.
-
-```yaml
-  significance: vital            # override only; requires significance_reason
-  significance_reason: linchpin of the Marsh Creek identification
-```
+Every field here is valid and fully defined, and most archives never use any of them. (There is no A.1: section numbers here never change, so a reference to one stays right.) A record without them is complete; a reader can skip this appendix until a record carries one. Each extension keeps the meaning it would have in the core.
 
 ### A.2 Confirmed absences (negative facts)
 
@@ -1094,11 +1120,10 @@ source_class: original           # on a source: original | derivative | authored
   evidence: direct               # on a claim: direct | indirect | negative
 ```
 
-### A.4 Claim pins: `asset` and `hypothesis`
+### A.4 Claim back-pointer: `hypothesis`
 
 ```yaml
-  asset: b-back                  # pins claim to a copy/role suffix of the source's files
-  hypothesis: h-xxxxxxxxxx       # back-pointer: the hypothesis this claim verified (§7)
+  hypothesis: h-xxxxxxxxxx       # the working answer this claim settled (§7, §17a)
 ```
 
 ### A.5 Organizations: `value_org`
@@ -1113,21 +1138,22 @@ The organization stays a value (§7); `value_org` only groups claims that name t
 ### A.6 Source publication and custody
 
 ```yaml
-rights:                          # optional publication metadata (tooling flattens
-                                 #   rights.publication_ok → index sources.publication_ok)
+rights:                          # optional publication metadata
   holder: family collection      #   who owns/holds copyright
-  publication_ok: true           #   exporters honor this in addition to restricted/living
+  publication_ok: false          #   false keeps the source out of the site and every export
 physical_location:               # optional: where the PHYSICAL original lives (changes over time)
   holder: Sam Rivera
   as_of: 2025-05
-files:
-  - file: photos/1880/Hartley-6084-1.jpg
-    digitized: "Scanned by Sam Rivera, 2025-05"   # optional per-file digitization provenance
 ```
+
+- **`rights`** - `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
+- **`physical_location`** - who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
 
 ### A.7 Person: `gender` and `external_ids`
 
-A person may carry `gender:` beside `sex:` (§9): identity, free text with suggested values; omit unless there is something to record. External profile IDs (WikiTree, Ancestry, FamilySearch) are fields on the person; on a merge they fold into the survivor (§9).
+A person may carry `gender:` beside `sex:` (§9): identity, free text with suggested values; omit unless there is something to record. Its one use is pronouns in drafted prose: a biography takes them from `gender` when present, else from `sex`, and leaves them neutral when neither says.
+
+External profile IDs (WikiTree, Ancestry, FamilySearch) are fields on the person: the person's own page on that site. Web capture writes the id it already knows from the page it captured, and on a merge they fold into the survivor (§9).
 
 ```yaml
 gender: man                      # optional; identity, free text with suggested values
