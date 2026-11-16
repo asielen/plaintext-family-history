@@ -2239,7 +2239,14 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # `relationships` rows were derived without them, so a claim written with
 # `mother:` has no parent edge until a rebuild - the same tools-only change
 # v8/v9 describe, so bump to force it.
-INDEX_SCHEMA_VERSION = 11
+# 12: a claim, or a source's `people:`, naming a merged person (SPEC §9) is
+# written under the survivor in `claim_persons`/`source_people` - so his
+# `relationships` rows and every view built on them include it - and one
+# claim naming the same person twice is one row (#304). A v11 index holds
+# those rows under the tombstone: the survivor's timeline, tree and exports
+# miss them, and the privacy gates that follow survivors would be reading
+# rows the index never moved. Tools-only again, so bump to force the rebuild.
+INDEX_SCHEMA_VERSION = 12
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).

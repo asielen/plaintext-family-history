@@ -1586,7 +1586,7 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 11)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 12)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1770,6 +1770,38 @@ class IndexSchemaVersionV11BumpTests(unittest.TestCase):
         self.assertEqual(status, 'old-schema')
 
     def test_open_index_db_refuses_the_stale_v10_cache(self) -> None:
+        self.assertIsNone(open_index_db(
+            self.root, ('persons', 'sources', 'claims'), strict=True))
+
+
+class IndexSchemaVersionV12BumpTests(unittest.TestCase):
+    """A claim naming a merged person is now written under the survivor
+    (SPEC §9, #304). A v11 cache keeps those rows under the tombstone - off
+    the survivor's timeline and tree - and updating the tools touches no
+    record file, so only the schema bump makes every index-reading tool
+    refuse that cache until `fha index` runs."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL.replace("'7'", "'11'")
+                           .replace('user_version=7', 'user_version=11'))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v11_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v11_cache(self) -> None:
         self.assertIsNone(open_index_db(
             self.root, ('persons', 'sources', 'claims'), strict=True))
 
