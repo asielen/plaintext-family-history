@@ -32,7 +32,7 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
   hearsay — that's story, not fact.
 - **Never alter the transcript.** Extraction reads; it does not delete, rewrite, condense, or "clean up"
   the transcript text. The transcript is preserved and searchable; mining only *indexes* it.
-- **Record the pass** in the source's `## AI Passes` block.
+- **Record the pass** as one entry in the source's `ai_passes:` frontmatter list (SPEC §14).
 
 ## Flow
 
@@ -99,9 +99,11 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
      Look it up first — `fha photoindex find --text "<words from it>"` (and `fha find --text` for a
      scan in the documents root). Found but unprocessed → offer `fha process <path> --type photo`
      (`--variants one` files a front and its back as one source) and draft the claim on **that**
-     source; this one keeps only a secondary reading, linked with `corroborates:`. Not found → a
-     "find the photo" `## Q:` in `notes/questions.md`. Never cite the object by its folder path in
-     `notes:` — cite `[[S-…]]` (SPEC §8.4; `fha lint` W137 flags a path).
+     source; this one keeps only a secondary reading, linked with `corroborates:`. Not found → tell
+     the human, and record it on this source with `fha source note <S-id> --text "…"` (the passage
+     describes a photo the archive does not hold yet); it becomes a `## Q:` only if he asks for one
+     (SPEC §17b). Never cite the object by its folder path in `notes:` — cite `[[S-…]]` (SPEC §8.4;
+     `fha lint` W137 flags a path).
 
 3. **Resolve each named person against the index — propose, don't guess.**
    ```
@@ -127,13 +129,14 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    `role: transcript` / `transcription` / `extracted-text` companion into `transcripts_fts`, so
    `fha find --text` reaches inside it.
 
-5. **Record the AI pass** in the source's `## AI Passes` block:
+5. **Record the AI pass** as one entry appended to the source's `ai_passes:` frontmatter list
+   (SPEC §14; create the list if this is the source's first pass):
    ```yaml
-   ## AI Passes
-   - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
-      # use your real model/harness identifiers - these two are placeholders, not values to copy
-      task: "mine Ethel Hartley interview for claims", outputs: [C-…, C-…], human_reviewed: false}
+   ai_passes:
+     - {date: 2026-07-01, by: {your-model-id}, task: claims, note: "mined the Ethel Hartley interview"}
+     # `by` is your real model identifier (add the harness when it matters) - a placeholder, not a value to copy
    ```
+   Who later accepts a claim is recorded on the claim (`reviewed:`), never on the pass.
 
 6. **Offer the hand-off, then close out.** Report the result plainly ("pulled four facts and two stories
    out of the interview; the transcript itself is untouched — ready for you to review the four when you
@@ -161,7 +164,7 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
 ## Done when
 
 - Mining a transcript in a session on `example-archive` drafts `suggested` claims with `anchor:`s for the
-  substantive assertions, routes stories to `## Stories`, records the pass in `## AI Passes`, and leaves
+  substantive assertions, routes stories to `## Stories`, records the pass in `ai_passes:`, and leaves
   the transcript text **byte-unchanged**.
 - The skill takes no action unless explicitly invoked.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings

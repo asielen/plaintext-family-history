@@ -34,7 +34,7 @@ answering a photo question never requires a write.
   `fha photoindex tag-person` — but that tool's own preview-and-`[y/N]` prompt is the gate. The
   skill runs the command; the human answers the prompt. It never pre-answers it.
 - **No AI-pass entry.** Nothing here is written to any source record, so there is nothing to
-  record in `## AI Passes`.
+  record in `ai_passes:`.
 - **Privacy.** Results are spoken to the archive's owner in-session; the gallery page is a
   private research artifact (unredacted, for the owner's own machine) — nothing produced here is
   publication output.

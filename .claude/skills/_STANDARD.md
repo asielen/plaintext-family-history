@@ -58,9 +58,10 @@ harness and break portability. The body is GitHub-flavored markdown: prose instr
    `reviewed:`). Directing that tool *is* the human's accept — the skill presents evidence and captures a
    decision the human actually stated in the session; it never accepts on his behalf, never infers
    consent from silence.
-3. **Record every AI pass** in the source's `## AI Passes` block — a YAML list entry
-   `- {date, model, harness, task, outputs: […], human_reviewed: bool}` (SPEC §14). This is how the
-   archive remembers what a machine touched; write it before you hand back.
+3. **Record every AI pass** as one entry in the source's `ai_passes:` frontmatter list —
+   `- {date, by, task}` plus an optional `note` (SPEC §14). This is how the archive remembers what a
+   machine touched; write it before you hand back. Who accepted a claim is recorded on the claim
+   (`reviewed:`), never on the pass.
 4. **Draft prose lives behind markers.** New profile/story prose a skill writes is wrapped in
    `<!-- AI-DRAFT {date} {model} - {note} -->` until the human accepts it, at which point
    `fha confirm draft <P-id>` flips it to `<!-- AI-ACCEPTED … -->` (provenance kept). A skill never
@@ -116,12 +117,12 @@ choice.
 ## 7. Sessions are an interface, not memory
 
 Anything worth keeping is written into archive records in SPEC formats **before the skill hands back** —
-claims into source files, hypotheses into a person's own `## Hypotheses` heading (on their profile
-directly, or their separate research file if they already have one - SPEC §16b: most people never need a
-separate file, so a hypothesis lands on the profile itself far more often now), open questions into
-`notes/questions.md` or a person's separate research file specifically (a profile-resident `## Open
-Questions` is not scanned - unlike hypotheses, that one genuinely needs the separate file or the general
-log), discoveries via `fha confirm discovery`, searches into the research log. Never
+claims into source files; questions and their working answers (SPEC §17a, §17b: a guess is the
+question entry with `id:`, `guess:`, `basis:` and `verify:` added, never a separate object) into
+`notes/questions.md` or the person's research file, which is created the first time something is written
+to it (SPEC §16b); discoveries via `fha confirm discovery`; searches into `notes/research-log.md`. A
+question is written only when the human asks it or two claims conflict - a gap a tool can compute (no
+birth date, no parents) is never written down, because `fha report` shows it fresh (SPEC §17b). Never
 rely on conversation history as a store of record; the human should never have to re-explain himself next
 session.
 
@@ -160,8 +161,7 @@ Capture the session transcript proving each "Done when" in the skill's PR descri
 One mechanical check precedes the behavioral one: **every `fha` command the SKILL.md documents was
 run against `example-archive/` before the skill shipped, and any filename or path the prose
 predicts is the actual result of running it** - a `--more` rename names the file for its source
-and appends the role, `--more` refuses a file outside every root and the inbox, `fha claim` has no
-`--notes` flag. A skill is
+and appends the role, `--more` refuses a file outside every root and the inbox. A skill is
 the human's memory of how the tools behave; a documented command that does not run as written
 teaches the wrong thing every time it is read (AGENTS_TOOLING §"Porting from an archive").
 Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented
@@ -205,8 +205,8 @@ is a signal it wants a capability a tool should own — see §6.
 
 ## 11. IDs on the page
 
-Any record ID a skill writes into **prose** — biography or story text, `## Notes` paragraphs, hypotheses,
-open questions, place history, discovery text, a claim's free-text `notes:` — is always wikilink-wrapped:
+Any record ID a skill writes into **prose** — biography or story text, `## Notes` paragraphs, working answers,
+question entries, place history, discovery text, a claim's free-text `notes:` — is always wikilink-wrapped:
 `[[S-xxxx]]`, or better `[[S-xxxx|the 1880 census]]` so the genealogist reads names, not codes (SPEC §18;
 AGENTS.md §"Format quick reference"). A bare `S-xxxx` dropped in a sentence is dead text — not clickable
 in Obsidian, invisible to the citation index. The tools are forgiving on *read* (a bare ID still

@@ -14,7 +14,7 @@ description: >
 A source whose files are all scans, photographs or image-only PDFs puts **nothing** into the archive as
 text. Its claim values are the only words about it anyone can search, so a text search over such an
 archive answers for what one earlier pass chose to write down while looking exactly like a search of the
-evidence (#46). This skill closes that gap the only way it can be closed — somebody reads the pictures
+evidence. This skill closes that gap the only way it can be closed — somebody reads the pictures
 and types out what they say — and it is model work, so it lives here and not in `tools/`.
 
 The split it honours is `fha xref`'s: **the tools detect the gap** (`fha lint`'s W124, and the coverage
@@ -43,8 +43,8 @@ Explicitly invoked either way. Nothing transcribes silently.
   Say this to the human in those words when you hand back. Nothing downstream — a claim, a biography, a
   packet — cites the transcript as though it were the document; it cites the source, and the transcript
   is how a reader *finds the spot*.
-- **A wrong transcript is worse than no transcript.** #46's failure was a null result read as a negative
-  finding. A misread transcript produces confident *hits*: the same error with the evidence apparently on
+- **A wrong transcript is worse than no transcript.** The failure this skill prevents is a null result
+  read as a negative finding. A misread transcript produces confident *hits*: the same error with the evidence apparently on
   your side, and nobody re-examines a question they believe is answered. Everything below — the marker,
   the uncertainty conventions, the refusal to resolve ambiguity — follows from that one sentence.
 - **This skill drafts and edits no claims.** Not `suggested`, not corrected, not re-anchored. It produces
@@ -54,8 +54,8 @@ Explicitly invoked either way. Nothing transcribes silently.
   is marked doubtful; a scribal error is transcribed as written. A transcript that quietly resolves
   ambiguity is how a slip of a nineteenth-century pen becomes a family fact.
 - **Every transcript is marked as an unreviewed AI reading** until a human has compared it to the image —
-  see **The marker** below. Record the pass in the source's `## AI Passes` block
-  (`{date, model, harness, task, outputs, human_reviewed}`), `human_reviewed: false`.
+  see **The marker** below. Record the pass as one entry in the source's `ai_passes:` frontmatter list
+  (SPEC §14: `{date, by, task}`, plus an optional `note`).
 - **Never modify an original** (AGENTS.md §"The contract" 3). The transcript is a new companion file; the
   scan, the photograph and the PDF are untouched, and nothing under the photos root is ever renamed.
 - **No machine-specific absolute paths** in anything written into the archive (AGENTS_TOOLING §11): the
@@ -146,7 +146,8 @@ archives:
 
 - **A scribal error is transcribed as written, with `[sic]`** — not "corrected", and not recorded as a
   reading ambiguity. "The clerk appears to have written the wrong year" is an observation about the
-  document; it goes to `notes/questions.md` (step 7), never into the transcript as a fixed value. A
+  document; it goes in the source's `## Notes` (`fha source note`), or into a question when it
+  contradicts a claim (step 7), never into the transcript as a fixed value. A
   reading ambiguity (`[Hartley?]`) says *I could not read this*. A `[sic]` says *I read it fine and the
   page is wrong*. Collapsing the two loses the only distinction that matters later.
 - **Never expand, normalise or modernise.** No spelling out abbreviations, no converting dates to EDTF,
@@ -210,15 +211,17 @@ is ever hand-edited afterwards.
 
 ### 6. Record the pass
 
+Append one entry to the source's `ai_passes:` frontmatter list (SPEC §14; create the list if this is the
+source's first pass):
+
 ```yaml
-## AI Passes
-- {date: 2026-08-16, model: {your-model-id}, harness: {your-harness},
-   # use your real model/harness identifiers - these two are placeholders, not values to copy
-   task: "transcribe 3-page probate scan, pages 1-3", outputs: ["…-transcript_S-….md"], human_reviewed: false}
+ai_passes:
+  - {date: 2026-08-16, by: {your-model-id}, task: transcript, note: "probate scan, pages 1-3"}
+  # `by` is your real model identifier (add the harness when it matters) - a placeholder, not a value to copy
 ```
 
-`outputs:` names the transcript file (this pass produced a file, not claims). `human_reviewed: false`
-until a human has read it against the image — the record-side mirror of the marker.
+The entry says the pass happened. Whether a human has checked the text against the image is said by the
+transcript's own marker (below), never by the pass entry.
 
 ### 7. Compare the transcript against every claim already on this source
 
@@ -233,19 +236,19 @@ So: read every claim on this source against what the page actually says. `fha fi
 record's path and its claim counts by status; the claims themselves you read out of that record's
 `## Claims` block.
 Where the transcript contradicts a claim — **including an `accepted` one** — that is a research question,
-not a correction you make. Write a `## Q:` block into `notes/questions.md` **before moving on**
-(AGENTS.md §"When you cannot answer a research question"), using SPEC §17's format:
+not a correction you make. A claim the evidence contradicts is one of the two things the questions file
+is for (SPEC §17b), so write a `## Q:` block into `notes/questions.md` **before moving on** (AGENTS.md
+§"When you cannot answer a research question"), in SPEC §17b's entry form:
 
 ```markdown
 ## Q: Does the probate page support the death age recorded for Caleb Hartley?
-
-origin: agent
-status: open
-refs: [[S-xxxxxxxxxx]], [[C-xxxxxxxxxx]], [[P-xxxxxxxxxx|Caleb Hartley]]
-context:
-- 2026-08-16 (agent): The accepted claim gives his age at death as 74. The page, transcribed this
-  session, reads "aged 57 years" at [Page 2]. One of the two is wrong; the image is the evidence, so
-  the page should be re-read by a human before the claim is touched.
+- origin: agent
+- status: open
+- refs: [s-xxxxxxxxxx, c-xxxxxxxxxx, p-xxxxxxxxxx]
+- context:
+  - 2026-08-16 (agent): The accepted claim gives his age at death as 74. The page, transcribed this
+    session, reads "aged 57 years" at [Page 2]. One of the two is wrong; the image is the evidence, so
+    the page should be re-read by a human before the claim is touched.
 ```
 
 Never edit or re-status the claim yourself. Offer the human the review — "there are three of these; want
@@ -308,11 +311,9 @@ publishes the whole unchecked transcript.
 checked against the image by a human -->`. The date and model are provenance and are preserved through
 any flip, exactly as `fha confirm draft` preserves them.
 
-**The record-side mirror.** The source's `## AI Passes` entry for this pass carries
-`human_reviewed: false` and names the file in `outputs:`. The two must agree, and where they disagree
-**the file's marker wins** — the file travels (into a packet, onto a USB stick, out of the archive
-entirely) and must state its own status without its record, and it is the file whose text the index
-already holds.
+**The marker is the only record of review.** The source's `ai_passes:` entry says a pass happened and
+nothing about review: the file travels (into a packet, onto a USB stick, out of the archive entirely) and
+must state its own status without its record, and it is the file whose text the index already holds.
 
 **Flipping it is a gap, and this skill blocks on it** (`_STANDARD.md` §6). `fha confirm draft` takes a
 `<P-id>` and edits a person profile; there is no verb that flips a marker in a source's companion file,
@@ -323,7 +324,7 @@ searches will keep flagging this text as unchecked."
 
 ## Backfill (the batch case)
 
-The archive that produced #46 held **43 image-only sources carrying 135 accepted claims**. Batches are
+One real archive held **43 image-only sources carrying 135 accepted claims**. Batches are
 bounded, resumable and reported — the shape AGENTS.md gives migration mode, though this is not migration
 mode: nothing moves, nothing is renamed, and every write is additive.
 
@@ -339,7 +340,7 @@ mode: nothing moves, nothing is renamed, and every write is additive.
    re-running lint at the start of the next batch *is* the resume. Keep no queue file, no session memory,
    no "sources 12-20 next time" note (AGENTS.md §"Sessions are an interface, not memory"). Anything worth
    remembering is already in the archive: coverage inside one long source goes in its `## Notes` via
-   `fha source note`, and a source you skipped and why goes in `notes/questions.md`.
+   `fha source note`, and so does a source you skipped and why.
 
 3. **Bounded batches: five sources, or one long multi-page source, per confirmed batch.** This is model
    reading, not file moving — the ceiling is attention, and it is far below migration mode's 200 files.
@@ -366,7 +367,8 @@ mode: nothing moves, nothing is renamed, and every write is additive.
   one. Contradictions become `## Q:` blocks; new facts go to `mine-transcript`; status is `review-claims`'
   and the human's.
 - Never guess a word. `[illegible]` and `[word?]` are correct answers; a confident invention is not.
-- Never "correct" the document. `[sic]` preserves the error; the observation goes to `notes/questions.md`.
+- Never "correct" the document. `[sic]` preserves the error; the observation goes in the source's
+  `## Notes`, or into a question when it contradicts a claim.
 - No harness that cannot view the images may produce a transcript from filenames, keywords or existing
   claim values. Halt and say so.
 - Originals are untouched; nothing under the photos root is renamed; the transcript is a new file
@@ -382,8 +384,7 @@ mode: nothing moves, nothing is renamed, and every write is additive.
 
 - Transcribing an image-only source in a session on `example-archive` produces a `role: transcript`
   companion attached by `fha process --more`, `[Page N]`-labeled in the original's pagination, ending in
-  a single `<!-- AI-DRAFT … -->` marker, with the pass recorded in `## AI Passes` as
-  `human_reviewed: false`.
+  a single `<!-- AI-DRAFT … -->` marker, with the pass recorded as an `ai_passes:` entry.
 - After `fha index`, `fha find --text "<a phrase only in the images>"` returns the source — the phrase was
   unfindable before — and `fha lint` no longer reports W124 for it.
 - A PDF carrying its own text layer is handled by `fha source extract` with no model reading, and its

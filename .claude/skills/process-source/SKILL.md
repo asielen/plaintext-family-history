@@ -31,7 +31,8 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   (`review-claims`) is the gate.
 - **Resolve names by proposing candidates, never by silent guessing** (AGENTS.md §"Who you serve"): an
   ambiguous name gets a candidate list for the human, or a fresh stub on his confirmation.
-- **Record the pass** in the source's `## AI Passes` block before hand-off.
+- **Record the pass** as one entry in the source's `ai_passes:` frontmatter list (SPEC §14) before
+  hand-off.
 - **Forgiving, not fussy** (_STANDARD.md §5): a loose note is the normal case, not an error — extract what
   you can, fold the rest into `## Notes`, never refuse.
 - **Never rename anything under the photos root** (AGENTS.md §"Don'ts"); `fha process` keyword-tags photos
@@ -90,9 +91,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
    Not after, and not "if there's time". The transcript exists *first* so the claims you draft in
    Stage B come from text you read out line by line rather than from a single pass over pictures, and
-   this skill is the only place that ordering can be enforced (issue #46 — a surname written plainly on
-   a hand-drawn chart in an image-only scan was judged invented and struck, because nothing in the
-   archive held the document's words). The transcript also carries the `[Page N]` labels your Stage B
+   this skill is the only place that ordering can be enforced: a surname written plainly on a
+   hand-drawn chart in an image-only scan reads as invented when nothing in the archive holds the
+   document's words. The transcript also carries the `[Page N]` labels your Stage B
    `anchor:`s will cite.
 
    It hands back with the source's words attached as a `role: transcript` companion, marked
@@ -198,7 +199,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      computed: clusters are normalized
      (case, punctuation and St/Co abbreviations folded, words sorted) and shown under whichever wording is
      commonest, so match your text to a cluster **by town, not by string equality**; and the counts are
-     `accepted`/`needs-review` claims only, so the `suggested` claims you draft here don't enter the list
+     `accepted` claims only, so the `suggested` claims you draft here don't enter the list
      at all until the human accepts them in `review-claims`.
      If this place text's cluster is in that list at **10 or more claims**, that is well past
      `fha places candidates`'s own default surfacing bar of 3 (report §6b's and `place-research`'s
@@ -262,8 +263,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      Look it up first — `fha photoindex find --text "<words from it>"` (and `fha find --text` for a
      scan in the documents root). Found but unprocessed → offer `fha process <path> --type photo`
      (`--variants one` files a front and its back as one source) and draft the claim on **that**
-     source; this one keeps only a secondary reading, linked with `corroborates:`. Not found → a
-     "find the photo" `## Q:` in `notes/questions.md`. Never cite the object by its folder path in
+     source; this one keeps only a secondary reading, linked with `corroborates:`. Not found → tell
+     the human, and record it on this source with `fha source note <S-id> --text "…"`; it becomes a
+     `## Q:` only if he asks for one (SPEC §17b). Never cite the object by its folder path in
      `notes:` — cite `[[S-…]]` (SPEC §8.4; `fha lint` W137 flags a path).
 
 7. **Route narrative and un-mappable prose.**
@@ -272,12 +274,12 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    - Anything that doesn't map to a claim (a fuzzy lead, a "chase this" note, context) → `## Notes`.
      Folding it here is the correct move, not a failure — never stall because a note is loose.
 
-8. **Record the AI pass** in the source's `## AI Passes` block:
+8. **Record the AI pass** as one entry appended to the source's `ai_passes:` frontmatter list
+   (SPEC §14; create the list if this is the source's first pass):
    ```yaml
-   ## AI Passes
-   - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
-      # use your real model/harness identifiers - these two are placeholders, not values to copy
-      task: "draft claims from 1880 census scan", outputs: [C-…, C-…], human_reviewed: false}
+   ai_passes:
+     - {date: 2026-07-01, by: {your-model-id}, task: claims, note: "drafted claims from the 1880 census scan"}
+     # `by` is your real model identifier (add the harness when it matters) - a placeholder, not a value to copy
    ```
 
    **When nothing is claim-worthy, that is a complete outcome, not a failure.** Some items are part of
@@ -286,7 +288,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    valid (the source template says so in as many words). Give it its discoverability surface instead:
    fill the record's `people:`/`places:` frontmatter links, write a `## Notes` paragraph saying what it
    is and why it was kept (this prose is full-text searched — it is where "keywords" go), delete the
-   empty `## Claims` block or leave it out, record the AI pass with `outputs: []` (step 8), and **skip
+   empty `## Claims` block or leave it out, record the AI pass with a `note:` saying no claims were drafted (step 8), and **skip
    the `review-claims` hand-off** — there is nothing to review. Close with `fha index` and `fha lint`
    yourself, since the review close-out won't run. (An item that names no one at all is a different
    case — `source_type: ephemera`, next — where `people:` must stay empty; `places:` is a separate,
@@ -295,7 +297,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 
    **A clipping that names no one already tracked in the archive** — period news, local color, general
    history kept on purpose for texture or a future biography, not because it evidences anyone — is
-   `source_type: ephemera` (#114, SPEC §14), not `newspaper`/`other`. The boundary isn't whether any
+   `source_type: ephemera` (SPEC §14), not `newspaper`/`other`. The boundary isn't whether any
    name appears in the prose; it's whether the source links to an archive person at all — a period
    mayor or a neighbor mentioned in passing, with no record of their own and none worth minting just
    for this, does **not** disqualify it, and naming such a person is not itself a reason to go create a
@@ -344,7 +346,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
   path, not a fallback.
 - The place-registration offer fires at most **once per place-text cluster per session**, only on an
   explicit yes, never repeated once declined in the same session — the same discipline `review-claims`'
-  promotion nudge uses, extended to places (issue #81).
+  promotion nudge uses, extended to places.
 - A registry write is the one write here that reaches **past the item in hand** — into `places.yaml` and
   into other sources' records — so unlike the rest of Stage B it owns its own follow-through: `fha index`
   then `fha places lint`, immediately, never deferred to the review close-out. (Stage A's scaffold and a
@@ -355,16 +357,16 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 ## Done when
 
 - Processing an inbox stub in a session on `example-archive` yields a real `sources/…` record with
-  `suggested` claims + `anchor:`s, the stub/bundle **consumed**, the AI pass recorded in `## AI Passes`,
+  `suggested` claims + `anchor:`s, the stub/bundle **consumed**, the AI pass recorded in `ai_passes:`,
   and a hand-off into `review-claims`.
 - A loosely-written note (approximate dates, informal spellings) processes without a hard refusal;
   un-mappable prose lands in `## Notes`; informal dates are translated to EDTF in the drafted claims.
 - An item with nothing claim-worthy exits cleanly by the zero-claims path: `people:`/`places:` filled,
-  context in `## Notes`, AI pass recorded with `outputs: []`, no review hand-off, no forced claims.
+  context in `## Notes`, AI pass recorded (its `note:` says no claims), no review hand-off, no forced claims.
 - An ephemera item (`source_type: ephemera`) exits the same zero-claims path with its OWN criterion,
   not the one above: `people:` stays strictly **empty** (never filled in to "complete" it), `places:`
   is filled in only when the source is genuinely tied to a place, context still lands in `## Notes`,
-  AI pass still recorded with `outputs: []`, no review hand-off, no forced claims.
+  AI pass still recorded, no review hand-off, no forced claims.
 - An image-only item is transcribed at Stage A½ *before* any claim is drafted: the source carries a
   `role: transcript` companion, and the Stage B claims cite its `[Page N]` anchors.
 - A place text whose **settlement name** resolves to one registry place whose hierarchy agrees gets

@@ -27,7 +27,7 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 
 - **Read-only by default.** The skill computes nothing and writes nothing on its own. `fha report` does
   its own refresh (incremental photoindex + index rebuild + lint) as step one — you do **not** re-run
-  those. One narrow exception lives inside that refresh (#48): if the archive still has an
+  those. One narrow exception lives inside that refresh: if the archive still has an
   un-migrated `.cache/cooccur_dismissed.json`, §8's `fha cooccur` call carries it forward to its
   durable home (`notes/cooccur_dismissed.json`) the first time it reads it — a housekeeping move of a
   decision the human already made, not a new one, and the report always names it in §8 when it
@@ -56,7 +56,7 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    confirmed connection. Say these as wins, in plain words: *"Since last time: Margaret's birth year is
    now backed by a second source — the 1871 marriage notice lines up with the census."*
 
-   **Then offer to log one, once (issue #121).** When §0 lists at least one real item (not the "No
+   **Then offer to log one, once.** When §0 lists at least one real item (not the "No
    discoveries since last session" placeholder), close the narration with a direct offer: *"Want me to
    log any of these as a discovery?"* §0 itself is not durable — it recomputes fresh from this session's
    diff every run (TOOLING §15a), so a win narrated here and not logged is gone the moment the next
@@ -80,7 +80,7 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    - Mention §1b (worth a second look — parked claims and thin facts to revisit when a new record
      surfaces; frame as "someday" leads, never chores), §2 (new since last time), §5b (answerable
      questions), §6b (place candidates — a large one here is a genuine contender for step 4's one next
-     action, not just a passing mention; see step 4), §7 (hypotheses / draft queues), §7b (promotion
+     action, not just a passing mention; see step 4), §7 (working answers / draft queues), §7b (promotion
      candidates — people who've earned a real page: a direct-line ancestor still a stub, or a stub that
      keeps turning up in accepted facts; frame as someday-leads — *"Frank keeps showing up — nine accepted
      facts and still a stub"*. The graduation is `fha person promote`, run only on the human's say-so —
@@ -100,7 +100,7 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    see Guardrails). Say **unlinked**, not "unregistered": §6b reports claims carrying no `place:`, which
    is not the same as a town missing from `places.yaml`, and this skill runs no registry lookup to tell
    the two apart — `place-research` does that on the other side of the hand-off.
-   Compare like with like: a §6b place line counts a cluster's **`accepted`/`needs-review`** claims (a
+   Compare like with like: a §6b place line counts a cluster's **`accepted`** claims (a
    `suggested` draft never enters that section at all), and §6b's *GPS* lines count photos, not claims —
    they are a different lead and not this comparison's business.
    This is a comparison of the two counts the briefing already printed, not a fixed number to clear —
@@ -177,11 +177,10 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
   sections 0–8 **discoveries-first**, and offers one concrete next action in plain language.
 - When §0 lists at least one real item, the discoveries narration ends with one offer to log it (*"Want
   me to log any of these as a discovery?"*) — asked once per run, never per item, never repeated once
-  he's answered. When §0 is empty (*"No discoveries since last session."*), no offer is made this run
-  (issue #121).
+  he's answered. When §0 is empty (*"No discoveries since last session."*), no offer is made this run.
 - It makes **zero** archive writes unless the human confirms one — a confirmed discovery lands via
   `fha confirm discovery`, never by hand-editing `notes/discoveries.md` — except the one narrow,
-  idempotent §8 housekeeping move above (#48), which needs no confirmation because it decides
+  idempotent §8 housekeeping move above, which needs no confirmation because it decides
   nothing, and which the report always names when it happens.
 - When the human answers a narrated connection ("yes, neighbors" / "no, drop it"), the skill echoes
   the exact `fha confirm cooccur`/`dismiss` command with `--dry-run`, applies only on his confirmation,

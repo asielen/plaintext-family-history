@@ -22,7 +22,7 @@ A brand-new archive knows nothing about the one family it is guaranteed to have 
 information on: the researcher's own. This skill asks him, once, at setup - who he is, how he wants
 the tree numbered, and who his immediate family is - and writes what he says the way the archive writes
 everything else: a real source with a real citation, and ordinary `suggested` claims that live or die
-by the same review gate as any other evidence (issue #74). It orchestrates existing `fha` verbs only;
+by the same review gate as any other evidence. It orchestrates existing `fha` verbs only;
 nothing here is a new tool. See [`../_STANDARD.md`](../_STANDARD.md).
 
 ## When this runs
@@ -48,12 +48,12 @@ re-entry into step 3 alone, not a repeat of steps 1-2.
   field - minting a stub, setting `sex:`, and setting `living:` are the same direct, confirmed-in-
   conversation writes `fha person new` / `set-sex` / `set-living` make everywhere else in this archive.
   They are gated by asking him plainly before writing, not by `fha claim`.
-- **Record the AI pass** in the interview source's `## AI Passes` block before handing off (_STANDARD.md
-  §3).
+- **Record the AI pass** as an entry in the interview source's `ai_passes:` frontmatter list before
+  handing off (_STANDARD.md §3).
 - **Respect privacy** (_STANDARD.md §3): his immediate family is almost always living people, and
   `living:` defaults to `unknown` on a fresh stub - this skill sets it explicitly (true/false/unknown)
   for everyone it touches, because his own household is exactly the case he can state with certainty.
-  `sex:` gets the same treatment for the same reason (#72): set explicitly for everyone this skill
+  `sex:` gets the same treatment for the same reason: set explicitly for everyone this skill
   touches, not only the newly minted - a `P-id` resolved via `fha find` rather than freshly minted never
   ran `fha person new`, so it never got `--sex` either, and needs its own `fha person set-sex` call.
 - **`root_person`/`root_generation` are written straight into `fha.yaml`**, which is documented as a
@@ -62,22 +62,22 @@ re-entry into step 3 alone, not a repeat of steps 1-2.
 
 ## Flow
 
-### 0. One-time check: is there already a place backlog? (issue #79 point 4)
+### 0. One-time check: is there already a place backlog?
 
 Before the family questions below, run one cheap, silent check - independent of whether this is a
 brand-new archive or a return visit (`root_person` already set, "Normally once per archive" above). Most
 archives reach this interview with nothing to find here: a genuinely fresh install has no claims of any
 kind yet. But an archive that already carries imported or migrated material - a `fha gedcom import`
 someone ran before ever getting to the personal interview, a batch of sources already processed - can be
-sitting on exactly issue #79's case: zero registered places and a real backlog of unlinked `place_text`,
+sitting on exactly this case: zero registered places and a real backlog of unlinked `place_text`,
 with nobody ever having been offered the one pass that would fix it. Migration mode is explicitly a
 sanctioned thing to do before this interview (AGENTS.md: "prefer [`fha gedcom import`] over hand-migrating
 one"), so this is not a rare ordering.
 
-`fha gedcom import` mints every claim it drafts at `status: suggested` - never `accepted`/`needs-review` -
+`fha gedcom import` mints every claim it drafts at `status: suggested` - never `accepted` -
 so a plain `fha places candidates` call (which deliberately excludes `suggested` claims everywhere else in
 this archive, since an unreviewed claim might still be disputed away) would see NOTHING from a fresh
-import and silently miss the exact backlog this check exists to catch (Codex review, PR #150). This one
+import and silently miss the exact backlog this check exists to catch. This one
 call is the sanctioned exception: pass `--include-suggested` to widen the scan for this one-time,
 informational purpose only - it is not a "confirmed data" report, so counting still-`suggested` claims
 here is correct in a way it would not be for `review-claims`, `fha report`, or any other everyday view.
@@ -91,8 +91,8 @@ fha places candidates --include-suggested
   candidates` finds is below 20 claims** → say nothing about this and move straight to step 1. A
   20-claim bar is deliberate and higher than the 3-claim bar `fha places candidates` surfaces everything
   past: the same "a cluster this large is an oversight, not a candidate to weigh" threshold `fha report`'s
-  own lead-in escalation notice uses (issue #79 point 2, `_PLACE_ESCALATION_THRESHOLD`) - a smaller
-  cluster is a normal, ongoing `review-claims`/`process-source` nudge (issue #81), not a one-time
+  own lead-in escalation notice uses (`_PLACE_ESCALATION_THRESHOLD`) - a smaller
+  cluster is a normal, ongoing `review-claims`/`process-source` nudge, not a one-time
   interruption of the family interview for.
 - **The registry is empty AND at least one cluster is at or past 20 claims** → this is the moment: *"Before
   we get to your own family - I noticed your records already mention '\<biggest cluster's label>' \<N>
@@ -116,15 +116,15 @@ fha places candidates --include-suggested
     fha places lint            # registry hygiene: orphan L-ids, duplicate names
     ```
   - **On no, or silence:** say nothing more about it this session and move straight to step 1 -
-    `fha places candidates`, `review-claims`'s own place nudge (issue #81), and `fha report`'s §6b/lead-in
-    escalation (issues #79 points 1-2) are all still there for it later.
+    `fha places candidates`, `review-claims`'s own place nudge, and `fha report`'s §6b/lead-in
+    escalation are all still there for it later.
 
 ### 1. Who are you?
 
 Ask his full name, and in the same breath: *"And for the tree's numbering - are you male, female,
 intersex, or would you rather I leave that blank?"* (`sex:` is what the Ahnentafel derivation reads to
-place a parent in the father/mother slot - #72's own comment thread found it missing on the owner
-himself in a real archive, silently degrading the whole tree's numbering). A rough birth year is welcome
+place a parent in the father/mother slot - missing on the owner himself, it silently degrades the
+whole tree's numbering). A rough birth year is welcome
 but optional.
 
 - **Resolve first, never assume a blank slate:** `fha find "<his name>"` - a session may be resuming, or
@@ -143,7 +143,7 @@ but optional.
 - **Set `sex:`/`living:`/a given birth year explicitly on the resolved `P-id`, whether it was just
   minted above or reused from a clear match.** A fresh mint took `--sex`/`--birth` at `fha person new`
   time, but a reused `P-id` never ran that command, so neither reached it - run these unconditionally so
-  the reuse branch isn't left with the same gap #72 found on the owner himself. He is, definitionally,
+  the reuse branch isn't left without `sex:`. He is, definitionally,
   in the room, so `living: true` needs no "are you alive" question.
   ```
   fha person set-sex <P-id> <M|F|intersex|unknown>
@@ -251,7 +251,7 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
    ```
    fha id mint C -n <count>
    ```
-   - **Parentage → `type: relationship`, never `type: birth`** (#71: a birth claim's second person is as
+   - **Parentage → `type: relationship`, never `type: birth`** (a birth claim's second person is as
      often an informant or a doctor as a parent - only an explicit `roles:` map says who is what,
      unambiguously, which is the whole point of asking him directly). One claim per child (including
      himself, as the child of his own parents), naming every parent he gave together:
@@ -300,10 +300,9 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
      goes to `## Stories` or `## Notes`, same routing rule as `process-source` step 7.
 6. **Record the AI pass:**
    ```yaml
-   ## AI Passes
-   - {date: <today>, model: {your-model-id}, harness: {your-harness},
-      task: "draft setup-interview relationship claims from the researcher's own account",
-      outputs: [C-…, C-…], human_reviewed: false}
+   ai_passes:
+     - {date: <today>, by: {your-model-id}, task: claims,
+        note: "setup-interview relationship claims from the researcher's own account"}
    ```
 
 ### 4. Hand off to the gate
@@ -317,7 +316,7 @@ lint` all belong to that hand-off, not to this skill.
 ## Guardrails
 
 - Parentage is written **only** as a `relationship` claim with an explicit `roles: {child:, parent:
-  […]}` map - never a `birth` claim (#71).
+  […]}` map - never a `birth` claim.
 - A spousal bond is written as a `type: marriage` claim with `roles: {spouse: […]}` - the SPEC-correct
   type for a couple, not `type: relationship`.
 - Every relationship/marriage claim drafted here is `status: suggested`; this skill **never** writes
@@ -343,7 +342,7 @@ lint` all belong to that hand-off, not to this skill.
   him before minting or writing anything else, rather than silently repeating itself.
 - The step 0 place-backlog offer fires at most **once per run**, only past the 20-claim oversight bar,
   only on an explicit yes, and is never repeated once declined or ignored in the same session - the same
-  discipline `process-source`'s own place-registration offer uses (issue #81), extended to this skill's
+  discipline `process-source`'s own place-registration offer uses, extended to this skill's
   one-time entry point. A registered cluster is written **only** via `fha confirm place`, exactly as
   `process-source`/`place-research` write one - never a hand-edit of `places.yaml`.
 
@@ -356,7 +355,7 @@ lint` all belong to that hand-off, not to this skill.
   `source_type: interview`, `source_class: authored` source whose `people:` links everyone named; a
   `relationship` claim per parent-child edge (never a `birth` claim) and a `marriage` claim per spouse,
   each `status: suggested` with `information: primary`, `evidence: direct`, and an `anchor:`; the AI
-  pass recorded in `## AI Passes`; and a hand-off into `review-claims`.
+  pass recorded in `ai_passes:`; and a hand-off into `review-claims`.
 - Nothing reaches `accepted` without the human's own pass through `review-claims`.
 - A loosely-answered question ("I don't really know my dad's exact birth year", "skip my mom's side for
   now") degrades gracefully - a skipped fact is simply omitted, never a stall or a refusal.

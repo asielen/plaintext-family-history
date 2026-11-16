@@ -108,12 +108,11 @@ and never runs over a whole folder or triage list.
    alongside the new one rather than replaced.
 
 5. **Record the pass.** If the photo's group has a source record (`S-id` present), append to
-   that source's `## AI Passes` block:
+   that source's `ai_passes:` frontmatter list:
    ```yaml
-   ## AI Passes
-   - {date: 2026-07-01, model: {your-model-id}, harness: {your-harness},
-      # use your real model/harness identifiers - these two are placeholders, not values to copy
-      task: "photo-context caption", outputs: [UserComment], human_reviewed: true}
+   ai_passes:
+     - {date: 2026-07-01, by: {your-model-id}, task: caption, note: "photo-context summary, approved text"}
+     # `by` is your real model identifier - a placeholder, not a value to copy
    ```
    then reindex just that source (a source edit makes the main index stale) and refresh the photo
    catalog too — `photoindex_status` watches every `sources/photos/*.md` mtime, so this same edit
