@@ -188,6 +188,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Old capture logs (read-only until Wave 4 carries them into notes/research-log.md)
 #    capture_log_paths         - current (notes/) path + legacy (.cache/) path
 #    read_capture_log_lines    - both files' lines, oldest first, no writes
+#    migrate_capture_log       - carry .cache/ copy into notes/ (backed up); True when moved
 #
 #  Safety copies of originals (`originals_backup:`, TOOLING §13f)
 #    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
@@ -3692,13 +3693,14 @@ def load_cooccur_dismissed(
 # `fha capture` now appends each capture to `notes/research-log.md`, the one
 # search log (SPEC §17c). Archives from before that still hold their capture
 # history as JSON lines in `notes/capture-log.jsonl` and, older still,
-# `.cache/capture_log.jsonl`. Nothing writes either file any more; `fha index`
-# keeps reading both into `search_log` so no "already searched" is lost until
-# a one-off pass folds them into the research log.
+# `.cache/capture_log.jsonl`. No capture is added to either any more; `fha
+# index` keeps reading both into `search_log` so no "already searched" is
+# lost, and the next capture carries the `.cache/` copy into `notes/` (which
+# backups and git keep) until a one-off pass folds both into the research log.
 
 def capture_log_paths(archive_root: str | Path) -> tuple[Path, Path]:
     """The two old capture-log files: `notes/capture-log.jsonl` and the
-    older `.cache/capture_log.jsonl`. Read only; nothing writes them."""
+    older `.cache/capture_log.jsonl`. No new capture is written to either."""
     root = Path(archive_root)
     return (root / 'notes' / 'capture-log.jsonl',
             root / '.cache' / 'capture_log.jsonl')
@@ -3708,7 +3710,7 @@ def _capture_log_file_lines(path: Path) -> list[str]:
     """The non-blank lines of one capture-log file; [] when it is absent.
 
     Raises OSError / UnicodeDecodeError for the caller to decide on: the
-    reader reports an undecodable file.
+    reader reports an undecodable file, the migrator leaves it alone.
     """
     if not path.exists():
         return []
@@ -3718,10 +3720,9 @@ def _capture_log_file_lines(path: Path) -> list[str]:
 def _merge_capture_log_lines(old: list[str], new: list[str]) -> list[str]:
     """Legacy lines first (they are older), then current lines not already carried.
 
-    An earlier tool version carried the `.cache/` file into `notes/` and may
-    have left the old one behind, so the old lines can sit at the head of
-    the new file; counting them off keeps those searches from being logged
-    twice, while two
+    A carry-forward that wrote the new file but could not delete the old one
+    leaves the old lines at the head of the new file; counting them off keeps
+    those searches from being logged twice, while two
     genuinely identical captures (the same page on the same day) still both
     survive, since each is counted once per occurrence.
     """
@@ -3758,6 +3759,41 @@ def read_capture_log_lines(archive_root: str | Path, on_decode_error=None) -> li
         except OSError:
             per_file.append([])
     return _merge_capture_log_lines(per_file[0], per_file[1])
+
+
+def migrate_capture_log(archive_root: str | Path) -> bool:
+    """Carry `.cache/capture_log.jsonl` into `notes/capture-log.jsonl`, once.
+
+    `.cache/` is skipped by `fha backup` and git, so older capture history
+    left there is one cache wipe from gone. `fha capture` calls this on each
+    run (its own entry goes to `notes/research-log.md`), so the first capture
+    after an upgrade finishes the move. The old lines go first, in
+    their order, then whatever the new file already held (deduplicated, see
+    `_merge_capture_log_lines`); the merged file is written atomically and
+    only then is the old one removed. Returns True when the move happened
+    just now - the caller MUST tell the human, so the old file never
+    disappears without a word.
+
+    If either file cannot be read or decoded, or the write fails, nothing is
+    moved or deleted: the old file stays where it is, the reader keeps
+    reading both, and the next capture tries again.
+    """
+    new_path, old_path = capture_log_paths(archive_root)
+    if not old_path.exists():
+        return False
+    try:
+        old_lines = _capture_log_file_lines(old_path)
+        new_lines = _capture_log_file_lines(new_path)
+    except (OSError, UnicodeDecodeError):
+        return False
+    merged = _merge_capture_log_lines(old_lines, new_lines)
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        write_text_exact_atomic(new_path, ''.join(ln + '\n' for ln in merged))
+        old_path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────

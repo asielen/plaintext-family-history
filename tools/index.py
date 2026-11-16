@@ -916,21 +916,26 @@ def _index_hypotheses_block(
 
 def _index_research_log_block(
     conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
+    *, whole_file: bool = False,
 ) -> None:
-    """Parse `## Research Log` entries from a research file (or notes/research-log.md)
-    body and insert rows into search_log.
+    """Parse research-log entries and insert rows into search_log.
 
-    notes/research-log.md (SPEC §16) isn't specified to require the
-    `## Research Log` heading the way a person research file does - it may
-    just be a bare list of entries.  Fall back to treating the whole body as
-    the section when no heading is present, so either shape works.
+    A person research file keeps its searches in its `## Research Log`
+    section (falling back to the whole body when it has none). The archive's
+    own `notes/research-log.md` (SPEC §17c) is ALL log - `whole_file=True` -
+    so every list entry counts under whatever headings the human grouped
+    them by (`## Hartley line`), and an entry `fha capture` appends at the
+    end of the file is read even when an `## Ideas` section comes before it.
     """
-    section = _extract_section_body(body, 'Research Log')
-    if not section.strip():
-        section = body
-    if not section.strip():
-        return
-    for entry in _parse_md_list_blocks(section):
+    if whole_file:
+        # One chunk per heading, so the list parser (which stops at a
+        # heading) sees every entry in the file.
+        sections = re.split(r'(?m)^#{1,6}\s.*$', body)
+    else:
+        section = _extract_section_body(body, 'Research Log')
+        sections = [section if section.strip() else body]
+    entries = [e for s in sections if s.strip() for e in _parse_md_list_blocks(s)]
+    for entry in entries:
         date = _strip_quotes(entry.get('date', ''))
         if not date:
             continue
@@ -1768,7 +1773,7 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
             content = ''
         if content.strip():
             rel_path = str(research_log_path.relative_to(archive_root))
-            _index_research_log_block(conn, content, None, rel_path)
+            _index_research_log_block(conn, content, None, rel_path, whole_file=True)
 
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,

@@ -843,6 +843,37 @@ class FullRebuildClearsStaleRowsTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _research_log_questions(self, text: str) -> list:
+        (self.archive_root / 'notes').mkdir(parents=True, exist_ok=True)
+        (self.archive_root / 'notes' / 'research-log.md').write_text(text, encoding='utf-8')
+        index.build_index(self.archive_root, {})
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        try:
+            return sorted(r[0] for r in conn.execute('SELECT question FROM search_log'))
+        finally:
+            conn.close()
+
+    def test_research_log_entries_under_every_heading_are_read(self) -> None:
+        # A hand-kept log grouped under headings: every entry is a search she
+        # ran, whichever heading it sits under - none may be dropped.
+        got = self._research_log_questions(
+            '# My searches\n\n## Hartley line\n\n'
+            '- date: 2020-01-01\n  question: hartley one\n  result: nil\n\n'
+            '## Cole line\n\n'
+            '- date: 2021-01-01\n  question: cole one\n  result: nil\n')
+        self.assertEqual(got, ['cole one', 'hartley one'])
+
+    def test_a_capture_appended_after_another_section_is_read(self) -> None:
+        # fha capture appends at the END of the file; a `## Research Log`
+        # section followed by `## Ideas` must not hide the appended entry.
+        got = self._research_log_questions(
+            '## Research Log\n\n'
+            '- date: 2020-01-01\n  question: by hand\n  result: nil\n\n'
+            '## Ideas\n\nTry the county court.\n\n'
+            '- date: 2026-11-16\n  question: "Captured page"\n'
+            '  repository: site.test\n  result: staged inbox/p.notes.md\n')
+        self.assertEqual(got, ['Captured page', 'by hand'])
+
     def test_capture_log_row_survives_full_rebuild(self) -> None:
         # A `fha capture` run writes the row straight into index.sqlite *and*
         # to notes/capture-log.jsonl. Simulate just the jsonl half here (the

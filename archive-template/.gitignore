@@ -8,8 +8,9 @@
 # NOT here: notes/cooccur_dismissed.json. It looks like a cache (it is
 # tool-written JSON) but it holds a human's "stop suggesting this" decisions,
 # which cannot be rebuilt - so it lives under notes/ and is tracked like any
-# other record (#48). Nor notes/capture-log.jsonl: the record of every search
-# a capture made (SPEC §16b), which no rebuild can recover.
+# other record (#48). Nor notes/research-log.md, the log of every search (fha
+# capture appends to it), or notes/capture-log.jsonl, older capture history
+# from before that log: neither can be rebuilt.
 /.cache/
 
 # Rebuildable deliverables (fha site / fha views output). Anchored to root

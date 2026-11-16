@@ -205,11 +205,39 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Local', got)
         self.assertEqual(got.count('First'), 1)              # never double-counted
 
+    def test_old_cache_capture_log_is_carried_into_notes_once(self) -> None:
+        # An archive from before SPEC 1c still has capture history in .cache/,
+        # which backup and git skip. The next capture moves it to
+        # notes/capture-log.jsonl - old lines first, never twice - and says
+        # so; nothing is lost and the research log takes the new capture.
+        cache = self.archive / '.cache'
+        cache.mkdir()
+        old_lines = [json.dumps({'date': '2020-01-0%d' % i, 'question': 'old %d' % i})
+                     for i in (1, 2)]
+        (cache / 'capture_log.jsonl').write_text(
+            ''.join(ln + '\n' for ln in old_lines), encoding='utf-8')
+        notes = self.archive / 'notes'
+        notes.mkdir()
+        (notes / 'capture-log.jsonl').write_text(old_lines[0] + '\n', encoding='utf-8')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._capture('<html><title>New</title></html>', url='https://n.test/p')
+        self.assertIn('Moved your older capture history', out.getvalue())
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        self.assertEqual(
+            (notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines(), old_lines)
+        self.assertEqual([e['question'] for e in self._log_entries()], ['New'])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._capture('<html><title>Again</title></html>', url='https://n.test/q')
+        self.assertNotIn('Moved your older capture history', out.getvalue())
+
     def test_old_capture_logs_are_left_alone_and_still_read(self) -> None:
         # An archive from before the one research log still holds its capture
         # history in notes/capture-log.jsonl (or .cache/capture_log.jsonl).
-        # Capture never touches those files; fha index keeps reading them, so
-        # "already searched" still sees every old capture alongside new ones.
+        # Capture never rewrites that history (it only carries the .cache/
+        # copy into notes/); fha index keeps reading it, so "already
+        # searched" still sees every old capture alongside new ones.
         import index
         import report
         cache = self.archive / '.cache'
@@ -225,8 +253,9 @@ class CaptureTestCase(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self._capture('<html><title>New</title></html>', url='https://n.test/p')
-        self.assertEqual((cache / 'capture_log.jsonl').read_text(encoding='utf-8'), old)
-        self.assertEqual((notes / 'capture-log.jsonl').read_text(encoding='utf-8'), mid)
+        # The .cache/ copy is carried into notes/ (old lines first); nothing is lost.
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        self.assertEqual((notes / 'capture-log.jsonl').read_text(encoding='utf-8'), old + mid)
         self.assertIn('notes/research-log.md', out.getvalue())
         with contextlib.redirect_stdout(io.StringIO()):
             index.build_index(self.archive, self.config)
