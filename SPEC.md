@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-**Version 1.2 - 2026-06-12**
+**Version 2.0 - 2026-11-15**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -240,7 +240,13 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   status: accepted               # required; §8.1 lifecycle
   confidence: high               # required; high | medium | low (§8.5). Tooling defaults by
                                  #   source_type (vital-record → high) and asks only when unclear
-  reviewed: 2026-06-10           # date of last human review (required once past suggested)
+  reviewed: 2026-06-10           # date of the human decision. Required on accepted, disputed,
+                                 #   rejected and superseded; optional on needs-review (a dated
+                                 #   needs-review means "looked at, still open", §8.1)
+  reviewed_by: human             # optional; who made that decision - `human` (the default
+                                 #   `fha claim` writes) or a researcher's name when the archive
+                                 #   has several. Never guessed: an older claim without it simply
+                                 #   does not say
   notes: >                       # optional but EXPECTED - the context/detail behind the claim,
                                  #   2-3 sentences typically, a "novel" if the claim is dense;
                                  #   tooling warns when a non-vital/low-confidence claim
@@ -307,9 +313,9 @@ Stub and curated are the same file shape (§16) - the same frontmatter, the same
 
 **Merging and separating identities.** When two person records prove to be one human: choose a survivor; the other record gains `status: merged`, `merged_into: p-survivor`, `merge_reason:`, `merged_date:` - and its file **persists forever, renamed with a `MERGED-INTO-p-survivor__` prefix** (e.g. `MERGED-INTO-p-de957bcda1__hartley__thomas_p-old.md`) so the tombstone is obvious on disk; IDs never die and every old reference still resolves through the pointer.
 Name variants and external IDs fold into the survivor.
-Tools resolve references *through* `merged_into`; the linter warns on new claims pointing at a merged person and lists remaining direct references for gradual cleanup.
+Tools resolve references *through* `merged_into`: a claim whose `persons:` or `roles:` still names the merged record counts for the survivor in every derivation, view and export. The linter warns on such a claim, and lists remaining direct references, for gradual cleanup - a warning, not an error, because nothing is lost while the pointer resolves.
 When one record proves to be two people (conflation): mint a new p-id and reassign each claim's `persons:`/`roles:` entries deliberately - a guided human task, since dividing an identity is research judgment - with both records noting the split and date.
-Source records get the parallel treatment: `status: superseded`, `superseded_by: s-…` (e.g. a better scan processed later), retained for the audit trail.
+**Merged sources.** When two source records prove to be one piece of evidence (a duplicate capture, a better scan processed separately), the survivor keeps the other's s-id in its `aliases:`, the other's files are attached to the survivor, and the other record is removed. A citation or filename carrying the old s-id still resolves to the survivor through that alias, and the linter lists it for gradual cleanup. The asymmetry with persons is deliberate: a merged source's files all move to the survivor, so nothing is left for its record to describe, while a merged person's tombstone still carries the merge reason.
 
 ```yaml
 id: p-de957bcda1                 # required
@@ -401,6 +407,7 @@ All dates in archive records use **EDTF (ISO 8601-2)**:
 | Decade | `185X` |
 | Year + month | `1850-05` |
 | Month approximate | `1850-~05` or `1850-05~` (tilde before or after month - both valid EDTF Level 1) |
+| Day approximate | `1850-05-~20`; `1850-05-20~` makes the whole date approximate |
 | Uncertain | `1850?` |
 | Before | `[..1920]` |
 | After (on or after) | `[1920..]` |
@@ -454,6 +461,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/discoveries.md` - the log of research wins, appended by `fha confirm discovery`.
 - `notes/cooccur_dismissed.json` - pairs of people the human has said are *not* connected, written by `fha confirm dismiss`, so the report stops suggesting them.
 - `notes/research-log.md` - the cross-person research log (§16b).
+- `notes/capture-log.jsonl` - one line per browser capture, written by `fha capture` (§16b).
 
 Each is optional; a missing file means "nothing recorded yet".
 
@@ -744,7 +752,9 @@ created: 2026-06-10
 
 ## AI Passes
 (optional - present only once a pass has run; structured yaml block:
-`- {date, model, harness, task, outputs: […], human_reviewed: bool}`)
+`- {date, model, harness, task, outputs: […]}` - one entry per extraction
+pass, AI contract rule 3; who reviewed a claim is recorded on the claim,
+`reviewed` / `reviewed_by`, never on the pass)
 
 ## Other headings
 (optional; a human may add any `##` section of their own - tools read the
@@ -793,7 +803,7 @@ Biographies then cite the proof like any source.
 **DNA sources.** `source_type: dna`, **always** `restricted: true`; raw files live in `documents/dna/`. The fields that describe the test are an extension (Appendix A.8).
 Export rule: DNA is excluded from every packet, site, and export by default, and `--include-restricted` does **not** include it - DNA requires its own explicit `--include-dna`.
 
-**Draft-prose markers.** `(TODO: import source)` is the recognized marker for useful factual prose awaiting its source; exporters treat marked sentences as context and exclude or flag them in public-facing output.
+**Draft-prose markers.** `(TODO: import source)` is the recognized marker for useful factual prose awaiting its source; the linter lists every one. A marked sentence is uncited, so it already reads as story or context (§18) and needs no export rule of its own.
 
 ## 15. Places
 
@@ -879,6 +889,7 @@ When a research file does exist, its body is: `## Research Notes`, `## Open Ques
 
 **The research log** records searches performed - including empty ones - so no collection is fruitlessly re-searched, and so "reasonably exhaustive" is demonstrable.
 Entries are **dated** (collections grow; a nil from 2024 is worth re-running in 2027) and **primarily tool-fed**: the capture flow, mining passes, and executed `research-next` plans log themselves; manual entries are welcome but never a required ritual.
+**Search history is optional.** The hand-kept log (`notes/research-log.md` and the research files' `## Research Log`) and the capture log (`notes/capture-log.jsonl`, one line per capture, which tools read as one search each) are useful when present - they let a tool say "already searched on (date)" before proposing a lead - and never needed to understand or operate the archive. Being durable records, they live under `notes/`, never in `.cache/`.
 Format:
 ```yaml
 - date: 2026-06-12
@@ -926,7 +937,7 @@ Double-bracket ID links, greppable and tool-verifiable:
 - The link always carries the **immutable ID**, never the slug or filename, so a citation survives a record rename. An optional display follows a pipe: `[[p-xxxx|Margaret Cole]]` reads as the name and links by ID.
 - `[[c-xxxx]]` is permitted when claim-level precision matters (one disputed assertion and its status) - the exception; it resolves to the claim's source record (§8.7).
 - `[[p-xxxx]]` cross-links people; `[[l-xxxx]]` a place. Both zero-hop via the record's ID/alias.
-- **Forgiving by default.** A hand-typed single-bracket `[s-xxxx]`, a bare `s-xxxx`, a human alias (`[[grandmas-album]]`), or an Obsidian fragment (`[[s-xxxx#Notes]]`) all still resolve; `fha normalize-links` tidies them to the standard form on request, never rejecting them.
+- **Forgiving by default.** A hand-typed single-bracket `[s-xxxx]`, a bare `s-xxxx`, a human alias (`[[grandmas-album]]`), or an Obsidian fragment (`[[s-xxxx#Notes]]`) all still resolve, and nothing rejects them. On request, `fha normalize-links` rewrites a single-bracket `[s-xxxx]` to `[[s-xxxx]]` and a resolved name or stem link to `[[id|name]]`, keeping the human's text as the display. It leaves a fully bare ID in prose alone, since it cannot tell a citation from a mention, and never guesses an ambiguous name.
 - **Uncited prose is by definition story/context, never fact.** The fact-safety rule, expressed as syntax.
 - Exporters swap links for refs; the WikiTree exporter renders `[[s-…]]` as `<ref>` blocks from the source's `citation` field, and redacts the display name of any `living`/`unknown` person (§19).
 
@@ -953,7 +964,9 @@ Integration rules:
    | `Y!M!` (1960-05) | `1960-05` |
    | `Y!M~` | `1960-~05` |
    | `Y!` | `1960` ( This is the same as Y!M?D? )|
-   | `Y~` | `1960~` (circa) or `19XX` (decade) |
+   | `Y~` | `1960~` (circa) |
+
+   A keyword pattern cannot say "the 1960s"; a decade belongs in a claim's `date:` as `196X` (§11). (`19XX` is a century in EDTF, not a decade.)
 
 2. **`import_date` never becomes truth.** The forced full `YYYY-MM-DD` written for EXIF compatibility is a technical workaround; only the EDTF value flows into archive records.
 3. **On processing, the source ID is embedded as a keyword:** `SOURCE: s-xxxxxxxxxx`. Third redundant carrier of the source↔file link - in a photo, and in a documents-root file whose format holds metadata. **Every keyword the tools add or remove goes into all three keyword fields photo managers read** - IPTC `Keywords`, XMP `dc:subject` and Lightroom's `lr:hierarchicalSubject` - in one write, and keywords are read as the union of the three; IPTC is left out only where a format has no standard IPTC block (PNG, GIF, HEIC, PDF). Lightroom reads and saves the XMP lists, so a keyword written to IPTC alone would be invisible there and could be erased by its next metadata save.
@@ -967,9 +980,8 @@ Integration rules:
 Generated output that leaves the archive falls into two categories with different binding privacy rules: **public output**, meant for redistribution beyond the family, and **private export**, a family-facing copy that stays within the family but is gathered outside the archive's own access controls.
 
 **Public output - living-person redaction (mandatory):**
-- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living [Surname]" or "Living Person", and all claims, photos, and source citations naming them are withheld.
+- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and all claims, photos, and source citations naming them are withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
-- Direct-line couple folders whose occupants are all redacted are collapsed to a stub entry; their folder number is retained so the pedigree chain remains intact.
 
 **Public output - restricted material (mandatory):**
 - Anything carrying `restricted` - a source, a claim, a person, or a name - is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name).
@@ -982,7 +994,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Private export (`fha packet`) - its own rules, per TOOLING §8:**
 - `fha packet` is a family/private export, not public output, and is not subject to the redaction rules above. A packet may include `living: false` people's full prose and cite other people who are still living, with a README caution rather than redaction.
 - The packet *subject* is held to a stricter rule than the cited-other-people case: `living: true` and `living: unknown` subjects are refused before any output is written, with no opt-in.
-- Anything `restricted` is excluded by default (restricted sources named by ID only in the README); `--include-restricted` overrides, except the **no-override** types: `restricted: dna` stays excluded until `--include-dna` is also passed, and `restricted: by-request` is never included by any flag. A `restricted: by-request` *person* vanishes from packet content but keeps their folder number so the pedigree chain stays intact (as with the all-redacted couple-folder collapse above).
+- Anything `restricted` is excluded by default (restricted sources named by ID only in the README); `--include-restricted` overrides, except the **no-override** types: `restricted: dna` stays excluded until `--include-dna` is also passed, and `restricted: by-request` is never included by any flag. A `restricted: by-request` *person* vanishes from packet content.
 
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` - it is as live as the last `fha index` run.
@@ -1031,7 +1043,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **Static site generator** | Render the archive as a **self-contained static HTML snapshot** - its own web-optimized asset derivatives, only publication-eligible material (living/unknown redacted, restricted/DNA excluded), built from accepted `relationship` claims, its social and adoptive edges drawn distinctly from the genetic line (§12.2). The home page carries a **marriage-aware ancestor pedigree** (a server-rendered, self-contained SVG, no script required) centered on a configured person and reaching back a configurable number of generations, with that person's own spouse(s)/children/siblings alongside it and a redaction-safe fallback for a living seed; each curated person's page carries the same immediate-family chart engine at its original scope (children, subject + spouse(s), parents, grandparents), plus a per-person opt-in **descendant explorer** - an interactive tree via a vendored rendering library fed a neutral JSON contract. No server, no accounts, no dependency on the archive once generated; works from a USB stick; embeds in packets. One sanctioned exception to the no-external-dependency rule: a place page with coordinates embeds an OpenStreetMap view (plain iframe, no library) that degrades to an empty frame offline while the ordinary map link beside it always works - the snapshot never *depends* on it. Visual design is built live, not specified here; the JSON data contract is. |
 | **WikiTree exporter** | Render a curated profile to WikiTree markup; `[[s-…]]` links → `<ref>` citations. |
 | **Doctor** | One health command: root + `fha.yaml` + mapped roots reachable; exiftool/Python present; index & photoindex freshness; lint summary; inbox aging; restricted/living/unknown counts; agent-instruction drift (stale command or skill names in AGENTS/skills). |
-| **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing, blank lines, final newline - never rewrites prose. |
+| **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing (lowercase, §10), blank lines, record section order, `value` first in each claim, final newline - never rewrites prose. |
 | **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. A sibling mode, `--path`, registers a file that must never move (no page, no asset copy - a pointer stub only). Full design: TOOLING_INGESTION.md. |
 | **Deterministic write-backs** | Human-directed, surgical edits to a record's own fields - the review/minting gesture behind every "confirm" click: move a claim's `status:`/correct its fields, or mint a brand-new claim onto a source (`fha claim`); set a person's `living:` flag, mint a new person stub, jot an unsourced relationship belief, write a provisional vitals estimate, or edit/append a curated profile's prose section, or rewrite one existing note entry named by its exact text (`fha person`); append a note to - or rewrite one note on - a source's own `## Notes` (`fha source`); set a registry place's coordinates/alt-names/dated history or append a dated place research note (`fha places set`/`note`). Every edit is bounded to the field/section named, previewed before writing, and never moves a claim to `accepted` except by direct human instruction (§6). Full design: TOOLING.md §3b/§3c/§3d/§10. |
 | **Research workbench (front door)** | A human-started, local, browser-based front door onto the same headless tool engines every terminal command drives (§5) - not a second capability, a second way to reach the first one. Every action previews before it writes and is gated by the same human decision §6 requires; nothing it does is undocumented (every action names its equivalent command). Not a daemon, no accounts, no network beyond the machine it runs on; disposable by construction (§5). Full design: TOOLING_INTERFACE.md §1b. |
