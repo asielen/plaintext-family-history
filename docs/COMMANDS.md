@@ -213,23 +213,21 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 
 ### `fha views sources-index`
 
-Refresh a person's own ## Sources section (and/or the couple-folder view).
+Refresh a person's own ## Sources section.
 
 ```text
 Rewrite the ## Sources GENERATED region inside a person's own
 profile (works on a stub too, so it can be populated before
-promotion - #76), and/or sources-index.md per curated couple
-folder. The per-person form has no --format html twin any more -
-the content lives inside the profile now, not a separate file.
+promotion). There is no separate sources-index file and no
+--format html page - the list lives inside the profile.
 Requires a fresh .cache/index.sqlite (run `fha index` first).
 ```
 
 | Argument | What it does |
 |---|---|
 | `[P-id]` | Person whose ## Sources section to refresh (stub or curated). |
-| `--all-curated` | Refresh every curated profile's ## Sources section, and (with --couple-folders) every couple-folder file too. |
-| `--couple-folders` | Generate sources-index.md in every curated couple folder. |
-| `--format` `{md,html}` | md (default): the companion .md beside the profile. html: a standalone printable page under generated/views/ (private and unredacted - it carries a visible not-for-publication banner; share through `fha site`). (html applies to --couple-folders only - the per-person section has no separate HTML view.) |
+| `--all-curated` | Refresh every curated profile's ## Sources section. |
+| `--format` `{md,html}` | md (default). html is refused: the list lives inside the profile, with no separate page. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha views draft-queue`
@@ -287,8 +285,8 @@ Delete every generated view file (companion .md + generated/views/ HTML); they r
 
 ```text
 Delete all GENERATED-headed view files: companion .md files (timeline,
-draft-queue, couple-folder sources-index.md) from the people/ tree, and
-single-file HTML views under generated/views/. Uses the <!-- GENERATED
+draft-queue, and any old couple-folder sources-index.md) from the
+people/ tree, and single-file HTML views under generated/views/. Uses the <!-- GENERATED
 … --> whole-file header as the sole signal, file by file; never touches
 profiles or manually authored files - including a profile whose own
 ## Sources section is a GENERATED-BEGIN/END region (#76): that region is
@@ -305,12 +303,11 @@ marker. --dry-run lists what would be removed without writing.
 
 ### `fha views refresh`
 
-Regenerate all content views for every curated person and couple folder.
+Regenerate all content views for every curated person.
 
 ```text
-Regenerate timeline and draft-queue for every curated person, refresh
-every curated person's own ## Sources section, plus sources-index.md
-for every curated couple folder.
+Regenerate timeline and draft-queue for every curated person, and
+refresh every curated person's own ## Sources section.
 --format html regenerates the standalone generated/views/ pages
 instead; --format both writes the two sets in one pass.
 Requires a fresh .cache/index.sqlite (run `fha index` first).

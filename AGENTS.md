@@ -320,8 +320,8 @@ fha process <file|folder>   process an original into a Source (documents: rename
 fha process refile <S-id> --to photos|documents
                             move a misfiled source file ACROSS roots (SPEC 12.1's
                             sanctioned correction; rename at the crossing; --dry-run)
-fha views timeline|sources-index|brackets     regenerate views (--format html for a
-                            printable standalone page under generated/views/)
+fha views timeline|sources-index|brackets     regenerate views (timeline and draft-queue also
+                            take --format html: a printable page under generated/views/)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default)
 fha reconcile                re-tie moved files to their records (documents by filename S-id,
                             photos via the catalog) after the human reorganizes; --dry-run first

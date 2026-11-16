@@ -293,6 +293,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_valid_edtf             - validate an EDTF string against this project's subset
 #    normalize_date            - loose human date ("circa 1870", "1870s") → canonical EDTF
 #    edtf_bounds               - compute (date_min, date_max) ISO strings
+#    claim_date_order_sql      - ORDER BY terms: claims in date order by their known bound
 #    _pad_date, _last_day      - internal date-padding helpers
 #    edtf_confidence           - sortable confidence score (components + marker rank)
 #    humanize_edtf             - EDTF -> plain-English reading date ('about 1912',
@@ -7665,6 +7666,22 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
     return ('0001-01-01', '9999-12-31')
 
 
+def claim_date_order_sql(alias: str = 'c') -> str:
+    """SQL ORDER BY terms that put a claim in date order: undated last, and
+    each dated one by its known bound from `edtf_bounds`.
+
+    That is `date_min`, except for "by 1895" (`[..1895]`), whose `date_min`
+    is the archive floor 0001-01-01: sorted on that, it led every timeline
+    under a stray decade heading that then repeated further down. It sorts by
+    its known end (`date_max`) instead. "From 1883 on" (`[1883..]`) already
+    sorts by its known start. `alias` is the claims table's alias in the
+    query ('' for none)."""
+    p = f'{alias}.' if alias else ''
+    return (f"CASE WHEN {p}date_min IS NULL OR {p}date_min = '' THEN 1 ELSE 0 END, "
+            f"CASE WHEN {p}date_edtf LIKE '[..%' THEN {p}date_max "
+            f"ELSE {p}date_min END ASC")
+
+
 def _pad_date(s: str, mode: str) -> str:
     parts = s.split('-')
     if mode == 'max':
@@ -10213,9 +10230,10 @@ def unreadable_dir_hold_mtimes(dirs) -> list[float]:
 def _is_generated_companion(path: Path, archive_root: Path) -> bool:
     """A `fha views` output under people/, excluded from the freshness
     watermark: a per-person companion (timeline / sources-index / draft-queue,
-    P-id in the name) or the couple-folder `sources-index.md` (`fha views
-    sources-index --couple-folders`, also written by `fha views refresh`),
-    which carries no P-id at all.
+    P-id in the name) or a couple-folder `sources-index.md`, which carries no
+    P-id at all. Nothing writes the couple-folder file any more (SPEC 2.1
+    Part IV); older archives still hold them until `fha views clean` sweeps
+    them, so they keep their exclusion.
 
     Three tests, all required, because being wrong here means a human's own
     file stops counting as a record: text search would keep serving its old
@@ -11845,9 +11863,8 @@ RESEARCH_PURPOSE_BLOCK = (
 
 # keyed by the `fha views` subcommand that rebuilds each kind - `_gen_header`
 # already takes the same string, so the two stay parallel. `sources-index`
-# here is the COUPLE-FOLDER form only (`--couple-folders`): the per-person
-# form no longer writes a separate file at all (#76 - see `write_generated_
-# region`/PERSON_SOURCES_PLACEHOLDER above), so it needs no block of its own.
+# writes no separate file at all (#76 - see `write_generated_region`/
+# PERSON_SOURCES_PLACEHOLDER above), so it needs no block of its own.
 VIEW_PURPOSE_BLOCKS: dict[str, str] = {
     'timeline': (
         "> **Generated view - do not edit.** A timeline of accepted claims "
@@ -11865,15 +11882,6 @@ VIEW_PURPOSE_BLOCKS: dict[str, str] = {
         "are overwritten\n"
         "> on the next refresh; write the citation into the profile to clear "
         "an entry."
-    ),
-    'sources-index': (
-        "> **Generated view - do not edit.** Every source touching someone in "
-        "this couple's\n"
-        "> folder, rebuilt by `fha views sources-index --couple-folders`. "
-        "Your edits are\n"
-        "> overwritten on the next refresh; the list follows the underlying "
-        "claims\n"
-        "> automatically."
     ),
 }
 
@@ -12614,13 +12622,12 @@ def render_research_content(pid: str, archive_root: str | Path) -> str:
     to the frontmatter on purpose: in the body a leading `#` is a markdown
     heading, not a comment.
 
-    Not called by `fha person promote`'s default path since #76 - the
-    separate research file is now an OPTIONAL escape valve (SPEC §16), not
-    something every promotion scaffolds - but kept as the one correct
-    renderer for anyone who does want one: a human copies
-    `_TEMPLATE.research.md` by hand exactly as before, and this function
-    stays available for a future opt-in path to use rather than reinventing
-    the same substitution."""
+    No tool scaffolds an empty research file (SPEC §16b: it exists only once
+    something is written in it). This is the renderer for the tool that
+    writes a person's first question or overflow note, which creates the file
+    at that moment - no current tool writes there yet (questions go to
+    `notes/questions.md`, overflow notes to the profile's own
+    `## Research Notes`), so it is kept for that path rather than reinvented."""
     text = research_template_text(archive_root)
     text = re.sub(r'^id:.*$', f'id: {fmt_id_display(pid)}', text, count=1, flags=re.M)
     text = re.sub(r'^created:.*$', f'created: {datetime.date.today().isoformat()}',
@@ -12689,10 +12696,8 @@ def promote_person_record(
          written one already sits beside the SOURCE record and the record is
          moving, MOVE it to the destination so its notes travel with the
          record; if one already sits at the destination, leave it. **Never
-         auto-created** (#76 - the separate research file is an escape valve
-         for a person's research outgrowing their `## Research Notes`
-         section, not a default every promotion scaffolds; a human who wants
-         one still copies `_TEMPLATE.research.md` by hand, exactly as today).
+         auto-created** (SPEC §16b - a research file exists only once
+         something is written in it).
 
     Steps already satisfied are skipped, so the engine is idempotent and also
     FINISHES a half-promotion (a record hand-flipped to curated but still
@@ -12884,11 +12889,8 @@ def promote_person_record(
             f'{_rel(research_path)} (your notes travel with the record)')
     elif research_path.exists():
         steps.append(f'research companion already exists ({_rel(research_path)}) - left as is')
-    else:
-        steps.append(
-            'no research companion created - it is optional now (SPEC §16); '
-            'copy people/_TEMPLATE.research.md by hand if this person\'s '
-            'research grows large enough to want one')
+    # Otherwise nothing: a research file exists only once something is
+    # written in it (SPEC §16b), so promotion neither creates nor suggests one.
 
     plan = {
         'status': 'dry-run' if dry_run else 'ok',

@@ -215,6 +215,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    claim_date_order_sql,
     # _AI_DRAFT_MARK_RE is _lib-private on purpose (the marker grammar has ONE
     # home, kept in sync with confirm.py's flip grammar); packet imports it for
     # the README draft count only, so the count can never drift from what
@@ -2168,8 +2169,7 @@ def _build_timeline_text(
             WHERE cp.person_id IN ({pid_placeholders}) AND c.status IN ('accepted', 'needs-review')
               AND c.source_id IN ({src_placeholders})
             ORDER BY
-                CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
-                c.date_min ASC,
+                {claim_date_order_sql('c')},
                 -- Claims on the same date stay in the order `fha index`
                 -- wrote them. Without this, a person with a merged-away id
                 -- would see same-day claims grouped by which id names them.

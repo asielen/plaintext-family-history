@@ -2412,9 +2412,9 @@ class PromoteTests(unittest.TestCase):
         # no rebuild between them.
         all_text = ' '.join(m.text for m in res.messages)
         for follow in ('fha views timeline', 'fha views sources-index',
-                       'fha views draft-queue', 'updated in place',
-                       'optional now'):
+                       'fha views draft-queue', 'updated in place'):
             self.assertIn(follow, all_text)
+        self.assertNotIn('_TEMPLATE.research.md', all_text)
         db = self.root / '.cache' / 'index.sqlite'
         self.assertTrue(db.exists())
         conn = sqlite3.connect(db)
@@ -2510,8 +2510,8 @@ class PromoteTests(unittest.TestCase):
         self.assertFalse(res.changed)
         preview = ' '.join(m.text for m in res.messages)
         self.assertIn('tier: stub -> curated', preview)
-        self.assertIn('research companion', preview)
-        self.assertIn('optional now', preview)
+        # SPEC 2.1 §16b: no research file, and no advice to copy an empty one.
+        self.assertNotIn('_TEMPLATE.research.md', preview)
         # #76: the body-section backfill previews too - the fixture's stub
         # already has an H1 and ## Biography, so only the rest is listed.
         self.assertIn('add the missing body section(s)', preview)
@@ -2549,6 +2549,9 @@ class PromoteTests(unittest.TestCase):
         self.assertEqual(res.data['status'], 'already')
         self.assertIn(PROMOTE_FOLDER, res.messages[0].text)
         self.assertFalse(res.changed)
+        # SPEC 2.1 §16b: a research file exists only once something is
+        # written in it, so its absence is not a gap to point out.
+        self.assertNotIn('research companion', res.messages[0].text)
 
     def test_non_direct_person_refused_plainly(self) -> None:
         res = person.run_promote(self.root, P_FRIEND)
