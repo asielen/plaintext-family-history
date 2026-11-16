@@ -143,6 +143,9 @@ its claims to the people asked about and leave the rest for later sessions.
      fha claim <C-id> --status suggested --dry-run
      fha claim <C-id> --status suggested
      ```
+     If `fha claim` refuses `--status suggested` (tools older than SPEC 2.1), leave the claim exactly as
+     it is and record the look with `fha source note <S-id> --text "reviewed <C-id> <date>: still open - <why>"`.
+     Never use another status to stand in for it.
      When he parks a claim, **offer — never auto-write — to record what would settle it**: "want me to
      jot down what would settle this, so it resurfaces when that record shows up?" Only on his explicit
      yes, write one **question entry** in SPEC §17b's form — an `## Q:` heading naming the question, then

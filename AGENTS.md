@@ -59,8 +59,8 @@ unless you tell him otherwise:
   you write and say.
 - **A photo-date guess is a working answer.** "When do you think this was taken?" gets an estimate
   with its stated basis (clothing, print format, photo process) — recorded, if it's worth keeping,
-  as the working answer on that question's entry (`origin: agent`, with `guess:`, `basis:` and
-  `verify:`, SPEC §17a), never as a claim.
+  as the working answer on that question's entry (`origin: human`, since he asked it, with `guess:`,
+  `basis:` and `verify:`, SPEC §17a), never as a claim.
 - **Keep the archive's own paperwork out of the family's story.** A claim's `value:` and a
   record's reader-facing prose (Biography, Stories, an unfenced `## Research Notes` paragraph)
   describe **what happened to the family** — a fact, in plain English, that a relative who has

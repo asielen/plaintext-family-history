@@ -86,28 +86,32 @@ now?", "any leads on Margaret's parents?"
      that implies a passenger list. Rank leads by payoff (closes a vital gap / answers an open question)
      and by ease (is the collection online, indexed, nearby?).
 
-4. **Optionally write a guess as a working answer — tagged `origin: agent`.** When the evidence
-   suggests a testable belief, it climbs the research ladder (SPEC §17a): the guess goes into the
-   **question entry** it answers, as that entry's working answer. If the human already has the question
-   written, add the four lines to it; otherwise write one entry in SPEC §17b's form, in the person's
-   research file (`## Open Questions`, the file created the first time something is written to it, SPEC
-   §16b) or `notes/questions.md` for a question spanning people. Mint the id with `fha id mint H`:
+4. **Optionally write a guess as a working answer, on a question he asked.** When the evidence
+   suggests a testable belief about a question the human has asked (now, or already written down),
+   it climbs the research ladder (SPEC §17a): the guess goes into that **question entry** as its
+   working answer. If the question is already written, add the four lines to it; if he is asking it
+   now, write one entry in SPEC §17b's form with `origin: human`, in the person's research file
+   (`## Open Questions`, the file created the first time something is written to it, SPEC §16b) or
+   `notes/questions.md` for a question spanning people. A gap the tools can compute (no death date,
+   no parents) is never written as a question to hang a guess on (SPEC §17b): offer the guess in the
+   briefing instead, and write it only if he then asks the question. Mint the id with `fha id mint H`:
    ```markdown
-   ## Q: Where and when did Thomas Hartley die?
-   - origin: agent
+   ## Q: Was the Thomas Hartley in the 1880 Fairview census our Thomas?
+   - origin: human
    - status: open
    - refs: [p-…]
    - id: h-…
-   - guess: in Breton County, Kansas, between 1911 and 1925
-   - basis: the 1880 census ([[S-…]]) has him about 40 in Fairview; no later record; Kansas statewide death registration began in 1911
-   - verify: the Kansas State death index, Breton County 1911–1925
+   - guess: yes - the same man
+   - basis: the census age (about 40) and birthplace (New York) match his baptism ([[S-…]]); no other Thomas Hartley in Breton County
+   - verify: the 1885 Kansas state census, which names his wife
    - context:
-     - 2026-07-01 (agent): guess drawn from the census age and the start of state death registration
+     - 2026-07-01 (agent): guess drawn from the census age and birthplace
    ```
    A working answer is a lead with a shape, never a claim. It settles one of three ways (§17a rung 4): a
    source says it (process the source; its claim carries the fact and may point back with
-   `hypothesis: h-…`), the pieces add up (a proof-argument source), or it is wrong (`status: abandoned`, the
-   entry kept so the guess is not made again). `refs:` holds bare IDs in single brackets; **any ID cited in
+   `hypothesis: h-…`), the pieces add up (a proof-argument source), or it is wrong: its `id`/`guess`/`basis`/`verify`
+   lines leave the entry, one dated `context:` line records it (`ruled out h-…: <guess> - <why>`), and the
+   question stays open; the next guess gets a new `h-` id. `refs:` holds bare IDs in single brackets; **any ID cited in
    `basis:`, `verify:` or a context line is prose and takes the `[[S-…]]`/`[[C-…]]`/`[[P-…]]` wikilink
    form** (AGENTS.md §"Format quick reference" Citations).
    When a newly processed source turns up evidence bearing on an **open** working answer, don't leave it for
