@@ -9,7 +9,7 @@
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
 When a tool and the spec disagree, the spec wins.
-When the spec and the files disagree, fix one; git records which.
+When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
 This spec describes a **target system**.
 Normative language - *must*, *should*, *is to be* - defines what the archive and its tools are required to do, whether or not they exist yet.
@@ -293,7 +293,7 @@ Claims live in a fenced ` ```yaml ` block - not because the parser needs the fen
 
 Two tiers (§4): **stub** - script-mintable in bulk, a permanent legitimate state - and **curated** - actively researched, the full file set of §16. **Rule:** every `P-id` referenced anywhere must resolve to at least a stub.
 
-Stub and curated are the same file shape (§16) - the same frontmatter, the same scaffolded body sections, present from the moment a record is minted. Only the `tier:` flag, the couple-folder placement, and how much of the body a human has actually written distinguish one from the other; promoting a stub to curated never creates a section that was not already there, only moves the file, flips the flag, and fills in whatever the stub had left empty.
+Stub and curated are the same file shape (§16) - the same frontmatter, the same scaffolded body sections, present from the moment a record is minted. Only the `tier:` flag, the couple-folder placement, and how much of the body a human has actually written distinguish one from the other; promoting a stub to curated never creates a section that was not already there, only moves the file, flips the flag, and fills in whatever the stub had left empty, including any scaffolded section a stub minted under an older shape lacks.
 
 **Merging and separating identities.** When two person records prove to be one human: choose a survivor; the other record gains `status: merged`, `merged_into: P-survivor`, `merge_reason:`, `merged_date:` - and its file **persists forever, renamed with a `MERGED-INTO-P-survivor__` prefix** (e.g. `MERGED-INTO-P-de957bcda1__hartley__thomas_P-old.md`) so the tombstone is obvious on disk; IDs never die and every old reference still resolves through the pointer.
 Name variants and external IDs fold into the survivor.
@@ -412,7 +412,7 @@ family_archive/              ← the root (default name; rename freely - nothing
     connections/             ← everyone else, anchor-numbered (§12.3)
     stubs/                   ← holding pen for people not yet placed
   places/places.yaml         ← single-file place registry (§15)
-  notes/                     ← general research workspace (§16)
+  notes/                     ← general research workspace (§17)
   ── assets (mappable elsewhere via fha.yaml; not git-pushed if local) ──
   photos/{year}/             ← ASSET TREE: all photos, by year (§12.4 - often external)
   documents/{type}/          ← ASSET TREE: scans, clippings, recordings, transcripts
@@ -473,7 +473,7 @@ Reorganizing or rescanning assets must never orphan a source or claim; the recor
 - **The anchor.** `fha.yaml`'s `root_person` (§12.4) names **the person this archive is centred on**, not necessarily #1 itself. `root_generation` says which position they occupy:
   - **`self`** (the default; omitting the key means this) puts `root_person` at #1.
   - **`children`** puts `root_person` at #2, leaving #1 to `root_person`'s own children, collectively. This is the way for a researcher who is the anchor but is not the youngest person on the direct line to be numbered without naming a child as `root_person`, and the only way for a childless researcher to be numbered at all.
-  - Any other value is reported and never silently read as `self`.
+  - Any other value is rejected by the same tools that check the anchor (`fha lint`, `fha views brackets`), never silently read as `self`.
 - **Anchor `self` at the youngest generation.** Under `root_generation: self`, any full sibling works as `root_person`, since siblings share one ancestor tree. A `root_person` who has a child in the archive is one rung up from #1, and every ancestral couple below then derives one generation high. That mistake is invisible from the folders - placement checks only ask whether a folder's number matches the number this same walk produced, so an archive numbered wrong throughout matches itself perfectly - so the tools check the anchor itself and report a `root_person` with a child on record while `root_generation` is `self` (`fha lint` and `fha views brackets`). It is a **warning, never an error**: anchoring at yourself with `root_generation` left at `self` is a legitimate choice, and so is re-anchoring downward later. The warning is silent under `root_generation: children`, which says outright that a child on record is the intended shape.
 - **Re-anchoring.** Either edit moves every number: pointing `root_person` at a descendant re-anchors the whole tree down a generation (the researcher's children become #1, researcher and spouse #2/#3, and every ancestral couple's number doubles), and setting `root_generation: children` shifts the same generation without renaming `root_person`. After either edit, one previewed pass realigns the already-promoted folders: `fha index`, then `fha views brackets --realign` (TOOLING §7). The reindex comes first because `fha.yaml` is part of what decides whether the index is stale, and the realign refuses to rename folders from stale data.
 - **Which edges number.** Tools compute every ancestral couple's Ahnentafel number by following only the **genetic** parent edges among accepted, non-negated claims (`subtype: biological` - the default - `surrogate-genetic`, `donor-sperm`, `donor-egg`). A parent edge comes from a `relationship` claim or from the `roles:` map of a `birth` claim, which are the same fact written two ways and reach the pedigree as one (§8.3). Social and legal parent edges (`adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `social`) are shown in the folder's bracket list and the relationship views, clearly marked, but are not numbered into the pedigree.
@@ -700,7 +700,7 @@ Biographies then cite the proof like any source.
 - The moment a source names someone who already has an archive record, or clearly warrants one on the mention's own merits, it no longer qualifies: it is re-typed to whatever fits (`newspaper`, `book`, …) and picks up that person's link like any other source. Nothing about `ephemera` is a one-way door.
 - A keepsake or scenic photo that is not proof of anything but is still linked to who it is about is an ordinary source with an optional, empty `## Claims` block, not `ephemera`: it belongs to the person it names and appears on their page as usual.
 
-*Where ephemera shows up.* A person's profile source list, packet, timeline, and draft queue all select a source the way `fha views sources-index` does (§8.7): by the frontmatter `people:` link **or** by any claim's own `persons:`. So an ephemera source with empty `people:` and empty claims - the ordinary case - is unreachable from every person-scoped surface, while one that still carries a claim naming a person (an occasional contextual claim) reaches that person's surfaces. Tooling checks only the `people:` half of that pair. Either way it is not lost: `fha site` gives it its own source page and lists it, alongside every other source, on the homepage's general Sources index (grouped by decade), and its `## Notes` prose is full-text searched.
+*Where ephemera shows up.* A person's profile source list, packet, timeline, and draft queue all select a source the way `fha views sources-index` does (§16): by the frontmatter `people:` link **or** by any claim's own `persons:`. So an ephemera source with empty `people:` and empty claims - the ordinary case - is unreachable from every person-scoped surface, while one that still carries a claim naming a person (an occasional contextual claim) reaches that person's surfaces. Tooling checks only the `people:` half of that pair. Either way it is not lost: `fha site` gives it its own source page and lists it, alongside every other source, on the homepage's general Sources index (grouped by decade), and its `## Notes` prose is full-text searched.
 
 **DNA sources.** `source_type: dna`, **always** `restricted: true`; raw files live in `documents/dna/`. The fields that describe the test are an extension (Appendix A.8).
 Export rule: DNA is excluded from every packet, site, and export by default, and `--include-restricted` does **not** include it - DNA requires its own explicit `--include-dna`.
@@ -785,7 +785,7 @@ Every document a tool writes or scaffolds - a profile, a source record, a genera
 
 ### 16b. `## Research Notes` and the optional research file
 
-Every profile carries its own `## Research Notes` section (above) - open questions, hunches, and brick walls, the lightweight default home for working notes on this person. Most people never need more than that section gives them, so `fha person new`, `fha stubs`, and `fha person promote` do not create a separate research file; it is an **optional escape valve**, which a human copies from `archive-template/people/_TEMPLATE.research.md` by hand once a person's research genuinely outgrows one section's worth of room.
+Every profile carries its own `## Research Notes` section (above) - open questions, hunches, and brick walls, the lightweight default home for working notes on this person. Most people never need more than that section gives them, so `fha person new`, `fha stubs`, and `fha person promote` do not create a separate research file by default; it is an **optional escape valve**, which a human copies from `archive-template/people/_TEMPLATE.research.md` by hand (or an opt-in tool path creates) once a person's research genuinely outgrows one section's worth of room.
 
 When a research file does exist, its body is: `## Research Notes`, `## Open Questions`, `## Hypotheses`, `## Research Log` - the overflow desk, not a duplicate of the profile's section. A person with both keeps the profile's `## Research Notes` as the short version and moves active working notes into the research file as they grow; the profile section is never required to stay empty, and tooling never reconciles the two against each other.
 
@@ -936,7 +936,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. A sibling mode, `--path`, registers a file that must never move (no page, no asset copy - a pointer stub only). Full design: TOOLING_INGESTION.md. |
 | **Deterministic write-backs** | Human-directed, surgical edits to a record's own fields - the review/minting gesture behind every "confirm" click: move a claim's `status:`/correct its fields, or mint a brand-new claim onto a source (`fha claim`); set a person's `living:` flag, mint a new person stub, jot an unsourced relationship belief, write a provisional vitals estimate, or edit/append a curated profile's prose section, or rewrite one existing note entry named by its exact text (`fha person`); append a note to - or rewrite one note on - a source's own `## Notes` (`fha source`); set a registry place's coordinates/alt-names/dated history or append a dated place research note (`fha places set`/`note`). Every edit is bounded to the field/section named, previewed before writing, and never moves a claim to `accepted` except by direct human instruction (§6). Full design: TOOLING.md §3b/§3c/§3d/§10. |
 | **Research workbench (front door)** | A human-started, local, browser-based front door onto the same headless tool engines every terminal command drives (§5) - not a second capability, a second way to reach the first one. Every action previews before it writes and is gated by the same human decision §6 requires; nothing it does is undocumented (every action names its equivalent command). Not a daemon, no accounts, no network beyond the machine it runs on; disposable by construction (§5). Full design: TOOLING_INTERFACE.md §1b. |
-| **Citation assistant** *(optional)* | Suggest missing `[[S-…]]` citations by matching uncited prose against accepted claims. |
+| **Citation assistant** *(proposed)* | Suggest missing `[[S-…]]` citations by matching uncited prose against accepted claims. |
 
 ---
 
@@ -1025,7 +1025,7 @@ external_ids:                    # optional
 
 ### A.8 DNA test fields
 
-A DNA source (§14) may describe the test: `tested_person:` (P-id), `provider:` (AncestryDNA, FamilyTreeDNA, …), `test_type:` (`autosomal` | `y-dna` | `mtdna`), optional kit notes. The core rule stands whether or not these are present: a DNA source is always restricted.
+A DNA source (§14) describes the test with these fields: `tested_person:` (P-id), `provider:` (AncestryDNA, FamilyTreeDNA, …), `test_type:` (`autosomal` | `y-dna` | `mtdna`), optional kit notes. The core rule stands whether or not these are present: a DNA source is always restricted.
 
 ### A.9 Places: `history` and `within`
 
