@@ -79,6 +79,7 @@ from _lib import (
     link_field_refs,
     load_fha_yaml,
     normalize_id,
+    parse_question_blocks,
     optional_scalar,
     parentage_parties,
     role_meaning,
@@ -148,7 +149,10 @@ configure_utf8_stdout()
 #  Markdown block parsing
 #    _parse_md_list_blocks   - generic "- field: value" block parser, shared by
 #                              the Hypotheses and Research Log section parsers
-#    _index_hypotheses_block - ## Hypotheses entries → hypotheses rows (any
+#    _index_question_working_answers - `## Q:` entries with an h- id (SPEC
+#                              §17a/b) → hypotheses + hypothesis_persons rows
+#                              (notes/questions.md, research files)
+#    _index_hypotheses_block - old `## Hypotheses` entries → the same rows (any
 #                              person file kind - #56, content decides)
 #    _index_research_log_block - ## Research Log entries → search_log rows
 #                              (research companions only, per SPEC §16)
@@ -353,17 +357,29 @@ CREATE TABLE IF NOT EXISTS search_log(
   path TEXT
 );
 
--- hypotheses: open research hypotheses attached to people.
+-- hypotheses: working answers - one row per question entry that carries an
+-- h- id (SPEC §17a/b), from notes/questions.md and research files' `## Open
+-- Questions`; the entry is the truth, this is its query surface. status is
+-- the question's own status. person_id is the first person the entry is
+-- about; hypothesis_persons lists them all (the people in its `refs:`).
+-- Old `## Hypotheses` list entries are read into the same rows until they
+-- are migrated (question is then empty).
 CREATE TABLE IF NOT EXISTS hypotheses(
   id TEXT PRIMARY KEY,
   person_id TEXT,
-  hypothesis TEXT,
+  question TEXT,
+  guess TEXT,
   basis TEXT,
   verify TEXT,
   origin TEXT,
   status TEXT,
   verified_claim TEXT,
   path TEXT
+);
+CREATE TABLE IF NOT EXISTS hypothesis_persons(
+  hypothesis_id TEXT,
+  person_id TEXT,
+  UNIQUE(hypothesis_id, person_id)
 );
 
 -- citations: citation/cross-link token locations by file and line number.
@@ -563,7 +579,7 @@ def _drop_tables(conn: sqlite3.Connection) -> None:
         'person_external', 'sources', 'source_files', 'claims', 'claim_persons',
         'claim_links', 'source_people', 'source_places', 'relationships',
         'places', 'place_names', 'place_history', 'search_log', 'hypotheses',
-        'citations', 'aliases', 'notes_fts', 'transcripts_fts',
+        'hypothesis_persons', 'citations', 'aliases', 'notes_fts', 'transcripts_fts',
     ]
     for t in tables:
         conn.execute(f'DROP TABLE IF EXISTS {t}')
@@ -878,10 +894,71 @@ def _extract_section_body(body: str, heading: str) -> str:
     return m.group(1) if m else ''
 
 
+def _verified_claim_in(status: str) -> str | None:
+    """The c-id a status names (`verified -> C-…`), normalized, or None."""
+    cm = ID_RE.search(status or '')
+    if cm and cm.group(1).upper() == 'C':
+        return normalize_id(f"{cm.group(1)}-{cm.group(2)}")
+    return None
+
+
+def _insert_working_answer(
+    conn: sqlite3.Connection, hid: str, person_ids: list[str], *,
+    question: str, guess: str, basis: str, verify: str, origin: str,
+    status: str, rel_path: str,
+) -> None:
+    """One `hypotheses` row plus its `hypothesis_persons` rows."""
+    conn.execute(
+        '''INSERT OR REPLACE INTO hypotheses
+           (id, person_id, question, guess, basis, verify, origin, status,
+            verified_claim, path)
+           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+        (hid, person_ids[0] if person_ids else None, question, guess, basis,
+         verify, origin, status, _verified_claim_in(status), rel_path),
+    )
+    # An h-id is never reused (SPEC §7; lint W146 names a repeat). If one is,
+    # the last entry wins whole: its people replace the earlier entry's, so
+    # one guess is never shown with another guess's people.
+    conn.execute('DELETE FROM hypothesis_persons WHERE hypothesis_id = ?', (hid,))
+    for pid in person_ids:
+        conn.execute(
+            'INSERT OR IGNORE INTO hypothesis_persons(hypothesis_id, person_id) VALUES (?,?)',
+            (hid, pid),
+        )
+
+
+def _index_question_working_answers(
+    conn: sqlite3.Connection, text: str, owner_pid: str | None, rel_path: str,
+) -> None:
+    """Working answers (SPEC §17a/b) from the `## Q:` entries in `text`.
+
+    A question becomes a working answer when its guess is written in, and the
+    entry gains an `h-` id: only entries with an id make a row. The people
+    are the `p-` ids in `refs:`; a question in a person's research file that
+    names nobody is about that person (`owner_pid`). A ruled-out guess is a
+    dated context line, not a field, so it makes no row.
+    """
+    for heading, info in parse_question_blocks(text).items():
+        hid = info.get('id') or ''
+        if not hid:
+            continue
+        people = list(dict.fromkeys(r for r in info['refs'] if r.startswith('p-')))
+        if not people and owner_pid:
+            people = [owner_pid]
+        _insert_working_answer(
+            conn, hid, people,
+            question=heading, guess=info['guess'], basis=info['basis'],
+            verify=info['verify'], origin=info['origin'], status=info['status'],
+            rel_path=rel_path,
+        )
+
+
 def _index_hypotheses_block(
     conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
 ) -> None:
-    """Parse `## Hypotheses` entries from a research file body and insert rows."""
+    """Old form: `## Hypotheses` list entries in a person file -> working
+    answer rows (their `hypothesis:` text is the guess). Read until the
+    archive's entries are folded into question entries."""
     section = _extract_section_body(body, 'Hypotheses')
     if not section.strip():
         return
@@ -889,25 +966,15 @@ def _index_hypotheses_block(
         hid = normalize_id(_strip_quotes(entry.get('id', '')))
         if not hid or not hid.startswith('h-'):
             continue
-        status = _strip_quotes(entry.get('status', ''))
-        verified_claim = None
-        cm = ID_RE.search(status)
-        if cm and cm.group(1).upper() == 'C':
-            verified_claim = normalize_id(f"{cm.group(1)}-{cm.group(2)}")
-        conn.execute(
-            '''INSERT OR REPLACE INTO hypotheses
-               (id, person_id, hypothesis, basis, verify, origin, status, verified_claim, path)
-               VALUES (?,?,?,?,?,?,?,?,?)''',
-            (
-                hid, pid,
-                _strip_quotes(entry.get('hypothesis', '')),
-                _strip_quotes(entry.get('basis', '')),
-                _strip_quotes(entry.get('verify', '')),
-                _strip_quotes(entry.get('origin', '')),
-                status,
-                verified_claim,
-                rel_path,
-            ),
+        _insert_working_answer(
+            conn, hid, [pid] if pid else [],
+            question='',
+            guess=_strip_quotes(entry.get('hypothesis', '')),
+            basis=_strip_quotes(entry.get('basis', '')),
+            verify=_strip_quotes(entry.get('verify', '')),
+            origin=_strip_quotes(entry.get('origin', '')),
+            status=_strip_quotes(entry.get('status', '')),
+            rel_path=rel_path,
         )
 
 
@@ -1302,6 +1369,9 @@ def _index_person(
         rel_path = str(path.relative_to(archive_root))
         _index_hypotheses_block(conn, body, pid, rel_path)
         if kind == 'research':
+            # A research file's `## Open Questions` (SPEC §16b) holds this
+            # person's questions and working answers in the §17b form.
+            _index_question_working_answers(conn, body, pid, rel_path)
             _index_research_log_block(conn, body, pid, rel_path)
 
 
@@ -1743,6 +1813,17 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
             (str(path.relative_to(archive_root)), content),
         )
+
+    # notes/questions.md (SPEC §17): questions spanning people, with their
+    # working answers. No owning person - the people come from `refs:`.
+    questions_path = notes_dir / 'questions.md'
+    if questions_path.exists():
+        try:
+            qtext = questions_path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            qtext = None   # the notes_fts pass above already reported it
+        if qtext:
+            _index_question_working_answers(conn, qtext, None, 'notes/questions.md')
 
     # notes/research-log.md (SPEC §16): multi-person/locality searches log
     # here with the same field shape as a research file's ## Research Log,

@@ -102,7 +102,7 @@ CODE MAP
                                     point 2) - same clusters §6b lists, never
                                     re-derived; reads `_fetch_place_
                                     candidates`'s shared result, never its own
-    _section_hypotheses          - §7: open hypotheses + draft-queue backlog
+    _section_hypotheses          - §7: open working answers + draft-queue backlog
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
     _section_possible_connections - §8: cooccur.run_cooccur top candidates
@@ -147,6 +147,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     parse_questions,
+    question_state,
     read_places_registry,
     read_record,
     is_working_copy,
@@ -176,7 +177,7 @@ SECTIONS: list[tuple[str, str, str]] = [
     ('answerable-questions', '5b', 'Answerable questions'),
     ('photo-triage', '6', 'Photo processing triage'),
     ('place-candidates', '6b', 'Place candidates'),
-    ('hypotheses', '7', 'Hypotheses & draft queues'),
+    ('hypotheses', '7', 'Working answers & draft queues'),
     ('promotion-candidates', '7b', 'Promotion candidates'),
     ('possible-connections', '8', 'Possible connections'),
 ]
@@ -383,7 +384,10 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
 
     newly_answered = sorted(
         h for h, status in cur_q.items()
-        if status.startswith('answered') and not _q_prev_status(h).startswith('answered')
+        # `answered` and `resolved` are one state (SPEC §17b), so either
+        # counts, and rewording one to the other is not news.
+        if question_state(status) == 'answered'
+        and question_state(_q_prev_status(h)) != 'answered'
     )
     if newly_answered:
         # Display the plain heading; when the same heading text exists in more
@@ -757,7 +761,7 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     §15a: closing requires human confirmation).
     """
     questions = parse_questions(archive_root)
-    open_qs = {h: info for h, info in questions.items() if info['status'] == 'open'}
+    open_qs = {h: info for h, info in questions.items() if question_state(info['status']) == 'open'}
     if not open_qs:
         return ['No open questions.']
 
@@ -1301,7 +1305,7 @@ def _place_text_escalations(candidates: dict | None) -> list[dict]:
     return [g for g in groups if g['claim_count'] >= _PLACE_ESCALATION_THRESHOLD]
 
 
-# ── Section 7: Hypotheses & draft queues ──────────────────────────────────────
+# ── Section 7: Working answers & draft queues ──────────────────────────────
 
 def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) -> bool:
     """
@@ -1340,15 +1344,26 @@ def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) ->
 def _section_hypotheses(conn, archive_root: Path) -> list[str]:
     lines: list[str] = []
 
-    open_hyps = conn.execute(
-        "SELECT person_id, COUNT(*) AS n FROM hypotheses WHERE status='open' GROUP BY person_id"
-    ).fetchall()
+    # Open working answers (SPEC §17a): question entries with a guess whose
+    # question is still open, counted for every person the question is about.
+    # `question_state` decides "open" here exactly as everywhere else, so
+    # `open - narrowed to the 1850s` counts.
+    counts: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT h.id, h.status, hp.person_id FROM hypotheses h "
+        "JOIN hypothesis_persons hp ON hp.hypothesis_id = h.id"
+    ):
+        if question_state(row['status'] or '') == 'open':
+            counts.setdefault(row['person_id'], set()).add(row['id'])
+    open_hyps = [{'person_id': pid, 'n': len(ids)} for pid, ids in sorted(counts.items())]
     if open_hyps:
-        lines.append('**Open hypotheses:**')
+        lines.append('**Open working answers (guesses not yet proved):**')
         for row in open_hyps:
-            lines.append(f"- {_person_label(conn, row['person_id'])} - {row['n']} open hypothesis/es")
+            n = row['n']
+            lines.append(f"- {_person_label(conn, row['person_id'])} - "
+                         f"{n} open working answer{'s' if n != 1 else ''}")
     else:
-        lines.append('No open hypotheses.')
+        lines.append('No open working answers.')
 
     curated_pids = [
         r[0] for r in conn.execute("SELECT id FROM persons WHERE tier='curated'")

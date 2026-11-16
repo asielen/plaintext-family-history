@@ -156,7 +156,8 @@ CODE MAP
                                      README.txt, but inside the copied record itself)
     _strip_frontmatter_list_entries - surgical removal from a top-level frontmatter list
     _flatten_alias_strings        - strings inside a nested-list alias entry
-    _redact_profile_text          - drop withheld name variants + their alias mirrors
+    _redact_profile_text          - drop withheld name variants + their alias mirrors,
+                                    and guessed (status: hypothesis) relationships
     _drop_private_fences          - withhold `<!-- private -->` fenced prose from any
                                      record copy (profile, research file, source record)
     _strip_emptied_sections       - drop profile sections the fence/draft passes emptied
@@ -860,7 +861,8 @@ def _redact_profile_text(
     text: str, *, include_restricted: bool, include_dna: bool,
 ) -> tuple[str, int] | None:
     """Strip withheld `name_variants` entries (and their `aliases:` mirrors)
-    from a profile copy's frontmatter.
+    and guessed `relationships:` entries (`status: hypothesis`) from a
+    profile copy's frontmatter.
 
     A `{value:, restricted: …}` name variant is a private prior name (SPEC
     §19); TOOLING §8 applies the shared flag logic to a NAME like anything
@@ -877,7 +879,7 @@ def _redact_profile_text(
     Body prose is untouched: the packet is a private export, and the
     structured entries are the only spec'd carriers of a withheld name.
 
-    Returns (new_text, names_removed) - (text, 0) when there is nothing to
+    Returns (new_text, names_removed, guesses_removed) - (text, 0, 0) when there is nothing to
     strip - or None when a variants list exists but cannot be safely edited;
     the profile is the packet's required centerpiece, so the caller treats
     None as a structural build failure rather than shipping it unredacted.
@@ -892,7 +894,7 @@ def _redact_profile_text(
     reader who moves the gate later re-opens the hole this arm cannot see."""
     fm = FRONT_RE.match(text)
     if not fm:
-        return text, 0
+        return text, 0, 0
     fm_start, fm_end = fm.start(1), fm.end(1)
     fm_text = text[fm_start:fm_end]
 
@@ -902,12 +904,23 @@ def _redact_profile_text(
             include_restricted=include_restricted, include_dna=include_dna,
         )
 
+    # A relationship he only guesses at (`status: hypothesis`, SPEC §9/§17a)
+    # stays home: a cousin reading the packet must not take "Walter Doe was
+    # his father" for a finding when it is a hunch not yet sourced.
+    guesses = _strip_frontmatter_list_entries(
+        fm_text, 'relationships',
+        lambda item: isinstance(item, dict)
+        and str(item.get('status') or '').strip().lower() == 'hypothesis')
+    if guesses is None:
+        return None
+    fm_text, guess_count = guesses[0], guesses[1]
+
     result = _strip_frontmatter_list_entries(fm_text, 'name_variants', _strip_variant)
     if result is None:
         return None
     fm_text, removed, removed_items = result
     if not removed:
-        return text, 0
+        return text[:fm_start] + fm_text + text[fm_end:], 0, guess_count
 
     hidden_values = {
         str(item.get('value') or '').strip().lower()
@@ -931,7 +944,7 @@ def _redact_profile_text(
         fm_text, alias_removed, _ = alias_result
         removed += alias_removed
 
-    return text[:fm_start] + fm_text + text[fm_end:], removed
+    return text[:fm_start] + fm_text + text[fm_end:], removed, guess_count
 
 
 # The template's own example fence (in the Research Notes placeholder) is
@@ -2283,6 +2296,17 @@ def _draft_note(count: int, filename: str) -> str:
             f'{filename}; they stay in your archive.')
 
 
+def _guess_note(count: int, filename: str) -> str:
+    """One plain README line for guessed relationships left out of the
+    profile copy (`status: hypothesis`, SPEC §9): his own unproved guesses,
+    not private facts."""
+    if count == 1:
+        return (f'1 family tie you marked as a guess was left out of {filename}; '
+                'it stays in your archive.')
+    return (f'{count} family ties you marked as guesses were left out of {filename}; '
+            'they stay in your archive.')
+
+
 def _private_fence_note(count: int, filename: str) -> str:
     """One plain README line for withheld `<!-- private -->` fenced prose.
 
@@ -2979,11 +3003,11 @@ def _packet_payload(
             )
             if profile_redaction is None:
                 raise OSError(
-                    f'private names in {profile_path.name} could not be separated '
+                    f'private names or guessed relationships in {profile_path.name} could not be separated '
                     'out of the copy - fix that file\'s frontmatter (`fha lint` '
                     'will point at the problem), then rebuild the packet.'
                 )
-            redacted_profile_text, hidden_name_count = profile_redaction
+            redacted_profile_text, hidden_name_count, guess_count = profile_redaction
             # #75/#76/#125: the purpose block, the `## Sources` region and
             # never-written sections are scaffolding for the working
             # archive, not content for the family. Cut FIRST, from the
@@ -3022,6 +3046,8 @@ def _packet_payload(
                     redaction_notes.append(
                         _plural_note(hidden_name_count, 'name', profile_path.name)
                     )
+                if guess_count:
+                    redaction_notes.append(_guess_note(guess_count, profile_path.name))
                 if private_count:
                     redaction_notes.append(
                         _private_fence_note(private_count, profile_path.name))

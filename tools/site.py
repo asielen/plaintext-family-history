@@ -281,6 +281,7 @@ from _lib import (
     open_index_db,
     parse_filename,
     parse_questions,
+    question_state,
     path_to_alias,
     person_section_is_unfilled,
     photoindex_status,
@@ -4472,7 +4473,7 @@ class _SiteBuilder:
         undecodable: list[Path] = []
         for _key, info in sorted(
                 parse_questions(self.archive_root, on_decode_error=undecodable.append).items()):
-            if info['status'] != 'open':
+            if question_state(info['status']) != 'open':
                 continue
             if self._question_origin_is_by_request(info):
                 continue

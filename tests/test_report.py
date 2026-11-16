@@ -392,6 +392,39 @@ class ReportTests(unittest.TestCase):
         self.assertIn('No suggested claims awaiting review.', md)
         self.assertTrue((self.archive_root / '.cache' / 'last_report.json').exists())
 
+    def test_computed_gap_is_shown_never_written_as_a_question(self) -> None:
+        # SPEC §17b "What belongs here": a gap a tool can compute (no birth
+        # date) is shown fresh by the report every time and never written
+        # into notes/questions.md, where it would only go stale.
+        qpath = self.archive_root / 'notes' / 'questions.md'
+        before = qpath.read_bytes()
+        result = report.run_report(self.archive_root, {}, full=True)
+        self.assertIn('missing vital(s): birth', result['markdown'])
+        self.assertEqual(qpath.read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in (self.archive_root / 'notes').iterdir()),
+                         ['questions.md'])
+
+    def test_open_working_answer_counted_for_its_person(self) -> None:
+        # SPEC §17a: a question with a guess written in is a working answer;
+        # §7 counts the open ones per person.
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            _QUESTIONS_MD
+            + '\n## Q: Who were Test Person\'s parents?\n'
+              '- origin: human\n- status: open\n- refs: [P-aaaaaaaaaa]\n'
+              '- id: h-4f20aa91c3\n- guess: the Coles of Easton\n'
+              '- basis: same household in 1850\n- verify: a death certificate\n'
+              '\n## Q: Where was Test Person married?\n'
+              '- origin: human\n- status: open - narrowed to the 1850s\n'
+              '- refs: [P-aaaaaaaaaa]\n- id: h-6f20aa91c3\n- guess: Easton\n'
+              '\n## Q: Was Test Person a twin?\n'
+              '- origin: human\n- status: resolved\n- refs: [P-aaaaaaaaaa]\n'
+              '- id: h-5f20aa91c3\n- guess: yes\n',
+            encoding='utf-8')
+        md = report.run_report(self.archive_root, {}, full=True)['markdown']
+        self.assertIn('**Open working answers (guesses not yet proved):**', md)
+        self.assertIn('Test Person', md)
+        self.assertIn('2 open working answers\n', md)
+
     def test_accepted_claim_surfaces_as_discovery_and_closes_vitals_gap(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
 
@@ -1566,6 +1599,33 @@ class QuestionNamespacingTests(unittest.TestCase):
         self.assertIn('**Questions newly answered:**', lines)
         self.assertIn(f'- {heading} - answered [[S-1111111111]]', lines)
         self.assertFalse(any('notes/questions.md ::' in line for line in lines))
+
+    def test_discoveries_count_a_resolved_question_as_answered(self) -> None:
+        # SPEC §17b: `resolved` and `answered` are the same state - and the
+        # questions template has long suggested "open -> resolved". A question he
+        # marked resolved is a win to show him, not something to skip; and
+        # flipping its wording from resolved to answered is not a new one.
+        heading = 'When was Test Person born?'
+        key = f'notes/questions.md :: {heading}'
+        base = {
+            'claim_status_by_id': {},
+            'claim_links': [],
+            'vitals_gap_person_ids': [],
+            'relationships': [],
+            'e009_messages': [],
+        }
+        lines = report._section_discoveries(
+            None, {**base, 'question_status_by_heading': {key: 'open'}},
+            {**base, 'question_status_by_heading': {key: 'resolved'}},
+        )
+        self.assertIn('**Questions newly answered:**', lines)
+        self.assertIn(f'- {heading} - resolved', lines)
+
+        lines = report._section_discoveries(
+            None, {**base, 'question_status_by_heading': {key: 'resolved'}},
+            {**base, 'question_status_by_heading': {key: 'answered [[S-1111111111]]'}},
+        )
+        self.assertEqual(lines, ['No discoveries since last session.'])
 
     def test_discoveries_disambiguate_duplicate_headings_with_file(self) -> None:
         heading = 'When was Test Person born?'

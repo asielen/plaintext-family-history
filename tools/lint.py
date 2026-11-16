@@ -150,6 +150,7 @@ from _lib import (
     load_fha_yaml,
     normalize_date,
     normalize_id,
+    parse_question_blocks,
     parse_filename,
     read_places_registry,
     read_record,
@@ -334,6 +335,8 @@ class Registry:
         self.claim_ids: dict[str, str] = {}        # C-id → source S-id
         self.place_ids: set[str] = set()           # L-ids
         self.hypothesis_ids: set[str] = set()      # H-ids
+        # h-id -> every file that DEFINES it, once per definition (W146)
+        self.hypothesis_def_paths: dict[str, list[Path]] = {}
 
         # id → path (for any type, first seen)
         self.all_record_ids: dict[str, Path] = {}
@@ -903,10 +906,20 @@ def _research_hypothesis_ids(body: str) -> set[str]:
     E004. Returns an empty set for a file with no such section - callers
     apply this unconditionally to every person file rather than gating the
     call on kind."""
-    ids: set[str] = set()
+    return set(_hypothesis_definitions(body))
+
+
+def _hypothesis_definitions(body: str) -> list[str]:
+    """Every h-id DEFINED in `body`, once per definition (so a repeat shows):
+    old `## Hypotheses` entries, and question entries' `- id:` lines - the
+    current form (SPEC §17b), where a working answer is the question itself."""
+    ids: list[str] = []
     for section in _HYPOTHESES_SECTION_RE.finditer(body):
         for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
-            ids.add(normalize_id(m.group(1)))
+            ids.append(normalize_id(m.group(1)))
+    for info in parse_question_blocks(body).values():
+        if info.get('id'):
+            ids.append(info['id'])
     return ids
 
 
@@ -1033,6 +1046,10 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
         text = read_text_or_report(questions_path, on_decode_error=on_decode_error)
         if text is not None:
             registry.questions_content = text
+            for info in parse_question_blocks(text).values():
+                if info.get('id'):
+                    registry.hypothesis_def_paths.setdefault(info['id'], []).append(
+                        questions_path)
 
     # People
     people_root = archive_root / 'people'
@@ -1069,6 +1086,22 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
             for m in ID_RE.finditer(text):
                 if m.group(1).upper() == 'H':
                     registry.hypothesis_ids.add(normalize_id(m.group(0)))
+
+    # W146: one h-id written on two working answers. SPEC §7: an h-id is
+    # never reused - with two, `fha find` and the report show only one guess
+    # and the other silently disappears from them.
+    for hid, def_paths in sorted(registry.hypothesis_def_paths.items()):
+        if len(def_paths) < 2:
+            continue
+        where = ', '.join(sorted({p.relative_to(archive_root).as_posix()
+                                  if p.is_relative_to(archive_root) else str(p)
+                                  for p in def_paths}))
+        findings.append(Finding(
+            'W', 'W146', def_paths[0],
+            f'{fmt_id_display(hid)} is written on {len(def_paths)} working answers '
+            f'({where}). Each guess needs its own h-id, or the tools show only one '
+            'of them. Keep it on one entry and give the other a new id '
+            '(`fha id mint H`).'))
 
 
 def _register_unread_record_id(path: Path, registry: Registry) -> None:
@@ -1177,7 +1210,9 @@ def _process_person_file(path: Path, registry: Registry,
     # this is unconditional rather than gated on kind at all.
     # Applied before any id checks so a mid-graduation (id-less) file's
     # hypotheses still count as existing records for E004.
-    registry.hypothesis_ids.update(_research_hypothesis_ids(rec['body']))
+    for hid in _hypothesis_definitions(rec['body']):
+        registry.hypothesis_ids.add(hid)
+        registry.hypothesis_def_paths.setdefault(hid, []).append(path)
 
     if id_placeholder:
         registry.placeholder_id_paths.add(path)
@@ -3024,12 +3059,14 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # E004: orphan reference. `fha stubs` only mints P-ids - naming it
             # for an H-id misdirects (issue #56's own complaint: the prefix is
             # unambiguous, so the hint can say the right thing instead of the
-            # one that only ever applies to persons). A hypothesis has no
-            # minting tool at all; it is defined by hand, in place, wherever
-            # the person it concerns is written up (SPEC §16).
+            # one that only ever applies to persons). A working answer has no
+            # minting tool of its own; its h-id is written on the question
+            # entry when the guess is (SPEC §17b).
             if tid_type == 'H':
-                fix_hint = ('Add an `id:` entry for it under some person\'s '
-                             '`## Hypotheses` section, or fix the ID.')
+                fix_hint = ('A working answer is defined on its question: add '
+                            '`- id:` with `- guess:` under that question\'s `## Q:` '
+                            'heading (notes/questions.md or the person\'s research '
+                            'file), or fix the ID.')
             else:
                 fix_hint = 'Create the missing record (for a person, run `fha stubs`) or fix the ID.'
             for ref_path, ref_line in refs[:3]:   # report first 3 sites

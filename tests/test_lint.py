@@ -888,8 +888,50 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         findings, _ = lint._run_lint_core(self.root, {})
         e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
         self.assertTrue(e004)
-        self.assertIn('## Hypotheses', e004[0].message)
+        self.assertIn('## Q:', e004[0].message)
         self.assertNotIn('fha stubs', e004[0].message)
+
+    def test_h_id_on_two_working_answers_is_w146(self) -> None:
+        # SPEC §7: an h-id is never reused. Written on two entries, the
+        # tools show one guess and the other vanishes - so lint names it.
+        self._write_profile('Nothing here.')
+        self._write_research(
+            '## Open Questions\n\n'
+            "## Q: Who were Thomas's parents?\n"
+            '- status: open\n- id: h-abcabcabcb\n- guess: the Coles\n')
+        (self.root / 'notes').mkdir()
+        (self.root / 'notes' / 'questions.md').write_text(
+            '## Q: Where did the Hartleys come from?\n'
+            '- status: open\n- id: h-abcabcabcb\n- guess: Yorkshire\n',
+            encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w146 = [f for f in findings if f.code == 'W146']
+        self.assertEqual(len(w146), 1, [f.message for f in findings])
+        self.assertIn('h-abcabcabcb', w146[0].message)
+        self.assertIn('notes/questions.md', w146[0].message)
+
+    def test_h_id_on_one_working_answer_is_not_w146(self) -> None:
+        self._write_profile('Working theory: [[h-abcabcabcb]].')
+        self._write_research(
+            '## Open Questions\n\n'
+            "## Q: Who were Thomas's parents?\n"
+            '- status: open\n- id: h-abcabcabcb\n- guess: the Coles\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W146'], [])
+
+    def test_working_answer_in_a_research_question_is_not_e004(self) -> None:
+        # SPEC §17b: a working answer is a question entry with its `- id:`,
+        # `- guess:` lines - in a research file's `## Open Questions`.
+        # Citing its h-id from the profile is a cite of a real record.
+        self._write_profile('Working theory: [[h-abcabcabcb]] covers the parents.')
+        self._write_research(
+            '## Open Questions\n\n'
+            "## Q: Who were Thomas's parents?\n"
+            '- origin: human\n- status: open\n- refs: [P-1111111111]\n'
+            '- id: h-abcabcabcb\n- guess: the Coles of Easton\n')
+        findings, reg = lint._run_lint_core(self.root, {})
+        self.assertIn('h-abcabcabcb', reg.hypothesis_ids)
+        self.assertEqual([f for f in findings if f.code == 'E004'], [])
 
     def test_citation_in_research_body_is_not_a_definition(self) -> None:
         # A [[H-…]] reference OUTSIDE the ## Hypotheses entries (a research-log

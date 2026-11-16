@@ -276,7 +276,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Open questions ('## Q:' blocks, SPEC §17) - notes/questions.md + every
 #  person research file's own '## Open Questions' section
 #    QUESTION_HEADING_RE, QUESTION_STATUS_RE, QUESTION_REFS_RE - the block grammar
-#    parse_question_blocks     - split one file's text into {heading: {status, refs, block}}
+#    question_state            - a question status -> open | answered | closed
+#                                (answered and resolved are one state, SPEC §17b)
+#    parse_question_blocks     - split one file's text into {heading: {status, refs,
+#                                origin, id, guess, basis, verify, block}}
 #    parse_questions            - notes/questions.md + every person research file ->
 #                                 {'{file} :: {heading}': {status, refs, block, heading, file}}
 #                                 (issue #117: the one place `fha report` and `fha site`
@@ -2285,7 +2288,10 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # 13: the claims table drops `asset`, `significance_override` and
 # `significance_reason` (SPEC 2.1 retired the fields). A v12 index still has
 # the columns; bump so `fha index` rebuilds the table in its current shape.
-INDEX_SCHEMA_VERSION = 13
+# 14: hypotheses.question/guess + hypothesis_persons - working answers are
+# read from question entries (SPEC §17b), with every person in refs:. A v13
+# index has neither the columns nor the table, so bump to force the rebuild.
+INDEX_SCHEMA_VERSION = 14
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
@@ -6815,23 +6821,65 @@ def is_person_file_kind(path: str | Path, kind: str, meta: dict | None = None) -
 QUESTION_HEADING_RE = re.compile(r'^## Q:\s*(.+)$', re.M)
 QUESTION_STATUS_RE = re.compile(r'^- status:\s*(.+)$', re.M)
 QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
+# The working-answer field lines (SPEC §17b) and `origin:`. One pattern per
+# field, matched at the start of a line: the `- ` is part of the format, so
+# an indented `context:` finding that happens to say "guess:" is never read.
+_QUESTION_FIELD_RES = {
+    name: re.compile(rf'^- {name}:[ \t]*(.*)$', re.M)
+    for name in ('origin', 'id', 'guess', 'basis', 'verify')
+}
+# Where one entry's own field lines end: the next `#`/`##` heading of any
+# kind. The last question in a research file is followed by other sections
+# (an old `## Hypotheses` list among them), and a field line there is not
+# this question's.
+_QUESTION_FIELDS_END_RE = re.compile(r'^#{1,2}\s', re.M)
+
+
+def question_state(status: str) -> str:
+    """One question `status:` -> 'open' | 'answered' | 'closed' | ''.
+
+    SPEC §17b: `answered` and `resolved` mean the same thing, and either may
+    carry the link that settled it - so a reader that tested only for
+    `answered` missed every question the genealogist marked `resolved` (the
+    word the questions template itself suggests). `closed (not pursuing)` is
+    its own outcome: given up, not answered. Anything else reads as ''.
+    """
+    m = re.match(r'\s*([A-Za-z]+)', status or '')
+    word = m.group(1).lower() if m else ''
+    if word in ('answered', 'resolved'):
+        return 'answered'
+    if word == 'closed':
+        return 'closed'
+    if word == 'open':
+        return 'open'
+    return ''
+
+
+def _strip_field_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1].strip()
+    return value
 
 
 def parse_question_blocks(text: str) -> dict[str, dict]:
-    """Split one file's text into {heading: {'status', 'refs', 'block'}}.
+    """Split one file's text into {heading: {'status', 'refs', 'origin', 'id',
+    'guess', 'basis', 'verify', 'block'}}.
 
     Splits purely on `## Q:` boundaries (a lookahead `re.split`), so a block
     runs from its own heading to the NEXT `## Q:` heading - or, when none
     follows, to the end of the text handed in. Fed a WHOLE file (as
     `parse_questions` does for a person's research file), the last block's
     `'block'` text can therefore run past the end of the Open Questions
-    section into whatever heading follows (`## Hypotheses`, `## Research
-    Log`, …). That has been harmless everywhere `'block'` has been read so
-    far - `fha report`'s answerable-questions section only keyword-searches
-    it - so this function does not trim to the next heading of any kind
-    itself; a caller that means to DISPLAY `'block'` verbatim (site.py's
-    person-page render) is responsible for cutting it back to the next `##`
-    heading on its own.
+    section into whatever heading follows (`## Research Notes`, …). A caller
+    that means to DISPLAY `'block'` verbatim (site.py's person-page render)
+    cuts it back to the next `##` heading on its own.
+
+    The FIELDS are read only from the entry's own lines - up to the next
+    heading of any kind - so a field line in a later section is never taken
+    for this question's. `id` is the working answer's normalized `h-` id
+    (SPEC §17a step 2), '' when the question has no guess yet; `guess`,
+    `basis`, `verify` and `origin` are the field text, '' when absent.
     """
     out: dict[str, dict] = {}
     blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
@@ -6840,15 +6888,25 @@ def parse_question_blocks(text: str) -> dict[str, dict]:
         if not m:
             continue
         heading = m.group(1).strip()
-        status_m = QUESTION_STATUS_RE.search(block)
-        refs_m = QUESTION_REFS_RE.search(block)
+        rest = block[m.end():]
+        end_m = _QUESTION_FIELDS_END_RE.search(rest)
+        fields_text = rest[:end_m.start()] if end_m else rest
+        status_m = QUESTION_STATUS_RE.search(fields_text)
+        refs_m = QUESTION_REFS_RE.search(fields_text)
         refs = [
             normalize_id(r.strip()) for r in (refs_m.group(1).split(',') if refs_m else [])
             if r.strip()
         ]
+        fields = {}
+        for name, rx in _QUESTION_FIELD_RES.items():
+            fm = rx.search(fields_text)
+            fields[name] = _strip_field_quotes(fm.group(1)) if fm else ''
+        hid = normalize_id(strip_link_wrapper(fields['id'])) if fields['id'] else ''
+        fields['id'] = hid if hid.startswith('h-') else ''
         out[heading] = {
             'status': status_m.group(1).strip() if status_m else '',
             'refs': refs,
+            **fields,
             'block': block,
         }
     return out

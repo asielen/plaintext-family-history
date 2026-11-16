@@ -57,7 +57,7 @@ milestone, build the phases in order unless a phase says otherwise.
 
 | Milestone | Layer | Phases | What it builds |
 |---|---|---|---|
-| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W143 (M1.10) |
+| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W146 (M1.10) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | `fha views` timeline / sources-index / draft-queue (M2.1), brackets (M2.2), tree / clean / refresh (M2.3); `fha doctor` (M2.4); `fha find` + `fha search` (M2.5) |
 | 3 | Layer 3 - Photo catalog | M3.1-M3.6 | `fha photoindex` scan and grouping (M3.1), `find` (M3.2), `triage` / `report` (M3.3), `reconcile` / `tag-person` (M3.4), `set-summary` (M3.5), `gallery` (M3.6) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4a | `fha xref` (M4.1); `fha cooccur` (M4.2); `fha find --related` (M4.3); `fha confirm` xref / cooccur / dismiss / place / discovery / draft (M4.4) and `confirm merge` (M4.4a) |
@@ -268,6 +268,10 @@ CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT,
 -- is the truth, this is only its query surface. status is the question's own status.
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, question TEXT, guess TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, path TEXT);
+-- every person a working answer is about: the p- ids in its question's refs:, or the research
+-- file's own person when refs: names nobody. person_id above is the first of them.
+CREATE TABLE hypothesis_persons(hypothesis_id TEXT, person_id TEXT,
+  UNIQUE(hypothesis_id, person_id));
 CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);  -- token = resolved canonical ID
 -- aliases: the resolution surface (canonical ID + human stems + on-demand c-ids + person/place name & variants)
 CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- kind: id | stem | name | variant | claim
@@ -319,7 +323,7 @@ python -m unittest tests.test_index tests.test_merged_survivor
 **One PR.** New file `tools/lint.py`. Wire `fha lint [--root PATH] [--json]` into `fha.py`,
 plus `fha check` as an alias registered on the same parser (TOOLING §3). This phase ships the
 lint engine and the first ten error codes only; the remaining errors (E011-E020, M1.5), the
-warning codes (W101-W114 in M1.6, W115-W143 in M1.10), and the fix/formatter flags (M1.7) are
+warning codes (W101-W114 in M1.6, W115-W146 in M1.10), and the fix/formatter flags (M1.7) are
 later phases in this same layer.
 
 **Lint is the reference `Result` renderer.** `run_lint` returns a `_lib.Result` (M1.1): each
@@ -543,7 +547,7 @@ Batch moves, the field-edit flags, `--clear` and `fha claim new` extend this ver
 
 ---
 
-### M1.10 - `fha lint` - warning codes (W115-W143)
+### M1.10 - `fha lint` - warning codes (W115-W146)
 
 **One PR** (or one per group below; each code is independent). Extend `tools/lint.py`. No new
 flags beyond the two fix modes M1.7 lists (`--fix-reciprocal`, `--fix-surnames`). Every code

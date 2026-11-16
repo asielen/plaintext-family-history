@@ -803,6 +803,120 @@ class IndexPublicationOkTests(unittest.TestCase):
             conn.close()
 
 
+class WorkingAnswersFromQuestionsTests(unittest.TestCase):
+    """SPEC §17a/b: a working answer is the question entry with a guess
+    written in - `- id: h-…`, `- guess:`, `- basis:`, `- verify:` - in
+    notes/questions.md or a research file's `## Open Questions`. The index
+    builds `hypotheses` from those entries, with the people from `refs:`, so
+    `fha find h-…` and the report's open-guesses count see them."""
+
+    _QUESTIONS_MD = (
+        '# Open Questions\n\n'
+        "## Q: Who were Margaret Cole's parents?\n"
+        '- origin: human\n'
+        '- status: open\n'
+        '- refs: [p-cd795c61e0, p-aaaaaaaaaa]\n'
+        '- id: h-4f20aa91c3\n'
+        '- guess: Daniel Cole and Ruth Ames of Easton, New York\n'
+        '- basis: the only Cole household in Easton in 1850 with a Margaret\n'
+        "- verify: Margaret's death certificate\n"
+        '- context:\n'
+        '  - 2026-06-12 (human): 1850 census checked\n\n'
+        '## Q: When did the family reach Fairview?\n'
+        '- origin: human\n'
+        '- status: open\n'
+        '- refs: [p-cd795c61e0]\n'
+    )
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        for d in ('people', 'sources', 'notes'):
+            (self.archive_root / d).mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows(self):
+        index.build_index(self.archive_root, {})
+        conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            hyps = [dict(r) for r in conn.execute('SELECT * FROM hypotheses ORDER BY id')]
+            people = sorted(tuple(r) for r in conn.execute(
+                'SELECT hypothesis_id, person_id FROM hypothesis_persons'))
+        finally:
+            conn.close()
+        return hyps, people
+
+    def test_questions_md_entry_with_a_guess_is_a_working_answer(self) -> None:
+        _write(self.archive_root / 'notes' / 'questions.md', self._QUESTIONS_MD)
+        hyps, people = self._rows()
+        # Only the entry with a guess; the plain question is not a working answer.
+        self.assertEqual(len(hyps), 1)
+        h = hyps[0]
+        self.assertEqual(h['id'], 'h-4f20aa91c3')
+        self.assertEqual(h['question'], "Who were Margaret Cole's parents?")
+        self.assertEqual(h['guess'], 'Daniel Cole and Ruth Ames of Easton, New York')
+        self.assertIn('1850', h['basis'])
+        self.assertIn('death certificate', h['verify'])
+        self.assertEqual(h['origin'], 'human')
+        self.assertEqual(h['status'], 'open')
+        self.assertEqual(h['path'], 'notes/questions.md')
+        self.assertEqual(h['person_id'], 'p-cd795c61e0')
+        self.assertEqual(people, [('h-4f20aa91c3', 'p-aaaaaaaaaa'),
+                                  ('h-4f20aa91c3', 'p-cd795c61e0')])
+
+    def test_research_file_open_question_with_a_guess_is_indexed(self) -> None:
+        # A research file's question about its own person need not repeat
+        # that person in refs: - the file says whose it is.
+        _write(self.archive_root / 'people' / 'cole__margaret_research_p-cd795c61e0.md', (
+            '---\nid: p-cd795c61e0\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Was she born in Easton?\n'
+            '- origin: agent\n'
+            '- status: resolved\n'
+            '- id: h-5555555555\n'
+            '- guess: yes, about 1841\n\n'
+            '## Research Notes\n\nNothing yet.\n'
+        ))
+        hyps, people = self._rows()
+        self.assertEqual(len(hyps), 1)
+        self.assertEqual(hyps[0]['id'], 'h-5555555555')
+        self.assertEqual(hyps[0]['person_id'], 'p-cd795c61e0')
+        self.assertEqual(hyps[0]['status'], 'resolved')
+        self.assertEqual(people, [('h-5555555555', 'p-cd795c61e0')])
+
+    def test_reused_h_id_does_not_mix_two_entries_people(self) -> None:
+        # SPEC §7 says an h-id is never reused (lint W146 names it). If one
+        # is, one entry wins whole - never one guess shown with both people.
+        _write(self.archive_root / 'people' / 'cole__margaret_research_p-cd795c61e0.md', (
+            '---\nid: p-cd795c61e0\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Was she born in Easton?\n'
+            '- status: open\n- id: h-4f20aa91c3\n- guess: yes\n'
+        ))
+        _write(self.archive_root / 'notes' / 'questions.md', self._QUESTIONS_MD)
+        hyps, people = self._rows()
+        self.assertEqual(len(hyps), 1)
+        winner = hyps[0]
+        if winner['path'] == 'notes/questions.md':
+            expected = ['p-aaaaaaaaaa', 'p-cd795c61e0']
+        else:
+            expected = ['p-cd795c61e0']
+            self.assertEqual(winner['guess'], 'yes')
+        self.assertEqual([p for _h, p in people], expected)
+
+    def test_old_hypotheses_list_is_still_read(self) -> None:
+        path = self.archive_root / 'people' / 'smith__test_research_P-aaaaaaaaaa.md'
+        _write(path, _RESEARCH_MD_WELL_FORMED)
+        hyps, people = self._rows()
+        self.assertEqual([h['id'] for h in hyps], ['h-1111111111', 'h-2222222222'])
+        self.assertTrue(hyps[0]['guess'])
+        self.assertEqual(people, [('h-1111111111', 'p-aaaaaaaaaa'),
+                                  ('h-2222222222', 'p-aaaaaaaaaa')])
+
+
 class FullRebuildClearsStaleRowsTests(unittest.TestCase):
     """A full rebuild must not leave stale hypotheses/search_log rows behind
     once an entry is removed from disk - _drop_tables already lists both
@@ -1617,7 +1731,7 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 13)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 14)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(

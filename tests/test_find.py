@@ -348,6 +348,33 @@ class RelatedHypothesisTests(unittest.TestCase):
         rc, out = _run(find.run_related, 'h-9999999999', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_WARNINGS)
 
+    def _add_working_answer(self) -> None:
+        # SPEC §17b: a question about two people, answered with a guess.
+        _add_person(self.conn, 'p-bbbbbbbbbb', 'Bob')
+        self.conn.execute(
+            "INSERT INTO hypotheses(id, person_id, question, guess, status, path) VALUES "
+            "('h-2222222222', 'p-aaaaaaaaaa', 'Were Alice and Bob siblings?', "
+            "'yes - same household in 1880', 'open', 'notes/questions.md')")
+        self.conn.executemany(
+            'INSERT INTO hypothesis_persons(hypothesis_id, person_id) VALUES (?,?)',
+            [('h-2222222222', 'p-aaaaaaaaaa'), ('h-2222222222', 'p-bbbbbbbbbb')])
+        self.conn.commit()
+
+    def test_related_working_answer_names_every_person_in_its_refs(self) -> None:
+        self._add_working_answer()
+        rc, out = _run(find.run_related, 'h-2222222222', None, self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Alice [p-aaaaaaaaaa]', out)
+        self.assertIn('Bob [p-bbbbbbbbbb]', out)
+
+    def test_find_working_answer_shows_question_and_guess(self) -> None:
+        self._add_working_answer()
+        rc, out = _run(find._find_hypothesis, 'h-2222222222', self.conn, self.archive_root)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('question: Were Alice and Bob siblings?', out)
+        self.assertIn('guess: yes - same household in 1880', out)
+        self.assertIn('p-aaaaaaaaaa, p-bbbbbbbbbb', out)
+
 
 class RelatedDateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1185,7 +1212,7 @@ class SearchJsonIdLookupTests(unittest.TestCase):
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'birth', 'born 1900',
                     ['p-aaaaaaaaaa'], status='accepted')
         self.conn.execute(
-            "INSERT INTO hypotheses(id, person_id, hypothesis, status) VALUES "
+            "INSERT INTO hypotheses(id, person_id, guess, status) VALUES "
             "('h-1111111111', 'p-aaaaaaaaaa', 'maybe born in Fairview', 'open')"
         )
         self.conn.commit()
