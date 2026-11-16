@@ -594,6 +594,17 @@ class MergeTombstoneLivingTests(unittest.TestCase):
     def test_an_explicit_true_stays(self) -> None:
         self.assertEqual(self._merge_with('living: true\n'), 'true')
 
+    def test_a_living_survivors_true_is_not_copied(self) -> None:
+        # A cousin alive at the merge dies later and is marked `living: false`.
+        # A `true` copied onto the tombstone would keep hiding him, and only a
+        # hand edit of the merged file would release him. Only `false` copies.
+        survivor = next(p for p in (self.root / 'people').rglob('*_P-aaaaaaaaaa.md')
+                        if not p.name.startswith('MERGED-INTO'))
+        text = survivor.read_text(encoding='utf-8')
+        self.assertIn('living: false\n', text)
+        survivor.write_text(text.replace('living: false\n', 'living: true\n'), encoding='utf-8')
+        self.assertEqual(self._merge_with('living: unknown\n'), 'unknown')
+
 
 # ── The synthetic-archive matrix ─────────────────────────────────────────────────
 

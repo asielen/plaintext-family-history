@@ -2952,14 +2952,17 @@ def run_confirm_merge(
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_into', ps_disp)
         tombstone_text = _set_fm_scalar(tombstone_text, 'merge_reason', _yaml_inline(reason))
         tombstone_text = _set_fm_scalar(tombstone_text, 'merged_date', _today())
-        # The same person, so the tombstone says what the survivor says about
-        # being alive - but only where it said nothing itself (`unknown`, the
-        # default every new stub is minted with, or no line). An explicit
-        # `living: true` stays: it is someone's word, and it keeps the
-        # survivor out of shared output until a human settles it (#304).
+        # The same person: where the tombstone said nothing about being alive
+        # (`unknown`, the default every new stub is minted with, or no line)
+        # and the survivor is recorded as dead, the tombstone says so too, so
+        # it never keeps a dead ancestor out of shared output. Only `false` is
+        # copied: a living survivor is already withheld on his own record, and
+        # a copied `true` would keep hiding him after he dies and is marked
+        # `living: false`, until someone hand-edits the merged file. An
+        # explicit `living: true` on the tombstone stays: it is someone's word.
         merged_living = normalize_living(merged_meta.get('living'))
         survivor_living = normalize_living(survivor_meta.get('living'))
-        if merged_living in (None, 'unknown') and survivor_living in LIVING_VALUES:
+        if merged_living in (None, 'unknown') and survivor_living == 'false':
             tombstone_text = _set_fm_scalar(tombstone_text, 'living', survivor_living)
         problem = _merge_fm_problem(merged_before, tombstone_text,
                                     _MERGE_TOMBSTONE_KEYS)

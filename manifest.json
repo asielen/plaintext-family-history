@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "e4b2f8a84a6cac664a0655c4b1a42932d5264cb49c954d0ac50d355cebe4146e",
+      "sha256": "6c550f22afee03b2c95cccec3e7f50ecd7614d8a68c96d6b4192221b2fbb9874",
       "spec_version": "2.0",
       "src": "tools/README.md"
     },
@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "c324cac4ef65f920f8492d092397f1a79a70d1d6e6dfdf4d6add37b8d6439ba4",
+      "sha256": "ec0b6d9406c53ebb22bf9b9e63bc10a3839d053527d9d7d13e942d5d072b0062",
       "spec_version": "2.0",
       "src": "tools/confirm.py"
     },
