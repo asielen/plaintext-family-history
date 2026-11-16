@@ -560,7 +560,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "21f167d912dc805e19168178b07df89784f82007bd444e492d16a9252b204b5e",
+      "sha256": "842afc1ea6274bcefe709597d03211310bd0ca36b9b3e66ee6575e33876daa65",
       "spec_version": "2.0",
       "src": "tools/confirm.py"
     },

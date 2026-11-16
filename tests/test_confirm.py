@@ -698,6 +698,28 @@ class ConfirmArchiveTests(unittest.TestCase):
             conn.close()
         self.assertIn(frozenset((PERSON_1.lower(), PERSON_2.lower())), edges)
 
+    def test_cooccur_promote_writes_reviewed_then_reviewed_by(self) -> None:
+        # Same order `fha claim` writes: status, reviewed, reviewed_by.
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', accept=True)
+        text = Path(first['source']).read_text(encoding='utf-8')
+        target = normalize_id(first['claim_id'])
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines) if target in ln.lower() and 'id:' in ln)
+        while not lines[start].lstrip().startswith('- '):
+            start -= 1
+        item = [lines[start]]
+        for ln in lines[start + 1:]:
+            if ln.startswith('- ') or ln.startswith('```'):
+                break
+            item.append(ln)
+        keys = [ln.strip().lstrip('- ').split(':', 1)[0] for ln in item]
+        self.assertEqual(keys[keys.index('status') + 1:keys.index('status') + 3],
+                         ['reviewed', 'reviewed_by'], keys)
+
     def test_cooccur_accept_promote_dry_run_writes_nothing(self) -> None:
         first = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')

@@ -481,8 +481,14 @@ def _add_link_to_claim(
                                  before_text=text), True, False
 
 
-def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tuple[str, bool]:
+def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str,
+                         after_key: str | None = None) -> tuple[str, bool]:
     """Set a single scalar key (e.g. `place: L-id`) on one claim item in place.
+
+    A key the claim does not have yet is inserted after the item's own `id:`
+    line - or, when `after_key` names a key the claim has, right after that
+    line, so `reviewed:` follows `status:` and `reviewed_by:` follows
+    `reviewed:`, the order `fha claim` writes (#304 review).
 
     The edit lands at the item's OWN key column (`claim_item_key_indent`), not
     an assumed base+2, so a claim written `-   value: …` (keys at column 4)
@@ -516,8 +522,16 @@ def _set_scalar_on_claim(text: str, claim_id: str, key: str, value: str) -> tupl
         # block scalar - landing there would split the human's quoted
         # evidence). The span was found via that same line, so it exists.
         own = _own_id_key_line(lines, start, end, base_indent)
-        id_idx = own[0] if own is not None else start
-        lines.insert(id_idx + 1, f'{key_indent}{key}: {value}')
+        anchor_idx = own[0] if own is not None else start
+        if after_key is not None:
+            after_dash = re.compile(r'^' + re.escape(base_indent) + r'-\s+'
+                                    + re.escape(after_key) + r':')
+            after_re = re.compile(r'^' + re.escape(key_indent) + re.escape(after_key) + r':')
+            for idx in range(start, end):
+                if after_dash.match(lines[idx]) or after_re.match(lines[idx]):
+                    anchor_idx = idx
+                    break
+        lines.insert(anchor_idx + 1, f'{key_indent}{key}: {value}')
 
     trailing = '\n' if text.endswith('\n') else ''
     expect = value if key == 'status' else None
@@ -904,8 +918,10 @@ def run_confirm_cooccur(
             try:
                 before = read_text_exact(source_path)
                 after, _ok = _set_scalar_on_claim(before, ex_id, 'status', 'accepted')
-                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp)
-                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed_by', 'human')
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp,
+                                                  after_key='status')
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed_by', 'human',
+                                                  after_key='reviewed')
             except _EditRefused as e:
                 return _fail(result, 'refused',
                              f'{ex_disp} in {source_path}: {e} Nothing was written.')
