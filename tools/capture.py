@@ -126,12 +126,14 @@ from _lib import (
     format_edtf_error,
     migrate_capture_log,
     format_source_type_error,
+    index_manifest_path,
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
     read_record,
     resolve_path,
     resolve_root_arg,
+    update_path_manifest,
     write_text_exact_atomic,
 )
 
@@ -718,7 +720,20 @@ def _write_capture_log(
     jsonl_ok = False
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, 'a', encoding='utf-8') as f:
+        # A file last saved by hand or by a git merge may not end in a
+        # newline; appending straight on would glue this search onto the
+        # last one and the index would read neither (#304 review).
+        needs_break = False
+        try:
+            if log_path.stat().st_size:
+                with open(log_path, 'rb') as tail:
+                    tail.seek(-1, os.SEEK_END)
+                    needs_break = tail.read(1) != b'\n'
+        except FileNotFoundError:
+            pass
+        with open(log_path, 'a', encoding='utf-8', newline='') as f:
+            if needs_break:
+                f.write('\n')
             f.write(json.dumps({
                 'date': date, 'question': question, 'repository': repository,
                 'collection': collection, 'terms': terms, 'result': result,
@@ -743,12 +758,41 @@ def _write_capture_log(
                 conn.commit()
             finally:
                 conn.close()
+            # The capture log is a freshness input (SPEC 16b: an index that has
+            # not read it is missing searches). This capture just put its own
+            # line in the index, so record the log as read - otherwise every
+            # capture would make `fha doctor` call a correct index stale.
+            if jsonl_ok:
+                _mark_capture_log_indexed(archive_root, log_path, legacy_path)
             return 'index'
         except Exception as e:  # noqa: BLE001
             print(f'WARNING: could not write search_log row ({e})'
                   + (' (still logged to jsonl)' if jsonl_ok else ''), file=sys.stderr)
 
     return 'jsonl' if jsonl_ok else 'none'
+
+
+def _mark_capture_log_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> None:
+    """Patch the index's path manifest for the capture log this run just wrote.
+
+    `fha index` lists both capture-log paths among the files it read, so a
+    log changed behind its back reads as stale. A capture that also wrote its
+    row straight into `search_log` has kept the index exactly as current as
+    the file, the same contract `index.upsert_source` keeps for one source.
+    The legacy key is dropped when the old file is gone (carried across).
+    Best effort: a failure here only costs one "run fha index" suggestion.
+    """
+    updates: dict[str, float | None] = {}
+    for path in (log_path, legacy_path):
+        rel = _rel(path, archive_root)
+        try:
+            updates[rel] = path.stat().st_mtime
+        except OSError:
+            updates[rel] = None
+    try:
+        update_path_manifest(index_manifest_path(archive_root), updates)
+    except Exception:  # noqa: BLE001 - never fail a capture over cache bookkeeping
+        pass
 
 
 # ── Top-level ─────────────────────────────────────────────────────────────────

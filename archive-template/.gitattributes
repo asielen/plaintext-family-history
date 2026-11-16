@@ -25,6 +25,14 @@
 # the archive (`browser_extensions: extensions`): /bin/sh cannot run CRLF.
 *.sh text eol=lf
 
+# The capture log (one line per web capture, written only by `fha capture`):
+# two machines that each captured something between syncs both append to it,
+# and `merge=union` keeps both sides' lines instead of stopping the pull on a
+# conflict nobody can sensibly resolve by hand. Only this file: union merging
+# a file people edit (notes/discoveries.md, any .md or .json) would silently
+# keep both versions of a changed line.
+notes/capture-log.jsonl text eol=lf merge=union
+
 # The Windows launchers stay CRLF. Pinning them either way stops the checksum
 # churn - the bytes become deterministic on every platform - but CRLF is what
 # cmd.exe expects, what Windows checkouts already produce via autocrlf, and what

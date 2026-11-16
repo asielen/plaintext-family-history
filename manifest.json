@@ -483,14 +483,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "eb95f92a038f98c71d2cf71d9f091ff2507975887f7092852eb5eaf8ce770c38",
+      "sha256": "3d7b498c1118087f4798798edcb5df32cf4cdaf670120e81f7e0003d4c71a7b3",
       "spec_version": "2.0",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "e52de0b748121ef7ed94748cbbf6b980807af06cefe7b6e7db2a048ad9f266e5",
+      "sha256": "cb06f83f99eba1c45d26d4b1c1048f100b6afc35e553fda700d0494e506f5917",
       "spec_version": "2.0",
       "src": "tools/_lib.py"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "d6d435d4ad62955c47929c7ae08caaf471822469ffb623998c2050fdbe4ff0d3",
+      "sha256": "ccb3baa621f934ebc864cd44978844d7d67f6d0e6f0afc64aa24386312853994",
       "spec_version": "2.0",
       "src": "tools/capture.py"
     },
@@ -917,7 +917,7 @@
     {
       "path": ".gitattributes",
       "category": "skeleton",
-      "sha256": "2c2ff0cb1eda5fc60f3240c7bdac1875d9aef6dfdcec8f3b8dafd848ca7450c4",
+      "sha256": "de9a2a4ca809da0b3e9ab2b300544839bc30a3c96c9925032496e0853903ba2b",
       "spec_version": "2.0",
       "src": "archive-template/.gitattributes"
     },

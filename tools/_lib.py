@@ -9889,6 +9889,9 @@ def newest_record_mtime_with_unreadable_dirs(archive_root: Path) -> tuple[float,
     for extra in (
         archive_root / 'places' / 'places.yaml',
         archive_root / 'fha.yaml',
+        # The capture log (SPEC §16b) is read into search_log; an index that
+        # has not seen its newest lines is missing searches (#304 review).
+        *capture_log_paths(archive_root),
     ):
         try:
             mtime = extra.stat().st_mtime
@@ -9915,6 +9918,13 @@ def newest_record_mtime(archive_root: Path) -> float:
     exist (person_files), which the next ordinary rebuild picks up. The
     exclusion is deliberately narrow - see `_is_generated_companion`: only a
     real generated file, in the place the generators write it, loses its vote.
+
+    The capture log (`notes/capture-log.jsonl`, and the legacy
+    `.cache/capture_log.jsonl` until it is carried across) votes too: the
+    index replays it into `search_log`, so a log that gained lines - a capture
+    synced from another machine - leaves "already searched" short until the
+    next rebuild (#304 review). `fha capture` patches the stored manifest when
+    it writes its own row, so a capture alone never reads as stale.
 
     fha.yaml is part of the watermark because it decides how records are read
     (the roots a source's `files:` entries resolve through, and every other
@@ -10066,7 +10076,7 @@ def _manifest_relpath(path: Path, archive_root: Path) -> str:
 def record_path_manifest(archive_root: str | Path) -> dict[str, float]:
     """The #48 path-set counterpart to `newest_record_mtime`: the SAME file
     selection (sources/people/notes `.md` minus generated companions, plus
-    `places.yaml` and `fha.yaml`) as `{path: mtime}` instead of one max, so a
+    `places.yaml`, `fha.yaml` and the capture log at both its paths) as `{path: mtime}` instead of one max, so a
     deleted record shows up as a missing key rather than disappearing into a
     watermark that only ever moves forward.
 
@@ -10087,7 +10097,8 @@ def record_path_manifest(archive_root: str | Path) -> dict[str, float]:
     files, _unreadable = _md_file_mtimes(
         dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
     manifest = {_manifest_relpath(p, archive_root): m for p, m in files}
-    for extra in (archive_root / 'places' / 'places.yaml', archive_root / 'fha.yaml'):
+    for extra in (archive_root / 'places' / 'places.yaml', archive_root / 'fha.yaml',
+                  *capture_log_paths(archive_root)):
         try:
             manifest[_manifest_relpath(extra, archive_root)] = extra.stat().st_mtime
         except OSError:
