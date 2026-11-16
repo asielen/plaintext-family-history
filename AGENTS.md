@@ -526,3 +526,4 @@ No editing `places.yaml` coordinates without human confirmation.
 No writing to `.cache/` by hand.
 No hand-editing `.fha/` (vendored - log the defect in `TOOL_ISSUES.md`; a human-requested local patch is marked `LOCAL PATCH` line by line), and no filing an upstream issue without an explicit yes and a scrubbed body.
 No deleting anything without explicit instruction - prefer `status: rejected`/`superseded` and `closed` questions, which preserve the research trail.
+No history in the design docs (tool-building mode): SPEC, TOOLING, BUILD, AGENTS and CHEATSHEET say what is true now, in the present tense. The story of a fix - the issue number, what used to happen, when it changed - goes in the commit and the PR (AGENTS_TOOLING, "Docs are present tense").

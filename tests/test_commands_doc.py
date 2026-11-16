@@ -7,7 +7,7 @@ test_commands_doc.py - the documents a rebuilder reads cannot drift from the too
 - TOOLING.md's lint catalogue lists exactly the codes the linter can emit.
 - The core design documents are written in the present tense: no issue
   numbers, decision logs or "earlier revision" history, which belongs in git
-  and the issue tracker (AGENTS.md, "Docs are present tense").
+  and the issue tracker (AGENTS_TOOLING.md, "Docs are present tense").
 
 Run: py -3.14 -m pytest tests/test_commands_doc.py -q   (from the repo root)
 """

@@ -189,6 +189,22 @@ rejected. A proposal that reopens a rejected option names the new information th
 justifies it. A design decision made during a build that the rationale doc does not
 yet explain is added there, in the present tense, in the same change.
 
+### Docs are present tense
+
+SPEC.md, TOOLING*.md, BUILD*.md, AGENTS*.md and CHEATSHEET.md state the current design.
+A reader in fifty years needs the rule, not the story of how it came to be:
+
+- No issue numbers, no "decision log", no "earlier revision", no "shipped in", no
+  "we found that". The story of a fix goes in its commit message and PR.
+- A reason that explains a rule stays, in one present-tense sentence beside it.
+  Anything longer goes to `docs/DESIGN_RATIONALE.md`.
+- A superseded design is deleted, not kept as a note.
+- Flags are not listed by hand: `docs/COMMANDS.md` is generated from the commands
+  (`py -3.14 build_commands_doc.py` after changing any flag).
+
+`tests/test_commands_doc.py` enforces the first and last points, and that
+TOOLING's lint table lists exactly the codes the linter emits.
+
 ---
 
 ## Maintainer practice
