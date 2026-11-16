@@ -1,28 +1,46 @@
-# BUILD_INTERFACE.md - the AI interface (workbench skills): build sequence
+# BUILD_INTERFACE.md - the AI interface (workflow skills) and the workbench: build sequence
 
-**Who this is for:** developers implementing the workflow **skills** that drive the `fha` tool suite. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers implementing the workflow **skills** that drive the `fha` tool suite, and the `fha serve` workbench. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
-This file is the build guide for the **interface layer** - the `.claude/skills/` workflow skills and the harness conventions around them. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture / inbox on-ramp). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
+This file is the order in which to build the **interface layer** from nothing, with the acceptance test for each step: the `.claude/skills/` workflow skills, the harness conventions around them, and the `fha serve` localhost workbench. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture and the inbox contract). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 
-**Status: all layers authored (I1-I8; the 2026-07 usability-review wave shipped `photo-context`, `find-photos`, `share-and-export`, and the `today` connection-reaction extension; the 2026-08 recordings wave shipped `import-recordings`, `transcribe-audio`, and the `mine-transcript` two-transcript extension; Layer I8 shipped `transcribe-source` and the `process-source` Stage A½ extension; `setup-interview` shipped under Layer I7, issue #74).** The `.claude/skills/` directory now holds `_STANDARD.md` (the authoring contract) and seventeen SKILL.md files: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `place-research`, `merge-identities`, `reconcile-site-edits`, `photo-context`, `find-photos`, `share-and-export`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, and `setup-interview` - one per milestone entry below, `reconcile-site-edits`, `import-notes` and `setup-interview` under Layer I7. Each SKILL.md was authored against the shipped tools (every `fha` command it invokes was verified to exist) and against `AGENTS.md` / `_STANDARD.md`; the lint invariant holds (`fha lint --root example-archive` still exits 1 on the pre-existing baseline, unchanged by the skill prose). The remaining acceptance gate for each is the **behavioral session check** (run it against `example-archive`, capture the transcript) - marked per-milestone below. Building surfaced **two core-tool gaps**, both closed at the verb level and now at the skill level: MI3.1's merge verb (`fha confirm merge` shipped and the skill's interim hand-edit was retired) and MI4's UserComment write (`fha photoindex set-summary` shipped; `photo-context/SKILL.md` landed with the usability-review wave).
+The `.claude/skills/` directory holds `_STANDARD.md` (the authoring contract every SKILL.md follows) and seventeen SKILL.md files, one folder per skill: `today`, `review-claims`, `process-source`, `mine-transcript`, `write-biography`, `research-next`, `merge-identities`, `place-research`, `photo-context`, `find-photos`, `share-and-export`, `import-recordings`, `transcribe-audio`, `reconcile-site-edits`, `import-notes`, `setup-interview` and `transcribe-source` - each with its milestone below.
 
 ---
 
 ## What a skill is (conventions, all phases)
 
 - **One folder per skill:** `.claude/skills/{name}/SKILL.md`, using the open SKILL.md standard (portable beyond Claude Code).
-- **Instructions + `fha` invocations only.** No harness APIs, no MCP calls, no Python. A skill orchestrates deterministic tools and adds model judgment; it never reimplements what a tool already does (TOOLING_INTERFACE.md §2).
-- **The contract is law** (AGENTS.md): AI-drafted claims are `status: suggested`; only the human moves a claim to `accepted` (always via `fha claim`, which stamps `reviewed:`); every AI pass is recorded in the source's `## AI Passes` block; draft prose lives behind `<!-- AI-DRAFT … -->` markers; nothing edits below a GENERATED header or overwrites human text.
+- **Instructions + `fha` invocations only.** No harness APIs, no MCP calls, no Python in the SKILL.md itself. A skill orchestrates deterministic tools and adds model judgment; it never reimplements what a tool already does (TOOLING_INTERFACE.md §2). A skill that needs code ships it as a script under its own `scripts/` folder, tested like any other code.
+- **The contract is law** (AGENTS.md): AI-drafted claims are `status: suggested`; only the human moves a claim to `accepted` (always via `fha claim`, which stamps `reviewed:` and `reviewed_by:`); every AI extraction pass is recorded in the source's frontmatter `ai_passes:` list (SPEC §14); draft prose lives behind `<!-- AI-DRAFT … -->` markers; nothing edits below a GENERATED header or overwrites human text.
 - **Sessions are an interface, not memory** (AGENTS.md): anything worth keeping is written into archive records in SPEC formats before the skill hands back.
-- **Definition of done is behavioral, not unit-tested.** A SKILL.md is verified by running it in a real session against `example-archive/` and confirming it produces the documented archive writes (suggested claims, recorded passes, view refreshes) and the documented hand-offs - and that it makes **zero** writes the contract forbids. There is no automated harness for skill prose; the "Done when" blocks below are session checks.
+- **No skill writes a computed gap as a question.** A gap the report computes is shown; a question is written into `notes/questions.md` only by the human or on the human's yes (SPEC §17).
+- **Definition of done is behavioral.** A SKILL.md is verified by running it in a real session against a scratch copy of `example-archive/` and confirming it produces the documented archive writes and hand-offs - and **zero** writes the contract forbids. The "Done when" blocks below are those session checks; where a skill ships a script, the script's tests are named too.
+- **Every `fha` command a skill names exists.** Before a SKILL.md lands, each command and flag it invokes is checked against the CLI (`fha <command> --help`), and each worked example that produces a filename is run through the owning tool's naming rule.
 - **Vendor-lock rules hold** (TOOLING_INTERFACE.md §1): if a second harness is added, its convention file is a one-line deferral to AGENTS.md and the same SKILL.md files drive it unchanged.
-- **Discoverable without a skill loader.** `AGENTS.md`'s "Playbooks" subsection (plan 02, landed 2026-07-09) points any harness at `.claude/skills/{name}/SKILL.md` and tells it to read and follow the matching one when a request matches its trigger - closing the gap for a harness (e.g. Codex) that reads `AGENTS.md` natively but has no native skill loader.
+- **Discoverable without a skill loader.** `AGENTS.md`'s "Playbooks" subsection points any harness at `.claude/skills/{name}/SKILL.md` and tells it to read and follow the matching one when a request matches its trigger, so a harness that reads `AGENTS.md` but has no skill loader still finds them.
 
-**Dependency note.** Every skill depends only on already-shipped `fha` commands; there is no skill→skill import. The ordering below is by daily-loop centrality (build the session spine first), not by hard dependency. `process-source` *hands off* to `review-claims`, so build `review-claims` no later than `process-source`.
+**Dependency note.** Every skill depends only on `fha` commands from BUILD.md and BUILD_INGESTION.md; there is no skill→skill import. The ordering below is by daily-loop centrality (build the session spine first), not by hard dependency. `process-source` *hands off* to `review-claims`, so build `review-claims` no later than `process-source`. A skill whose core verb does not exist yet is not authored (`_STANDARD.md` §6): the verb is built first, in BUILD.md.
 
 ---
 
-## Layer I1 - The session spine (Milestone I1 - authored; session check pending)
+## Milestones
+
+| Milestone | Layer | Phases | What it builds |
+|---|---|---|---|
+| I1 | Layer I1 - The session spine | MI1.1-MI1.3 | `today`, `review-claims`, `process-source` |
+| I2 | Layer I2 - Drafting & inference | MI2.1-MI2.3 | `mine-transcript`, `write-biography`, `research-next` |
+| I3 | Layer I3 - Frontier-tier skills | MI3.1-MI3.2 | `merge-identities`, `place-research` |
+| I4 | Layer I4 - Photo context | MI4.1 | `photo-context` |
+| I5 | Layer I5 - Conversational front doors | MI5.1-MI5.3 | `find-photos`, `share-and-export`, the `today` connection-reaction step |
+| I6 | Layer I6 - Recordings | MI6.1-MI6.3 | `import-recordings`, `transcribe-audio`, the `mine-transcript` two-transcript step |
+| I7 | Layer I7 - Escape hatch, legacy notes, first run | MI7.1-MI7.3 | `reconcile-site-edits`, `import-notes`, `setup-interview` |
+| I8 | Layer I8 - The image-only gap | MI8.1-MI8.2 | `transcribe-source`, the `process-source` Stage A½ step |
+| I9 | Layer I9 - The workbench | MI9.1 | `fha serve` |
+
+---
+
+## Layer I1 - The session spine (Milestone I1)
 
 The three skills a genealogist touches every session: open the workbench, process new material, review what was drafted.
 
@@ -30,11 +48,9 @@ The three skills a genealogist touches every session: open the workbench, proces
 
 ### MI1.1 - `today` skill (`/today`)
 
-**One PR.** `.claude/skills/today/SKILL.md` + a `/today` slash wrapper.
+**One PR.** `.claude/skills/today/SKILL.md`; the folder name is the `/today` wrapper the harness surfaces. The reference skill for `_STANDARD.md`.
 
-**Status: authored** (`.claude/skills/today/SKILL.md`; the folder name *is* the `/today` wrapper - the harness surfaces the skill as `/today`). Reference skill for `_STANDARD.md`. Session check pending.
-
-Run `fha report`, then narrate it **discoveries-first** (the report is a research narrative before a chore list), and offer to start the top item - most often a `review-claims` session on the oldest `suggested` backlog, or processing the inbox. §6b is eligible for that one slot too (issue #81): when its largest **unlinked** place-text cluster carries more claims than §1's oldest backlog has suggested ones (or §1 is empty), it wins and the offer hands off to `place-research` at its step 3 (the unlinked-cluster arm - a cluster has no `L-id` for step 1's neighborhood pull). A relative comparison of two counts the briefing already printed, never a hardcoded number, never a §6b GPS line's photo count; the offer says "unlinked", which is what §6b reports, not "unregistered", which this skill runs no registry lookup to establish. The skill reads the report; it does not recompute it. It writes nothing on its own except, on the human's say-so, a `fha confirm discovery` entry for a confirmed win.
+Run `fha report`, then narrate it **discoveries-first** (the report is a research narrative before a chore list), and offer to start the top item - most often a `review-claims` session on the oldest `suggested` backlog, or processing the inbox. §6b is eligible for that one slot too: when its largest **unlinked** place-text cluster carries more claims than §1's oldest backlog has suggested ones (or §1 is empty), it wins and the offer hands off to `place-research` at its step 3 (the unlinked-cluster arm - a cluster has no `L-id` for step 1's neighborhood pull). A relative comparison of two counts the briefing already printed, never a hardcoded number, never a §6b GPS line's photo count; the offer says "unlinked", which is what §6b reports, not "unregistered", which this skill runs no registry lookup to establish. The skill reads the report; it does not recompute it. It writes nothing on its own except, on the human's say-so, a `fha confirm discovery` entry for a confirmed win.
 
 **Orchestrates:** `fha report` (read), `fha confirm discovery` (on confirmation), then `review-claims` / `process-source` / `place-research` (the next-action hand-offs).
 
@@ -46,18 +62,16 @@ Run `fha report`, then narrate it **discoveries-first** (the report is a researc
 
 ### MI1.2 - `review-claims` skill
 
-**One PR.** `.claude/skills/review-claims/SKILL.md`.
+**One PR.** `.claude/skills/review-claims/SKILL.md`. The reused accept-gate interaction.
 
-**Status: authored** (`.claude/skills/review-claims/SKILL.md`). The reused accept-gate interaction; session check pending.
-
-Stage C of the pipeline. Walk one source's `suggested` backlog in one of three styles - guided one-by-one (the default), batched (numbered groups of ~5 grouped by person; one grouped reply = one stated decision per numbered claim; offered proactively past ~6 suggested claims), or self-serve skimming of the source file - the human's choice. Every claim shown, in any style, carries its `anchor:` context AND its evidence link (the anchored asset or record path, then the `[[S-id]]` token); capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept; a grouped same-status decision is one batch write, `fha claim C-a C-b ... --status X`, previewed once). Parking a claim at `needs-review` offers - explicit yes only - to record what would settle it (a SPEC §17 `## Q:` block or a `verify:` hypothesis); the close-out nudges promotion once for a decided-on stub at/over `promotion: claims_threshold:` (default 5) or flagged as a direct-line stub, running `fha person promote` (direct-line) or `fha person promote --into connections/` (anyone else, SPEC §12.3, issue #80) + the `write-biography` hand-off only on the yes (2026-07-23 revision; connections widened later). It nudges place registration on the same terms (issue #81): the largest `fha places candidates` cluster **holding a claim decided on in this session** - same scoping as promotion, so an untouched cluster stays report §6b's business rather than re-firing every run - at/over 10 claims, its town looked up with `fha find --json … --kind place` before the offer is spoken (unlinked is not unregistered), then `fha confirm place` `--into` an existing place or minting a new one, only on the yes. Finish with a reindex (full `fha index` - the `process-source`/`mine-transcript` hand-off usually minted new person stubs, which `fha index --source` does not index; `--source` is fine only for a status-only pass), `fha xref` to surface new corroboration/contradiction, a reindex again if any `fha confirm xref` link was written, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`. A place nudge answered yes writes *after* that done-gate and `fha confirm place` does not reindex, so it reopens the close-out: `fha index` + `fha places lint` + `fha lint` again.
+Stage C of the pipeline. Walk one source's `suggested` backlog in one of three styles - guided one-by-one (the default), batched (numbered groups of ~5 grouped by person; one grouped reply = one stated decision per numbered claim; offered proactively past ~6 suggested claims), or self-serve skimming of the source file - the human's choice. Every claim shown, in any style, carries its `anchor:` context AND its evidence link (the anchored asset or record path, then the `[[S-id]]` token); capture the human's accept / dispute / edit decision and any manual additions; write each decision with `fha claim` (which moves status and stamps `reviewed:` - directing the tool *is* the accept; a grouped same-status decision is one batch write, `fha claim C-a C-b ... --status X`, previewed once). A claim the human wants to come back to stays `suggested` with a `reviewed:` date, and - explicit yes only - what would settle it is recorded on the SPEC §17 research ladder (a question, or a working answer with its `verify:`). The close-out nudges promotion once for a decided-on stub at/over `promotion: claims_threshold:` (default 5) or flagged as a direct-line stub, running `fha person promote` (direct-line) or `fha person promote --into connections/` (anyone else, SPEC §12.3) + the `write-biography` hand-off only on the yes. It nudges place registration on the same terms: the largest `fha places candidates` cluster **holding a claim decided on in this session** - same scoping as promotion, so an untouched cluster stays report §6b's business rather than re-firing every run - at/over 10 claims, its town looked up with `fha find --json … --kind place` before the offer is spoken (unlinked is not unregistered), then `fha confirm place` `--into` an existing place or minting a new one, only on the yes. Finish with a reindex (full `fha index` - the `process-source`/`mine-transcript` hand-off usually minted new person stubs, which `fha index --source` does not index; `--source` is fine only for a status-only pass), `fha xref` to surface new corroboration/contradiction, a reindex again if any `fha confirm xref` link was written, a `fha views timeline`/`draft-queue` refresh for each curated person touched (stubs skipped; `views brackets` checked when a relationship claim was accepted), and `fha lint`. A place nudge answered yes writes *after* that done-gate and `fha confirm place` does not reindex, so it reopens the close-out: `fha index` + `fha places lint` + `fha lint` again.
 
 **Orchestrates:** `fha claim`, `fha confirm xref`, `fha index`, `fha xref`, `fha views timeline`/`draft-queue` (touched persons), `fha lint`.
 
 **Guardrails:** never moves a claim to `accepted` without the human; `accepted` always carries `reviewed:` (E006). The skill presents judgment; the human gates.
 
 **Done when:**
-- Reviewing a source's suggested claims in a session results in `fha claim` writes for each decision, a clean incremental reindex, an `fha xref` pass, a timeline/draft-queue refresh for each curated person touched, and `fha lint` exiting on its real findings.
+- Reviewing a source's suggested claims in a session results in `fha claim` writes for each decision, a clean reindex, an `fha xref` pass, a timeline/draft-queue refresh for each curated person touched, and `fha lint` exiting on its real findings.
 - No claim reaches `accepted` without an explicit human decision in the transcript.
 
 ---
@@ -66,19 +80,17 @@ Stage C of the pipeline. Walk one source's `suggested` backlog in one of three s
 
 **One PR.** `.claude/skills/process-source/SKILL.md`. Depends on MI1.2 (hands off to it).
 
-**Status: authored** (`.claude/skills/process-source/SKILL.md`; hands off to the shipped `review-claims`). Session check pending.
-
-The pipeline driver. If the inbox item is a **source stub** (`*.notes.md` sidecar or a bundle folder, SPEC §12.1), its frontmatter + notes seed Stage A (pre-filling §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A is `fha process`; Stage B is the AI draft (read the file incl. vision, resolve names/places against the index with candidate proposals, draft `suggested` claims with `anchor:`s, pull `## Stories`); then hand off to `review-claims` for Stage C, whose close-out (reindex, xref, view refresh, lint) finishes the pipeline. Place resolution goes by the **settlement name** (`fha find --json "<town>" --kind place` matches `name:`/`alt_names:`, never `hierarchy:`), an unlinked place stays a legitimate permanent state, and a text whose `fha places candidates` cluster already carries 10+ claims earns one explicit-yes-only registration offer (issue #81) - checked against the registry before it is spoken, so an already-registered town is a `--into` merge, not a duplicate mint. That write reaches past the item in hand, so it carries its own `fha index` + `fha places lint` there rather than deferring to the close-out. The stub is **consumed** - promoted into the source record, not left behind. Must handle loosely-written notes gracefully (AGENTS.md): extract what it can, fold the rest into `## Notes`, never stall on imperfect prose.
+The pipeline driver. If the inbox item is a **source stub** (a `*.notes.md` sidecar or a bundle folder - the inbox contract, BUILD_INGESTION MG0.1), its frontmatter + notes seed Stage A (pre-filling SPEC §14 frontmatter) and its parsed-person/vital hints seed Stage B's draft; otherwise Stage A starts from the bare file. Stage A is `fha process`; Stage B is the AI draft (read the file incl. vision, resolve names/places against the index with candidate proposals, draft `suggested` claims with `anchor:`s, pull `## Stories`); then hand off to `review-claims` for Stage C, whose close-out (reindex, xref, view refresh, lint) finishes the pipeline. Place resolution goes by the **settlement name** (`fha find --json "<town>" --kind place` matches `name:`/`alt_names:`, never `hierarchy:`), an unlinked place stays a legitimate permanent state, and a text whose `fha places candidates` cluster already carries 10+ claims earns one explicit-yes-only registration offer - checked against the registry before it is spoken, so an already-registered town is a `--into` merge, not a duplicate mint. That write reaches past the item in hand, so it carries its own `fha index` + `fha places lint` there rather than deferring to the close-out. The stub is **consumed** - promoted into the source record, not left behind. Must handle loosely-written notes gracefully (AGENTS.md): extract what it can, fold the rest into `## Notes`, never stall on imperfect prose.
 
 **Orchestrates:** `fha process`, `fha id mint` (via process), `fha stubs` (unresolved names), `fha find --json … --kind place` / `fha places candidates` / `fha confirm place` + `fha index` + `fha places lint` (the place-registration offer), then `review-claims` (whose close-out owns the rest of the reindex/xref/views/lint).
 
 **Done when:**
-- Processing an inbox stub in a session yields a real `sources/…` record with `suggested` claims + anchors, the stub consumed, the AI pass recorded in `## AI Passes`, and a hand-off into `review-claims`.
+- Processing an inbox stub in a session yields a real `sources/…` record with `suggested` claims + anchors, the stub consumed, the pass recorded in `ai_passes:`, and a hand-off into `review-claims`.
 - A loosely-written note (approximate dates, informal spellings) processes without a hard refusal; unmappable prose lands in `## Notes`.
 
 ---
 
-## Layer I2 - Drafting & inference (Milestone I2 - authored; session check pending)
+## Layer I2 - Drafting & inference (Milestone I2)
 
 The skills invoked by name when the human wants prose written or leads found.
 
@@ -88,9 +100,7 @@ The skills invoked by name when the human wants prose written or leads found.
 
 **One PR.** `.claude/skills/mine-transcript/SKILL.md`. **Never runs unrequested.**
 
-**Status: authored** (`.claude/skills/mine-transcript/SKILL.md`; invoked-only). Session check pending.
-
-The invoked extraction pass over a transcript: selective claim drafting (`suggested` + `anchor:` - substantive assertions only), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), narrative chunks to `## Stories`, the rest left in the transcript (it is preserved and searchable; extraction is indexing, not preservation). Record the pass in the source's `## AI Passes` block (model, date, task).
+The invoked extraction pass over a transcript: selective claim drafting (`suggested` + `anchor:` - substantive assertions only), name→P-id resolution against the index with candidate proposals for unresolved names (mint stubs on confirmation), narrative chunks to `## Stories`, the rest left in the transcript (it is preserved and searchable; extraction is indexing, not preservation). Record the pass in the source's `ai_passes:` list (date, model, task).
 
 **Orchestrates:** `fha stubs`, `fha id mint`, `fha index --source`, `fha lint`.
 
@@ -104,16 +114,14 @@ The invoked extraction pass over a transcript: selective claim drafting (`sugges
 
 **One PR.** `.claude/skills/write-biography/SKILL.md`.
 
-**Status: authored** (`.claude/skills/write-biography/SKILL.md`). Session check pending.
+Drafting rules for profiles: facts only from `accepted` claims; cite every factual sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; `[[P-…]]`/`[[S-…]]` links only from verified IDs. Consumes the `fha views draft-queue` backlog (uncited accepted claims). Draft prose is written inside `<!-- AI-DRAFT … -->` markers; on human acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED … -->` (provenance preserved). Pronouns come from `gender`, else `sex`. Two named styles, `chronicle` (the default) and `narrative`, chosen in the session or by `fha.yaml`'s `biography:` block. A stub target is offered promotion first (`fha person promote`).
 
-Drafting rules for profiles: facts only from `accepted` claims; cite every factual sentence (summary block: one citation per line; body: all relevant citations); anything uncited must read as story/context; `[[P-…]]`/`[[S-…]]` links only from verified IDs. Consumes the `fha views draft-queue` backlog (uncited accepted claims). Draft prose is written inside `<!-- AI-DRAFT … -->` markers; on human acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED … -->` (provenance preserved).
-
-**Orchestrates:** `fha views draft-queue`, `fha find` (verify IDs), `fha confirm draft`.
+**Orchestrates:** `fha views draft-queue`, `fha find` (verify IDs), `fha person promote`, `fha confirm draft`.
 
 **Done when:**
 - Drafting a bio in a session pulls from the draft queue, cites every factual sentence with a verified `[[S-…]]`, wraps new prose in AI-DRAFT markers, and never overwrites human-written text.
 - Acceptance flips markers via `fha confirm draft`, not by hand-editing.
-- (Style addendum, 2026-07-22.) A session drafting in each named style (`chronicle` / `narrative`) on `example-archive` keeps the identical citation density and the lint baseline; the marker and AI-pass name the style; with no session ask and no `fha.yaml` `biography:` block the voice is `chronicle` - unchanged default behavior.
+- A session in each style keeps the identical citation density and the lint baseline; the marker and the pass name the style; with no session ask and no `biography:` block the voice is `chronicle`.
 
 ---
 
@@ -121,19 +129,17 @@ Drafting rules for profiles: facts only from `accepted` claims; cite every factu
 
 **One PR.** `.claude/skills/research-next/SKILL.md`.
 
-**Status: authored** (`.claude/skills/research-next/SKILL.md`). Session check pending.
+Inference and steering. **Checks the research log FIRST** - never proposes a search already logged unless the nil has aged past the re-run horizon (default 18 months). Combines open questions, vitals gaps, and working answers with historical context (which record sets exist for the time/place, where they are held, what era events imply) into concrete research leads. May write a working answer (`guess:`, `basis:`, `verify:`) on the SPEC §17 research ladder, marked as the agent's - leads and guesses, never claims. Executed searches are logged back to `notes/research-log.md` (SPEC §17c).
 
-Inference and steering. **Checks the research log FIRST** - never proposes a search already logged unless the nil has aged past the re-run horizon (default 18 months). Combines open questions, vitals gaps, and open hypotheses with historical context (which record sets exist for the time/place, where they are held, what era events imply) into concrete research leads. May draft hypotheses (`origin: agent`) into research files - leads and hypotheses, never claims. Emits plan-shaped output whose executed searches are logged back to the search log.
-
-**Orchestrates:** `fha report` / index queries (gaps, questions, hypotheses), the search-log surface, `fha lint`.
+**Orchestrates:** `fha report` / index queries (gaps, questions, working answers), the research log, `fha lint`.
 
 **Done when:**
-- Asking "where should I look for X?" in a session produces log-aware leads (already-searched annotations present), and any drafted hypothesis is `origin: agent`, never a claim.
+- Asking "where should I look for X?" in a session produces log-aware leads (already-searched annotations present), and any drafted guess is marked as the agent's, never a claim.
 - No lead duplicates a recent logged nil.
 
 ---
 
-## Layer I3 - Frontier-tier skills (Milestone I3 - authored)
+## Layer I3 - Frontier-tier skills (Milestone I3)
 
 Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (TOOLING_INTERFACE.md §1).
 
@@ -141,11 +147,9 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 ### MI3.1 - `merge-identities` skill
 
-**One PR.** `.claude/skills/merge-identities/SKILL.md`.
+**One PR.** `.claude/skills/merge-identities/SKILL.md`. Needs BUILD.md M4.4a (`fha confirm merge`).
 
-**Status: authored** (`.claude/skills/merge-identities/SKILL.md`). The judgment half - pull both neighborhoods, lay out the evidence, propose, wait for human confirmation - is fully on shipped tools, and so is the write: the core gap this milestone surfaced (SPEC §9's merge write had no `fha` verb) **closed when `fha confirm merge` shipped** (BUILD.md M4.4a; audit Wave 3 / plan 16). The skill now drives the verb (dry-run first) and the interim hand-edit path was retired; `.claude/skills/merge-identities/GAP.md` remains as the historical record of the spec-discovery. Session check pending.
-
-"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write is `fha confirm merge`'s job - the skill never silently merges, and the split stays hand-guided (SPEC §9). A merged person is never directly referenced again (lint W107 lists any reference left; it still counts for the survivor meanwhile, SPEC §9).
+"Same person" / "two people" judgment. Read the candidate neighborhood (`fha find --related`, co-occurrence signals); propose a merge or a split with the evidence laid out; the human confirms. The mechanical write is `fha confirm merge` (dry-run first) - the skill never silently merges, and the split stays hand-guided (SPEC §9). A merged person is never directly referenced again (lint W107 lists any reference left; it still counts for the survivor meanwhile, SPEC §9).
 
 **Orchestrates:** `fha find --related`, `fha cooccur`, `fha confirm merge`, `fha lint` (W107/W115 verification).
 
@@ -158,47 +162,37 @@ Cheap to attempt, expensive to get wrong - escalate to the frontier model tier (
 
 **One PR.** `.claude/skills/place-research/SKILL.md`.
 
-**Status: authored** (`.claude/skills/place-research/SKILL.md`; registry writes go through the shipped `fha confirm place`). Session check pending.
-
 "Fill in this place's history." Loose citations are acceptable (place context is narrative scaffolding, not vital fact). Draft dated `history:` entries and place notes, link `[[L-…]]`, and propose registry entries for `fha confirm place` to write. Never edits `places.yaml` coordinates without human confirmation (AGENTS.md).
 
-**Orchestrates:** `fha find --related <L-id>`, `fha places candidates`, `fha confirm place`.
+**Orchestrates:** `fha find --related <L-id>`, `fha places candidates`, `fha confirm place`, `fha places set` / `note`.
 
 **Done when:**
 - Researching a place in a session drafts dated history with `[[L-…]]` links and proposes registry writes via `fha confirm place`; no coordinate is changed without confirmation.
 
 ---
 
-## Layer I4 - Skill backlog (Milestone I4 - shipped)
+## Layer I4 - Photo context (Milestone I4)
 
-Ideas carried from the former TOOLING_INTERFACE.md §2.3 backlog. `photo-context`, its one entry, is
-fully shipped: the core verb (`fha photoindex set-summary`, BUILD.md M3.5) landed first, and the
-SKILL.md landed with the 2026-07 usability-review wave. The backlog is empty.
+### MI4.1 - `photo-context` skill
 
-| Skill | Status | Sketch |
-|---|---|---|
-| `photo-context` | **shipped** (`.claude/skills/photo-context/SKILL.md`) | Update a photo's embedded AI summary (UserComment) with archive knowledge: identified people's relationships, the event/claim context, place history - captions get smarter as the archive grows. Writes marked as AI (SPEC §20); operates through `fha photoindex` and exiftool-via-tool, never bulk-reading the photos tree. |
+**One PR.** `.claude/skills/photo-context/SKILL.md` (+ `DESIGN.md`, which settles the trigger, inputs and provenance rule). Needs BUILD.md M3.5 (`fha photoindex set-summary`).
 
-**Design + status:** `.claude/skills/photo-context/DESIGN.md` settles the trigger (invoked-only, one photo or a
-small batch), inputs (`photoindex find`, `photo_people`, `fha relate`, claim/place context), and the
-provenance rule (AI-marked, human caption preserved). The core-tool gap it confirmed is closed:
-`fha photoindex set-summary` (BUILD.md M3.5) writes the AI-marked `UserComment`, preserves human comment
-text verbatim, previews with `--dry-run`, and is working-copy-aware. SPEC §20 already permitted the write,
-so no SPEC amendment was needed - only the tool. Per `_STANDARD.md` §6 the SKILL.md was deferred until
-that verb existed; it was then authored against the design (DESIGN.md keeps the history and records the
-flip). Session check pending, like the other layers.
+Invoked only, for one photo or a small batch: gather what the archive knows (identified people and how they are related, the event and claim context, the place's history), draft a better summary, and - only after the human approves the exact text - write it as an AI-marked caption (`AI: …` in `UserComment`, SPEC §20) via `fha photoindex set-summary`. A human-written comment is preserved verbatim and the AI text added below it; never bulk, never by reading the photos tree directly.
+
+**Orchestrates:** `fha photoindex find`, `fha relate`, `fha find --related`, `fha photoindex set-summary`.
+
+**Done when:**
+- In a session, a caption request produces a drafted summary, writes nothing until the human approves the exact text, and the written comment is AI-marked with any human text above it intact.
 
 ---
 
-## Layer I5 - Usability-review session skills (Milestone I5 - authored)
+## Layer I5 - Conversational front doors (Milestone I5)
 
-The 2026-07 usability review (owner point 3: skill coverage) added the two conversational front doors
-the persona report found missing, plus the `today` extension that completes the report's connection
-loop. Design: TOOLING_INTERFACE.md §2.3.
+The conversational entry points to the photo catalog and to sharing, plus the step that completes the report's connection loop. Design: TOOLING_INTERFACE.md §2.3.
 
 ### MI5.1 - `find-photos` skill
 
-**Status: authored** (`.claude/skills/find-photos/SKILL.md`). Session check pending (behavioral transcript with the phase-2 landing).
+**One PR.** `.claude/skills/find-photos/SKILL.md`.
 
 The photo subsystem's front door: resolve "show me grandma's photos" to a P-id via `fha find`, answer from `fha photoindex find` at variation-group granularity in plain language, offer a clickable `fha photoindex gallery` page, and hand identification to `tag-person`'s own confirm prompt. Read-only.
 
@@ -208,200 +202,207 @@ The photo subsystem's front door: resolve "show me grandma's photos" to a P-id v
 
 ### MI5.2 - `share-and-export` skill
 
-**Status: authored** (`.claude/skills/share-and-export/SKILL.md`). Session check pending (behavioral transcript with the phase-2 landing).
+**One PR.** `.claude/skills/share-and-export/SKILL.md`.
 
-The guided path for the privacy-sensitive act: route the request to `packet` / `gedcom` / `site --standalone` / `wikitree` / `backup`, speak each tool's privacy defaults in plain words before running, preview first, then report exactly what went out and what stayed home. Never adds an override flag unasked; importing a tree INTO the archive is a gedcom-import / migration conversation, not this skill.
+The guided path for the privacy-sensitive act: route the request to `packet` / `gedcom` / `site --standalone` / `wikitree` / `backup`, speak each tool's privacy defaults in plain words before running, preview first, then report exactly what went out and what stayed home. Never adds an override flag unasked; importing a tree INTO the archive is a gedcom-import conversation, not this skill.
 
 **Orchestrates:** `fha packet`, `fha gedcom`, `fha site --standalone`, `fha wikitree`, `fha backup`.
 
 **Done when:** each sharing phrase routes to the right tool with the privacy script spoken first; a living-person packet request is declined with the tool's reason translated, never worked around; every write is preceded by a preview and the report names the artifact path and the exclusions.
 
-### MI5.3 - `today` connection-reaction extension
+### MI5.3 - `today` connection-reaction step
 
-**Status: authored** (folded into `.claude/skills/today/SKILL.md` as flow step 6). Completes the loop `tools/report.py` §8 left to the skill layer: "yes, they were neighbors" → `fha confirm cooccur` (dry-run echoed first, minted `suggested` unless the human's flat, unhedged answer is the review); "no, stop suggesting that pair" → `fha confirm dismiss` (tombstone, reversible). No write without an explicit ruling.
+**One PR.** A flow step in `.claude/skills/today/SKILL.md`. Completes the loop `fha report` §8 leaves to the skill layer: "yes, they were neighbors" → `fha confirm cooccur` (dry-run echoed first, minted `suggested` unless the human's flat, unhedged answer is the review); "no, stop suggesting that pair" → `fha confirm dismiss` (tombstone, reversible).
 
-## Layer I6 - Recordings skills (Milestone I6 - authored in a live archive, ported 2026-08-15)
+**Done when:** a narrated connection answered yes or no produces exactly one `fha confirm cooccur` or `fha confirm dismiss` write, previewed first; no write happens without an explicit ruling.
 
-Authored against real phone-app exports in a live archive on 2026-08-11..13 and ported here scrubbed of family specifics. Design: TOOLING_INTERFACE.md §2.4.
+---
+
+## Layer I6 - Recordings (Milestone I6)
+
+Design: TOOLING_INTERFACE.md §2.4. Needs BUILD.md M11.8 (`fha media`).
 
 ### MI6.1 - `import-recordings` skill
 
-**Status: authored** (`.claude/skills/import-recordings/SKILL.md` + `scripts/attribute_speakers.py` + `scripts/find_duplicate_media.py` + `GAP.md`), with `tests/test_import_recordings.py` covering both scripts (the 0.65 confidence gate and the one-vote-per-word pooling it is calibrated against - two methods covering the same span must not each claim that coverage, which is what made 0.90 mean about 0.45 - the 80% timestamp gate with its tail-coverage and blind-span rules, the two-sided mispair gate with its 20-matched-word floor, the output-collision refusals, the refuse-before-publishing paths, the refusal to replace an existing `--out`/`--report` without `--replace` (kept separate from `--force`), the destination pre-flight that answers a folder-on-the-output-name or a file-for-a-parent before any alignment or write, the recovery messages executed rather than read for keywords (the command printed when the JSON report fails after the transcript is written is captured from stderr and run, and must exit 0 - the transcript is kept, so that command carries `--replace`; the same for the `--replace` line printed by the existence refusal, and for the free names it offers for *every* taken destination rather than only the first), and the size-then-SHA-256 dedupe including its fail-closed `indeterminate` verdict and exit 3). Session check pending on `example-archive` (needs a synthetic recording + app-transcript pair in the fixture; a whisper-free dry path is enough to exercise dedupe, dating, grouping and the `fha process` sequence).
+**One PR.** `.claude/skills/import-recordings/SKILL.md` + `scripts/attribute_speakers.py` (+ `GAP.md`, the record of the core verbs it needed).
 
-The recordings on-ramp: dedupe by content, date from the container, group by sitting into one session source, always a fresh whisper pass beside the app transcript, speaker labels only under gates and speaker names only on the human's yes.
+The recordings on-ramp: dedupe by content (`fha media dedupe`), date from the container (`fha media probe`), group by sitting into one session source under `documents/interviews/{interviewee}-{yyyy-mm-dd}/`, always a fresh whisper pass beside the app transcript, speaker labels only under gates and speaker names only on the human's yes. The script's gates: the 0.65 confidence gate with one-vote-per-word pooling (two methods covering the same span must not each claim it), the 80% timestamp gate with its tail-coverage and blind-span rules, the two-sided mispair gate with its 20-matched-word floor; it refuses before publishing on any failed gate, never replaces an existing `--out`/`--report` without `--replace`, pre-flights every destination before any alignment or write, and prints recovery commands that run as printed.
 
-**Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha media dedupe` and `fha media probe` (shipped `tools/media.py`, issues #43/#44 - see `GAP.md`, both entries now closed), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer only.
+**Orchestrates:** `fha find` (and `fha search` for a same-sitting lead when the bytes differ), `fha media dedupe`, `fha media probe`, `fha process` (`--type interview --slug`, then `--more FILE ROLE` once per companion), `fha index`, `fha lint`; the skill's own `scripts/` for whisper and label transfer only.
 
-**Done when:** see the skill's own "Done when" - one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
+**Done when:** one sitting lands as one folder under one S-id with every companion attached by its own `--more` call; a byte-identical repeat is skipped and reported with the path it duplicates; a pair failing the 50% gate degrades to two plain transcripts; speaker → person is a table and no name is written until answered.
+
+```
+python -m unittest tests.test_import_recordings tests.test_media
+```
 
 ### MI6.2 - `transcribe-audio` skill
 
-**Status: authored** (`.claude/skills/transcribe-audio/SKILL.md` + `scripts/transcribe_audio.py`), with the script's non-model logic covered by [`tests/test_transcribe_audio.py`](tests/test_transcribe_audio.py). The transcription itself requires `faster-whisper` on the machine that holds the audio and is not exercised in CI; the tests inject fake segment iterators instead, which is where the failure modes actually live.
+**One PR.** `.claude/skills/transcribe-audio/SKILL.md` + `scripts/transcribe_audio.py`. The transcription needs `faster-whisper` on the machine that holds the audio and is not run in CI; the tests inject fake segment iterators instead, which is where the failure modes live.
 
 Local re-transcription attached beside the original (both kept, always), the `--name` prefix rule that keeps a source's files together in a listing, and the offered claim-by-claim audit of facts mined from the garbled original.
 
 The `--name` value is the source's **shared stem with no role suffix**: `attach_more` appends the role itself, so `--name …-whisper` files as `…-whisper-whisper-transcript_S-….md`. The reviewed `.md` is copied under the documents root before `--more` (which refuses a file filed anywhere else), and a filed name that looks wrong is reported, never renamed - `fha process` renames a documents-root file once and no verb renames it again, so the human reorganizes and `fha reconcile` re-ties.
 
-Two script invariants the skill's batch advice rests on, both regression-tested: **all-or-nothing publication** (`.part` siblings renamed into place only after the segment iterator is exhausted; an interruption, a decode failure or a zero-speech run leaves no file behind, so a "skip what already exists" queue can never mistake a stump for a finished pass, and an existing output is a clean no-op unless `--force`) and a **portable `.md` header** (the recording is named by filename, never by the absolute path typed on the command line - AGENTS_TOOLING.md §11, SPEC §12.4).
+Two script invariants: **all-or-nothing publication** (`.part` siblings renamed into place only after the segment iterator is exhausted; an interruption, a decode failure or a zero-speech run leaves no file behind, and an existing output is a clean no-op unless `--force`) and a **portable `.md` header** (the recording is named by filename, never by an absolute path - AGENTS_TOOLING.md, SPEC §12.4).
 
 **Orchestrates:** `scripts/transcribe_audio.py`, `fha process --more … whisper-transcript`, `fha claim <C-id> --value` for audited corrections, `review-claims` for new material.
 
+**Done when:**
 ```
 python -m unittest tests.test_transcribe_audio -v   # atomic publish, portable header, documented commands
 ```
 
-### MI6.3 - `mine-transcript` two-transcript extension
+### MI6.3 - `mine-transcript` two-transcript step
 
-**Status: authored** (folded into `.claude/skills/mine-transcript/SKILL.md` step 1). Mine from the whisper/app comparison, anchor to the transcript actually quoted, and treat a coverage divergence as a signal the app truncated or mis-attached a file.
+**One PR.** Step 1 of `.claude/skills/mine-transcript/SKILL.md`. Mine from the whisper/app comparison, anchor to the transcript actually quoted, and treat a coverage divergence as a signal the app truncated or mis-attached a file.
+
+**Done when:** mining a session with two transcripts anchors each claim to the transcript it quotes and reports any coverage divergence before drafting.
 
 ---
 
-## Layer I7 - Skills authored outside the layered waves (Milestone I7 - authored)
+## Layer I7 - Escape hatch, legacy notes, first run (Milestone I7)
 
-Three skills landed with the work they serve rather than with a numbered skill wave, so they had no
-milestone entry here while the header above already counted them. They are recorded here so every
-one of the seventeen shipped SKILL.md files has a status line in this doc, which is the authoritative
-build-status record for the interface layer. Design: TOOLING_INTERFACE.md §2.5 (MI7.1-MI7.2) and §2.7
-(MI7.3).
+Design: TOOLING_INTERFACE.md §2.5 (MI7.1-MI7.2) and §2.7 (MI7.3).
 
 ### MI7.1 - `reconcile-site-edits` skill
 
-**Status: authored** (`.claude/skills/reconcile-site-edits/SKILL.md`). Shipped with the static site's
-Phase E escape hatch (docs/SITE_PLAN.md layer (e)): `fha site` is deterministic and never reads its own
-output, so a hand-edited HTML page is overwritten on the next build. The skill reads the edited page,
-diffs it against a pristine baseline build to recover the human's intent, folds that intent into the
-real source (`.fha/design/custom.css`, `notes/home.md`, the person's record, or `fha.yaml`'s `site:`
-block), and rebuilds. Every source write is human-confirmed first; `fha site` learns nothing.
-Session check pending, like the other layers.
+**One PR.** `.claude/skills/reconcile-site-edits/SKILL.md`. `fha site` is deterministic and never reads its own output, so a hand-edited HTML page is overwritten on the next build (docs/SITE_PLAN.md layer (e)). The skill reads the edited page, diffs it against a pristine baseline build to recover the human's intent, folds that intent into the real source (`.fha/design/custom.css`, `notes/home.md`, the person's record, or `fha.yaml`'s `site:` block), and rebuilds. Every source write is human-confirmed first; `fha site` learns nothing.
 
-**Orchestrates:** `fha site` (baseline + rebuild), `fha person edit`, plain file edits to the named
-sources - no new verb.
+**Orchestrates:** `fha site` (baseline + rebuild), `fha person edit`, plain file edits to the named sources.
+
+**Done when:** a hand-edited page in a session is traced back to one source change per intent, each confirmed before writing, and a rebuild reproduces the edit.
 
 ### MI7.2 - `import-notes` skill
 
-**Status: authored** (`.claude/skills/import-notes/SKILL.md`). The legacy-notes on-ramp: chunk a pile of
-freeform research notes, propose a home per chunk under the routing rule (evidence someone asserted →
-inbox → source; a thing to find out → open question; a testable belief → hypothesis; a search already
-run → research log; everything else → `notes/research/`), and write each chunk only on the human's
-confirmation. It drafts no claims - evidence earns those later through `process-source` and
-`review-claims` - and never deletes or rewrites the original notes. Session check pending.
+**One PR.** `.claude/skills/import-notes/SKILL.md`. The legacy-notes on-ramp: chunk a pile of freeform research notes, propose a home per chunk under the routing rule (evidence someone asserted → inbox → source; a thing to find out → a question; a testable belief → a working answer; a search already run → the research log; everything else → `notes/research/`), and write each chunk only on the human's confirmation. It drafts no claims - evidence earns those later through `process-source` and `review-claims` - and never deletes or rewrites the original notes.
 
-**Orchestrates:** `fha process` (via the inbox hand-off to `process-source`), `fha find` for name
-resolution, plain writes into `notes/questions.md` and `notes/research/` - no new verb.
+**Orchestrates:** `fha process` (via the inbox hand-off to `process-source`), `fha find` for name resolution, plain writes into `notes/questions.md`, `notes/research-log.md` and `notes/research/`.
+
+**Done when:** a notes file in a session is split into chunks, each routed only on a yes, with the original untouched.
 
 ### MI7.3 - `setup-interview` skill
 
-**Status: authored** (`.claude/skills/setup-interview/SKILL.md`). The first-run on-ramp (issue #74):
-`fha install` stamps a brand-new archive and asks the new owner nothing, so the one family it is
-guaranteed to have authoritative information on - his own - starts the archive's life unrecorded. A real
-archive was found ~13 months and ~290 people in still missing the owner's own father, one of his two
-children, `sex:` on himself/his spouse/his son, and his spouse's place in the pedigree. The skill asks
-him, once, right after install: who he is (mints his own person record, `sex:` set); how he wants the
-tree numbered (`root_generation: self | children`, issue #72, written into `fha.yaml`); and his
-immediate family - parents, spouse(s), children. It writes one `source_class: authored` interview
-source and drafts `relationship` claims with explicit `roles:` maps for parentage (never `birth` claims
-- issue #71) plus a `marriage` claim per spouse, every claim `status: suggested`, then hands off to
-`review-claims` - the interview proposes, it never self-accepts. `fha install`'s "Next steps" gained one
-line pointing here. Session check pending, like the other layers. Built directly against `root_generation`
-(issue #72, MI-equivalent `#102`, merged into master the same session) - no longer a forward dependency.
+**One PR.** `.claude/skills/setup-interview/SKILL.md`. The first-run on-ramp: `fha install` stamps a brand-new archive and asks the new owner nothing, so the one family it is guaranteed to have authoritative information on - his own - would otherwise start unrecorded. The skill asks him, once, right after install: who he is (mints his own person record, `sex:` set); how he wants the tree numbered (`root_generation: self | children`, written into `fha.yaml`); and his immediate family - parents, spouse(s), children. It writes one `source_class: authored` interview source and drafts `relationship` claims with explicit `roles:` maps for parentage (never `birth` claims) plus a `marriage` claim per spouse, every claim `status: suggested`, then hands off to `review-claims` - the interview proposes, it never self-accepts. `fha install`'s "Next steps" points here.
 
-**Step 0 - place-backlog offer (2026-08, issue #79 point 4, PR #150).** Before the family questions, the
-skill now runs one cheap, silent, one-time check: an archive that already carries imported/migrated
-material (`fha gedcom import` run before this interview - a sanctioned ordering per AGENTS.md) can reach
-this interview sitting on a real backlog of unlinked `place_text` with zero registered places, and nobody
-ever offered the one pass that would fix it. `fha index` then `fha places candidates --include-suggested`
-surfaces the clusters (widened to count `status: suggested` claims - `fha gedcom import` mints everything
-at that status, so the plain accepted/needs-review-only view would see nothing); past a 20-claim oversight
-bar (`_PLACE_ESCALATION_THRESHOLD`'s own bar, issue #79 point 2), the skill offers once to register the
-biggest cluster(s) via `fha confirm place`, then reindexes and runs `fha places lint` to confirm no new
-registry-hygiene findings. "Not now" or silence drops it for the rest of the session; a registry that
-already has an entry, or every cluster below the bar, means the check says nothing at all.
+**Step 0 - the place-backlog offer.** Before the family questions, one silent, one-time check: an archive that already carries imported material (`fha gedcom import` run first) can reach this interview with a real backlog of unlinked `place_text` and zero registered places. `fha index` then `fha places candidates --include-suggested` surfaces the clusters (`--include-suggested`, because an import mints everything `suggested`); past a 20-claim bar, the skill offers once to register the biggest cluster(s) via `fha confirm place`, then reindexes and runs `fha places lint`. "Not now" or silence drops it for the session; a registry that already has an entry, or every cluster below the bar, means the check says nothing.
 
-**Orchestrates:** `fha index`, `fha places candidates --include-suggested`, `fha confirm place`, `fha
-places lint` (step 0's place-backlog offer), `fha person new`, `fha person set-sex`, `fha person
-set-living`, `fha process`, hand-drafted claims (the same Stage-B judgment `process-source` already
-performs), `review-claims`. One core-tool addition: `places.py`'s `fha places candidates` gained the
-`--include-suggested` flag (Codex review, PR #150) so this skill's one-time backlog scan can see a
-fresh-import-shaped backlog that the everyday, `suggested`-excluding view cannot - every other verb this
-skill drives already existed.
+**Orchestrates:** `fha index`, `fha places candidates --include-suggested`, `fha confirm place`, `fha places lint`, `fha person new`, `fha person set-sex`, `fha person set-living`, `fha process`, hand-drafted claims (the same Stage-B judgment `process-source` performs), `review-claims`.
+
+**Done when:** on a freshly installed archive, the session mints the owner's record, writes `root_person`/`root_generation`, files one authored interview source whose claims are all `suggested` with explicit `roles:`, and hands off to `review-claims`.
 
 ---
 
-## Layer I8 - The image-only gap (Milestone I8 - authored 2026-08-16, issue #46)
+## Layer I8 - The image-only gap (Milestone I8)
 
-An image-only source contributes no text to the archive, so `fha find --text` searches only what an
-earlier pass wrote into a claim value while looking exactly like a search of the evidence. The core
-half of the answer is detection and is built in `tools/` (lint **W124**; the coverage note `fha find
---text` prints under every result, hit or miss; `role: transcript` companions loaded into
-`transcripts_fts`). The half that cannot be deterministic - somebody reads the pictures - is this
-layer. Design: TOOLING_INTERFACE.md §2.6.
+An image-only source contributes no text to the archive, so `fha find --text` searches only what an earlier pass wrote into a claim value while looking exactly like a search of the evidence. The deterministic half of the answer is in BUILD.md (lint W124, the coverage note `fha find --text` prints, `role: transcript` companions loaded into `transcripts_fts`). The half that cannot be deterministic - somebody reads the pictures - is this layer. Design: TOOLING_INTERFACE.md §2.6.
 
 ### MI8.1 - `transcribe-source` skill
 
-**Status: authored** (`.claude/skills/transcribe-source/SKILL.md` + `GAP.md`), with the mechanically
-checkable half of the SKILL.md pinned by [`tests/test_transcribe_source.py`](tests/test_transcribe_source.py):
-every `fha` verb the prose names exists in the CLI, the documented `--more` example really produces
-the filename it shows when run through `process.attach_more`'s naming rule, the skill's
-"image-only" definition is `_lib.file_entry_carries_text` rather than a second hand-written copy of
-it, and the marker contract's four states plus the placement rule are executed rather than read for
-keywords - including the counter-example that a top-of-file marker leaks the whole unreviewed
-transcript through `_lib.strip_unaccepted_drafts` while the documented end-of-file placement
-withholds all of it. The behavioral session check against `example-archive` is pending like every
-other layer, but the pipeline was run end to end on a scratch copy: W124 fires on an image-only
-source with an accepted claim, `fha process --more <file> transcript` files `{stem}.md` as
-`{stem}-transcript_{S-id}.md`, `fha index` puts it in `transcripts_fts`, `fha find --text` then
-returns a phrase that was unfindable before and its coverage count drops by one, and W124 clears.
+**One PR.** `.claude/skills/transcribe-source/SKILL.md` (+ `GAP.md`).
 
-Reads an image-only source and writes out what it says as a `[Page N]`-labeled `role: transcript`
-companion in the original's pagination. `fha source extract` is tried first on any PDF so the model
-never re-reads text the file already holds. Two entry points: from `process-source` **between Stage
-A and Stage B** (see MI1.3's Stage A½ - the ordering rule is the win, and that skill is the only
-place it can be enforced), and standalone for backfill in confirmed batches of five sources or
-fewer, whose worklist is re-read from `fha lint` each time rather than carried in session memory.
+Reads an image-only source and writes out what it says as a `[Page N]`-labeled `role: transcript` companion in the original's pagination. `fha source extract` is tried first on any PDF so the model never re-reads text the file already holds. Two entry points: from `process-source` **between Stage A and Stage B** (MI8.2), and standalone for backfill in confirmed batches of five sources or fewer, whose worklist is re-read from `fha lint` (W124) each time rather than carried in session memory.
 
-The skill **drafts and edits no claims**. Unclaimed facts hand off to `mine-transcript`; a reading
-that contradicts an existing claim - **including an `accepted` one** - becomes a `## Q:` block in
-`notes/questions.md`, never a silent correction. That contradiction report is the single most
-valuable thing it produces: hand-transcribing three such sources found two accepted claims
-materially wrong, a time of death wrong in two claims and in a note quoting the page "verbatim", and
-a scribal error carried as a reading ambiguity.
+The skill **drafts and edits no claims**. Unclaimed facts hand off to `mine-transcript`; a reading that contradicts an existing claim - **including an `accepted` one** - becomes a question in `notes/questions.md`, never a silent correction. That contradiction report is the most valuable thing it produces.
 
-**The unreviewed-transcript marker contract** (the deliverable a `find --text` implementation reads
-against) reuses `<!-- AI-DRAFT … -->` / `<!-- AI-ACCEPTED … -->` rather than inventing a third
-convention - four states, *unreviewed* outranking *verified*, *damaged* failing closed to
-*unreviewed*, one marker as the last non-blank line of a heading-free body. Full statement:
-TOOLING_INTERFACE.md §2.6 and the skill's own "The marker" section.
+**The unreviewed-transcript marker contract** (what `fha find --text` reads to label a hit `[unchecked AI transcript]`) reuses `<!-- AI-DRAFT … -->` / `<!-- AI-ACCEPTED … -->` rather than inventing a third convention - four states, *unreviewed* outranking *verified*, *damaged* failing closed to *unreviewed*, one marker as the last non-blank line of a heading-free body. Full statement: TOOLING_INTERFACE.md §2.6 and the skill's own "The marker" section. No verb flips the marker yet (`fha confirm draft` edits person profiles only), so every AI transcript stays *unreviewed*; the wanted verb is recorded in `transcribe-source/GAP.md`, and a skill never hand-edits a marker.
 
-**Orchestrates:** `fha find`, `fha source extract`, `fha process --more … transcript`, `fha index`,
-`fha source note`, `fha lint` (W124 as its own worklist and done-gate) - no new verb.
+**Orchestrates:** `fha find`, `fha source extract`, `fha process --more … transcript`, `fha index`, `fha source note`, `fha lint` (W124 as its worklist and done-gate).
 
-**One gap, blocked not enacted** (`_STANDARD.md` §6): nothing flips the marker. `fha confirm draft`
-takes a `<P-id>` and edits a person profile only, and a skill never hand-edits a marker, so every AI
-transcript stays *unreviewed* - true, if incomplete. The wanted verb is recorded in
-[`transcribe-source/GAP.md`](.claude/skills/transcribe-source/GAP.md); no interim enactment is
-blessed here, and blessing one would be an owner decision needing its own entry in this doc.
+**Done when:**
+- On a scratch copy: W124 fires on an image-only source with an accepted claim; `fha process --more <file> transcript` files `{stem}.md` as `{stem}-transcript_{S-id}.md`; `fha index` puts it in `transcripts_fts`; `fha find --text` returns a phrase that was unfindable before and its coverage count drops by one; W124 clears.
 
 ```
 python -m unittest tests.test_transcribe_source -v   # documented commands, naming rule, marker contract
 ```
 
-### MI8.2 - `process-source` Stage A½ extension
+### MI8.2 - `process-source` Stage A½ step
 
-**Status: authored** (folded into `.claude/skills/process-source/SKILL.md` as Stage A½, between
-Stage A and Stage B). The ordering rule from #46: when `fha process` has just filed an item whose
-files are all images, the transcript is written **before** any claim is drafted, so Stage B drafts
-from text somebody read out line by line rather than from a single pass over pictures. Stage B's
-existing "text layer first" advice for large PDFs stays where it is and now names the same
-`transcribe-source` path for the all-image case.
+**One PR.** Stage A½ of `.claude/skills/process-source/SKILL.md`, between Stage A and Stage B. When `fha process` has just filed an item whose files are all images, the transcript is written **before** any claim is drafted, so Stage B drafts from text somebody read out line by line rather than from a single pass over pictures. Stage B's "text layer first" advice for large PDFs names the same `transcribe-source` path for the all-image case.
+
+**Done when:** processing an all-image item in a session produces the transcript companion before any `suggested` claim is drafted.
+
+---
+
+## Layer I9 - The workbench (Milestone I9)
+
+### MI9.1 - `fha serve` - the localhost workbench
+
+**One PR** (or one per bullet group below). New file `tools/serve.py`. Wire `fha serve [--port N]
+[--no-browser]` (default port 8765; port 0 picks a free one), plus the `serve.cmd` launcher
+(TOOLING_INTERFACE.md §1b; TOOLING.md §12 for the site it wraps). Needs: `fha site --linked`
+(BUILD.md M8), `fha find --json` (M2.5), and every write-back engine its buttons drive.
+
+**What it is.** A human-started, foreground, 127.0.0.1-only web front door onto the archive: it
+serves the linked (unredacted) `fha site` build over HTTP and adds an editing layer. It is a
+**front door, not an engine**: `serve.py` is one of the two sanctioned places a tool imports
+other tools (with `fha.py`), driving their `run_*` engines in-process; `site.py` is loaded by
+path under a private name, as in `fha.py`. Not a daemon: no auth, no network beyond the loopback
+socket, no file watcher, and an AI agent never starts it.
+
+**The parity rule.** Every button is exactly one documented `fha` command, run in-process
+through its `run_*` engine, and every apply echoes the literal CLI command it ran. The verb table
+(`VERBS`, each entry a schema + engine call + echo + the reindex it needs):
+
+| Verb | Command it runs |
+|---|---|
+| `claim.review`, `claim.new` | `fha claim …`, `fha claim new …` |
+| `confirm.xref`, `confirm.cooccur`, `confirm.dismiss` | `fha confirm xref / cooccur / dismiss` |
+| `person.new`, `person.set-living`, `person.set-sex`, `person.set-profile-photo`, `person.relate`, `person.estimate`, `person.edit`, `person.note`, `person.edit_note` | the matching `fha person` verb |
+| `person.add_family` | `fha person new` (when the relative has no record yet) then `fha person relate --reciprocal` - both echoed |
+| `source.note`, `source.edit_note` | `fha source note / edit-note` |
+| `place.set`, `place.note`, `place.edit_note` | `fha places set / note / edit-note` |
+| `process.file` | `fha process` |
+| `capture.path` | `fha capture --path` |
+| `site.publish` | `fha site --standalone` |
+| `index.rebuild` | `fha index` |
+| `home.edit` | a bounded write of `notes/home.md` - the same edit as opening the file; dry-run shows the diff |
+
+Two conveniences inside the rule: relate and add-family buttons pass `--reciprocal` (the echo
+names it; the CLI default is unchanged), and `/api/pickfile` opens the OS's own file dialog so
+the register-by-path form gets a full path - the pick itself reads and writes nothing.
+
+**Routes.** `GET` serves the snapshot pages, `/review` (the claim-review queue), `/inbox` (the
+inbox, pairing each file with its sidecar), and `/root/…` (an archive file, confined).
+`POST /api/run` runs a verb; `/api/find` is the search box (`fha find --json`); `/api/reindex`;
+`/api/open` opens a confined file in the OS; `/api/upload` writes a dropped file into `inbox/`
+with an optional `<stem>.notes.md` sidecar in the BUILD_INGESTION MG0.1 shape (the "what" text
+as its body, the "who" names under `people:`); `/api/pickfile`.
+
+**The human gate is a click.** Every mutating request is a dry-run preview first, applied only by
+a second explicit confirmation; the server itself defaults `dry_run` to true unless the POST says
+`{"dry_run": false}`. An accept through the workbench stamps `reviewed:` exactly as the CLI does.
+The workbench never reads evidence to draft anything - Stage B stays with the skills.
+
+**Security is the whole trust boundary** (`run_serve_preflight` and the handler): bind
+127.0.0.1 only; a Host-header allowlist on every request; a per-process CSRF token compared with
+`hmac.compare_digest` on every POST; canonical-path confinement (resolve + `is_relative_to`) on
+snapshot files, `/root/` aliases, `/api/open`, `/api/upload` and the `process.file` argument;
+`no-store` + `nosniff` headers; one global mutation lock held across mutate → reindex →
+snapshot-invalidate.
+
+**Refresh on use.** The read side is a snapshot of `fha site --linked` under `.cache/serve/`,
+rebuilt only when a page is requested and the record trees changed since the last build (an
+mtime probe plus a path manifest, so a deleted record is caught too) - never on a timer. That
+snapshot is the only thing serve writes outside what its engines write; deleting `serve.py` and
+`.cache/serve/` changes nothing about the archive, and stopping the process is always safe.
+
+**Done when:**
+```sh
+fha serve --root <scratch-archive> --no-browser    # prints the 127.0.0.1 URL; Ctrl-C exits cleanly
+# a person page's "set living" button previews, then applies, and echoes `fha person set-living …`
+# a POST without the CSRF token, or with a foreign Host header, is refused
+python -m unittest tests.test_serve
+```
 
 ---
 
 ## Testing invariants (all phases)
 
-There is no automated test harness for SKILL.md prose - skills are verified by session behavior. The exception is a skill that ships a `scripts/` file: that code is tested like any other code, and the test may also pin the parts of its SKILL.md that are mechanically checkable - that every flag the prose names exists in the script's parser, and that a worked example really produces the filename it shows when run through the owning tool's naming rule (`tests/test_transcribe_audio.py` is the pattern). For every skill PR, confirm in a real session against `example-archive`:
+Skill prose has no automated harness - skills are verified by session behavior. The exception is a skill that ships a `scripts/` file: that code is tested like any other code, and the test may also pin the parts of its SKILL.md that are mechanically checkable - that every flag the prose names exists in the script's parser, and that a worked example really produces the filename it shows when run through the owning tool's naming rule (`tests/test_transcribe_audio.py` is the pattern). `fha serve` is tested like any other tool (`tests/test_serve.py`). For every skill PR, confirm in a real session against a scratch copy of `example-archive`:
 
 1. The skill produces exactly the documented archive writes (suggested claims, recorded AI passes, view refreshes, confirm-driven entries) and **no** write the contract forbids - nothing reaches `accepted` without a human `fha claim`, nothing edits below a GENERATED header, no human text is overwritten.
-2. Every AI pass is recorded in the source's `## AI Passes` block.
+2. Every AI extraction pass is recorded in the source's `ai_passes:` list (SPEC §14).
 3. The skill degrades gracefully on messy input (loose dates, informal names) - it infers or asks one plain question, never hard-refuses (AGENTS.md "Who you serve").
 4. The skill calls deterministic `fha` tools for everything a tool already owns; it adds only judgment.
 5. `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9, mirroring TOOLING.md §15) after the skill runs - no new errors or warnings from anything the skill wrote.
