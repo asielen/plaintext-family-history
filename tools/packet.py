@@ -228,7 +228,9 @@ from _lib import (
     is_placeholder_name,
     is_working_copy,
     load_fha_yaml,
+    index_merge_survivors,
     merge_survivor,
+    merged_into_survivor,
     normalize_id,
     open_index_db,
     path_to_alias,
@@ -1114,22 +1116,15 @@ def _resolve_merged_person(
 def _merged_alias_ids(conn: sqlite3.Connection, survivor_id: str) -> list[str]:
     """
     Every person id whose merged_into chain resolves to survivor_id (SPEC
-    §9), found by walking merged_into outward from the survivor rather
-    than assuming a single hop. Once `_resolve_merged_person` redirects pid
+    §9), across any number of hops. Once `_resolve_merged_person` redirects pid
     to the survivor, sources/claims still citing one of these old ids must
     still be gathered, not dropped.
+
+    The map is `_lib.index_merge_survivors` - the one `fha index` used to
+    hand those records' claims to the survivor - so the packet gathers (and
+    privacy-checks) exactly the records whose claims now count for him.
     """
-    aliases: set[str] = set()
-    frontier = {survivor_id}
-    while frontier:
-        placeholders = ','.join('?' * len(frontier))
-        rows = conn.execute(
-            f"SELECT id FROM persons WHERE status = 'merged' AND merged_into IN ({placeholders})",
-            list(frontier),
-        ).fetchall()
-        frontier = {r['id'] for r in rows if r['id'] not in aliases and r['id'] != survivor_id}
-        aliases |= frontier
-    return sorted(aliases)
+    return merged_into_survivor(index_merge_survivors(conn), survivor_id)
 
 
 def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[str]:
@@ -2602,6 +2597,43 @@ def _packet_payload(
                 'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
                 'messages': [f'{fmt_id_display(pid)}: {hint}'],
             }
+
+        # A record merged into this person speaks through them now (its
+        # claims and sources are gathered below, SPEC §9), so its own
+        # restriction governs the packet exactly as the subject's does - or a
+        # request made under the old record would ship under the new one
+        # (#304 review).
+        for tid in _merged_alias_ids(conn, pid):
+            trow = conn.execute('SELECT path FROM persons WHERE id = ?', (tid,)).fetchone()
+            if trow is None or not trow['path']:
+                continue
+            t_value, t_trouble = _record_restriction(archive_root / trow['path'])
+            if t_trouble is not None:
+                return {
+                    'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
+                    'messages': [
+                        f'{fmt_id_display(tid)}, which was merged into {fmt_id_display(pid)}, '
+                        f'could not be read ({trow["path"]}: {t_trouble}), so there is no way '
+                        'to tell whether it asked to be left out of exports. Nothing was '
+                        'exported. Repair that file (run `fha lint`), run `fha index`, then '
+                        'run `fha packet` again.'
+                    ],
+                }
+            if not _restricted_included(
+                t_value, include_restricted=include_restricted, include_dna=include_dna
+            ):
+                rtype = _restricted_type(t_value)
+                hint = (
+                    'it asked to be left out (restricted: by-request), so this packet is never '
+                    'built while its records count for this person.'
+                    if rtype == 'by-request' else
+                    f'it is restricted ({rtype}); pass --include-restricted to build the packet.'
+                )
+                return {
+                    'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
+                    'messages': [f'{fmt_id_display(tid)} was merged into '
+                                 f'{fmt_id_display(pid)} and {hint}'],
+                }
 
         photo_status = 'absent'
         if not no_photos:

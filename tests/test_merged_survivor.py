@@ -154,5 +154,149 @@ class MergeSurvivorMapTests(unittest.TestCase):
             merge_survivor_map({'p-a': 'p-b', 'p-b': 'p-a', 'p-d': 'p-gone'}, known), {})
 
 
+class _MergeFixture(unittest.TestCase):
+    """Thomas, his merged duplicate, Mary; each test adds its own records."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        _write(self.root / 'fha.yaml', 'roots:\n  documents: documents\n')
+        self.person(THOMAS, 'Thomas Hartley', tier='curated', sex='M')
+        self.person(DUP, 'Thos Hartley', extra=f'status: merged\nmerged_into: {THOMAS}\n',
+                    prefix=f'MERGED-INTO-{THOMAS}__')
+        self.person(MARY, 'Mary Cole', sex='F')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def person(self, pid, name, *, tier='stub', sex='M', extra='', prefix='', body=''):
+        folder = self.root / 'people' / ('stubs' if tier == 'stub' else '')
+        slug = name.lower().replace(' ', '_')
+        _write(folder / f'{prefix}{slug}_{pid}.md',
+               f'---\nid: {pid}\nname: {name}\nliving: false\nsex: {sex}\ntier: {tier}\n'
+               f'{extra}---\n\n# {name}\n\n{body}## Biography\n\nx\n')
+
+    def source(self, sid, claims):
+        _write(self.root / 'sources' / 'other' / f'rec_{sid}.md',
+               f'---\nid: {sid}\ntitle: Record\nsource_type: other\n---\n\n'
+               f'## Claims\n```yaml\n{claims}```\n')
+
+    def build(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.root, {'roots': {'documents': 'documents'}})
+
+    def rows(self, sql, args=()):
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return conn.execute(sql, args).fetchall()
+        finally:
+            conn.close()
+
+    def lint_findings(self):
+        from _lib import load_fha_yaml
+        findings, registry = lint._run_lint_core(self.root, load_fha_yaml(self.root))
+        return findings, registry
+
+
+def _claim(cid, ctype, persons, roles=None, date='1850'):
+    text = (f'- id: {cid}\n  type: {ctype}\n  value: "{ctype} record"\n'
+            f'  persons: [{", ".join(persons)}]\n')
+    if roles:
+        text += '  roles: {' + ', '.join(f'{k}: {v}' for k, v in roles.items()) + '}\n'
+    return text + (f'  date: {date}\n  status: accepted\n  confidence: high\n'
+                   '  reviewed: 2026-06-10\n')
+
+
+class LintPairsRolesThroughSurvivorsTests(_MergeFixture):
+    """C3: `persons:` names the survivor, `roles:` still names the tombstone.
+    The index reads both through the survivor and derives Mary -> Thomas; lint
+    used to drop the child role before resolving it and report E013 on
+    Thomas's correct summary line."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.person(THOMAS, 'Thomas Hartley', tier='curated',
+                    body=f'**Parents:** [[{MARY}|Mary Cole]] [[{SRC}]]\n\n')
+        self.source(SRC, _claim(CLAIM, 'birth', [THOMAS, MARY],
+                                {'child': DUP, 'parent': MARY}))
+        self.build()
+
+    def test_index_and_lint_agree_on_the_parent_edge(self) -> None:
+        self.assertIn((THOMAS, 'parent', MARY),
+                      set(self.rows('SELECT person_id, rel, other_id FROM relationships')))
+        findings, registry = self.lint_findings()
+        self.assertIn(THOMAS, lint._build_child_edges(registry).get(MARY, {}))
+        claim = registry.source_claims[SRC][0]
+        self.assertEqual(lint._claim_parentage_pids(claim, registry.alias_map),
+                         ({THOMAS}, {MARY}))
+        self.assertEqual([f.message for f in findings if f.code == 'E013'], [])
+
+
+class BrokenMergePointerTests(_MergeFixture):
+    """A1/A2: a merge the tools cannot follow leaves the claims where they are
+    - and lint must say so, not claim they count for someone."""
+
+    def test_dangling_pointer_is_an_error_and_w107_does_not_promise(self) -> None:
+        ghost = 'p-zzzzzzzzz9'
+        stuck = 'p-aaaaaaaaa4'
+        self.person(stuck, 'Xavier Dangle', extra=f'status: merged\nmerged_into: {ghost}\n')
+        self.source(SRC, _claim(CLAIM, 'residence', [stuck]))
+        self.build()
+        self.assertEqual(self.rows('SELECT person_id FROM claim_persons'), [(stuck,)])
+        findings, _reg = self.lint_findings()
+        e020 = [f.message for f in findings if f.code == 'E020']
+        self.assertEqual(len(e020), 1, e020)
+        self.assertIn(ghost, e020[0])
+        w107 = [f.message for f in findings if f.code == 'W107' and CLAIM in f.message.lower()]
+        self.assertEqual(len(w107), 1)
+        self.assertNotIn('already counts', w107[0])
+
+    def test_loop_is_an_error(self) -> None:
+        a, b = 'p-aaaaaaaaa4', 'p-aaaaaaaaa5'
+        self.person(a, 'Ann Loop', extra=f'status: merged\nmerged_into: {b}\n')
+        self.person(b, 'Bea Loop', extra=f'status: merged\nmerged_into: {a}\n')
+        self.build()
+        findings, _reg = self.lint_findings()
+        self.assertEqual(len([f for f in findings if f.code == 'E020']), 2)
+
+    def test_merged_into_without_status_moves_nothing_and_warns(self) -> None:
+        half = 'p-aaaaaaaaa5'
+        self.person(half, 'Yolanda Half', extra=f'merged_into: {MARY}\n')
+        self.source(SRC, _claim(CLAIM, 'occupation', [half]))
+        self.build()
+        self.assertEqual(self.rows('SELECT person_id FROM claim_persons'), [(half,)])
+        findings, registry = self.lint_findings()
+        self.assertEqual(len([f for f in findings if f.code == 'W140']), 1)
+        self.assertNotIn(half, lint._registry_merge_survivors(registry))
+        self.assertFalse([f for f in findings if f.code == 'W107'])
+
+
+class OnePersonOneRowTests(_MergeFixture):
+    """A4: a claim naming the tombstone AND the survivor is one person."""
+
+    def test_claim_persons_has_one_row_for_the_survivor(self) -> None:
+        self.source(SRC, _claim(CLAIM, 'residence', [DUP, THOMAS]))
+        self.build()
+        self.assertEqual(self.rows('SELECT person_id, position FROM claim_persons'),
+                         [(THOMAS, 0)])
+
+
+class FindExplainsTheMergeTests(_MergeFixture):
+    """A3: `fha find <tombstone>` says where its claims went."""
+
+    def test_find_names_the_survivor(self) -> None:
+        import find
+        self.source(SRC, _claim(CLAIM, 'birth', [DUP, MARY], {'child': DUP, 'parent': MARY}))
+        self.build()
+        from _lib import load_fha_yaml
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            find.run_find(DUP, self.root, load_fha_yaml(self.root))
+        text = out.getvalue()
+        self.assertIn(f'merged into:   {THOMAS}', text)
+        self.assertIn(f'fha find {THOMAS}', text)
+        self.assertNotIn('claims: none\n', text)
+
+
 if __name__ == '__main__':
     unittest.main()

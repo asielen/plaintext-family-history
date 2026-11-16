@@ -323,6 +323,7 @@ command (TOOLING §3).
 | E014 | Non-EDTF date value (validate against `edtf_bounds` regex) |
 | E015 | `type: relationship` claim missing `roles:` map |
 | ~~E016~~ | Retired - a claim naming a merged P-id counts for the survivor (SPEC §9) and is reported under W107 |
+| E020 | `status: merged` record whose `merged_into:` names no person, or loops (claims stay on the tombstone) |
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` |
 | E018 | `AGENTS.md` or skills reference deprecated commands or contradict locked rules |
 

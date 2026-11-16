@@ -401,6 +401,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Alias resolution / publication guards
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
+#    merge_pointer             - status: merged + merged_into -> the id claims move to
+#    SurvivorAliasMap          - alias map whose person refs resolve to survivors (lint)
+#    index_merge_survivors     - merge_survivor_map read from the index persons table
+#    merged_into_survivor      - the tombstones whose claims now count for one person
+#    restricted_with_survivors - a restricted tombstone keeps its survivor withheld
 #    strip_unaccepted_drafts   - drop AI-DRAFT prose + AI markers pre-publication (fail-closed)
 #    transcript_review_state   - has a human checked this transcript against the
 #                                 picture? unreviewed | verified | unmarked | damaged
@@ -8827,11 +8832,35 @@ def resolve_typed_ref(
     if not ref:
         return None
     if id_type_of(ref):
-        return normalize_id(ref)
+        return through_survivors(normalize_id(ref), alias_map)
     resolved = resolve_ref(ref, alias_map) if alias_map else None
     if resolved and (want is None or id_type_of(resolved) == want):
-        return resolved
+        return through_survivors(resolved, alias_map)
     return None
+
+
+class SurvivorAliasMap(dict):
+    """An alias map that also reads a merged person as the survivor (SPEC §9).
+
+    A plain dict resolves exactly as before. Lint builds its map as one of
+    these (`survivors` = `merge_survivor_map` over its person records) so
+    every persons:/roles: reference - in every pairing rule, vitals check and
+    tree twin - lands on the person `fha index` writes into `claim_persons`,
+    and lint and the index cannot disagree about who a claim is about. A
+    check that must see the name as written (W107) uses `dict(map)`.
+    """
+
+    def __init__(self, base: dict, survivors: dict[str, str]):
+        super().__init__(base)
+        self.survivors = dict(survivors)
+
+
+def through_survivors(pid: str, alias_map) -> str:
+    """`pid`, or its survivor when `alias_map` is a SurvivorAliasMap."""
+    survivors = getattr(alias_map, 'survivors', None)
+    if survivors and id_type_of(pid) == 'P':
+        return survivors.get(pid, pid)
+    return pid
 
 
 def merge_survivor_map(
@@ -8866,6 +8895,57 @@ def merge_survivor_map(
         if current is not None and current != start:
             out[start] = current
     return out
+
+
+def merge_pointer(status: object, merged_into: object) -> str | None:
+    """The id a person record's claims move to, or None: the one rule (SPEC §9).
+
+    A record moves its claims only when it is a finished tombstone - `status:
+    merged` AND a `merged_into:` id. Either half alone is a merge left part
+    done by hand (lint W140 names it), and guessing which half is right would
+    move a person's evidence onto someone else on the strength of one line.
+    The index, lint, the privacy gates and `fha find` all ask this function,
+    so a claim is never counted for the survivor in one place and left on the
+    tombstone in another.
+    """
+    if str(status or '').strip().lower() != 'merged':
+        return None
+    target = normalize_id(str(merged_into or '').strip())
+    return target or None
+
+
+def index_merge_survivors(conn: sqlite3.Connection) -> dict[str, str]:
+    """{merged P-id: survivor P-id} from the index's persons table.
+
+    `fha index` writes claims and source people under the survivor through this
+    map; every privacy gate that reads those rows (site, packet, GEDCOM,
+    WikiTree) reads the same map to know which tombstones now speak through a
+    survivor, so a restriction on the tombstone still governs (#304 review).
+    """
+    rows = conn.execute('SELECT id, status, merged_into FROM persons').fetchall()
+    known = {r[0] for r in rows}
+    pointers = {r[0]: t for r in rows if (t := merge_pointer(r[1], r[2]))}
+    return merge_survivor_map(pointers, known)
+
+
+def merged_into_survivor(survivors: dict[str, str], pid: str) -> list[str]:
+    """Every tombstone whose claims now count for `pid` (sorted), through chains."""
+    pid = normalize_id(pid)
+    return sorted(t for t, s in survivors.items() if s == pid)
+
+
+def restricted_with_survivors(restricted: set[str], survivors: dict[str, str]) -> set[str]:
+    """`restricted` plus the survivor of every restricted tombstone.
+
+    A merge makes two records one person, and `fha index` hands the
+    tombstone's claims to the survivor. A `restricted:` marker on the
+    tombstone - a request to be left out, made under that record - is about
+    the same human, so it must keep governing what those claims publish: the
+    survivor is withheld too. Erring this way costs a page the owner can
+    re-open by moving the marker onto the survivor deliberately; erring the
+    other way publishes what someone asked to keep private.
+    """
+    return set(restricted) | {survivors[p] for p in restricted if p in survivors}
 
 
 def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:

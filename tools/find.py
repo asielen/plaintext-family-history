@@ -94,6 +94,8 @@ from _lib import (
     newest_record_mtime,
     normalize_date,
     normalize_id,
+    fmt_id_display,
+    index_merge_survivors,
     normalize_place_text,
     open_index_db,
     path_to_alias,
@@ -292,6 +294,16 @@ def _find_person(
     print(f'  living: {row["living"]}   tier: {row["tier"]}')
     print(f'  file:          {profile_path}')
     print(f'  couple folder: {couple_folder}')
+    # A merged duplicate (SPEC §9): `fha index` counts its claims for the
+    # survivor, so this record shows none of its own. Say where they went,
+    # rather than a bare "claims: none" that reads as lost evidence.
+    survivor = index_merge_survivors(conn).get(normalize_id(pid))
+    survivor_name = None
+    if survivor:
+        srow = conn.execute('SELECT name FROM persons WHERE id = ?', (survivor,)).fetchone()
+        survivor_name = srow['name'] if srow else None
+        print(f'  merged into:   {fmt_id_display(survivor)}'
+              + (f'  [{survivor_name}]' if survivor_name else ''))
 
     # Companion files: research, timeline, sources-index, draft-queue
     companions = conn.execute(
@@ -325,6 +337,9 @@ def _find_person(
         print('  claims:')
         for r in claim_rows:
             print(f'    {r["type"]} / {r["status"]}: {r["n"]}')
+    elif survivor:
+        print(f'  claims: none of its own - every claim that names this record counts for '
+              f'{fmt_id_display(survivor)} now (run `fha find {fmt_id_display(survivor)}` to see them)')
     else:
         print('  claims: none')
 

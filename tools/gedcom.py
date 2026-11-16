@@ -92,6 +92,8 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    index_merge_survivors,
+    restricted_with_survivors,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -948,6 +950,20 @@ def _gedcom_payload(
         unreadable_persons: list[str] = []
         unreadable_sources: list[tuple[str, str]] = []   # (source id, path)
         restricted_persons = _restricted_person_ids(archive_root, persons, unreadable_persons)
+        # A restricted record merged into someone still governs: the index
+        # gave its claims to the survivor (SPEC §9), so the survivor's name and
+        # facts are withheld too (#304 review).
+        # `persons` holds no tombstones, so their own markers are read here.
+        survivors = index_merge_survivors(conn)
+        tombstones = {
+            r['id']: r for r in conn.execute(
+                'SELECT id, path FROM persons WHERE id IN (%s)' % ','.join('?' * len(survivors)),
+                sorted(survivors)).fetchall()
+        } if survivors else {}
+        restricted_persons = restricted_with_survivors(
+            restricted_persons | _restricted_person_ids(archive_root, tombstones,
+                                                        unreadable_persons),
+            survivors)
         restricted_sources = _restricted_source_ids(conn, archive_root, unreadable_sources)
         restricted_claims = _restricted_claim_ids(conn, archive_root)
 

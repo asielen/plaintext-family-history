@@ -116,7 +116,9 @@ from _lib import (
     fmt_id_display,
     id_type_of,
     is_valid_id,
+    index_merge_survivors,
     merge_survivor,
+    merged_into_survivor,
     normalize_id,
     open_index_db,
     person_is_living,
@@ -673,6 +675,34 @@ def _chain_flagged_record(conn: sqlite3.Connection, archive_root: Path, pid: str
                 cache[rec['id']] = flagged
         if flagged:
             return rec
+    chain = person_merge_chain(conn, pid)
+    if chain:
+        return _merged_record_flagged(conn, archive_root, chain[-1]['id'],
+                                      on_decode_error=on_decode_error, cache=cache)
+    return None
+
+
+def _merged_record_flagged(conn: sqlite3.Connection, archive_root: Path, pid: str, *,
+                           on_decode_error=None, cache: dict | None = None) -> dict | None:
+    """The first record MERGED INTO `pid` whose file is flagged, or None.
+
+    `fha index` hands a tombstone's claims to its survivor (SPEC §9), so a
+    `restricted:` marker on the tombstone - the same person's request, made
+    under the old record - must still withhold the survivor, or those claims
+    would publish under the survivor's name (#304 review). The map is
+    `_lib.index_merge_survivors`, the one the index wrote the claims with."""
+    for tid in merged_into_survivor(index_merge_survivors(conn), pid):
+        row = conn.execute('SELECT id, name, path FROM persons WHERE id = ?', (tid,)).fetchone()
+        if row is None or not row['path']:
+            continue
+        if cache is not None and tid in cache:
+            flagged = cache[tid]
+        else:
+            flagged = _person_record_flagged(archive_root, row['path'], on_decode_error)
+            if cache is not None:
+                cache[tid] = flagged
+        if flagged:
+            return {'id': row['id'], 'name': row['name'], 'path': row['path']}
     return None
 
 
@@ -1301,6 +1331,18 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'messages': [
                         f'{fmt_id_display(pid)} is restricted; WikiTree is public-facing and '
                         'has no opt-in. Remove the restriction or export a different person.'
+                    ]}
+        merged_hit = _merged_record_flagged(conn, archive_root, pid,
+                                            on_decode_error=note_undecodable)
+        if merged_hit is not None:
+            return {'status': 'restricted-subject', 'text': None,
+                    'messages': [
+                        f'{fmt_id_display(merged_hit["id"])} ({merged_hit["path"]}) was merged into '
+                        f'{fmt_id_display(pid)} and is restricted (or could not be read to '
+                        'check), and its records now count for this person - so WikiTree, '
+                        'which is public-facing with no opt-in, will not publish them. If the '
+                        'restriction no longer applies, remove it from that record, run '
+                        '`fha index`, then export again.'
                     ]}
 
         restricted_refs = _restricted_source_refs(conn, archive_root, body,

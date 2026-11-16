@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     claim_role_pairs,
     read_capture_log_lines,
-    merge_survivor_map,
+    index_merge_survivors,
     join_claim_roles,
     configure_utf8_stdout,
     SIGNIFICANCE,
@@ -1327,13 +1327,11 @@ def _merge_survivors(conn: sqlite3.Connection) -> dict[str, str]:
 
     Persons are indexed before any source on the full build, and are unchanged
     on a `--source` upsert, so both paths read the same pointers here and keep
-    row-for-row equivalence. The chain/cycle/dangling rule is
-    `_lib.merge_survivor_map`.
+    row-for-row equivalence. The rule (`status: merged` plus `merged_into:`,
+    chains followed, loops and dangling pointers stop) is
+    `_lib.index_merge_survivors`, the same map every privacy gate reads.
     """
-    rows = conn.execute('SELECT id, merged_into FROM persons').fetchall()
-    known = {r[0] for r in rows}
-    pointers = {r[0]: r[1] for r in rows if r[1]}
-    return merge_survivor_map(pointers, known)
+    return index_merge_survivors(conn)
 
 
 def _index_source(
@@ -1672,11 +1670,19 @@ def _index_source(
                 }
                 resolved_roles.append((str(role_name), role_pids))
 
+        # One row per PERSON, at the first place they are named: a claim
+        # naming both a tombstone and its survivor (or one person by ID and
+        # by name) is still one person, and two rows made `fha find` count
+        # the claim twice for him (#304 review).
+        written: set[str] = set()
         for pos, p_raw in enumerate(link_field_refs(claim.get('persons'))):
             ppid = resolve_typed_ref(p_raw, alias_map, want='P')
             if not ppid:
                 continue   # inert note-link: unknown/ambiguous name, no garbage row
             ppid = survivors.get(ppid, ppid)
+            if ppid in written:
+                continue
+            written.add(ppid)
             # Every role this person carries, not just the first one listed:
             # the mother who was also the informant is a parent too (#266).
             role = join_claim_roles(rn for rn, pids in resolved_roles if ppid in pids)

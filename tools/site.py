@@ -269,7 +269,9 @@ from _lib import (
     is_valid_id,
     is_working_copy,
     load_fha_yaml,
+    index_merge_survivors,
     merge_chain,
+    restricted_with_survivors,
     merge_survivor,
     normalize_id,
     open_index_db,
@@ -4327,6 +4329,12 @@ class _SiteBuilder:
                     value = v.get('value')
                     if value:
                         self.restricted_names.setdefault(pid, set()).add(str(value).strip().lower())
+        # A restricted record merged into someone else still governs: the
+        # index hands its claims to the survivor (SPEC §9), so the survivor
+        # is withheld too, or those claims would publish under his name
+        # (#304 review). Same map the index used (`index_merge_survivors`).
+        self.restricted_persons = restricted_with_survivors(
+            self.restricted_persons, index_merge_survivors(self.conn))
         for sid, row in self.source_meta.items():
             if row['restricted'] or not row['path']:
                 continue   # index-restricted sources are already handled
