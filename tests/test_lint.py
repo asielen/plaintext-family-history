@@ -5401,5 +5401,56 @@ class PersonWithoutFrontmatterE010Tests(unittest.TestCase):
                          [(f.code, f.message) for f in findings])
 
 
+class SettledVerdictReviewedDateTests(unittest.TestCase):
+    """SPEC §8.4: `reviewed:` is required on accepted, disputed, rejected and
+    superseded claims, optional on needs-review. Accepted stays E006's error;
+    the other three settled verdicts are W139 - a warning, because an older
+    archive holds many of them marked before the rule and an error would stop
+    every lint-gated step over a missing note of when."""
+
+    PID = 'p-7aaaaaaaa1'
+    SID = 's-7aaaaaaaa1'
+
+    def _codes(self, status: str, reviewed: str | None) -> dict:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        (root / 'people' / 'stubs' / f'cole__mary_{self.PID}.md').write_text(
+            f'---\nid: {self.PID}\nname: Mary Cole\nliving: false\ntier: stub\n---\n\n'
+            '# Mary Cole\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        review_line = f'  reviewed: {reviewed}\n' if reviewed is not None else ''
+        (root / 'sources' / 'other' / f'note_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: A note\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n'
+            f'- value: "Mary lived in Salina"\n  id: c-7aaaaaaaa1\n  type: residence\n'
+            f'  persons: [{self.PID}]\n  status: {status}\n{review_line}'
+            '  confidence: low\n  notes: x.\n```\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out
+
+    def test_settled_verdicts_without_a_date_warn(self) -> None:
+        for status in ('disputed', 'rejected', 'superseded'):
+            with self.subTest(status=status):
+                codes = self._codes(status, None)
+                self.assertEqual(len(codes.get('W139', [])), 1, codes)
+                self.assertEqual(codes['W139'][0].severity, 'W')
+                self.assertIn('fha claim', codes['W139'][0].message)
+                self.assertNotIn('E006', codes)
+
+    def test_dated_verdicts_and_needs_review_are_quiet(self) -> None:
+        self.assertNotIn('W139', self._codes('disputed', '2026-01-02'))
+        self.assertNotIn('W139', self._codes('needs-review', None))
+        self.assertIn('W139', self._codes('rejected', ''))  # blank reads as absent
+        # accepted keeps its own error, not this warning
+        codes = self._codes('accepted', None)
+        self.assertIn('E006', codes)
+        self.assertNotIn('W139', codes)
+
+
 if __name__ == '__main__':
     unittest.main()

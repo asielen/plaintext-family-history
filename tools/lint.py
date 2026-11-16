@@ -1533,6 +1533,18 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         if status == 'accepted' and not reviewed:
             findings.append(Finding('E', 'E006', path,
                 f'Accepted claim {cid} missing reviewed date'))
+        # W139: SPEC 8.4 asks for the date on every settled verdict, not only
+        # accepted. A warning rather than E006's error: an archive kept for
+        # years holds many disputed or rejected claims marked before the rule
+        # said so, nothing reads the date to decide anything, and an error
+        # would stop every lint-gated step over a missing note of when.
+        elif (status in ('disputed', 'rejected', 'superseded')
+              and not str(claim.get('reviewed') or '').strip()):
+            findings.append(Finding('W', 'W139', path,
+                f'Claim {cid} is {status} but has no reviewed: date saying when that was '
+                f'decided. Add `reviewed: YYYY-MM-DD` under its status: line (the day it '
+                f'was decided, if you know it), or run `fha claim {cid} --status {status}` '
+                f'to record it as decided today.'))
 
         # E019: status / confidence must come from their controlled vocabularies
         # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops

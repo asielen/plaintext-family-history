@@ -289,7 +289,7 @@ one bad file.
 | E003 | Filename ID suffix ≠ frontmatter `id` |
 | E004 | Any `[token]`, `persons:`, `place:`, `corroborates/contradicts` target not found |
 | E005 | P-id appears anywhere but no person record exists for it |
-| E006 | `accepted` claim missing `reviewed` field |
+| E006 | `accepted` claim missing `reviewed` field (disputed/rejected/superseded without it: W139, a warning) |
 | E007 | Claim `type` outside §8.2 vocabulary |
 | E008 | `significance_override` present without `significance_reason` |
 | E009 | `contradicts:` link present but no open question in `notes/questions.md` references both C-ids |

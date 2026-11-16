@@ -45,7 +45,7 @@ THE SEVEN WRITE-BACKS
                step-05 claim review (`fha claim … --status accepted`), which is
                the only place "the human accepts" lives. `--accept` is the
                escape hatch for a human who is treating this confirm *as* the
-               review (it stamps `reviewed:` like `fha claim` does).
+               review (it stamps `reviewed:` and `reviewed_by: human` like `fha claim` does).
   dismiss    - record a co-occurrence pair in `notes/cooccur_dismissed.json`,
                the tombstone `fha cooccur` reads to stop re-proposing a pair.
                Nothing else writes NEW dismissals to this file; this is its
@@ -905,6 +905,7 @@ def run_confirm_cooccur(
                 before = read_text_exact(source_path)
                 after, _ok = _set_scalar_on_claim(before, ex_id, 'status', 'accepted')
                 after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed', stamp)
+                after, _ok = _set_scalar_on_claim(after, ex_id, 'reviewed_by', 'human')
             except _EditRefused as e:
                 return _fail(result, 'refused',
                              f'{ex_disp} in {source_path}: {e} Nothing was written.')
@@ -1039,7 +1040,10 @@ def _relationship_claim_lines(
         f'  status: {status}',
     ]
     if status == 'accepted' and reviewed:
+        # The human said yes to this tie at this prompt: record who decided
+        # beside when (SPEC §8.4), exactly as `fha claim` does.
         lines.append(f'  reviewed: {reviewed}')
+        lines.append('  reviewed_by: human')
     lines += [
         '  confidence: medium',
         '  information: secondary',
