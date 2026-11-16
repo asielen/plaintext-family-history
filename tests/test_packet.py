@@ -1263,6 +1263,161 @@ class PacketTests(unittest.TestCase):
         self.assertIn('## Zzz Kept', copied)
         self.assertIn('Write their story in plain sentences', copied)
 
+    # ── <!-- private --> fenced prose (the profile template's promise) ───────
+    # The template tells the genealogist a fenced note stays "out of a shared
+    # copy". A packet is a copy handed to a relative, so a hunch about a
+    # living cousin he fenced off must not travel in it - not in the profile,
+    # not in a research file, not in a source record's notes.
+
+    def _profile_copy(self, result):
+        return next((result['packet_dir'] / 'profile').glob('*.md')).read_text(
+            encoding='utf-8')
+
+    def test_private_fence_withheld_from_profile_copy(self):
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees behind the barn.\n\n'
+            '## Stories\n\nThe barn burned in 1910.\n\n'
+            '<!-- private -->\nAunt May thinks the fire was set on purpose.\n'
+            '<!-- /private -->\n\n'
+            '## Research Notes\n\nCheck the 1880 census.\n\n'
+            '<!-- private -->\nA living cousin says he left after a falling-out.\n'
+            '<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        self.assertNotIn('living cousin', copied)
+        self.assertNotIn('set on purpose', copied)
+        self.assertNotIn('private -->', copied)          # no stray markers either
+        self.assertIn('He kept bees behind the barn.', copied)
+        self.assertIn('The barn burned in 1910.', copied)
+        self.assertIn('Check the 1880 census.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn(
+            f'2 notes you marked private were left out of {profile_path.name}; '
+            'they stay in your archive.', readme)
+
+    def test_unterminated_private_fence_withholds_to_end(self):
+        # Fail closed: an opener with no closer hides everything after it
+        # rather than guess where the private part was meant to stop.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees.\n\n'
+            '<!-- private -->\nA hunch about a living cousin.\n\n'
+            '## Research Notes\n\nMore private-adjacent notes.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        self.assertIn('He kept bees.', copied)
+        self.assertNotIn('living cousin', copied)
+        self.assertNotIn('private-adjacent', copied)
+
+    def test_private_fence_around_a_draft_withholds_both(self):
+        # Ordering guard. The draft stripper cuts back to the previous
+        # heading, which would swallow a fence OPENER sitting above the draft
+        # and strand the rest of the fenced text with only its closer - if
+        # drafts ran first, "Secret B" would ship. Fences are resolved first.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nPublic paragraph.\n\n'
+            '<!-- private -->\nSecret A.\n\nDrafted paragraph.\n'
+            '<!-- AI-DRAFT 2026-06-30 claims: [] -->\n\nSecret B.\n<!-- /private -->\n\n'
+            '## Stories\n\nA told story.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        for hidden in ('Secret A', 'Secret B', 'Drafted paragraph', 'AI-DRAFT', 'private -->'):
+            self.assertNotIn(hidden, copied)
+        self.assertIn('A told story.', copied)
+
+    def test_all_private_section_ships_like_an_unwritten_one(self):
+        # A section holding nothing but fenced prose is empty once the fence
+        # is resolved; its bare heading must not promise the relative content.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees.\n\n'
+            '## Research Notes\n<!-- private -->\nOnly a hunch.\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertNotIn('Only a hunch', copied)
+        self.assertNotIn('## Research Notes', copied)
+        self.assertIn('## Biography', copied)
+
+    def test_scaffolded_placeholder_still_dropped_with_fence_pass(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` EXAMPLE.
+        # Resolving fences before the unfilled-section check would change the
+        # placeholder's words so it no longer matched, and the rest of the
+        # template's instructions would ship. The placeholder must still go.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            + render_person_body_scaffold('Test Person').replace(
+                '## Biography\nWrite their story',
+                '## Biography\nHe kept bees.\n\n## Zzz Kept\nWrite their story'),
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertNotIn('Open questions, hunches, and brick walls', copied)
+        self.assertNotIn('## Research Notes', copied)
+        self.assertIn('He kept bees.', copied)
+
+    def test_private_fence_withheld_from_research_copy(self):
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\nTry the county probate index.\n\n'
+            '<!-- private -->\nThe living cousin may be his grandson.\n<!-- /private -->\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = (result['packet_dir'] / 'profile' / 'research_p-aaaaaaaaaa.md').read_text(
+            encoding='utf-8')
+        self.assertIn('Try the county probate index.', copied)
+        self.assertNotIn('his grandson', copied)
+        self.assertNotIn('private -->', copied)
+
+    def test_private_fence_withheld_from_source_record_copy(self):
+        self._seed_person()
+        src = self._seed_source('s-1111111111', 'Letter')
+        src.write_text(
+            '---\nid: s-1111111111\ntitle: Letter\n---\n## Claims\n\n## Notes\n\n'
+            'A letter from 1902.\n\n<!-- private -->\nThe sender may be alive.\n'
+            '<!-- /private -->\n',
+            encoding='utf-8')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').rglob('s-1111111111.md')).read_text(
+            encoding='utf-8')
+        self.assertIn('A letter from 1902.', copied)
+        self.assertNotIn('may be alive', copied)
+        self.assertNotIn('private -->', copied)
+
     def test_pre_75_profile_with_no_purpose_block_ships_unchanged(self):
         # No backfill/migration tooling (#75/#76 done-when): an
         # older-shaped record that never had a purpose block or a Sources

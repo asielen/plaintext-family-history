@@ -157,6 +157,9 @@ CODE MAP
     _strip_frontmatter_list_entries - surgical removal from a top-level frontmatter list
     _flatten_alias_strings        - strings inside a nested-list alias entry
     _redact_profile_text          - drop withheld name variants + their alias mirrors
+    _drop_private_fences          - withhold `<!-- private -->` fenced prose from any
+                                     record copy (profile, research file, source record)
+    _strip_emptied_sections       - drop profile sections the fence/draft passes emptied
     _strip_profile_drafts         - withhold unaccepted AI-draft prose from the profile copy
     _strip_scaffolding_blocks     - drop #75's purpose block (+ #76's `## Sources`
                                      region and #125's never-written §16 sections,
@@ -181,6 +184,7 @@ CODE MAP
     _copy_into                    - copy one file, returning the dest path or None on a missing src
     _plural_note                  - one plain "left out for privacy" README line
     _draft_note                   - one plain "draft awaiting your review left out" README line
+    _private_fence_note           - one plain "notes you marked private left out" README line
     _copy_redacted_source         - like _copy_into, but with the withheld claims cut out
     _copy_source_with_scaffolding_stripped - like _copy_into, but with #75's purpose
                                      block cut out (the ordinary-source sibling of
@@ -216,6 +220,10 @@ from _lib import (
     # the README draft count only, so the count can never drift from what
     # strip_unaccepted_drafts actually cut. The strip itself is the public API.
     _AI_DRAFT_MARK_RE,
+    # Same reasoning for the private-fence grammar: imported for the README
+    # count and a no-op check only; the cut itself is apply_private_fence.
+    _PRIVATE_BLOCK_RE,
+    _PRIVATE_MARK_RE,
     CLAIMS_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -223,6 +231,7 @@ from _lib import (
     FRONT_RE,
     FhaConfigError,
     Result,
+    apply_private_fence,
     configure_utf8_stdout,
     fmt_id_display,
     is_placeholder_name,
@@ -911,6 +920,50 @@ def _redact_profile_text(
         removed += alias_removed
 
     return text[:fm_start] + fm_text + text[fm_end:], removed
+
+
+def _drop_private_fences(text: str) -> tuple[str, int]:
+    """Withhold prose the genealogist fenced off with `<!-- private -->` ...
+    `<!-- /private -->` from a record copy about to leave the archive.
+
+    The profile template tells him a fenced note stays "out of a shared
+    copy", and a packet is exactly that: a copy handed to a relative. So a
+    hunch about a living cousin he fenced off stays home - from the profile,
+    from a research file copied with --include-research, and from a source
+    record's notes alike. No flag opens it: the include flags govern the
+    `restricted` marker, and a fence is the author's own, narrower "not this
+    paragraph", lifted by deleting the markers.
+
+    The cut is `_lib.apply_private_fence(drop=True)` - the same rule
+    `fha site`'s shared build uses, including its fail-closed half: an
+    opener with no closer withholds everything after it. Bounded to the
+    body for the same reason `_strip_profile_drafts` is (an unclosed opener
+    must never cut through the frontmatter). A body with no fence marker at
+    all is returned untouched - not even blank-line tidying - so an
+    ordinary record still ships as a byte-identical copy.
+
+    Returns (new_text, fenced_blocks_withheld) for the README's plain count.
+    """
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    body = text[body_start:]
+    if not _PRIVATE_MARK_RE.search(body):
+        return text, 0
+    count = len(_PRIVATE_BLOCK_RE.findall(body))
+    return text[:body_start] + apply_private_fence(body, drop=True), count
+
+
+def _strip_emptied_sections(text: str) -> str:
+    """Drop a profile copy's §16 sections left with nothing in them once the
+    private-fence and draft passes have run - a `## Research Notes` that held
+    only fenced prose must ship like a section never written, not as a bare
+    heading promising the relative something. Body-bounded, and ONLY the
+    unfilled-section rule: re-running the whole `_strip_scaffolding_blocks`
+    would re-anchor its purpose-block match and could eat a human's own
+    blockquote that now sits where the purpose block was."""
+    fm = FRONT_RE.match(text)
+    body_start = fm.end() if fm else 0
+    return text[:body_start] + strip_unfilled_person_sections(text[body_start:])
 
 
 def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
@@ -2119,6 +2172,19 @@ def _draft_note(count: int, filename: str) -> str:
             f'{filename}; they stay in your archive.')
 
 
+def _private_fence_note(count: int, filename: str) -> str:
+    """One plain README line for withheld `<!-- private -->` fenced prose.
+
+    Same three lessons as _plural_note - something was held back, how much,
+    nothing was deleted - in his own terms: these are notes HE marked
+    private, not facts the restricted marker withheld."""
+    if count == 1:
+        return (f'1 note you marked private was left out of {filename}; '
+                'it stays in your archive.')
+    return (f'{count} notes you marked private were left out of {filename}; '
+            'they stay in your archive.')
+
+
 def _asset_path_note(count: int, filename: str) -> str:
     """One plain README line for a `files:` entry redacted INSIDE a copied
     source record - not the missing-asset sentence `_redact_asset_path`
@@ -2204,6 +2270,8 @@ def _copy_redacted_source(
     # §16 person sections (only person profiles do), so
     # is_person_profile=False here.
     new_text = _strip_scaffolding_blocks(new_text, is_person_profile=False)
+    # Notes the genealogist fenced `<!-- private -->` stay home too.
+    new_text, private_count = _drop_private_fences(new_text)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = _unique_dest_path(dest_dir, src.name)
     try:
@@ -2224,6 +2292,8 @@ def _copy_redacted_source(
         return None
     if removed:
         redaction_notes.append(_plural_note(removed, 'fact', dest.name))
+    if private_count:
+        redaction_notes.append(_private_fence_note(private_count, dest.name))
     if asset_paths_redacted:
         redaction_notes.append(_asset_path_note(asset_paths_redacted, dest.name))
     return dest
@@ -2310,6 +2380,9 @@ def _copy_source_with_scaffolding_stripped(
         return None
     text, asset_paths_redacted = files_redacted
     new_text = _strip_scaffolding_blocks(text, is_person_profile=False)
+    # A source record's notes and a research file are both prose the
+    # genealogist writes, so a `<!-- private -->` fence in either stays home.
+    new_text, private_count = _drop_private_fences(new_text)
     if new_text == text and not asset_paths_redacted:
         return _copy_into(src, dest_dir, messages=messages)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -2320,6 +2393,8 @@ def _copy_source_with_scaffolding_stripped(
         if messages is not None:
             messages.append(f'WARNING: could not copy {src}: {e}')
         return None
+    if private_count and redaction_notes is not None:
+        redaction_notes.append(_private_fence_note(private_count, dest.name))
     if asset_paths_redacted and redaction_notes is not None:
         redaction_notes.append(_asset_path_note(asset_paths_redacted, dest.name))
     return dest
@@ -2756,8 +2831,23 @@ def _packet_payload(
                     'will point at the problem), then rebuild the packet.'
                 )
             redacted_profile_text, hidden_name_count = profile_redaction
+            # #75/#76/#125: the purpose block, the `## Sources` region and
+            # never-written sections are scaffolding for the working
+            # archive, not content for the family. Cut FIRST, from the
+            # untouched text: the Research Notes placeholder embeds a
+            # `<!-- private -->` EXAMPLE, so after the fence pass below it
+            # would no longer match and the rest of the template's
+            # instructions would ship.
+            profile_out_text = _strip_scaffolding_blocks(
+                redacted_profile_text, is_person_profile=True
+            )
+            # Notes he fenced `<!-- private -->` stay home. BEFORE the draft
+            # pass: that cuts each draft back to the previous heading, which
+            # would swallow a fence opener sitting above a draft and leave
+            # the fenced text after the draft with only its closer - shipped.
+            profile_out_text, private_count = _drop_private_fences(profile_out_text)
             profile_out_text, draft_count, draft_problem = _strip_profile_drafts(
-                redacted_profile_text
+                profile_out_text
             )
             if draft_problem is not None:
                 raise OSError(
@@ -2766,14 +2856,9 @@ def _packet_payload(
                     'Repair the marker (usually: add the missing "-->"), or remove '
                     'the draft text, then rebuild the packet.'
                 )
-            # #75/#76: the purpose block and the `## Sources` region are
-            # scaffolding for the working archive, not content for the
-            # family - strip them the same way the draft markers just above
-            # are stripped, before deciding whether this copy differs from
-            # the original at all.
-            profile_out_text = _strip_scaffolding_blocks(
-                profile_out_text, is_person_profile=True
-            )
+            # A section the two passes just emptied ships like one never
+            # written: no bare heading over nothing.
+            profile_out_text = _strip_emptied_sections(profile_out_text)
             if profile_out_text != profile_text:
                 # An OSError here raises into the cleanup handler at the bottom
                 # of the build, which rmtree's the whole packet - so atomicity
@@ -2788,6 +2873,9 @@ def _packet_payload(
                     redaction_notes.append(
                         _plural_note(hidden_name_count, 'name', profile_path.name)
                     )
+                if private_count:
+                    redaction_notes.append(
+                        _private_fence_note(private_count, profile_path.name))
                 if draft_count:
                     redaction_notes.append(_draft_note(draft_count, profile_path.name))
             elif _copy_into(profile_path, profile_dir, messages=messages) is None:

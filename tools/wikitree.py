@@ -77,6 +77,8 @@ CODE MAP
     _broken_merge_notes              - old ids whose merge chain is broken, with the fix
 
   Rendering
+    (apply_private_fence             - drop `<!-- private -->` fenced prose (drop=True);
+                                       an unclosed fence drops to the end - lives in _lib)
     (strip_unaccepted_drafts         - drop `<!-- AI-DRAFT … -->` prose + AI markers,
                                        fail-closed on damaged markers - lives in _lib)
     (strip_unfilled_person_sections  - drop §16 sections still holding only the record
@@ -108,6 +110,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     VITAL_TYPES,
+    apply_private_fence,
     claim_is_own_vital,
     configure_utf8_stdout,
     edtf_bounds,
@@ -1272,7 +1275,26 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         # from accepted prose, so the export refuses (fail closed) rather
         # than risk shipping unaccepted text - same refusal family as the
         # privacy scans below.
-        body, draft_problem = strip_unaccepted_drafts(rec['body'])
+        #
+        # A `<!-- private -->` fence goes first of all. The profile template
+        # tells the genealogist a fenced note stays "out of a shared copy",
+        # and a public wiki is the most shared copy there is - a hunch about
+        # a living cousin he fenced off must never be published. Resolved
+        # over the WHOLE body (as `fha site` does) so an opener written above
+        # a heading still covers the text below it, and BEFORE the draft
+        # stripper: that cuts each draft back to the previous heading, which
+        # would swallow a fence opener sitting above a draft and strand the
+        # fenced text after the draft with only its closer - published.
+        # Fenced text is not going out, so like a draft it is also gone
+        # before the privacy scans and cannot refuse the export. One
+        # constraint on the order: the Research Notes scaffold placeholder
+        # embeds a `<!-- private -->` EXAMPLE, so unfilled sections are cut
+        # from the untouched body first - after the fence pass the
+        # placeholder no longer matches, and the rest of the template's
+        # instructions would be published.
+        body = strip_unfilled_person_sections(rec['body'])
+        body = apply_private_fence(body, drop=True)
+        body, draft_problem = strip_unaccepted_drafts(body)
         if draft_problem:
             return {'status': 'broken-draft-marker', 'text': None,
                     'messages': [
@@ -1292,6 +1314,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         # that will. It also runs after the stripper on purpose - a section
         # holding nothing but an unaccepted draft is empty once that draft is
         # gone, and an empty `== Biography ==` heading is scaffolding too.
+        # (Likewise a section that held nothing but fenced private prose.)
         body = strip_unfilled_person_sections(body)
 
         # A restricted subject (any value, including by-request) is refused
