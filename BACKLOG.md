@@ -131,6 +131,59 @@ exists to catch.
 
 ---
 
+## 5. Deferred fixes
+
+Each errs safe today: it refuses, or keeps something private, or leaves
+something out.
+
+- **A damaged AI-draft marker is found only at publish time.** If a
+  biography's `<!-- AI-DRAFT … -->` marker is broken (the closing `-->`
+  missing, say), `fha site` and `fha packet` quietly leave that prose out and
+  `fha wikitree` refuses, but nothing warned the owner earlier. Neither
+  `fha lint` nor `fha doctor` checks the markers (`_lib.py`
+  `strip_unaccepted_drafts` holds the grammar). *Approach:* a lint warning
+  naming the file and the marker, using the same grammar. *Severity:* low.
+- **`fha capture --asset` looks only in the current folder.** An owner who
+  types a path as it sits inside the archive gets "file not found"
+  (`capture.py`, the `--asset` resolution). `fha process` already retries
+  relative to the archive root. *Approach:* the same retry. *Severity:* low.
+- **The "is this restricted?" rule is copied into several tools**
+  (`_is_restricted_value` in index, doctor, gedcom, site and wikitree;
+  `_is_restricted` in lint; `_restricted_type` in packet and site;
+  `_restricted_type_of` in process). The copies agree today. If one drifts, a
+  private record could leak from one export path. *Approach:* one function in
+  `_lib`, plus a test that pins its true/false table. *Severity:* low, but
+  privacy-class.
+- **A withheld earlier name can still show in a packet's prose.** Packet
+  redaction strips a restricted `name_variants` entry and its alias copies, but
+  leaves body prose alone on purpose, so a link written `[[p-x|Old Name]]`
+  still shows the private name. Low risk, since a packet is a private family
+  export. *Approach:* rewrite the display text of links to that person, or name
+  the leftovers in the packet README.
+
+---
+
+## 6. Feature ideas (not yet on the roadmap)
+
+Not fixes. Recorded here until one earns a place in `BUILD.md`.
+
+- **"Possible duplicate people" in `fha report`.** People coming from Ancestry
+  expect duplicate flags. `fha confirm merge` exists, but nothing surfaces
+  candidate pairs (similar name, compatible birth years, shared places), even
+  though the merge-identities skill speaks of "the report flagged a possible
+  duplicate".
+- **"On this day" in `fha report`.** Births, marriages and deaths from accepted
+  claims that fall this week, narrated by the today skill. Warmth for the
+  session-start briefing, no new command.
+- **An archive progress line.** "234 people, 61% of vitals sourced, 18 photos
+  untagged", built from the index: the progress bar that keeps a hobbyist
+  going.
+- **`fha views canvas`.** A regenerable Obsidian `.canvas` (or Mermaid) family
+  tree drawn from relationship claims, so an Obsidian user can see the tree
+  without leaving the vault. Today `fha views tree` emits JSON or DOT only.
+
+---
+
 *Source: the spec-accuracy + philosophy audit (see git history around the
 `Docs:`/`lint:`/`photoindex:` audit-fix commits). Items 1–2 and 4 here were the
 audit's "deferred / needs-a-decision" findings and the rest of that audit was
