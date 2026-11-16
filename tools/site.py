@@ -251,6 +251,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_date_order_sql,
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
@@ -5757,7 +5758,7 @@ class _SiteBuilder:
         for c in self.conn.execute(
             'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence FROM claims c '
             f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
-            "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
+            f"{claim_date_order_sql('c')}",
             (sid,),
         ):
             # A restricted claim (read from the record file) is withheld from
@@ -6566,7 +6567,7 @@ class _SiteBuilder:
             "c.status, c.confidence, c.reviewed "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
-            "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
+            f"ORDER BY {claim_date_order_sql('c')}",
             (pid,),
         ).fetchall()
         # Standalone: show the event with its citation redacted when the source is
@@ -7874,7 +7875,7 @@ class _SiteBuilder:
             "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id, "
             "c.status, c.confidence, c.reviewed FROM claims c "
             f"WHERE c.place_id = ? AND {place_status_filter} {living_filter} "
-            "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
+            f"ORDER BY {claim_date_order_sql('c')}",
             (lid,),
         ).fetchall()
         # Standalone: also withhold events whose only source is restricted/living-linked,

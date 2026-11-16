@@ -514,7 +514,7 @@ Find places where the command exits 0 but did not do what the user requested:
 - A check handles person profile files but not companion files (or vice versa).
 - FTS search degrades to regex scan but the regex pass covers different file types.
 - Privacy/filtering rules applied to `fha find` are not applied to the scan fallback.
-- `fha views sources-index` covers curated persons but not couple folders, or vice versa.
+- `fha views sources-index` covers curated persons but not stubs, or vice versa.
 
 **8 - Path and config assumptions**
 - `archive_root / 'documents'` or `archive_root / 'photos'` hardcoded instead of going

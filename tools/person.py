@@ -1542,17 +1542,11 @@ def run_promote(
         # engine finishes the job instead of no-opping.)
         result.data['status'] = 'already'
         result.data['folder'] = parent.name
-        # A curated-and-filed person can still lack the research companion no
-        # other surface will ever scaffold - say so rather than no-op silently.
-        research_name = research_companion_filename(path.name)
-        note = ''
-        if research_name and not (parent / research_name).exists():
-            note = (' (One gap: their research companion file is missing - copy '
-                    'people/_TEMPLATE.research.md into the folder as '
-                    f'{research_name} when you want one.)')
+        # No word about a research file: SPEC §16b - it exists only once
+        # something is written in it, so its absence is not a gap.
         result.add('info',
                    f'{label} is already curated - their record lives in '
-                   f'people/{parent.name}/. Nothing to do.{note}')
+                   f'people/{parent.name}/. Nothing to do.')
         return result
 
     # `--into connections/` is intercepted here, before the generic folder
@@ -1738,11 +1732,8 @@ def run_promote(
                    'notes travelled with it, nothing was lost.')
     elif applied['research_path'].exists():
         result.add('info', 'Research companion already exists - left as is.')
-    else:
-        result.add('info',
-                   'No research companion created - it is optional now (SPEC '
-                   '§16): copy people/_TEMPLATE.research.md by hand if this '
-                   "person's research grows large enough to want one.")
+    # No research file is created (SPEC §16b: it exists only once something
+    # is written in it), and none is suggested.
 
     # Keep the index correct in place rather than deleting it (#37). A move
     # keeps the record's mtime, so the staleness check cannot see it - the

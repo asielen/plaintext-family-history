@@ -112,6 +112,7 @@ from _lib import (
     VITAL_TYPES,
     claim_is_own_vital,
     configure_utf8_stdout,
+    claim_date_order_sql,
     edtf_bounds,
     extract_token_ids,
     extract_tokens,
@@ -1145,7 +1146,7 @@ def _research_notes_lines(
     <ref> machinery - that stays reserved for cited facts.
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT DISTINCT c.id, c.value, c.date_edtf, c.date_min, s.title AS source_title
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
@@ -1154,8 +1155,7 @@ def _research_notes_lines(
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0
-        ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END,
-                 c.date_min ASC
+        ORDER BY {claim_date_order_sql('c')}
         """,
         (pid,),
     ).fetchall()

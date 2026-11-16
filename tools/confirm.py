@@ -1375,14 +1375,17 @@ def _place_exists(archive_root: Path, place_id: str) -> bool:
 
 
 def _place_block_lines(place_id: str, name: str, hierarchy: str | None) -> list[str]:
-    """Build a minimal new place record for places.yaml (no coords - geocode later)."""
+    """Build a minimal new place record for places.yaml (no coords - geocode later).
+
+    No `notes:`: SPEC §15 writes notes only when there is something to say
+    about the place, so a new place carries none (place-research or
+    `fha places note` adds real ones)."""
     lines = [
         f'- id: {fmt_id_display(place_id)}',
         f'  name: {_yaml_inline(name.strip())}',
     ]
     if hierarchy and hierarchy.strip():
         lines.append(f'  hierarchy: {_yaml_inline(hierarchy.strip())}')
-    lines.append('  notes: registered from a place-text cluster via `fha confirm place`')
     return lines
 
 

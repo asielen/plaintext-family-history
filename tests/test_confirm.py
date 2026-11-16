@@ -138,6 +138,15 @@ class EditHelperTests(unittest.TestCase):
         self.assertEqual(rec['name'], 'A: B')
         self.assertEqual(rec['hierarchy'], 'St. John #2')
 
+    def test_new_place_carries_no_boilerplate_notes(self) -> None:
+        # SPEC 2.1 §15: `notes:` is written only when there is something to
+        # say about the place. A freshly registered place carries none, so
+        # the place page does not show the same filler line on every town.
+        import yaml
+        lines = confirm._place_block_lines('L-7c1a9f4e22', 'Marsh Creek', None)
+        rec = yaml.safe_load('\n'.join(lines))[0]
+        self.assertNotIn('notes', rec)
+
     def test_set_scalar_inserts_place(self) -> None:
         new, changed = confirm._set_scalar_on_claim(_CLAIMS, 'C-bb22cc33dd', 'place', 'L-7c1a9f4e22')
         self.assertTrue(changed)
