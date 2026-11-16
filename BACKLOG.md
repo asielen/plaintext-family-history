@@ -131,7 +131,7 @@ exists to catch.
 
 ---
 
-## 5. Deferred fixes from the usability reviews
+## 5. Deferred fixes
 
 Each errs safe today: it refuses, or keeps something private, or leaves
 something out.

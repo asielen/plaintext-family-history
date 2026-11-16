@@ -2,8 +2,8 @@
 
 Why the archive is shaped the way it is.
 
-`SPEC.md` says what the rules are. This document says why, and what was
-considered and turned down. It is written for someone who opens the archive
+`SPEC.md` says what the rules are. This document says why, and which
+alternatives it turns down. It is written for someone who opens the archive
 long after the people who built it are gone, and wants to know whether a rule
 is load-bearing before changing it.
 
@@ -125,10 +125,10 @@ which records empty searches so a dead collection is not searched again; name
 variants and birth surnames; two people with the same name kept apart by ID;
 and conflicting records kept as a citable state rather than a mistake to hide.
 
-The small 5% still shaped the data model. It is where the relationship nature
+The small 5% still shapes the data model. It is where the relationship nature
 field (topic 3), the enslaver and enslaved relationship types, the translation
 file role, the "left out by request" privacy marker, and the rule for one
-person who sits at two places in the pedigree all came from.
+person who sits at two places in the pedigree all come from.
 
 **What we rejected.** Logging in to record sites, paging through results, or
 downloading in bulk on the tool's own initiative (see topic 9). Building DNA
@@ -165,9 +165,9 @@ numbered into the pedigree.
 **Why.**
 
 - **Two true parents are not a conflict.** Without a nature field, an adoptive
-  father and a biological father are both just "parent". The only way the model
-  had to relate two such claims was `contradicts`, which would call two true
-  things a conflict. The same problem hits misattributed parentage (a DNA
+  father and a biological father are both just "parent". The only way to
+  relate two such claims would be `contradicts`, which calls two true things a
+  conflict. The same problem hits misattributed parentage (a DNA
   father and the father who raised the child, both real), donor conception and
   surrogacy. With `subtype`, each is a separate, equally valid edge.
 - **Most of what you know starts as a guess.** A name an aunt mentioned, a
@@ -234,8 +234,11 @@ entry (`SPEC.md` §17):
    past it. The tree and the site draw it as a guess. Exports leave it out.
 4. **Settle.** A source says it (a normal claim). Or the pieces add up, and the
    reasoning is written as a proof-argument source that the claim cites. Or it
-   was wrong: the entry is marked `abandoned` and kept, so nobody makes the same
-   guess again.
+   is wrong: the guess is ruled out. Its lines leave the entry, and one dated
+   `context:` line records `ruled out h-…` and why, so nobody makes the same
+   guess again. The question stays open, and the next guess gets a new `h-` id.
+   There is no "abandoned" status, because the status belongs to the question,
+   and a wrong guess does not answer the question.
 
 **The test between a weak source and a working answer.** If anyone or anything
 other than the researcher says it (a family story, an index entry, another
@@ -250,8 +253,9 @@ claim needs a source.
   person looked?" with "how good is the record?".
 - **One ladder instead of five mechanisms.** Open questions, separate hypothesis
   records, a "needs review" status, accepted-but-low claims and guessed tree
-  edges all held the same idea in different places. A reader had to learn five
-  things. Now there is one entry that grows as the research does.
+  edges are the same idea. Spread across five places, a reader would have to
+  learn five things. One entry that grows as the research does is one thing to
+  learn.
 - **An `h-` id never becomes a `c-` id.** IDs are typed for life. Settling a
   working answer creates a new claim from the source that proves it. Both
   records stay, and the claim may point back at the working answer.
@@ -395,11 +399,11 @@ Its rules:
 
 **Why.** The owner this is built for is comfortable clicking around a website
 and does not want a terminal. Adding a note or dropping a scan into the inbox
-already works with a file browser. What hurt were the structured decisions,
-above all accepting a claim, which meant hand-editing a status inside a block
-of YAML: the scariest edit in the archive. Those decisions already existed as
-commands. The only missing piece was a gentler door to them. A thin problem
-deserved a thin answer.
+already works with a file browser. What is hard is the structured decisions,
+above all accepting a claim, which by hand means editing a status inside a
+block of YAML: the scariest edit in the archive. Those decisions are already
+commands. What the owner needs is a gentler door to them. A thin problem
+deserves a thin answer.
 
 A local page served by Python's standard library has almost no upkeep: no
 packaging, no code signing, no app store review, no framework to chase. If it
@@ -442,11 +446,11 @@ fetches the one full-size image, with no login.
 
 **Why.** Capture exists to file the record you are already looking at, not to
 harvest a site. Fetching the one image on screen, when you click, is no
-different from clicking the site's own button. Earlier bulk-download tools for
-the same site broke when its private interfaces changed and ran against its
-terms; the one-record rule avoids both.
+different from clicking the site's own button. Bulk-download tools for
+such sites break when the site's private interfaces change, and they run
+against its terms; the one-record rule avoids both.
 
-**Lessons from building the site readers.**
+**How the site readers work.**
 
 - **The browser stays simple; the Python recipe decides.** The add-on fills in
   only obvious hints (title, address, date). The per-site reading of a census
@@ -459,7 +463,7 @@ terms; the one-record rule avoids both.
   ingest, and the owner's own typed corrections win over both.
 - **Field labels are not people.** Sites lay out records as label and value.
   Without a guard, labels like "Birth Date" end up in the list of names. One
-  shared guard fixed this for every site.
+  shared guard keeps them out for every site.
 - **Sites fall into tiers.** Pages that publish standard metadata need only a
   light recipe. The big record sites, which build their pages in script with no
   metadata, need table readers. Public archives using the IIIF image standard
