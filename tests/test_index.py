@@ -1731,7 +1731,7 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 13)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 14)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
