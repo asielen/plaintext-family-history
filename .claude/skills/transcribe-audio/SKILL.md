@@ -132,7 +132,8 @@ came, rather than the bare form.
    Never replace, detach, or "supersede" the original transcript, even when
    the whisper pass is clearly better — the two disagree in exactly the spots
    a reviewer needs to compare, and provenance beats tidiness.
-   Note the pass (model, date) in the source's `## Notes` / `## AI Passes`.
+   Record the pass as one entry in the source's `ai_passes:` frontmatter list
+   (`{date, by: <the whisper model the run used>, task: transcript}`, SPEC §14).
 5. **Re-anchor carefully.** Existing claims keep their anchors to the original
    transcript — a whisper pass never silently re-anchors, re-words or re-notes
    an `accepted` claim. When a whisper timestamp resolves a disputed reading,
@@ -202,43 +203,34 @@ came, rather than the bare form.
      without the re-stamp, and none of them moves without his yes.
    - **On a no, or a "let me think about it", write nothing.** Leave the claim
      exactly as it is. If he would rather not leave a doubtful fact looking
-     settled, `fha claim <C-id> --status needs-review` drops it back into
-     `review-claims`'s queue without inventing a value — offer it, don't assume
-     it. Either way the declined or parked proposal goes in the pass notes: a
-     reading he considered and rejected is worth as much as one he took.
+     settled, park it: `fha claim <C-id> --status suggested` puts it back among
+     the unsettled claims with today's `reviewed:` date - "checked, still open"
+     (SPEC §8.1) - without inventing a value. Offer it, don't assume it; if the
+     tool refuses the park, see [`GAP.md`](GAP.md). Either way the declined or
+     parked proposal goes in the pass's `note:`: a reading he considered and
+     rejected is worth as much as one he took.
    - **When the corrected reading changes WHICH fact is asserted — a different
      person, a different event, a different place — it is not a repair.** Draft
      it as a **new `status: suggested` claim** and hand it to `review-claims`;
-     propose what should become of the old claim (`needs-review`, `disputed`,
-     `superseded`) and let him say. `fha claim new --source <S-id> --status
-     suggested …` mints it; it has no `--anchor` flag ([`GAP.md`](GAP.md)), so
-     the `anchor:` naming the whisper transcript
-     (`anchor: "…-whisper, 00:41:22"`) is added in the source's `## Claims`
-     block the way `mine-transcript` step 2 drafts one — safe here because the
-     claim is `suggested` and nothing already accepted is being touched. The
-     same holds for anything whisper recovers that the app transcript mangled
-     beyond use: new material is a new claim, never folded into an accepted one.
-   - **A garbled quote in a claim's `notes:` needs the same yes — and no verb
-     writes that field.** `fha claim` corrects `value`, `date`, `type`,
-     `place`, `place_text`, `persons` and `confidence`; `notes:` and `anchor:`
-     are not among them ([`GAP.md`](GAP.md)). So don't quietly hand-edit the
-     record: show the before/after as above, and record the corrected reading
-     with a verb that exists —
-     `fha source note <S-id> --text "[[C-…]]: whisper 00:41:22 reads … where the
-     app transcript had …"` — which appends to the source's `## Notes` without
-     touching the claim. If he asks for the claim's own `notes:` line to be
-     repaired in place, that is his call on his own record: make that one-line
-     edit in the source record's `## Claims` block (a record, never an archived
-     original or a `files:` entry), say exactly which line you changed, then
-     re-stamp with `fha claim <C-id> --status accepted` so the review date moves
-     with the content, and finish with `fha lint`.
-   - Record the audit in `## AI Passes`: `outputs` lists what was actually
-     written (C-ids corrected on his say-so, C-ids parked, new `suggested`
-     C-ids), and proposals he declined go in the task/notes text so the reading
-     survives without pretending to be a fact. `human_reviewed: false` until he
-     says otherwise — the pass being *run* with him in the room is not the same
-     as him having reviewed its output, and this is the field a later reader
-     uses to tell them apart.
+     propose what should become of the old claim (parked as `suggested`,
+     `disputed`, `superseded`) and let him say. `fha claim new --source <S-id>
+     --status suggested … --anchor "…-whisper, 00:41:22"` mints it with the
+     anchor naming the whisper transcript, the form `mine-transcript` step 2
+     uses. The same holds for anything whisper recovers that the app transcript
+     mangled beyond use: new material is a new claim, never folded into an
+     accepted one.
+   - **A garbled quote in a claim's `notes:`, or an anchor that should name
+     the whisper transcript, needs the same yes and the same re-stamp.** Show
+     the before/after as above; on his yes,
+     `fha claim <C-id> --status accepted --notes "…"` (or `--anchor "…"`)
+     writes the field and moves `reviewed:` to today in one call. Never
+     hand-edit the record's `## Claims` block.
+   - Record the audit as one entry in the source's `ai_passes:` list
+     (`task: audit`), with a `note:` naming what was actually written (claims
+     corrected on his say-so, claims parked, new `suggested` claims) and the
+     proposals he declined, so the reading survives without pretending to be a
+     fact. Whether he accepted a correction is on the claim (`reviewed:`), never
+     on the pass.
 
    A claim that turns out to be right is a valuable result; say so rather than
    manufacturing a finding. And whisper is better, not perfect — where both
@@ -267,8 +259,7 @@ came, rather than the bare form.
   never folded into an accepted one.
 - Writes only to the given `--outdir`; on attach, through `fha process --more`;
   in the audit, through `fha claim` / `fha claim new` / `fha source note` on
-  the human's per-claim yes, plus the one hand-edit he explicitly asks for (a
-  claim's `notes:` line, which no verb owns — see [`GAP.md`](GAP.md)).
+  the human's per-claim yes.
   Archived assets are never renamed, moved, or overwritten — not by
   the script, not by hand, not to fix a name that sorts badly. Neither is a
   record's `files:` entry: `fha process --more` writes it, `fha reconcile`

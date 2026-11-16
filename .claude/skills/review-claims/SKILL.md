@@ -53,7 +53,8 @@ its claims to the people asked about and leave the rest for later sessions.
    plain words — "the census scan is at `documents/census/1880-census-hartley.jpg` — open it alongside
    and we'll go through what it says." He should never have to review a claim about a document he can't
    see. Open the source `.md` and read its `## Claims` block; the ones with `status: suggested` are the
-   backlog.
+   backlog. A suggested claim that already carries a `reviewed:` date was parked in an earlier session
+   ("checked, still open", SPEC §8.1) — say so when you reach it, so he knows he has seen it before.
 
 2. **Offer the three review styles, let him choose** (AGENTS.md §"Review claims with the human"):
    - **Guided, one-by-one** — you walk each claim in turn (the default; best for a handful, or when he
@@ -107,8 +108,8 @@ its claims to the people asked about and leave the rest for later sessions.
      fha claim C-a C-b C-c --status accepted --dry-run
      fha claim C-a C-b C-c --status accepted
      ```
-     (stamps `reviewed:` on each; any of the five statuses batches the same way — batch-reject and
-     batch-needs-review are as legitimate as batch-accept). The tool validates every id before writing
+     (stamps `reviewed:` on each; every review status batches the same way — batch-reject and
+     batch-park are as legitimate as batch-accept). The tool validates every id before writing
      anything, so a mistyped id refuses the whole batch cleanly.
    - **A single accept:**
      ```
@@ -136,32 +137,30 @@ its claims to the people asked about and leave the rest for later sessions.
      ```
    - **Dispute** (keep it, mark it contested): `--status disputed` — same `--dry-run`, then apply.
    - **Reject** (wrong, but preserve the trail — never delete): `--status rejected` — preview, then apply.
-   - **Park** (not sure yet): `--status needs-review` leaves it for later without accepting (preview
-     first too). When he parks a claim, **offer — never auto-write — to record what would settle it**:
-     "want me to jot down what would settle this, so it resurfaces when that record shows up?" Only on
-     his explicit yes, write one of:
-     - an **open question**, hand-written per SPEC §17's shape — an `## Q:` heading naming the question;
-       `- origin: human`; `- status: open`; `- refs: [C-id]` (single brackets, comma-separated for
-       several - e.g. `- refs: [C-abc1234def, C-...]`; the `[[C-…]]` double-bracket form is for
-       PROSE links only, and in this structured field the report's question parser stops at the
-       first `]` and normalizes it to an invalid ref); a dated context line noting what was
-       parked and why. **Not the profile's own `## Research Notes` section** — `## Open Questions`
-       is scanned ONLY in `notes/questions.md` and a person's SEPARATE research file (`report.py`'s
-       `_parse_questions`, lint's E009 registry — both read a profile's own `## Open Questions` as
-       out of scope by design, so one written there would silently never surface again). Into the
-       person's separate research file if they already have one; if they don't, into
-       `notes/questions.md` instead (still fully discoverable, just not filed under their name) —
-       or, if this person's research clearly justifies a file of their own now, offer to create one
-       (copy `_TEMPLATE.research.md`) rather than defaulting to one silently. If a same-question
-       block already exists, **append a context line to it** rather than writing a twin;
-     - or, when what he voiced is a testable belief rather than a question, a **hypothesis** with a
-       `verify:` line ("what evidence would settle it") — this one CAN go straight on the profile,
-       under its own `## Hypotheses` heading (added if not already there): unlike Open Questions,
-       hypotheses are indexed content-first from any person file, profile included (issue #56's
-       widening). Prefer the person's separate research file when they already have one, to keep
-       hypotheses grouped with their other research; the profile is the fallback, not a lesser
-       option.
-     No yes, no write — a parked claim with no note is a fine outcome too.
+   - **Park** (looked at, not settled yet): the claim stays `suggested` and gets today's `reviewed:`
+     date, which reads "checked, still open" (SPEC §8.1). Preview first too:
+     ```
+     fha claim <C-id> --status suggested --dry-run
+     fha claim <C-id> --status suggested
+     ```
+     If `fha claim` refuses `--status suggested` (tools older than SPEC 2.1), leave the claim exactly as
+     it is and record the look with `fha source note <S-id> --text "reviewed <C-id> <date>: still open - <why>"`.
+     Never use another status to stand in for it.
+     When he parks a claim, **offer — never auto-write — to record what would settle it**: "want me to
+     jot down what would settle this, so it resurfaces when that record shows up?" Only on his explicit
+     yes, write one **question entry** in SPEC §17b's form — an `## Q:` heading naming the question, then
+     one `- ` line per field: `- origin: human` (he asked for it); `- status: open`; `- refs: [c-…]`
+     (single brackets, bare IDs, comma-separated for several; the `[[c-…]]` double-bracket form is for
+     PROSE links only, and in this structured field the question parser stops at the first `]`); and a
+     `- context:` line with a dated sub-line noting what was parked and why. If he also voices a guess
+     ("I think it's the other Margaret"), that is the same entry's **working answer** (SPEC §17a rung
+     2), not a separate object: add `- id:` (mint one with `fha id mint H`), `- guess:`, `- basis:` (his
+     reason) and `- verify:` (what would settle it). Where it goes: the person's research file
+     (`## Open Questions`), created the first time something is written to it (SPEC §16b), or
+     `notes/questions.md` for a question that spans people. Never the profile's own sections — questions
+     are read from those two places only. If a same-question entry already exists, **append a context
+     line to it** rather than writing a twin. No yes, no write — a parked claim with no note is a fine
+     outcome too.
    - **A manual addition** he dictates is drafted into the source's `## Claims` as a new `status: suggested`
      claim — write the **full claim shape** `process-source` uses, not just an id: a fresh `id:`
      (`fha id mint C`), `type:`, `persons:`, `value:`, `confidence:`, the Mills `information:`/`evidence:`
@@ -184,7 +183,7 @@ its claims to the people asked about and leave the rest for later sessions.
      `fha person set-living <P-id> false` for each.
    If he wants a death accepted but the person kept out of exports anyway, accept with `--keep-living`
    (re-accepting that claim later never changes the flag).
-   If he moves a death he accepted earlier to rejected/disputed/needs-review, `fha claim` warns that the
+   If he moves a death he accepted earlier to rejected/disputed, or parks it, `fha claim` warns that the
    person is still marked as no longer living — the flag is never put back on its own. Ask him ("should
    Ada go back to unknown, so she's kept out of exports again?") and only on his yes run
    `fha person set-living <P-id> unknown`.
@@ -222,7 +221,7 @@ its claims to the people asked about and leave the rest for later sessions.
    fha views draft-queue <P-id>
    ```
    For **every** person named in a claim decided this session — curated or still a stub — also refresh
-   their own `## Sources` section (#76: the per-person form works on a stub on purpose, so their sources
+   their own `## Sources` section (the per-person form works on a stub on purpose, so their sources
    list is already current the moment they later graduate, instead of needing a rebuild right after):
    ```
    fha views sources-index <P-id>   # the source list gains the just-reviewed source's evidence
@@ -260,9 +259,9 @@ its claims to the people asked about and leave the rest for later sessions.
 
    **Places.** A review pass that just accepted a batch of claims is precisely the moment a place-text
    cluster crosses its threshold — check for it here rather than leaving it for a session that never comes
-   back to it (issue #81). It reads the index step 5 just rebuilt, and it counts exactly the statuses this
-   pass just moved: the detector groups `accepted`/`needs-review` claims only, so what he accepted a moment
-   ago is in the list and anything still `suggested` is not.
+   back to it. It reads the index step 5 just rebuilt, and it counts exactly the statuses this pass just
+   moved: the detector groups `accepted` claims only, so what he accepted a moment ago is in the list and
+   anything still `suggested` is not.
    ```
    fha places candidates   # ranked unlinked place-text clusters (default threshold 3), sorted largest first
    ```
@@ -272,8 +271,7 @@ its claims to the people asked about and leave the rest for later sessions.
    `claim_ids` list holds at least one claim decided on in this session. That is the promotion nudge's own
    scoping ("any person decided-on this session"), and it is what stops this one nagging: a session is an
    interface, not memory (`_STANDARD.md` §7), so a "not now" is gone by the next run, and a nudge keyed on
-   the archive's *largest* cluster would ask again every session forever — the volume issue #81 explicitly
-   does not want. A big cluster this pass never touched is a real candidate and keeps its home in report
+   the archive's *largest* cluster would ask again every session forever. A big cluster this pass never touched is a real candidate and keeps its home in report
    §6b and `place-research`, not here.
    Of the clusters that qualify, take the **largest**, and act only when it is at **10 or more claims**
    (`process-source`'s same offer bar, its step 5); below that it is a candidate, not an interruption.
@@ -338,8 +336,8 @@ its claims to the people asked about and leave the rest for later sessions.
   matters (AGENTS.md §"Don'ts").
 - A contradiction always ends with an open question (E009-clean) — let `fha confirm xref … --as
   contradicts` spawn it.
-- The park offer, the promotion nudge, and the place nudge are **offers**: they write (`## Q:` block,
-  hypothesis) or run (`fha person promote`, `fha confirm place`) only on the human's explicit yes, never
+- The park offer, the promotion nudge, and the place nudge are **offers**: they write (a `## Q:` entry,
+  with a working answer when he voices a guess) or run (`fha person promote`, `fha confirm place`) only on the human's explicit yes, never
   on silence or a hedge.
 - The place nudge only ever considers a cluster **this pass moved** (its `claim_ids` hold a claim decided
   on this session), names at most **one** of them (the largest), and fires at most once per session, same
@@ -352,7 +350,7 @@ its claims to the people asked about and leave the rest for later sessions.
   it writes after the done-gate and `fha confirm place` doesn't reindex. A session never ends on that write.
   `fha places lint` is read there for what the write *added*: a pre-existing PL finding elsewhere in the
   registry is the archive's standing state, not this session's to chase.
-- Record no separate `## AI Passes` entry here *unless* you drafted a new claim in this session (a manual
+- Record no separate `ai_passes:` entry here *unless* you drafted a new claim in this session (a manual
   addition you formatted) — plain acceptance of existing drafts is the human's pass, not the AI's.
 - Any record ID you write into prose (a note, a spawned question, a story) is `[[ ]]`-wrapped,
   `[[ID|Name]]` preferred; bare IDs belong only inside claims-block YAML fields and tool arguments
@@ -372,7 +370,10 @@ its claims to the people asked about and leave the rest for later sessions.
   claim carries a `reviewed:` date (post-run `fha lint` shows no **E006**).
 - A contradiction surfaced by xref ends in `fha confirm xref … --as contradicts`, leaving the archive
   **E009**-clean.
-- The park offer (an SPEC §17 `## Q:` block or a `verify:` hypothesis), the promotion nudge
+- A parked claim stays `suggested` with a `reviewed:` date; no claim is written at any other "pending"
+  status.
+- The park offer (a SPEC §17b `## Q:` entry, with `id`/`guess`/`basis`/`verify` when he voiced a guess),
+  the promotion nudge
   (`fha person promote` + `write-biography` hand-off), and the place nudge (`fha confirm place`, when the
   largest `fha places candidates` cluster holding a claim decided on this session is at or over 10 claims,
   and its town has been looked up first) fired **only on explicit yeses** — no yes, no write, no run.

@@ -1,42 +1,111 @@
-# TOOLING_INGESTION.md - Research, Capture & the Inbox On-Ramp
+# TOOLING_INGESTION.md - The Inbox Contract & the Capture On-Ramp
 
-**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - the path that turns research a genealogist is doing on the open web into staged material the archive can process. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - anything that puts material into an archive's inbox for `fha process` to turn into a source. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
 
 **Version 2.1 - companion to SPEC.md v2.1 and TOOLING.md v2.1 (versions track the SPEC).**
 
-This document is a focused expansion of one tool family that the main [`TOOLING.md`](TOOLING.md) only sketches: the **capture / inbox / ingestion** on-ramp. SPEC.md Part III (§12.1) states *what* a source stub is and how assets and records separate; TOOLING.md §13b names the `fha capture` engine; this document specifies *how* the whole intake spine works end to end - the engine, every delivery form that feeds it, and the browser companion in enough detail to build it in any language.
+This document defines one thing first and everything else after it: **what a source waiting in the inbox looks like**, and how `fha process` reads it (§1). That shape is the contract. A person dropping a scan and typing a note, the `fha capture` engine (§2), the browser companion (§5), a script someone writes for their own scanner - each is only a front end, and **any front end that produces the §1 shape is conforming**. SPEC.md §12.1 states what a source stub is; TOOLING.md §13b names the `fha capture` engine; this document specifies the contract and the engine in enough detail to build a new front end in any language.
 
-It is one of three sibling design docs, each with its own build doc: [`TOOLING.md`](TOOLING.md) (core tools) → [`BUILD.md`](BUILD.md); **this doc** (ingestion) → [`BUILD_INGESTION.md`](BUILD_INGESTION.md); [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) (workbench + skills) → [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md).
+It is one of three sibling design docs, each with its own build doc: [`TOOLING.md`](TOOLING.md) (core tools) → [`BUILD.md`](BUILD.md); **this doc** (ingestion) → [`BUILD_INGESTION.md`](BUILD_INGESTION.md); [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) (workbench + skills) → [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md). How the browser companion reads particular sites is in [`browser-companion/README.md`](browser-companion/README.md); the companion does not need to be rebuildable from this document, only to produce the shape it defines.
 
-The governing rule carried from TOOLING.md applies here without exception: **tools have no daemons, watchers, or schedulers.** Freshness is refresh-on-use. Capture stages material; nothing sweeps it automatically; a human (or a workbench skill) runs the next step. The browser companion is a *dumb, replaceable front-end* - it stages raw material, and the durable Python tooling decides what that material means.
-
----
-
-## 1. Where intake sits in the loop
+The governing rule carried from TOOLING.md applies here without exception: **tools have no daemons, watchers, or schedulers.** Freshness is refresh-on-use. Capture stages material; nothing sweeps it automatically; a human (or a workbench skill) runs the next step.
 
 The archive's operating spine is **capture → file → process** (SPEC §4). Intake is the first two steps:
 
 | State | Where it lives | What it is | Who makes it |
 |---|---|---|---|
-| **Research** | the open web (Ancestry, FamilySearch, Newspapers.com, FindAGrave, a county site) | a record the human is looking at, behind their own login | the human, mid-search |
-| **Source stub** | `inbox/` (SPEC §12.1) | an asset (or none) + a freeform `*.notes.md` sidecar with rough notes and any structured hints a recipe recovered | hand, **or capture** |
-| **Processed source** | `sources/…` + filed asset | a real `{slug}_{S-id}.md` record with `suggested` claims drafted from the stub | `fha process` + the `process-source` skill |
-
-Intake's job is to get a research find safely into the inbox **as a stub**, fast, without forcing a full review session mid-browse. Everything judgmental - minting the S-id, resolving people against the index, drafting claims - is deferred to processing, where the index is at hand. The principle, stated once and obeyed everywhere below:
+| **Research** | the open web, a shoebox, a relative's album | a record the human is looking at | the human |
+| **Source stub** | `inbox/` (SPEC §12.1) | an asset (or none) + a freeform notes file with rough notes and any structured hints | hand, **or any front end** |
+| **Processed source** | `sources/…` + filed asset | a `{slug}_{s-id}.md` record with `suggested` claims drafted from the stub | `fha process` + the `process-source` skill |
 
 > **Fast, forgiving capture now; structured review later.** Grab everything while the page is open; defer every decision that can wait.
 
-This is why the inbox stub is *pre-source*: no S-id, no accepted claims, light optional frontmatter over freeform prose (SPEC §12.1). The same stub format is produced whether a human drops a scan and types a note, or the browser companion captures a census page - the only difference is who typed the notes.
+A stub is *pre-source*: no s-id, no accepted claims, light optional frontmatter over freeform prose. Everything judgmental - minting the s-id, resolving people against the index, drafting claims - happens at processing, where the index is at hand.
 
 ---
 
-## 2. The engine: `fha capture` (already built)
+## 1. The inbox contract
 
-The deterministic backend is [`tools/capture.py`](tools/capture.py). It is the single source of truth for *what a capture becomes*; every delivery form in §4 is a thinner or fatter front-end onto this one engine. It is built and shipping today as the **paste-fallback** path (§4.1).
+### 1.1 The three shapes
+
+A source waiting in `inbox/` (the inbox root resolves through `fha.yaml`, SPEC §12.4) takes exactly one of three shapes:
+
+| Shape | On disk | When |
+|---|---|---|
+| **Lone sidecar** | `{stem}.{ext}` + `{stem}.notes.md` side by side | one file. The pair is matched by stem: exactly one other file in the folder may share the notes file's stem |
+| **Pointer-only stub** | `{stem}.notes.md` alone, frontmatter `asset_elsewhere: true` | no file to copy in: the record is held elsewhere, or the file must never move. It names the evidence with `external_links:`, `asset_path:`, or both |
+| **Bundle folder** | `inbox/{name}/` holding a bare `notes.md` and one or more files | more than one file for one source: a page copy and the record, a photo and its back, a recording and its transcript |
+
+A file with no notes file at all is also valid inbox material - processing simply starts from a blank page. A notes file is never required.
+
+A folder that holds no `notes.md` is not a bundle: `fha process` treats it as a folder of separate items to triage (TOOLING.md §6).
+
+### 1.2 The notes file
+
+**The body** is freeform prose, written by a person or filled in by a front end - the human's own words about what this is and why it matters. It has no schema. At processing it becomes the record's `## Notes` (SPEC §14), where a reviewer reads it beside the evidence.
+
+**The frontmatter** is optional; a person may skip it entirely. When present, these keys are read (every one is optional, and a key not listed is ignored):
+
+| Key | Meaning | What `fha process` does with it |
+|---|---|---|
+| `title` | what the item is | the record's `title:` (a `--title` flag wins) |
+| `source_type` | SPEC §14 vocabulary | the record's `source_type:` and the asset root it files into (`--type` wins); an out-of-vocabulary value is refused before anything moves, naming the allowed words |
+| `source_date` | the date of the evidence itself | normalized to EDTF; a loose date ("about 1880", "1870s") is translated, and an unclear one stops processing before the stub is consumed |
+| `source_class` | `original` \| `derivative` \| `authored` | the record's `source_class:` (a proof argument is always `authored`) |
+| `citation` | a citation, as text | the record's `citation:` |
+| `repository` | where the evidence came from or is held | the record's `repository:` |
+| `provenance` | where the original came from | the record's `provenance:` |
+| `external_links` | `[{url, accessed}]`, or bare URL strings | the record's `external_links:` |
+| `people` | a list of **names** as the page or the person wrote them | never resolved here: the names are added to `## Notes` as one line ("Captured people mentioned on source page (unreconciled): …") for the drafting pass to resolve against the index |
+| `restricted` | `true` keeps the source out of exports (SPEC §19) | the record's `restricted: true` (always set for `source_type: dna`) |
+| `asset_elsewhere` | `true` on a pointer-only stub | lets a notes file with no companion file mint a record with no `files:`; without it a lone notes file is refused as a likely mistake |
+| `asset_path` | where a must-never-move file lives, exactly as the person typed it | folded into `provenance:` as "Original not copied into the archive - last known location: …" |
+| `asset_path_absolute` | the same path, resolved | written by `fha capture --path` for a person reading the stub; not copied into the record, since a machine-specific path does not belong in a file that travels |
+| `files` / `roles` | per-file hints, bundle folders only (§1.3) | each file's entry in the record's `files:` inventory |
+
+The fill-in template a person copies by hand is `archive-template/inbox/_TEMPLATE.notes.md`: plain questions, no frontmatter. A notes file must be UTF-8; one saved in another encoding, or with frontmatter that does not parse, is refused with the fix named and nothing changed.
+
+### 1.3 Role hints in a bundle
+
+A bundle's `notes.md` may say what each file is, in either of two forms:
+
+```yaml
+files:                       # a list (the form capture writes)
+  - file: grave-1.jpg
+    role: grave
+    is_primary: true         # the file to open first; at most one
+  - file: record-data.json
+    role: site-data
+roles:                       # or a filename -> role mapping
+  interview.mp3: recording
+  interview-transcript.md: transcript
+```
+
+A `files:` entry may also carry `copy:` (which print or copy the file is, SPEC §14). Each hint becomes that file's `files:` entry in the record; a file with no hint is given a role from its name (`…-back` → `back`) or none. A hint naming a file that is not in the folder stops processing before anything moves, so a typo is fixed in the stub rather than lost with it. `is_primary: true` marks the record's main file (SPEC §14); without one, processing picks the plain scan or the first record file.
+
+### 1.4 How `fha process` reads it
+
+`fha process` (TOOLING.md §6) takes the item - the asset, its notes file, or the bundle folder - and:
+
+1. **Pairs it.** An asset finds its `{stem}.notes.md`; a notes file finds its one same-stem companion (several is a refusal: process the intended file directly); a notes file with none needs `asset_elsewhere: true` and at least one of `external_links:` / `asset_path:`.
+2. **Decides the type and root.** `--type` outranks the notes file's `source_type:`, which outranks an `fha.yaml` `intake_defaults:` rule and then the file's extension. The type decides the asset root: a scanned record saved as a `.jpg` with `source_type: census` files into the documents root, not the photo library.
+3. **Mints the s-id and files the evidence.** Documents-root files are renamed `{slug}[-{copy}][-{role}]_{s-id}.{ext}` and carry the `SOURCE:` keyword where the format holds one; photos-root files keep their names and get the keyword (SPEC §12.1, §13). A bundle dissolves: one s-id for every file, the folder gone.
+4. **Scaffolds the record** from the frontmatter (§1.2) and the role hints (§1.3), with the notes body as `## Notes`.
+5. **Consumes the stub.** The notes file is gone once the record holds its content; the original files are copied into their roots and the inbox originals parked in `inbox/processed/` (SPEC §12.1). Nothing is deleted.
+
+Every step before the record write can fail cleanly, and a failure leaves the inbox exactly as it was. Drafting claims from the stub is the `process-source` skill's job, after Stage A (TOOLING_INTERFACE.md §2.1): the notes and the name hints seed `suggested` claims, never accepted facts.
+
+### 1.5 Conformance
+
+A front end conforms when what it writes into `inbox/` is one of the §1.1 shapes, its notes file parses as §1.2 describes, and it never writes outside the inbox. It need not use `fha capture`; it need not be a browser. A front end that cannot write into the inbox directly (a browser extension, §5.1) may stage a §3 bundle for `fha capture --ingest` to turn into a §1 shape instead.
+
+---
+
+## 2. The engine: `fha capture`
+
+[`tools/capture.py`](tools/capture.py) is the reference front end, and the one the others feed: given a web page, it decides what the page becomes in the inbox.
 
 ### 2.1 What it does
-
-`fha capture` reads page HTML the human already has in front of them and writes a **source stub** into `inbox/` - never a finished record.
 
 ```
 fha capture [--url URL] [--title "…"] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]
@@ -44,31 +113,30 @@ fha capture [--url URL] [--title "…"] [--type TYPE] [--date DATE] [--asset FIL
 
 HTML arrives on **stdin** (`… | fha capture`) or from an `--asset` that is itself a saved page. The engine:
 
-1. **Chooses a recipe.** Site recipes (§2.2) are tried in priority order; the first whose `detect()` matches wins; an unknown site falls to the **generic recipe** (page title, canonical URL, accessed-date, and ~2000 chars of visible text as the citation basis). Any page is capturable.
-2. **Extracts citation fields** - title, `source_type`, `citation`, `repository`, `source_date`, `external_links`, and the **person names the page lists**. Explicit `--title`/`--type`/`--date` always override the scrape (the human's word wins); `--type` is validated against the controlled `source_type` vocabulary so a typo surfaces now, not as an unprocessable stub later.
-3. **Renders the stub** - a `{slug}.notes.md` whose *light, optional* frontmatter carries the recovered citation fields and whose body is the visible text or the human's notes. `people:` here is a list of **names** (a hint the processing pass reconciles against the index), never resolved `P-id`s - a stub has none yet.
-4. **Stages the asset** beside the stub, sharing the stub's basename so they pair (SPEC §12.1 lone-sidecar rule). Collisions are detected before any overwrite.
-5. **Writes a research-log entry** - capture is itself a logged search (SPEC §16), so `fha report`'s "already searched here" annotation sees it immediately: a `search_log` row when the index exists, and always appended to `notes/capture-log.jsonl` (SPEC §16b) - the durable record, which `fha index` reads back into `search_log` on every rebuild and which `fha backup` and git keep because it lives under `notes/`, not `.cache/`. An archive still holding the pre-move `.cache/capture_log.jsonl` keeps it in "already searched" (the index reads both files) until the next capture carries its lines across, in order and without doubling, removes the old file and says so. Both paths are index freshness inputs (a line synced from another machine stales the index until `fha index` replays it), and a capture that also wrote its own `search_log` row patches the stored manifest so it does not stale a fresh index. A line is never glued onto a final line that lacks its newline, and the archive template's `.gitattributes` marks the file `merge=union` so two machines' captures merge without a conflict (an existing archive must add that line by hand - `.gitattributes` is skeleton, which `fha update-tools` never rewrites).
+1. **Chooses a recipe.** Site recipes (§2.2) are tried in priority order; the first whose `detect()` matches wins; an unknown site falls to the **generic recipe** (page title, canonical URL, accessed date, and about 2000 characters of visible text as the citation basis). Any page is capturable.
+2. **Extracts citation fields** - title, `source_type`, `citation`, `repository`, `source_date`, `source_class`, `external_links`, and the **person names the page lists**. Explicit `--title`/`--type`/`--date` always override the scrape (the human's word wins); `--type` is checked against the `source_type` vocabulary so a typo surfaces now, not as an unprocessable stub later.
+3. **Writes the stub** - a lone sidecar (§1.1): `{slug}.notes.md` whose frontmatter carries the recovered fields (§1.2) and whose body is the human's notes or the page's visible text, beside the asset as `{slug}.{ext}`. A capture with no asset and a URL is a pointer-only stub (`asset_elsewhere: true`). Collisions are detected before any overwrite.
+4. **Logs the search.** Capture is itself a search, so each capture appends one entry to `notes/research-log.md`, the archive's one search log, in SPEC §17c's shape: `date` (the capture date), `question` (the page title), `repository` (the site), `collection` (the record's collection when the recipe knows it), and `result: staged <inbox path>` - captured, not yet processed, so no s-id exists yet. `fha index` reads the log, so `fha report`'s "already searched" annotation sees the capture. The log is a durable record under `notes/`, never `.cache/`.
 
 ### 2.2 Recipes are data, not code
 
 Recipes live in [`tools/capture_recipes/`](tools/capture_recipes/) - one module per site, each exposing `detect(html, url)` and `extract(html, url)`, discovered at runtime and sorted by `PRIORITY`. They are **plug-in data** for capture (extensible without touching the engine), which is why importing them does not breach the tools-never-import-tools rule. A broken or interface-incomplete recipe is skipped with a warning, never aborting the capture - the page still captures generically.
 
-Current coverage, in priority order: **Ancestry** (record + image viewer, census household tables), **Newspapers.com** (clipping + citation), **FamilySearch** (record + tree person), **FindAGrave** (memorial + cemetery place). The generic recipe is the floor under all of them.
+Current coverage, in priority order: **Ancestry** (record pages, the image viewer, census household tables, shared tree photos), **Newspapers.com** (clipping + citation), **FamilySearch** (record + tree person), **Find a Grave** (memorial + cemetery place). The generic recipe is the floor under all of them.
 
 ### 2.3 The three asset cases
 
-Capture resolves the asset in exactly three ways (the cases the rest of this doc refers to as **(a)/(b)/(c)**):
+Every capture resolves its evidence one of three ways, referred to below as **(a)/(b)/(c)**:
 
-- **(a) Downloadable** - a real image/document the human can save (or the companion can fetch) becomes the source's asset.
-- **(b) Page-is-the-record** - an obituary, a wiki bio, a memorial page: store a **self-contained preservation asset** in `documents/web/…` (an acceptable second-tier format per SPEC §2). A bare `outerHTML` dump is *not enough* - it still references images, CSS, and fonts by URL, so once the page rots the "evidence" is a skeleton of broken links. The asset must therefore inline its resources: a **single-file HTML** (images/CSS/fonts rewritten to embedded data-URIs) is the default - viewable offline forever and *still text-scrapeable* - with **print-to-PDF** the alternative when a faithful rendered page matters more than re-parsing it. Either way the raw DOM is *also* saved separately as the scrape source (`page.html`, §3), because a PDF and a heavily-inlined snapshot are for the human's eyes; the recipe extracts from the clean DOM.
-- **(c) Pointer-only** - the page merely says "record held at the county courthouse": no asset, citation + `external_links` only, written with `asset_elsewhere: true` so `fha process` knows the missing companion is deliberate (the explicit flag it requires before minting a no-asset record), and flagged for a later retrieval pass.
+- **(a) A file** - an image or document the page holds - becomes the source's asset.
+- **(b) The page is the record** - an obituary, a wiki biography, a memorial page. The asset is a **self-contained preservation copy** of the page: a single-file HTML with its images and stylesheets inlined, so it survives the original's rot and stays readable offline. A bare `outerHTML` dump is not enough - it still points at images and styles by URL, and once the page goes the "evidence" is a skeleton of broken links. The raw DOM is saved separately as the scrape source (`page.html`, §3), because the inlined copy is for the human's eyes and the recipe reads the clean DOM.
+- **(c) Pointer-only** - the page only says where the record is held. No asset: citation + `external_links` only, written `asset_elsewhere: true` (§1.1), so the missing file is deliberate.
 
-A fourth, practical sub-case of (a) lives in the companion: **on-screen but not downloadable** (the common Ancestry viewer image you cannot right-click). The companion offers *capture-what's-shown* - a screenshot/snapshot saved as a `provisional-image`, honest that a cleaner original may exist behind the paywall, but never letting the human leave empty-handed.
+A screenshot of an image the page will not hand over is a case-(a) asset marked **provisional**: an honest stand-in, flagged so review knows a cleaner original may exist.
 
-### 2.4 Boundaries (non-negotiable)
+### 2.4 Boundaries
 
-Capture reads the **open DOM/HTML only**. It does not log in, paginate, query APIs, or fetch behind auth on its own; it sees only what the browser is already showing the human in their own session. Two scoped exceptions ride the human's own Capture click on the page in front of them: on an Ancestry image-viewer page the companion calls Ancestry's own image-download endpoint in the human's session - the same single request Ancestry's Download button makes; never bulk, never uninvited, never on any other site - and a page whose image is served over the open IIIF standard has that one full-size image fetched without credentials. Bulk or automated retrieval against a site's terms is out of scope **by design** - this is a tool for filing the record you are already looking at, not a scraper. Everything it produces enters at `suggested` / needs-review like any intake; no claim is accepted without a human `reviewed:` date.
+The engine reads only the HTML it is given; it fetches nothing itself. A front end fetches only on the human's own action, in the human's own browser session, and only what that session can already open: it never logs in, never asks for or stores a password, and never sends a site's credentials anywhere but that site. What each site reader fetches, and how it paces itself and stops when a site asks it to slow down, is documented per site in [`browser-companion/README.md`](browser-companion/README.md). Everything that arrives enters as pre-source material; no claim is accepted without a human `reviewed:` date.
 
 ### 2.5 Flags & exit codes
 
@@ -81,18 +149,19 @@ Capture reads the **open DOM/HTML only**. It does not log in, paginate, query AP
 | `--asset FILE` | an image/document to stage, or the saved page HTML to read |
 | `--path PATH` | register a file that must stay exactly where it is - see §2.6 |
 | `--note TEXT` | a note to record with `--path` (goes in the stub body) |
-| `--ingest [DIR]` | sweep staged companion bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
+| `--ingest [DIR]` | sweep staged bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
+| `--host` / `--install-host [--browser B]` | the native-messaging host and its one-time registration (§5.7) |
 | `--dry-run` | preview every write without touching disk |
 
 The modes are mutually exclusive: `--install-host`, `--host`, `--ingest`, `--path`, and the default page capture (`--url`/`--title`/`--type`/`--date`/`--asset`) each run alone. Mixing flags across two modes (e.g. `--ingest --url …`) is a hard error naming both sides, not a silent drop of the losing mode's flags. (`--browser` belongs to `--install-host`; `--dry-run` is cross-mode; `--title` is shared between page capture and `--path`, since both use it to label the stub.)
 
-Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash, mixing mode flags) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
+Exit: `0` clean · `1` warnings (a `--path` target not found right now) · `2` user error (bad `--type`/`--date`, asset destination clash, mixing mode flags) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
 
-### 2.6 `--path` - register a file that must never move (plan 17)
+### 2.6 `--path` - register a file that must never move
 
-A fourth mode, unrelated to web pages: `fha capture --path PATH [--note TEXT] [--title TEXT]` registers a file - most often a photo still sitting in a family member's own library, or a document in someone else's archive folder - that can never be copied, moved, or renamed, but still belongs on the processing queue. It reads no HTML and stages no asset copy; the target is only `.exists()`-checked, never opened.
+`fha capture --path PATH [--note TEXT] [--title TEXT]` registers a file that can never be copied, moved, or renamed but still belongs on the processing queue - most often a photo in a family member's own library, or a document in someone else's archive folder. It reads no HTML and stages no copy; the target is only checked for existence, never opened.
 
-The stub it writes reuses the case-(c) pointer-only shape (§2.3): `asset_elsewhere: true`, so `fha process` knows the missing companion asset is deliberate, not an oversight. Two new frontmatter keys carry the location itself, since case (c) previously only ever said a companion was *missing*, never *where it actually lives*: `asset_path` (the path exactly as the human typed it - a mapped drive letter, a relative note-to-self, whatever shorthand was meaningful to them) and `asset_path_absolute` (the resolved, unambiguous form, usable regardless of the working directory a later pass runs from). Both are forward-slashed for a stable cross-platform read.
+It writes a pointer-only stub (§1.1) carrying the location:
 
 ```yaml
 ---
@@ -103,27 +172,24 @@ asset_path_absolute: E:/family-photos/grandma-wedding.jpg
 ---
 ```
 
-`slug` comes from the target file's own stem (there is no page title to borrow), so the stub is named after what it points at. A missing target (an unplugged drive, a typo'd path) is not a hard refusal - the human may be capturing before reconnecting the drive - so the stub is still written and a warning printed either way.
-
-**Recorded follow-up, not a promise.** As of this build, `fha process` reads and honors `asset_elsewhere: true` (the existing case-(c) flag), but does **not yet** read `asset_path`/`asset_path_absolute` - it mints a no-asset record the same way it already does for any other pointer-only stub, without pre-filling those two locations into the record. Consuming them (e.g. offering the resolved path as a "confirm you can see this file" step at processing time) is a natural next step for `fha process`, not yet built.
+`asset_path` is the path exactly as the human typed it (a mapped drive letter, a relative note-to-self); `asset_path_absolute` is the resolved form. Both are forward-slashed. The stub is named after the target file's own stem. A missing target (an unplugged drive, a typo) is a warning, not a refusal: the stub is still written. `fha process` reads `asset_path` into the record's `provenance:` (§1.2).
 
 ---
 
-## 3. The staged-bundle contract (the seam)
+## 3. The staged bundle (the browser-side seam)
 
-Every delivery form converges on one artifact: a **staged bundle** the engine can turn into an inbox stub. Defining this contract once is what keeps the front-ends dumb and interchangeable.
-
-A staged bundle is a folder containing:
+A browser cannot write into `inbox/` (§5.1), so the companion writes a **staged bundle** under the browser's Downloads folder instead, and `fha capture --ingest` (§6) turns each bundle into a §1 inbox shape. A staged bundle is a folder:
 
 ```
 <slug>-<timestamp>-<token>/
-  page.html        ← the raw captured DOM (always present; the scrape source recipes run on)
-  asset.<ext>      ← the asset: case (a) the file/image; case (b) the self-contained
-                     preservation copy (single-file .html or .pdf); absent for case (c)
-  capture.json     ← the human's inputs + the browser's generic pre-fill
+  page.html        ← the raw captured DOM, the scrape source the recipe runs on
+  <asset files>    ← the evidence: the record image, the page snapshot, site data … (none for case (c))
+  capture.json     ← the human's inputs + the browser's pre-fill + the list of assets
 ```
 
-`page.html` (the always-saved scrape source) and the case-(b) `asset` (the human-facing preservation copy) are deliberately **two files even when both are HTML**: the asset inlines its images/CSS so it survives link rot but is bulky and lossy to re-parse, while `page.html` stays the clean DOM the recipe extracts from. For case (a) the asset is the downloaded/fetched file itself; for case (c) there is no asset. `capture.json` is the human-and-browser layer; `page.html` is the machine-extractable layer. The split is deliberate: **the browser captures raw material and light hints; the Python recipe does the authoritative extraction at ingest** (§5.5). `capture.json`:
+`page.html` and a case-(b) page snapshot are **two files even when both are HTML**: the snapshot inlines its resources so it survives link rot but is bulky to re-parse, while `page.html` stays the clean DOM. A bundle without `page.html` is still read: the `webpage`-role snapshot (else the first HTML asset) is parsed instead, and a bundle with no HTML at all is reported malformed. The trailing `<token>` makes the folder name unique even when two captures share a slug and a timestamp.
+
+`capture.json`:
 
 ```json
 {
@@ -133,9 +199,11 @@ A staged bundle is a folder containing:
   "accessed": "2026-06-24",
   "source_date": "1880",
   "source_type": "census",
+  "source_class": "derivative",
   "repository": "Ancestry.com",
+  "citation": "…",
   "assets": [
-    { "file": "record.jpg", "role": "record", "mode": "manual" },
+    { "file": "record.jpg", "role": "record", "mode": "manual", "provisional": true },
     { "file": "page-snapshot.html", "role": "webpage", "mode": "singlefile" }
   ],
   "people": ["Thomas Hartley", "Margaret Hartley", "Ethel Hartley"],
@@ -144,209 +212,153 @@ A staged bundle is a folder containing:
 }
 ```
 
-Every field except `url` is optional. `notes` is the human's free-text body; `people` is the human's curated checklist, carrying **at minimum the name of a person the record is about**; it is **additive** (the human's names lead, and recipe-found household/family names the panel never showed are kept rather than dropped). `repository` is the human's "where it's from" edit and wins over the recipe/host guess. `citation` is a citation the page itself supplied (a site's own "cite this" - the companion sends one for a Newspapers.com clipping, §5.6) and replaces the citation the recipe assembles; it is additive to schema 2, so an older ingest simply ignores it. `source_class` is SPEC §14's `original | derivative | authored` when the page itself says which (the companion sends `derivative` for an Ancestry index entry, §5.6); ingest keeps only one of those three words, writes it into the stub as a hint, and `fha process` honours it (a proof-argument is still always `authored`); also additive to schema 2. `recipe_hint` is the browser's *guess*; the engine still runs detection on `page.html` and may overrule it.
+| Field | Meaning |
+|---|---|
+| `schema` | the shape version (current **2**, `capture._CAPTURE_JSON_SCHEMA`). Absent is read as current; a newer one is read for the fields it shares, with a one-line "run `fha update-tools`" warning - never refused |
+| `url` | the record page. The only field a bundle should always carry |
+| `title`, `source_type`, `source_date`, `repository` | the human's edits, or the browser's pre-fill; they override what the recipe reads from `page.html` |
+| `citation` | a citation the page itself supplied (a site's own "cite this"); replaces the one the recipe assembles |
+| `source_class` | `original` \| `derivative` \| `authored`, when the page says which; any other word is dropped |
+| `accessed` | the capture date |
+| `assets` | the ordered list of evidence files, `{file, role, mode, provisional?, is_primary?}`. A listed file missing from the folder makes the bundle malformed: it is reported and left in staging, never filed incomplete. `role` becomes the file's role hint (§1.3); `is_primary: true` marks the main file. `mode` (how the file was obtained) and `provisional` are informational: the provisional warning reaches review as a line the companion adds to `notes` |
+| `people` | names the human ticked or typed, plus names the site reader found; additive |
+| `notes` | the human's own words; they become the stub body |
+| `recipe_hint` | the browser's guess at the site; the engine still runs detection on `page.html` and may overrule it |
 
-**Assets (schema 2).** The shipping companion and backend use `assets: [ {file, role, mode, provisional?} ]` - an ordered list (record-then-webpage), so the page-copy-plus-record "both" case files as a §12.1 bundle folder; the optional per-asset `provisional: true` marks a capture-what's-shown stand-in (a screenshot) for an original that couldn't be fetched (set by the companion; ingest does not yet read it - the notes line is the operative carrier, §5.6). A file listed here is part of the completed-capture contract: if it is missing on disk at ingest, the bundle is reported malformed and left in staging, not filed incomplete. The earlier flat **schema 1** shape (`asset_mode: "fetch|singlefile|pdf|manual|none"` + `asset_file: "asset.jpg"`, single asset) is still **accepted** by ingest as legacy/hand-authored input.
-
-`schema` is the `capture.json` shape version (current: **2**, the `capture._CAPTURE_JSON_SCHEMA` constant) and exists so the companion and the backend can evolve independently - ingest is **forgiving** about it: an *absent* `schema` is read as the current version (legacy/hand-authored bundles), and a *newer* one is read for the fields it shares with a one-line "run `fha update-tools`" warning, **never refused**. Bump it only on an incompatible shape change.
-
----
-
-## 4. Delivery forms (front-ends onto one engine)
-
-The front-ends, in increasing polish and increasing install cost. **One backend serves them all:** every form converges on the §3 staged-bundle contract (or, for the paste floor, on the engine directly).
-
-### 4.1 Paste fallback - *the v1 path, shipping today*
-
-The human copies the page (or saves the HTML) and pipes it in: `pbpaste | fha capture --url …`, or `fha capture --asset saved-page.html --url …`. Needs nothing new - no extension, no browser permission. This is the always-available floor and the path every other form degrades to. It produces the inbox stub directly.
-
-### 4.2 Bookmarklet - *not pursued*
-
-> **Decision (MG2.1):** the bookmarklet is **not a supported delivery form.** A `javascript:` bookmark can only trigger a *single combined `.html` download*, never the `<slug>-<timestamp>-<token>/` staged-bundle folder that `fha capture --ingest` (§6) consumes - so it would need its own loose-single-file ingest path, a second seam to maintain for a form strictly weaker than the extension (no multi-asset, no authenticated fetch, no clean `page.html`/asset split). The **browser extension (§4.3) is the front-end**; the **paste fallback (§4.1) is the zero-install floor** for anyone who hasn't installed it. A saved single page is still always capturable by hand: `fha capture --asset saved-page.html --url …`.
-
-### 4.3 Browser extension - *the nice panel* (§5)
-
-A proper MV3 extension with a side panel: generic pre-fill, a notes box, the three asset modes, and a staged bundle written to a capture folder. The preferred everyday form. Fully specified in §5.
-
-### 4.4 Native-messaging host - *seamless, v2*
-
-An optional small local host the extension can hand bundles to, so they land **straight in the archive `inbox/`** (even an external root) with no Downloads detour and no manual ingest step. Install-gated; the extension works without it (falling back to §5.1's download path). Specified in §5.7.
-
-### 4.5 Claude-in-Chrome - *the AI front-end*
-
-Where available, Claude-in-Chrome reads the open record page and writes the staged bundle (or the inbox stub directly) through the normal tool path - no custom extension to maintain. It is a delivery form, not a separate engine: it produces the same `capture.json` + `page.html` + asset and hands off to `fha capture`/`fha process`.
+The flat schema-1 shape (`asset_mode: "fetch|singlefile|pdf|manual|none"` + `asset_file`) is also accepted: one asset with the default `record` role, or none.
 
 ---
 
-## 5. The browser extension - full design
+## 4. Front ends
 
-The everyday companion. Manifest V3, Chromium-first (the same code loads in Edge; a Firefox port is a packaging detail, not a redesign). It lives **outside** the Python tool suite - it runs in the *browser*, never inside the archive - but it **ships with every archive** (owner decision 2026-07-26): it is a front-end tool exactly like the serve workbench, and since it has no build step, its source tree IS the loadable artifact. `fha install`/`fha update-tools` vendor the loadable files (`manifest.json`, `src/`, `icons/`, the README) into **`.fha/browser-companion/`** as ordinary operating-layer manifest entries, so any archive owner can point chrome://extensions → "Load unpacked" at that folder with no workshop clone; the extension's dev furniture (`tests/`, `test-bundle/`, `package.json`) stays in the repo. Its home in the repo is `browser-companion/` (source = artifact), versioned alongside the spec; *developing* it remains a workshop-repo activity like any other tool-building.
+Each front end produces either the §1 shape directly or a §3 bundle for `--ingest`.
 
-### 5.1 The transport problem and its solution
+### 4.1 By hand
 
-The hard constraint that §13b never resolved: **an MV3 extension cannot write to an arbitrary filesystem path.** It has no access to the archive's `inbox/`. Its only file-writing affordance is `chrome.downloads.download()`, which writes **under the browser's Downloads directory** (subfolders are allowed; escaping the Downloads root is not). It also cannot *move* a file the user already downloaded.
+Drop a file in `inbox/` and, if there is anything to say, a `{stem}.notes.md` beside it (or make a folder with a `notes.md`). This is the shape everything else imitates; it needs no tool at all.
 
-So the extension cannot, by itself, drop a bundle into `inbox/`. Three honest resolutions, in order of how much they ask of the user:
+### 4.2 Paste
 
-1. **Staging folder + explicit ingest (default).** The extension writes the bundle to `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. Locally, the human runs **`fha capture --ingest`** (§6), which sweeps that folder into the archive's real `inbox/` - the one sanctioned *move* at intake (SPEC §12.1). No watcher, no daemon: an explicit command, on the human's schedule, exactly like every other refresh-on-use step.
-2. **Download directly into the inbox.** If the archive's `inbox/` lives under the user's Downloads tree (or the browser's download directory is pointed at it), the extension's bundle lands in `inbox/` immediately and `--ingest` is a no-op. A convenience for the common single-machine setup; not assumable in general because `inbox/` is a configurable root (SPEC §12.4) that often lives elsewhere.
-3. **Native-messaging host (§5.7).** A registered local host writes the bundle straight into `inbox/`, anywhere it lives, with no Downloads detour. The seamless upgrade, install-gated.
+`pbpaste | fha capture --url …`, or `fha capture --asset saved-page.html --url …`. Needs no extension and no browser permission; it writes the inbox stub directly. This is the floor every other web front end degrades to.
 
-The default (1) needs zero native install and works in plain Chrome. The extension never pretends it wrote to the archive when it only wrote to Downloads - its final panel line says exactly where the bundle went and, when staging, that `fha capture --ingest` will file it.
+### 4.3 Browser extension (§5)
 
-### 5.2 The staged bundle (what the extension writes)
+A Manifest V3 extension with a side panel: pre-fill, a notes box, the asset choices, and a staged bundle written to a capture folder. The everyday web front end.
 
-Exactly the §3 contract: `page.html`, an optional `asset.<ext>`, and `capture.json`. The extension assembles all three in memory (content script + panel), then writes them with `chrome.downloads.download()` into `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`. `page.html` is **always** saved - it is the raw material the Python recipe re-extracts from, so even a generic in-browser pre-fill that got the title wrong is recoverable at ingest.
+### 4.4 Native-messaging host (§5.7)
 
-### 5.3 The panel workflow (the four phases)
+An optional local host the extension hands bundles to, so they land straight in the archive `inbox/` (even an external root) with no Downloads detour and no separate ingest step.
 
-The UX the owner described, mapped to the capture→file spine. The panel never blocks on a decision answerable in two seconds.
+### 4.5 An AI harness with browser access
 
-**Phase 1 - Invoke (one gesture).** On any record page the human clicks the toolbar button (or a page-action overlay). A side panel opens over the page; nothing is written yet. If a recipe hint matches, the panel says so ("Looks like an Ancestry census"); otherwise it announces generic capture.
+An agent that can read the open page (Claude in Chrome, or any harness with a browser tool) produces the same `capture.json` + `page.html` + assets, or the inbox stub directly, and hands off to `fha capture`/`fha process`. It is a front end, not a separate engine.
 
-**Phase 2 - Confirm, don't fill (a glance).** The panel shows what the browser pre-filled - title, date, repository/collection, the person names it found, the image it spotted - as editable fields, plus a **notes box pre-seeded with a tiny template**:
+A bookmarklet is not a front end: a `javascript:` bookmark can trigger only a single combined `.html` download, never a bundle folder, so a saved page goes through §4.2 instead.
 
-```
-Who is this for? (the person/family this record is about)
-What is it? / anything to remember
-```
+---
 
-The human's job is a glance and a nudge: fix a mangled title, untick an irrelevant person, type a sentence of context. Everything is optional; a hurried human clicks straight through. The panel's *only* insistence is on the asset (Phase 3) - the one thing that cannot be redone once the page is closed.
+## 5. The browser companion
 
-**Phase 3 - Capture the evidence (asset mode a/b/c).** The panel offers the three modes explicitly, because this is where pages fight back. The shipped panel composes them as a page-copy checkbox ("Keep a copy of the whole page", on by default) plus a two-option evidence picker ("Yes, save the actual file" / "No, the page copy is the record") - (a)/(b)/(c) remain the underlying cases:
+[`browser-companion/`](browser-companion/) is a Manifest V3 extension, Chromium-first (the same code loads in Edge). It runs in the browser, never inside the archive, but **ships with every archive**: `fha install` and `fha update-tools` copy its loadable files (`manifest.json`, `src/`, `icons/`, and the owner's README) into `.fha/browser-companion/`, so any archive owner can load it unpacked with no clone of the project. Its development files (`tests/`, `test-bundle/`, `package.json`) stay in the project repo. Its README documents the panel, every site reader, and the extension's tests; this section states only what the rest of the toolchain relies on.
 
-- **(a) Auto-capture from a link** - the human pastes (or the panel pre-fills from a detected `<img>`/PDF link) the asset URL; the extension `fetch()`es it **in the page's own session** (`credentials: 'include'`) and saves the bytes as `asset.<ext>`. Honest caveat: a cross-origin or DRM-protected viewer image may refuse the fetch - the panel says so and offers (c).
-- **(b) Page-as-asset** - one click stores a **self-contained preservation copy** as the asset (case (b)): a **single-file HTML** with images/CSS/fonts inlined as data-URIs (`asset_mode: "singlefile"`), so the saved page survives the original's rot instead of decaying into broken-image placeholders. Print-to-PDF was dropped - the single-file HTML supersedes it, and a real PDF still enters via the mode-(a) URL fetch or the mode-(c) drop. The raw `page.html` is saved alongside regardless, so scraping never depends on the bulky preservation copy.
-- **(c) Manual hand-off** - the human downloads the file the normal way (or screenshots the viewer), then **drag-drops it into the panel**; the extension folds it into the bundle as `asset.<ext>` (`asset_mode: "manual"`, flagged `provisional-image` when it is a screenshot). This is the always-works escape hatch.
+### 5.1 Transport
 
-A fourth choice, **none** (case (c) pointer-only), writes citation + `external_links` with no asset: with the page-copy toggle off and "No, the page copy is the record" selected, the capture stages citation + link only (an empty `assets` list), and ingest files it as a pointer stub flagged `asset_elsewhere: true`.
+An MV3 extension cannot write to an arbitrary path: its only file-writing call, `chrome.downloads.download()`, writes under the browser's Downloads folder. So the companion writes each bundle (§3) to `Downloads/fha-inbox/<slug>-<timestamp>-<token>/`, and the human runs **`fha capture --ingest`** (§6) to file it - the one sanctioned *move* at intake (SPEC §12.1). If the archive's inbox lies under the Downloads folder, or `capture_staging:` points there, the bundle needs only that one command. With the native host (§5.7) installed and switched on, bundles go straight into `inbox/`. The panel never claims it wrote to the archive when it wrote to Downloads: its last line says where the bundle went and gives the exact command, with the folder the browser actually used.
 
-**Phase 4 - Stage, don't process (hand-off).** Clicking *Capture* writes the staged bundle (§5.2) and the panel reports where it went. **No source record is minted, no claims drafted, no S-id assigned** - the bundle is pre-source. The human goes back to researching and captures five more the same way; a research sitting yields a dozen bundles, and one later `fha capture --ingest` + `process-source` session works them all. Batch capture is the natural mode.
+### 5.2 What it writes
 
-Batch mode keeps the form honest across navigations: a navigation that lands *during* a capture is not lost - the panel replays the pre-fill refresh the moment the capture finishes; a viewer that changes only the address (no page load, e.g. next-image arrows) refreshes the form the same way; and if the page still moved between pre-fill and *Capture*, the panel warns ("This page changed since the form was filled") but never blocks - the human may have edited the fields deliberately.
+Exactly the §3 bundle. `page.html` is saved in every mode, so a wrong pre-fill is recoverable at ingest.
 
-### 5.4 MV3 manifest & permissions (least privilege)
+### 5.3 The panel
 
-```jsonc
-{
-  "manifest_version": 3,
-  "name": "Plaintext Family History (Capture)",
-  "version": "0.1.0",
-  "action": { "default_title": "Capture this record" },
-  "background": { "service_worker": "background.js" },
-  "side_panel": { "default_path": "panel.html" },
-  "permissions": ["activeTab", "scripting", "downloads", "storage", "sidePanel"],
-  "optional_permissions": ["nativeMessaging"],
-  "host_permissions": ["<all_urls>"]
-}
-```
+One gesture opens a side panel over the record page; nothing is written yet. The panel shows the pre-filled title, date, repository and people as editable fields, a notes box, and the evidence choice: a page-copy checkbox (case (b), on by default) and "is there a specific file that is the record?" (case (a): a URL to fetch or a file dropped in; a screen capture is ticked as provisional). With neither, the capture is pointer-only (case (c)). *Capture* writes the bundle and reports where it went; no s-id is assigned and no claim drafted. The panel stays bound to the tab it opened on, follows that tab's navigation, and warns - without blocking - when the page changed after the form was filled.
 
-- `activeTab` + `scripting` - read the current page's DOM only when the human invokes the companion (no ambient page access).
-- `downloads` - write the staged bundle into `Downloads/fha-inbox/…`.
-- `storage` - remember the human's preferences (staging-folder name, default evidence choice, page-copy default). The native-host opt-in is not stored here - it is carried by the optional `nativeMessaging` permission itself.
-- `sidePanel` (+ the `side_panel` key) - show the Phase-1→4 panel (§5.3) over the page via Chrome's side-panel API. Not a privacy-sensitive grant - it only lets the extension open its own panel - so it holds the least-privilege intent while enabling the described UX.
-- `nativeMessaging` is **optional** - requested only if the human opts into the §5.7 seamless path.
-- `host_permissions: <all_urls>` is load-bearing for two things, neither of them the asset fetch: (1) batch mode re-injects `content.js` when the tab navigates to the next record, and the `activeTab` grant expires at navigation, so cross-navigation `chrome.scripting.executeScript` needs the host grant; (2) the panel reads `tab.url` (the staleness warning, the navigation refresh) without the `tabs` permission, which works only because the host grant exposes tab URLs. The case-(a) fetch - the reason this bullet once gave - does not need the grant at all: it runs in the content script, riding the page's own CORS (Chrome >= 85). It can still be narrowed to the recipe domains for a tighter build, and the single-invoke DOM read rides on `activeTab` with no host grant.
+### 5.4 Permissions
 
-### 5.5 In-browser pre-fill vs. authoritative Python extraction
+The companion's own [`manifest.json`](browser-companion/manifest.json) is the reference. It asks for `activeTab` and `scripting` (read the page when the human invokes the panel), `downloads` (write the bundle), `storage` (preferences), `sidePanel` (the panel itself), the optional `nativeMessaging` (only when the human turns on §5.7), and `<all_urls>` host access (re-reading a page after the tab navigates, reading the tab's address for the staleness warning, and the site readers' requests to the record's own site).
 
-**The recipes stay in Python. The browser does only a light, generic pre-fill.** The panel reads obvious signals - `<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, visible person-name selectors - to fill the glance-and-nudge fields, and guesses a `recipe_hint` from the hostname. That is *all* - with the one exception below. The durable, per-site citation parsing - the census household table, the marriage-index fields - happens when `fha capture --ingest` runs the existing Python recipe on the saved `page.html`.
+### 5.5 Pre-fill and site readers
 
-This is a deliberate architecture choice, not laziness:
+On any page the panel reads generic signals - `<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, JSON-LD Person names, the largest image - and guesses `recipe_hint` from the hostname. On the sites it knows (Ancestry, FamilySearch, Find a Grave, Newspapers.com, and IIIF image servers) a **site reader** in the companion reads the record as the site presents it and saves what it finds as bundle assets: the record image at full size, the site's own index of the record as a `site-data` JSON file, photos, and the site's own citation. Each reader is described in [`browser-companion/README.md`](browser-companion/README.md).
 
-- **One source of truth.** Re-implementing Ancestry/FamilySearch parsing in JavaScript would mean two recipe sets drifting apart. The browser captures; Python extracts.
-- **The companion stays dumb and replaceable** (the TOOLING §13b promise). The extension, the native host, and Claude-in-Chrome all produce the same `page.html`; the engine treats them identically.
-- **Hints are cheap to be wrong about.** Because `page.html` is always saved, a bad browser guess costs nothing - the Python recipe corrects it at ingest, and the human's explicit edits in `capture.json` still win over both.
+The Python recipe still runs on the saved `page.html` at ingest, and the human's typed fields still win over both. Where the browser and the recipe derive the same hint (`source_type`, `source_date`, `source_class` from a record's collection and event date), they apply **one shared rule written twice** - `recordHints` in `browser-companion/src/lib/ancestry-record.js` and `record_hints` in `tools/capture_recipes/_common.py` - held to the same answers by one case table (`tests/fixtures/capture-samples/ancestry-hints.json`) that both test suites run.
 
-**The one exception: record hints from a site's own data.** On the record pages the companion reads site-specifically (Ancestry, FamilySearch and Find a Grave - §5.6), the panel also sends `source_type`, `source_date` and `source_class` in `capture.json`, taken from the record's collection and its own event date. It does this through **one shared rule** written twice - `recordHints` in `browser-companion/src/lib/ancestry-record.js` and `record_hints` in `tools/capture_recipes/_common.py` - held to the same answers by one case table (`tests/fixtures/capture-samples/ancestry-hints.json`) that both test suites run. So the browser's guess and the ingest recipe's reading of the same page cannot drift, and the three points above still hold: a type or date the human typed in the form wins and the hint only fills a blank (`source_class` has no form field, so its hint stands), and the recipe still reads the saved page at ingest.
+### 5.6 Asset acquisition
 
-### 5.6 Asset acquisition, honestly
-
-| Mode | How | Caveat / MV3 reality |
+| Case | How | Caveat |
 |---|---|---|
-| (a) fetch | `fetch(url, {credentials:'include'})` in the content-script context | cross-origin / tiled viewer / DRM images may refuse → fall to (c) |
-| (b) singlefile | walk the DOM; `fetch` each referenced image/CSS/font and rewrite its URL to a `data:` URI; serialize to one `.html` | **doable in pure MV3** (the SingleFile approach); cost is fetch volume + base64 bloat on image-heavy pages, and same-origin/CORS limits on a few sub-resources. Capture *after* load so dynamic content has settled. The default for case (b). |
-| (b) pdf | print-to-PDF of the rendered page | **not reliably one-click in MV3**: extensions have no print API; programmatic PDF needs the `chrome.debugger` `Page.printToPDF` protocol (heavyweight, shows a warning banner) or the §5.7 native host. Not offered in the panel - dropped, the single-file snapshot supersedes it; the dependable path for a PDF remains the human's own *Save as PDF* handed in via (c), or a direct PDF URL via (a). |
-| (a/b) page images | also pull the page's primary `<img>` as its own asset file | a cheap add-on to (a)/(b): when the record centers on a photo, save that image even if the page itself is the asset, so the evidence isn't trapped inside a snapshot. Schema 2's `assets:` list carries multiple files (record + page snapshot), filed as a SPEC §12.1 bundle (§3) |
-| (c) manual | drag-drop the human's own download (a saved image, a *Save-as-PDF*, a screenshot) into the panel | screenshots are flagged `provisional-image` - a better scan may exist |
-| none | citation + `external_links` only | `asset_elsewhere: true`; lands in the research-to-do |
-| familysearch-record | **site-specific, FamilySearch records** (`ark:/61903/1:1:{id}`, and the image viewer opened from one, `personArk=`): the content script reads the record through FamilySearch's own data service (GEDCOM X) with the signed-in session - the `fssessionid` login sent as a Bearer token **only** to https addresses on familysearch.org or a subdomain, never to an address FamilySearch's reply names without that check, read per request and never stored or written into a capture - into `record-data.json` (role `site-data`: the data and its citation, FamilySearch's index of the record, never a transcript), and fetches the full image behind `ark:/61903/3:1:{image}` (its `dist.jpg`) as `record.jpg` (role `record`). A bare image viewer saves that full image the ordinary way | before Capture the panel asks for the image's description and first kilobyte; a restricted (center-only) image turns the status amber ("the record's data only") and the bundle notes say which image and why. Title, type, date and class come from FamilySearch's own data (the same `recordHints` rule as Ancestry, from the record's GEDCOM X facts). `record.imageSaved`, `same_image_as`, the always-kept page copy for an image-less bundle, and the Seen It stripping follow the Ancestry row |
-| findagrave-memorial | **site-specific, Find a Grave memorials** (`/memorial/{id}/{slug}`, not its gallery or flower pages), **no login**: the content script reads the memorial as the page shows it - its name, birth and death dates and places, cemetery (and its id), plot, inscription, gravesite details, bio, the family members it links (relation, memorial id, name, dates), who made it, and Find a Grave's own citation ("accessed" filled with the capture date) - into `record-data.json` (role `site-data`, with the list of its photos), and its photo list from the memorial's own gallery pages (`…/photo?page=N`, at most 20, `credentials: 'omit'`). The panel downloads each photo at full size as `{kind}-{n}.{ext}` with that role (`grave-1`, `person-1`, `family-1`, `document-1`, `flowers-1`, `cemetery-1`, `other-1`, else `photo-1`), only from `https://images.findagrave.com/photos/…` (no other host or port, no credentials in the address, redirects never followed - `redirect: 'error'` - an image content type), without cookies or a referrer; at most 40 per capture, one at a time with a 0.8-2 s pause; the gravestone (else the person) is marked `is_primary` in `capture.json`, which ingest carries into `notes.md` for `fha process` | a 429 (from a photo or a later gallery page) stops the downloads at once and the bundle says which photos are still to come; a photo list read only in part (a later page failed, fewer listed than Find a Grave's count, or no count and a page it does not recognise) turns the result amber ("Find a Grave shows N photos; M are saved") and records `photosPartial: true` with `photosTotal` null when the count is not known - never "no photos", which only a count of 0 says; the next Capture is a capture of its own, to be filed with the memorial's source by hand; a refused or missing photo is named with its cause; a gallery that will not read still saves the memorial; a removed or merged memorial (no `#bio-name`) stages nothing and says to search for the person. Hints (the shared `recordHints` rule, collection "Find a Grave"): `source_type: website` (a volunteer's compilation, not a vital record - SPEC §8.5 would otherwise default its claims to high confidence), `source_class: derivative`, `source_date` the memorial's own death date - Find a Grave gives no burial date and a burial is known only to be on or after the death (TI-068), so none is invented, and the birth never dates it. Each photo in `record-data.json` carries `file` (or null with `same_image_as`, `error` or `skipped`); a photo already saved in the sitting or reported by the Seen It add-on (`fagphoto:{photoId}`, from a saved file only) is not downloaded again. Typed title/date/type/repository win; the always-kept page copy for a bundle with no photo, the tab identity checks and the Seen It stripping follow the Ancestry row |
-| ancestry-record | **site-specific, Ancestry record pages** (`/search/collections/{dbId}/records/{recordId}`): the content script reads the record as the site shows it - its labelled index fields, the household table, the "Source Citation" sections - into `record-data.json` (role `site-data`: the site's index, never a transcript), and fetches the linked scan (`/imageviewer/…` or an image-only collection's `/interactive/…` link) through the same token call as the image-viewer path, as `record.jpg` (role `record`) | a record with no scan, or one Ancestry will not hand over, still stages its index with a note saying so. The record's own hints ride in `capture.json` where the human left the form blank: `source_type` and `source_date` from its collection and its own event-date field (a death index dates by the death, never by the index's first year), `source_class: derivative` for an index (TI-066); the ingest recipe applies the same rule to a saved page of this layout (one shared case table, `tests/fixtures/capture-samples/ancestry-hints.json`). Household members share one census page: a page saved earlier in the sitting, or one the Seen It add-on reports the archive holds, is not downloaded again - the bundle records `same_image_as` (the record that holds the page, by `rec:` key and address, or the archive source's S-id). `record.imageSaved` says whether the bundle itself holds the scan (`imageId` is only the image the record links to); Seen It counts a page as saved only on it. A bundle that would hold only `record-data.json` (no scan) keeps the page copy even when it was unticked, so filing keeps the index's role. The Seen It add-on's injected badges are never read or saved (TI-067) |
-| newspapers-tiles | **site-specific, Newspapers.com only** (like the Ancestry image-viewer path): the content script reads the page's own embedded data (each clipping's rectangle, the page size, a day-long page pass); the panel rebuilds the whole page at 1:1 from the site's own image tiles, one tile at a time with short random gaps (0.2-0.7 s), backing off only on the site's 429/503 "slow down" answers and stopping at once with the real cause on any other refusal, and cuts out each chosen clipping | the site's own *Download PDF* is a 2048 px JPEG, a quarter of a broadsheet scan. Stages **one bundle per clipping** (separately published items never share an S-id, SPEC §7): `clipping.jpg` (role `clipping`), `page.jpg` (`page`), `annotated.jpg` (`annotated`, the page with the item boxed - a capture-time derivative, never the newspaper), `clipping-data.json` (`site-data`: details, the site's four citation styles, and its machine OCR kept as `.json` so it is never searched or read as a transcript). Sends the site's Genealogy-style citation as `capture.json` `citation` (§3). Offers the opened clipping whoever made it, plus the signed-in member's own clippings on the page, never one that marks no area to cut out; the tab's page copy goes only with the bundle for the record on screen (on a clipping page, that clipping), and the closing message names where each bundle went and which, if any, failed; never bulk-downloads |
+| (a) file by URL | `fetch` in the page's own session | a cross-origin or protected image may refuse; the panel says so and offers a dropped file |
+| (a) dropped file | the human's own download, *Save as PDF*, or screenshot dropped on the panel | a screenshot is marked provisional |
+| (a) site reader | the record image, photos or page tiles fetched by the site's reader (§5.5) | per site; see the companion's README |
+| (b) single-file snapshot | the page cloned after load, images and stylesheets inlined as `data:` URIs, executable scripts dropped, JSON-LD kept | bounded in size; fonts and nested CSS resources are not inlined |
+| (c) none | citation + `external_links` only | ingest writes `asset_elsewhere: true` |
 
-The companion never silently produces a worse asset than it claims: a screenshot is labelled provisional, a pointer-only capture is labelled asset-elsewhere, a single-file snapshot is honest that it is a *copy of the page* not the original record, and review sees every flag. And the raw `page.html` is saved in every mode, so a preservation asset that is hard to re-parse (a PDF, a bulky inlined snapshot) never costs the recipe its clean scrape source.
+The companion never produces a worse asset than it claims: a screenshot is labelled provisional, a pointer-only capture is labelled asset-elsewhere, and a snapshot is a copy of the page, not the record.
 
-**Carrying the provisional flag (the shipping convention).** `capture.json` schema 2 (§3) carries the flag in the contract, per asset - `assets: [{file, role, mode, provisional?}]` - and the companion sets it. The backend does **not yet read it**: `fha capture --ingest` consumes only each entry's `file` + `role` (`capture.py` `_resolve_bundle_assets`), so the warning reaches review through the companion's *other* carrier - the `[provisional image - a cleaner original may exist …]` line it prepends to the human's `notes` body, which ingest files as the stub body. A legacy **schema 1** bundle, which has no dedicated field, carries the flag the same way. Teaching ingest and the stub render to honor the structured field (a stub frontmatter flag review can filter on) is the remaining plumbing step (§9).
+### 5.7 Native-messaging host
 
-### 5.7 Native-messaging host (the seamless upgrade)
+`fha capture --host` is a Python native-messaging host the extension launches on demand (no resident process): length-prefixed JSON over stdin/stdout. It files a bundle straight into the configured `inbox/` through the same code as `--ingest`, and answers two read-only questions (name suggestions from the archive, and whether a URL is already captured). `fha capture --install-host` writes the per-browser registration once. The extension uses it only when the human turns on "file straight into my archive"; if the host answers but fails to file a bundle, the capture falls back to Downloads and the panel says why, naming `fha capture --ingest` (recover this one) and `fha capture --install-host` (fix it).
 
-An optional Python host (`fha capture --host`, registered as a native-messaging manifest the extension can find) that receives a bundle over stdin/stdout framing and writes it **straight into the archive's `inbox/`** - resolving `inbox` through `fha.yaml` (SPEC §12.4), so it works for an external inbox root the Downloads path can't reach. With the host installed, Phase 4 files directly; without it, the extension falls back to §5.1's staging folder. If the opted-in host answers the availability ping but then fails to file a bundle, the capture falls back to Downloads *and says so* - the panel names the reason and points at `fha capture --ingest` (recover this one) and `fha capture --install-host` (fix the recurrence); the seamless path never degrades silently. The host runs only when the browser invokes it (no resident daemon), preserving the no-watcher rule. Installation is a one-time `fha capture --install-host` that writes the per-browser native-messaging manifest pointing at the local `fha`.
+### 5.8 Seen It - the research-side sibling
 
-### 5.8 Seen It - the research-side sibling (not part of capture)
-
-[`seen-it/`](seen-it/) is a separate, optional MV3 add-on for the *research* half of a sitting: it remembers which Newspapers.com pages, Ancestry/FamilySearch records and Find a Grave memorials the human has already opened, ruled out, clipped or attached to their tree, and marks them on the sites, so a search is not re-run and a page not re-read. It writes nothing to the archive and stages nothing; its research-log export produces entries for the human to paste into `notes/research-log.md`. It works **standalone** (everything in browser storage) by default. Its opt-in "Advanced mode" adds a small stdlib-Python native-messaging helper (`seen-it/host/seenit_host.py`) that **only reads** an archive: given the archive folder, it resolves `documents` and `inbox` through `fha.yaml` `roots:` exactly as `_lib.resolve_path` does, reads `sources/`, and sweeps the §5.1 staging folder (`capture_staging:`, else `~/Downloads/fha-inbox`), answering which items are already filed (with their S-id) or captured but not yet filed. Its own data folder (the human's browsing record) is a per-user setting and is refused inside an archive or a git checkout. It is not vendored into an archive's `.fha/`; instead `fha install`/`update-tools` keep the owner's loaded copy current in the folder fha.yaml's `browser_extensions:` names, copied from the clone (TOOLING §13c); see [`seen-it/README.md`](seen-it/README.md).
+[`seen-it/`](seen-it/) is a separate, optional MV3 add-on for the research half of a sitting: it remembers which Newspapers.com pages, Ancestry/FamilySearch records and Find a Grave memorials the human has already opened, ruled out, clipped or attached to a tree, and marks them on the sites. It writes nothing to the archive and stages nothing; its research-log export produces entries for the human to paste into `notes/research-log.md`. It works standalone by default; its opt-in Advanced mode adds a stdlib-Python native-messaging helper (`seen-it/host/seenit_host.py`) that **only reads** an archive - it resolves `documents` and `inbox` through `fha.yaml` `roots:`, reads `sources/`, and sweeps the staging folder - to say which items are already filed (with their s-id) or captured but not yet filed. Its own data folder is a per-user setting, refused inside an archive or a git checkout. It is not copied into `.fha/`; `fha install`/`update-tools` keep the owner's loaded copy current in the folder `fha.yaml`'s `browser_extensions:` names (TOOLING §13c). See [`seen-it/README.md`](seen-it/README.md).
 
 ---
 
-## 6. `fha capture --ingest` - the sweep (new backend mode)
+## 6. `fha capture --ingest` - the sweep
 
-The local bridge from a staged-bundle folder to real inbox stubs. A new mode of the existing engine, not a new tool.
+The bridge from staged bundles (§3) to inbox shapes (§1).
 
 ```
 fha capture --ingest [DIR] [--dry-run]
 ```
 
-`DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>-<token>/` bundle it finds:
+`DIR` is resolved in order: the argument, then `fha.yaml`'s `capture_staging:` (read as a plain path and `~`-expanded - it is not an archive root), then `~/Downloads/fha-inbox/`. For each bundle folder it finds:
 
-1. **Read** `capture.json`, `page.html`, and the optional asset.
-2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`/`repository`/`citation`/`source_class`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
-3. **File** the resulting `{slug}.notes.md` + asset into the archive `inbox/` (the one sanctioned move).
-4. **Clear** the staged bundle (move it to a `fha-inbox/.ingested/` holding folder, never hard-delete - the same never-lose-the-human's-work bias as everywhere else).
+1. **Read** `capture.json`, the scrape source, and the listed assets (§3).
+2. **Run the engine** (§2.1) with the scrape source as the HTML and the `capture.json` fields as explicit overrides, exactly as if a human had typed them. The recipe re-detects on the page (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` carry through as name hints.
+3. **File** the result into the archive `inbox/`: zero or one asset as a lone sidecar (or a pointer-only stub), two or more as a bundle folder whose `notes.md` carries the `files:` role hints and the `is_primary` mark (§1.3).
+4. **Log** the capture in `notes/research-log.md` (§2.1).
+5. **Park** the staged bundle in `fha-inbox/.ingested/` - never hard-deleted.
 
-`--dry-run` reports the plan - which bundles, which recipe each matched, which stub each would become - and writes nothing. Ingest is idempotent: a bundle already swept (present in `.ingested/`) is skipped, so re-running after an interruption is safe. A malformed bundle (no `page.html`, unreadable `capture.json`) is reported and left in place, never silently dropped.
+`--dry-run` reports which bundles, which recipe each matched and which stub each would become, and writes nothing. A bundle already in `.ingested/` is skipped, so re-running after an interruption is safe. A malformed bundle (no scrape source, unreadable `capture.json`, a listed asset missing, a file still locked by the browser) is reported with its fix and left in place; one bundle's failure never stops the others. A capture of a photo shared to someone's Ancestry tree that holds no picture is never filed; it is set aside once in `fha-inbox/.not-filed/` and said so.
 
-Because nothing sweeps automatically (the no-watcher rule), the human has to *remember* to run `--ingest` - so **`fha doctor` surfaces the nudge**: when the staging folder holds un-ingested bundles it reports `staged captures: N bundle(s) … waiting  next: run \`fha capture --ingest\``, the same name-the-next-step treatment as inbox aging. It only speaks up when the staging folder exists (most machines never run the companion), so it is silent noise-free elsewhere.
+Because nothing sweeps automatically, **`fha doctor` reminds the human**: when the staging folder holds un-ingested bundles it reports `staged captures: N bundle(s) … waiting  next: run \`fha capture --ingest\``. It speaks only when the staging folder exists.
 
-**Working-copy interaction (SPEC §12.4):** `--ingest` writes only to `inbox/` and reads no originals, so it stays available on a `WORKING_COPY` machine - captures made while travelling sweep into the inbox to carry back, exactly like any other inbox material.
+**Working copy (SPEC §12.4):** `--ingest` writes only to `inbox/` and reads no originals, so it works on a `WORKING_COPY` machine; captures made while travelling sweep into the inbox to carry back.
 
 ---
 
 ## 7. Privacy, safety, and what intake must never do
 
-These bind every delivery form and the engine alike:
+These bind every front end and the engine alike:
 
-- **Reads only the open page, in the human's own session.** No login, no pagination, no fetching behind auth on the tool's own initiative (§2.4). The case-(a) asset fetch retrieves only an asset the human can already see, with §2.4's two scoped exceptions - the Ancestry image-download endpoint called in the human's own session (the same single request as Ancestry's Download button; never bulk, never on any other site) and a IIIF full-size image fetched without credentials - both firing only on the human's Capture click, one image at a time.
-- **No local absolute paths leak.** Stubs store alias-form paths; `capture.json` carries the page URL, not a machine path.
-- **Everything enters `suggested`.** Capture drafts nothing as accepted; the S-id, the claims, and the person resolution are all the processing pass's job, gated by human review.
-- **Living/restricted handling is deferred to processing.** A stub is pre-source and carries no `living`/`restricted` decision; those are set when the source record is minted. The companion never publishes anything outward - it only stages into the local inbox.
-- **The human always owns the throw-away.** Ingested bundles move to `.ingested/`, never hard-deleted; provisional and asset-elsewhere flags surface in review rather than being silently resolved.
+- **The human's own session, the human's own action.** Nothing logs in, stores a credential, or fetches in the background; a front end fetches only what the human's session can already open, when the human asks (§2.4).
+- **No local absolute paths leak.** Stubs store alias-form paths; `capture.json` carries the page URL, not a disk path. The one exception is `asset_path_absolute` on a `--path` stub, which never reaches the record (§1.2).
+- **Everything enters as pre-source.** No s-id, no accepted claim, no person resolution at intake; all of it is the processing pass's job, gated by human review.
+- **Living/restricted decisions wait for processing.** A stub carries a `restricted:` hint at most; the record is where the decision is made.
+- **The human owns the throw-away.** Ingested bundles move to `.ingested/`, processed inbox originals to `inbox/processed/`; nothing is hard-deleted.
 
 ---
 
-## 8. Build status & milestones
+## 8. Build status
 
 | Piece | Status |
 |---|---|
-| Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
-| `fha capture --path` - register a must-never-move asset (§2.6) | **built** (plan 17, [`tools/capture.py`](tools/capture.py) `run_capture_path`; [`tests/test_capture.py`](tests/test_capture.py) `CapturePathTestCase`) - one pointer stub, `asset_path`/`asset_path_absolute` recorded; `fha process` (`process_pointer_only`) now accepts `asset_path` as a second pointer-only shape alongside `external_links`, folding the human's own `asset_path` shorthand into `provenance:` (never the machine-specific `asset_path_absolute`) - PR #30 review follow-up, [`tests/test_process.py`](tests/test_process.py) `test_sidecar_pointer_only_accepts_capture_path_stub` |
-| Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
-| `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD_INGESTION.md MG2.1) |
-| `fha doctor` staged-captures nudge (§6) | **built** ([`tools/doctor.py`](tools/doctor.py); BUILD_INGESTION.md MG2.1) - warns when bundles sit in the staging folder waiting for `--ingest` |
-| Browser extension (§5) | **built** ([`browser-companion/`](browser-companion/), MV3) - the four-phase side panel, generic pre-fill, the fetch / single-file / manual / pointer-only asset modes (print-to-PDF dropped - the single-file snapshot supersedes it; a real PDF enters via URL fetch or drop), and the staged-bundle download path; vendored into every archive at `.fha/browser-companion/` by `fha install`/`update-tools` (load unpacked from there - owner decision 2026-07-26; dev furniture excluded). The seamless native-host path (§5.7) now ships end to end: its backend (below) plus the extension front-end that consumes it (IIIF/warning panel wiring and the opt-in `nativeMessaging` permission request in `native-host.js`), which stays OFF by default behind the "file straight into my archive" toggle |
-| Native-messaging host backend (§5.7) | **built** ([`tools/capture.py`](tools/capture.py) `fha capture --host` / `--install-host`; [`tests/test_capture_host.py`](tests/test_capture_host.py)) - length-prefixed stdin/stdout JSON: files a framed bundle into the configured `inbox/` (via `run_ingest`), plus read-only `suggestNames` / `checkUrl`. The extension front-end that drives it (the opt-in `nativeMessaging` permission request + `isAvailable` gate) also ships, OFF by default behind the "file straight into my archive" toggle |
-| Seen It research add-on (§5.8) | **built** ([`seen-it/`](seen-it/), MV3, standalone by default; read-only archive helper in `seen-it/host/`; [`tests/test_seen_it.py`](tests/test_seen_it.py)) - not vendored into `.fha/`; `fha install`/`update-tools` keep the loaded copy current in the `browser_extensions:` folder (TOOLING §13c) |
-| Bookmarklet (§4.2) | **not pursued** - the extension is the front-end; the paste fallback is the floor (see §4.2) |
+| Inbox contract read by `fha process` (§1) | **built** ([`tools/process.py`](tools/process.py) `_read_sidecar`, `_bundle_file_hints`, `process_pointer_only`, `process_bundle`) |
+| Engine `fha capture` (paste, recipes, generic, stub, search log) | **built** ([`tools/capture.py`](tools/capture.py)) |
+| `fha capture --path` (§2.6) | **built** (`run_capture_path`; `fha process` reads `asset_path`) |
+| Recipes: Ancestry, FamilySearch, Newspapers.com, Find a Grave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
+| `fha capture --ingest` (§6) and the `fha doctor` nudge | **built** (`run_ingest`; [`tools/doctor.py`](tools/doctor.py)) |
+| Browser companion (§5) | **built** ([`browser-companion/`](browser-companion/)); copied into every archive at `.fha/browser-companion/` |
+| Native-messaging host (§5.7) | **built** (`fha capture --host` / `--install-host`; off by default in the extension) |
+| Seen It (§5.8) | **built** ([`seen-it/`](seen-it/)) |
 
-The build order that follows the spine's own logic: the engine first, then `--ingest` (it makes *any* staged bundle useful and is a thin wrapper over the existing engine), then the extension (which produces those bundles), then the native host as a seamless-path upgrade. The concrete, phased milestone breakdown lives in [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (the MG series: engine MG1.1-MG1.3, `--ingest` MG2.1, browser companion MG2.2, native host MG2.3); this document is the design it implements against.
+Build order follows the spine: the engine, then `--ingest` (it makes any staged bundle useful), then the extension, then the native host. The milestones are in [`BUILD_INGESTION.md`](BUILD_INGESTION.md).
 
 ---
 
-## 9. Open questions (deferred, not decided)
+## 9. Open questions
 
-- **Capture-folder discovery.** *Resolved when `--ingest` was built (MG2.1):* the sweep resolves `DIR` in the order **explicit positional arg → `fha.yaml` `capture_staging:` key → default `~/Downloads/fha-inbox/`**. `capture_staging` is read straight off the config and `~`-expanded - it is *not* an archive root (it lives under the browser's Downloads tree), so it is never routed through `resolve_path`. The extension's own `storage` of a chosen folder is a browser-side convenience layered on top, not a backend concern.
-- **Tiled-viewer assets.** The Ancestry image viewer serves tiles, not a single file; case-(a) fetch can't reassemble them. v1 answer is the (c) screenshot `provisional-image`; a tile-stitcher is explicitly out of scope (and near the §2.4 boundary).
-- **Single-file vs. PDF as the case-(b) default.** Single-file HTML stays scrapeable and is one-click in MV3, but bloats on image-heavy pages and can miss CORS-locked sub-resources; PDF renders faithfully but isn't reliably one-click (needs `chrome.debugger` or the native host) and can't be re-parsed. v1 leans single-file, with PDF offered via the human's *Save as PDF* + drag-drop (c). Whether to bundle a vendored SingleFile-style inliner or write a minimal one is a build-time call.
-- **How much to inline.** Images and CSS are the must-haves for case (b); fonts, web-components, and lazy-loaded media are diminishing returns against snapshot size. Settle the inlining scope when the extension is built.
-- **Recipe parity in the panel.** Whether to let a recipe ship an *optional* JS pre-fill snippet for a richer Phase-2 glance, without becoming a second source of truth. Kept out of v1 to hold the §5.5 line.
-- **First-class provisional/asset flags.** *Half-resolved when `capture.json` schema 2 landed:* the per-asset `provisional` flag now rides in the contract (`assets: [{file, role, mode, provisional?}]`, §3) and the companion sets it - but `fha capture --ingest` currently reads only each entry's `file`/`role` and drops the flag, so the warning reaches review via the `[provisional image - …]` notes line (§5.6). The remaining step is the ingest/stub plumbing: read the field at sweep time and surface it as a stub frontmatter flag review can filter on.
+- **The provisional flag in the stub.** `assets[].provisional` reaches review only as the `[provisional image - …]` line the companion adds to `notes`. A stub frontmatter flag review could filter on would need ingest to read the field.
+- **How much a snapshot inlines.** Images and stylesheets are inlined; fonts, web components and lazy-loaded media are not. The trade is snapshot size against fidelity, settled per need. (The companion's inliner is written minimal for that reason.)

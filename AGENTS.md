@@ -37,7 +37,7 @@ These bind exactly like the contract below. They are why **sessions are an inter
 ### Speculation and storytelling
 
 The formats above fence what you *write* (suggested claims, AI-DRAFT markers, origin-tagged
-hypotheses). The same line binds what you *say* — the human hears your confidence as fact
+working answers). The same line binds what you *say* — the human hears your confidence as fact
 unless you tell him otherwise:
 
 - **Label spoken speculation in the same breath.** Any assertion not backed by an `accepted`
@@ -57,9 +57,10 @@ unless you tell him otherwise:
   an era implied — cites loosely (a county history, a general reference) and reads as context,
   never as a sourced family fact. This is the place-research rule, generalized to everything
   you write and say.
-- **A photo-date guess is a hypothesis.** "When do you think this was taken?" gets an estimate
-  with its stated basis (clothing, print format, photo process) — recorded as an
-  `origin: agent` hypothesis if it's worth keeping, never as a claim.
+- **A photo-date guess is a working answer.** "When do you think this was taken?" gets an estimate
+  with its stated basis (clothing, print format, photo process) — recorded, if it's worth keeping,
+  as the working answer on that question's entry (`origin: human`, since he asked it, with `guess:`,
+  `basis:` and `verify:`, SPEC §17a), never as a claim.
 - **Keep the archive's own paperwork out of the family's story.** A claim's `value:` and a
   record's reader-facing prose (Biography, Stories, an unfenced `## Research Notes` paragraph)
   describe **what happened to the family** — a fact, in plain English, that a relative who has
@@ -75,8 +76,8 @@ unless you tell him otherwise:
   to the sentence about the person. That material already has a real home, so there is never a
   reason to leave it in the reader's way: a claim's own `notes:` field (SPEC §8.4 —
   "provenance remarks, supersession pointers go here too" — never rendered onto any built page,
-  standalone or `--linked` alike); for something broader than one claim, a person's research file
-  `## Research Log` (SPEC §16b, likewise never rendered); or the `<!-- private -->` fence around
+  standalone or `--linked` alike); for something broader than one claim, the person's research file
+  (SPEC §16b; the site never renders it); or the `<!-- private -->` fence around
   just that paragraph (TOOLING.md §3c) when it belongs sitting near the prose it concerns but
   must still stay off a shared build. This applies whether a human typed the sentence directly or
   an AI-assisted pass drafted it — a `mine-transcript` comparison of two transcription passes, in
@@ -181,7 +182,8 @@ people/connections/     non-direct people (FAN club), ordinary §13 person files
                         the anchor couple is derived from claims, not the filename
 people/stubs/           unplaced person stubs
 places/places.yaml      place registry
-notes/                  general research; notes/questions.md = question log
+notes/                  general research; notes/questions.md = questions and working answers,
+                        notes/research-log.md = the one search log (SPEC §17)
 .fha/                   vendored machinery in an installed archive (tools/, design/) -
                         run it, never hand-edit it; refreshed by `fha update-tools`
 .cache/                 disposable tool caches (index.sqlite, photos.sqlite) - never truth
@@ -193,7 +195,8 @@ The capture **browser extension** (`browser-companion/` in the project repo) run
 *browser*, never inside the archive - but every installed archive carries a ready-to-load
 copy at `.fha/browser-companion/` (chrome://extensions → Developer mode → "Load unpacked" →
 that folder; its README says the same). At run time its whole archive footprint is the
-staged bundles it drops and the `fha capture --ingest` sweep that files them (TOOLING §13b).
+staged bundles it drops, the `fha capture --ingest` sweep that files them into `inbox/` (TOOLING §13b),
+and the one `notes/research-log.md` entry each capture appends (SPEC §17c).
 The optional **Seen It** add-on is kept current by `fha update-tools` in the folder fha.yaml's
 `browser_extensions:` names (TOOLING §13c). Never tell the human to *remove* an add-on and load
 it again - Chrome deletes its data with it; the reload arrow in chrome://extensions is the step.
@@ -201,7 +204,7 @@ Working ON the extension is a project-repo activity like any other tool-building
 
 ## Format quick reference
 
-- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = hypothesis; never converts to C - verification mints a new claim and links both ways). The ID is the machine identity: mint with `fha id mint <TYPE>` (or, by hand, draw 10 chars from that alphabet and verify the string appears nowhere in the tree). A record a human created with no ID yet is valid - the linter mints one on contact and keeps the filename/name as an alias; never block on a missing ID.
+- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = a working answer on a question entry, SPEC §17a; never converts to C - settling it mints a new claim, which may point back with `hypothesis:`). The ID is the machine identity: mint with `fha id mint <TYPE>` (or, by hand, draw 10 chars from that alphabet and verify the string appears nowhere in the tree). A record a human created with no ID yet is valid - the linter mints one on contact and keeps the filename/name as an alias; never block on a missing ID.
 IDs are immutable and never reused.
 - **Filenames:** sources `{slug}_{S-id}.md`; documents-root source files
 `{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` (the sort name is the birth surname when there is one; surname-less people - mononyms, enslaved ancestors by given name, patronymics, foundlings - lead with the double underscore, e.g. `__caesar_P-….md`; the full cultural name lives in `name`/`name_variants`).
@@ -272,8 +275,8 @@ fha confirm <verb> …         act on a detection candidate, report prompt, or c
                             decision (xref/cooccur/dismiss/place/discovery/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <P-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
-                            backfill any record section a pre-#76 stub is still missing (never a
-                            research file - that stays opt-in, SPEC §16b); always explicit, never
+                            backfill any record section an older stub is still missing (never a
+                            research file - that is created only when something is written to it, SPEC §16b); always explicit, never
                             automatic. A direct-line person files into their derived couple folder;
                             `--into connections/` files anyone else flat in people/connections/
                             (SPEC §12.3) - called with no --into, a non-direct stub is refused
@@ -331,7 +334,7 @@ fha photoindex gallery ...   the matching photos as one clickable HTML page unde
 fha find <ID|text>           locate anything: record + assets + citations for an ID;
                             FTS across records, notes, transcripts, photo captions
 fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
-                            adjacent to a person, place, source, claim, or hypothesis
+                            adjacent to a person, place, source, claim, or working answer
 fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
                             --kind/--limit narrow it
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
@@ -438,31 +441,39 @@ Voice follows the archive's biography style - the human's in-session ask, else `
 chronicle; extending existing prose keeps its register. Narrative texture comes only from cited
 claims or clearly-flagged period context - the citation contract is identical in both styles.
 - **Log searches:** when you search an external collection for the human (or execute a
-research-next plan), write the research-log entry (date, repository, collection, terms, result incl. nil).
-Check the log before proposing any search.
-- **AI passes:** record every extraction pass in the source's `## AI Passes` yaml block
-({date, model, harness, task, outputs, human_reviewed}).
+research-next plan), append one entry to `notes/research-log.md`, the archive's one search log
+(SPEC §17c: date, question, repository, collection, terms, result incl. nil; `fha capture` appends
+there too). Check the log before proposing any search.
+- **AI passes:** record every extraction pass as one entry in the source's `ai_passes:` frontmatter
+list - `{date, by, task}` plus an optional `note` (SPEC §14). Who accepted a claim is recorded on the
+claim (`reviewed:`), never on the pass.
 Draft prose you write into profiles goes inside `<!-- AI-DRAFT ... -->` markers until the human accepts it; on acceptance, `fha confirm draft <P-id>` flips the marker to `<!-- AI-ACCEPTED ... -->` (provenance kept).
 - **Mine a transcript:** be selective - substantive assertions become `suggested` claims
 with anchors; narrative chunks go to `## Stories`; the rest stays in the transcript (it is preserved and searchable; extraction is indexing, not preservation).
-Record your pass in the source's `## AI Passes` block.
+Record your pass in the source's `ai_passes:` list.
 
 ### When you cannot answer a research question (log it)
 
 **Open questions about the family history do not live in the session.** A session ends and takes
-everything unwritten with it - the same argument that sends tool defects to `TOOL_ISSUES.md`, and
-it holds just as squarely for research findings, which already have a home and have simply never
-had an instruction pointing at it. Any question about the *records* that you raise and cannot
-settle before moving on - a claim whose value does not appear in the source it cites, a person
-whose `living` flag you could not determine so export redaction is undefined for them, a date
-conflict you noticed but did not adjudicate, a batch of `accepted` claims resting on images nobody
-has transcribed - gets a `## Q:` block in **`notes/questions.md`** *before you move on*, not at the
-end of the session.
+everything unwritten with it - the same argument that sends tool defects to `TOOL_ISSUES.md`. SPEC
+§17b says what is written down: a question **the human asks** that you cannot settle now, and a
+**conflict in the evidence** - two claims that disagree, or a claim whose value the source it cites
+does not support. Each gets a `## Q:` entry *before you move on*, not at the end of the session: in
+the person's research file when it is about one person (the file is created the first time
+something is written to it, SPEC §16b), else in **`notes/questions.md`**.
 
-Use the block SPEC §17 defines: `origin:` (`human` | `tool` | `agent` - yours is `agent`; this
-records who *raised* the question, not what it is about), `status:` (`open`), `refs:`, and a dated
-`context:` line carrying enough that a reader six months later knows why it mattered and what
-would settle it. A question you only said out loud is a question you lost.
+**A gap a tool can compute is never written down.** No birth date, no parents, no source for a
+provisional date, accepted claims resting on images nobody has transcribed (W124), a `living` flag
+still `unknown` - `fha report` and `fha lint` show each of these fresh every time, and a written copy
+only goes stale. Point the human at the report instead.
+
+Use the entry form SPEC §17b defines - an `## Q:` heading, then one `- ` line per field: `origin:`
+(`human` | `tool` | `agent` - this records who *raised* the question, not what it is about),
+`status:` (`open`), `refs:` (bare IDs in single brackets), and a `context:` line with dated sub-lines
+carrying enough that a reader six months later knows why it mattered and what would settle it. A
+guess you have about the answer is the same entry's **working answer** (SPEC §17a): add `id:` (from
+`fha id mint H`), `guess:`, `basis:` and `verify:` - never a separate object, never a claim. A
+question you only said out loud is a question you lost.
 
 **This file is for the history, not the software.** A bug, a missing capability, a command that
 misreports its own cause - that is a tool defect and it belongs in `TOOL_ISSUES.md` under the rule
@@ -473,13 +484,11 @@ genuine gap in the research - log the defect in `TOOL_ISSUES.md` and open the qu
 for what remains unknown *about the family*, each pointing at the other. Do not restate the bug
 in `notes/`.
 
-Within that scope it binds in `research` mode as much as any other, and covers your own research
-output as much as the records: a claim you drafted and could not fully evidence is a question, not
-a loose end. Closing one later without an answer is a legitimate, recordable outcome (`closed (not
-pursuing)`); never writing it down is not. Note what this is *not*: `fha lint --spawn-questions`
-opens these blocks for exactly one machine-detectable case (E009, a `contradicts:` with no open
-question). Everything a human or an agent notices is yours to write, and nothing will warn you
-that you didn't.
+Within that scope it binds in `research` mode as much as any other. Closing one later without an
+answer is a legitimate, recordable outcome (`closed (not pursuing)`); never writing it down is not.
+`fha lint --spawn-questions` opens an entry for one machine-detectable conflict (E009, a
+`contradicts:` with no open question); every other conflict a human or an agent notices is yours to
+write, and nothing will warn you that you didn't.
 
 ### You cannot conclude absence from a search
 

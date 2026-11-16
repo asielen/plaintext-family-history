@@ -3,17 +3,20 @@
 A Manifest V3 browser extension that stages an open genealogy record page into
 your archive's inbox as a **capture bundle**. It is the everyday front-end for
 the intake on-ramp described in [`../TOOLING_INGESTION.md`](../TOOLING_INGESTION.md)
-§5.
+§5. What it must produce is TOOLING_INGESTION's inbox contract (§1) by way of the
+staged bundle (§3); how it reads each site is this README's business (Site
+readers, below).
 
 > **Fast, forgiving capture now; structured review later.** Grab everything while
 > the page is open; defer every decision that can wait.
 
-The extension is deliberately **dumb and replaceable**. It never logs in, never
-scrapes behind your back, and never decides what a record *means*. It stages raw
-material, the page's DOM, an optional asset, and a little metadata, and the
-durable Python tool (`fha capture --ingest`) does the authoritative extraction
-later. A wrong guess in the browser costs nothing, because the raw `page.html` is
-always saved and the Python recipe corrects it at filing.
+The extension is deliberately **replaceable**. It never logs in, never fetches
+anything you did not ask for, and never decides what a record *means*. It stages
+raw material - the page's DOM, the record's files, what the site says about the
+record, and a little metadata - and `fha capture --ingest` turns that into an
+inbox item. A wrong guess in the browser costs nothing, because the raw
+`page.html` is always saved, the Python recipe reads it again at filing, and
+what you typed wins over both.
 
 This folder lives **outside** the Python tool suite - it runs in the *browser*,
 never inside the archive - but it **ships with every archive**: `fha install` /
@@ -71,9 +74,8 @@ composes with the Yes/No evidence choice. The raw `page.html` is always saved
 separately as the recipe's scrape source.
 
 `capture.json` (schema 2; every field except `url` optional; see
-[`../TOOLING_INGESTION.md`](../TOOLING_INGESTION.md) §3). The single
-`asset_mode`/`asset_file` pair of schema 1 is now an `assets:` LIST, one entry
-per staged file with its `role`:
+[`../TOOLING_INGESTION.md`](../TOOLING_INGESTION.md) §3) lists the staged files
+as an `assets:` list, one entry per file with its `role`:
 
 ```json
 {
@@ -103,8 +105,8 @@ per staged file with its `role`:
   `fha process` later dissolves into one source whose `files:` inventory lists
   each asset with its role.
 
-Ingest is **back-compatible**: a legacy **schema 1** bundle (flat
-`asset_mode`/`asset_file`) still files unchanged. The raw `page.html` is the
+Ingest also reads the **schema 1** shape (a flat `asset_mode`/`asset_file`
+pair). The raw `page.html` is the
 scrape source when present; if a bundle omits it, the `webpage`-role HTML
 snapshot is parsed instead.
 
@@ -188,107 +190,210 @@ no-op, the bundles land in `inbox/` directly.
 
 ---
 
-## What it never does (privacy & safety, §7)
+## Privacy and safety
 
-- Reads only the **open page, in your own session**. No login, no pagination, no
-  fetching behind auth on its own initiative. A fetched asset is only one you can
-  already see. One scoped exception to "no API calls": on an Ancestry image-viewer
-  page, Capture calls Ancestry's own image-download endpoint in your session - the
-  same single request its Download button makes; never bulk, never uninvited,
-  never on any other site (the hand-test plan is
-  [`ANCESTRY-AUTOFETCH-TEST.md`](ANCESTRY-AUTOFETCH-TEST.md)). A page whose image
-  is served over the open IIIF standard gets the same one-image treatment,
-  fetched without credentials. A second scoped exception, Newspapers.com only:
-  opening the panel on a clipping or page reads the page's list of clippings
-  (the same request its viewer makes, at most a few pages of 25), and Capture
-  rebuilds that one newspaper page from the viewer's own image tiles - one tile
-  at a time with short random gaps, backing off when the site asks it to slow down - plus one
-  request per extra clipping you ticked, for its text. One page per Capture,
-  only the clippings you chose; never your whole clippings list. On an Ancestry
-  **record** page, Capture reads the record as the page shows it and fetches the
-  one scan it links to, through the same download call as the image viewer.
-  If the Seen It add-on is installed, the panel asks it one question before
-  that download - "does the archive already hold this census page?" - so a
-  household's shared page is fetched once; nothing else is asked or sent.
-  On a photo shared to an Ancestry tree (the media viewer,
-  `/mediaui-viewer/…/media/{mediaId}`), Capture reads the photo's Details as
-  the page shows them - stopping at its "Saved by" list of other members -
-  and fetches the one image the viewer shows, from the page's own site in your
-  session (`lib/ancestry-record.js` `ancMediaImageUrl` builds an address on
-  the page's origin only, and content.js checks it again before the fetch),
-  keeping the bytes exactly as sent. The bundle files as a `photo` source
-  whose `external_links` keep the viewer's address without its query - the
-  address Seen It knows the photo by (`med:{mediaId}`). When the photo will
-  not come and no file was dropped in, nothing is staged: a photo source is
-  never filed without its picture. No copy of the page is kept for a shared
-  photo (the page lists other members): the archive keeps the photo and
-  `photo-data.json`, whose fields are only what the Details reader extracts,
-  and the Python recipe reads no people or text from that page. `fha capture
-  --ingest` leaves out a page copy an older add-on made of such a page (it
-  stays parked in the staging folder) and says so in the notes; a shared-photo
-  capture with no picture is never filed - it is set aside, once, in the
-  staging folder's `.not-filed/`. Where the page's layout is unclear, the
-  Details reader leaves text out rather than file someone else's words as
-  hers: it reads only the photo's own Details box - Ancestry's own panel
-  (`#mediaViewerDetailsPanel`, read by its structure alone:
-  `ancMediaPanelDetails`, #261; never the AI-estimated date or suggested
-  description Ancestry shows in place of an empty field, the "Saved by"
-  members or the comments), else the element whose own heading or
-  aria-label is "Details" (`ancMediaDetailsBoxes`), whole, each field by its
-  own label. Nothing outside the box is read, and with no box
-  found no field comes from the page body - only the photo, its address and
-  the tab's own title are kept; the rest can be read on Ancestry from the
-  saved address (PR #258 round 9, reversible). Capture
-  reads the page again first, and
-  stages nothing while the page shows Details or linked people the form has
-  not shown her (they are added to the form for her to check), so a photo is
-  captured once - a second capture of a filed photo cannot be filed. Fields
-  the page filled in and she never changed (date, title, Kind, untouched
-  people) follow that second read, and a change is shown before anything is
-  staged; while Ancestry's panel still describes the item shown before (its
-  title differs from the alt text of the viewer's own picture of this item,
-  `ancMediaPanelIsFor`), nothing is read and Capture waits; a second press on
-  the same item, or a press with her own file dropped in, stages the picture
-  and its address with no details from the panel (`details: {}`, the title
-  from the picture's alt text unless she typed one, and only the date, Kind and
-  people she set herself) - never a dead end (#261 audit).
-  The panel's category is read too and sets the form's Kind
-  (`ancMediaKind`, #261): an obituary or newspaper article is a newspaper, a
-  birth, death or marriage certificate a vital record, a property record a
-  land record, another document what its title says (else other), and
-  anything else - portraits, military service, occupation, education,
-  yearbooks, unknown words - a photo. The Kind at Capture decides the
-  filing: a photo's picture is role `front` (photo library), any other
-  kind's is `record` (documents root).
-  On a FamilySearch record or image viewer, the page reads the record and its
-  image through FamilySearch's own data service, as FamilySearch's pages do,
-  with your signed-in session. That session (the `fssessionid` login, sent as a
-  Bearer token) goes **only** to https addresses on familysearch.org or its
-  subdomains - never to an address FamilySearch's reply names without that
-  check - and is read fresh from the page for each request, never stored,
-  logged, or written into a capture (`lib/familysearch-record.js`
-  `fsAuthHeaders`, tested in `tests/test-familysearch.js` and
-  `tests/test-content-load.js`). Before Capture the panel asks for the image's
-  first kilobyte only, to say whether it can be saved from here.
-  On a Find a Grave memorial no login is used at all: the page reads the
-  memorial as it shows it and its photo list from the memorial's own gallery
-  pages (at most 20, `credentials: 'omit'`), and the panel downloads each
-  photo - at most 40, one at a time with a 0.8-2 s pause, stopping at the
-  first "slow down" (HTTP 429, from the photo list or a photo) - only from
-  https://images.findagrave.com/photos/…, without cookies or a referrer,
-  refusing any other host or port and never following a redirect
-  (`redirect: 'error'`, so no request leaves that host) (`fagPhotoUrlOk` in `lib/findagrave-record.js`, the same rule in
-  `lib/findagrave.js`, tested in `tests/test-findagrave.js`,
-  `tests/test-panel-findagrave.js` and `tests/test-content-load.js`). The one
-  question for the Seen It add-on is which of the memorial's photos the
-  archive already holds (`fagphoto:{photoId}` keys).
-- No local machine paths leak, `capture.json` carries the page URL, never a disk
+- **Your session, your click.** The add-on never logs in, never asks for or
+  stores a password, and fetches nothing in the background. Every request it
+  makes rides your own signed-in browser session, on the site you are looking
+  at, when you press Capture (or open the panel, for the few sites whose record
+  list it reads to fill the form). Each site's rules are below.
+- No local machine paths leak: `capture.json` carries the page URL, never a disk
   path.
-- Everything enters review as **pre-source**. The S-id, the claims, the person
-  resolution, and any living/restricted decision are all the *filing* pass's job,
-  gated by your review. The companion never publishes anything outward.
+- Everything enters as **pre-source**. The S-id, the claims, the person
+  resolution, and any living/restricted decision are all the *filing* pass's
+  job, gated by your review. The add-on never publishes anything outward.
 - The throw-away is always yours: ingested bundles are parked in `.ingested/`,
   never hard-deleted.
+
+---
+
+## Site readers
+
+On the sites below, a site reader in the add-on reads the record the way the
+site presents it and saves what it finds as bundle files. The Python recipe
+still reads the saved `page.html` at ingest, and what you typed in the form
+wins over both. Each reader's code lives in `src/lib/` (the canonical module;
+`content.js` keeps a copy, see Architecture).
+
+### Generic pages and IIIF
+
+Any page gets the generic pre-fill: `<title>`/`og:title`, the canonical URL,
+`article:published_time`, JSON-LD Person names, and the largest image. A page
+whose image is served over the open IIIF standard has that one full-size image
+fetched without credentials (`lib/iiif.js`).
+
+### Ancestry
+
+- **Image viewer.** Capture calls Ancestry's own image-download endpoint in your
+  session - the same single request its Download button makes - and saves the
+  image as `record.jpg` (role `record`). The hand-test plan is
+  [`ANCESTRY-AUTOFETCH-TEST.md`](ANCESTRY-AUTOFETCH-TEST.md).
+- **Record pages** (`/search/collections/{dbId}/records/{recordId}`). The reader
+  (`lib/ancestry-record.js`) reads the record as the page shows it - its
+  labelled index fields, the household table, the "Source Citation" sections -
+  into `record-data.json` (role `site-data`: the site's index, never a
+  transcript), and fetches the linked scan (`/imageviewer/…`, or an image-only
+  collection's `/interactive/…` link) through the same download call, as
+  `record.jpg`. A record with no scan, or one Ancestry will not hand over,
+  still stages its index with a note saying so. A bundle that would hold only
+  `record-data.json` keeps the page copy even when it was unticked, so filing
+  keeps the index's role.
+- **Record hints.** Where you left the form blank, `capture.json` carries the
+  record's own `source_type` and `source_date` (from its collection and its own
+  event-date field - a death index dates by the death, never by the index's
+  first year) and `source_class: derivative` for an index. The rule is
+  `recordHints`, shared with the Python recipe's `record_hints` through one
+  case table (`tests/fixtures/capture-samples/ancestry-hints.json`) that both
+  test suites run.
+- **Shared census pages.** Household members share one census page: a page
+  saved earlier in the sitting, or one the Seen It add-on reports the archive
+  holds, is not downloaded again - the bundle records `same_image_as` (the
+  record that holds the page, by `rec:` key and address, or the archive
+  source's S-id). `record.imageSaved` says whether the bundle itself holds the
+  scan (`imageId` is only the image the record links to); Seen It counts a page
+  as saved only on it. If the Seen It add-on is installed, the panel asks it
+  one question before that download - "does the archive already hold this
+  census page?" - and nothing else. Seen It's own injected badges are never
+  read or saved.
+- **Photos shared to a tree** (the media viewer,
+  `/mediaui-viewer/…/media/{mediaId}`). Capture reads the photo's Details as
+  the page shows them and fetches the one image the viewer shows, from the
+  page's own site in your session (`ancMediaImageUrl` builds an address on the
+  page's origin only, and `content.js` checks it again before the fetch),
+  keeping the bytes exactly as sent. The bundle files as a `photo` source whose
+  `external_links` keep the viewer's address without its query - the address
+  Seen It knows the photo by (`med:{mediaId}`). The rules:
+  - It reads only the photo's own Details box: Ancestry's own panel
+    (`#mediaViewerDetailsPanel`, read by its structure alone,
+    `ancMediaPanelDetails` - never the AI-estimated date or suggested
+    description Ancestry shows in place of an empty field, the "Saved by"
+    members or the comments), else the element whose own heading or aria-label
+    is "Details" (`ancMediaDetailsBoxes`), whole, each field by its own label.
+    Nothing outside the box is read; with no box found, only the photo, its
+    address and the tab's own title are kept.
+  - No copy of the page is kept (the page lists other members): the archive
+    keeps the photo and `photo-data.json`, whose fields are only what the
+    Details reader extracts, and the Python recipe reads no people or text from
+    that page. `fha capture --ingest` leaves out a page copy an older add-on made
+    of such a page (it stays parked in the staging folder) and says so in the
+    notes.
+  - A photo source is never filed without its picture. When the photo will not
+    come and no file was dropped in, nothing is staged; a shared-photo bundle
+    with no picture is set aside once, in the staging folder's `.not-filed/`.
+  - Capture reads the page again first and stages nothing while the page shows
+    Details or linked people the form has not shown you (they are added to the
+    form for you to check), so a photo is captured once. Fields the page filled
+    in and you never changed follow that second read, and a change is shown
+    before anything is staged. While Ancestry's panel still describes the item
+    shown before (its title differs from the alt text of the viewer's own
+    picture, `ancMediaPanelIsFor`), nothing is read and Capture waits; a second
+    press on the same item, or a press with your own file dropped in, stages the
+    picture and its address with no details from the panel (`details: {}`, the
+    title from the picture's alt text unless you typed one).
+  - The panel's category sets the form's Kind (`ancMediaKind`): an obituary or
+    newspaper article is a newspaper, a birth, death or marriage certificate a
+    vital record, a property record a land record, another document what its
+    title says (else other), and anything else - portraits, military service,
+    occupation, education, yearbooks, unknown words - a photo. The Kind at
+    Capture decides the filing: a photo's picture is role `front` (photo
+    library), any other kind's is `record` (documents root).
+
+### FamilySearch
+
+On a record (`ark:/61903/1:1:{id}`) or the image viewer opened from one
+(`personArk=`), the reader (`lib/familysearch-record.js`) reads the record
+through FamilySearch's own data service (GEDCOM X) with your signed-in session,
+into `record-data.json` (role `site-data`: the data and its citation,
+FamilySearch's index of the record, never a transcript), and fetches the full
+image behind `ark:/61903/3:1:{image}` (its `dist.jpg`) as `record.jpg` (role
+`record`). A bare image viewer saves that full image the ordinary way.
+
+- **The login rule.** The session (the `fssessionid` login, sent as a Bearer
+  token) goes **only** to https addresses on familysearch.org or its subdomains
+  - never to an address FamilySearch's reply names without that check - and is
+  read fresh from the page for each request, never stored, logged, or written
+  into a capture (`fsAuthHeaders`, tested in `tests/test-familysearch.js` and
+  `tests/test-content-load.js`).
+- Before Capture the panel asks for the image's description and first kilobyte
+  only, to say whether it can be saved from here; a restricted (center-only)
+  image turns the status amber ("the record's data only") and the bundle notes
+  say which image and why.
+- Title, type, date and class come from FamilySearch's own data, by the same
+  `recordHints` rule as Ancestry. `record.imageSaved`, `same_image_as`, the
+  always-kept page copy for an image-less bundle, and the Seen It stripping
+  follow the Ancestry reader.
+
+### Find a Grave
+
+On a memorial (`/memorial/{id}/{slug}`, not its gallery or flower pages) no
+login is used at all. The reader (`lib/findagrave-record.js`) reads the memorial
+as the page shows it - its name, birth and death dates and places, cemetery
+(and its id), plot, inscription, gravesite details, bio, the family members it
+links (relation, memorial id, name, dates), who made it, and Find a Grave's own
+citation ("accessed" filled with the capture date) - into `record-data.json`
+(role `site-data`, with the list of its photos), and its photo list from the
+memorial's own gallery pages (`…/photo?page=N`, at most 20,
+`credentials: 'omit'`).
+
+- **Photos.** The panel (`lib/findagrave.js`) downloads each photo at full size
+  as `{kind}-{n}.{ext}` with that role (`grave-1`, `person-1`, `family-1`,
+  `document-1`, `flowers-1`, `cemetery-1`, `other-1`, else `photo-1`), only from
+  `https://images.findagrave.com/photos/…` - no other host or port, no
+  credentials in the address, redirects never followed (`redirect: 'error'`),
+  an image content type - without cookies or a referrer; at most 40 per
+  capture, one at a time with a 0.8-2 s pause (`fagPhotoUrlOk`, tested in
+  `tests/test-findagrave.js`, `tests/test-panel-findagrave.js` and
+  `tests/test-content-load.js`). The gravestone (else the person) is marked
+  `is_primary` in `capture.json`, which ingest carries into `notes.md` for
+  `fha process`.
+- **When the site says slow down.** A 429 (from a photo or a later gallery
+  page) stops the downloads at once, and the bundle says which photos are still
+  to come. A photo list read only in part (a later page failed, fewer listed
+  than Find a Grave's count, or no count and a page it does not recognise)
+  turns the result amber ("Find a Grave shows N photos; M are saved") and
+  records `photosPartial: true`, with `photosTotal` null when the count is not
+  known - never "no photos", which only a count of 0 says. The next Capture is
+  a capture of its own, to be filed with the memorial's source by hand. A
+  refused or missing photo is named with its cause; a gallery that will not
+  read still saves the memorial; a removed or merged memorial (no `#bio-name`)
+  stages nothing and says to search for the person.
+- **Hints** (the shared `recordHints` rule, collection "Find a Grave"):
+  `source_type: website` (a volunteer's compilation, not a vital record - SPEC
+  §8.5 would otherwise default its claims to high confidence),
+  `source_class: derivative`, and `source_date` the memorial's own death date -
+  Find a Grave gives no burial date and a burial is known only to be on or
+  after the death, so none is invented, and the birth never dates it.
+- Each photo in `record-data.json` carries `file` (or null with
+  `same_image_as`, `error` or `skipped`); a photo already saved in the sitting
+  or reported by the Seen It add-on (`fagphoto:{photoId}`, from a saved file
+  only) is not downloaded again. Typed title/date/type/repository win.
+
+### Newspapers.com
+
+Opening the panel on a clipping or a page reads the page's own embedded data
+(each clipping's rectangle, the page size, a day-long page pass) and the page's
+list of clippings - the same request its viewer makes, at most a few pages of
+25 (`lib/newspapers-page-data.js`). It offers the opened clipping whoever made
+it, plus your own clippings on the page, never one that marks no area to cut
+out.
+
+On Capture, the panel (`lib/newspapers.js`) rebuilds that newspaper page at 1:1
+from the site's own image tiles, one tile at a time with short random gaps
+(0.2-0.7 s), backing off only on the site's 429/503 "slow down" answers and
+stopping at once with the real cause on any other refusal, and cuts out each
+clipping you ticked (one more request each, for its text). The site's own
+*Download PDF* is a 2048 px JPEG, a quarter of a broadsheet scan, which is why
+the page is rebuilt.
+
+It stages **one bundle per clipping** (separately published items never share
+an S-id, SPEC §7): `clipping.jpg` (role `clipping`), `page.jpg` (`page`),
+`annotated.jpg` (`annotated`, the page with the item boxed - a capture-time
+derivative, never the newspaper), and `clipping-data.json` (`site-data`:
+details, the site's four citation styles, and its machine OCR, kept as `.json`
+so it is never searched or read as a transcript). The site's Genealogy-style
+citation goes in `capture.json` `citation`. The tab's page copy goes only with
+the bundle for the record on screen (on a clipping page, that clipping), and
+the closing message names where each bundle went and which, if any, failed.
 
 ---
 
@@ -304,8 +409,8 @@ src/
   panel.html/.css/.js  the side panel, the numbered steps
   lib/
     capture-json.js    builds capture.json (schema 2, the assets[] list) + name
-    bundle.js          writes the bundle via chrome.downloads (the §5.1 path)
-    native-host.js     optional seamless path (§5.7), shipped, opt-in (off by default)
+    bundle.js          writes the bundle via chrome.downloads (TOOLING_INGESTION §5.1)
+    native-host.js     optional seamless path (§5.7), opt-in (off by default)
     srcset.js          HTML-spec srcset parsing (canonical; content.js keeps a copy)
     iiif.js            IIIF Image-API URL rewriting (canonical; ditto)
     people-harvest.js  JSON-LD person harvest (canonical; ditto)
@@ -326,57 +431,45 @@ canonical modules above have hand-kept copies inside it, and
 `tests/test-sync.js` re-runs both sides through the same battery so a drift is a
 failing build rather than a hope.
 
-The **recipes stay in Python.** The browser does only a light, generic pre-fill
-(`<title>`/`og:title`, canonical URL, `article:published_time`, JSON-LD Person
-names, the largest image). The per-site census-table / index parsing happens when
-`fha capture --ingest` runs the existing Python recipe on the saved `page.html`
-(§5.5). One source of truth; the companion stays replaceable.
+**Who extracts what.** The site readers above read the sites in the browser,
+where your session is, and save what they read as bundle files. The Python
+recipe (`tools/capture_recipes/`) reads the saved `page.html` again at ingest
+for the citation fields and the people, and where both derive the same hint
+they share one rule and one case table. What you typed in the form wins over
+both, and because `page.html` is always saved, a wrong guess in the browser
+costs nothing.
 
-### The transport reality (§5.1)
+### The transport reality (TOOLING_INGESTION §5.1)
 
 An MV3 extension cannot write to an arbitrary path, its only file-writing
 affordance is `chrome.downloads.download()`, which writes under the browser's
 Downloads directory. So the default path stages to `Downloads/fha-inbox/…` and
 you run `fha capture --ingest` to do the one sanctioned *move* into the archive.
-The optional native-messaging host (§5.7) removes the Downloads detour: the Python
-side ships (`fha capture --host` / `--install-host`), and the extension side is
-opt-in — OFF by default behind the "file straight into my archive" toggle, falling
-back to the staging path when no host answers.
+The optional native-messaging host (§5.7) removes the Downloads detour: the
+Python side is `fha capture --host` / `--install-host`, and the extension side
+is opt-in — OFF by default behind the "file straight into my archive" toggle,
+falling back to the staging path when no host answers.
 
 ---
 
-## Deviations & notes from the spec (for the maintainer)
+## Design notes (for the maintainer)
 
-These are the build-time decisions where the implementation went slightly beyond
-[`../TOOLING_INGESTION.md`](../TOOLING_INGESTION.md) §5 as written. They are
-recorded here (not silently) as proposed spec clarifications:
-
-- **`sidePanel` permission added.** The side-panel UX §5.3 describes requires
-  Chrome's `sidePanel` permission and a `side_panel` manifest key, so both are
-  present. `sidePanel` is not a privacy-sensitive grant (it only allows showing
-  a panel), so this keeps the least-privilege intent. *(Amendment landed:
-  §5.4's manifest sketch now lists `sidePanel`.)*
-- **`capture.json` is schema 2: an `assets:` list.** The single
-  `asset_mode`/`asset_file` pair became `assets: [{file, role, mode,
-  provisional?}]` so one capture can carry **both** a page snapshot (role
-  `webpage`) and a separate evidence file (role `record`), the "both" case the
-  panel's design enables. Ingest reads both shapes (schema 1's flat pair still
-  files unchanged) and routes multi-asset captures to a SPEC §12.1 bundle folder.
-  *(Amendment landed: §3 now documents schema 2 as the shipping shape, with
-  schema 1 kept as accepted legacy input; this README and the test-bundle stay
-  the worked example.)*
-- **Provisional flag is now structured (and still in `notes`).** A flagged
-  screen capture sets `assets[].provisional: true` (schema 2) AND prepends a
-  `[provisional image, …]` line to the human's `notes` body, so review sees it
-  whether or not a tool honors the structured flag yet. The §5.6 notes-line
-  convention is kept as the always-readable belt-and-braces.
+- **`capture.json` is schema 2: an `assets:` list,** `[{file, role, mode,
+  provisional?, is_primary?}]`, so one capture can carry **both** a page
+  snapshot (role `webpage`) and a separate evidence file (role `record`). Ingest
+  also reads the schema-1 flat `asset_mode`/`asset_file` pair, and routes
+  multi-asset captures to a SPEC §12.1 bundle folder. TOOLING_INGESTION §3 is
+  the contract; this README and the test-bundle are the worked example.
+- **The provisional flag rides twice.** A flagged screen capture sets
+  `assets[].provisional: true` AND prepends a `[provisional image, …]` line to
+  your `notes`, so review sees it whether or not a tool reads the structured
+  flag.
 - **The handoff command names only a location the browser reported.** The
   download directory is a browser setting - moved to OneDrive, to a second
   volume, or carrying a localized name - so a home-relative `Downloads` path
-  synthesized from the staging-folder setting was a guess presented as fact: it
-  sent `--ingest` to a folder the bundle had never been written to, and the
-  sweep reported nothing waiting on a capture that had just succeeded. The
-  panel now reads the completed download's own absolute path
+  synthesized from the staging-folder setting would be a guess presented as
+  fact, sending `--ingest` to a folder the bundle was never written to. The
+  panel reads the completed download's own absolute path
   (`chrome.downloads.search` → `DownloadItem.filename`), drops the file and
   bundle segments to get the folder that holds the bundles, and puts THAT in
   the command. With no reported path (before the first capture of a sitting, or
@@ -386,20 +479,17 @@ recorded here (not silently) as proposed spec clarifications:
   invented path.
 - **The copied command carries the launcher prefix the machine needs.** `fha`
   is a launcher FILE at the archive root, never a program on PATH (AGENTS.md
-  "Execution rules"), so the bare `fha …` the card used to offer was a
-  command-not-found for everyone except a Windows Command Prompt user - the one
-  shell that searches the current directory. `capture-json.js` `launcher()`
-  reads the OS off `navigator.userAgentData.platform` (falling back to
-  `navigator.platform`, then the UA string) and renders `./fha` or `.\fha`;
-  unknown falls to `./fha`, which PowerShell also accepts. The card holds ONE
-  string rather than the docs' three-shell block because that string is what
-  the Copy button puts on the clipboard, and Windows gets the PowerShell
-  spelling because `.\fha` resolves through PATHEXT in cmd.exe too - so it
-  strands nobody, while the bare form strands every PowerShell user. Every
-  other command the panel prints (the native-host hints, the fallback warning)
-  goes through the same prefix.
+  "Execution rules"), so a bare `fha …` is command-not-found for everyone except
+  a Windows Command Prompt user. `capture-json.js` `launcher()` reads the OS off
+  `navigator.userAgentData.platform` (falling back to `navigator.platform`,
+  then the UA string) and renders `./fha` or `.\fha`; unknown falls to `./fha`,
+  which PowerShell also accepts. The card holds ONE string rather than the
+  docs' three-shell block because that string is what the Copy button puts on
+  the clipboard, and Windows gets the PowerShell spelling because `.\fha`
+  resolves through PATHEXT in cmd.exe too. Every other command the panel prints
+  (the native-host hints, the fallback warning) goes through the same prefix.
 - **Single-file snapshot is minimal but scrape-able.** It inlines images and
-  stylesheet text (the §9 must-haves), drops **executable** scripts but **keeps
+  stylesheet text, drops **executable** scripts but **keeps
   `<script type="application/ld+json">` and other non-executable metadata** so the
   snapshot stays parseable; it does **not** inline fonts or nested CSS `url()`
   resources, and it is bounded (≤120 resources, ≤5 MB each). `page.html` is still
@@ -460,15 +550,12 @@ recorded here (not silently) as proposed spec clarifications:
   left alone they would resolve into whatever folder the snapshot was opened
   from - while `<noscript>` is left byte for byte, since absolutizing in there
   would arm the tracking pixel those blocks most often carry.
-- **Print-to-PDF mode removed.** The old radio offering *Save as PDF* via
-  drag-drop is gone: the single-file HTML snapshot supersedes it (§9's case-(b)
-  default), and a real PDF still files fine through the "Yes, save the actual
-  file" path (paste its url, or drop the PDF). One fewer mode to explain.
-- **Bookmarklet is not here, by design.** §4.2 (the MG2.1 decision): a
-  `javascript:` bookmark can only trigger a single combined `.html` download,
-  never the staged-bundle folder `--ingest` consumes. The **extension is the
-  front-end**; the **paste fallback** (`pbpaste | fha capture …`) is the
-  zero-install floor for anyone who hasn't installed it.
+- **No print-to-PDF mode.** The single-file HTML snapshot covers case (b), and a
+  real PDF files through the "Yes, save the actual file" path (paste its url, or
+  drop the PDF).
+- **No bookmarklet.** A `javascript:` bookmark can only trigger a single combined
+  `.html` download, never the staged-bundle folder `--ingest` consumes; the
+  paste path (`pbpaste | fha capture …`) is the zero-install floor.
 
 ---
 

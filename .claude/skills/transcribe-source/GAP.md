@@ -14,8 +14,8 @@ fha confirm transcript <S-id> [--file <the companion>] [--dry-run]
 
 that rewrites `<!-- AI-DRAFT {date} {model} - … -->` to
 `<!-- AI-ACCEPTED {date} {model} - … (accepted {today}) -->` in the named companion, preserving the
-original date and model exactly as `confirm.run_accept_draft` does, and flipping the matching
-`## AI Passes` entry's `human_reviewed:` to `true` in the same write.
+original date and model exactly as `confirm.run_accept_draft` does. The marker is the only record of
+review: the source's `ai_passes:` entry says the pass happened and is left as it is.
 
 **Why it matters:** the marker contract in `SKILL.md` gives a consumer four states — *unreviewed*,
 *verified*, *unmarked*, *damaged* — and today only three of them are reachable. `fha find --text`

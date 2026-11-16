@@ -31,8 +31,8 @@ for "import my Ancestry tree into here" — see Guardrails.
 
 ## The contract for this skill
 
-- Rules 1–4 (suggested-only claims, human-gated `accepted`, `## AI Passes`, draft markers) barely
-  apply: **this skill drafts no claims, writes no records, and adds no `## AI Passes` entry.** It
+- Rules 1–4 (suggested-only claims, human-gated `accepted`, `ai_passes:`, draft markers) barely
+  apply: **this skill drafts no claims, writes no records, and adds no `ai_passes:` entry.** It
   reads the archive through the export tools and writes only export artifacts (a packet zip, a
   `.ged`/wiki text file, a site folder, a backup zip) — never anything under `people/`, `sources/`,
   `places/`, or `notes/`. There is nothing here for a future session to have "touched" in the
@@ -127,7 +127,7 @@ for "import my Ancestry tree into here" — see Guardrails.
   wikitree text, site HTML, backup zip). A fix is always upstream — the source record, then
   re-export. A hand-edited site specifically routes to `reconcile-site-edits`, never to a raw HTML
   patch here.
-- **This skill writes no claims, no records, no `## AI Passes` entry.** It reads and exports;
+- **This skill writes no claims, no records, no `ai_passes:` entry.** It reads and exports;
   there is nothing to record under SPEC §14, and no session should invent a pass entry for a run
   of this skill.
 

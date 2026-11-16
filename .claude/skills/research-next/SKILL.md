@@ -2,15 +2,17 @@
 name: research-next
 description: >
   Run when the human asks "where should I look for X?" / "what's next on the Hartleys?" / "what should I
-  research?". Checks the research log FIRST, then combines open questions, vitals gaps, and open
-  hypotheses with historical context (which record sets exist for the era/place, where they're held) into
-  concrete, ranked research leads. May draft hypotheses (`origin: agent`) into research files — leads and
-  hypotheses, never claims. Logs any executed search back to the research log.
+  research?". Checks the research log FIRST, then combines open questions, working answers, and the
+  gaps `fha report` computes with historical context (which record sets exist for the era/place, where
+  they're held) into concrete, ranked research leads. May write a guess as a working answer on a question
+  entry (`origin: agent`) — leads and working answers, never claims. Logs any executed search back to
+  `notes/research-log.md`.
 ---
 
 # research-next
 
-The archive already knows what it doesn't know: open questions, vitals gaps (W101), open hypotheses. This
+The archive already knows what it doesn't know: open questions, working answers still to settle, and the
+gaps `fha report` computes (vitals, W101). This
 skill turns those into *concrete* leads — which record set, which repository, which search terms — steered
 by historical context. The research log is the guardrail against wasted effort: never propose a search
 already run unless its nil has aged past the re-run horizon. See [`../_STANDARD.md`](../_STANDARD.md).
@@ -22,21 +24,22 @@ now?", "any leads on Margaret's parents?"
 
 ## The contract for this skill (state it before you start)
 
-- **Leads and hypotheses only — never claims.** A claim requires a source by definition; this skill has no
-  source, so it produces research *directions*, not facts. Any belief it records is a hypothesis record with
-  `status: open` and `origin: agent`, written under `## Hypotheses` on the person's own profile (or their
-  separate research file, when they already have one — SPEC §16b: most people never need a separate file
-  now, and a hypothesis is indexed content-first from either, issue #56). (SPEC §16 hypothesis-record statuses are
-  `open` / `verified → C-…` / `abandoned`, and `fha report` lists open hypotheses with `WHERE status='open'`,
-  so a new hypothesis must be `status: open` to surface next session — `status: hypothesis` is a different
-  value, reserved for *unsourced `relationships:` entries* per §8.6, and would never appear in the report.)
+- **Leads and working answers only — never claims.** A claim requires a source by definition; this skill
+  has no source, so it produces research *directions*, not facts. A guess worth keeping is a **working
+  answer** (SPEC §17a rung 2): the question entry it answers, with `id:`, `guess:`, `basis:` and `verify:`
+  added — never a separate object, and never a claim. (`status: hypothesis` is a different thing: a guessed
+  relationship entered on a person's `relationships:` so the tree can be followed past it, §17a rung 3.)
+- **Gaps are read, never written.** A gap a tool can compute — no death date, no parents, a provisional
+  birth with no source — is shown fresh by `fha report` every time; never write it into the questions file
+  as a question (SPEC §17b). A question entry is written when the human asks one, or when you have a guess
+  worth keeping (then the entry exists for its working answer).
 - **Log-aware, always.** Check the research log **before** proposing anything. Never re-propose a search
   already logged unless its nil has aged past the re-run horizon (default **18 months** — collections
   grow).
-- **Log executed searches back.** When the human actually runs a lead you proposed, write the research-log
-  entry (date, repository, collection, terms, result including nil).
-- **Sessions are an interface, not memory** (_STANDARD.md §7): the plan and any hypothesis are written
-  into the archive — the person's own `## Hypotheses` heading or their research file — not left in the
+- **Log executed searches back.** When the human actually runs a lead you proposed, append the entry to
+  `notes/research-log.md` (date, question, repository, collection, terms, result including nil — SPEC §17c).
+- **Sessions are an interface, not memory** (_STANDARD.md §7): any working answer is written into the
+  archive — its question entry in the person's research file or `notes/questions.md` — not left in the
   chat.
 
 ## Flow
@@ -45,20 +48,20 @@ now?", "any leads on Margaret's parents?"
    ```
    fha report
    ```
-   The report already carries much of what you need: **§1b** worth-a-second-look claims (parked
-   needs-review claims and accepted low-confidence facts — both are corroboration targets, see step 3),
-   **§3** vitals gaps (W101), **§7** open hypotheses,
+   The report already carries much of what you need: **§1b** worth-a-second-look claims (parked claims —
+   still `suggested` but carrying a `reviewed:` date — and accepted low-confidence facts; both are
+   corroboration targets, see step 3), **§3** vitals gaps (W101), **§7** open working answers,
    and — critically — **§5 search-log awareness**, which annotates leads "already searched (date)" and
    flags nils older than the horizon as worth re-running. Read §5 first: it is the log guardrail surfaced
    for you. Note **§5b** is *answerable* questions — open questions that already have a closeable answer (a
    "close this out" signal), **not** the open-research backlog; for that backlog, read `notes/questions.md`
-   (`## Q:` blocks with `status: open`) and each person's `## Open Questions` directly. For a person-scoped
-   ask, also pull their neighborhood and their research file:
+   (`## Q:` entries with `status: open`) and each person's research-file `## Open Questions` directly. For
+   a person-scoped ask, also pull their neighborhood and their research file:
    ```
    fha find --related <P-id>          # the person's world: sources, places, associated people
-   fha find <P-id>                    # the person's own record, and their separate research file if
-                                       # they have one (## Research Log, ## Open Questions, ## Hypotheses -
-                                       # most people don't have this file at all now, SPEC §16b)
+   fha find <P-id>                    # the person's own record, and their research file if they have
+                                       # one (## Research Notes, ## Open Questions - most people never
+                                       # have this file, SPEC §16b)
    ```
 
 2. **Surface "already searched" before proposing anything.** For each gap you're about to address, state
@@ -67,12 +70,12 @@ now?", "any leads on Margaret's parents?"
    months (*"…but that nil is over two years old now, and FamilySearch has added Kansas records since, so
    it's worth another pass"*).
 
-3. **Combine gaps + questions + hypotheses — and thin facts — with historical context into ranked
+3. **Combine gaps + questions + working answers — and thin facts — with historical context into ranked
    leads.** An **accepted claim with `confidence: low`** is a lead too (SPEC §8.5: the human is building
    on it without being certain): propose the record that would corroborate or supersede it — *"Thomas's
    bookkeeper occupation rests on one low-confidence directory mention; the 1885 Kansas state census
-   would confirm it."* A **parked needs-review claim** (report §1b) works the same way: name what would
-   settle it. For each open
+   would confirm it."* A **parked claim** (report §1b: `suggested`, with a `reviewed:` date) works the
+   same way: name what would settle it. For each open
    thread, name a concrete lead: the record set, the holding repository, and the search terms — steered by
    what actually existed for that time and place:
    - *"Thomas has no death record and the 1880 census puts him in Fairview about age 40, so he likely died
@@ -83,71 +86,73 @@ now?", "any leads on Margaret's parents?"
      that implies a passenger list. Rank leads by payoff (closes a vital gap / answers an open question)
      and by ease (is the collection online, indexed, nearby?).
 
-4. **Optionally draft hypotheses — tagged `origin: agent`.** When the evidence
-   suggests a testable belief, record it under `## Hypotheses` — on the person's own profile (add the
-   heading directly if it isn't there yet; a hypothesis is indexed content-first from any person file,
-   profile included, issue #56 — unlike an open question, this one does NOT need a separate research
-   file to be found), or their separate research file if they already have one, to keep it grouped with
-   other research on them (mint the ID with `fha id mint H`):
-   ```yaml
-   ## Hypotheses
-   - id: H-…
-     hypothesis: "Thomas Hartley died in Breton County between 1911 and 1925"
-     basis: "1880 census ([[S-…]]) age ~40 in Fairview; no later record; Kansas death registration began 1911"
-     verify: "Kansas State death index, Breton County 1911–1925"
-     origin: agent
-     status: open
+4. **Optionally write a guess as a working answer, on a question he asked.** When the evidence
+   suggests a testable belief about a question the human has asked (now, or already written down),
+   it climbs the research ladder (SPEC §17a): the guess goes into that **question entry** as its
+   working answer. If the question is already written, add the four lines to it; if he is asking it
+   now, write one entry in SPEC §17b's form with `origin: human`, in the person's research file
+   (`## Open Questions`, the file created the first time something is written to it, SPEC §16b) or
+   `notes/questions.md` for a question spanning people. A gap the tools can compute (no death date,
+   no parents) is never written as a question to hang a guess on (SPEC §17b): offer the guess in the
+   briefing instead, and write it only if he then asks the question. Mint the id with `fha id mint H`:
+   ```markdown
+   ## Q: Was the Thomas Hartley in the 1880 Fairview census our Thomas?
+   - origin: human
+   - status: open
+   - refs: [p-…]
+   - id: h-…
+   - guess: yes - the same man
+   - basis: the census age (about 40) and birthplace (New York) match his baptism ([[S-…]]); no other Thomas Hartley in Breton County
+   - verify: the 1885 Kansas state census, which names his wife
+   - context:
+     - 2026-07-01 (agent): guess drawn from the census age and birthplace
    ```
-   A hypothesis is a lead with a shape, never a claim. It carries `status: open` and
-   `origin: agent`; an `H-id` never converts to a `C-id` — verification later mints a *new* claim and links
-   both ways (AGENTS.md §"Format quick reference"). **Any ID cited inside `basis:`/`verify:` — or in a
-   later dated update to this hypothesis — is always the `[[S-…]]`/`[[C-…]]`/`[[P-…]]` wikilink form, never
-   a bare or single-bracket ID** (AGENTS.md §"Format quick reference" Citations: "acceptance is lenient...
-   but write the `[[ ]]` form"). This applies inside the `## Hypotheses` list itself — it is a plain markdown
-   list (the fence around the example above is display formatting only), unlike a source's `## Claims`
-   block, which *is* fenced and keeps IDs bare (SPEC §8): a hypothesis's prose fields are read by a human
-   and should resolve as links in Obsidian, where a link inside a real fence would not.
-   When a newly processed source turns up evidence bearing on an **already-open** hypothesis, don't leave it
-   for the next session to notice: append a dated paragraph under the hypothesis (`**Update (YYYY-MM-DD):**
-   …`, citing the new source/claim with `[[ ]]` links) rather than editing the hypothesis's own fields in
-   place — the hypothesis's original `basis`/`verify` stay as first written; the update is the new
-   information layered on top, same as the research log pattern in step 6.
+   A working answer is a lead with a shape, never a claim. It settles one of three ways (§17a rung 4): a
+   source says it (process the source; its claim carries the fact and may point back with
+   `hypothesis: h-…`), the pieces add up (a proof-argument source), or it is wrong: its `id`/`guess`/`basis`/`verify`
+   lines leave the entry, one dated `context:` line records it (`ruled out h-…: <guess> - <why>`), and the
+   question stays open; the next guess gets a new `h-` id. `refs:` holds bare IDs in single brackets; **any ID cited in
+   `basis:`, `verify:` or a context line is prose and takes the `[[S-…]]`/`[[C-…]]`/`[[P-…]]` wikilink
+   form** (AGENTS.md §"Format quick reference" Citations).
+   When a newly processed source turns up evidence bearing on an **open** working answer, don't leave it for
+   the next session to notice: append a dated context line to the entry (citing the new source/claim with
+   `[[ ]]` links) rather than editing its `guess`/`basis`/`verify` in place — those stay as first written;
+   the context line is the new information layered on top.
 
 5. **Emit a plan-shaped list.** Present the leads as a short ranked plan the human can act on — top pick
    first, each with its record set / repository / terms / why. End with the single best next move.
 
 6. **Log any executed search back.** If the human runs a lead (now or reports back that he did), append
-   the entry under `## Research Log`. Unlike a hypothesis, a research-log entry is discovered ONLY in
-   `notes/research-log.md` or a person's SEPARATE research file (`fha index`/the report read it there
-   specifically) — a person's own profile is never scanned for one, so log a person-specific search to
-   their research file when they already have one; when they don't, log it to `notes/research-log.md`
-   instead (still fully discoverable, "already searched (date)" keeps working) rather than starting a
-   research file just to hold one entry:
+   one entry to **`notes/research-log.md`**, the archive's one search log (SPEC §17c). Put the working
+   answer or the person in `question:` — a person ID there makes the search count for that person, so
+   "already searched (date)" keeps working:
    ```yaml
-   ## Research Log
    - date: 2026-07-01
-     question: "[[H-…]] Thomas Hartley death record"
+     question: "[[h-…]] Thomas Hartley death record"
      repository: Kansas State Historical Society
      collection: "Kansas death index, Breton County 1911–1925"
      terms: "Hartley, Thomas"
-     result: nil        # or a note / an [[S-…]] when it turns up a source
+     result: nil        # or found [[s-…]] / partial (note)
    ```
    A logged nil is not a failure — it's what stops the next session from re-running the same dead end.
 
 ## Guardrails
 
-- Leads and hypotheses only — **never** a claim (no source ⇒ no claim).
+- Leads and working answers only — **never** a claim (no source ⇒ no claim).
+- A computed gap is never written as a question; a question entry exists because the human asked it or
+  because it carries a working answer.
 - Log-aware: no lead duplicates a recent logged nil (within the 18-month horizon); state "already searched
   (date)" before proposing.
-- Hypotheses are `origin: agent`, `status: open`, written under `## Hypotheses` on the profile or the
-  research file — never mixed into a source's `## Claims`.
-- Executed searches are logged (including nils); the log is the memory, not the chat.
+- A working answer is the question entry's `id`/`guess`/`basis`/`verify` lines, `origin: agent`,
+  `status: open`, in the research file or `notes/questions.md` — never mixed into a source's `## Claims`.
+- Executed searches are logged in `notes/research-log.md` (including nils); the log is the memory, not
+  the chat.
 
 ## Done when
 
 - "Where should I look for X?" in a session on `example-archive` produces concrete, **ranked** leads with
   "already searched (date)" annotations present, and **no** lead duplicates a recent logged nil.
-- Any drafted hypothesis is `origin: agent` / `status: open`, written under `## Hypotheses` on the
-  profile or the research file — never a claim.
+- Any guess written down is a working answer on a question entry (`origin: agent`, `status: open`,
+  with `id`/`guess`/`basis`/`verify`) — never a claim, and no computed gap was written as a question.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

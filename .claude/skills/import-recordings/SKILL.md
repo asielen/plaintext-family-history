@@ -59,14 +59,13 @@ your first reply and don't drift out of it.
 - **Speaker names are proposals.** A machine may transfer labels; only the human may say who is
   speaking. Unknown stays unknown.
 - Every pass over a source — whisper, label transfer, mining — is recorded in that source's
-  `## AI Passes` block before you hand back (_STANDARD.md §3.3, SPEC §6.3). Nothing lints for it.
+  `ai_passes:` frontmatter list before you hand back (_STANDARD.md §3.3, SPEC §14). Nothing lints for it.
 - Living people: a recording of someone alive is ordinary archive material, but the person record's
   `living:` flag must be right, and anything the human flags as sensitive gets `restricted: true` on
   the source (SPEC §19).
 
-The content-hash duplicate check and the container-metadata date read are now real `fha` verbs -
-`fha media dedupe` and `fha media probe` (project issues #43/#44) - retiring the two owner exceptions
-this folder's [`GAP.md`](GAP.md) used to record. The local whisper run and the speaker-label transfer
+The content-hash duplicate check and the container-metadata date read are `fha` verbs -
+`fha media dedupe` and `fha media probe`. The local whisper run and the speaker-label transfer
 remain this skill's own `scripts/`, since they are model-dependent and non-portable (GAP.md's "Not
 gaps" section). All four are read-only on the archive: they report, and `fha process` is still the
 only thing that writes. If a further capability turns out to be missing, **stop and name it** — do
@@ -577,17 +576,16 @@ proposal-and-confirm is unchanged.
 11. **Record the passes.** One entry per machine pass, before you hand back:
 
     ```yaml
-    - {date: {today}, model: faster-whisper-medium, harness: {your-harness},
-       task: "local whisper transcription of the recording",
-       outputs: [], human_reviewed: false}
-    - {date: {today}, model: {your-model-id}, harness: {your-harness},
-       task: "speaker-label transfer from the app transcript onto the whisper text (gate >= 0.65)",
-       outputs: [], human_reviewed: false}
+    ai_passes:
+      - {date: {today}, by: faster-whisper-medium, task: transcript,
+         note: "local whisper transcription of the recording"}
+      - {date: {today}, by: {your-model-id}, task: speaker labels,
+         note: "speaker-label transfer from the app transcript onto the whisper text (gate >= 0.65)"}
     ```
 
-    Use your real model and harness identifiers — those braces are placeholders, not values to
-    copy — and record the whisper model the run **actually** used, which is not always the one you
-    asked for. `outputs: []` is valid when a pass produced no claims.
+    Use your real model identifier — those braces are placeholders, not values to copy — and record
+    the whisper model the run **actually** used, which is not always the one you asked for. A pass
+    that produced no claims is still recorded.
 
 12. **Fork on the mode.**
 
@@ -667,7 +665,7 @@ proposal-and-confirm is unchanged.
   whisper transcript attached by one `--more` call each under the session stem, the source record
   carrying `source_type: interview`, an EDTF `source_date` derived from the container **after** the
   recording's timezone was settled, with the UTC/local caveat and the timezone's provenance in
-  `## Notes`, alias-form `files:` paths, and an `## AI Passes` entry per machine pass.
+  `## Notes`, alias-form `files:` paths, and an `ai_passes:` entry per machine pass.
 - A recording whose timezone cannot be established lands with an honest interval `source_date`
   (`1998-06-14/1998-06-15`) and a sentence saying why - never a single exact day the evidence does
   not support, and never a stall.
