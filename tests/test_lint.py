@@ -2783,7 +2783,7 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertIn('names 6 people', f.message)
         self.assertIn('which two of them were the couple', f.message)
         self.assertIn('fha relate', f.message)
-        self.assertIn('spouse: [P-', f.message)
+        self.assertIn('spouse: [p-', f.message)
         # The repair must never be "delete the parents from persons:".
         self.assertIn('Leave everyone in persons:', f.message)
 
@@ -2882,7 +2882,7 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertNotIn('which two of them', msg)
         self.assertIn('a parent', msg)
         self.assertIn('no marriage is recorded between them', msg)
-        self.assertIn('spouse: [P-', msg)
+        self.assertIn('spouse: [p-', msg)
 
     def test_two_person_divorce_with_a_contradictory_role_warns(self) -> None:
         roles = f'  roles:\n    spouse: [{self.HUS}]\n    parent: [{self.WIF}]\n'
@@ -2980,8 +2980,8 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # Says what is wrong, what it costs, and the concrete repair.
         self.assertIn('names 3 people', f.message)
         self.assertIn('fha relate', f.message)
-        self.assertIn('child: [P-', f.message)
-        self.assertIn('parent: [P-', f.message)
+        self.assertIn('child: [p-', f.message)
+        self.assertIn('parent: [p-', f.message)
         # The repair must never be "delete the parents from persons:".
         self.assertIn('Leave everyone in persons:', f.message)
 
@@ -3010,7 +3010,7 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         msg = w[0].message
         # The wording has to fit THIS shape: the claim HAS said who was born.
         self.assertIn('says who was born', msg)
-        self.assertIn('parent: [P-', msg)
+        self.assertIn('parent: [p-', msg)
 
     # -- #260: a map that places everyone has said all its record says --------
     # A warning nothing can clear without inventing a role teaches the owner
@@ -3056,7 +3056,7 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # Names who is still unplaced, and offers both ways to place them.
         self.assertIn(f'{lint.fmt_id_display(self.MOTHER)} (no role given)', msg)
         self.assertNotIn(lint.fmt_id_display(self.CHILD) + ' (', msg)
-        self.assertIn('parent: [P-', msg)
+        self.assertIn('parent: [p-', msg)
         self.assertIn('informant:', msg)
 
     def test_child_with_mother_word_is_a_parent_and_clean(self) -> None:
@@ -3092,7 +3092,7 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # `parents:` and `parnet:` are what a person types meaning `parent:`.
         # Read as descriptive roles they would place the parents and derive
         # nothing, so the parents would silently never reach the tree.
-        for word in ('parents', 'parnet', 'Parents', 'praent'):
+        for word in ('parents', 'parnet', 'Parents', 'praent', 'mothers', 'fathers'):
             with self.subTest(role=word):
                 roles = (f'  roles:\n    child: [{self.CHILD}]\n'
                          f'    {word}: [{self.FATHER}, {self.MOTHER}]\n')
@@ -3285,7 +3285,7 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         msg = w[0].message
         self.assertIn('does not say who was born', msg)
-        self.assertIn('child: [P-', msg)
+        self.assertIn('child: [p-', msg)
 
     def test_suggested_claim_does_not_warn(self) -> None:
         # Derivation reads accepted claims only, so a suggested claim has cost
@@ -3414,7 +3414,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertIn('C-2222222222', f.message)
         self.assertIn('names 3 people', f.message)
         self.assertIn('died', f.message)
-        self.assertIn('spouse: [P-', f.message)
+        self.assertIn('spouse: [p-', f.message)
 
     def test_two_person_burial_without_roles_warns(self) -> None:
         w = self._w132(self._build(ctype='burial', persons=[self.A, self.B]))
@@ -3427,7 +3427,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn('names 3 people', w[0].message)
         self.assertIn('who was baptized', w[0].message)
-        self.assertIn('child: [P-', w[0].message)
+        self.assertIn('child: [p-', w[0].message)
 
     def test_single_person_death_claim_is_clean(self) -> None:
         # The legacy single-subject shape (vital_subjects case 2, answers

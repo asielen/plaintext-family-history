@@ -895,6 +895,8 @@ _NEAR_MISS_TARGETS: tuple[str, ...] = ('parent', 'child', 'spouse', 'deceased')
 _NEAR_MISS_PLURALS: dict[str, str] = {
     'parents': 'parent', 'children': 'child', 'childs': 'child',
     'spouses': 'spouse',
+    'mothers': 'parent', 'fathers': 'parent', 'sons': 'child',
+    'daughters': 'child', 'husbands': 'spouse', 'wives': 'spouse',
 }
 
 
