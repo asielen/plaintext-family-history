@@ -115,6 +115,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    SOURCE_CLASS_VALUES,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
@@ -558,10 +559,6 @@ def _coerce_result(raw) -> RecipeResult:
     )
 
 
-# SPEC §14 / §8.5: the Mills classes a source record may carry.
-SOURCE_CLASSES = ('original', 'derivative', 'authored')
-
-
 def _valid_source_class(value) -> str | None:
     """`value` as a SPEC §14 source_class, or None when it is not one.
 
@@ -572,7 +569,7 @@ def _valid_source_class(value) -> str | None:
     if not isinstance(value, str):
         return None
     v = value.strip().lower()
-    return v if v in SOURCE_CLASSES else None
+    return v if v in SOURCE_CLASS_VALUES else None
 
 
 # ── Stub assembly ─────────────────────────────────────────────────────────────

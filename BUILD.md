@@ -57,7 +57,7 @@ milestone, build the phases in order unless a phase says otherwise.
 
 | Milestone | Layer | Phases | What it builds |
 |---|---|---|---|
-| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W140 (M1.10) |
+| 1 | Layer 1 - Foundation | M1.1-M1.10 | `_lib.py` with the `Result` contract, `fha.py` dispatcher, `fha id` (M1.1); `fha index` (M1.2-M1.3); `fha lint` / `fha check` engine, errors, warnings W101-W114, fix modes and formatter (M1.4-M1.7); `fha stubs` (M1.8); `fha claim` status moves (M1.9); lint warnings W115-W141 (M1.10) |
 | 2 | Layer 2 - Archive views & discovery | M2.1-M2.5 | `fha views` timeline / sources-index / draft-queue (M2.1), brackets (M2.2), tree / clean / refresh (M2.3); `fha doctor` (M2.4); `fha find` + `fha search` (M2.5) |
 | 3 | Layer 3 - Photo catalog | M3.1-M3.6 | `fha photoindex` scan and grouping (M3.1), `find` (M3.2), `triage` / `report` (M3.3), `reconcile` / `tag-person` (M3.4), `set-summary` (M3.5), `gallery` (M3.6) |
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4a | `fha xref` (M4.1); `fha cooccur` (M4.2); `fha find --related` (M4.3); `fha confirm` xref / cooccur / dismiss / place / discovery / draft (M4.4) and `confirm merge` (M4.4a) |
@@ -320,7 +320,7 @@ python -m unittest tests.test_index tests.test_merged_survivor
 **One PR.** New file `tools/lint.py`. Wire `fha lint [--root PATH] [--json]` into `fha.py`,
 plus `fha check` as an alias registered on the same parser (TOOLING §3). This phase ships the
 lint engine and the first ten error codes only; the remaining errors (E011-E020, M1.5), the
-warning codes (W101-W114 in M1.6, W115-W140 in M1.10), and the fix/formatter flags (M1.7) are
+warning codes (W101-W114 in M1.6, W115-W141 in M1.10), and the fix/formatter flags (M1.7) are
 later phases in this same layer.
 
 **Lint is the reference `Result` renderer.** `run_lint` returns a `_lib.Result` (M1.1): each
@@ -377,7 +377,7 @@ command (TOOLING §3).
 | E012 | `SOURCE:` keyword ↔ record inventory disagreement (photos root; requires `--with-exif`) |
 | E013 | Summary block `**Born/Died/Married/Parents/Children:**` citations don't match accepted claims |
 | E014 | Non-EDTF date value (validate against `edtf_bounds` regex) |
-| E015 | `type: relationship` claim missing `roles:` map |
+| E015 | `type: relationship` claim missing `roles:` map, or `roles:` that is not a map |
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` |
 | E018 | `AGENTS.md` or skills reference deprecated commands or contradict locked rules |
 | E019 | Claim `status` outside the SPEC §8.1 lifecycle set, or `confidence` outside `high`/`medium`/`low` (§8.5) |
@@ -539,7 +539,7 @@ Batch moves, the field-edit flags, `--clear` and `fha claim new` extend this ver
 
 ---
 
-### M1.10 - `fha lint` - warning codes (W115-W140)
+### M1.10 - `fha lint` - warning codes (W115-W141)
 
 **One PR** (or one per group below; each code is independent). Extend `tools/lint.py`. No new
 flags beyond the two fix modes M1.7 lists (`--fix-reciprocal`, `--fix-surnames`). Every code
@@ -566,7 +566,7 @@ W115, W126), `_lib.spouse_parties` (W115, W125), `_lib.vital_subjects` (W132),
 | W123 | A record folder lint could not open (one warning per folder, emitted last) |
 | W124 | Accepted claims on a source whose files carry no searchable text |
 | W125 | Accepted, non-negated `marriage`/`divorce` naming two or more people that yields no couple |
-| W126 | Accepted, non-negated `birth` naming two or more people that yields no parent edge, or one person listed as both child and parent |
+| W126 | Accepted, non-negated `birth` naming two or more people that yields no parent edge, or one person listed as both child and parent; a misspelt or plural derivation role (`_lib.role_near_miss`) on a `birth` or `relationship` claim |
 | W127 | `root_person` has an accepted genetic child and `root_generation` is not `children` |
 | W128 | A file lint tried to read is not UTF-8 (reported, never crashes the run) |
 | W129 | `root_generation` is neither `self` nor `children` (skips the Ahnentafel pass) |
@@ -581,6 +581,7 @@ W115, W126), `_lib.spouse_parties` (W115, W125), `_lib.vital_subjects` (W132),
 | W138 | A person file's name sorts them under a surname their record no longer reads (`--fix-surnames`) |
 | W139 | `disputed`/`rejected`/`superseded` claim with no `reviewed:` date |
 | W140 | Half a merge: `merged_into:` without `status: merged`, or the reverse |
+| W141 | Claim `information`/`evidence`, source `source_class` or person `sex` outside its vocabulary (`_lib` constants; `sex: U` tolerated) |
 
 W119, W120, W127 and W129 each have a twin in `fha views brackets` (M2.2, M11.4, M11.7) built
 on the same map. W121 is also surfaced by `fha doctor` and `fha index`, so it fires on the first

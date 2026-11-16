@@ -2661,8 +2661,8 @@ class MarriageRoleScopingTests(unittest.TestCase):
     def test_legacy_spouse_of_relationship_is_scoped_too(self) -> None:
         # The third path into the spouse graph: `relationship` +
         # `subtype: spouse-of`, whose roles: fallback had the same unguarded
-        # shape. A roles: map that resolves no spouse (the list shorthand
-        # lint's own E015 message suggests) must not pair six people off.
+        # shape. A roles: map that resolves no spouse (a hand-written list
+        # shorthand, which lint's E015 reports) must not pair six people off.
         claims = (
             '- id: C-4444444444\n'
             '  value: "spouses"\n'

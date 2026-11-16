@@ -196,6 +196,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    SOURCE_CLASS_VALUES,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
@@ -1100,7 +1101,7 @@ def _scaffold_text(
     hinted_class = str(source_class or '').strip().lower()
     if source_type == 'proof-argument':
         record_class = 'authored'
-    elif hinted_class in ('original', 'derivative', 'authored'):
+    elif hinted_class in SOURCE_CLASS_VALUES:
         record_class = hinted_class
     else:
         record_class = 'original'

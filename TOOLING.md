@@ -217,7 +217,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E012 | E | Embedded `SOURCE:` keyword disagrees with the documents filename ID or the inventory; on the photos root, with the inventory. `--with-exif`. | §20 |
 | E013 | E | Profile summary block drift: a `**Born/Died/Married/Parents/Children:**` line cites IDs or dates no accepted claim backs (a line with no accepted claim at all is W104). See parsing below. | §16 |
 | E014 | E | A date is not valid EDTF. | §6 |
-| E015 | E | A `type: relationship` claim has no `roles:`. | §8.3 |
+| E015 | E | A `type: relationship` claim has no `roles:` map: the field is missing, empty, or not a map (a list such as `roles: [parent, child]` names nobody). The message shows the map form. | §8.3 |
 | E017 | E | A DNA source is not `restricted: true`, or a DNA file is outside `documents/dna/`. | §19, A.8 |
 | E018 | E | AGENTS.md references a deprecated command (`fha promote`) or photo-rename instructions. Skills are not yet scanned. | §20 |
 | E019 | E | A value outside its closed vocabulary: claim `status` not in the §8.1 set, or `confidence` not `high`/`medium`/`low`. The status set is `suggested`, `accepted`, `disputed`, `rejected`, `superseded`; the code must stop accepting `needs-review`. | §8.1, §8.5 |
@@ -247,7 +247,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W123 | W | A record folder lint could not open (permissions, a disconnected drive). One per folder, emitted last; the report says nothing about what is filed there. | - |
 | W124 | W | Accepted claims on a source with files but no searchable text (no `.md`/`.txt`, no `transcript` or `extracted-text` companion). Read from `files:` roles only; silent when every claim is still `suggested`. Fix: `fha source extract`, or transcribe and attach with `fha process … --more … transcript`. | §14 |
 | W125 | W | An accepted, non-negated `marriage` or `divorce` claim naming two or more people that derives no couple (no `roles:` naming two spouses). The message is worded per shape. | §8.3 |
-| W126 | W | An accepted, non-negated `birth` claim naming two or more people that derives no parent edge: no `roles:`, a person left unroled, no child named, or one person listed as both child and parent (the last also on `relationship` claims). Kin synonyms count as roles; any role, even descriptive, places a person. | §8.3 |
+| W126 | W | An accepted, non-negated `birth` claim naming two or more people that derives no parent edge: no `roles:`, a person left unroled, no child named, or one person listed as both child and parent (the last also on `relationship` claims). Kin synonyms count as roles; any role, even descriptive, places a person, except a derivation role misspelt or in the plural (`parents:`, `parnet:`, `_lib.role_near_miss`), which is reported - on `birth` and on accepted, non-negated `relationship` claims alike. | §8.3 |
 | W127 | W | `root_person` has an accepted genetic child on record, so every couple folder numbers one generation high. Silent when `root_generation: children`. Fix: set `root_generation: children` (or re-anchor), then `fha index` and `fha views brackets --realign`. Also reported by `fha views brackets`. | §12.2, §12.4 |
 | W128 | W | A file lint could not decode as UTF-8. Lint never crashes on it and never rewrites it; the record's ID is still taken from its filename. Fix: re-save as UTF-8. | - |
 | W129 | W | `root_generation` is not `self` or `children`. The whole Ahnentafel pass is skipped. Also in `fha views brackets`; `fha person promote` refuses. | §12.4 |
@@ -262,6 +262,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W138 | W | A person's filename sorts under a surname the record no longer reads. Fix: `--fix-surnames` when the filename's surname spells words of `name:`, else a hand-written `surname:`. | §13 |
 | W139 | W | A `disputed`, `rejected` or `superseded` claim with no `reviewed:` date. Never back-filled. | §8.4 |
 | W140 | W | Half a merge: `merged_into:` without `status: merged`, or the reverse. | §9 |
+| W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |

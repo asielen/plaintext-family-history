@@ -86,6 +86,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    CLAIM_TYPES, VITAL_TYPES  - frozensets derived from SIGNIFICANCE
 #    SOURCE_TYPES              - controlled vocabulary for source_type field
 #    PERSON_SEX_VALUES         - controlled vocabulary for a person record's sex field (SPEC §9)
+#    SOURCE_CLASS_VALUES       - controlled vocabulary for a source's source_class (SPEC §14, A.3)
 #    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
 #    is_catalogued_photo_name  - does the photo catalog keep this file? (scan + freshness)
 #    is_back_scan_candidate    - could this `-back` file be a scan? (process + doctor)
@@ -1942,6 +1943,11 @@ CONFIDENCE_VALUES: tuple[str, ...] = ('high', 'medium', 'low')
 # conclusion, or is it evidence of an absence - SPEC §8.6).
 INFORMATION_VALUES: tuple[str, ...] = ('primary', 'secondary', 'undetermined')
 EVIDENCE_VALUES: tuple[str, ...] = ('direct', 'indirect', 'negative')
+
+# A source's `source_class` (SPEC §14, A.3): was this the original record, a
+# copy or abstract of one, or the researcher's own writing (a proof argument,
+# an interview the owner gave). Shared by capture, process and lint.
+SOURCE_CLASS_VALUES: tuple[str, ...] = ('original', 'derivative', 'authored')
 
 _CONFIDENCE_BY_SOURCE_TYPE: dict[str, str] = {
     'vital-record': 'high',
