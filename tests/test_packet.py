@@ -1466,6 +1466,96 @@ class PacketTests(unittest.TestCase):
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
         self.assertIn('Cousin Ruth [P-cccccccccc]', readme)
 
+    def test_fence_opened_above_a_heading_keeps_his_last_biography_paragraph(self):
+        # Round-2 review of #305: a fence opened above `## Research Notes`
+        # holding a draft re-inserted the draft marker where the fence was,
+        # so the draft cut reached back and dropped his own last Biography
+        # paragraph - and the README then called it a draft.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\nHe was born in 1875.\n\n'
+            'HUMAN-LAST-BIO-PARA he kept bees.\n\n'
+            '<!-- private -->\n## Research Notes\nDraft hunch.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n<!-- /private -->\n\n'
+            '## Stories\nHUMAN-STORY.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertIn('HUMAN-LAST-BIO-PARA', copied)
+        self.assertIn('HUMAN-STORY', copied)
+        self.assertNotIn('Draft hunch', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('draft paragraph', readme)
+        self.assertIn('1 note you marked private was left out', readme)
+
+    def test_living_relative_linked_by_name_is_cautioned_unless_fenced(self):
+        # Round-2 review: the caution read only ID tokens from the copies, so
+        # a living cousin linked by name (`[[Cousin Ruth]]`, the form Obsidian
+        # autocompletes) was no longer named. Names resolve through the
+        # index's alias map, as the index itself does; a fenced one stays out.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Cousin Ruth', living='true',
+                          surname='Other')
+        self._seed_person(pid='p-dddddddddd', name='Aunt May', living='true',
+                          surname='May')
+        self.conn.executemany(
+            'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+            [('cousin ruth', 'p-cccccccccc', 'name'), ('aunt may', 'p-dddddddddd', 'name')])
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe taught [[Cousin Ruth]] to keep bees.\n\n'
+            '<!-- private -->\n[[Aunt May]] may be his daughter.\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Cousin Ruth [P-cccccccccc]', readme)
+        self.assertNotIn('Aunt May', readme)
+
+    def test_ambiguous_name_link_is_not_guessed(self):
+        # Two records share the alias: the index refuses to resolve it, and so
+        # does the caution - it never names one of them on a guess.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Ruth A', living='true', surname='A')
+        self._seed_person(pid='p-dddddddddd', name='Ruth B', living='true', surname='B')
+        self.conn.executemany(
+            'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+            [('ruth', 'p-cccccccccc', 'name'), ('ruth', 'p-dddddddddd', 'name')])
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe taught [[Ruth]] to keep bees.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Ruth A', readme)
+        self.assertNotIn('Ruth B', readme)
+
+    def test_living_person_on_an_unreadable_source_whose_photo_ships_is_cautioned(self):
+        # Round-2 review: a source whose Claims block cannot be parsed stays
+        # home, but its files still ship. Its `people:` list must still put a
+        # living relative in the caution - her photo is in the packet.
+        self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Aunt May', living='true', surname='May')
+        src = self._seed_source('s-2222222222', 'Photo of aunt', asset_rel='documents/aunt.jpg',
+                                persons=('p-aaaaaaaaaa', 'p-cccccccccc'))
+        src.write_text('---\nid: s-2222222222\ntitle: Photo\n---\n## Claims\n\n'
+                       '```yaml\n- id: [unclosed\n```\n', encoding='utf-8')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertTrue((result['packet_dir'] / 'files' / 'aunt.jpg').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Aunt May [P-cccccccccc]', readme)
+
     def test_research_draft_caution_ignores_a_draft_only_inside_a_fence(self):
         # The draft went out with the fence, so warning the relative about
         # "unreviewed draft text" in that file would be untrue. (The heading

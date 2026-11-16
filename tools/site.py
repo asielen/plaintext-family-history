@@ -6330,14 +6330,20 @@ class _SiteBuilder:
         # which is exactly the ordering hazard this capture exists to avoid.
         research_as_written = (_extract_section(body, 'Research Notes') or '').strip()
         dp = not self.linked
-        # keep_ai_markers: the draft pass below runs per section on this
-        # fenced text, and a fence around a draft's last paragraph must not
-        # take the draft's end marker with it - that published the draft's
-        # earlier paragraphs as accepted prose (round-1 review of #305).
+        # Private fences and unaccepted drafts are withheld in ONE pass over
+        # the WHOLE body (`withhold_private_and_drafts`): both sets of ranges
+        # come from the text as written and are cut once, so a fence can
+        # neither hide a draft's end marker (publishing the draft's earlier
+        # paragraphs) nor be cut open by a draft (publishing fenced text after
+        # it) - and the person page shows exactly what `fha wikitree` and
+        # `fha packet` ship (#305 rounds 1-2). Stories is then read back out
+        # of the processed body, so a fence opened above its heading holds
+        # too. A damaged marker anywhere in the body withholds all three
+        # prose sections, as a damaged one in any of them always did.
+        problem: str | None = None
         if body:
-            body = apply_private_fence(body, drop=dp, keep_ai_markers=True)
-        if stories:
-            stories = apply_private_fence(stories, drop=dp, keep_ai_markers=True)
+            body, problem = withhold_private_and_drafts(body, drop_private=dp)
+        stories = _extract_section(body, 'Stories') if (body and problem is None) else None
         # A section that holds NOTHING but its own scaffold placeholder text
         # was never actually filled in by a human - render it exactly like an
         # empty section, not like real content (#125). Without this, a
@@ -6353,16 +6359,9 @@ class _SiteBuilder:
                else _extract_section(body, 'Biography'))
         research = (None if person_section_is_unfilled('Research Notes', research_as_written)
                     else _extract_section(body, 'Research Notes'))
-        problem: str | None = None
-        if bio:
-            bio, problem = strip_unaccepted_drafts(bio)
-            bio = bio.strip()
-        if stories and problem is None:
-            stories, problem = strip_unaccepted_drafts(stories)
-            stories = stories.strip()
-        if research and problem is None:
-            research, problem = strip_unaccepted_drafts(research)
-            research = research.strip()
+        bio = bio.strip() if bio else bio
+        stories = stories.strip() if stories else stories
+        research = research.strip() if research else research
         if problem is not None:
             self.messages.append(
                 f'WARNING: a draft marker in {row["path"]} is damaged ({problem}) - '

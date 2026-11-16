@@ -1435,6 +1435,31 @@ class PersonPageTests(_Base):
         self.assertNotIn('DRAFT-PARA-1', html)
         self.assertNotIn('DRAFT-PARA-2', html)
 
+    def test_fence_opened_above_a_heading_holding_a_draft_keeps_his_biography(self):
+        # Round-2 review of #305 (same input as the wikitree/packet tests).
+        body = ('# P\n## Biography\nHe was born in 1875.\n\n'
+                'HUMAN-LAST-BIO-PARA he kept bees.\n\n'
+                '<!-- private -->\n## Research Notes\nDraft hunch.\n'
+                '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n<!-- /private -->\n\n'
+                '## Stories\nHUMAN-STORY.\n')
+        self._seed_person('p-aaaaaaaaaa', 'P', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('HUMAN-LAST-BIO-PARA', html)
+        self.assertIn('HUMAN-STORY', html)
+        self.assertNotIn('Draft hunch', html)
+
+    def test_fence_opened_above_the_stories_heading_holds_on_the_site(self):
+        # Stories used to be fenced on its own, so an opener written above
+        # its heading was not seen and the fenced story was published.
+        body = ('# P\n## Biography\nHe kept bees.\n\n<!-- private -->\n## Stories\n'
+                'FENCED-STORY about a living cousin.\n<!-- /private -->\n')
+        self._seed_person('p-aaaaaaaaaa', 'P', body=body)
+        self._run(linked=False)
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('He kept bees.', html)
+        self.assertNotIn('FENCED-STORY', html)
+
     def test_nested_private_fence_stays_off_the_shared_site(self):
         body = ('# P\n## Research Notes\nPublic note.\n\n<!-- private -->\nouter\n'
                 '<!-- private -->\ninner\n<!-- /private -->\nOUTER-TAIL-SECRET\n'

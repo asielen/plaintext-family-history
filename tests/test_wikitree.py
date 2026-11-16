@@ -1488,6 +1488,31 @@ class WikitreePrivateFenceTests(unittest.TestCase):
         self.assertNotIn('NESTED-SECRET', r['text'])
         self.assertNotIn('private -->', r['text'])
 
+    def test_fence_opened_above_a_heading_holding_a_draft_keeps_his_biography(self):
+        # Round-2 review of #305: the dropped fence left the draft marker
+        # where the fence had been - above the heading - and the draft cut
+        # then reached back into his Biography and dropped its last paragraph.
+        self._write_profile(
+            '## Biography\nHe was born in 1875 [S-0000000001].\n\n'
+            'HUMAN-LAST-BIO-PARA he kept bees.\n\n'
+            '<!-- private -->\n## Research Notes\nDraft hunch.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n<!-- /private -->\n\n'
+            '## Stories\nHUMAN-STORY.\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'ok')
+        self.assertIn('HUMAN-LAST-BIO-PARA', r['text'])
+        self.assertIn('HUMAN-STORY', r['text'])
+        self.assertNotIn('Draft hunch', r['text'])
+
+    def test_damaged_marker_inside_a_fence_still_refuses(self):
+        # As on master: damage cannot be judged safe just because a fence is
+        # around it - it may be the end of a draft that began outside.
+        self._write_profile(
+            '## Biography\nHe was born in 1875 [S-0000000001].\n\nDRAFT-P1.\n\n'
+            '<!-- private -->\nhunch\n<!-- /AI-DRAFT -->\n<!-- /private -->\n')
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+        self.assertEqual(r['status'], 'broken-draft-marker')
+
     def test_plain_nested_fence_stays_private(self):
         self._write_profile(
             '## Biography\n'

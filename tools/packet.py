@@ -233,8 +233,14 @@ from _lib import (
     Result,
     apply_private_fence,
     configure_utf8_stdout,
+    TOKEN_RE,
     count_private_fences,
-    extract_token_ids,
+    extract_wikilinks,
+    has_unfenced_draft_text,
+    id_type_of,
+    private_fence_spans,
+    resolve_ref,
+    withhold_private_and_drafts,
     fmt_id_display,
     is_placeholder_name,
     is_working_copy,
@@ -953,11 +959,9 @@ def _drop_private_fences(text: str) -> tuple[str, int]:
     all is returned untouched - not even blank-line tidying - so an
     ordinary record still ships as a byte-identical copy.
 
-    Any AI-DRAFT/AI-ACCEPTED marker a dropped fence held is left in place
-    (`keep_ai_markers`): on the profile the draft pass that follows needs the
-    marker to withhold a draft whose last paragraph was fenced (round-1
-    review of #305), and a research file or source record keeps its drafts
-    by design, so its draft caution must still see them.
+    For the research file and source records, which keep their drafts by
+    design. The profile, whose drafts are withheld, goes through
+    `_strip_profile_drafts` instead: fences and drafts in one cut.
 
     Returns (new_text, fenced_blocks_withheld) for the README's plain count,
     not counting the template's own example fence.
@@ -968,8 +972,7 @@ def _drop_private_fences(text: str) -> tuple[str, int]:
     if not _PRIVATE_MARK_RE.search(body):
         return text, 0
     count = count_private_fences(body, ignore=_TEMPLATE_FENCE_EXAMPLE)
-    return (text[:body_start]
-            + apply_private_fence(body, drop=True, keep_ai_markers=True), count)
+    return text[:body_start] + apply_private_fence(body, drop=True), count
 
 
 def _strip_emptied_sections(text: str) -> str:
@@ -985,7 +988,7 @@ def _strip_emptied_sections(text: str) -> str:
     return text[:body_start] + strip_unfilled_person_sections(text[body_start:])
 
 
-def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
+def _strip_profile_drafts(text: str) -> tuple[str, int, int, str | None]:
     """Withhold unaccepted AI-draft prose from the profile copy (round-2 S1).
 
     The AI-pass contract (AGENTS.md) is unqualified: prose an AI drafted stays
@@ -1004,21 +1007,37 @@ def _strip_profile_drafts(text: str) -> tuple[str, int, str | None]:
     at the top of the body would cut from offset 0 - straight through the
     frontmatter. Splitting first mirrors wikitree, which strips rec['body'].
 
-    Returns (new_text, draft_blocks_withheld, problem). A non-None problem
-    means a damaged marker (an unterminated `<!-- AI-DRAFT`, a stray marker
-    word the grammar cannot account for): draft can no longer be told from
-    accepted prose, no usable text is returned, and the caller must treat
-    the profile as un-shippable - the same structural posture as a private
-    name that could not be separated out. The block count comes from _lib's
-    own marker regex, not a local copy, so the README's "N draft paragraphs
-    were left out" can never drift from what the stripper actually cut."""
+    Fenced `<!-- private -->` prose is withheld in the SAME cut
+    (`withhold_private_and_drafts`, #305): both sets of ranges come from the
+    text as written, so neither pass can erase what the other needs.
+
+    Returns (new_text, draft_blocks_withheld, private_notes_withheld,
+    problem); a draft wholly inside a fence counts as a private note, not as
+    a draft. A non-None problem means a damaged marker (an unterminated
+    `<!-- AI-DRAFT`, a stray marker word the grammar cannot account for),
+    judged on the text as written, so one inside a fence counts too: draft
+    can no longer be told from accepted prose, no usable text is returned,
+    and the caller must treat the profile as un-shippable - the same
+    structural posture as a private name that could not be separated out.
+    The block count comes from _lib's own marker regex, not a local copy, so
+    the README's "N draft paragraphs were left out" can never drift from what
+    the stripper actually cut."""
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
-    stripped, problem = strip_unaccepted_drafts(body)
+    if not _PRIVATE_MARK_RE.search(body):
+        stripped, problem = strip_unaccepted_drafts(body)
+        fences: list[tuple[int, int]] = []
+        private_count = 0
+    else:
+        stripped, problem = withhold_private_and_drafts(body, drop_private=True)
+        fences = private_fence_spans(body)
+        private_count = count_private_fences(body, ignore=_TEMPLATE_FENCE_EXAMPLE)
     if problem is not None:
-        return '', 0, problem
-    return text[:body_start] + stripped, len(_AI_DRAFT_MARK_RE.findall(body)), None
+        return '', 0, 0, problem
+    drafts = sum(1 for m in _AI_DRAFT_MARK_RE.finditer(body)
+                 if not any(fs <= m.start() and m.end() <= fe for fs, fe in fences))
+    return text[:body_start] + stripped, drafts, private_count, None
 
 
 # A purpose block (SPEC §16a, #75) is a blockquote whose every line starts
@@ -1334,6 +1353,7 @@ def _classify_sources(
 def _other_named_persons(
     conn: sqlite3.Connection, included_source_ids: list[str], pid: str,
     excluded_claim_ids: set[str] | None = None,
+    claimless_source_ids: set[str] | None = None,
 ) -> list[sqlite3.Row]:
     """
     Return living/unknown persons (other than pid) named by an included
@@ -1345,22 +1365,27 @@ def _other_named_persons(
     A claim the packet withholds (`excluded_claim_ids`) names nobody: the
     caution exists to warn about what the relative will READ, and naming a
     living person whose only tie is a withheld restricted claim would put
-    that tie in the README instead. Callers pass only the sources that ship.
+    that tie in the README instead. A source whose claims cannot be read
+    safely (`claimless_source_ids` - its record stays home but its files
+    still ship) contributes its `people:` list and no claims: her photo goes
+    in the packet, so the relative must still be told she is living.
     """
     if not included_source_ids:
         return []
     excluded = excluded_claim_ids or set()
+    claim_sources = [s for s in included_source_ids if s not in (claimless_source_ids or set())]
     placeholders = ','.join('?' * len(included_source_ids))
+    cplaceholders = ','.join('?' * len(claim_sources))
     claim_rows = conn.execute(
         f"""
         SELECT cp.claim_id AS claim_id, p.id, p.name
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         JOIN persons p ON p.id = cp.person_id
-        WHERE p.id != ? AND c.source_id IN ({placeholders})
+        WHERE p.id != ? AND c.source_id IN ({cplaceholders})
         """,
-        [pid] + included_source_ids,
-    ).fetchall()
+        [pid] + claim_sources,
+    ).fetchall() if claim_sources else []
     people_rows = conn.execute(
         f"""
         SELECT p.id, p.name FROM persons p
@@ -1402,12 +1427,42 @@ def _living_caution_people(conn: sqlite3.Connection, rows, pid: str) -> list[dic
     return out
 
 
+def _resolve_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """alias -> canonical id from the index's aliases table, clash-aware
+    exactly like `fha index`'s own citation scan (`_resolve_map_from_aliases`
+    with no type filter): an alias naming two or more records is left out,
+    so an ambiguous bare name is never guessed at."""
+    idx: dict[str, set[str]] = {}
+    try:
+        for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
+            idx.setdefault(alias, set()).add(cid)
+    except sqlite3.Error:
+        return {}
+    return {a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1}
+
+
+def _linked_ids(text: str, alias_map: dict[str, str]) -> set[str]:
+    """Every record a text links to, by the index's citation rule: ID tokens
+    (`[[P-…]]`, `[P-…]`) plus name/stem wikilinks (`[[Cousin Ruth]]`) that the
+    alias map resolves. Mirrors `index._index_citations_for_file`, so the
+    caution reads a copy the way the index reads the original."""
+    out = {m.group(1).lower() for m in TOKEN_RE.finditer(text)}
+    for target, _disp, _frag, _span in extract_wikilinks(text):
+        if id_type_of(target):
+            continue
+        resolved = resolve_ref(target, alias_map)
+        if resolved:
+            out.add(resolved)
+    return out
+
+
 def _citation_named_persons(
     conn: sqlite3.Connection, copied_files: list[Path], pid: str
 ) -> list[sqlite3.Row]:
     """
-    Return living/unknown persons (other than pid) named by a `[[P-id]]` /
-    `[P-id]` token in the packet's copied .md records (profile, research
+    Return living/unknown persons (other than pid) linked by a `[[P-id]]` /
+    `[P-id]` token or a resolvable name link (`[[Cousin Ruth]]`) in the
+    packet's copied .md records (profile, research
     note, included source records) - catches a living person mentioned only
     in prose, with no `claim_persons`/`source_people` row, that
     `_other_named_persons` would otherwise miss. Merges are followed the
@@ -1420,13 +1475,14 @@ def _citation_named_persons(
     fenced off (round-1 review of #305). A copy that cannot be read is
     skipped; it was written by this build a moment ago.
     """
+    alias_map = _resolve_map(conn)
     ids: set[str] = set()
     for f in copied_files:
         try:
-            ids.update(t for t in extract_token_ids(f.read_text(encoding='utf-8'))
-                       if t.startswith('p-'))
+            text = f.read_text(encoding='utf-8')
         except (OSError, UnicodeError):
             continue
+        ids.update(t for t in _linked_ids(text, alias_map) if t.startswith('p-'))
     ids.discard(pid)
     if not ids:
         return []
@@ -2775,7 +2831,8 @@ def _packet_payload(
         # matches further below; the dict stays open until just before the
         # README is written so every source can contribute.
         other_named_by_id = {r['id']: r for r in _other_named_persons(
-            conn, sorted(included_ids - unsafe_source_ids), pid, excluded_claim_ids)}
+            conn, sorted(included_ids), pid, excluded_claim_ids,
+            claimless_source_ids=unsafe_source_ids)}
 
         # A generational suffix (Jr, Sr, II, III, IV, V) is never the
         # surname (issue #78, the same #53 rule every other consumer
@@ -2883,14 +2940,10 @@ def _packet_payload(
             profile_out_text = _strip_scaffolding_blocks(
                 redacted_profile_text, is_person_profile=True
             )
-            # Notes he fenced `<!-- private -->` stay home. BEFORE the draft
-            # pass: that cuts each draft back to the previous heading, which
-            # would swallow a fence opener sitting above a draft and leave
-            # the fenced text after the draft with only its closer - shipped.
-            profile_out_text, private_count = _drop_private_fences(profile_out_text)
-            profile_out_text, draft_count, draft_problem = _strip_profile_drafts(
-                profile_out_text
-            )
+            # Notes he fenced `<!-- private -->` and unreviewed drafts stay
+            # home, in one cut computed on the text as written (#305).
+            profile_out_text, draft_count, private_count, draft_problem = (
+                _strip_profile_drafts(profile_out_text))
             if draft_problem is not None:
                 raise OSError(
                     f'a draft marker in {profile_path.name} is damaged ({draft_problem}) - '
@@ -2946,15 +2999,17 @@ def _packet_payload(
                         # Research stays a byte copy (round-2 scope decision:
                         # working notes, not publication prose), so a draft
                         # marker inside travels with it - detect it for the
-                        # README caution. Sniffed in the COPY, not the
-                        # original: a draft that sat inside a dropped
-                        # `<!-- private -->` fence did not travel, and the
-                        # README must not warn of it. A byte sniff, not a
-                        # parse: 'AI-DRAFT' is ASCII; an unreadable copy just
-                        # forgoes the caution it could not verify.
+                        # README caution - judged with the same ranges the
+                        # fence/draft pass uses (`has_unfenced_draft_text`):
+                        # a draft wholly inside a dropped `<!-- private -->`
+                        # fence did not travel and is not warned of, while a
+                        # draft whose last paragraph was fenced still ships
+                        # its earlier ones and is. An unreadable original
+                        # just forgoes the caution it could not verify.
                         try:
-                            research_draft_caution = b'AI-DRAFT' in research_copy.read_bytes()
-                        except OSError:
+                            research_draft_caution = has_unfenced_draft_text(
+                                read_text_exact(research_path))
+                        except (OSError, UnicodeError):
                             research_draft_caution = False
                 elif research_path is not None:
                     messages.append(f'WARNING: research file not found on disk: {research_path}')

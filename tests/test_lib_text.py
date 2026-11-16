@@ -335,6 +335,33 @@ class WithholdPrivateAndDraftsTests(unittest.TestCase):
         self.assertIsNotNone(problem)
         self.assertEqual(out, '')
 
+    def test_fence_opened_above_a_heading_cuts_exactly_the_union(self):
+        # Round 2: the cut is the union of the draft ranges and the fence
+        # ranges, both read from the original text - nothing outside either
+        # is touched, however the two overlap.
+        t = ('## Biography\nHUMAN-LAST.\n\n<!-- private -->\n## Research Notes\n'
+             'Draft hunch.\n<!-- AI-DRAFT 2026-07-01 -->\n<!-- /private -->\n\n'
+             '## Stories\nTold.\n')
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=True)
+        self.assertIsNone(problem)
+        self.assertIn('HUMAN-LAST.', out)
+        self.assertIn('## Stories\nTold.', out)
+        self.assertNotIn('Draft hunch', out)
+        self.assertNotIn('Research Notes', out)
+
+    def test_without_a_fence_it_is_exactly_the_draft_stripper(self):
+        t = ('## Biography\nHuman.\n<!-- AI-ACCEPTED 2026-06-01 -->\n\nDraft.\n'
+             '<!-- AI-DRAFT 2026-07-01 -->\n')
+        self.assertEqual(_lib.withhold_private_and_drafts(t, drop_private=True),
+                         _lib.strip_unaccepted_drafts(t))
+
+    def test_unfenced_draft_text_detection(self):
+        inside = '## L\n<!-- private -->\nh\n<!-- AI-DRAFT x -->\n<!-- /private -->\n'
+        straddle = '## L\nP1.\n\n<!-- private -->\nP2\n<!-- AI-DRAFT x -->\n<!-- /private -->\n'
+        self.assertFalse(_lib.has_unfenced_draft_text(inside))
+        self.assertTrue(_lib.has_unfenced_draft_text(straddle))
+        self.assertFalse(_lib.has_unfenced_draft_text('## L\nNo drafts.\n'))
+
     def test_linked_preview_keeps_fenced_text(self):
         t = 'A\n<!-- private -->\nkept\n<!-- /private -->\nB'
         out, problem = _lib.withhold_private_and_drafts(t, drop_private=False)
