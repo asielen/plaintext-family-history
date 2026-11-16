@@ -531,6 +531,88 @@ def _intercept_process_refile(argv: list[str]) -> int | None:
     return args.func(args)
 
 
+def build_full_parser() -> argparse.ArgumentParser:
+    """The complete `fha` parser with every subcommand registered.
+
+    main() parses with it, and build_commands_doc.py walks it to write
+    docs/COMMANDS.md, so the command reference is always the CLI itself.
+    """
+    # Lazy imports: kept inside this function (called from main) for the
+    # reason main() gives: one broken tool must not stop the others loading.
+    from id import register as id_register
+    from index import register as index_register
+    from lint import register as lint_register
+    from stubs import register as stubs_register
+    from views import register as views_register
+    from doctor import register as doctor_register
+    from find import register as find_register
+    from relate import register as relate_register
+    from photoindex import register as photoindex_register
+    from xref import register as xref_register
+    from cooccur import register as cooccur_register
+    from report import register as report_register
+    from packet import register as packet_register
+    from places import register as places_register
+    from gedcom import register as gedcom_register
+    from wikitree import register as wikitree_register
+    from process import register as process_register
+    from capture import register as capture_register
+    from convert_mining import register as convert_mining_register
+    from claim import register as claim_register
+    from confirm import register as confirm_register
+    from person import register as person_register
+    from source import register as source_register
+    from serve import register as serve_register
+    from scaffold import register as scaffold_register
+    from working_copy import register as working_copy_register
+    from normalize_links import register as normalize_links_register
+    from backup import register as backup_register
+    from reconcile import register as reconcile_register
+    from media import register as media_register
+    from reorganize import register as reorganize_register
+    # 'site' shadows Python's stdlib site module (already cached in
+    # sys.modules at interpreter startup), so `from site import …` would
+    # find the wrong module. Load tools/site.py by path under a private name.
+    site_register = _load_site_module().register
+
+    parser = build_parser()
+    subs = parser.add_subparsers(dest='command', metavar='COMMAND')
+
+    id_register(subs)
+    index_register(subs)
+    lint_register(subs)
+    stubs_register(subs)
+    views_register(subs)
+    doctor_register(subs)
+    find_register(subs)
+    relate_register(subs)
+    photoindex_register(subs)
+    xref_register(subs)
+    cooccur_register(subs)
+    report_register(subs)
+    packet_register(subs)
+    places_register(subs)
+    gedcom_register(subs)
+    wikitree_register(subs)
+    process_register(subs)
+    capture_register(subs)
+    convert_mining_register(subs)
+    claim_register(subs)
+    confirm_register(subs)
+    person_register(subs)
+    source_register(subs)
+    site_register(subs)
+    serve_register(subs)
+    scaffold_register(subs)  # adds both 'install' and 'update-tools'
+    working_copy_register(subs)
+    normalize_links_register(subs)
+    backup_register(subs)
+    reconcile_register(subs)
+    media_register(subs)
+    reorganize_register(subs)
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -601,78 +683,7 @@ def main(argv: list[str] | None = None) -> int:
         if result is not None:
             return result
 
-        # Lazy imports: keep them inside main() for the reason above.
-        from id import register as id_register
-        from index import register as index_register
-        from lint import register as lint_register
-        from stubs import register as stubs_register
-        from views import register as views_register
-        from doctor import register as doctor_register
-        from find import register as find_register
-        from relate import register as relate_register
-        from photoindex import register as photoindex_register
-        from xref import register as xref_register
-        from cooccur import register as cooccur_register
-        from report import register as report_register
-        from packet import register as packet_register
-        from places import register as places_register
-        from gedcom import register as gedcom_register
-        from wikitree import register as wikitree_register
-        from process import register as process_register
-        from capture import register as capture_register
-        from convert_mining import register as convert_mining_register
-        from claim import register as claim_register
-        from confirm import register as confirm_register
-        from person import register as person_register
-        from source import register as source_register
-        from serve import register as serve_register
-        from scaffold import register as scaffold_register
-        from working_copy import register as working_copy_register
-        from normalize_links import register as normalize_links_register
-        from backup import register as backup_register
-        from reconcile import register as reconcile_register
-        from media import register as media_register
-        from reorganize import register as reorganize_register
-        # 'site' shadows Python's stdlib site module (already cached in
-        # sys.modules at interpreter startup), so `from site import …` would
-        # find the wrong module. Load tools/site.py by path under a private name.
-        site_register = _load_site_module().register
-
-        parser = build_parser()
-        subs = parser.add_subparsers(dest='command', metavar='COMMAND')
-
-        id_register(subs)
-        index_register(subs)
-        lint_register(subs)
-        stubs_register(subs)
-        views_register(subs)
-        doctor_register(subs)
-        find_register(subs)
-        relate_register(subs)
-        photoindex_register(subs)
-        xref_register(subs)
-        cooccur_register(subs)
-        report_register(subs)
-        packet_register(subs)
-        places_register(subs)
-        gedcom_register(subs)
-        wikitree_register(subs)
-        process_register(subs)
-        capture_register(subs)
-        convert_mining_register(subs)
-        claim_register(subs)
-        confirm_register(subs)
-        person_register(subs)
-        source_register(subs)
-        site_register(subs)
-        serve_register(subs)
-        scaffold_register(subs)  # adds both 'install' and 'update-tools'
-        working_copy_register(subs)
-        normalize_links_register(subs)
-        backup_register(subs)
-        reconcile_register(subs)
-        media_register(subs)
-        reorganize_register(subs)
+        parser = build_full_parser()
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))
