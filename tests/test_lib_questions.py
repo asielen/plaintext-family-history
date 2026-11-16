@@ -132,6 +132,8 @@ class QuestionStateTests(unittest.TestCase):
     def test_open_and_closed_are_their_own_states(self) -> None:
         from _lib import question_state
         self.assertEqual(question_state('open'), 'open')
+        self.assertEqual(question_state('open - narrowed to the 1850s'), 'open')
+        self.assertEqual(question_state('open; asked Aunt May'), 'open')
         self.assertEqual(question_state('closed (not pursuing)'), 'closed')
         self.assertEqual(question_state(''), '')
 

@@ -887,6 +887,26 @@ class WorkingAnswersFromQuestionsTests(unittest.TestCase):
         self.assertEqual(hyps[0]['status'], 'resolved')
         self.assertEqual(people, [('h-5555555555', 'p-cd795c61e0')])
 
+    def test_reused_h_id_does_not_mix_two_entries_people(self) -> None:
+        # SPEC §7 says an h-id is never reused (lint W146 names it). If one
+        # is, one entry wins whole - never one guess shown with both people.
+        _write(self.archive_root / 'people' / 'cole__margaret_research_p-cd795c61e0.md', (
+            '---\nid: p-cd795c61e0\ncreated: 2026-06-01\n---\n\n'
+            '## Open Questions\n\n'
+            '## Q: Was she born in Easton?\n'
+            '- status: open\n- id: h-4f20aa91c3\n- guess: yes\n'
+        ))
+        _write(self.archive_root / 'notes' / 'questions.md', self._QUESTIONS_MD)
+        hyps, people = self._rows()
+        self.assertEqual(len(hyps), 1)
+        winner = hyps[0]
+        if winner['path'] == 'notes/questions.md':
+            expected = ['p-aaaaaaaaaa', 'p-cd795c61e0']
+        else:
+            expected = ['p-cd795c61e0']
+            self.assertEqual(winner['guess'], 'yes')
+        self.assertEqual([p for _h, p in people], expected)
+
     def test_old_hypotheses_list_is_still_read(self) -> None:
         path = self.archive_root / 'people' / 'smith__test_research_P-aaaaaaaaaa.md'
         _write(path, _RESEARCH_MD_WELL_FORMED)

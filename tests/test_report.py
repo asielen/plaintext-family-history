@@ -413,6 +413,9 @@ class ReportTests(unittest.TestCase):
               '- origin: human\n- status: open\n- refs: [P-aaaaaaaaaa]\n'
               '- id: h-4f20aa91c3\n- guess: the Coles of Easton\n'
               '- basis: same household in 1850\n- verify: a death certificate\n'
+              '\n## Q: Where was Test Person married?\n'
+              '- origin: human\n- status: open - narrowed to the 1850s\n'
+              '- refs: [P-aaaaaaaaaa]\n- id: h-6f20aa91c3\n- guess: Easton\n'
               '\n## Q: Was Test Person a twin?\n'
               '- origin: human\n- status: resolved\n- refs: [P-aaaaaaaaaa]\n'
               '- id: h-5f20aa91c3\n- guess: yes\n',
@@ -420,7 +423,7 @@ class ReportTests(unittest.TestCase):
         md = report.run_report(self.archive_root, {}, full=True)['markdown']
         self.assertIn('**Open working answers (guesses not yet proved):**', md)
         self.assertIn('Test Person', md)
-        self.assertIn('1 open working answer\n', md)
+        self.assertIn('2 open working answers\n', md)
 
     def test_accepted_claim_surfaces_as_discovery_and_closes_vitals_gap(self) -> None:
         report.run_report(self.archive_root, {}, full=True)

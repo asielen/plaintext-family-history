@@ -264,6 +264,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W140 | W | Half a merge: `merged_into:` without `status: merged`, or the reverse. | §9 |
 | W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
 | W143 | W | A source record still carrying a field SPEC 2.1 retired: a claim's `significance`, `significance_reason` or `asset`, a `files:` entry's `language` or `digitized`. One line per record naming them: nothing reads them, safe to delete. Never an error. | §8.4, §14 |
+| W146 | W | One `h-` id written on two working answers (question entries in `notes/questions.md` or research files, or old `## Hypotheses` entries). An h-id is never reused; the index keeps one entry whole, so the other guess drops out of `fha find` and the report. Fix: keep the id on one entry, mint a new one for the other (`fha id mint H`). | §7, §17b |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |

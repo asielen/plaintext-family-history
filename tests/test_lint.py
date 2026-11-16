@@ -891,6 +891,34 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         self.assertIn('## Q:', e004[0].message)
         self.assertNotIn('fha stubs', e004[0].message)
 
+    def test_h_id_on_two_working_answers_is_w146(self) -> None:
+        # SPEC §7: an h-id is never reused. Written on two entries, the
+        # tools show one guess and the other vanishes - so lint names it.
+        self._write_profile('Nothing here.')
+        self._write_research(
+            '## Open Questions\n\n'
+            "## Q: Who were Thomas's parents?\n"
+            '- status: open\n- id: h-abcabcabcb\n- guess: the Coles\n')
+        (self.root / 'notes').mkdir()
+        (self.root / 'notes' / 'questions.md').write_text(
+            '## Q: Where did the Hartleys come from?\n'
+            '- status: open\n- id: h-abcabcabcb\n- guess: Yorkshire\n',
+            encoding='utf-8')
+        findings, _ = lint._run_lint_core(self.root, {})
+        w146 = [f for f in findings if f.code == 'W146']
+        self.assertEqual(len(w146), 1, [f.message for f in findings])
+        self.assertIn('h-abcabcabcb', w146[0].message)
+        self.assertIn('notes/questions.md', w146[0].message)
+
+    def test_h_id_on_one_working_answer_is_not_w146(self) -> None:
+        self._write_profile('Working theory: [[h-abcabcabcb]].')
+        self._write_research(
+            '## Open Questions\n\n'
+            "## Q: Who were Thomas's parents?\n"
+            '- status: open\n- id: h-abcabcabcb\n- guess: the Coles\n')
+        findings, _ = lint._run_lint_core(self.root, {})
+        self.assertEqual([f for f in findings if f.code == 'W146'], [])
+
     def test_working_answer_in_a_research_question_is_not_e004(self) -> None:
         # SPEC §17b: a working answer is a question entry with its `- id:`,
         # `- guess:` lines - in a research file's `## Open Questions`.

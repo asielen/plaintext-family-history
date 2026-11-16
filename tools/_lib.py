@@ -2288,6 +2288,9 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # 13: the claims table drops `asset`, `significance_override` and
 # `significance_reason` (SPEC 2.1 retired the fields). A v12 index still has
 # the columns; bump so `fha index` rebuilds the table in its current shape.
+# 14: hypotheses.question/guess + hypothesis_persons - working answers are
+# read from question entries (SPEC §17b), with every person in refs:. A v13
+# index has neither the columns nor the table, so bump to force the rebuild.
 INDEX_SCHEMA_VERSION = 14
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
@@ -6841,7 +6844,8 @@ def question_state(status: str) -> str:
     word the questions template itself suggests). `closed (not pursuing)` is
     its own outcome: given up, not answered. Anything else reads as ''.
     """
-    word = (status or '').strip().split(' ', 1)[0].strip().lower()
+    m = re.match(r'\s*([A-Za-z]+)', status or '')
+    word = m.group(1).lower() if m else ''
     if word in ('answered', 'resolved'):
         return 'answered'
     if word == 'closed':

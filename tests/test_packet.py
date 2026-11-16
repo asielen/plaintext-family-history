@@ -1524,6 +1524,8 @@ class PacketTests(unittest.TestCase):
         self.assertNotIn('hypothesis', copied)
         self.assertIn('Mary Doe', copied)
         self.assertIn('He kept bees.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('1 family tie you marked as a guess was left out', readme)
 
     def test_only_guessed_relationships_drop_the_key(self):
         profile_path = self._seed_person()

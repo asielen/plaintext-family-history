@@ -916,6 +916,10 @@ def _insert_working_answer(
         (hid, person_ids[0] if person_ids else None, question, guess, basis,
          verify, origin, status, _verified_claim_in(status), rel_path),
     )
+    # An h-id is never reused (SPEC §7; lint W146 names a repeat). If one is,
+    # the last entry wins whole: its people replace the earlier entry's, so
+    # one guess is never shown with another guess's people.
+    conn.execute('DELETE FROM hypothesis_persons WHERE hypothesis_id = ?', (hid,))
     for pid in person_ids:
         conn.execute(
             'INSERT OR IGNORE INTO hypothesis_persons(hypothesis_id, person_id) VALUES (?,?)',

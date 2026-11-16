@@ -1346,11 +1346,16 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
 
     # Open working answers (SPEC §17a): question entries with a guess whose
     # question is still open, counted for every person the question is about.
-    open_hyps = conn.execute(
-        "SELECT hp.person_id, COUNT(DISTINCT h.id) AS n FROM hypotheses h "
-        "JOIN hypothesis_persons hp ON hp.hypothesis_id = h.id "
-        "WHERE LOWER(TRIM(h.status)) = 'open' GROUP BY hp.person_id ORDER BY hp.person_id"
-    ).fetchall()
+    # `question_state` decides "open" here exactly as everywhere else, so
+    # `open - narrowed to the 1850s` counts.
+    counts: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT h.id, h.status, hp.person_id FROM hypotheses h "
+        "JOIN hypothesis_persons hp ON hp.hypothesis_id = h.id"
+    ):
+        if question_state(row['status'] or '') == 'open':
+            counts.setdefault(row['person_id'], set()).add(row['id'])
+    open_hyps = [{'person_id': pid, 'n': len(ids)} for pid, ids in sorted(counts.items())]
     if open_hyps:
         lines.append('**Open working answers (guesses not yet proved):**')
         for row in open_hyps:
