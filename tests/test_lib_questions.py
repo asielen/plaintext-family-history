@@ -79,6 +79,62 @@ class ParseQuestionBlocksTests(unittest.TestCase):
     def test_text_with_no_q_heading_yields_nothing(self) -> None:
         self.assertEqual(parse_question_blocks('# Just a title\n\nSome prose.\n'), {})
 
+    def test_working_answer_fields_are_read(self) -> None:
+        # SPEC §17b: a question with a guess carries `- id:`, `- guess:`,
+        # `- basis:`, `- verify:` field lines - the working answer is the
+        # same entry as the question, not a separate record.
+        text = (
+            '## Q: Who were Margaret Cole\'s parents?\n'
+            '- origin: human\n'
+            '- status: open\n'
+            '- refs: [p-cd795c61e0]\n'
+            '- id: H-4f20aa91c3\n'
+            '- guess: Daniel Cole and Ruth Ames of Easton, New York\n'
+            '- basis: the only Cole household in Easton in 1850 with a Margaret\n'
+            '- verify: Margaret\'s death certificate, or Daniel Cole\'s will\n'
+            '- context:\n'
+            '  - 2026-06-12 (human): 1850 census checked\n'
+        )
+        info = parse_question_blocks(text)["Who were Margaret Cole's parents?"]
+        self.assertEqual(info['origin'], 'human')
+        self.assertEqual(info['id'], 'h-4f20aa91c3')
+        self.assertEqual(info['guess'], 'Daniel Cole and Ruth Ames of Easton, New York')
+        self.assertIn('1850', info['basis'])
+        self.assertIn('death certificate', info['verify'])
+
+    def test_question_without_a_guess_has_no_id(self) -> None:
+        info = parse_question_blocks('## Q: When?\n- status: open\n')['When?']
+        self.assertEqual(info['id'], '')
+        self.assertEqual(info['guess'], '')
+
+    def test_fields_stop_at_the_next_heading(self) -> None:
+        # The last question in a research file is followed by other sections;
+        # an old `## Hypotheses` entry's `- id:` there is not this question's.
+        text = (
+            '## Q: Last question?\n'
+            '- status: open\n\n'
+            '## Hypotheses\n\n'
+            '- id: H-1111111111\n'
+            '  hypothesis: something else\n'
+        )
+        self.assertEqual(parse_question_blocks(text)['Last question?']['id'], '')
+
+
+class QuestionStateTests(unittest.TestCase):
+    """SPEC §17b: `answered` and `resolved` mean the same; closed is distinct."""
+
+    def test_answered_and_resolved_are_one_state(self) -> None:
+        from _lib import question_state
+        self.assertEqual(question_state('answered [[s-1234567890]]'), 'answered')
+        self.assertEqual(question_state('resolved'), 'answered')
+        self.assertEqual(question_state('Resolved [[s-1234567890]]'), 'answered')
+
+    def test_open_and_closed_are_their_own_states(self) -> None:
+        from _lib import question_state
+        self.assertEqual(question_state('open'), 'open')
+        self.assertEqual(question_state('closed (not pursuing)'), 'closed')
+        self.assertEqual(question_state(''), '')
+
 
 class ParseQuestionsTests(unittest.TestCase):
     """The whole-archive read: notes/questions.md + every research file."""

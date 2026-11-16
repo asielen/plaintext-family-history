@@ -102,7 +102,7 @@ Rebuilds `.cache/index.sqlite` from the tree: the query surface for every tool a
 
 Target: ~5k sources / ~30k claims in under a minute; correctness first.
 
-The tool must read working answers from question entries (`id: h-…`, `guess:`); current code still reads `## Hypotheses` blocks. It reads captures from `notes/research-log.md`.
+The tool reads captures from `notes/research-log.md`.
 
 **Incremental.** `fha index --source s-xxxx` upserts one source (run after review sessions). Delete children first: claim IDs → `claim_persons`, `claim_links`, then `claims`; `sources.path` → `citations`, `notes_fts` (no FTS cascade); then `sources`, `source_files`, `source_people`. Any incremental/full difference is an incremental bug.
 
@@ -151,8 +151,9 @@ CREATE TABLE place_names(place_id TEXT, alt_name TEXT);
 CREATE TABLE place_history(place_id TEXT, period_edtf TEXT, date_min TEXT, date_max TEXT, hierarchy TEXT);
 CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT, repository TEXT,
   collection TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
-CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, hypothesis TEXT, basis TEXT,
-  verify TEXT, origin TEXT, status TEXT, verified_claim TEXT, path TEXT);
+CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, question TEXT, guess TEXT,
+  basis TEXT, verify TEXT, origin TEXT, status TEXT, path TEXT);
+CREATE TABLE hypothesis_persons(hypothesis_id TEXT, person_id TEXT);  -- the people in refs:
 CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);
 CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- id|stem|name|variant|claim
 CREATE VIRTUAL TABLE notes_fts USING fts5(path, content);
@@ -602,7 +603,7 @@ Ranked, read-only index query, built on `xref` and `cooccur` data. Absent or unr
 - **L-id:** claims naming it; their people by frequency; source count; photos geotagged within about 0.002°; micro-places `within:` it.
 - **S-id:** claims by status; people; places; sources corroborating or contradicting its claims (`claim_links`, both ways); sibling sources sharing a person or `repository`.
 - **C-id:** source, persons, place; claims it corroborates/contradicts (both ways); sibling claims (same person, same type).
-- **H-id:** the person, claims referencing it (`claims.hypothesis`), the verifying claim if resolved. Built from `claims.hypothesis` + `claim_persons`; the `hypotheses` table is unpopulated.
+- **H-id:** the people its question is about (`refs:`, from the `hypotheses` index), and claims referencing it (`claims.hypothesis`, SPEC A.4). With no index row, the people come from those claims.
 
 **`--date <EDTF>`**: accepted claims (and their people, sources, places) whose `date_min`/`date_max` (§1) overlap the range. Standalone it joins no photos. With a P-, L- or S-id it narrows that neighborhood; C and H ignore it.
 
@@ -981,6 +982,7 @@ photos/      ← all photos of the person
 **Privacy.**
 - `living: unknown` counts as living. A subject with `living: true|unknown` is refused before output; there is no `--include-living`. Other `living: true|unknown` persons in the materials are named in a README caution.
 - `restricted` material is excluded (sources listed by ID and reason, never title). `--include-restricted` opens plain restrictions; `restricted: dna` also needs `--include-dna`; `by-request` never ships. A `by-request` person keeps their folder number. A restricted name shows the unrestricted display name. No DNA by default.
+- A guessed relationship (a profile `relationships:` entry with `status: hypothesis`, SPEC §9) is cut from the profile copy under every flag.
 - `<!-- private -->` prose (§3c) is cut from every copied record under every flag; the README counts it per file ("2 notes you marked private were left out of …; they stay in your archive").
 
 **Unreadable = restricted** (the marker lives in the file). Unreadable subject: refused (`restricted-subject`, exit 3). Unreadable source: excluded with its files, named by ID with the reason `could not be read` (never `restricted`). Both under every flag, since `by-request` is what an unreadable record cannot rule out. Unreadable means: will not open/decode, invalid YAML frontmatter, frontmatter not a mapping, or no frontmatter block; a block that parses, even empty, is honored as unrestricted. A source whose claims YAML fails has record and claims withheld but files shipped (its frontmatter was read).
@@ -1508,7 +1510,7 @@ The session start screen, narrated by the `today` skill.
 | 7b | `promotion-candidates` | (a) Direct-line ancestors still stubs (W119, Ahnentafel walk from `root_person`), closest first, each offering `fha person promote`; (b) any stub whose accepted-claim count reaches `promotion: claims_threshold:` (default 5), offered `fha person promote <p-id> --into connections/`. Counts plus the top few. |
 | 8 | `possible-connections` | The three `fha cooccur` outputs, with confirm/dismiss prompts. |
 
-Every section's items are leads; the report proposes, the human acts. (Sections 1b and 7 must read SPEC §17 forms: the code still reads `needs-review` claims, a `hypotheses` table and a `search_log` table.)
+Every section's items are leads; the report proposes, the human acts. (Section 1b must read SPEC §17 forms: the code still reads `needs-review` claims and a `search_log` table.)
 
 **Place-text escalation.** A §6b cluster of 20 or more claims sharing one unlinked `place_text` is promoted to the banner. Its line is the same line §6b prints, with a ready command: `--into <l-id>` when the text matches a registered place (exactly, or after the claim-write-time normalization of SPEC §15), else `--name=...`. On a run filtered to any other section, it names `fha report --section place-candidates`. The Result carries `data['place_escalations']` (raw clusters) and `data['sections']['place-escalations']`.
 

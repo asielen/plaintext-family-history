@@ -1502,6 +1502,46 @@ class PacketTests(unittest.TestCase):
         self.assertNotIn('Cousin Ruth', readme)
         self.assertNotIn('P-cccccccccc', readme)
 
+    def test_guessed_relationship_stays_home(self):
+        # SPEC §9/§17a: a `relationships:` entry marked `status: hypothesis`
+        # is his own unproved guess - the tree may draw it, but exports leave
+        # it out. A packet handed to a cousin must not state "Walter Doe was
+        # his father" when that is only a hunch. The sourced entry still ships.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\nrelationships:\n'
+            '  - to: "[[Mary Doe]]"\n    type: parent\n    source: "[[s-1111111111]]"\n'
+            '  - to: "[[Walter Doe]]"\n    type: parent\n    status: hypothesis\n'
+            '---\n# Test Person\n\n## Biography\n\nHe kept bees.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('Walter Doe', copied)
+        self.assertNotIn('hypothesis', copied)
+        self.assertIn('Mary Doe', copied)
+        self.assertIn('He kept bees.', copied)
+
+    def test_only_guessed_relationships_drop_the_key(self):
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\nrelationships:\n'
+            '  - to: "[[Walter Doe]]"\n    type: parent\n    status: hypothesis\n'
+            'tier: curated\n---\n# Test Person\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('Walter Doe', copied)
+        self.assertNotIn('relationships:', copied)
+        self.assertIn('tier: curated', copied)
+
     def test_living_relative_named_outside_the_fence_is_still_cautioned(self):
         # The other half: a mention that does ship keeps its caution.
         profile_path = self._seed_person()

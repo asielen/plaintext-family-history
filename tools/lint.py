@@ -150,6 +150,7 @@ from _lib import (
     load_fha_yaml,
     normalize_date,
     normalize_id,
+    parse_question_blocks,
     parse_filename,
     read_places_registry,
     read_record,
@@ -907,6 +908,11 @@ def _research_hypothesis_ids(body: str) -> set[str]:
     for section in _HYPOTHESES_SECTION_RE.finditer(body):
         for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
             ids.add(normalize_id(m.group(1)))
+    # The current form (SPEC §17b): a working answer is the question entry
+    # itself, its h-id on the entry's `- id:` line.
+    for info in parse_question_blocks(body).values():
+        if info.get('id'):
+            ids.add(info['id'])
     return ids
 
 
@@ -3024,12 +3030,14 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # E004: orphan reference. `fha stubs` only mints P-ids - naming it
             # for an H-id misdirects (issue #56's own complaint: the prefix is
             # unambiguous, so the hint can say the right thing instead of the
-            # one that only ever applies to persons). A hypothesis has no
-            # minting tool at all; it is defined by hand, in place, wherever
-            # the person it concerns is written up (SPEC §16).
+            # one that only ever applies to persons). A working answer has no
+            # minting tool of its own; its h-id is written on the question
+            # entry when the guess is (SPEC §17b).
             if tid_type == 'H':
-                fix_hint = ('Add an `id:` entry for it under some person\'s '
-                             '`## Hypotheses` section, or fix the ID.')
+                fix_hint = ('A working answer is defined on its question: add '
+                            '`- id:` with `- guess:` under that question\'s `## Q:` '
+                            'heading (notes/questions.md or the person\'s research '
+                            'file), or fix the ID.')
             else:
                 fix_hint = 'Create the missing record (for a person, run `fha stubs`) or fix the ID.'
             for ref_path, ref_line in refs[:3]:   # report first 3 sites

@@ -8,7 +8,7 @@ below is commented out - copy it, uncomment it, and fill it in.
 
 ## Q: When exactly did the family settle in Fairview?
 - origin: human            # who raised it: human, or a tool that spotted a conflict
-- status: open             # open -> resolved, as you answer it
+- status: open             # open -> answered (same as resolved), or closed (not pursuing)
 - refs: [P-__________]     # the people, sources, or claims this is about (their codes)
 - context:
   - (human, 2026-01-01) The 1880 census places them there, but the arrival date is unknown.

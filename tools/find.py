@@ -630,7 +630,8 @@ def _find_hypothesis(
     documented in the research narrative.
     """
     row = conn.execute(
-        "SELECT id, person_id, hypothesis, status, verified_claim, path FROM hypotheses WHERE id = ?",
+        "SELECT id, person_id, question, guess, status, verified_claim, path "
+        "FROM hypotheses WHERE id = ?",
         (hid,)
     ).fetchone()
     if row is None:
@@ -645,14 +646,17 @@ def _find_hypothesis(
 
     print(f'{hid}')
     print(f'  file:   {row["path"]}')
-    if row['person_id']:
-        print(f'  person: {row["person_id"]}')
+    if row['question']:
+        print(f'  question: {row["question"]}')
+    people = _hypothesis_person_ids(conn, hid, row['person_id'])
+    if people:
+        print(f'  person: {", ".join(people)}')
     print(f'  status: {row["status"] or "(none)"}')
     if row['verified_claim']:
         print(f'  verified_claim: {row["verified_claim"]}')
-    if row['hypothesis']:
-        preview = row['hypothesis'][:100] + ('…' if len(row['hypothesis']) > 100 else '')
-        print(f'  hypothesis: {preview}')
+    if row['guess']:
+        preview = row['guess'][:100] + ('…' if len(row['guess']) > 100 else '')
+        print(f'  guess: {preview}')
 
     # Find section heading in the research file
     if row['path']:
@@ -675,6 +679,20 @@ def _find_hypothesis(
         print('  mentioned in: none')
 
     return EXIT_CLEAN
+
+
+def _hypothesis_person_ids(conn: sqlite3.Connection, hid: str,
+                           fallback: str | None) -> list[str]:
+    """Every person a working answer is about (the people in its
+    question's `refs:`), or the row's one `person_id` on an index built
+    before `hypothesis_persons` existed."""
+    try:
+        people = [r[0] for r in conn.execute(
+            'SELECT person_id FROM hypothesis_persons WHERE hypothesis_id = ? '
+            'ORDER BY person_id', (hid,))]
+    except sqlite3.OperationalError:
+        people = []
+    return people or ([fallback] if fallback else [])
 
 
 def _find_section_heading(path: Path, target_id: str) -> str | None:
@@ -2015,8 +2033,8 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
         else:
             print('  person(s) concerned: none found')
     else:
-        if row['person_id']:
-            print(f"  person: {names.get(row['person_id'], row['person_id'])} [{row['person_id']}]")
+        for pid in _hypothesis_person_ids(conn, hid, row['person_id']):
+            print(f"  person: {names.get(pid, pid)} [{pid}]")
         print(f"  status: {row['status'] or '(none)'}")
         if row['verified_claim']:
             vrow = conn.execute(
@@ -2361,11 +2379,12 @@ def _bare_id_hit(conn: sqlite3.Connection, id_norm: str) -> dict | None:
 
     if hit_type == 'hypothesis':
         row = conn.execute(
-            'SELECT id, person_id, hypothesis, status FROM hypotheses WHERE id = ?', (id_norm,)
+            'SELECT id, person_id, question, guess, status FROM hypotheses WHERE id = ?',
+            (id_norm,)
         ).fetchone()
         if row is None:
             return None
-        label = _truncate_label(row['hypothesis'] or 'hypothesis')
+        label = _truncate_label(row['guess'] or row['question'] or 'working answer')
         person_name = None
         if row['person_id']:
             prow = conn.execute(

@@ -268,6 +268,10 @@ CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT,
 -- is the truth, this is only its query surface. status is the question's own status.
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, question TEXT, guess TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, path TEXT);
+-- every person a working answer is about: the p- ids in its question's refs:, or the research
+-- file's own person when refs: names nobody. person_id above is the first of them.
+CREATE TABLE hypothesis_persons(hypothesis_id TEXT, person_id TEXT,
+  UNIQUE(hypothesis_id, person_id));
 CREATE TABLE citations(token TEXT, kind TEXT, path TEXT, line INTEGER);  -- token = resolved canonical ID
 -- aliases: the resolution surface (canonical ID + human stems + on-demand c-ids + person/place name & variants)
 CREATE TABLE aliases(alias TEXT, canonical_id TEXT, kind TEXT);  -- kind: id | stem | name | variant | claim
