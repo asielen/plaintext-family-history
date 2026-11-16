@@ -10241,7 +10241,7 @@ class WithheldSourcePictureTests(unittest.TestCase):
                 pages = self.builds[state][3]
                 tree = pages.get(f'data/tree_{self.THOMAS.lower()}_descendants.json')
                 self.assertIsNotNone(tree, sorted(pages))
-                self.assertIn(self.THOMAS, tree)
+                self.assertIn(self.THOMAS.lower(), tree)
                 self.assertNotIn(self.STEM, tree)
 
 

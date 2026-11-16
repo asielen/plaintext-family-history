@@ -768,7 +768,7 @@ class PhotoRecordReconcileTests(unittest.TestCase):
                     self._scan()
                 before = self.record.read_text(encoding='utf-8')
                 text = self._assert_reported(self._run(with_exif=(route == 'exif')), before)
-                self.assertIn('S-0000000001', text)
+                self.assertIn('s-0000000001', text)
 
     def test_unread_keywords_are_reported_with_the_flag_that_reads_them(self) -> None:
         # No catalog and no --with-exif: the same-named file's keywords are

@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ec042bea16aa5428bc669ff2f5a667bb059446e7c603c68d21853b3697549e99",
+      "sha256": "3e0582026c25ec460ace53c4ff4dd4f2e22c2bf9027d30865dda38a8c9a71945",
       "spec_version": "2.0",
       "src": "tools/_lib.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ebde160bc8dd4182c64d389a3d7b7b54c0b3a7a9475eea724af364d2a8273a11",
+      "sha256": "2eaf6109a442b02307c13144e913fcdb831e37c77beb332dc6d60299cd24dae0",
       "spec_version": "2.0",
       "src": "tools/lint.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "b7350c8f419d213dc2c64ce21b71ab6e27537169cc2bc82f318e4b8c1446d6b2",
+      "sha256": "7fc31b02982e0847d03b813c681058f7424c73348db0042932f2dc3ca07898e4",
       "spec_version": "2.0",
       "src": "tools/process.py"
     },
@@ -955,7 +955,7 @@
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "5a75a8ccd1ce03ceb9913c5dafda07518b2af893ba831e015675a1e290b11cc8",
+      "sha256": "ece1b15bb8f3d5c93b68659c08f7fd8bd3ea452c6b8ff5194692299cb3d51838",
       "spec_version": "2.0"
     },
     {

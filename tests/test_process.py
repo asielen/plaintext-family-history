@@ -2361,7 +2361,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(renamed), '--more', str(kit), 'attachment', '--type', 'dna'])
         self.assertEqual(rc, EXIT_CLEAN)
         attached = next((self.archive / 'documents' / 'census').glob(
-            'family-letter2-attachment_S-*.txt'))  # #278: named for the source
+            'family-letter2-attachment_s-*.txt'))  # #278: named for the source
         self.assertEqual(read_record(record)['meta']['restricted'], 'dna')
 
         # Simulate a pre-fix record: strip restricted: back out by hand, as
@@ -3024,6 +3024,23 @@ class ProcessTestCase(unittest.TestCase):
         people = rec['meta'].get('people', [])
         self.assertIn('p-de957bcda1', people)
         self.assertIn('p-ab3c8f0e12', people)
+
+    def test_photo_people_does_not_twin_an_uppercase_tag_already_on_the_photo(self) -> None:
+        # A photo an older tool (or Lightroom) tagged `P-de957bcda1` already
+        # names him; writing `p-de957bcda1` beside it would show two tags for
+        # one person in every photo program, written into the original.
+        store = self._install_photo_store()
+        self._write_person('P-de957bcda1')
+        photo = self.archive / 'photos' / '1880' / 'tagged-before.jpg'
+        photo.write_bytes(b'\xff\xd8\xff')
+        store.keywords[str(photo.resolve())] = ['P-de957bcda1']
+        store.keywords[str(photo)] = ['P-de957bcda1']
+
+        rc = self._run([str(photo), '--people', 'P-de957bcda1'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        person_tags = [kw for kw in store.read(photo)
+                       if kw.lower() == 'p-de957bcda1']
+        self.assertEqual(person_tags, ['P-de957bcda1'])
 
     def test_photo_people_dry_run_shows_people_without_writing(self) -> None:
         store = self._install_photo_store()

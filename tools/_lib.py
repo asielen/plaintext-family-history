@@ -895,6 +895,55 @@ def role_meaning(role: Any) -> str:
     return CLAIM_ROLE_SYNONYMS.get(norm, norm)
 
 
+# The roles whose loss is silent and costly: a parent, child, spouse or
+# deceased line that never derives. Only these are checked for near misses.
+_NEAR_MISS_TARGETS: tuple[str, ...] = ('parent', 'child', 'spouse', 'deceased')
+_NEAR_MISS_PLURALS: dict[str, str] = {
+    'parents': 'parent', 'children': 'child', 'childs': 'child',
+    'spouses': 'spouse',
+    'mothers': 'parent', 'fathers': 'parent', 'sons': 'child',
+    'daughters': 'child', 'husbands': 'spouse', 'wives': 'spouse',
+}
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """True when `a` and `b` differ by one insertion, deletion, substitution,
+    or a swap of two neighbouring letters (`parnet` / `parent`)."""
+    if a == b or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diffs = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+        if len(diffs) == 1:
+            return True
+        return (len(diffs) == 2 and diffs[1] == diffs[0] + 1
+                and a[diffs[0]] == b[diffs[1]] and a[diffs[1]] == b[diffs[0]])
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def role_near_miss(role: Any) -> str | None:
+    """The derivation role a `roles:` key was almost certainly meant to be, or
+    None.
+
+    SPEC §8.3 reads any word outside the role list as a descriptive role that
+    places the person and derives nothing. That is right for `sibling:` or
+    `grandparent:`, but `parents:` or a typed `parnet:` is somebody meaning
+    `parent:`, and reading it as descriptive would keep the parents out of the
+    tree with nothing said. Plurals and words one keystroke from `parent`,
+    `child`, `spouse` or `deceased` are reported instead."""
+    word = role_meaning(role)
+    if not word or word in CLAIM_ROLE_WORDS:
+        return None
+    if word in _NEAR_MISS_PLURALS:
+        return _NEAR_MISS_PLURALS[word]
+    if len(word) < 4:
+        return None
+    for target in _NEAR_MISS_TARGETS:
+        if _one_edit_apart(word, target):
+            return target
+    return None
+
+
 def join_claim_roles(roles: Iterable[Any]) -> str | None:
     """The `claim_persons.role` value for one person: every role they carry,
     in `roles:` order, deduplicated, or None when the claim gives them none.

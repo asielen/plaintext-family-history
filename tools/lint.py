@@ -110,6 +110,7 @@ from _lib import (
     photos_ignore_patterns,
     photo_reconcile_route,
     role_meaning,
+    role_near_miss,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
@@ -1187,8 +1188,8 @@ def _process_person_file(path: Path, registry: Registry,
             # sort under a surname wants `{surname}__{given}_P-…`.
             findings.append(Finding('W', 'W117', path,
                 f'Person filename {path.name} has no "__" sort separator. The sort '
-                f'name goes before "__" ({{surname}}__{{given}}_P-…); for someone with '
-                f'no surname, lead with the double underscore (__{stem.split("_")[0]}_P-…). '
+                f'name goes before "__" ({{surname}}__{{given}}_p-…); for someone with '
+                f'no surname, lead with the double underscore (__{stem.split("_")[0]}_p-…). '
                 f'Rename if it should sort under a surname; otherwise this is fine.'))
         else:
             findings.append(Finding('E', 'E002', path,
@@ -3101,7 +3102,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'were the couple, so {cost}{where_they_go}'
                             'Leave everyone in persons: (a certificate names the parents '
                             'too, and that is right) and add a roles: map naming the '
-                            'pair - `roles:` then an indented `spouse: [P-…, P-…]` line.'))
+                            'pair - `roles:` then an indented `spouse: [p-…, p-…]` line.'))
                     else:
                         # Exactly two people, and the claim placed one of them
                         # somewhere other than the couple. It HAS said which two
@@ -3120,7 +3121,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'2 people, but its roles: map calls {elsewhere} rather than '
                             f'a spouse, so {cost}{where_they_go}'
                             'If these two were the couple, name them both - `roles:` then '
-                            'an indented `spouse: [P-…, P-…]` line. If they were not, the '
+                            'an indented `spouse: [p-…, p-…]` line. If they were not, the '
                             'couple is missing from persons: - add them there.'))
 
             # W126: an accepted birth claim that names other people and gets no
@@ -3201,6 +3202,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             keys = all_roles.get(pid, [])
                             if not keys:
                                 return 'no role given'
+                            for key in keys:
+                                meant = role_near_miss(key)
+                                if meant:
+                                    return (f'under `{key}:`, which looks like '
+                                            f'`{meant}:` written another way - the archive '
+                                            'reads it as a description only')
                             if 'parent' in keys:
                                 return 'listed both as the person born and as a parent'
                             return None
@@ -3227,7 +3234,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                                    'take them off whichever of the `child:` and '
                                    '`parent:` lines is wrong. ' if self_parent else '')
                                 + ('If they are the parents, add them to the roles: '
-                                   'map - an indented `parent: [P-…, P-…]` line beside '
+                                   'map - an indented `parent: [p-…, p-…]` line beside '
                                    'the `child:` one (`parent:` covers a mother and a '
                                    'father alike). If they are not, give each one the '
                                    'part they played instead - an `informant:`, '
@@ -3242,7 +3249,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         findings.append(Finding('W', 'W126', src_path,
                             f'{head} and {marked}, but does not say who was born, '
                             f'so no parent link is recorded{where_it_goes}'
-                            'Add an indented `child: [P-…]` line to the roles: map '
+                            'Add an indented `child: [p-…]` line to the roles: map '
                             'naming the person this record is the birth of.'))
                     else:
                         # The reporter's shape: a certificate of live birth,
@@ -3254,8 +3261,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'{where_it_goes}'
                             'Leave everyone in persons: (a birth record names the '
                             'parents too, and that is right) and add a roles: map - '
-                            '`roles:` then indented `child: [P-…]` and '
-                            '`parent: [P-…, P-…]` lines.'))
+                            '`roles:` then indented `child: [p-…]` and '
+                            '`parent: [p-…, p-…]` lines.'))
 
             # W126, the self-parent variant (#266 review): a claim that lists one
             # person under both `child:` and `parent:` and still derives a
@@ -3408,9 +3415,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {claim.get("id","?")} (type: baptism) names '
                             f'{len(distinct)} people but does not say who was '
                             f'baptized{where_it_goes}'
-                            'Add a roles: map - an indented `child: [P-…]` line '
+                            'Add a roles: map - an indented `child: [p-…]` line '
                             'naming who was baptized (and, if useful, `parent: '
-                            '[P-…, P-…]` for the parents alongside).'))
+                            '[p-…, p-…]` for the parents alongside).'))
                     else:
                         # death/burial: `roles: deceased:` (SPEC §8.3, #173
                         # follow-up) names the subject(s) directly - the
@@ -3426,12 +3433,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {claim.get("id","?")} (type: {claim_type}) names '
                             f'{len(distinct)} people but does not say which of them '
                             f'{verb}{where_it_goes}'
-                            f'Add a roles: map - either `deceased: [P-…]` naming '
+                            f'Add a roles: map - either `deceased: [p-…]` naming '
                             f'directly who {verb} (list more than one id if they '
                             f'{verb} together), or leave the person who {verb} '
                             'unroled and name who everyone else is instead - '
-                            '`spouse: [P-…]`, `child: [P-…]`, `parent: [P-…]`, or '
-                            '`witness: [P-…]`.'))
+                            '`spouse: [p-…]`, `child: [p-…]`, `parent: [p-…]`, or '
+                            '`witness: [p-…]`.'))
 
             # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id (bare or [[wrapped]]) that doesn't

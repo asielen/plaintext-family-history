@@ -724,6 +724,21 @@ def _run_exiftool_embed_source(
                                    backup=backup, command='fha process')
 
 
+def _carries_own_source_keyword(file_path: Path, s_id: str) -> bool:
+    """True when the file already holds `SOURCE: {s_id}` in any letter case.
+
+    IDs are matched without regard to case (SPEC §10), and a file an older
+    tool keyworded says `SOURCE: S-…`. A read that fails answers False, so the
+    caller writes the keyword as it always did."""
+    try:
+        existing = _run_exiftool_read_keywords(file_path)
+    except RuntimeError:
+        return False
+    want = s_id.strip().lower()
+    return any((m := _SOURCE_KEYWORD_RE.match(str(kw).strip()))
+               and m.group(1).lower() == want for kw in existing or [])
+
+
 def _run_exiftool_remove_source(
     file_path: Path, s_id: str, extra_keywords: list[str] | None = None,
     *, backup: OriginalBackup,
@@ -2674,8 +2689,10 @@ def process_photo(
             f'{file_path.name} already carries SOURCE: {fmt_id_display(existing)}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
-    existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-    new_people = [p for p in (people or []) if p not in existing_pids]
+    # Case-blind: a photo an older tool tagged `P-…` already names the person,
+    # and a lowercase `p-…` beside it would show two tags for one person.
+    existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+    new_people = [p for p in (people or []) if normalize_id(p) not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(on_disk)
@@ -2885,8 +2902,9 @@ def process_photo_group(
                 f'{m.name} already carries SOURCE: {fmt_id_display(existing_source)}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
-        existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-        per_member_new_people[m] = [p for p in (people or []) if p not in existing_pids]
+        existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+        per_member_new_people[m] = [p for p in (people or [])
+                                    if normalize_id(p) not in existing_pids]
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     ordered = [primary] + [m for m in members if m != primary]
@@ -5883,6 +5901,12 @@ def process_refile(
                     f'WARNING: keywords are not supported for {src.suffix} files, '
                     f'so the SOURCE: {sid} keyword was not embedded in {new_name}. '
                     'The record\'s files: inventory still carries the identity.')
+            elif _carries_own_source_keyword(dest_path, sid):
+                # An older fha already wrote this source's keyword, perhaps as
+                # `SOURCE: S-…`. Writing the lowercase spelling beside it would
+                # show one source twice in every photo program, so the file
+                # is left as it is: it already names its source.
+                pass
             else:
                 try:
                     err = _run_exiftool_embed_source(

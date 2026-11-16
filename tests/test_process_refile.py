@@ -1651,6 +1651,24 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertIn('fha reconcile', err)
         self.assertNotIn('--type', err)
 
+    def test_refile_into_photos_does_not_twin_a_keyword_an_older_tool_wrote(self) -> None:
+        # A scan an older fha filed as a document already carries
+        # `SOURCE: S-…` inside it. Carrying it into the photo library must not
+        # write a lowercase `SOURCE: s-…` beside it: every photo program would
+        # show one source twice, written into the original.
+        store = self._install_photo_store()
+        asset, _record = self._write_doc_source()
+        moved = self.archive / 'photos' / '1880s' / 'campaign-card.jpg'
+        # The keyword lives in the file's bytes, so it travels with the move;
+        # the fake store is keyed by path, so seed both ends.
+        store.keywords[str(asset)] = [f'SOURCE: {SID}']
+        store.keywords[str(moved)] = [f'SOURCE: {SID}']
+
+        rc = self._run([SID, '--to', 'photos', '--dest', '1880s', '--type', 'photo'])
+
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(store.keywords[str(moved)], [f'SOURCE: {SID}'])
+
     def test_type_carries_across_into_photos_too(self) -> None:
         # The mirror direction: a document source that turns out to be a family
         # photo is re-typed and its record moves the same way.
