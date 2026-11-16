@@ -102,13 +102,13 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "3ba7952be45dbf5efafc58839565212c4236acc994a7040353fa0d6946c7dc2a",
+      "sha256": "31ea0be3c1266b76aacfecabd4a0ff6f930f0fe2065cfedf3942bfdc85b765c8",
       "spec_version": "2.1"
     },
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "3ae50f3e0f267d8c866181a43eef560613349f10053a01155bf2fa7855905a38",
+      "sha256": "e48f283254ef845d96b83dc2d9c28ec68c8b63c2dcec889d865582a083634385",
       "spec_version": "2.1"
     },
     {
@@ -931,7 +931,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d9fd5250814a2d571b82096278c91454455442166bf76f39940e55cd36f65bd0",
+      "sha256": "9b2e9e77942455b6b4195828d091f1877f096cc2e75e359b1977870cedba879b",
       "spec_version": "2.1"
     },
     {
