@@ -82,8 +82,10 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Body text here.', rec['body'])
         self.assertNotIn('ignored', rec['body'])            # script body dropped
 
-        # No index present → entry lands in the jsonl fallback.
-        log = self.archive / '.cache' / 'capture_log.jsonl'
+        # No index present -> entry lands in the capture log, under notes/
+        # (SPEC §16b) so backups and git keep it - never in .cache/.
+        log = self.archive / 'notes' / 'capture-log.jsonl'
+        self.assertFalse((self.archive / '.cache' / 'capture_log.jsonl').exists())
         self.assertTrue(log.exists())
         self.assertIn('example.com', log.read_text(encoding='utf-8'))
 
@@ -109,7 +111,42 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIsNone(rows[0][3])                        # no S-id at capture time
         # Always also appended to the jsonl (durability across a search_log
         # drop/rebuild), even though the index row already exists.
-        self.assertTrue((cache / 'capture_log.jsonl').exists())
+        self.assertTrue((self.archive / 'notes' / 'capture-log.jsonl').exists())
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+
+    def test_old_cache_capture_log_is_carried_into_notes_once(self) -> None:
+        # An archive upgraded from before SPEC §16b still has its search
+        # history in .cache/, which backup skips. The first capture moves it
+        # to notes/ - old lines first, in order, never twice - and says so.
+        cache = self.archive / '.cache'
+        cache.mkdir()
+        old_lines = [json.dumps({'date': '2020-01-0%d' % i, 'question': 'old %d' % i})
+                     for i in (1, 2)]
+        (cache / 'capture_log.jsonl').write_text(
+            ''.join(ln + '\n' for ln in old_lines), encoding='utf-8')
+        # A half-finished earlier move: the new file already holds line 1.
+        notes = self.archive / 'notes'
+        notes.mkdir()
+        (notes / 'capture-log.jsonl').write_text(old_lines[0] + '\n', encoding='utf-8')
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = self._capture('<html><title>New</title></html>', url='https://n.test/p')
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('Moved your capture history', out.getvalue())
+        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        lines = (notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(lines[:2], old_lines)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(json.loads(lines[2])['question'], 'New')
+
+        # A second capture appends and announces nothing.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self._capture('<html><title>Again</title></html>', url='https://n.test/q')
+        self.assertNotIn('Moved your capture history', out.getvalue())
+        self.assertEqual(
+            len((notes / 'capture-log.jsonl').read_text(encoding='utf-8').splitlines()), 4)
 
     def test_flag_overrides_and_unknown_type_refused(self) -> None:
         html = '<html><title>Original</title></html>'

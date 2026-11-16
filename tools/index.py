@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_role_pairs,
+    read_capture_log_lines,
     join_claim_roles,
     configure_utf8_stdout,
     SIGNIFICANCE,
@@ -1738,48 +1739,44 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
                        on_decode_error=None) -> None:
-    """Re-ingest `.cache/capture_log.jsonl` rows into search_log.
+    """Re-ingest the capture log (`notes/capture-log.jsonl`, SPEC §16b) into search_log.
 
     `fha capture` writes a search_log row directly into index.sqlite for
     immediate freshness, but a full rebuild drops and recreates search_log
     from scratch (`_drop_tables`) - without this, that row would vanish on the
-    next `fha index` run. capture.py also always appends the same row to this
-    jsonl file, so re-ingesting it here makes every capture survive a reindex
+    next `fha index` run. capture.py also always appends the same row to the
+    capture log, so re-ingesting it here makes every capture survive a reindex
     regardless of whether the index existed at capture time.
+
+    An archive that has not captured since the log moved out of `.cache/`
+    still has its history at `.cache/capture_log.jsonl`; `_lib.read_capture_log_lines`
+    reads both, oldest first, so none of it drops out of "already searched"
+    before the next capture carries the file across. The index never moves
+    the file itself - it is the human's record, and the writer owns the move.
+    A file that is not UTF-8 is the ONLY record of the captures in it
+    (`_drop_tables` clears search_log every build and this replays it), so it
+    is named through `on_decode_error` rather than decoded away in silence.
     """
-    capture_log_path = archive_root / '.cache' / 'capture_log.jsonl'
-    if capture_log_path.exists():
+    lines = read_capture_log_lines(archive_root, on_decode_error)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
         try:
-            lines = capture_log_path.read_text(encoding='utf-8').splitlines()
-        except OSError:
-            lines = []
-        except UnicodeDecodeError:
-            # capture_log.jsonl is the ONLY record of captures made before this
-            # index existed (`_drop_tables` clears search_log every build and
-            # this replays it), so decoding it away silently loses that history
-            # for good rather than until the next run.
-            if on_decode_error is not None:
-                on_decode_error(capture_log_path)
-            lines = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            conn.execute(
-                '''INSERT INTO search_log
-                   (date, person_id, question, repository, collection, terms, result, source_id, path)
-                   VALUES (?,?,?,?,?,?,?,?,?)''',
-                (
-                    entry.get('date', ''), None, entry.get('question', ''),
-                    entry.get('repository', ''), entry.get('collection', ''),
-                    entry.get('terms', ''), entry.get('result', ''), None,
-                    entry.get('path', ''),
-                ),
-            )
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        conn.execute(
+            '''INSERT INTO search_log
+               (date, person_id, question, repository, collection, terms, result, source_id, path)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (
+                entry.get('date', ''), None, entry.get('question', ''),
+                entry.get('repository', ''), entry.get('collection', ''),
+                entry.get('terms', ''), entry.get('result', ''), None,
+                entry.get('path', ''),
+            ),
+        )
 
 
 def _index_citations(
