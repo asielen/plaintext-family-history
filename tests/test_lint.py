@@ -3407,8 +3407,8 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
 
 
 class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
-    """W132 (#126, reopened): an accepted-or-needs-review death/burial/baptism
-    claim naming two or more people with NO `roles:` map at all -
+    """W132 (#126, reopened): an accepted-or-parked (`suggested` with a
+    `reviewed:` date, SPEC §8.1) death/burial/baptism claim naming two or more people with NO `roles:` map at all -
     `_lib.vital_subjects`'s case 2a, where a claim like a burial record naming
     the deceased alongside a grandchild who visited the grave used to read as
     both of their own burials, and now (correctly) reads as neither's. Birth
@@ -3427,13 +3427,13 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
     shape could ever have created. W132's case 2a is a different problem -
     it is the exact shape `xref.py` puts in its own `unscoped_vital_claim_ids`
     - so it matches `fha xref`'s own scope instead: `accepted` OR
-    `needs-review`, and EITHER polarity. A negated claim naming a genuine
+    parked, and EITHER polarity. A negated claim naming a genuine
     subject and an incidental bystander with no `roles:` map is exactly as
     ambiguous as the positive version of the same shape (negation flips
     whether the event happened, not which named person it happened to), so
     it must get the same `roles:` nudge - see
-    `test_negated_claim_warns`/`test_needs_review_claim_warns` below. Only a
-    `suggested`, disputed, or rejected claim stays silent, since `fha xref`
+    `test_negated_claim_warns`/`test_parked_claim_warns` below. Only a
+    never-reviewed `suggested`, disputed, or rejected claim stays silent, since `fha xref`
     never compares those either.
     """
 
@@ -3444,7 +3444,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
 
     def _build(self, *, ctype: str = 'death', persons=None,
                roles_block: str = '', status: str = 'accepted',
-               negated: bool = False) -> Path:
+               negated: bool = False, reviewed: bool = True) -> Path:
         root = Path(tempfile.mkdtemp())
         (root / 'people').mkdir(parents=True)
         (root / 'sources' / 'notes').mkdir(parents=True)
@@ -3460,8 +3460,9 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
                  f'  id: C-2222222222\n'
                  f'  type: {ctype}\n'
                  f'  persons: [{", ".join(named)}]\n'
-                 f'  status: {status}\n  reviewed: 2026-01-01\n'
-                 f'  confidence: high\n  date: 1902-04-17\n'
+                 f'  status: {status}\n'
+                 + ('  reviewed: 2026-01-01\n' if reviewed else '')
+                 + f'  confidence: high\n  date: 1902-04-17\n'
                  + ('  negated: true\n  evidence: negative\n' if negated
                     else '  information: primary\n  evidence: direct\n')
                  + '  notes: x.\n'
@@ -3522,18 +3523,26 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
 
     def test_suggested_claim_does_not_warn(self) -> None:
         # `fha xref` never compares a `suggested` claim either (its own
-        # query reads only `accepted`/`needs-review`), so there is nothing
+        # query reads only accepted and parked claims), so a never-reviewed
+        # draft has nothing
         # yet for a `roles:` map to unblock - review (W102's backlog) comes
         # first.
-        self.assertEqual(self._w132(self._build(status='suggested')), [])
+        self.assertEqual(self._w132(self._build(status='suggested', reviewed=False)), [])
 
-    def test_needs_review_claim_warns(self) -> None:
+    def test_retired_needs_review_spelling_warns_like_parked(self) -> None:
+        # An archive written before SPEC 2.1 still says `needs-review`; W132
+        # reads it exactly as a parked claim.
+        w = self._w132(self._build(status='needs-review'))
+        self.assertEqual(len(w), 1)
+        self.assertIn('once accepted', w[0].message)
+
+    def test_parked_claim_warns(self) -> None:
         # #173 follow-up, second round: W132's case 2a now matches
         # `fha xref`'s own scope, which compares BOTH accepted and
-        # needs-review claims - unlike W125/W126, which stay accepted-only
+        # parked claims - unlike W125/W126, which stay accepted-only
         # because they warn about a tree edge only an accepted claim could
         # have created.
-        w = self._w132(self._build(status='needs-review'))
+        w = self._w132(self._build(status='suggested'))
         self.assertEqual(len(w), 1)
         self.assertIn('died', w[0].message)
 
@@ -3554,13 +3563,13 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn('died', w[0].message)
 
-    def test_negated_needs_review_claim_warns(self) -> None:
-        # Both extensions at once: a needs-review, negated, zero-role,
+    def test_negated_parked_claim_warns(self) -> None:
+        # Both extensions at once: a parked, negated, zero-role,
         # 2+-person claim must not fall into the dead end this fix exists to
         # close - excluded from every `fha xref` comparison bucket AND
         # invisible to the one lint check that would tell a human how to fix
         # it.
-        w = self._w132(self._build(status='needs-review', negated=True))
+        w = self._w132(self._build(status='suggested', negated=True))
         self.assertEqual(len(w), 1)
 
     def test_negated_claim_with_shared_deceased_role_does_not_warn(self) -> None:
@@ -3640,16 +3649,16 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertIn('summary box', w[0].message)
         self.assertIn('WikiTree profile', w[0].message)
 
-    def test_needs_review_impact_text_promises_attribution_not_display(
+    def test_parked_impact_text_promises_attribution_not_display(
             self) -> None:
         # #173 follow-up, third round: a genealogist who follows this
-        # warning on a needs-review claim and adds `roles:` gets
+        # warning on a parked claim and adds `roles:` gets
         # attribution - the claim becomes comparable in `fha xref` - but NOT
         # a summary box, chart node, GEDCOM, or WikiTree entry, since every
         # one of those consumers independently requires `accepted`. The old
         # unconditional wording promised the display outcome even here;
         # this checks the branch that stops making that promise.
-        w = self._w132(self._build(status='needs-review'))
+        w = self._w132(self._build(status='suggested'))
         self.assertEqual(len(w), 1)
         self.assertIn('not attributable to anyone yet', w[0].message)
         self.assertIn('fha xref', w[0].message)
@@ -3668,12 +3677,12 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertIn('not attributable to anyone yet', w[0].message)
         self.assertIn('a negated claim never does, by design', w[0].message)
 
-    def test_needs_review_negated_impact_text_leads_with_negation(
+    def test_parked_negated_impact_text_leads_with_negation(
             self) -> None:
         # Both extensions at once: negation, not review status, is the
         # reason display will never happen, so the negated wording must win
-        # even though the claim is also needs-review.
-        w = self._w132(self._build(status='needs-review', negated=True))
+        # even though the claim is also parked.
+        w = self._w132(self._build(status='suggested', negated=True))
         self.assertEqual(len(w), 1)
         self.assertIn('a negated claim never does, by design', w[0].message)
         self.assertNotIn('once accepted and not negated', w[0].message)
@@ -5546,6 +5555,20 @@ class SettledVerdictReviewedDateTests(unittest.TestCase):
         self.assertIn('E006', self._codes('accepted', '"  "'))
         self.assertNotIn('E006', self._codes('accepted', '2026-01-02'))
 
+
+    def test_retired_needs_review_gets_one_gentle_warning(self) -> None:
+        # SPEC 2.1 §8.1 retired `needs-review`; an archive written before
+        # then still carries it. One warning naming the fix, never E019.
+        codes = self._codes('needs-review', '2026-01-02')
+        self.assertEqual(len(codes.get('W142', [])), 1, codes)
+        self.assertNotIn('E019', codes)
+        self.assertIn('fha claim', codes['W142'][0].message)
+        self.assertIn('status: suggested', codes['W142'][0].message)
+
+    def test_parked_suggested_claim_is_quiet(self) -> None:
+        codes = self._codes('suggested', '2026-01-02')
+        self.assertNotIn('W142', codes)
+        self.assertNotIn('E019', codes)
 
 class RelationshipRolesShapeE015Tests(unittest.TestCase):
     """E015: a relationship claim's `roles:` must be a map naming each

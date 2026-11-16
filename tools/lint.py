@@ -60,6 +60,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    RETIRED_NEEDS_REVIEW,
+    claim_status,
     file_name_surname_mismatch,
     merge_pointer,
     merge_survivor_map,
@@ -522,7 +524,7 @@ REQUIRED_CLAIM_FIELDS  = {'id', 'type', 'persons', 'value', 'status', 'confidenc
 # confidence). Values outside these sets are typos that would silently corrupt
 # accepted-claim rollups (e.g. `status: acccepted` is never counted as accepted).
 VALID_CLAIM_STATUS = frozenset({
-    'suggested', 'needs-review', 'accepted', 'disputed', 'rejected', 'superseded',
+    'suggested', 'accepted', 'disputed', 'rejected', 'superseded',
 })
 VALID_CONFIDENCE = frozenset({'high', 'medium', 'low'})
 
@@ -1642,10 +1644,20 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 f'was decided, if you know it), or run `fha claim {cid} --status {status}` '
                 f'to record it as decided today.'))
 
+        # W142: the retired `needs-review` status (SPEC 2.1 §8.1 dropped it).
+        # Every tool reads it as a looked-at `suggested` claim, so nothing is
+        # lost meanwhile - one gentle warning, not E019's error.
+        if status.strip().lower() == RETIRED_NEEDS_REVIEW:
+            findings.append(Finding('W', 'W142', path,
+                f'Claim {cid} says `status: needs-review`, a word the archive no longer '
+                'uses. It means the same as `status: suggested` with a `reviewed:` date '
+                '(looked at, not settled yet), and the tools already read it that way. '
+                'Change the line to `status: suggested` (keep or add `reviewed:`), or '
+                f'run `fha claim {cid} --status suggested`.'))
         # E019: status / confidence must come from their controlled vocabularies
         # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
         # the claim from accepted-claim rollups, so catch it.
-        if status and status not in VALID_CLAIM_STATUS:
+        elif status and status not in VALID_CLAIM_STATUS:
             findings.append(Finding('E', 'E019', path,
                 f'Claim {cid} status {status!r} is not a valid review status. '
                 f'Use one of: {", ".join(sorted(VALID_CLAIM_STATUS))}.'))
@@ -1742,8 +1754,12 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                     'nothing moved'))
     registry.source_inventory[sid] = inventory_paths
 
-    # W102: suggested-claim backlog
-    suggested = [c for c in claims if str(c.get('status', '')) == 'suggested']
+    # W102: suggested-claim backlog - drafts nobody has looked at yet. A
+    # parked claim (suggested with a reviewed: date, SPEC §8.1) was looked at,
+    # so it is not backlog; `fha report` §1b lists those instead.
+    suggested = [c for c in claims
+                 if str(c.get('status', '')).strip() == 'suggested'
+                 and not str(c.get('reviewed') or '').strip()]
     if suggested:
         findings.append(Finding('W', 'W102', path,
             f'{len(suggested)} suggested claim(s) awaiting review'))
@@ -3515,7 +3531,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         'is recorded for them and they will be missing from the family '
                         f'tree. Rename the line to `{meant}:`.'))
 
-            # W132: an accepted-or-needs-review death/burial/baptism claim
+            # W132: an accepted-or-parked death/burial/baptism claim
             # naming 2+ people with NO roles: map at all - the zero-role-signal
             # shape `_lib.vital_subjects` (#126, reopened) now answers [] for
             # rather than guessing "everyone named is their own record".
@@ -3548,13 +3564,14 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # (#173 follow-up, second round). W125/W126 gate on
             # `derives_edges` (accepted, non-negated) because they warn about
             # a TREE EDGE a claim of this shape would otherwise have created -
-            # a `suggested`/`needs-review` claim has not earned one yet (W102
+            # a `suggested` claim, parked or not, has not earned one yet (W102
             # tracks that backlog instead) and a negated claim never derives
             # one at all (SPEC §8.6). Case 2a's ambiguity is a different
             # problem: it is the exact shape `xref.py` puts in its own
             # `unscoped_vital_claim_ids` (see that module's docstring), and
-            # `fha xref` compares both accepted and needs-review claims, of
-            # EITHER polarity. A negated claim naming two zero-role people
+            # `fha xref` compares both accepted and parked claims (`suggested`
+            # with a `reviewed:` date, SPEC §8.1), of EITHER polarity. A
+            # negated claim naming two zero-role people
             # ("neither A nor B died, contrary to a rumor") has the identical
             # bystander-vs-joint-subject ambiguity a positive claim of the
             # same shape has - negation says the event didn't happen, not
@@ -3567,14 +3584,16 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # marriage is symmetric (the claim IS about the relationship
             # BETWEEN the people it names) and a vital event happens to
             # exactly one person, so that model does not transfer. Matching
-            # `status in ('accepted', 'needs-review')` and dropping the
+            # accepted-or-parked claims and dropping the
             # `negated` check here (instead of reusing `derives_edges`) keeps
             # W132 and `fha xref`'s own scoping in lockstep, so a human always
             # has exactly one path - `roles: deceased:`/`child:` - to resolve
             # an ambiguous claim of this shape, whichever tool surfaces it
             # first and whichever polarity the claim has.
-            claim_status = str(claim.get('status', '')).strip()
-            w132_in_scope = claim_status in ('accepted', 'needs-review')
+            status_now = claim_status(claim)
+            is_parked = (status_now == 'suggested'
+                         and bool(str(claim.get('reviewed') or '').strip()))
+            w132_in_scope = status_now == 'accepted' or is_parked
             if claim_type in ('death', 'burial', 'baptism') and w132_in_scope:
                 persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
                 subjects = vital_subjects(claim_type, persons_with_roles)
@@ -3597,7 +3616,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # box and (if the owner has mapped that type in
                     # wikitree_templates.yaml) a WikiTree infobox field, so
                     # those two are the only ones named for them.
-                    # A claim that is `needs-review` (not yet accepted) or
+                    # A claim that is parked (not yet accepted) or
                     # `negated` (a confirmed ABSENCE, never meant to display
                     # as a positive vital fact) independently never reaches
                     # any of the consumers named below, whether or not
@@ -3614,10 +3633,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # (the reason W132 covers this shape at all - #126/#173),
                     # not a guarantee it will render anywhere yet.
                     is_negated = bool(claim.get('negated'))
-                    will_display = claim_status == 'accepted' and not is_negated
+                    will_display = status_now == 'accepted' and not is_negated
                     if not will_display:
                         why = (
-                            'once accepted' if claim_status == 'needs-review' and not is_negated
+                            'once accepted' if is_parked and not is_negated
                             else 'a negated claim never does, by design' if is_negated
                             else 'once accepted and not negated'
                         )

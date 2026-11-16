@@ -2,7 +2,7 @@
 test_claim.py - fha claim: human-directed claim review write-back.
 
 Covers the surgical `## Claims` edit (`_apply_claim_review`), the `run_claim`
-contract (accept/dispute/reject/needs-review round-trip, default-today on accept,
+contract (accept/dispute/reject/park-at-suggested round-trip, default-today on accept,
 dry-run writes nothing, malformed/unknown C-id), and an end-to-end check that
 `fha index` + `fha lint` reflect a status change on a real archive (an accepted
 vital relieves the right W101).
@@ -181,9 +181,9 @@ class ApplyClaimReviewTests(unittest.TestCase):
             '```\n'
         )
         new, changed = claim._apply_claim_review(
-            text, 'C-aa11bb22cc', status='needs-review', reviewed='2026-06-24')
+            text, 'C-aa11bb22cc', status='suggested', reviewed='2026-06-24')
         self.assertTrue(changed)
-        self.assertIn('status: needs-review', new)
+        self.assertIn('status: suggested', new)
         self.assertIn('reviewed: 2026-06-24', new)
         self.assertNotIn('2026-01-01', new)
 
@@ -432,10 +432,22 @@ class RunClaimTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self._status_of('C-aa11bb22cc'), 'rejected')
 
-    def test_needs_review_round_trip(self) -> None:
-        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='needs-review')
+    def test_park_at_suggested_stamps_reviewed(self) -> None:
+        # SPEC 2.1 §8.1: looked at, cannot settle it yet -> the claim stays
+        # `suggested` and carries today's `reviewed:` (and who looked).
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='suggested')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._status_of('C-aa11bb22cc'), 'needs-review')
+        self.assertEqual(self._status_of('C-aa11bb22cc'), 'suggested')
+        text = self.source.read_text(encoding='utf-8')
+        self.assertIn(f'reviewed: {claim._today()}', text)
+        self.assertIn('reviewed_by: human', text)
+
+    def test_retired_needs_review_status_is_refused(self) -> None:
+        # SPEC 2.1 dropped `needs-review`; no tool writes it any more.
+        before = self.source.read_bytes()
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='needs-review')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.source.read_bytes(), before)
 
     def test_disputed_round_trip(self) -> None:
         # `disputed` is a SPEC §8.1 review outcome (a contested claim) - the tool
@@ -640,10 +652,10 @@ class QuotedIdClaimTests(unittest.TestCase):
 
     def test_unit_edit_targets_the_owner(self) -> None:
         new, changed = claim._apply_claim_review(
-            _QUOTED_SOURCE, self.TARGET, status='needs-review', reviewed='2026-07-05')
+            _QUOTED_SOURCE, self.TARGET, status='suggested', reviewed='2026-07-05')
         self.assertTrue(changed)
         rec = {c['id']: c for c in read_record_from_text(new)}
-        self.assertEqual(rec[self.TARGET]['status'], 'needs-review')
+        self.assertEqual(rec[self.TARGET]['status'], 'suggested')
         self.assertEqual(rec[self.DECOY]['status'], 'accepted')
 
     def test_quoted_only_id_is_clean_not_found(self) -> None:
@@ -780,10 +792,10 @@ class ClaimIndexLintIntegrationTests(unittest.TestCase):
         self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'accepted')
         self.assertFalse(self._w101_birth_for_person())
 
-        # Demote to needs-review → the vital gap reopens; index shows the move.
-        demote = claim.run_claim(self.root, claim_id=self.BIRTH_CLAIM, status='needs-review')
+        # Park it back at suggested → the vital gap reopens; index shows the move.
+        demote = claim.run_claim(self.root, claim_id=self.BIRTH_CLAIM, status='suggested')
         self.assertEqual(demote.exit_code, EXIT_CLEAN)
-        self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'needs-review')
+        self.assertEqual(self._claim_status_in_index(self.BIRTH_CLAIM), 'suggested')
         self.assertTrue(self._w101_birth_for_person())
 
         # Re-accept (default today) → gap relieved again; index reflects accepted.
@@ -2114,7 +2126,7 @@ class RunClaimBatchTests(unittest.TestCase):
         self.assertEqual(result['reviewed'], claim._today())
 
     def test_batch_reject_works_any_status_is_legal(self) -> None:
-        # Batch-reject (and batch-needs-review) are as legitimate as
+        # Batch-reject (and batch-park at suggested) are as legitimate as
         # batch-accept: the gate is status-ONLY, not accept-only.
         result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
                                        status='rejected')
@@ -2123,13 +2135,13 @@ class RunClaimBatchTests(unittest.TestCase):
         for cid in self.BOTH:
             self.assertEqual(rec[cid]['status'], 'rejected')
 
-    def test_batch_needs_review_works(self) -> None:
+    def test_batch_park_at_suggested_works(self) -> None:
         result = claim.run_claim_batch(self.root, claim_ids=list(self.BOTH),
-                                       status='needs-review')
+                                       status='suggested')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         rec = self._claims()
         for cid in self.BOTH:
-            self.assertEqual(rec[cid]['status'], 'needs-review')
+            self.assertEqual(rec[cid]['status'], 'suggested')
 
     def test_multi_id_with_field_flag_refused_nothing_written(self) -> None:
         before = self.source.read_text(encoding='utf-8')
@@ -2724,12 +2736,12 @@ class ClaimBatchCliRoutingTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = claim._standalone_main(['C-aa11bb22cc', 'C-bb22cc33dd',
-                                         '--status', 'needs-review',
+                                         '--status', 'suggested',
                                          '--root', str(self.root)])
         self.assertEqual(rc, EXIT_CLEAN)
         rec = self._claims()
-        self.assertEqual(rec['C-aa11bb22cc']['status'], 'needs-review')
-        self.assertEqual(rec['C-bb22cc33dd']['status'], 'needs-review')
+        self.assertEqual(rec['C-aa11bb22cc']['status'], 'suggested')
+        self.assertEqual(rec['C-bb22cc33dd']['status'], 'suggested')
 
     def test_fha_main_single_id_still_byte_compatible(self) -> None:
         import fha
@@ -3610,7 +3622,7 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
 
     def test_only_an_accept_marks_anyone(self) -> None:
         _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _ADA))
-        for status in ('needs-review', 'disputed', 'rejected', 'superseded'):
+        for status in ('suggested', 'disputed', 'rejected', 'superseded'):
             with self.subTest(status=status):
                 claim.run_claim(self.root, claim_id='C-aa11bb22cc', status=status)
                 self.assertEqual(self._living(self.ada), 'unknown')
@@ -3764,7 +3776,7 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
         # dry run, then live (single), then a batch moving one more out
         for status, cids, dry, pid in (('rejected', ['C-aa11bb22cc'], True, _ADA),
                                        ('rejected', ['C-aa11bb22cc'], False, _ADA),
-                                       ('needs-review', ['C-aa11bb22cc', 'C-bb22cc33dd'],
+                                       ('suggested', ['C-aa11bb22cc', 'C-bb22cc33dd'],
                                         False, _MARY)):
             with self.subTest(status=status, cids=cids, dry=dry):
                 result = claim.run_claim_batch(self.root, claim_ids=cids, status=status,
@@ -4488,7 +4500,7 @@ class ReviewedByStampTests(unittest.TestCase):
         return out
 
     def test_a_status_move_stamps_reviewed_by_human_right_after_reviewed(self) -> None:
-        for status in ('accepted', 'disputed', 'rejected', 'needs-review', 'superseded'):
+        for status in ('accepted', 'disputed', 'rejected', 'suggested', 'superseded'):
             with self.subTest(status=status):
                 self.source.write_text(_CLAIM_BLOCK, encoding='utf-8')
                 result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status=status)

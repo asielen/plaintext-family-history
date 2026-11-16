@@ -34,7 +34,7 @@
     <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>Place</th><th>People</th><th>Status</th>{% if workbench %}<th></th>{% endif %}</tr></thead>
     <tbody>
     {% for c in source.claims %}
-      <tr{% if workbench and c.status == 'suggested' %} class="wb-suggested"{% elif workbench and c.status == 'needs-review' %} class="wb-needs-review"{% endif %}>
+      <tr{% if workbench and c.parked %} class="wb-parked"{% elif workbench and c.status == 'suggested' %} class="wb-suggested"{% endif %}>
         <td>{{ c.type }}</td>
         <td>{{ c.value }}</td>
         <td>{{ c.date }}</td>

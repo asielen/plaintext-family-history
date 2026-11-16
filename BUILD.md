@@ -510,13 +510,12 @@ python -m unittest tests.test_stubs tests.test_person_names
 ### M1.9 - `fha claim` - claim-review write-back
 
 **One PR.** New file `tools/claim.py`. Wire `fha claim <c-id> --status accepted|disputed|rejected|
-superseded [--reviewed DATE] [--value "…"] [--date EDTF] [--root PATH] [--dry-run]`
-into `fha.py` (TOOLING §3b). The four `--status` choices are the SPEC §8.1 review outcomes a
+superseded|suggested [--reviewed DATE] [--value "…"] [--date EDTF] [--root PATH] [--dry-run]`
+into `fha.py` (TOOLING §3b). The first four `--status` choices are the SPEC §8.1 review outcomes a
 human moves a claim into (`suggested → accepted | disputed | rejected | superseded`). A claim the
-reviewer has looked at but cannot settle yet stays `suggested`; `--reviewed DATE` with no
-`--status` writes the `reviewed:` date on it, which is what marks it "checked, still open" (called
-reviewed-suggested below). (Today's `tools/claim.py` still offers a fifth `needs-review` status
-for this and refuses `--reviewed` without `--status`; SPEC 2.1 dropped that status.) Belongs in the foundation layer: it is the deterministic half of the
+reviewer has looked at but cannot settle yet stays `suggested`: `--status suggested` keeps it there
+and writes the `reviewed:` date (today, or `--reviewed DATE`), which is what marks it "checked,
+still open" (called reviewed-suggested below). Belongs in the foundation layer: it is the deterministic half of the
 review flow whose codes lint already defines (E006 - an `accepted` claim must carry `reviewed:`),
 and it needs only `_lib` (`read_record`, the `## Claims` parsing, `Result`).
 

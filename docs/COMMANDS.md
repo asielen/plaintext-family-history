@@ -509,7 +509,7 @@ Write an AI summary into a photo's embedded comment, preserving human text
 
 ## `fha xref`
 
-Cross-reference accepted/needs-review claims for corroboration/contradiction candidates
+Cross-reference accepted/parked claims for corroboration/contradiction candidates
 
 ```text
 Find which of your facts back each other up and which ones conflict.
@@ -886,7 +886,9 @@ Review claims: move status (one C-id or several) and/or correct fields (human-di
 Record your verdict on a suggested fact - the human decision point.
 
   fha claim <C-id> --status accepted   Confirm a fact (stamps today's date)
-  fha claim <C-id> --status disputed|rejected|needs-review|superseded
+  fha claim <C-id> --status disputed|rejected|superseded
+  fha claim <C-id> --status suggested  Looked at it, cannot settle it yet
+                                       (stays suggested, dated today)
   fha claim C-a C-b C-c --status accepted   One verdict for several claims at once
   fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
   fha claim <C-id> --clear place_text     Remove an optional field (repeatable)
@@ -911,7 +913,7 @@ To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --h
 | Argument | What it does |
 |---|---|
 | `C-id [C-id ...]` | The claim(s) to review (e.g. C-fd0000001a). Several C-ids apply one status move to each - batches are status-only, and any bad id stops the whole batch before anything is written. |
-| `--status` `{accepted,disputed,rejected,needs-review,superseded}` | The review status to set. At least one of --status/--value/--date/--type/--place/--place-text/--persons/--confidence/--information/--evidence/--anchor/--notes/--clear is required. |
+| `--status` `{accepted,disputed,rejected,superseded,suggested}` | The review status to set; `suggested` parks a claim you looked at but cannot settle yet (it stays suggested, dated today). At least one of --status/--value/--date/--type/--place/--place-text/--persons/--confidence/--information/--evidence/--anchor/--notes/--clear is required. |
 | `--reviewed` `DATE` | Review date (YYYY-MM-DD); defaults to today. Only takes effect together with --status. |
 | `--reviewed-by` `NAME` | Who made this review decision, written as reviewed_by: on the claim (SPEC §8.4). Defaults to "human"; give a name when several researchers share the archive. Only takes effect together with --status. |
 | `--value` `TEXT` | Optionally correct the claim value (single-line scalar only). |

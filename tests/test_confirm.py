@@ -708,6 +708,22 @@ class ConfirmArchiveTests(unittest.TestCase):
             conn.close()
         self.assertIn(frozenset((PERSON_1.lower(), PERSON_2.lower())), edges)
 
+    def test_cooccur_accept_promotes_a_retired_needs_review_claim(self) -> None:
+        # An archive written before SPEC 2.1 may carry `needs-review`; it is a
+        # looked-at `suggested` claim, so --accept promotes it the same way.
+        first = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='friend')
+        src = Path(first['source'])
+        text = src.read_text(encoding='utf-8')
+        src.write_text(text.replace('status: suggested', 'status: needs-review', 1),
+                       encoding='utf-8')
+        promoted = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
+            subtype='friend', accept=True)
+        self.assertEqual(promoted['status'], 'accepted')
+        self.assertEqual(promoted['claim_id'], first['claim_id'])
+        self.assertNotIn('needs-review', src.read_text(encoding='utf-8'))
+
     def test_cooccur_promote_writes_reviewed_then_reviewed_by(self) -> None:
         # Same order `fha claim` writes: status, reviewed, reviewed_by.
         first = confirm.run_confirm_cooccur(

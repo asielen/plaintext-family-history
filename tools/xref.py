@@ -11,7 +11,7 @@ of scope for this tool.
 
 ALGORITHM
 ---------
-For every person, group their accepted/needs-review claims by claim `type`
+For every person, group their accepted/parked claims by claim `type`
 (relationship claims are further split by `subtype` - the *nature* of the bond,
 e.g. biological vs. adoptive - this person's `role`, and the other person(s)
 named in the claim, since a person can be e.g. a child in one relationship claim
@@ -574,7 +574,7 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
             SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
                    value, negated
             FROM claims
-            WHERE status IN ('accepted', 'needs-review')
+            WHERE (status = 'accepted' OR (status = 'suggested' AND COALESCE(reviewed, '') != ''))
             '''
         )
     }
@@ -712,12 +712,13 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     # test with no polarity check, and `claim_vital_subjects[cid]` is always
     # `subjects` as `vital_subjects` returned it, never overridden to `None`.
     #
-    # Covers both `accepted` and `needs-review` claims, matching every other
-    # comparison `fha xref` makes (the module-level query above already
-    # restricts `claims_by_id` to those two statuses) - a claim that dropped
+    # Covers both `accepted` and parked claims (`suggested` with a
+    # `reviewed:` date, SPEC §8.1), matching every other comparison `fha xref`
+    # makes (the module-level query above already restricts `claims_by_id`
+    # to those two) - a claim that dropped
     # out of every bucket here is a claim this tool compared nothing
     # against, whether or not it has cleared review yet. `fha lint`'s W132
-    # matches this same accepted-or-needs-review, either-polarity scope for
+    # matches this same accepted-or-parked, either-polarity scope for
     # its own case 2a check, so a human always has exactly one path (`roles:
     # deceased:`/`child:`) to resolve an ambiguous claim of this shape,
     # whichever tool surfaces it first.
@@ -1017,7 +1018,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'xref' onto the main fha parser."""
     p = subs.add_parser(
         'xref',
-        help='Cross-reference accepted/needs-review claims for corroboration/contradiction candidates',
+        help='Cross-reference accepted/parked claims for corroboration/contradiction candidates',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

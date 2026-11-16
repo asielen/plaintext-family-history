@@ -50,6 +50,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_role_pairs,
+    claim_status,
     read_capture_log_lines,
     index_merge_survivors,
     join_claim_roles,
@@ -1704,7 +1705,7 @@ def _index_source(
                 place_id_raw,
                 place_text,
                 str(claim.get('value', '')),
-                str(claim.get('status', '')),
+                claim_status(claim),
                 reviewed,
                 confidence,
                 information,
@@ -2040,8 +2041,8 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     can ask "who are this person's parents?" with a simple SELECT.
 
     Called at the end of both full rebuild and incremental upsert so the table
-    is always current.  Only accepted claims are used - suggested and
-    needs-review claims don't become load-bearing graph edges.
+    is always current.  Only accepted claims are used - suggested claims
+    (reviewed or not) don't become load-bearing graph edges.
 
     Parent/child and spouse edges are keyed on the claim's `roles:` map (child +
     parent, or spouse), not on `subtype:` - `subtype` now names the *nature* of a

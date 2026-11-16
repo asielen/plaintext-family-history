@@ -53,7 +53,8 @@ source_type: vital-record
   type: birth
   persons: [P-aaaaaaaaaa]
   value: Born 1900
-  status: needs-review
+  status: suggested
+  reviewed: 2026-03-01
 ```
 '''
 
@@ -323,7 +324,8 @@ source_type: vital-record
   persons: [P-aaaaaaaaaa]
   value: Lived in Topeka
   place_text: "Topeka, Kansas"
-  status: needs-review
+  status: suggested
+  reviewed: 2026-03-01
 ```
 '''
 
@@ -358,7 +360,8 @@ source_type: vital-record
   persons: [P-aaaaaaaaaa]
   value: Lived at the old manse
   place_text: 'The "Old Manse", Springfield'
-  status: needs-review
+  status: suggested
+  reviewed: 2026-03-01
 ```
 '''
 
@@ -429,7 +432,7 @@ class ReportTests(unittest.TestCase):
         report.run_report(self.archive_root, {}, full=True)
 
         # Source 2 (a suggested claim) lands on disk, and source 1's birth
-        # claim flips from needs-review to accepted.
+        # parked claim (suggested, reviewed) flips to accepted.
         (self.archive_root / 'sources' / 'sourcetwo_S-2222222222.md').write_text(
             _SOURCE_TWO_SUGGESTED, encoding='utf-8'
         )
@@ -440,7 +443,7 @@ class ReportTests(unittest.TestCase):
         result = report.run_report(self.archive_root, {}, full=False)
         md = result['markdown']
 
-        self.assertIn('Claims newly accepted', md)
+        self.assertIn('Parked claims now accepted', md)
         self.assertIn('c-1111111111', md)
         self.assertIn('Profiles newly vital-complete', md)
         self.assertIn('Test Person', md)
@@ -464,15 +467,46 @@ class ReportTests(unittest.TestCase):
         self.assertIn('No new sources or persons since last session.', md)
 
     def test_second_look_lists_parked_and_low_confidence_claims(self) -> None:
-        # §1b (owner decision 2026-07-22): parked needs-review claims and
+        # §1b (owner decision 2026-07-22): parked claims (suggested with a
+        # reviewed: date, SPEC §8.1) and
         # accepted low-confidence claims surface as revisit leads - counts
         # plus the oldest few, not the whole backlog.
         result = report.run_report(self.archive_root, {}, full=True, section='second-look')
         md = result['markdown']
         self.assertIn('## 1b. Worth a second look', md)
-        # Fixture source one carries the needs-review birth claim (parked bucket).
+        # Fixture source one carries the parked birth claim (parked bucket).
         self.assertIn('**Parked (1):**', md)
         self.assertIn('Born 1900', md)
+
+    def test_parked_claim_leaves_the_review_queue(self) -> None:
+        # Looked at and parked: not a first-time review item any more.
+        result = report.run_report(self.archive_root, {}, full=True, section='review-queue')
+        self.assertIn('No suggested claims awaiting review.', result['markdown'])
+
+    def test_retired_needs_review_reads_as_parked(self) -> None:
+        # An archive written before SPEC 2.1 still says `needs-review`; the
+        # report reads it exactly as a parked suggested claim.
+        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
+            _SOURCE_ONE_NEEDS_REVIEW.replace('status: suggested', 'status: needs-review'),
+            encoding='utf-8')
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+        self.assertIn('**Parked (1):**', md)
+        self.assertIn('No suggested claims awaiting review.', md)
+
+    def test_old_snapshot_needs_review_then_accepted_is_a_discovery(self) -> None:
+        # A snapshot written before SPEC 2.1 recorded the parked claim as
+        # `needs-review`; accepting it later is still a discovery.
+        report.run_report(self.archive_root, {}, full=True)
+        snap_path = self.archive_root / '.cache' / 'last_report.json'
+        snap = json.loads(snap_path.read_text(encoding='utf-8'))
+        snap.pop('parked_claim_ids', None)
+        snap['claim_status_by_id'] = {k: 'needs-review' for k in snap['claim_status_by_id']}
+        snap_path.write_text(json.dumps(snap), encoding='utf-8')
+        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
+            _SOURCE_ONE_ACCEPTED, encoding='utf-8')
+        md = report.run_report(self.archive_root, {}, full=False)['markdown']
+        self.assertIn('Parked claims now accepted', md)
 
     def test_second_look_reports_nothing_when_all_settled(self) -> None:
         (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
@@ -556,7 +590,8 @@ class ReportTests(unittest.TestCase):
             '  persons: [P-aaaaaaaaaa]\n'
             '  value: Lived in Topeka\n'
             '  place_text: "Topeka, Kansas"\n'
-            '  status: needs-review\n',
+            '  status: suggested\n'
+            '  reviewed: 2026-03-01\n',
             '',
         )
         (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(

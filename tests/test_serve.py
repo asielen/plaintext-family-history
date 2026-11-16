@@ -161,6 +161,22 @@ class HomeAndChromeTests(_ServeCase):
         self.assertFalse(legacy_path.exists())
         self.assertIn('notes/cooccur_dismissed.json', stderr.getvalue())
 
+    def test_parked_claim_leaves_the_review_queue(self):
+        # "Not sure yet" keeps a claim `suggested` and dates it (SPEC §8.1);
+        # the queue lists never-reviewed drafts only, so it leaves the queue.
+        import claim as claim_mod
+        claims = [i for i in serve.gather_review(self.state)['items']
+                  if i.get('actions') == 'claim']
+        self.assertTrue(claims, 'fixture must have a suggested claim for this to prove anything')
+        cid = claims[0]['claim_id']
+        result = claim_mod.run_claim(self.root, claim_id=cid, status='suggested')
+        self.assertTrue(result.ok, result.messages)
+        serve.invalidate_snapshot(self.state)
+        serve.ensure_snapshot(self.state)
+        after = [i['claim_id'] for i in serve.gather_review(self.state)['items']
+                 if i.get('actions') == 'claim']
+        self.assertNotIn(cid, after)
+
     def test_review_and_inbox_render(self):
         # 'Review'/'Inbox' appear in the servebar nav on every page, so those
         # words alone cannot tell a working queue render from a broken one -

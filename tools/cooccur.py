@@ -31,7 +31,7 @@ THREE OUTPUTS (TOOLING §690)
    (default 2) distinct sources, with no existing `relationships` edge
    between them, ranked by source count then source-type variety.
 
-2. Shared-place co-occurrence: accepted/needs-review claims of different,
+2. Shared-place co-occurrence: accepted/parked claims of different,
    unlinked people that share a place (`place_id` if both have one, else
    normalized `place_text`) with overlapping EDTF date bounds - e.g. two
    people each placed in the same town the same year by different sources,
@@ -129,7 +129,7 @@ def _person_cooccurrence(conn: sqlite3.Connection, threshold: int, dismissed: se
         SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
         FROM claim_persons cp
         JOIN claims c ON c.id = cp.claim_id
-        WHERE c.status IN ('accepted', 'needs-review')
+        WHERE (c.status = 'accepted' OR (c.status = 'suggested' AND COALESCE(c.reviewed, '') != ''))
         '''
     ):
         sources_by_person.setdefault(row['person_id'], set()).add(row['source_id'])
@@ -195,7 +195,7 @@ def _same_place(a: dict, b: dict) -> bool:
 
 def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]) -> list[dict]:
     """
-    Accepted/needs-review claims of different, unlinked people that share a
+    Accepted/parked claims of different, unlinked people that share a
     place (structured `place_id` preferred, else normalized `place_text`)
     with overlapping EDTF bounds - e.g. two people each placed in the same
     town the same year by different sources (TOOLING §690b).
@@ -206,7 +206,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
             '''
             SELECT id, source_id, place_id, place_text, date_edtf
             FROM claims
-            WHERE status IN ('accepted', 'needs-review')
+            WHERE (status = 'accepted' OR (status = 'suggested' AND COALESCE(reviewed, '') != ''))
               AND (negated IS NULL OR negated = 0)
               AND date_edtf IS NOT NULL AND date_edtf != ''
               AND (
@@ -358,7 +358,7 @@ def _org_recurrence(conn: sqlite3.Connection, threshold: int = 2) -> list[dict]:
             '''
             SELECT id, source_id, type, subtype, value
             FROM claims
-            WHERE status IN ('accepted', 'needs-review')
+            WHERE (status = 'accepted' OR (status = 'suggested' AND COALESCE(reviewed, '') != ''))
               AND (negated IS NULL OR negated = 0)
               AND type IN ({})
             '''.format(','.join('?' * len(_ORG_CLAIM_TYPES))),

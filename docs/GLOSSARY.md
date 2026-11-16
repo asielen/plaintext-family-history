@@ -82,11 +82,11 @@ One record per physical place, forever.
 No ID yet.
 *Example: `inbox/grandmas-album/` holding the scans plus a `notes.md` of your hunches - real material, no ID assigned yet.*
 
-**Status lifecycle** - `suggested → needs-review → accepted | disputed | rejected | superseded`.
+**Status lifecycle** - `suggested → accepted | disputed | rejected | superseded`.
 Human review is the only gate to `accepted`.
 AI output always starts at `suggested`.
-`needs-review` is both a waypoint and a legitimate resting place: where a drafted fact waits for your look, *and* the verdict you give when you've looked and can't settle it yet ("possible - but I want a second record before I ink it"). A parked claim stays active and keeps matching against new evidence, and its review date shows when you last weighed it. `disputed` is different - it marks a claim your sources actively contradict.
-*Example: the assistant's guess at a birthplace sits at `needs-review` until you say "yes" - then, and only then, it becomes `accepted`. Or you look at it, stay unsure, and deliberately leave it parked at `needs-review` - a recorded "not proven yet," not a forgotten one.*
+`suggested` is both where a drafted fact waits for your look *and* where it rests when you've looked and can't settle it yet ("possible - but I want a second record before I ink it"). Parking it that way stamps a `reviewed:` date, so a dated suggested claim reads "looked at, still open" and an undated one reads "not looked at yet". `disputed` is different - it marks a claim your sources actively contradict.
+*Example: the assistant's guess at a birthplace sits at `suggested` until you say "yes" - then, and only then, it becomes `accepted`. Or you look at it, stay unsure, and deliberately park it (it stays `suggested`, dated today) - a recorded "not proven yet," not a forgotten one.*
 
 **Stub (person)** - a person record for someone referenced but not yet researched. Same shape as a curated record - an ID, a name, and every section (Sources, Biography, Stories, Research Notes, Friends & Family) scaffolded from the start - just with little or nothing filled in yet, and filed in `people/stubs/` instead of a couple folder until it earns one.
 A permanent, legitimate state, not a backlog.

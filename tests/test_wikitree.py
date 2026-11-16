@@ -58,7 +58,7 @@ def _add_source(conn, sid, title, path, *, source_type='vital-record', restricte
 
 def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
                source_id='s-0000000001', status='accepted', value='x', negated=0,
-               roles=None):
+               roles=None, reviewed=None):
     """Seed one claim. `roles` is {person_id: role} - which of the people the
     claim names plays which part on the record (SPEC §8.3)."""
     mn = ''
@@ -67,8 +67,8 @@ def _add_claim(conn, cid, ctype, persons, date_edtf='', place_text=None,
         mn = edtf_bounds(date_edtf)[0]
     conn.execute(
         'INSERT INTO claims(id, source_id, type, date_edtf, date_min, place_text, '
-        'value, status, negated) VALUES (?,?,?,?,?,?,?,?,?)',
-        (cid, source_id, ctype, date_edtf, mn, place_text, value, status, negated),
+        'value, status, negated, reviewed) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        (cid, source_id, ctype, date_edtf, mn, place_text, value, status, negated, reviewed),
     )
     for pos, p in enumerate(persons):
         conn.execute(
@@ -208,14 +208,16 @@ class WikitreeRenderTests(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         return conn
 
-    def test_needs_review_excluded_from_spacetime_recast_as_research_note(self):
-        # Owner decision 2026-07-22: a parked needs-review claim never stamps
+    def test_parked_claim_excluded_from_spacetime_recast_as_research_note(self):
+        # Owner decision 2026-07-22: a parked claim (suggested + reviewed:,
+        # SPEC §8.1) never stamps
         # a fact (no spacetime span), but goes out as an open question in
         # Research Notes so a collaborator can pick it up.
         conn = self._reopen()
         _add_claim(conn, 'c-0000000003', 'residence', ['p-0000000001'],
                    date_edtf='1910', place_text='Topeka', source_id='s-0000000002',
-                   status='needs-review', value='Possibly moved to Topeka')
+                   status='suggested', reviewed='2026-03-01',
+                   value='Possibly moved to Topeka')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
         text = r['text']
@@ -243,7 +245,7 @@ class WikitreeRenderTests(unittest.TestCase):
         _freshen_index(self.root)
         conn = self._reopen()
         _add_claim(conn, 'c-0000000005', 'residence', ['p-0000000001'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly moved to Topeka')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -270,7 +272,7 @@ class WikitreeRenderTests(unittest.TestCase):
                     path='people/edith.md')
         _add_claim(conn, 'c-0000000006', 'marriage',
                    ['p-0000000001', 'p-0000000003'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly married Edith Kowalski in Chicago')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -294,7 +296,7 @@ class WikitreeRenderTests(unittest.TestCase):
                     path='people/edith.md')
         _add_claim(conn, 'c-0000000006', 'marriage',
                    ['p-0000000001', 'p-0000000003'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly married Edith Kowalski in Chicago')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -363,7 +365,7 @@ class WikitreeRenderTests(unittest.TestCase):
                     path='people/edith.md')
         _add_claim(conn, 'c-0000000006', 'marriage',
                    ['p-0000000001', 'p-0000000003'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly married Edith Kowalski in Chicago')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -382,7 +384,7 @@ class WikitreeRenderTests(unittest.TestCase):
                     path='people/edith.md')
         _add_claim(conn, 'c-0000000006', 'marriage',
                    ['p-0000000001', 'p-0000000003'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly married Edith Kowalski in Chicago')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -510,7 +512,7 @@ class WikitreeRenderTests(unittest.TestCase):
         conn = self._reopen()
         _add_source(conn, 's-0000000003', 'Sealed record', 'sources/sealed.md', restricted=1)
         _add_claim(conn, 'c-0000000004', 'residence', ['p-0000000001'],
-                   source_id='s-0000000003', status='needs-review',
+                   source_id='s-0000000003', status='suggested', reviewed='2026-03-01',
                    value='Secret whereabouts')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -872,11 +874,11 @@ class WikitreeRenderTests(unittest.TestCase):
         conn = self._reopen()
         self._seed_merged_duplicate_of_living_person(conn)
         _add_claim(conn, 'c-0000000007', 'residence', ['p-0000000001', 'p-0000000004'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly boarded with Kenny on Brackenwold Road')
         # A parked claim about John alone still goes out as a question.
         _add_claim(conn, 'c-0000000008', 'residence', ['p-0000000001'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly moved to Topeka')
         conn.commit(); conn.close()
         r = wikitree.run_wikitree(self.root, 'p-0000000001')
@@ -921,7 +923,7 @@ class WikitreeRenderTests(unittest.TestCase):
         conn = self._reopen()
         self._seed_merged_duplicate_of(conn)
         _add_claim(conn, 'c-0000000009', 'residence', ['p-0000000001', 'p-0000000006'],
-                   source_id='s-0000000002', status='needs-review',
+                   source_id='s-0000000002', status='suggested', reviewed='2026-03-01',
                    value='Possibly lodged with Pell at Gorsemoor Cottage')
         conn.commit(); conn.close()
         _freshen_index(self.root)

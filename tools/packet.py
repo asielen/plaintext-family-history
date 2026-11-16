@@ -217,6 +217,7 @@ import yaml
 
 from _lib import (
     claim_date_order_sql,
+    PARKED_CLAIM_SQL,
     # _AI_DRAFT_MARK_RE is _lib-private on purpose (the marker grammar has ONE
     # home, kept in sync with confirm.py's flip grammar); packet imports it for
     # the README draft count only, so the count can never drift from what
@@ -2172,9 +2173,9 @@ def _build_timeline_text(
     headers) - this is a one-shot export artifact, not a tracked archive view.
 
     A packet is family research material, not publication (the README says
-    so), so needs-review claims stay IN - but tagged the same plain words the
-    timeline views use: '[unconfirmed - parked {date}]' on a parked
-    needs-review claim, '[low confidence]' on an accepted claim whose
+    so), so parked claims (still `suggested`, with a reviewed: date - looked
+    at, not settled, SPEC §8.1) stay IN - but tagged the same plain words the
+    timeline views use: '[unconfirmed - parked {date}]' on a parked claim, '[low confidence]' on an accepted claim whose
     evidence is thin (owner decision 2026-07-22; the public site, by
     contrast, is accepted-only).
 
@@ -2193,7 +2194,8 @@ def _build_timeline_text(
                    c.place_text, c.source_id, c.status, c.confidence, c.reviewed
             FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
-            WHERE cp.person_id IN ({pid_placeholders}) AND c.status IN ('accepted', 'needs-review')
+            WHERE cp.person_id IN ({pid_placeholders})
+              AND (c.status = 'accepted' OR {PARKED_CLAIM_SQL})
               AND c.source_id IN ({src_placeholders})
             ORDER BY
                 {claim_date_order_sql('c')},
@@ -2217,8 +2219,8 @@ def _build_timeline_text(
         if row['place_text']:
             line += f' @ {row["place_text"]}'
         line += f' [{fmt_id_display(row["source_id"])}]'
-        if row['status'] == 'needs-review':
-            line += f' [unconfirmed - parked {row["reviewed"]}]' if row['reviewed'] else ' [unconfirmed]'
+        if row['status'] == 'suggested':
+            line += f' [unconfirmed - parked {row["reviewed"]}]'
         elif row['status'] == 'accepted' and row['confidence'] == 'low':
             line += ' [low confidence]'
         lines.append(line + '\n')

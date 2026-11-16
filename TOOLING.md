@@ -220,10 +220,10 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E015 | E | A `type: relationship` claim has no `roles:` map: the field is missing, empty, or not a map (a list such as `roles: [parent, child]` names nobody). The message shows the map form. | §8.3 |
 | E017 | E | A DNA source is not `restricted: true`, or a DNA file is outside `documents/dna/`. | §19, A.8 |
 | E018 | E | AGENTS.md references a deprecated command (`fha promote`) or photo-rename instructions. Skills are not yet scanned. | §20 |
-| E019 | E | A value outside its closed vocabulary: claim `status` not in the §8.1 set, or `confidence` not `high`/`medium`/`low`. The status set is `suggested`, `accepted`, `disputed`, `rejected`, `superseded`; the code must stop accepting `needs-review`. | §8.1, §8.5 |
+| E019 | E | A value outside its closed vocabulary: claim `status` not in the §8.1 set, or `confidence` not `high`/`medium`/`low`. The status set is `suggested`, `accepted`, `disputed`, `rejected`, `superseded`. | §8.1, §8.5 |
 | E020 | E | A merge the tools cannot follow: `merged_into:` names no person record, or merges loop. The tombstone's claims stay put and are missing from every timeline, tree and export until fixed. | §9 |
 | W101 | W | Vitals gaps per person (the completeness report). | §9 |
-| W102 | W | Suggested-claim backlog per source. | §8.1 |
+| W102 | W | Suggested-claim backlog per source: drafts with no `reviewed:` date. | §8.1 |
 | W103 | W | Stale couple-folder bracket list against the parent edges the index derives (accepted, non-negated `relationship` and `birth` claims, one shared rule); or a couple folder name missing its `+ second spouse` half. Add-only: an existing `+ …`, hand-made base or placeholder base is never rewritten. Fix: `fha views brackets --fix`. | §12 |
 | W104 | W | A summary line with no supporting accepted claim. | §16 |
 | W105 | W | Hand edits under a GENERATED header. Not implemented (needs mtime tracking); a no-op. | §16 |
@@ -253,7 +253,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W129 | W | `root_generation` is not `self` or `children`. The whole Ahnentafel pass is skipped. Also in `fha views brackets`; `fha person promote` refuses. | §12.4 |
 | W130 | W | A curated profile lacks one of `## Biography`, `## Stories`, `## Research Notes`, `## Friends & Family` (read from the profile file itself, not its research file). No auto-backfill. | §16 |
 | W131 | W | A documents-root file's embedded keyword resolves to an archive person absent from the source's `people:`. `--with-exif`. Fix: `fha source clear-keyword`, or add the person. | §14, §20 |
-| W132 | W | An accepted `death`, `burial` or `baptism` claim, either polarity, naming two or more people with no `roles:` at all. Fix: `roles: deceased: [p-…]` (or `child:` for baptism). The tool must check accepted claims only; current code still checks `needs-review` ones too. | §8.3 |
+| W132 | W | An accepted or reviewed-but-open (`suggested` with `reviewed:`) `death`, `burial` or `baptism` claim, either polarity, naming two or more people with no `roles:` at all. Fix: `roles: deceased: [p-…]` (or `child:` for baptism). The same claims `fha xref` compares. | §8.3 |
 | W133 | W | A `roles:` target absent from the claim's `persons:`. Every claim, any status. | §8.3 |
 | W134 | W | `source_type: ephemera` with a non-empty `people:`. | §14 |
 | W135 | W | One person named twice in a claim's `persons:`. A repeated ID is tidy-up; a name resolving onto a listed ID may be a different person and is worded as a question. | §8.4 |
@@ -265,6 +265,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
 | W143 | W | A source record still carrying a field SPEC 2.1 retired: a claim's `significance`, `significance_reason` or `asset`, a `files:` entry's `language` or `digitized`. One line per record naming them: nothing reads them, safe to delete. Never an error. | §8.4, §14 |
 | W146 | W | One `h-` id written on two working answers (question entries in `notes/questions.md` or research files, or old `## Hypotheses` entries). An h-id is never reused; the index keeps one entry whole, so the other guess drops out of `fha find` and the report. Fix: keep the id on one entry, mint a new one for the other (`fha id mint H`). | §7, §17b |
+| W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |
@@ -359,7 +360,7 @@ Move an existing claim's `status:` (stamping the review), correct its fields, or
 
 ```
 fha claim <c-id> [<c-id> …]
-                 [--status accepted|disputed|rejected|superseded]
+                 [--status accepted|disputed|rejected|superseded|suggested]
                  [--value "…"] [--date EDTF] [--type TYPE] [--place l-id] [--place-text TEXT]
                  [--persons p-id[,p-id…]] [--confidence high|medium|low]
                  [--information primary|secondary|undetermined]
@@ -374,8 +375,6 @@ fha claim new --source s-id --type TYPE --value "…" [--date DATE]
               [--evidence direct|indirect|negative] [--anchor TEXT] [--notes TEXT]
               [--reviewed-by NAME] [--keep-living] [--root PATH] [--dry-run]
 ```
-
-SPEC §8.1 has no `needs-review`; the tool must drop it, and current code still accepts it.
 
 ### Review contract (SPEC §8.2, §8.4, §8.5)
 
@@ -606,7 +605,7 @@ Ranked, read-only index query, built on `xref` and `cooccur` data. Absent or unr
 - **C-id:** source, persons, place; claims it corroborates/contradicts (both ways); sibling claims (same person, same type).
 - **H-id:** the people its question is about (`refs:`, from the `hypotheses` index), and claims referencing it (`claims.hypothesis`, SPEC A.4). With no index row, the people come from those claims.
 
-**`--date <EDTF>`**: accepted claims (and their people, sources, places) whose `date_min`/`date_max` (§1) overlap the range. Standalone it joins no photos. With a P-, L- or S-id it narrows that neighborhood; C and H ignore it.
+**`--date <EDTF>`**: accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) (and their people, sources, places) whose `date_min`/`date_max` (§1) overlap the range. Standalone it joins no photos. With a P-, L- or S-id it narrows that neighborhood; C and H ignore it.
 
 ### `--text "…"`
 
@@ -886,7 +885,7 @@ All views derive purely from the index. Timeline and draft-queue write GENERATED
 
 ### Content views
 
-- **`fha views timeline [p-id|--all-curated] [--format md|html]`** → `…_timeline_{p-id}.md`. Accepted claims sorted by date - an open-ended date by its known bound (`[..1895]` by 1895, `[1883..]` by 1883), undated last - grouped by decade, each line `EDTF - type: value [[s-id]]`; an accepted low-confidence claim (SPEC §8.5) ends `[low confidence]`. Suggested claims follow in a trailing "unreviewed" section, a dated one (checked, still open, SPEC §8.1) tagged as such. The private view keeps unsettled material visible; the site (§12) is accepted-only. The tool must drop the `needs-review` status; current code still selects it and tags it `[unconfirmed - parked {date}]`.
+- **`fha views timeline [p-id|--all-curated] [--format md|html]`** → `…_timeline_{p-id}.md`. Accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) sorted by date - an open-ended date by its known bound (`[..1895]` by 1895, `[1883..]` by 1883), undated last - grouped by decade, each line `EDTF - type: value [[s-id]]`; an accepted low-confidence claim (SPEC §8.5) ends `[low confidence]`, a reviewed-but-open one `[unconfirmed - parked {date}]`. Never-reviewed suggested claims follow in a trailing "unreviewed" section. The private view keeps unsettled material visible; the site (§12) is accepted-only.
 - **`fha views draft-queue [p-id|--all-curated] [--format md|html]`** → `…_draft-queue_{p-id}.md`: accepted claims whose source the profile body does not cite - the writing backlog for `write-biography` (§14b).
 - **`fha views sources-index [p-id|--all-curated]`**: every source with ≥1 claim naming the person, grouped by `source_type`, written inside the profile's `## Sources` section between `<!-- GENERATED-BEGIN sources-index by sources-index on {date} -->` and `<!-- GENERATED-END sources-index -->`, with a visible notice; nothing outside the span changes. Works on any person, including `people/stubs/` and misplaced folders; `--all-curated` is the curated-only batch form. Refuses `--format html`. The write re-syncs that profile's index row (D9, §4a). There is no couple-folder `sources-index.md`; one left by an older version carries the GENERATED header, so `fha views clean` removes it.
 
@@ -1121,7 +1120,7 @@ Photos are out of scope (identified by `SOURCE:` keyword, not path). Exit codes:
 
 **`fha places lint`** - orphan L-ids, duplicates by normalized name, dangling or cyclic `within:`, a `within:` target with its own outward `within:`.
 
-**`fha places candidates`** - normalizes unlinked claim `place_text` (case, punctuation, St/Street, Co/County), clusters near-variants by token-set match, and emits groups of 3+ occurrences with claims and date spread; plus photo-GPS clusters (3+ photos within ~150 m) near no known place. Default scope: accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1). `--include-suggested` adds every `suggested` claim (for the setup-interview backlog scan after `fha gedcom import`). The tool must use reviewed-but-open `suggested`; current code still filters on the retired `needs-review` status.
+**`fha places candidates`** - normalizes unlinked claim `place_text` (case, punctuation, St/Street, Co/County), clusters near-variants by token-set match, and emits groups of 3+ occurrences with claims and date spread; plus photo-GPS clusters (3+ photos within ~150 m) near no known place. Default scope: accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1). `--include-suggested` adds every `suggested` claim (for the setup-interview backlog scan after `fha gedcom import`).
 
 Elevation: human confirms, mint an L-id (+`within:`), then backfill `place:` per claim, each shown. `place_text` is never altered. This pattern is the template for recurring-people (FAN) detection.
 
@@ -1188,7 +1187,7 @@ The JSON is inline in the page (read from the DOM, so `file://` works) and also 
 Where accepted claims for one vital disagree, every single-date surface (summary, chart labels, `fha views tree`, GEDCOM `BIRT`/`DEAT`) picks by `_lib.vital_pick_key`: (1) dated before undated (backwards range = undated); (2) precision tier: day, month, year, about-a-year or 2-3-year span, decade, wider; (3) confidence; (4) narrower range; (5) claim id. Tiers, not raw days, so a leap year never outranks confidence. Picked after the own-vital and publishability filters. `fha xref` flags non-overlapping accepted vitals; differing exactness is not a contradiction. No conflict marker on the headline.
 
 ### Audience split
-Standalone shows accepted claims only (timeline, source claims, place claims). Linked/workbench also shows reviewed-but-open claims (`suggested` with `reviewed:`), marked "unconfirmed - parked {date}" and tinted in the workbench. Never-reviewed `suggested` never renders. Low-confidence accepted claims carry a "low confidence" flag everywhere. The tool must select reviewed-but-open `suggested`; current code still selects `needs-review`.
+Standalone shows accepted claims only (timeline, source claims, place claims). Linked/workbench also shows reviewed-but-open claims (`suggested` with `reviewed:`), marked "unconfirmed - parked {date}" and tinted in the workbench. Never-reviewed `suggested` never renders. Low-confidence accepted claims carry a "low confidence" flag everywhere.
 
 ### Privacy (standalone)
 The standalone site is the safe-to-share version (SPEC §21): `living`/`unknown` redacted; `restricted` excluded wherever it appears (a restricted name shows the unrestricted display name); DNA excluded; `publication_ok: false` sources withheld. `--linked` is a local preview: links to real files, no copying, no redaction guarantee.
@@ -1224,7 +1223,7 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 
 - `[[s-id]]` → `<ref name="s-id"/>`; full `<ref name="s-id">{citation}</ref>` definitions go in a hidden `<div name="references" style="display: none">` at the top.
 - A statement backed by an accepted claim with `place`/`date` is wrapped in `<span class="spacetime" data-loc="{place name}" data-date="{ISO date}">…</span>` (low confidence qualifies).
-- Reviewed-but-open claims (`suggested` with `reviewed:`) export under `== Research Notes ==` as "Unconfirmed: {value} - noted in "{source}". Not yet verified - corroboration welcome.", appended to an existing section. The tool must select these; current code still selects `needs-review`.
+- Reviewed-but-open claims (`suggested` with `reviewed:`) export under `== Research Notes ==` as "Unconfirmed: {value} - noted in "{source}". Not yet verified - corroboration welcome.", appended to an existing section.
 - `[[p-id]]` → `[[{external_ids.wikitree}|{name}]]`, else the plain name.
 - From `external_links`: an Ancestry record (`/discoveryui-content/view/{id}:{db}`, `/search/collections/{db}/records/{id}`, `dbid=…&h=…`) → `{{Ancestry Record|db|id}}`; an image-viewer scan (`/imageviewer/collections/{db}/images/{id}`) → `{{Ancestry Image|db|id}}`; other addresses none.
 - Optional claim-type → infobox mappings (e.g. `{{US Civil War}}`) in `tools/wikitree_templates.yaml`.
@@ -1423,7 +1422,7 @@ fha xref [--root PATH]
 
 Run by the `review-claims` skill at the end of each review and inside `fha report`; never scheduled. Read-only: it prints candidate pairs with both claims' context. Writes belong to `fha confirm xref` (§14a3).
 
-**Input.** Accepted claims from the index. (The code still also reads `needs-review`; it must read accepted claims only.)
+**Input.** Accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) from the index, so a parked claim resurfaces when a new source corroborates or contradicts it.
 
 **Corroboration candidates.** Same person, same type, overlapping EDTF bounds, different sources, not already linked.
 - Vital types, `relationship`, `divorce`: overlap is enough.
@@ -1451,12 +1450,12 @@ fha cooccur [--threshold N] [--root PATH]
 Read-only, like `fha places candidates`; consumed through the report. Writes belong to `fha confirm cooccur` / `confirm dismiss` (§14a3). Pairs with an existing `relationship` edge (kin or social) or a dismissal in `notes/cooccur_dismissed.json` are excluded.
 
 1. **People co-occurrence.** Person pairs named together in at least `--threshold` (default 2) distinct sources. Ranked by count and source variety (different `source_type`s weigh more). Output shows the shared sources.
-2. **Shared place.** Accepted claims of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF bounds.
+2. **Shared place.** Accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF bounds.
 3. **Entity hubs.** Named entities in claim values (employers in `occupation`, units in `military`, clubs in `event`/`note`) recurring across N or more people or sources: "Plains Junction Railroad - 4 people, 6 sources." Organizations stay claim values; no record type.
 
 All three feed the report and render in the FAN view as dashed provisional edges.
 
-(The code still also reads `needs-review` claims and carries a legacy `.cache/cooccur_dismissed.json` forward; it must read accepted claims and `notes/cooccur_dismissed.json` only.)
+(The code still carries a legacy `.cache/cooccur_dismissed.json` forward; it must read `notes/cooccur_dismissed.json` only.)
 
 ## 14a3. `fha confirm` - the detection write-back layer
 
@@ -1498,7 +1497,7 @@ The session start screen, narrated by the `today` skill.
 | # | Key | Content |
 |---|---|---|
 | 0 | `discoveries` | Questions answered, contradictions resolved, first corroborations, profiles newly vital-complete, confirmed connections. On confirmation each goes to `notes/discoveries.md` via `confirm discovery`. |
-| 1 | `review-queue` | `suggested` claims by source, oldest first (W102). |
+| 1 | `review-queue` | `suggested` claims with no `reviewed:` date, by source, oldest first (W102). |
 | 1b | `second-look` | Parked claims (`suggested` with a `reviewed:` date, SPEC §8.1; oldest first) and accepted low-confidence claims (§8.5): counts plus the oldest few. |
 | 2 | `new-since-last` | Sources, claims, people added or changed. |
 | 3 | `vitals-gaps` | Curated people first, then people touched since last report (W101). Computed fresh each run; never written as questions (SPEC §17b). |
@@ -1511,7 +1510,7 @@ The session start screen, narrated by the `today` skill.
 | 7b | `promotion-candidates` | (a) Direct-line ancestors still stubs (W119, Ahnentafel walk from `root_person`), closest first, each offering `fha person promote`; (b) any stub whose accepted-claim count reaches `promotion: claims_threshold:` (default 5), offered `fha person promote <p-id> --into connections/`. Counts plus the top few. |
 | 8 | `possible-connections` | The three `fha cooccur` outputs, with confirm/dismiss prompts. |
 
-Every section's items are leads; the report proposes, the human acts. (Section 1b must read SPEC §17 forms: the code still reads `needs-review` claims and a `search_log` table.)
+Every section's items are leads; the report proposes, the human acts. (The search log must read SPEC §17 forms: the code still reads a `search_log` table.)
 
 **Place-text escalation.** A §6b cluster of 20 or more claims sharing one unlinked `place_text` is promoted to the banner. Its line is the same line §6b prints, with a ready command: `--into <l-id>` when the text matches a registered place (exactly, or after the claim-write-time normalization of SPEC §15), else `--name=...`. On a run filtered to any other section, it names `fha report --section place-candidates`. The Result carries `data['place_escalations']` (raw clusters) and `data['sections']['place-escalations']`.
 
@@ -1593,7 +1592,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha serve [--port N] [--no-browser]` (T) | Open the localhost workbench (TOOLING_INTERFACE.md §1b) - a private, editable browser view of this archive with the review queue and inbox one click away. Human-started only; an agent never starts it unasked. Every button is one documented `fha` command, dry-run previewed then confirmed, CLI-echoed. Not load-bearing: killing it or deleting `.cache/serve/` loses nothing. |
 
 **`fha claim <c-id> [<c-id> …]` (T C)** - the review gesture (§3b). Driven by `review-claims` and the report's prompts; `accepted` is the human gate.
-- Moves claim `status:` (`accepted`/`disputed`/`rejected`/`superseded`) and stamps `reviewed:`. A claim looked at but not yet settled stays `suggested` with a `reviewed:` date (SPEC §8.1). The tool must drop `needs-review` from `--status`; current code still accepts it.
+- Moves claim `status:` (`accepted`/`disputed`/`rejected`/`superseded`) and stamps `reviewed:`. A claim looked at but not yet settled stays `suggested` with a `reviewed:` date (SPEC §8.1): `--status suggested` keeps it there and stamps the date.
 - At least one of `--status`/`--value`/`--date`/`--type`/`--place`/`--place-text`/`--persons`/`--confidence`/`--information`/`--evidence`/`--anchor`/`--notes`/`--clear` is required, so a field-only correction needs no status move.
 - `--information`/`--evidence`/`--anchor`/`--notes` correct the Mills fields and context note surgically; every free-text field write echoes what it wrote.
 - `--clear FIELD` removes an optional field whole; empty values are refused, never written as `key: ''`.

@@ -49,11 +49,13 @@ def _add_alt_name(conn, pid, alt_name):
     conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt_name))
 
 
-def _add_claim(conn, cid, place_id=None, place_text=None, date_edtf=None, status='accepted'):
+def _add_claim(conn, cid, place_id=None, place_text=None, date_edtf=None, status='accepted',
+               reviewed=None):
     conn.execute(
-        'INSERT INTO claims(id, source_id, type, value, status, place_id, place_text, date_edtf) '
-        'VALUES (?,?,?,?,?,?,?,?)',
-        (cid, 's-0000000001', 'residence', 'lived there', status, place_id, place_text, date_edtf),
+        'INSERT INTO claims(id, source_id, type, value, status, place_id, place_text, date_edtf, '
+        'reviewed) VALUES (?,?,?,?,?,?,?,?,?)',
+        (cid, 's-0000000001', 'residence', 'lived there', status, place_id, place_text, date_edtf,
+         reviewed),
     )
 
 
@@ -301,9 +303,10 @@ class PlacesCandidatesTests(unittest.TestCase):
         # A fresh `fha gedcom import` mints every claim as `suggested` - the
         # exact scenario the setup-interview skill's step 0 must be able to
         # see. include_suggested=True must count them without excluding the
-        # normal accepted/needs-review claims.
+        # normal accepted and parked (suggested + reviewed:) claims.
         _add_claim(self.conn, 'c-0111111111', place_text='Topeka, Kansas', status='accepted')
-        _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas', status='needs-review')
+        _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas', status='suggested',
+                   reviewed='2026-03-01')
         _add_claim(self.conn, 'c-2111111111', place_text='Topeka, Kansas', status='suggested')
         self.conn.commit()
         without = places.run_candidates(self.archive_root, {}, threshold=3)
