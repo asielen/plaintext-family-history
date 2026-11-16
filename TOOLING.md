@@ -81,6 +81,7 @@ CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 **Restriction (all exports).**
 - `restricted` on a source, claim, person or name is excluded from public output. `fha packet` excludes it by default; `--include-restricted` opens plain restrictions; `dna` also needs `--include-dna`; `by-request` has no override. Restricted names resolve internally and redact on export.
 - Enforced by ID in `site`, `wikitree`, `packet`, `gedcom`: the person's record, page, tree position, facts and `[[p-id]]` links (shown as the redaction label). Names in free text are not matched.
+- **Privacy carries through a merge** (`_lib.carry_to_survivors`). A tombstone's `restricted:` or explicit `living: true` (`living_carried_to_survivors`) keeps its survivor out of `site`, `packet`, `gedcom` and `wikitree` too: the claims `fha index` hands the survivor are about the same human. A tombstone's `unknown` or missing `living:` carries nothing; the survivor's own `living: false` wins. A refusal names the tombstone file whose `living: true` holds the survivor back (`living_tombstones_of`), since `fha person set-living` on a merged record acts on the survivor.
 - An unreadable `restricted:` marker means restricted (`read_restriction_marker`): non-UTF-8, no or invalid frontmatter, or frontmatter that is not a mapping. `fha index` still keeps such a person's row from the filename's p-id (name `unknown`, `living: unknown`).
 
 ---
@@ -164,12 +165,15 @@ CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
 - `transcripts_fts`: every `files:` entry with role `transcript`, `transcription` or `extracted-text` that is a `.md`/`.txt` on disk.
 - Lookup indexes are created `IF NOT EXISTS` on every write open, so old caches gain them without a version bump; readers never create them (it would hide staleness). Queries whose order reaches output say `ORDER BY` (often `rowid`).
 - The tool must drop claim columns `asset`, `significance_override`, `significance_reason`; current code still has them.
+- `person_files.kind` must be one of profile, research, timeline, draft-queue (`sources-index` writes no companion, §7); current code still lists `sources-index` in `_lib.COMPANION_KINDS`.
 
 **Relationship derivation** (accepted claims only; edges are pure cache, traversal crosses in-law branches):
 - `relationship` `child-of` → `child` edge (subject → parents) + reciprocal `parent` edges. `birth` → the same pair, by roles only.
 - `spouse-of` and `marriage` → reciprocal `spouse` edges dated from the claim; `date_end` from a `divorce` between the pair or a `death` of either.
 - Social subtypes → `friend` / `associate` / `neighbor`.
 - Every role a person carries counts (`roles_by_person`, SPEC §8.3); `roles:` order never decides. A person named twice (`[p-a, "[[Alice Smith]]"]`) counts once.
+- Kin synonyms read as the role they name (`_lib.role_meaning`, SPEC §8.3): `mother`/`father` → `parent`, `son`/`daughter` → `child`, `husband`/`wife` → `spouse`. Every role comparison goes through it.
+- Only `persons:` entries are candidates (`resolve_claim_persons_with_roles`): a `roles:` target that is not in `persons:` is dropped before `vital_subjects`, `spouse_parties` and `parentage_parties` see it. Lint W133 reports it, because dropping it can leave one unroled person read as the subject.
 
 *Couples - `_lib.spouse_parties`* (index edges and divorce `date_end`, `fha gedcom` FAM placement, lint W115/W125). Scoped by `roles:`, never by all of `persons:`:
 1. `spouse:` names ≥2 distinct persons → those (≥3 = serial marriages, all pairings).
@@ -249,7 +253,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W129 | W | `root_generation` is not `self` or `children`. The whole Ahnentafel pass is skipped. Also in `fha views brackets`; `fha person promote` refuses. | §12.4 |
 | W130 | W | A curated profile lacks one of `## Biography`, `## Stories`, `## Research Notes`, `## Friends & Family` (read from the profile file itself, not its research file). No auto-backfill. | §16 |
 | W131 | W | A documents-root file's embedded keyword resolves to an archive person absent from the source's `people:`. `--with-exif`. Fix: `fha source clear-keyword`, or add the person. | §14, §20 |
-| W132 | W | An accepted `death`, `burial` or `baptism` claim, either polarity, naming two or more people with no `roles:` at all. Fix: `roles: deceased: [p-…]` (or `child:` for baptism). | §8.3 |
+| W132 | W | An accepted `death`, `burial` or `baptism` claim, either polarity, naming two or more people with no `roles:` at all. Fix: `roles: deceased: [p-…]` (or `child:` for baptism). The tool must check accepted claims only; current code still checks `needs-review` ones too. | §8.3 |
 | W133 | W | A `roles:` target absent from the claim's `persons:`. Every claim, any status. | §8.3 |
 | W134 | W | `source_type: ephemera` with a non-empty `people:`. | §14 |
 | W135 | W | One person named twice in a claim's `persons:`. A repeated ID is tidy-up; a name resolving onto a listed ID may be a different person and is worded as a question. | §8.4 |
@@ -885,7 +889,7 @@ All views derive purely from the index. Timeline and draft-queue write GENERATED
 
 - `ancestors`: parent edges recursively. `descendants`: child edges recursively, plus spouses as one-hop leaves (in-law lineages not recursed). `fan`: kin plus social edges, 2 hops (`--generations N` sets hops).
 - BFS with a visited-set cycle guard; nodes dedupe by p-id, edges by `(from, to, type)`.
-- Output: the **neutral tree JSON** (the stable contract) or GraphViz DOT. Nodes `{p_id, name, vitals, sex}`, `vitals` = `{"birth", "death"}` each the `date_edtf` of the first accepted claim of that type, or null. Edges `{type, from, to, claim_id, subtype, genetic, dates}`; `dates.start/end` only on spouse edges; `genetic` is false for adoptive, step, foster, guardian, social, true otherwise (unset `subtype` = genetic, SPEC §12.2).
+- Output: the **neutral tree JSON** (the stable contract) or GraphViz DOT. Nodes `{p_id, name, vitals, sex}`, `vitals` = `{"birth", "death"}` each the `date_edtf` of the accepted, non-negated claim of that type picked by `_lib.vital_pick_key` among the person's own vitals (`claim_is_own_vital`; §12 "Which claim gives a life date"), or null. Edges `{type, from, to, claim_id, subtype, genetic, dates}`; `dates.start/end` only on spouse edges; `genetic` is false for adoptive, step, foster, guardian, social, true otherwise (unset `subtype` = genetic, SPEC §12.2).
 - Rendering belongs to the build (an adapter maps the JSON to the site's tree library; non-genetic edges dashed). `--format html` is refused with a pointer to `fha site`.
 
 ### `fha views brackets` - folder maintenance
@@ -1061,7 +1065,7 @@ Both writers (and gallery tiles) refuse a `MISSING:` path and name `reconcile`.
 
 **`fha reconcile`** heals all types: documents re-match by `_{s-id}` filename (unique hit rewrites the line; duplicates reported; unlisted s-id files reported with `fha process --more`), then photos. Working-copy mode is a no-op; an unreachable root warns.
 
-**Record-side photo healing**: a photos-alias `files:` entry missing on disk (not `missing-fixture`) is re-tied only when exactly one unlisted file (by device/inode, `photos_ignore:` applied) has its exact filename, carries this record's `SOURCE:` and no other, and no other entry shares the name. Otherwise: one report naming candidates and the `file:` line to edit, exit 1. Keywords come from fresh catalog rows or `--with-exif`; after a config-stamp change none are trusted. Lint E011 names the working route. The catalog pass should follow the same rule (idea, see BACKLOG.md).
+**Record-side photo healing**: a photos-alias `files:` entry missing on disk (not `missing-fixture`) is re-tied only when exactly one unlisted file (by device/inode, `photos_ignore:` applied) has its exact filename, carries this record's `SOURCE:` and no other, and no other entry shares the name. Otherwise: one report naming candidates and the `file:` line to edit, exit 1. Keywords come from fresh catalog rows or `--with-exif`; after a config-stamp change none are trusted. Lint E011 names the working route.
 
 ### Content re-tie
 
@@ -1261,7 +1265,7 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 
 Capture runs on the page the human has open: never logs in, fetches behind auth, paginates or queries APIs. Output is an inbox source stub (SPEC §12.1): `{slug}.notes.md` with optional frontmatter (`source_type`, `citation`, `repository`, `external_links`, `source_date`, `people:` names) and the page text or notes as body. `fha process` later mints the S-id and drafts claims.
 
-**Engine** (`tools/capture.py`): a site recipe (Ancestry, FamilySearch, Newspapers.com, FindAGrave) or the generic recipe (title, URL, accessed date, visible text); recipes are data in `tools/capture_recipes/`. `--title`/`--type`/`--date` override. Writes the stub and asset, and appends one entry per capture to `notes/research-log.md` in the SPEC §17c shape. The tool must append to `notes/research-log.md`; current code still writes `notes/capture-log.jsonl`.
+**Engine** (`tools/capture.py`): a site recipe (Ancestry, FamilySearch, Newspapers.com, FindAGrave) or the generic recipe (title, URL, accessed date, visible text); recipes are data in `tools/capture_recipes/`. `--title`/`--type`/`--date` override. Writes the stub and asset, and appends one entry per capture to `notes/research-log.md` in the SPEC §17c shape, with `result: staged <inbox path>` naming where the stub waits. The tool must append to `notes/research-log.md`; current code still writes `notes/capture-log.jsonl`.
 
 **Assets:** (a) a downloadable image/document becomes the asset (an on-screen-only viewer image gets an interactive `provisional-image` fallback); (b) the record is the page → cleaned HTML snapshot in `documents/web/…` (SPEC §2); (c) the page points elsewhere → citation + `external_links`, `asset_elsewhere: true`.
 
@@ -1465,7 +1469,8 @@ The detectors only read; `fha confirm` is their write floor, driven by any front
 **`confirm merge`** is planned in memory and applied with an undo journal; any failure rolls everything back.
 - Folds `name`/`name_variants` (restricted mappings kept), `external_ids:` and `relationships:` (deduped by to+type+subtype; self-edges skipped with a warning) into the survivor. An `external_ids` key conflict keeps the survivor's value, warns naming both, exits 1; the tombstone keeps the other.
 - Tombstone: `status: merged`, `merged_into:`, `merge_reason:`, `merged_date:`; folded fields and `tier:` stripped; `aliases:` reduced to the bare id; generated views deleted (GENERATED header verified, lookalikes kept with a warning); file renamed to `MERGED-INTO-p-survivor__<original>` last, never deleted.
-- Relinks `persons:`/`roles:` in claims of every status (bare, `[[p-id]]`, `[[p-id|Name]]`, resolving names; deduped), profiles' `relationships:`, and source `people:`. A file that cannot be rewritten safely refuses the merge with zero writes. Prose mentions are left for lint W107 (counted).
+- Privacy: on a tombstone whose `living:` is `unknown` or missing, writes `living: false` when the survivor is `living: false`, so the merged record never hides a dead ancestor (§1 Restriction). Never copies `true`; a tombstone's own `living: true` or `restricted:` stays and keeps governing the survivor.
+- Relinks `persons:`/`roles:` in claims of every status (bare, `[[p-id]]`, `[[p-id|Name]]`, resolving names; deduped), profiles' `relationships:`, and source `people:`. A file that cannot be rewritten safely refuses the merge with zero writes. Prose mentions are left for lint W107 (counted). A `relationships:` entry whose `to:` still names the tombstone reads through the survivor, so it is the edge the index derives, not a W115.
 - Re-run: `already`. Exit 3: self-merge, unknown id, tombstone `--into` (names the final survivor), different-survivor re-merge, rename collision. Exit 1 is reserved for "landed with warnings". Evidence concerns warn, never refuse. Splits stay hand-guided (SPEC §9).
 
 ## 14b. `fha views draft-queue` - material awaiting narrative
