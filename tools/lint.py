@@ -1282,8 +1282,11 @@ def _process_person_file(path: Path, registry: Registry,
         # it reads as not recorded, the same as leaving the line out.
         sex = meta.get('sex')
         if sex not in (None, '') and str(sex).strip() not in PERSON_SEX_VALUES | {'U'}:
-            findings.append(_vocab_finding(path, 'Person record', 'sex', sex,
-                                           sorted(PERSON_SEX_VALUES)))
+            finding = _vocab_finding(path, 'Person record', 'sex', sex,
+                                     sorted(PERSON_SEX_VALUES))
+            finding.message += (f' To fix it: fha person set-sex {meta.get("id") or "<p-id>"} '
+                                'M|F|intersex|unknown')
+            findings.append(finding)
 
     # Collect token refs from body
     _collect_token_refs(rec['body'], path, registry)
@@ -1609,15 +1612,15 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 findings.append(_vocab_finding(path, f'Claim {cid}', field, word, valid))
 
         # E015: a relationship claim must have a roles: MAP (SPEC §8.3). A list
-        # such as `roles: [parent, child]` names nobody, so like a missing map
-        # it puts no one in the tree.
+        # such as `roles: [parent, child]` names nobody's part, so like a missing
+        # map it cannot say who is the parent and who the child.
         roles = claim.get('roles')
         if claim_type == 'relationship' and not (isinstance(roles, dict) and roles):
             problem = ('is missing its roles: map' if not roles else
                        'has a roles: line that is not a map of role to person')
             findings.append(Finding('E', 'E015', path,
-                f'Claim {cid} (type: relationship) {problem}, so it puts no one in the '
-                'family tree. Write roles: on its own line, then one indented line per '
+                f'Claim {cid} (type: relationship) {problem}, so the tools cannot tell '
+                'who is who. Write roles: on its own line, then one indented line per '
                 'part naming who plays it, e.g. `child: p-…` and `parent: [p-…]` '
                 '(or `spouse: [p-…, p-…]`).'))
 
