@@ -1397,10 +1397,14 @@ def _render_bundle_notes(
         lines += [f'  - {_yaml_inline(str(name))}' for name in result.people]
     lines += _external_ids_lines(result)
     if assets:
+        # SPEC §14: `is_primary: true` alone marks the main file. An asset
+        # an older add-on sent as role `primary` is written that way.
+        if not primary:
+            primary = next((f for f, r in assets if r == 'primary'), None)
         lines.append('files:')
         for filename, role in assets:
             lines.append(f'  - file: {_yaml_inline(filename)}')
-            if role:
+            if role and role != 'primary':
                 lines.append(f'    role: {_yaml_inline(role)}')
             if primary and filename == primary:
                 lines.append('    is_primary: true')
@@ -1579,7 +1583,8 @@ _NOT_FILED_DIRNAME = '.not-filed'
 
 
 # The roles a capture gives the photo itself (the add-on's `front`, an older
-# capture's `record`, a hand-built bundle's `photo`).
+# capture's `record`, a hand-built bundle's `photo`, an older add-on's
+# `primary` main-file mark).
 _PICTURE_ROLES = frozenset({'front', 'back', 'record', 'photo', 'primary'})
 
 

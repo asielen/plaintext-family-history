@@ -99,6 +99,17 @@ class IngestTestCase(unittest.TestCase):
         self.assertIn('grave-1', primary[0]['file'])
         self.assertEqual(primary[0]['role'], 'grave-1')
 
+    def test_an_older_primary_role_is_written_as_the_main_file_mark(self) -> None:
+        # SPEC §14: `is_primary: true` alone marks the main file; a capture
+        # whose asset came in as role `primary` never writes `role: primary`.
+        result = capture.RecipeResult(title='A page', source_type='website')
+        notes = capture._render_bundle_notes(
+            result, accessed='2026-11-16',
+            assets=[('page.png', 'primary'), ('page-data.json', 'site-data')])
+        self.assertNotIn('role: primary', notes)
+        self.assertIn('  - file: page.png\n    is_primary: true\n', notes)
+        self.assertEqual(notes.count('is_primary'), 1)
+
     def test_a_main_file_mark_on_a_file_not_in_the_bundle_is_ignored(self) -> None:
         self.assertIsNone(capture._bundle_primary(
             {'assets': [{'file': 'grave-1.jpg', 'is_primary': True}]}, [(Path('family-1.png'), 'family-1')]))

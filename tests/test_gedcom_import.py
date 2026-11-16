@@ -290,7 +290,18 @@ class ApplyTestCase(_ArchiveCase):
         self.assertNotIn('people', meta)                       # omitted by design
         self.assertEqual(meta['files'][0]['role'], 'original')
         self.assertEqual(meta['files'][0]['original_filename'], 'small.ged')
+        self.assertIn(meta['files'][0]['is_primary'], (True, 'true'))
         self.assertEqual(meta['source_date'], '2026-07-01')    # HEAD DATE 1 JUL 2026
+        # SPEC §14: the import pass is one `ai_passes:` entry just before
+        # `created:` - no `## AI Passes` section, no `human_reviewed`.
+        text = rec_path.read_text(encoding='utf-8')
+        self.assertNotIn('## AI Passes', text)
+        self.assertNotIn('human_reviewed', text)
+        self.assertEqual(len(meta['ai_passes']), 1)
+        self.assertEqual(meta['ai_passes'][0]['task'], 'claims')
+        self.assertIn('gedcom import', meta['ai_passes'][0]['by'])
+        keys = list(meta)
+        self.assertEqual(keys.index('ai_passes') + 1, keys.index('created'))
 
         claims = rec['claims']
         self.assertEqual(len(claims), 23)

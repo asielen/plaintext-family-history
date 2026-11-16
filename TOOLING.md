@@ -132,7 +132,8 @@ CREATE TABLE sources(id TEXT PRIMARY KEY, title TEXT NOT NULL, source_type TEXT,
   status TEXT DEFAULT 'active', superseded_by TEXT, path TEXT NOT NULL);
 CREATE TABLE source_files(source_id TEXT, path TEXT, role TEXT, copy TEXT,
   derived INTEGER DEFAULT 0, original_filename TEXT, date_edtf TEXT,
-  exists_on_disk INTEGER, in_inventory INTEGER);
+  exists_on_disk INTEGER, in_inventory INTEGER,
+  is_primary INTEGER DEFAULT 0);  -- 1 on the source's main file (SPEC §14)
 CREATE TABLE claims(id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT NULL,
   subtype TEXT, date_edtf TEXT, date_min TEXT, date_max TEXT, place_id TEXT, place_text TEXT,
   value TEXT NOT NULL, status TEXT NOT NULL, reviewed TEXT, confidence TEXT, information TEXT,
@@ -264,6 +265,8 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W140 | W | Half a merge: `merged_into:` without `status: merged`, or the reverse. | §9 |
 | W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
 | W143 | W | A source record still carrying a field SPEC 2.1 retired: a claim's `significance`, `significance_reason` or `asset`, a `files:` entry's `language` or `digitized`. One line per record naming them: nothing reads them, safe to delete. Never an error. | §8.4, §14 |
+| W144 | W | An `ai_passes:` list a reader cannot use: not a list, or an entry that is not a mapping with `date` (EDTF), `by` and `task`. | §14 |
+| W145 | W | A source marks more than one file `is_primary: true`. Fix: keep it on the one a reader opens first; for a photo, `fha source set-primary`. | §14 |
 | W146 | W | One `h-` id written on two working answers (question entries in `notes/questions.md` or research files, or old `## Hypotheses` entries). An h-id is never reused; the index keeps one entry whole, so the other guess drops out of `fha find` and the report. Fix: keep the id on one entry, mint a new one for the other (`fha id mint H`). | §7, §17b |
 | W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
@@ -541,7 +544,7 @@ fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 **`edit-note`.** `fha person edit-note`'s twin for one `## Notes` paragraph (§3c), with `note`'s guards.
 
 **`extract`.** Dumps a PDF's text layer to `{slug}[-{copy}]-extracted-text_{s-id}.md` beside it (a `-primary` ending on the slug is dropped), `[Page N]`-labelled in the PDF's own pagination so `anchor: "page N"` lines up, header naming the copy label. Appends `role: extracted-text, derived: true` to `files:` via `fha process --more`'s writer. The original is untouched (SPEC §12.1).
-- **Which PDF:** `--copy LABEL` (any capitals; unknown lists labels); else the main-file PDF, the unlabelled one if several (none or several unlabelled: refuse naming `--copy`); else the single non-derived PDF (several: refuse). The tool must pick the main file by `is_primary: true`; current code still uses `role: primary`.
+- **Which PDF:** `--copy LABEL` (any capitals; unknown lists labels); else the main-file PDF, the unlabelled one if several (none or several unlabelled: refuse naming `--copy`); else the single non-derived PDF (several: refuse).
 - One dump per source; rerun is `already`, naming the PDF it came from; never overwrites.
 - `--pages 1-60,102` (1-based, checked against page count).
 - No text layer on a page: placeholder line. All-image PDF: warning refusal toward OCR, nothing written. Encrypted: refused, naming the unlock path.
@@ -562,7 +565,7 @@ fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 - `OriginalBackup` safety copy (§13f); remove and add in one exiftool call.
 - Documents root only; photos-root correction is undesigned.
 
-**`set-primary`.** Moves the main-file mark (the fix §3a's `wrong_main_image` names). Text surgery on frontmatter `files:` only: the `--file` entry (alias or bare name, exact then case-insensitive) gets `is_primary: true`; the old main entry gets `is_primary: false`, the role its filename spells (`back`, `negative`, `page-2`; else `variant`) and `copy:` if its name has an unrecorded copy letter. Nothing else changes; no photo is touched. The tool must write only `is_primary`; current code also writes and reads `role: primary` as a main-file mark.
+**`set-primary`.** Moves the main-file mark (the fix §3a's `wrong_main_image` names). Text surgery on frontmatter `files:` only: the `--file` entry (alias or bare name, exact then case-insensitive) gets `is_primary: true`; the old main entry gets `is_primary: false`, the role its filename spells (`back`, `negative`, `page-2`; else `variant`) and `copy:` if its name has an unrecorded copy letter. Nothing else changes; no photo is touched.
 
 Refuses, nothing written: `--file` matches none, several, or a non-photos-root entry; one-line list or entry form; 2+ other files already marked main; current main file not a photo; result without exactly one `is_primary: true`. The new text must parse to the planned list with all else unchanged before the atomic write (CRLF kept); then it is re-read and restored if wrong. `--dry-run` previews in words plus a diff; rerun is `already`.
 
@@ -708,8 +711,7 @@ Transactional: a failure undoes every step in reverse order. `--dry-run` prints 
 SPEC §14 order: `id`; `aliases: [s-id, stem]` (stem keeps old `[[stem]]` links working); `title`; `source_type`; `source_date` (if hinted); `source_class` (`authored` for `proof-argument`, else a valid hint, else `original`); `repository` (or `unknown`); `citation` (or title); `people` (`--people`, else `[]`); `restricted: true` (hinted; always `dna`); `provenance`; `external_links`; `physical_location` (step 9); `files:`; `created`. Body: the §16a purpose block, an empty `## Claims` YAML fence, `## Notes`.
 
 - `files:` entry keys in order: `file`, `role`, `copy`, `is_primary`, `original_filename`. Pointer-only sources (§13b) omit `files:`.
-- The main file carries `is_primary: true` and its real role. AI passes are added later as `ai_passes:` frontmatter (SPEC §14).
-- The tool must mark the main file with `is_primary: true` alone; current code still writes `role: primary` and sets `is_primary` only on photos.
+- The main file carries `is_primary: true` and the role its name spells, if any (`front`); a single document has no role. AI passes are added later as `ai_passes:` frontmatter (SPEC §14).
 
 ### Type and root
 
@@ -1147,7 +1149,7 @@ Exit codes: 0 written/dry-run; 1 unknown L-id or missing registry (with `fha fin
 
 `fha convert-mining [--root PATH] [--apply]` (dry-run default) converts legacy transcript-mining output (`facts.txt`, `stories.txt`, `questions.txt`, `sources.txt`, alias files).
 
-1. **Sources:** each legacy transcript is copied to `documents/interviews/` and processed (`source_type: interview`, `people:` via alias files). The legacy pass is an `ai_passes:` entry (SPEC §14; gpt-4-class, dates from run headers). The tool must write `ai_passes:`; current code still writes an `## AI Passes` section.
+1. **Sources:** each legacy transcript is copied to `documents/interviews/` and processed (`source_type: interview`, `people:` via alias files). The legacy pass is an `ai_passes:` entry (SPEC §14; gpt-4-class, dates from run headers).
 2. **Facts to claims** (table rows; `Update(T###)` lines merge into `notes`): Claim → `value`; Earliest/Latest → EDTF (`same date` one value, else interval; `~`/`??` → `~`/`X`; an unstorable pair, often backwards, kept in `notes` with one summarized warning); High/Medium/Low → `confidence`; `status: suggested`; `type` by keyword (birth/marriage/served/lived-at), else `event` with the legacy Section as `subtype`.
 3. **Anchors:** search the transcript for the 3 rarest words of `value`; a unique window gives `anchor: line N`.
 4. **Stories** → `## Stories` (P-ids resolved); **questions** → `notes/questions.md` as `open`, `[[s-…]]` mapped.
@@ -1636,7 +1638,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | Surface | What it is / when |
 |---|---|
 | `fha source edit-note <s-id> --old-text … --text …` (T C) | Rewrite ONE existing `## Notes` paragraph, named by its exact current text (§3d) - the source-page twin of `person edit-note`. `--dry-run`. |
-| `fha source set-primary <s-id> --file NAME` (T C) | Make the named photo a source record's main image (§3d) by moving `is_primary: true` to its `files:` entry (and `is_primary: false` onto the old one) - the fix `fha doctor` names when a record calls a photo's back its main image. Edits only the record's `files:` list; no photo is renamed. The tool must not write `role: primary`; current code still sets it beside `is_primary`. `--dry-run`. |
+| `fha source set-primary <s-id> --file NAME` (T C) | Make the named photo a source record's main image (§3d) by moving `is_primary: true` to its `files:` entry (and `is_primary: false` onto the old one) - the fix `fha doctor` names when a record calls a photo's back its main image. Edits only the record's `files:` list; no photo is renamed. `--dry-run`. |
 | `fha source clear-keyword <s-id> --keyword … [--replace-with …]` (T C) | Clear or correct one embedded keyword on a source's documents-root file (§3d) - the tool-mediated fix for a stray keyword `fha lint --with-exif` (W131) finds. Removes the EXACT on-file value (case-insensitive match against `--keyword`) from every keyword field; `--replace-with` corrects it - into every keyword field the file takes - instead of just clearing it. `--dry-run`. |
 | `fha lint` (T C) | After any batch of edits; the done-gate. Alias: **`fha check`**. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |

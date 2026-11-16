@@ -1730,8 +1730,9 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # (#126 reopened bumped 7 -> 8, #266 8 -> 9 and PR #285 9 -> 10 - when
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
-        # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 14)
+        # and IndexSchemaVersionV9BumpTests below. Plan 19 S3 bumped 14 -> 15 for
+        # source_files.is_primary.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 15)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -2031,6 +2032,52 @@ def _strip_lookup_indexes(db_path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+class MainFileFlagTests(unittest.TestCase):
+    """SPEC §14: `is_primary: true` marks a source's main file; a record
+    written before SPEC 2.1 says `role: primary`. The index flags the main
+    file either way, and never shows the old mark as a role."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _rows(self, files_block: str) -> dict:
+        _write(self.root / 'sources' / 'church' / f'register_{_LOOKUP_SID}.md',
+               f'---\nid: {_LOOKUP_SID}\ntitle: Register\nsource_type: church\n'
+               f'{files_block}---\n\n## Claims\n```yaml\n```\n')
+        with redirect_stdout(io.StringIO()):
+            index.build_index(self.root, {})
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return {r[0].rsplit('/', 1)[-1]: (r[1], r[2]) for r in conn.execute(
+                'SELECT path, role, is_primary FROM source_files')}
+        finally:
+            conn.close()
+
+    def test_is_primary_flags_the_main_file(self) -> None:
+        rows = self._rows(
+            'files:\n'
+            f'  - file: documents/church/register-back_{_LOOKUP_SID}.jpg\n'
+            '    role: back\n'
+            f'  - file: documents/church/register_{_LOOKUP_SID}.jpg\n'
+            '    is_primary: true\n')
+        self.assertEqual(rows[f'register-back_{_LOOKUP_SID}.jpg'], ('back', 0))
+        self.assertEqual(rows[f'register_{_LOOKUP_SID}.jpg'], ('', 1))
+
+    def test_an_older_role_primary_still_flags_the_main_file(self) -> None:
+        rows = self._rows(
+            'files:\n'
+            f'  - file: documents/church/register_{_LOOKUP_SID}.jpg\n'
+            '    role: primary\n'
+            f'  - file: documents/church/register-back_{_LOOKUP_SID}.jpg\n'
+            '    role: back\n')
+        self.assertEqual(rows[f'register_{_LOOKUP_SID}.jpg'], ('', 1))
+        self.assertEqual(rows[f'register-back_{_LOOKUP_SID}.jpg'], ('back', 0))
 
 
 class LookupIndexUpgradeTests(unittest.TestCase):

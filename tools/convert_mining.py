@@ -23,7 +23,7 @@ What it produces (TOOLING §11):
      `documents/interviews/{slug}_{S-id}.txt` (renamed with the minted S-id,
      `original_filename` kept), a `sources/interview/{slug}_{S-id}.md` record
      scaffolded with `source_type: interview`, `people:` resolved via the alias
-     map, the legacy extraction pass recorded in `## AI Passes`, and stories in
+     map, the legacy extraction pass recorded in `ai_passes:`, and stories in
      `## Stories`.
   2. **Facts → suggested claims.** Each `facts.txt` table row → a `suggested`
      claim on its source record: the Claim text → `value`; Earliest/Latest →
@@ -103,6 +103,7 @@ from _lib import (
     EXIT_WARNINGS,
     Result,
     CLAIM_TYPES,
+    ai_pass_lines,
     FhaConfigError,
     configure_utf8_stdout,
     fmt_id_display,
@@ -876,9 +877,6 @@ def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[st
 
 def _render_source_record(source: _Source, names: dict[str, str] | None = None) -> str:
     """Render a source record's full text (frontmatter + claims + notes + stories)."""
-    outputs = ['source-record', 'suggested-claims']
-    if source.stories:
-        outputs.append('stories')
     lines = [
         '---',
         f'id: {source.sid}',
@@ -895,9 +893,16 @@ def _render_source_record(source: _Source, names: dict[str, str] | None = None) 
         lines += [
             'files:',
             f'  - file: {_yaml_inline(source.doc_dest_alias)}',
-            '    role: primary',
+            '    is_primary: true',
             f'    original_filename: {_yaml_inline(source.transcript_src.name)}',
         ]
+    # The legacy extraction pass, recorded the SPEC §14 way (AI contract
+    # rule 3): one `ai_passes:` entry, just before `created:`.
+    lines += ai_pass_lines(
+        source.ai_pass_date,
+        f'{source.ai_pass_model} (legacy-mining-import)',
+        'claims, stories' if source.stories else 'claims',
+        f'imported from legacy mining pass {source.legacy_id}')
     lines += [
         f'created: {_today()}',
         '---',
@@ -910,18 +915,6 @@ def _render_source_record(source: _Source, names: dict[str, str] | None = None) 
             lines.append('')
         lines += _render_claim(claim, names)
     lines.append('```')
-    lines += [
-        '',
-        '## AI Passes',
-        '```yaml',
-        f'- date: {_yaml_inline(source.ai_pass_date)}',
-        f'  model: {_yaml_inline(source.ai_pass_model)}',
-        '  harness: legacy-mining-import',
-        f'  task: {_yaml_inline(f"Import legacy mining pass {source.legacy_id}")}',
-        f'  outputs: [{", ".join(outputs)}]',
-        '  human_reviewed: false',
-        '```',
-    ]
     lines += ['', '## Notes', source.notes]
     if source.stories:
         lines += ['', '## Stories']

@@ -392,10 +392,12 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rec['meta']['title'], 'Fairview 1880')
         self.assertEqual(rec['claims'], [])  # empty ## Claims block parses to []
         files = rec['meta']['files']
-        self.assertEqual(files[0]['role'], 'primary')
+        # SPEC §14: `is_primary: true` is the one main-file mark; a single
+        # document says nothing more about what it is, so it has no role.
+        self.assertEqual(files[0]['is_primary'], 'true')
+        self.assertNotIn('role', files[0])
         self.assertEqual(files[0]['original_filename'], '1880-fairview.txt')
         self.assertTrue(files[0]['file'].startswith('documents/census/'))
-        self.assertNotIn('is_primary', files[0])  # documents are not is_primary
 
     def test_document_special_char_title_stays_parseable(self) -> None:
         # A title carrying YAML-significant characters (`: `, leading `-`, ` #`)
@@ -872,7 +874,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(records), 1)
         rec = read_record(records[0])
         self.assertEqual(rec['meta']['source_type'], 'photo')
-        self.assertEqual(rec['meta']['files'][0]['role'], 'primary')
+        self.assertNotIn('role', rec['meta']['files'][0])
         self.assertEqual(rec['meta']['files'][0]['is_primary'], 'true')
         self.assertTrue(rec['meta']['files'][0]['file'].startswith('photos/1880/'))
 
@@ -1363,6 +1365,30 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual([p for p in (self.archive / 'documents').iterdir()
                           if p.is_file()], [])
 
+    def test_more_second_digitization_is_a_copy_not_a_second_main_file(self) -> None:
+        # SPEC §14: exactly one entry carries `is_primary: true`, and
+        # `role: primary` is never written. `--more FILE primary:LABEL` (a
+        # second digitization of the main file) lists the copy by its label,
+        # with no role line, and leaves the original the one main file.
+        page1 = self.archive / 'documents' / 'census' / 'book.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_s-*.txt'))
+        sid = renamed1.stem.split('_')[-1]
+        other = self.archive / 'documents' / 'census' / 'fs-scan.txt'
+        other.write_text('p1 again', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(other), 'primary:familysearch'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
+        text = record.read_text(encoding='utf-8')
+        self.assertNotIn('role: primary', text)
+        files = read_record(record)['meta']['files']
+        self.assertEqual([f for f in files if f.get('is_primary') in (True, 'true')],
+                         [files[0]])
+        self.assertEqual(files[1]['copy'], 'familysearch')
+        self.assertNotIn('role', files[1])
+        self.assertTrue(files[1]['file'].endswith(f'-familysearch_{sid}.txt'), files[1])
+
     # ── #113: a print/copy letter is never read as "back" ────────────────────
 
     def test_bare_copy_letter_is_never_read_as_back(self) -> None:
@@ -1399,7 +1425,8 @@ class ProcessTestCase(unittest.TestCase):
         record = next((self.archive / 'sources' / 'photos').glob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
         self.assertEqual(len(files), 3)
-        self.assertEqual(files['x-00100.jpg']['role'], 'primary')
+        self.assertNotIn('role', files['x-00100.jpg'])
+        self.assertEqual(files['x-00100.jpg']['is_primary'], 'true')
         self.assertEqual(files['x-00100-back.jpg']['role'], 'back')
         self.assertNotEqual(files['x-00100b.jpg']['role'], 'back')
         self.assertEqual(files['x-00100b.jpg']['copy'], 'b')
@@ -1424,7 +1451,8 @@ class ProcessTestCase(unittest.TestCase):
         record = next((self.archive / 'sources' / 'census').glob('*_s-*.md'))
         files = read_record(record)['meta']['files']
         self.assertEqual(len(files), 2)
-        self.assertEqual(files[0]['role'], 'primary')
+        self.assertNotIn('role', files[0])
+        self.assertEqual(files[0]['is_primary'], 'true')
         self.assertEqual(files[1]['role'], 'back')
         self.assertEqual(files[1]['original_filename'], 'x-00200-back.pdf')
         attached_back = list((self.archive / 'documents' / 'census').glob('*-back_s-*.pdf'))
@@ -3230,7 +3258,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(records), 1)
         files = read_record(records[0])['meta']['files']
         self.assertEqual(len(files), 2)
-        self.assertEqual(files[0]['role'], 'primary')
+        self.assertNotIn('role', files[0])
         self.assertEqual(files[0]['is_primary'], 'true')
         self.assertTrue(files[0]['file'].endswith('portrait_1880.jpg'))
         self.assertEqual(files[1]['role'], 'back')
@@ -3451,7 +3479,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
         record = next((self.archive / 'sources').rglob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
-        self.assertEqual(files['portrait.jpg']['role'], 'primary')
+        self.assertNotIn('role', files['portrait.jpg'])
         self.assertIn(files['portrait.jpg']['is_primary'], (True, 'true'))
         self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
         self.assertNotIn(files['portrait-envelope.jpg'].get('is_primary'), (True, 'true'))
@@ -3471,7 +3499,10 @@ class ProcessTestCase(unittest.TestCase):
         record = next((self.archive / 'sources').rglob('*_s-*.md'))
         files = {Path(f['file']).name: f for f in read_record(record)['meta']['files']}
         self.assertIn(files['portrait-front.jpg']['is_primary'], (True, 'true'))
+        # SPEC §14: the main file's role says what it is, never `primary`.
+        self.assertEqual(files['portrait-front.jpg']['role'], 'front')
         self.assertEqual(files['portrait-envelope.jpg']['role'], 'envelope')
+        self.assertNotIn('role: primary', record.read_text(encoding='utf-8'))
 
     def test_bundle_extracted_text_companion_stays_searchable(self) -> None:
         # #209 review: the last-word rule read 'record-extracted-text.txt' as
@@ -3490,7 +3521,7 @@ class ProcessTestCase(unittest.TestCase):
             'The parcel adjoins Quillfeather Creek.', encoding='utf-8')
         self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
         record = next((self.archive / 'sources').rglob('*_s-*.md'))
-        roles = {f['original_filename']: f['role'] for f in read_record(record)['meta']['files']}
+        roles = {f['original_filename']: f.get('role') for f in read_record(record)['meta']['files']}
         self.assertEqual(roles['record-extracted-text.txt'], 'extracted-text')
         cfg = load_fha_yaml(self.archive)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -4420,6 +4451,15 @@ class TypeFlagRoutingTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(read_record(records[0])['meta']['source_type'], 'census')
         self._assert_photos_root_untouched(renames)
+        # SPEC §14: exactly one file - the first page, chosen with no hint -
+        # is the main file, marked `is_primary: true` alone; its name stays
+        # the bare one the main document always had.
+        files = read_record(records[0])['meta']['files']
+        mains = [f for f in files if f.get('is_primary') in (True, 'true')]
+        self.assertEqual(len(mains), 1, files)
+        self.assertNotIn('role', mains[0])
+        self.assertRegex(mains[0]['file'], r'/page-1_s-[0-9a-z]+\.jpg$')
+        self.assertNotIn('role: primary', records[0].read_text(encoding='utf-8'))
 
     def test_bundle_type_outranks_the_notes_hint(self) -> None:
         bundle = self.archive / 'inbox' / 'clipping'

@@ -472,7 +472,7 @@ class SourceExtractTests(unittest.TestCase):
         result = self._run()
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         joined = ' '.join(m.text for m in result.messages)
-        self.assertIn('role: primary', joined)
+        self.assertIn('main file', joined)
         self.assertIn(f'a_{SID.lower()}.pdf', joined)
         self.assertIn(f'b_{SID.lower()}.pdf', joined)
         self.assertIn('copy:', joined)
@@ -493,6 +493,36 @@ class SourceExtractTests(unittest.TestCase):
             f'    role: primary\n    copy: {second_copy}\n')
         self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
         (self.pdf.parent / second).write_bytes(_minimal_pdf(['FamilySearch copy text']))
+
+    def _two_copies_new_form(self, second: str) -> None:
+        """SPEC §14: `is_primary: true` on the main PDF alone; the second
+        digitization listed by its copy label, with no role line."""
+        self._write_record(
+            f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
+            '    is_primary: true\n'
+            f'  - file: documents/book/{second}\n'
+            '    copy: familysearch\n')
+        self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
+        (self.pdf.parent / second).write_bytes(_minimal_pdf(['FamilySearch copy text']))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_is_primary_marks_the_pdf_to_read(self) -> None:
+        self._two_copies_new_form(f'hartley-familysearch_{SID.lower()}.pdf')
+        result = self._run()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        out = self.pdf.parent / f'county-history-extracted-text_{SID.lower()}.md'
+        self.assertIn('Own scan text', out.read_text(encoding='utf-8'))
+
+    @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
+    def test_an_older_primary_named_copy_keeps_working_without_its_role(self) -> None:
+        # A copy filed as `-primary` by an older `--more FILE primary:COPY`
+        # keeps its name once its record drops `role: primary`; the dump
+        # still leaves the word out.
+        self._two_copies_new_form(f'hartley-familysearch-primary_{SID.lower()}.pdf')
+        result = self._run(copy_label='familysearch')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        out = self.pdf.parent / f'hartley-familysearch-extracted-text_{SID.lower()}.md'
+        self.assertIn('FamilySearch copy text', out.read_text(encoding='utf-8'))
 
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_labelled_second_primary_extracts_the_unlabelled_one(self) -> None:

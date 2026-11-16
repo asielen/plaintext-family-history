@@ -5845,8 +5845,8 @@ class _SiteBuilder:
 
         Returns `(entries, portrait)`. `portrait` is the `source_files` row
         the head-of-record thumbnail should use: the image the record names
-        as its main one (`role: primary`, which `fha process` and `fha source
-        set-primary` write beside `is_primary: true`), else `role: front`, if
+        as its main one (`is_primary: true`, SPEC §14 - `fha index` flags it in
+        `source_files.is_primary`), else `role: front`, if
         such an image resolved to a viewable thumbnail, else the first image in
         `source_files`' own row order (the order `fha index` wrote the rows,
         which follows the record's `files:` list - there is no separate
@@ -5861,7 +5861,7 @@ class _SiteBuilder:
         entries: list[dict] = []
         candidates: list[tuple[int, dict]] = []   # (rank, entry) for resolvable images
         for f in self.conn.execute(
-            'SELECT path, role, copy, date_edtf FROM source_files WHERE source_id = ? '
+            'SELECT path, role, copy, date_edtf, is_primary FROM source_files WHERE source_id = ? '
             'ORDER BY rowid', (sid,)
         ):
             if not f['path']:
@@ -5898,7 +5898,7 @@ class _SiteBuilder:
                 # as the portrait, because the back was listed first (#210
                 # review).
                 role = (f['role'] or '').strip().lower()
-                candidates.append((0 if role == 'primary' else 1 if role == 'front' else 2, entry))
+                candidates.append((0 if f['is_primary'] else 1 if role == 'front' else 2, entry))
                 # An image is going into a shareable snapshot, past the
                 # living-person gate at the top of this loop.
                 self._warn_if_published_photo_went_unchecked()
