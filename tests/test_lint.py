@@ -3092,7 +3092,8 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # `parents:` and `parnet:` are what a person types meaning `parent:`.
         # Read as descriptive roles they would place the parents and derive
         # nothing, so the parents would silently never reach the tree.
-        for word in ('parents', 'parnet', 'Parents', 'praent', 'mothers', 'fathers'):
+        for word in ('parents', 'parnet', 'Parents', 'praent', 'mothers', 'fathers',
+                     'mohter', 'fahter'):
             with self.subTest(role=word):
                 roles = (f'  roles:\n    child: [{self.CHILD}]\n'
                          f'    {word}: [{self.FATHER}, {self.MOTHER}]\n')

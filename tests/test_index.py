@@ -1579,14 +1579,14 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_schema_version_is_10(self) -> None:
+    def test_schema_version_is_current(self) -> None:
         # Pins the bump itself - a silent regression back to 6 or 7 would
         # defeat every check below without failing any of them on its own.
         # (#126 reopened bumped 7 -> 8, #266 8 -> 9 and PR #285 9 -> 10 - when
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 10)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 11)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -1739,6 +1739,37 @@ class IndexSchemaVersionV9BumpTests(unittest.TestCase):
         self.assertEqual(status, 'old-schema')
 
     def test_open_index_db_refuses_the_stale_v8_cache(self) -> None:
+        self.assertIsNone(open_index_db(
+            self.root, ('persons', 'sources', 'claims'), strict=True))
+
+
+class IndexSchemaVersionV11BumpTests(unittest.TestCase):
+    """A claim written `mother:` or `wife:` now derives a family-tree edge.
+    A v10 cache's `relationships` rows were built before that, and updating
+    the tools touches no record file, so only the schema bump makes every
+    index-reading tool refuse that cache until `fha index` runs."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / '.cache').mkdir(parents=True)
+        self.db_path = self.root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(self.db_path))
+        conn.executescript(_V7_SCHEMA_STAMP_SQL.replace("'7'", "'10'")
+                           .replace('user_version=7', 'user_version=10'))
+        conn.commit()
+        conn.close()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_v10_stamped_cache_reads_as_old_schema(self) -> None:
+        status, _detail = sqlite_cache_schema_status(
+            self.db_path, index.INDEX_SCHEMA_VERSION,
+            ('persons', 'sources', 'claims'))
+        self.assertEqual(status, 'old-schema')
+
+    def test_open_index_db_refuses_the_stale_v10_cache(self) -> None:
         self.assertIsNone(open_index_db(
             self.root, ('persons', 'sources', 'claims'), strict=True))
 

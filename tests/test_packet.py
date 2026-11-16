@@ -1279,6 +1279,389 @@ class PacketTests(unittest.TestCase):
         self.assertIn('## Zzz Kept', copied)
         self.assertIn('Write their story in plain sentences', copied)
 
+    # ── <!-- private --> fenced prose (the profile template's promise) ───────
+    # The template tells the genealogist a fenced note stays "out of a shared
+    # copy". A packet is a copy handed to a relative, so a hunch about a
+    # living cousin he fenced off must not travel in it - not in the profile,
+    # not in a research file, not in a source record's notes.
+
+    def _profile_copy(self, result):
+        return next((result['packet_dir'] / 'profile').glob('*.md')).read_text(
+            encoding='utf-8')
+
+    def test_private_fence_withheld_from_profile_copy(self):
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees behind the barn.\n\n'
+            '## Stories\n\nThe barn burned in 1910.\n\n'
+            '<!-- private -->\nAunt May thinks the fire was set on purpose.\n'
+            '<!-- /private -->\n\n'
+            '## Research Notes\n\nCheck the 1880 census.\n\n'
+            '<!-- private -->\nA living cousin says he left after a falling-out.\n'
+            '<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        self.assertNotIn('living cousin', copied)
+        self.assertNotIn('set on purpose', copied)
+        self.assertNotIn('private -->', copied)          # no stray markers either
+        self.assertIn('He kept bees behind the barn.', copied)
+        self.assertIn('The barn burned in 1910.', copied)
+        self.assertIn('Check the 1880 census.', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn(
+            f'2 notes you marked private were left out of {profile_path.name}; '
+            'they stay in your archive.', readme)
+
+    def test_unterminated_private_fence_withholds_to_end(self):
+        # Fail closed: an opener with no closer hides everything after it
+        # rather than guess where the private part was meant to stop.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees.\n\n'
+            '<!-- private -->\nA hunch about a living cousin.\n\n'
+            '## Research Notes\n\nMore private-adjacent notes.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        self.assertIn('He kept bees.', copied)
+        self.assertNotIn('living cousin', copied)
+        self.assertNotIn('private-adjacent', copied)
+
+    def test_private_fence_around_a_draft_withholds_both(self):
+        # Ordering guard. The draft stripper cuts back to the previous
+        # heading, which would swallow a fence OPENER sitting above the draft
+        # and strand the rest of the fenced text with only its closer - if
+        # drafts ran first, "Secret B" would ship. Fences are resolved first.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nPublic paragraph.\n\n'
+            '<!-- private -->\nSecret A.\n\nDrafted paragraph.\n'
+            '<!-- AI-DRAFT 2026-06-30 claims: [] -->\n\nSecret B.\n<!-- /private -->\n\n'
+            '## Stories\n\nA told story.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        for hidden in ('Secret A', 'Secret B', 'Drafted paragraph', 'AI-DRAFT', 'private -->'):
+            self.assertNotIn(hidden, copied)
+        self.assertIn('A told story.', copied)
+
+    def test_all_private_section_ships_like_an_unwritten_one(self):
+        # A section holding nothing but fenced prose is empty once the fence
+        # is resolved; its bare heading must not promise the relative content.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees.\n\n'
+            '## Research Notes\n<!-- private -->\nOnly a hunch.\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertNotIn('Only a hunch', copied)
+        self.assertNotIn('## Research Notes', copied)
+        self.assertIn('## Biography', copied)
+
+    def test_scaffolded_placeholder_still_dropped_with_fence_pass(self):
+        # The Research Notes placeholder embeds a `<!-- private -->` EXAMPLE.
+        # Resolving fences before the unfilled-section check would change the
+        # placeholder's words so it no longer matched, and the rest of the
+        # template's instructions would ship. The placeholder must still go.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            + render_person_body_scaffold('Test Person').replace(
+                '## Biography\nWrite their story',
+                '## Biography\nHe kept bees.\n\n## Zzz Kept\nWrite their story'),
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertNotIn('Open questions, hunches, and brick walls', copied)
+        self.assertNotIn('## Research Notes', copied)
+        self.assertIn('He kept bees.', copied)
+
+    def test_fencing_a_drafts_last_paragraph_keeps_the_whole_draft_out(self):
+        # Round-1 review P1: the fence erased the draft's end marker, and the
+        # draft's first paragraph shipped as if it had been accepted.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nPublic bit.\n'
+            '<!-- AI-ACCEPTED 2026-05-01 -->\n\n'
+            'DRAFT-PARA-1 he probably deserted.\n\n<!-- private -->\nDRAFT-PARA-2.\n'
+            '<!-- AI-DRAFT 2026-06-30 claims: [] -->\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = self._profile_copy(result)
+        self.assertIn('Public bit.', copied)
+        self.assertNotIn('DRAFT-PARA-1', copied)
+        self.assertNotIn('DRAFT-PARA-2', copied)
+
+    def test_nested_private_fence_withheld_from_profile_copy(self):
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nPublic.\n\n<!-- private -->\nouter\n'
+            '<!-- private -->\ninner\n<!-- /private -->\nOUTER-TAIL-SECRET\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertIn('Public.', copied)
+        self.assertNotIn('OUTER-TAIL-SECRET', copied)
+
+    def test_living_relative_named_only_inside_a_fence_is_not_named_in_readme(self):
+        # Round-1 review P1: the README caution listed living people from the
+        # index's citations, taken before the fence was applied - so the one
+        # person he fenced off was named, with their ID, on the README.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Cousin Ruth', living='true',
+                          surname='Other')
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe kept bees.\n\n'
+            '<!-- private -->\n[[P-cccccccccc|Ruth]] may be his daughter.\n'
+            '<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self.conn.execute(
+            "INSERT INTO citations(token, kind, path, line) VALUES ('p-cccccccccc', 'P', ?, 9)",
+            (profile_path.relative_to(self.archive_root).as_posix(),),
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Cousin Ruth', readme)
+        self.assertNotIn('P-cccccccccc', readme)
+
+    def test_living_relative_named_outside_the_fence_is_still_cautioned(self):
+        # The other half: a mention that does ship keeps its caution.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Cousin Ruth', living='true',
+                          surname='Other')
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe taught [[P-cccccccccc|Ruth]] to keep bees.\n',
+            encoding='utf-8',
+        )
+        self.conn.execute(
+            "INSERT INTO citations(token, kind, path, line) VALUES ('p-cccccccccc', 'P', ?, 7)",
+            (profile_path.relative_to(self.archive_root).as_posix(),),
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Cousin Ruth [p-cccccccccc]', readme)
+
+    def test_fence_opened_above_a_heading_keeps_his_last_biography_paragraph(self):
+        # Round-2 review of #305: a fence opened above `## Research Notes`
+        # holding a draft re-inserted the draft marker where the fence was,
+        # so the draft cut reached back and dropped his own last Biography
+        # paragraph - and the README then called it a draft.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\nHe was born in 1875.\n\n'
+            'HUMAN-LAST-BIO-PARA he kept bees.\n\n'
+            '<!-- private -->\n## Research Notes\nDraft hunch.\n'
+            '<!-- AI-DRAFT 2026-07-01 claude-x - v1 -->\n<!-- /private -->\n\n'
+            '## Stories\nHUMAN-STORY.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertIn('HUMAN-LAST-BIO-PARA', copied)
+        self.assertIn('HUMAN-STORY', copied)
+        self.assertNotIn('Draft hunch', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('draft paragraph', readme)
+        self.assertIn('1 note you marked private was left out', readme)
+
+    def test_living_relative_linked_by_name_is_cautioned_unless_fenced(self):
+        # Round-2 review: the caution read only ID tokens from the copies, so
+        # a living cousin linked by name (`[[Cousin Ruth]]`, the form Obsidian
+        # autocompletes) was no longer named. Names resolve through the
+        # index's alias map, as the index itself does; a fenced one stays out.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Cousin Ruth', living='true',
+                          surname='Other')
+        self._seed_person(pid='p-dddddddddd', name='Aunt May', living='true',
+                          surname='May')
+        self.conn.executemany(
+            'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+            [('cousin ruth', 'p-cccccccccc', 'name'), ('aunt may', 'p-dddddddddd', 'name')])
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe taught [[Cousin Ruth]] to keep bees.\n\n'
+            '<!-- private -->\n[[Aunt May]] may be his daughter.\n<!-- /private -->\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Cousin Ruth [p-cccccccccc]', readme)
+        self.assertNotIn('Aunt May', readme)
+
+    def test_ambiguous_name_link_is_not_guessed(self):
+        # Two records share the alias: the index refuses to resolve it, and so
+        # does the caution - it never names one of them on a guess.
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Ruth A', living='true', surname='A')
+        self._seed_person(pid='p-dddddddddd', name='Ruth B', living='true', surname='B')
+        self.conn.executemany(
+            'INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)',
+            [('ruth', 'p-cccccccccc', 'name'), ('ruth', 'p-dddddddddd', 'name')])
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n## Biography\n\nHe taught [[Ruth]] to keep bees.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('Ruth A', readme)
+        self.assertNotIn('Ruth B', readme)
+
+    def test_living_person_on_an_unreadable_source_whose_photo_ships_is_cautioned(self):
+        # Round-2 review: a source whose Claims block cannot be parsed stays
+        # home, but its files still ship. Its `people:` list must still put a
+        # living relative in the caution - her photo is in the packet.
+        self._seed_person()
+        self._seed_person(pid='p-cccccccccc', name='Aunt May', living='true', surname='May')
+        src = self._seed_source('s-2222222222', 'Photo of aunt', asset_rel='documents/aunt.jpg',
+                                persons=('p-aaaaaaaaaa', 'p-cccccccccc'))
+        src.write_text('---\nid: s-2222222222\ntitle: Photo\n---\n## Claims\n\n'
+                       '```yaml\n- id: [unclosed\n```\n', encoding='utf-8')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertTrue((result['packet_dir'] / 'files' / 'aunt.jpg').exists())
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('Aunt May [p-cccccccccc]', readme)
+
+    def test_research_draft_caution_ignores_a_draft_only_inside_a_fence(self):
+        # The draft went out with the fence, so warning the relative about
+        # "unreviewed draft text" in that file would be untrue. (The heading
+        # matters: without a boundary above the fence, the draft grammar
+        # counts "Try probate." as part of the draft, and the caution is
+        # then right.)
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\nTry probate.\n\n## Hunches\n<!-- private -->\nhunch\n'
+            '<!-- AI-DRAFT 2026-06-30 claims: [] -->\n<!-- /private -->\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('unreviewed draft text', readme)
+
+    def test_research_draft_caution_kept_when_draft_text_still_travels(self):
+        # The other half: a draft whose LAST paragraph he fenced still ships
+        # its earlier paragraph in the research copy (research is a byte copy
+        # by design), so the README must still say the file holds draft text.
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\n## Leads\nDRAFT-LEAD-1.\n\n<!-- private -->\nDRAFT-LEAD-2.\n'
+            '<!-- AI-DRAFT 2026-06-30 claims: [] -->\n<!-- /private -->\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        copied = (result['packet_dir'] / 'profile' / 'research_p-aaaaaaaaaa.md').read_text(
+            encoding='utf-8')
+        self.assertIn('DRAFT-LEAD-1', copied)
+        self.assertNotIn('DRAFT-LEAD-2', copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('unreviewed draft text', readme)
+
+    def test_template_example_fence_is_not_counted_as_his_note(self):
+        # A filled-in Research Notes that still carries the template's own
+        # example fence: the example is dropped, but it is not a note he wrote.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            + render_person_body_scaffold('Test Person').replace(
+                '(standalone) site.\n<!-- /private -->\n',
+                '(standalone) site.\n<!-- /private -->\n\nCheck the 1880 census.\n'),
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        copied = self._profile_copy(result)
+        self.assertIn('Check the 1880 census.', copied)
+        self.assertNotIn("A hunch you're not ready to publish", copied)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('marked private', readme)
+
+    def test_private_fence_withheld_from_research_copy(self):
+        self._seed_person()
+        self._seed_research(
+            '# Research\n\nTry the county probate index.\n\n'
+            '<!-- private -->\nThe living cousin may be his grandson.\n<!-- /private -->\n')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True, include_research=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = (result['packet_dir'] / 'profile' / 'research_p-aaaaaaaaaa.md').read_text(
+            encoding='utf-8')
+        self.assertIn('Try the county probate index.', copied)
+        self.assertNotIn('his grandson', copied)
+        self.assertNotIn('private -->', copied)
+
+    def test_private_fence_withheld_from_source_record_copy(self):
+        self._seed_person()
+        src = self._seed_source('s-1111111111', 'Letter')
+        src.write_text(
+            '---\nid: s-1111111111\ntitle: Letter\n---\n## Claims\n\n## Notes\n\n'
+            'A letter from 1902.\n\n<!-- private -->\nThe sender may be alive.\n'
+            '<!-- /private -->\n',
+            encoding='utf-8')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'sources').rglob('s-1111111111.md')).read_text(
+            encoding='utf-8')
+        self.assertIn('A letter from 1902.', copied)
+        self.assertNotIn('may be alive', copied)
+        self.assertNotIn('private -->', copied)
+
     def test_pre_75_profile_with_no_purpose_block_ships_unchanged(self):
         # No backfill/migration tooling (#75/#76 done-when): an
         # older-shaped record that never had a purpose block or a Sources

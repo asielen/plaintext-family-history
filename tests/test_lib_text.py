@@ -51,6 +51,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import _lib  # noqa: E402 - attribute access, so a missing helper fails per test
 from _lib import (
     apply_private_fence,
     is_generated_file,
@@ -268,6 +269,105 @@ class PrivateFenceTests(unittest.TestCase):
     def test_no_marker_untouched(self):
         t = 'He was a private in the 15th Kansas.'   # the word, not a fence
         self.assertEqual(apply_private_fence(t, drop=True), t)
+
+    def test_nested_fence_holds_until_its_own_closer(self):
+        # He wraps a whole section in a fence while the template's example
+        # fence is still inside it: everything up to the OUTER closer is his
+        # private text. Pairing on the first closer published the tail.
+        t = ('Public.\n<!-- private -->\nouter\n<!-- private -->\ninner\n'
+             '<!-- /private -->\nOUTER-TAIL\n<!-- /private -->\nAfter.')
+        out = _lib.apply_private_fence(t, drop=True)
+        self.assertNotIn('OUTER-TAIL', out)
+        self.assertNotIn('inner', out)
+        self.assertIn('Public.', out)
+        self.assertIn('After.', out)
+
+    def test_nested_fence_unclosed_outer_drops_to_end(self):
+        t = 'Public.\n<!-- private -->\na\n<!-- private -->\nb\n<!-- /private -->\nTAIL'
+        self.assertEqual(_lib.apply_private_fence(t, drop=True), 'Public.\n')
+
+    def test_stray_closer_hides_nothing(self):
+        t = 'Kept one.\n<!-- /private -->\nKept two.'
+        out = _lib.apply_private_fence(t, drop=True)
+        self.assertIn('Kept one.', out)
+        self.assertIn('Kept two.', out)
+        self.assertNotIn('private', out)
+
+    def test_count_counts_outer_fences_and_skips_the_ignored_example(self):
+        t = ('<!-- private -->\nA\n<!-- private -->\nB\n<!-- /private -->\n<!-- /private -->\n'
+             '<!-- private -->\n  The   example.\n<!-- /private -->\n')
+        self.assertEqual(_lib.count_private_fences(t), 2)
+        self.assertEqual(_lib.count_private_fences(t, ignore='The example.'), 1)
+
+
+class WithholdPrivateAndDraftsTests(unittest.TestCase):
+    """The two publication-time exclusions together. Each order on its own
+    leaks; the combined pass must withhold the union of both."""
+
+    def test_fence_around_a_drafts_last_paragraph_still_withholds_the_draft(self):
+        # Fencing the marker must not turn the draft's first paragraph into
+        # accepted prose.
+        t = ('## Biography\nHuman text.\n<!-- AI-ACCEPTED 2026-06-01 -->\n\n'
+             'DRAFT-P1.\n\n<!-- private -->\nDRAFT-P2.\n'
+             '<!-- AI-DRAFT 2026-07-01 claude-x -->\n<!-- /private -->\n')
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=True)
+        self.assertIsNone(problem)
+        self.assertNotIn('DRAFT-P1', out)
+        self.assertNotIn('DRAFT-P2', out)
+        self.assertIn('Human text.', out)
+        self.assertNotIn('AI-', out)
+
+    def test_fence_opened_above_a_draft_still_withholds_text_after_it(self):
+        t = ('## Biography\nPublic.\n\n<!-- private -->\nSECRET-A\n\nDraft.\n'
+             '<!-- AI-DRAFT 2026-07-01 -->\n\nSECRET-B\n<!-- /private -->\n\n## Stories\nTold.\n')
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=True)
+        self.assertIsNone(problem)
+        for hidden in ('SECRET-A', 'SECRET-B', 'Draft.', 'private'):
+            self.assertNotIn(hidden, out)
+        self.assertIn('Told.', out)
+
+    def test_damaged_marker_inside_a_fence_still_refuses(self):
+        # Without the fence this is a damaged marker; the fence must not hide
+        # the damage and let an earlier draft paragraph through.
+        t = ('## Biography\nDRAFT-P1.\n\n<!-- private -->\nhunch\n'
+             '<!-- /AI-DRAFT -->\n<!-- /private -->\n')
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=True)
+        self.assertIsNotNone(problem)
+        self.assertEqual(out, '')
+
+    def test_fence_opened_above_a_heading_cuts_exactly_the_union(self):
+        # Round 2: the cut is the union of the draft ranges and the fence
+        # ranges, both read from the original text - nothing outside either
+        # is touched, however the two overlap.
+        t = ('## Biography\nHUMAN-LAST.\n\n<!-- private -->\n## Research Notes\n'
+             'Draft hunch.\n<!-- AI-DRAFT 2026-07-01 -->\n<!-- /private -->\n\n'
+             '## Stories\nTold.\n')
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=True)
+        self.assertIsNone(problem)
+        self.assertIn('HUMAN-LAST.', out)
+        self.assertIn('## Stories\nTold.', out)
+        self.assertNotIn('Draft hunch', out)
+        self.assertNotIn('Research Notes', out)
+
+    def test_without_a_fence_it_is_exactly_the_draft_stripper(self):
+        t = ('## Biography\nHuman.\n<!-- AI-ACCEPTED 2026-06-01 -->\n\nDraft.\n'
+             '<!-- AI-DRAFT 2026-07-01 -->\n')
+        self.assertEqual(_lib.withhold_private_and_drafts(t, drop_private=True),
+                         _lib.strip_unaccepted_drafts(t))
+
+    def test_unfenced_draft_text_detection(self):
+        inside = '## L\n<!-- private -->\nh\n<!-- AI-DRAFT x -->\n<!-- /private -->\n'
+        straddle = '## L\nP1.\n\n<!-- private -->\nP2\n<!-- AI-DRAFT x -->\n<!-- /private -->\n'
+        self.assertFalse(_lib.has_unfenced_draft_text(inside))
+        self.assertTrue(_lib.has_unfenced_draft_text(straddle))
+        self.assertFalse(_lib.has_unfenced_draft_text('## L\nNo drafts.\n'))
+
+    def test_linked_preview_keeps_fenced_text(self):
+        t = 'A\n<!-- private -->\nkept\n<!-- /private -->\nB'
+        out, problem = _lib.withhold_private_and_drafts(t, drop_private=False)
+        self.assertIsNone(problem)
+        self.assertIn('kept', out)
+        self.assertNotIn('private', out)
 
 
 class GeneratedOwnershipTests(unittest.TestCase):
