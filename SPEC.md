@@ -243,8 +243,8 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   reviewed: 2026-06-10           # date of the human decision. Required on accepted, disputed,
                                  #   rejected and superseded; optional on needs-review (a dated
                                  #   needs-review means "looked at, still open", §8.1)
-  reviewed_by: human             # optional; who made that decision - `human` (the default
-                                 #   `fha claim` writes) or a researcher's name when the archive
+  reviewed_by: human             # optional; who made that decision - `human`, which a tool
+                                 #   recording the decision writes by default, or a researcher's name when the archive
                                  #   has several. Never guessed: an older claim without it simply
                                  #   does not say
   notes: >                       # optional but EXPECTED - the context/detail behind the claim,
