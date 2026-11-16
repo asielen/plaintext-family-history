@@ -314,7 +314,9 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(str(census['source_date']), '1880')
         self.assertNotIn('source_class', census)
         self.assertEqual(death['source_type'], 'vital-record')
-        self.assertEqual(str(death['source_date']), '1957-01-07')
+        # An index entry's only date is the death itself, not the date of the
+        # index, so it gets no source_date (SPEC §14: the date OF the source).
+        self.assertNotIn('source_date', death)
         self.assertEqual(death['source_class'], 'derivative')
 
     def test_capture_json_source_class_reaches_the_stub(self) -> None:
