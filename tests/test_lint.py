@@ -3088,6 +3088,18 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
                                    roles_block=roles)
                 self.assertEqual(self._w126(root), [])
 
+    def test_a_misspelt_or_plural_parent_line_still_warns(self) -> None:
+        # `parents:` and `parnet:` are what a person types meaning `parent:`.
+        # Read as descriptive roles they would place the parents and derive
+        # nothing, so the parents would silently never reach the tree.
+        for word in ('parents', 'parnet', 'Parents', 'praent'):
+            with self.subTest(role=word):
+                roles = (f'  roles:\n    child: [{self.CHILD}]\n'
+                         f'    {word}: [{self.FATHER}, {self.MOTHER}]\n')
+                w = self._w126(self._build(roles_block=roles))
+                self.assertEqual(len(w), 1, w)
+                self.assertIn('looks like `parent:`', w[0].message)
+
     def test_descriptive_role_beside_an_unroled_person_still_warns(self) -> None:
         # The person with no role at all is the one the claim left unsaid.
         roles = (f'  roles:\n    child: [{self.CHILD}]\n'

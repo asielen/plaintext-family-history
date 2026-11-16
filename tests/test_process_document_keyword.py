@@ -108,7 +108,7 @@ class DocumentKeywordTests(_Base):
                                           '--type', 'census'])
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 renamed = list((self.archive / 'documents' / 'census').glob(
-                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                    f'{Path(name).stem}_s-*{Path(name).suffix}'))
                 self.assertEqual(len(renamed), 1)
                 if expect:
                     self.assertEqual(store.embed_calls, renamed)
@@ -259,7 +259,7 @@ class DocumentKeywordTests(_Base):
                 rc, _out, err = self._run([str(folder / 'record.jpg'), '--type', 'census'] + extra)
                 self.assertEqual(rc, EXIT_ERRORS)
                 self.assertIn('record-back.jpg (the back scan beside it) already carries '
-                              'SOURCE: S-a1b2c3d4e5', err)
+                              'SOURCE: s-a1b2c3d4e5', err)
         self.assertTrue((folder / 'record.jpg').exists())
         self.assertTrue((folder / 'record-back.jpg').exists())
         self.assertEqual(store.embed_calls, [])
@@ -353,7 +353,7 @@ class RealDocumentKeywordTests(_Base):
                 self.assertEqual(rc, EXIT_CLEAN, err)
                 self.assertNotIn('WARNING', err)
                 renamed = next((self.archive / 'documents' / 'census').glob(
-                    f'{Path(name).stem}_S-*{Path(name).suffix}'))
+                    f'{Path(name).stem}_s-*{Path(name).suffix}'))
                 sid = renamed.stem.rsplit('_', 1)[1]
                 got = read_fields(renamed)
                 holding = [tag for tag, vals in got.items() if f'SOURCE: {sid}' in vals]

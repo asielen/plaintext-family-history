@@ -2674,8 +2674,10 @@ def process_photo(
             f'{file_path.name} already carries SOURCE: {fmt_id_display(existing)}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
-    existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-    new_people = [p for p in (people or []) if p not in existing_pids]
+    # Case-blind: a photo an older tool tagged `P-…` already names the person,
+    # and a lowercase `p-…` beside it would show two tags for one person.
+    existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+    new_people = [p for p in (people or []) if normalize_id(p) not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(on_disk)
@@ -2885,8 +2887,9 @@ def process_photo_group(
                 f'{m.name} already carries SOURCE: {fmt_id_display(existing_source)}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
-        existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
-        per_member_new_people[m] = [p for p in (people or []) if p not in existing_pids]
+        existing_pids = {normalize_id(kw) for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+        per_member_new_people[m] = [p for p in (people or [])
+                                    if normalize_id(p) not in existing_pids]
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     ordered = [primary] + [m for m in members if m != primary]

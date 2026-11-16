@@ -307,7 +307,7 @@ class ReciprocityW116Tests(unittest.TestCase):
         rec = read_record(parent_path)
         self.assertEqual(rec['parse_errors'], [])
         rel = rec['meta']['relationships'][0]
-        self.assertEqual(rel['to'], '[[P-aaaaaaaaaa|Ann "Annie" kid]]')
+        self.assertEqual(rel['to'], '[[p-aaaaaaaaaa|Ann "Annie" kid]]')
 
     def test_fix_reciprocal_subtype_with_yaml_chars_is_quoted(self) -> None:
         # Same sweep, other free-text field: the claim's subtype is whatever a

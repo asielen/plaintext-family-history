@@ -109,6 +109,7 @@ from _lib import (
     photos_ignore_patterns,
     photo_reconcile_route,
     role_meaning,
+    role_near_miss,
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
@@ -3161,6 +3162,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             keys = all_roles.get(pid, [])
                             if not keys:
                                 return 'no role given'
+                            for key in keys:
+                                meant = role_near_miss(key)
+                                if meant:
+                                    return (f'under `{key}:`, which looks like '
+                                            f'`{meant}:` misspelt - the archive '
+                                            'reads it as a description only')
                             if 'parent' in keys:
                                 return 'listed both as the person born and as a parent'
                             return None
