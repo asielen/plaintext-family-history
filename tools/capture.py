@@ -127,6 +127,7 @@ from _lib import (
     migrate_capture_log,
     format_source_type_error,
     index_manifest_path,
+    read_path_manifest,
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
@@ -712,6 +713,13 @@ def _write_capture_log(
     log_path, legacy_path = capture_log_paths(archive_root)
     row = (date, None, question, repository, collection, terms, result, None, stub_rel)
 
+    # Was the index up to date with the log BEFORE this capture touched it?
+    # Only then may the capture mark the log as read afterwards: a line synced
+    # in from another machine must keep the index stale until `fha index`
+    # replays it (#304 review).
+    log_was_indexed = db_path.exists() and _capture_log_is_indexed(
+        archive_root, log_path, legacy_path)
+
     if migrate_capture_log(archive_root):
         print(f'Moved your capture history from {_rel(legacy_path, archive_root)} to '
               f'{_rel(log_path, archive_root)}, where backups and git keep it '
@@ -762,7 +770,7 @@ def _write_capture_log(
             # not read it is missing searches). This capture just put its own
             # line in the index, so record the log as read - otherwise every
             # capture would make `fha doctor` call a correct index stale.
-            if jsonl_ok:
+            if jsonl_ok and log_was_indexed:
                 _mark_capture_log_indexed(archive_root, log_path, legacy_path)
             return 'index'
         except Exception as e:  # noqa: BLE001
@@ -770,6 +778,25 @@ def _write_capture_log(
                   + (' (still logged to jsonl)' if jsonl_ok else ''), file=sys.stderr)
 
     return 'jsonl' if jsonl_ok else 'none'
+
+
+def _capture_log_is_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> bool:
+    """True when the index's stored manifest records both capture-log paths
+    exactly as they are on disk now (same mtime, or absent on both sides) -
+    i.e. every line in them is already in `search_log`. A missing or
+    unreadable manifest is False: nothing proves the index read the log."""
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    if stored is None:
+        return False
+    for path in (log_path, legacy_path):
+        rel = _rel(path, archive_root)
+        try:
+            current = path.stat().st_mtime
+        except OSError:
+            current = None
+        if stored.get(rel) != current:
+            return False
+    return True
 
 
 def _mark_capture_log_indexed(archive_root: Path, log_path: Path, legacy_path: Path) -> None:
@@ -780,7 +807,10 @@ def _mark_capture_log_indexed(archive_root: Path, log_path: Path, legacy_path: P
     row straight into `search_log` has kept the index exactly as current as
     the file, the same contract `index.upsert_source` keeps for one source.
     The legacy key is dropped when the old file is gone (carried across).
-    Best effort: a failure here only costs one "run fha index" suggestion.
+    Called only when `_capture_log_is_indexed` held before this capture's
+    append - so the one new line is the capture's own row, never a synced line
+    the index has not seen. Best effort: a failure here only costs one "run
+    fha index" suggestion.
     """
     updates: dict[str, float | None] = {}
     for path in (log_path, legacy_path):

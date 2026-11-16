@@ -147,6 +147,35 @@ class CaptureTestCase(unittest.TestCase):
         os.utime(log, (future, future))
         self.assertTrue(record_manifest_is_stale(self.archive))
 
+    def test_a_local_capture_does_not_hide_a_synced_line(self) -> None:
+        # Round 4: a line pulled in from another machine, then a capture here.
+        # The capture may not mark the whole log as read - the synced line is
+        # still missing from the index, so the index must stay stale until
+        # fha index replays it, and then search_log must hold it.
+        import index
+        import sqlite3
+        from _lib import record_manifest_is_stale
+        self._capture('<html><title>First</title></html>', url='https://x.test/1')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        log = self.archive / 'notes' / 'capture-log.jsonl'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(json.dumps({'question': 'from the other machine'}) + '\n')
+        future = log.stat().st_mtime + 5
+        os.utime(log, (future, future))
+        self._capture('<html><title>Local</title></html>', url='https://x.test/2')
+        self.assertTrue(record_manifest_is_stale(self.archive))
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.archive, self.config)
+        self.assertFalse(record_manifest_is_stale(self.archive))
+        conn = sqlite3.connect(str(self.archive / '.cache' / 'index.sqlite'))
+        try:
+            got = [r[0] for r in conn.execute('SELECT question FROM search_log')]
+        finally:
+            conn.close()
+        self.assertIn('from the other machine', got)
+        self.assertIn('Local', got)
+
     def test_old_cache_capture_log_is_carried_into_notes_once(self) -> None:
         # An archive upgraded from before SPEC §16b still has its search
         # history in .cache/, which backup skips. The first capture moves it

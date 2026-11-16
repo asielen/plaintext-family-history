@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "ccb3baa621f934ebc864cd44978844d7d67f6d0e6f0afc64aa24386312853994",
+      "sha256": "c952e82f696a442e8efed55944f08dd1aebbeccac399aaa07dfd1acc8598dde0",
       "spec_version": "2.0",
       "src": "tools/capture.py"
     },
