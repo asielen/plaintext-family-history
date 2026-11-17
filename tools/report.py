@@ -235,7 +235,8 @@ def _vitals_gap_pids(findings: list, registry) -> list[str]:
 # a baseline instead of reporting every claim as changed. 2: participants
 # serialized as JSON, every role a person carries (#266). 3: no `asset`
 # (SPEC 2.1 retired the claim field; index schema 13 drops the column).
-CLAIM_FINGERPRINT_VERSION = 3
+# 4: a retired `needs-review` claim is read as `suggested` (SPEC 2.1 §8.1).
+CLAIM_FINGERPRINT_VERSION = 4
 
 
 def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:

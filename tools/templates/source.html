@@ -40,7 +40,7 @@
         <td>{{ c.date }}</td>
         <td>{{ c.place }}</td>
         <td>{{ c.persons_html }}</td>
-        <td><span class="status status-{{ c.status }}">{{ c.status }}</span>{% if c.status == 'accepted' and c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
+        <td><span class="status status-{{ c.status }}">{% if c.parked %}not sure yet{% else %}{{ c.status }}{% endif %}</span>{% if c.status == 'accepted' and c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
         {% if workbench %}
         <td class="wb-actions">
           {% if c.status == 'suggested' %}

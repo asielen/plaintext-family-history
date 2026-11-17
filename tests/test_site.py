@@ -257,6 +257,19 @@ class SourcePageTests(_Base):
         wb = self._read('sources/s-1111111111.html')
         self.assertIn('wb-parked', wb)                      # tinted row
         self.assertIn('status-suggested', wb)               # status word badge
+        self.assertIn('status-suggested">not sure yet</span>', wb)  # status cell
+
+    def test_parked_claims_are_not_promised_as_waiting_for_review(self):
+        # The review queue lists only drafts nobody has looked at, so the
+        # source and person pages must not count a parked claim as waiting.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
+                         status='suggested', reviewed='2026-03-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        self.assertNotIn('wait for', self._read('sources/s-1111111111.html'))
+        self.assertNotIn('wb-pointer', self._read('persons/p-aaaaaaaaaa.html'))
 
     def test_missing_asset_listed_not_linked(self):
         self._seed_source('s-1111111111', 'Has Asset')

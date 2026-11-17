@@ -5829,7 +5829,9 @@ class _SiteBuilder:
             # fixtures) must not vary by platform.
             'source_id': fmt_id_display(sid),
             'record_relpath': str(row['path']).replace('\\', '/'),
-            'suggested_count': sum(1 for c in claims if c['status'] == 'suggested'),
+            # Never-reviewed drafts only - the same set the review queue lists.
+            'suggested_count': sum(1 for c in claims
+                                   if c['status'] == 'suggested' and not c['parked']),
             'notes_html': notes_html,
             'notes_entries': notes_entries,
         }
@@ -6029,7 +6031,8 @@ class _SiteBuilder:
             'open_review_count': (self.conn.execute(
                 "SELECT COUNT(DISTINCT c.id) FROM claims c "
                 "JOIN claim_persons cp ON c.id = cp.claim_id "
-                "WHERE cp.person_id = ? AND c.status = 'suggested'", (pid,)
+                f"WHERE cp.person_id = ? AND c.status = 'suggested' AND NOT {PARKED_CLAIM_SQL}",
+                (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
         }

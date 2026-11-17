@@ -132,13 +132,13 @@
     {
       "path": ".claude/skills/transcribe-audio/GAP.md",
       "category": "operating",
-      "sha256": "2e6ae8db101ecc7893fd8d93f18dfda524df0a9d1d08e0a5713a5f8fee381569",
+      "sha256": "5264b56d196b52b72d1bffa89f2d2c9444e9292a220a6e51b52967e9afdc614f",
       "spec_version": "2.1"
     },
     {
       "path": ".claude/skills/transcribe-audio/SKILL.md",
       "category": "operating",
-      "sha256": "db5893220eb5b7d9e8a3523fb749484086117277b7e6d5655f7be8102980fe2c",
+      "sha256": "0749c0c0b2be6299ea55da27cc1e39fb2722d2761c594596a0994be4b6ab1ae0",
       "spec_version": "2.1"
     },
     {
@@ -378,7 +378,7 @@
     {
       "path": ".fha/design/design-system.html",
       "category": "operating",
-      "sha256": "b3fa55517691e38fd0179ea07f0f4d9b5d2433dcf5c5fc722201abed4f4eef87",
+      "sha256": "80947bbeaeb72b58d77d9d345835ac884f4607d1d3d318c547a6d6c04f0d382b",
       "spec_version": "2.1",
       "src": "design/design-system.html"
     },
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "db4796a053cc984eb578d487507857af1a10728e95a24bca41a50b00019aa786",
+      "sha256": "b4205775f7f8f761b5c7f275ffbb5041e665e52032e55ecbbd854d054654ced1",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "ee660b7e41fd9a0e8436cd8655e1ee1a158d039c1a881a673ce4786b2fec07ca",
+      "sha256": "cb056e618c0f6f4b262206130c9a4821fd6cd3a0999af1985193d98cfd5a0bf9",
       "spec_version": "2.1",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "9bc313ba5cdd33b413b156edb3b6189ad586d3928f2c115ad82a6d31ea5c97d6",
+      "sha256": "68c2543fe78ac66b5572d61541835a13308dc580ebe5c1f3a41b410b246c1cc6",
       "spec_version": "2.1",
       "src": "tools/lint.py"
     },
@@ -707,7 +707,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "c8d6b1403de16c84f8ca3a082f6d2f86de81675f4f84ef8150d3f631354d45c0",
+      "sha256": "3206317a6a8809abc7a73941219947417bdb41b6e4ec46106cd89bdf7c21b7a8",
       "spec_version": "2.1",
       "src": "tools/report.py"
     },
@@ -728,14 +728,14 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "360f9c1137cb4d24201be3480e4290d1106a9eb3c9a45333d75851484267fcb8",
+      "sha256": "f26dc2dbdd3d196aa6fae43d304a8dfda07bd230dc0fbaac9145d48a183484e6",
       "spec_version": "2.1",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "035ccded29d2b15748f36987fa9ed1d1e40aa9f57a907074786b417c0e5ea0ab",
+      "sha256": "5584b28871347fda1d4ac2f9c5bb235ace91d58f30192c1218b3f6bc8dd04e59",
       "spec_version": "2.1",
       "src": "tools/site.py"
     },
@@ -826,7 +826,7 @@
     {
       "path": ".fha/tools/templates/source.html",
       "category": "operating",
-      "sha256": "6f27ac71b6669e2d8d6fecbce66b323cd88e7b8a04c8c537766fc52e1d95e329",
+      "sha256": "855de43840adb995f62ac15dae758409841bd5d7f24c5024bb5f8f178b89dc45",
       "spec_version": "2.1",
       "src": "tools/templates/source.html"
     },
@@ -1169,7 +1169,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "8c8eb54ab9d019b70a7a38665209aedc142a13dbb7554515e94aee4359a746a6",
+      "sha256": "a6c588394ddc430d8c3586c0a172282e0db847ed2b388645ffecdff3f52e9dce",
       "spec_version": "2.1",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }

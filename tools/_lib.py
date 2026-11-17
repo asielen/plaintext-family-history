@@ -1337,6 +1337,16 @@ def claim_status(claim: Any) -> str:
     return 'suggested' if status.lower() == RETIRED_NEEDS_REVIEW else status
 
 
+def claim_is_parked(claim: dict) -> bool:
+    """A claim a reviewer looked at and could not settle (SPEC §8.1):
+    `suggested` with a `reviewed:` date - or the retired `needs-review`,
+    which always meant "looked at", dated or not."""
+    raw = str(claim.get('status') or '').strip().lower()
+    if raw == RETIRED_NEEDS_REVIEW:
+        return True
+    return raw == 'suggested' and bool(str(claim.get('reviewed') or '').strip())
+
+
 # The claim types whose subject has died (SPEC §8.3: both name him `deceased:`).
 DEATH_CLAIM_TYPES = frozenset({'death', 'burial'})
 

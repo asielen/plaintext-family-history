@@ -90,6 +90,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (  # noqa: E402
+    PARKED_CLAIM_SQL,
     configure_utf8_stdout,
     ASSET_ROOT_ALIASES,
     EXIT_CLEAN,
@@ -724,7 +725,7 @@ def gather_review(state: ServeState) -> dict:
                 # Never-reviewed drafts only: one the reviewer parked ("not
                 # sure yet" - still suggested, now dated, SPEC §8.1) leaves
                 # the queue; `fha report` §1b brings it back for a second look.
-                "WHERE c.status = 'suggested' AND COALESCE(c.reviewed, '') = '' "
+                f"WHERE c.status = 'suggested' AND NOT {PARKED_CLAIM_SQL} "
                 "ORDER BY c.source_id, c.id"
             ).fetchall()
             for r in rows:

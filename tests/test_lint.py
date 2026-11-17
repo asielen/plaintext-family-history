@@ -3536,6 +3536,10 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
         self.assertIn('once accepted', w[0].message)
 
+    def test_undated_retired_needs_review_warns_like_parked(self) -> None:
+        w = self._w132(self._build(status='needs-review', reviewed=False))
+        self.assertEqual(len(w), 1)
+
     def test_parked_claim_warns(self) -> None:
         # #173 follow-up, second round: W132's case 2a now matches
         # `fha xref`'s own scope, which compares BOTH accepted and

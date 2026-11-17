@@ -494,6 +494,17 @@ class ReportTests(unittest.TestCase):
         self.assertIn('**Parked (1):**', md)
         self.assertIn('No suggested claims awaiting review.', md)
 
+    def test_undated_retired_needs_review_still_reads_as_parked(self) -> None:
+        # `needs-review` always meant "looked at", even where nobody wrote
+        # down when: it must not fall back into the first-time review queue.
+        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
+            _SOURCE_ONE_NEEDS_REVIEW.replace('status: suggested', 'status: needs-review')
+            .replace('  reviewed: 2026-03-01\n', ''),
+            encoding='utf-8')
+        md = report.run_report(self.archive_root, {}, full=True)['markdown']
+        self.assertIn('**Parked (1):**', md)
+        self.assertIn('No suggested claims awaiting review.', md)
+
     def test_old_snapshot_needs_review_then_accepted_is_a_discovery(self) -> None:
         # A snapshot written before SPEC 2.1 recorded the parked claim as
         # `needs-review`; accepting it later is still a discovery.

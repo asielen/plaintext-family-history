@@ -58,7 +58,7 @@ created: 2026-01-01        # the date you added this (any date is fine)
   type: residence          # what kind of fact: birth, death, marriage, residence, census, occupation, ...
   persons: [P-__________]  # whose fact this is - the person's code, no brackets
   id: C-__________         # this claim's own 10-character code (same dice-roll; a tool can fill it)
-  status: suggested        # suggested -> needs-review -> accepted, as you confirm it
+  status: suggested        # stays suggested until you confirm it (accepted); "not sure yet" keeps it suggested with a reviewed: date
   confidence: medium       # high / medium / low - how sure you are
 
   # --- You can ignore everything below at first. ---

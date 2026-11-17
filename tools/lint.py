@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     RETIRED_NEEDS_REVIEW,
     claim_status,
+    claim_is_parked,
     file_name_surname_mismatch,
     merge_pointer,
     merge_survivor_map,
@@ -1650,10 +1651,11 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         if status.strip().lower() == RETIRED_NEEDS_REVIEW:
             findings.append(Finding('W', 'W142', path,
                 f'Claim {cid} says `status: needs-review`, a word the archive no longer '
-                'uses. It means the same as `status: suggested` with a `reviewed:` date '
-                '(looked at, not settled yet), and the tools already read it that way. '
-                'Change the line to `status: suggested` (keep or add `reviewed:`), or '
-                f'run `fha claim {cid} --status suggested`.'))
+                'uses. It means "looked at, not settled yet", and the tools already read '
+                'it that way. Today that is written `status: suggested` with a '
+                '`reviewed:` date: change the line to `status: suggested` and keep its '
+                '`reviewed:` line (or add one with the day it was last looked at), or '
+                f'run `fha claim {cid} --status suggested` to record it as looked at today.'))
         # E019: status / confidence must come from their controlled vocabularies
         # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
         # the claim from accepted-claim rollups, so catch it.
@@ -3591,8 +3593,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # an ambiguous claim of this shape, whichever tool surfaces it
             # first and whichever polarity the claim has.
             status_now = claim_status(claim)
-            is_parked = (status_now == 'suggested'
-                         and bool(str(claim.get('reviewed') or '').strip()))
+            is_parked = claim_is_parked(claim)
             w132_in_scope = status_now == 'accepted' or is_parked
             if claim_type in ('death', 'burial', 'baptism') and w132_in_scope:
                 persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
