@@ -281,6 +281,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W149 | W | Any other claim (not an event, not `relationship`) naming two or more people that gives someone no role. A warning only - it blocks no accept. Fix: `roles:` with `subject:` for whose fact it is - everyone, when nobody is primary (a party they all attended) - or `head`/`household_member` on a census, the others by their part. | §8.3 |
 | W150 | W | A person file still listing working answers under a separate `## Hypotheses` heading, which no tool reads. Fix: move each into a question entry (`## Q:` in `notes/questions.md` or the research file's `## Open Questions`) with its `id:` and `guess:` lines, then delete the section. | §17b |
 | W151 | W | A source's `people:` entry written the old way, a bare ID with the person's name as a comment (`- p-…  # Margaret Cole`); the name sits where no tool reads or updates it. Fix: write `- "[[p-…|Margaret Cole]]"`. Any other comment is a note and is not reported. | §14 |
+| W152 | W | Capture history left at `.cache/capture_log.jsonl`, which no tool reads and backups skip. Fix: move it to `notes/capture-log.jsonl` (or paste its lines at the top of that file), delete it, run `fha index`. | §17c |
 | W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |

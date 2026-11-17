@@ -1031,6 +1031,18 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     on_error = unreadable_dir_recorder(registry.unreadable_dirs)
     on_decode_error = registry.note_undecodable
 
+    # W152: capture history left at `.cache/capture_log.jsonl`, where no tool
+    # reads it and backups and git skip it - one cache wipe from gone.
+    old_capture_log = archive_root / '.cache' / 'capture_log.jsonl'
+    if old_capture_log.is_file():
+        findings.append(Finding('W', 'W152', old_capture_log,
+            'Older capture history is still in .cache/capture_log.jsonl, where no tool '
+            'reads it and backups skip it, so those searches are missing from "already '
+            'searched". Move it into the notes folder: if notes/capture-log.jsonl does not '
+            'exist, move the file there under that name; if it does, paste this file\'s '
+            'lines at the top of it. Then delete .cache/capture_log.jsonl and run '
+            '`fha index`.'))
+
     # Notes: load questions + research for E009 check
     questions_path = archive_root / 'notes' / 'questions.md'
     if questions_path.exists():

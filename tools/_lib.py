@@ -185,10 +185,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 returning (pairs, migrated) so a caller that
 #                                 would otherwise look silent can report it
 #
-#  Old capture logs (read-only until Wave 4 carries them into notes/research-log.md)
-#    capture_log_paths         - current (notes/) path + legacy (.cache/) path
-#    read_capture_log_lines    - both files' lines, oldest first, no writes
-#    migrate_capture_log       - carry .cache/ copy into notes/ (backed up); True when moved
+#  Old capture log (read-only)
+#    capture_log_path          - the old notes/capture-log.jsonl
+#    read_capture_log_lines    - its lines, oldest first, no writes
 #
 #  Safety copies of originals (`originals_backup:`, TOOLING §13f)
 #    BackupRefused             - "no safety copy, so do not write" (carries the sentence)
@@ -3795,112 +3794,40 @@ def load_cooccur_dismissed(
     return merged, migrated
 
 
-# ── Old capture logs (read-only) ──────────────────────────────────────────────
+# ── Old capture log (read-only) ───────────────────────────────────────────────
 #
 # `fha capture` now appends each capture to `notes/research-log.md`, the one
 # search log (SPEC §17c). Archives from before that still hold their capture
-# history as JSON lines in `notes/capture-log.jsonl` and, older still,
-# `.cache/capture_log.jsonl`. No capture is added to either any more; `fha
-# index` keeps reading both into `search_log` so no "already searched" is
-# lost, and the next capture carries the `.cache/` copy into `notes/` (which
-# backups and git keep) until a one-off pass folds both into the research log.
+# history as JSON lines in `notes/capture-log.jsonl`. No capture is added to
+# it any more; `fha index` keeps reading it into `search_log` so no "already
+# searched" is lost. (A copy left at the even older `.cache/capture_log.jsonl`
+# is read by nothing: `fha lint` W152 names it and the fix.)
 
-def capture_log_paths(archive_root: str | Path) -> tuple[Path, Path]:
-    """The two old capture-log files: `notes/capture-log.jsonl` and the
-    older `.cache/capture_log.jsonl`. No new capture is written to either."""
-    root = Path(archive_root)
-    return (root / 'notes' / 'capture-log.jsonl',
-            root / '.cache' / 'capture_log.jsonl')
-
-
-def _capture_log_file_lines(path: Path) -> list[str]:
-    """The non-blank lines of one capture-log file; [] when it is absent.
-
-    Raises OSError / UnicodeDecodeError for the caller to decide on: the
-    reader reports an undecodable file, the migrator leaves it alone.
-    """
-    if not path.exists():
-        return []
-    return [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip()]
-
-
-def _merge_capture_log_lines(old: list[str], new: list[str]) -> list[str]:
-    """Legacy lines first (they are older), then current lines not already carried.
-
-    A carry-forward that wrote the new file but could not delete the old one
-    leaves the old lines at the head of the new file; counting them off keeps
-    those searches from being logged twice, while two
-    genuinely identical captures (the same page on the same day) still both
-    survive, since each is counted once per occurrence.
-    """
-    remaining: dict[str, int] = {}
-    for line in old:
-        remaining[line] = remaining.get(line, 0) + 1
-    merged = list(old)
-    for line in new:
-        if remaining.get(line, 0) > 0:
-            remaining[line] -= 1
-            continue
-        merged.append(line)
-    return merged
+def capture_log_path(archive_root: str | Path) -> Path:
+    """The old capture-log file, `notes/capture-log.jsonl`. No new capture
+    is written to it."""
+    return Path(archive_root) / 'notes' / 'capture-log.jsonl'
 
 
 def read_capture_log_lines(archive_root: str | Path, on_decode_error=None) -> list[str]:
-    """Every capture-log line, legacy and current together, oldest first.
+    """Every non-blank line of the old capture log, oldest first.
 
-    Reads both locations without writing anything - `fha index` calls this and
-    never moves a file of the human's - so every capture logged in the old
-    form stays in `search_log` on every rebuild. A file that is not UTF-8 is passed to `on_decode_error` (the
-    build names it in a warning) and contributes no lines; an unreadable one is
-    skipped the same way silently, as before.
+    Reads without writing anything - `fha index` calls this and never moves a
+    file of the human's. A file that is not UTF-8 is passed to
+    `on_decode_error` (the build names it in a warning) and contributes no
+    lines; an unreadable one is skipped the same way silently.
     """
-    new_path, old_path = capture_log_paths(archive_root)
-    per_file: list[list[str]] = []
-    for path in (old_path, new_path):
-        try:
-            per_file.append(_capture_log_file_lines(path))
-        except UnicodeDecodeError:
-            if on_decode_error is not None:
-                on_decode_error(path)
-            per_file.append([])
-        except OSError:
-            per_file.append([])
-    return _merge_capture_log_lines(per_file[0], per_file[1])
-
-
-def migrate_capture_log(archive_root: str | Path) -> bool:
-    """Carry `.cache/capture_log.jsonl` into `notes/capture-log.jsonl`, once.
-
-    `.cache/` is skipped by `fha backup` and git, so older capture history
-    left there is one cache wipe from gone. `fha capture` calls this on each
-    run (its own entry goes to `notes/research-log.md`), so the first capture
-    after an upgrade finishes the move. The old lines go first, in
-    their order, then whatever the new file already held (deduplicated, see
-    `_merge_capture_log_lines`); the merged file is written atomically and
-    only then is the old one removed. Returns True when the move happened
-    just now - the caller MUST tell the human, so the old file never
-    disappears without a word.
-
-    If either file cannot be read or decoded, or the write fails, nothing is
-    moved or deleted: the old file stays where it is, the reader keeps
-    reading both, and the next capture tries again.
-    """
-    new_path, old_path = capture_log_paths(archive_root)
-    if not old_path.exists():
-        return False
+    path = capture_log_path(archive_root)
     try:
-        old_lines = _capture_log_file_lines(old_path)
-        new_lines = _capture_log_file_lines(new_path)
-    except (OSError, UnicodeDecodeError):
-        return False
-    merged = _merge_capture_log_lines(old_lines, new_lines)
-    try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_exact_atomic(new_path, ''.join(ln + '\n' for ln in merged))
-        old_path.unlink()
+        if not path.exists():
+            return []
+        return [ln for ln in path.read_text(encoding='utf-8').splitlines() if ln.strip()]
+    except UnicodeDecodeError:
+        if on_decode_error is not None:
+            on_decode_error(path)
+        return []
     except OSError:
-        return False
-    return True
+        return []
 
 
 # ── Safety copies of originals (`originals_backup:`, TOOLING §13f) ────────────
@@ -10894,9 +10821,9 @@ def newest_record_mtime_with_unreadable_dirs(archive_root: Path) -> tuple[float,
     for extra in (
         archive_root / 'places' / 'places.yaml',
         archive_root / 'fha.yaml',
-        # The old capture logs are read into search_log; an index that has
-        # not seen their newest lines is missing searches (#304 review).
-        *capture_log_paths(archive_root),
+        # The old capture log is read into search_log; an index that has
+        # not seen its newest lines is missing searches (#304 review).
+        capture_log_path(archive_root),
     ):
         try:
             mtime = extra.stat().st_mtime
@@ -10929,8 +10856,8 @@ def newest_record_mtime(archive_root: Path) -> float:
     typed by hand, synced from another machine - leaves "already searched"
     short until the next rebuild (#304 review). `fha capture` patches the
     stored manifest when it writes its own row, so a capture alone never reads
-    as stale. The old capture logs (`notes/capture-log.jsonl`,
-    `.cache/capture_log.jsonl`) vote too, while the index still reads them.
+    as stale. The old capture log (`notes/capture-log.jsonl`) votes too,
+    while the index still reads it.
 
     fha.yaml is part of the watermark because it decides how records are read
     (the roots a source's `files:` entries resolve through, and every other
@@ -11104,7 +11031,7 @@ def record_path_manifest(archive_root: str | Path) -> dict[str, float]:
         dirs, keep=lambda p: not _is_generated_companion(p, archive_root))
     manifest = {_manifest_relpath(p, archive_root): m for p, m in files}
     for extra in (archive_root / 'places' / 'places.yaml', archive_root / 'fha.yaml',
-                  *capture_log_paths(archive_root)):
+                  capture_log_path(archive_root)):
         try:
             manifest[_manifest_relpath(extra, archive_root)] = extra.stat().st_mtime
         except OSError:

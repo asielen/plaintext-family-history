@@ -1811,16 +1811,14 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path, on_error=None,
 
 def _index_capture_log(conn: sqlite3.Connection, archive_root: Path,
                        on_decode_error=None) -> None:
-    """Read the old capture logs into search_log.
+    """Read the old capture log into search_log.
 
     `fha capture` now logs each capture in `notes/research-log.md` (read by
     `_index_notes`). Archives from before that still hold earlier captures as
-    JSON lines in `notes/capture-log.jsonl` and `.cache/capture_log.jsonl`;
-    nothing writes those files any more, but a full rebuild drops search_log
-    (`_drop_tables`), so they are replayed here or those searches would drop
-    out of "already searched". `_lib.read_capture_log_lines` reads both,
-    oldest first. The index never moves or rewrites them - they are the
-    human's record.
+    JSON lines in `notes/capture-log.jsonl`; nothing writes that file any
+    more, but a full rebuild drops search_log (`_drop_tables`), so it is
+    replayed here or those searches would drop out of "already searched".
+    The index never moves or rewrites it - it is the human's record.
     A file that is not UTF-8 is the ONLY record of the captures in it
     (`_drop_tables` clears search_log every build and this replays it), so it
     is named through `on_decode_error` rather than decoded away in silence.
