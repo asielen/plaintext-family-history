@@ -1,9 +1,9 @@
 {
-  "seed": "P-7g8h9jkamb",
+  "seed": "p-7g8h9jkamb",
   "mode": "descendants",
   "nodes": [
     {
-      "p_id": "P-7g8h9jkamb",
+      "p_id": "p-7g8h9jkamb",
       "name": "Clara Mabel Frost",
       "sex": "F",
       "vitals": {
@@ -14,7 +14,7 @@
       "photo": "/root/photos/clara-frost-portrait.jpg"
     },
     {
-      "p_id": "P-5e6f7g8h9j",
+      "p_id": "p-5e6f7g8h9j",
       "name": "Edith Louise Hartley",
       "sex": "F",
       "vitals": {
@@ -25,7 +25,7 @@
       "photo": null
     },
     {
-      "p_id": "P-2b3c4d5e6f",
+      "p_id": "p-2b3c4d5e6f",
       "name": "James Robert Bradford",
       "sex": "M",
       "vitals": {
@@ -36,7 +36,7 @@
       "photo": null
     },
     {
-      "p_id": "P-0a1b2c3d4e",
+      "p_id": "p-0a1b2c3d4e",
       "name": "Alex James Bradford",
       "sex": "unknown",
       "vitals": {
@@ -50,9 +50,9 @@
   "edges": [
     {
       "type": "child",
-      "from": "P-7g8h9jkamb",
-      "to": "P-5e6f7g8h9j",
-      "claim_id": "C-fc0000001a",
+      "from": "p-7g8h9jkamb",
+      "to": "p-5e6f7g8h9j",
+      "claim_id": "c-fc0000001a",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -63,9 +63,9 @@
     },
     {
       "type": "child",
-      "from": "P-5e6f7g8h9j",
-      "to": "P-2b3c4d5e6f",
-      "claim_id": "C-fc0000002b",
+      "from": "p-5e6f7g8h9j",
+      "to": "p-2b3c4d5e6f",
+      "claim_id": "c-fc0000002b",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -76,9 +76,9 @@
     },
     {
       "type": "child",
-      "from": "P-2b3c4d5e6f",
-      "to": "P-0a1b2c3d4e",
-      "claim_id": "C-fc0000003c",
+      "from": "p-2b3c4d5e6f",
+      "to": "p-0a1b2c3d4e",
+      "claim_id": "c-fc0000003c",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",

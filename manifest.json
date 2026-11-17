@@ -12,7 +12,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "69adfe84ccb2eeb80adefa3e7d44201d38db827f92346d65ad1ed7d901a320e9",
+      "sha256": "ac0eb703b0f32cf751565c42925a6e898ddf00d09f9b4cf56f1f5a88bd86f868",
       "spec_version": "2.2"
     },
     {
@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "0ace7f450b63855f54ecf3297c449781183520156768eca60ca0e67777664a1a",
+      "sha256": "175993b63bc8d3a467b9abc287c71d96b7b2d532e5a40714db0d53d832cf7870",
       "spec_version": "2.2",
       "src": "tools/_lib.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "cffc85c23c0de812b7b031afd04b4c36a2874777d4c7a43cd1214d2ac5b8890a",
+      "sha256": "ced7136d33637c6b8289c9809c16c9e98a8f6f6fb1a6728216e1bbcf55415d6e",
       "spec_version": "2.2",
       "src": "tools/lint.py"
     },
@@ -882,7 +882,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "b47945a477cc84d46cfff36873bf76c07b9c07294ee097dd9028b70e839b31f4",
+      "sha256": "e05debb100bac7a87819b4ab3f2e8bc929aa879583c0250dfc43ae87803c8afc",
       "spec_version": "2.2",
       "src": "tools/views.py"
     },
@@ -1023,7 +1023,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "b1ee9b937002922ffb495b93ec71b2c41b9a73a138761792c225b6233a6e5610",
+      "sha256": "24f520556a746a053a1a19cdb7e81d40f403a494a33c1332211636881085cf0c",
       "spec_version": "2.2",
       "src": "TOOLING.md"
     },
@@ -1067,7 +1067,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "f4469a24ff6996b528273b9fd4b2d2f26a1d136c123487f865a1a5f4745fc949",
+      "sha256": "e2b01cd02e34702888b07dc31be8bcc911e200011b765244add2e4ffb8f82aec",
       "spec_version": "2.2",
       "src": "archive-template/fha.yaml"
     },
@@ -1102,7 +1102,7 @@
     {
       "path": "notes/questions.md",
       "category": "skeleton",
-      "sha256": "b9d52907653b7566b9d174165fb7a456f429b6f8dfb4fdc9d42a6a931e8fe7bd",
+      "sha256": "03b7d41e5e43d4ad4c146883c76f372488b30e61d758fc952e59a4b25b8da00b",
       "spec_version": "2.2",
       "src": "archive-template/notes/questions.md"
     },
@@ -1116,14 +1116,14 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "4be793792597bb7c2802ca252c7ea08e91701a2d19fb503a300c65dd042ad72d",
+      "sha256": "93b94fb07fdc8183e50526549e7d77ec84c1bb0750494b5b4879b769a453fdc0",
       "spec_version": "2.2",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
     {
       "path": "people/_TEMPLATE.research.md",
       "category": "skeleton",
-      "sha256": "35871a5b1e656da9101224a01c0a9756814f1b307fb781774a0cb57abaf07db1",
+      "sha256": "fa8f21637034113db82d7aaf7410c1d9c3ca510692a1cea2ba0fa5f15bea8e5e",
       "spec_version": "2.2",
       "src": "archive-template/people/_TEMPLATE.research.md"
     },
@@ -1142,13 +1142,6 @@
       "src": "archive-template/people/stubs/.gitkeep"
     },
     {
-      "path": "people/stubs/_TEMPLATE.stub.md",
-      "category": "skeleton",
-      "sha256": "005e6c6499fa9f46620de020f31d0c883d081bae956cba424a77ee97d56996ae",
-      "spec_version": "2.2",
-      "src": "archive-template/people/stubs/_TEMPLATE.stub.md"
-    },
-    {
       "path": "photos/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -1158,7 +1151,7 @@
     {
       "path": "places/places.yaml",
       "category": "skeleton",
-      "sha256": "33811c119aad621d5aeb4dcd10d73e982fb85555faf90c863947b16ff9b859ea",
+      "sha256": "c96093c28cc151ac0fec412e54237b43b5806853c2e7649b0e3b21e5cce641cd",
       "spec_version": "2.2",
       "src": "archive-template/places/places.yaml"
     },
@@ -1178,7 +1171,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "49fa7e83c483265a18bc92d7407e653f70d982b38ed6b556a9e17eef2eac9bea",
+      "sha256": "180b89d8704bc11caa4b611f094e270144b3128f819e9942968a4c702a7a0a50",
       "spec_version": "2.2",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
