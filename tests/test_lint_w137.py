@@ -32,7 +32,7 @@ PID = 'P-de957bcda1'
 
 def _source(sid: str, *, files: list[str], claims_notes: str = '', value: str = 'Ada was 16',
             prose: str = '', extra_files: str = '') -> str:
-    files_block = ''.join(f'  - file: {f}\n    role: primary\n' for f in files) + extra_files
+    files_block = ''.join(f'  - file: {f}\n    is_primary: true\n' for f in files) + extra_files
     return (
         f'---\nid: {sid}\naliases:\n  - {sid}\ntitle: A source\nsource_type: interview\n'
         f'files:\n{files_block}---\n\n'
@@ -211,7 +211,7 @@ class W137Tests(unittest.TestCase):
                     extra_files='')
         rec = self.root / 'sources' / 'photos' / f'a-source_{PHOTO_SRC}.md'
         rec.write_text(rec.read_text(encoding='utf-8').replace(
-            '    role: primary\n', '    role: primary\n    original_filename: letter.pdf\n', 1),
+            '    is_primary: true\n', '    is_primary: true\n    original_filename: letter.pdf\n', 1),
             encoding='utf-8')
         self._interview(claims_notes='Written before filing: documents/letters/letter.pdf')
         self.assertEqual(self._w137(), [])

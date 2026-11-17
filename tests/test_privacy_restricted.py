@@ -688,7 +688,7 @@ class LintRecognitionTests(_Base):
         rec_path.parent.mkdir(parents=True, exist_ok=True)
         rec_path.write_text(
             '---\nid: s-ffffffffff\ntitle: DNA test\nsource_type: dna\nrestricted: dna\n'
-            'files:\n  - file: documents/dna/raw_s-ffffffffff.txt\n    role: primary\n---\n',
+            'files:\n  - file: documents/dna/raw_s-ffffffffff.txt\n    is_primary: true\n---\n',
             encoding='utf-8')
         (self.root / 'documents' / 'dna').mkdir(parents=True, exist_ok=True)
         (self.root / 'documents' / 'dna' / 'raw_s-ffffffffff.txt').write_text('x', encoding='utf-8')
@@ -701,7 +701,7 @@ class LintRecognitionTests(_Base):
         rec_path.parent.mkdir(parents=True, exist_ok=True)
         rec_path.write_text(
             '---\nid: s-ggggggggg0\ntitle: DNA test\nsource_type: dna\n'
-            'files:\n  - file: documents/dna/raw_s-ggggggggg0.txt\n    role: primary\n---\n',
+            'files:\n  - file: documents/dna/raw_s-ggggggggg0.txt\n    is_primary: true\n---\n',
             encoding='utf-8')
         (self.root / 'documents' / 'dna').mkdir(parents=True, exist_ok=True)
         (self.root / 'documents' / 'dna' / 'raw_s-ggggggggg0.txt').write_text('x', encoding='utf-8')

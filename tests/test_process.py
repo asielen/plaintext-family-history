@@ -1294,7 +1294,7 @@ class ProcessTestCase(unittest.TestCase):
     def test_append_file_entry_preserves_nonempty_inline_files_value(self) -> None:
         record_text = (
             '---\nid: S-aaaaaaaaaa\n'
-            'files: [{file: documents/census/page1.pdf, role: primary}]\n'
+            'files: [{file: documents/census/page1.pdf, is_primary: true}]\n'
             'created: 2026-01-01\n---\n\nbody\n'
         )
         entry = ['  - file: documents/census/page2.txt', '    role: page-2']

@@ -1053,8 +1053,7 @@ class FindSourceRestrictedLabelTests(unittest.TestCase):
 
 class FindSourceMainFileTagTests(unittest.TestCase):
     """`fha find <S-id>` tags the source's main file `[main]` (SPEC §14
-    `is_primary: true`), and an older record's `role: primary` the same way -
-    the index no longer stores that old mark as a role."""
+    `is_primary: true`)."""
 
     def _out(self, files_block: str) -> str:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1070,8 +1069,8 @@ class FindSourceMainFileTagTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_CLEAN)
             return out
 
-    def test_both_forms_tag_the_main_file(self) -> None:
-        for mark in ('    is_primary: true\n', '    role: primary\n'):
+    def test_the_main_file_is_tagged(self) -> None:
+        for mark in ('    is_primary: true\n',):
             with self.subTest(mark=mark):
                 out = self._out('files:\n  - file: documents/other/letter.pdf\n' + mark
                                 + '  - file: documents/other/letter-back.pdf\n    role: back\n')

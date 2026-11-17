@@ -1989,7 +1989,7 @@ source_type: church
 people: ["[[{_LOOKUP_PID}]]"]
 files:
   - file: documents/church/register-front_{_LOOKUP_SID}.jpg
-    role: primary
+    is_primary: true
   - file: documents/church/register-back_{_LOOKUP_SID}.jpg
     role: back
 ---
@@ -2035,9 +2035,8 @@ def _strip_lookup_indexes(db_path: Path) -> None:
 
 
 class MainFileFlagTests(unittest.TestCase):
-    """SPEC §14: `is_primary: true` marks a source's main file; a record
-    written before SPEC 2.1 says `role: primary`. The index flags the main
-    file either way, and never shows the old mark as a role."""
+    """SPEC §14: `is_primary: true` marks a source's main file, and the
+    index flags it."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -2069,15 +2068,15 @@ class MainFileFlagTests(unittest.TestCase):
         self.assertEqual(rows[f'register-back_{_LOOKUP_SID}.jpg'], ('back', 0))
         self.assertEqual(rows[f'register_{_LOOKUP_SID}.jpg'], ('', 1))
 
-    def test_an_older_role_primary_still_flags_the_main_file(self) -> None:
+    def test_an_old_role_primary_is_not_read_as_the_mark(self) -> None:
+        # `fha lint` W145 names it; the index does not guess.
         rows = self._rows(
             'files:\n'
             f'  - file: documents/church/register_{_LOOKUP_SID}.jpg\n'
             '    role: primary\n'
             f'  - file: documents/church/register-back_{_LOOKUP_SID}.jpg\n'
             '    role: back\n')
-        self.assertEqual(rows[f'register_{_LOOKUP_SID}.jpg'], ('', 1))
-        self.assertEqual(rows[f'register-back_{_LOOKUP_SID}.jpg'], ('back', 0))
+        self.assertEqual(rows[f'register_{_LOOKUP_SID}.jpg'][1], 0)
 
 
 class LookupIndexUpgradeTests(unittest.TestCase):
@@ -2220,7 +2219,7 @@ title: County History
 source_type: book
 files:
   - file: documents/book/county-history_{low}.pdf
-    role: primary
+    is_primary: true
   - file: documents/book/county-history-extracted-text_{sid}.md
     role: extracted-text
     derived: true

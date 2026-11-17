@@ -95,7 +95,7 @@ class SourceClearKeywordTests(unittest.TestCase):
     def _write_record(self, files_block: str | None = None, people: str = '') -> None:
         if files_block is None:
             files_block = (f'files:\n  - file: documents/deeds/deed_{SID.lower()}.tif\n'
-                           '    role: primary\n')
+                           '    is_primary: true\n')
         self.record.write_text(
             f'---\nid: {SID}\ntitle: Deed\nsource_type: deed\n'
             f'{files_block}{people}---\n\n## Notes\nA county deed.\n',
@@ -209,7 +209,7 @@ class SourceClearKeywordTests(unittest.TestCase):
                          'a missing asset must report ok=False, not the True default')
 
     def test_no_documents_root_file_refuses(self) -> None:
-        self._write_record(files_block='files:\n  - file: photos/1900/deed.jpg\n    role: primary\n')
+        self._write_record(files_block='files:\n  - file: photos/1900/deed.jpg\n    is_primary: true\n')
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertIn('documents-root', result.messages[-1].text)
@@ -221,7 +221,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         # configured documents root entirely. Must refuse before exiftool
         # ever touches the resolved (wrong) target.
         self._write_record(files_block=(
-            'files:\n  - file: documents/../../outside.tif\n    role: primary\n'))
+            'files:\n  - file: documents/../../outside.tif\n    is_primary: true\n'))
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertEqual(self.store.write_calls, [])
@@ -229,7 +229,7 @@ class SourceClearKeywordTests(unittest.TestCase):
 
     def test_doubled_slash_alias_escaping_the_root_is_refused(self) -> None:
         self._write_record(files_block=(
-            'files:\n  - file: documents//../../outside.tif\n    role: primary\n'))
+            'files:\n  - file: documents//../../outside.tif\n    is_primary: true\n'))
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertEqual(self.store.write_calls, [])
@@ -241,7 +241,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         # file - exiftool accepts a directory operand and applies the write
         # to every file inside it, so this must refuse before any exiftool
         # call at all (originals_backup is unset here too - no safety copy).
-        self._write_record(files_block='files:\n  - file: documents/deeds\n    role: primary\n')
+        self._write_record(files_block='files:\n  - file: documents/deeds\n    is_primary: true\n')
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertEqual(self.store.write_calls, [])
@@ -259,7 +259,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         self.store.seed(drifted, subject=['Margaret Hartley'])
         self._write_record(files_block=(
             f'files:\n  - file: documents/deeds/deed_{other_sid.lower()}.tif\n'
-            '    role: primary\n'))
+            '    is_primary: true\n'))
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
         self.assertEqual(self.store.write_calls, [])
@@ -502,7 +502,7 @@ class SourceClearKeywordTests(unittest.TestCase):
         second.write_bytes(b'y')
         self.store.seed(second, subject=[])   # the back scan carries no stray keyword
         self._write_record(files_block=(
-            f'files:\n  - file: documents/deeds/deed_{SID.lower()}.tif\n    role: primary\n'
+            f'files:\n  - file: documents/deeds/deed_{SID.lower()}.tif\n    is_primary: true\n'
             f'  - file: documents/deeds/deed-back_{SID.lower()}.tif\n    role: back\n'))
         result = self._run(keyword='Margaret Hartley')
         self.assertEqual(result['status'], 'refused')
@@ -564,7 +564,7 @@ class RealWrapperClearKeywordTests(unittest.TestCase):
             self.root / 'documents' / 'letters' / f'letter_{SID.lower()}.jpg')
         (self.root / 'sources' / 'letter' / f'letter_{SID.lower()}.md').write_text(
             f'---\nid: {SID}\ntitle: Letter\nsource_type: letter\nfiles:\n'
-            f'  - file: documents/letters/letter_{SID.lower()}.jpg\n    role: primary\n'
+            f'  - file: documents/letters/letter_{SID.lower()}.jpg\n    is_primary: true\n'
             '---\n\n## Notes\nA letter.\n', encoding='utf-8')
         self.config = load_fha_yaml(self.root)
 

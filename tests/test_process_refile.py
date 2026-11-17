@@ -105,7 +105,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         """A processed document source: asset + record. Returns (asset, record)."""
         asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
         asset.write_bytes(b'jpegbytes')
-        entry = f'  - file: documents/census/campaign-card_{SID}.jpg\n    role: primary\n'
+        entry = f'  - file: documents/census/campaign-card_{SID}.jpg\n    is_primary: true\n'
         if with_original_filename:
             entry += '    original_filename: campaign-card.jpg\n'
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
@@ -119,7 +119,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         transcript = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.txt'
         transcript.write_text('extracted text', encoding='utf-8')
         entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
-                 '    role: primary\n'
+                 '    is_primary: true\n'
                  '    original_filename: campaign-card.jpg\n'
                  f'  - file: documents/census/campaign-card_{SID}.txt\n'
                  '    role: transcript\n'
@@ -133,7 +133,6 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'photos' / '1880' / 'portrait.jpg'
         asset.write_bytes(b'jpegbytes')
         entry = ('  - file: photos/1880/portrait.jpg\n'
-                 '    role: primary\n'
                  '    is_primary: true\n')
         record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
@@ -252,7 +251,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.pdf'
         asset.write_bytes(b'%PDF-1.4')
         entry = (f'  - file: documents/census/campaign-card_{SID}.pdf\n'
-                 '    role: primary\n    original_filename: campaign-card.pdf\n')
+                 '    is_primary: true\n    original_filename: campaign-card.pdf\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -363,7 +362,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         sidecar = self.archive / 'documents' / 'census' / 'card.jpg.txt'
         sidecar.write_text('notes', encoding='utf-8')
         entry = ('  - file: documents/census/card.jpg\n'
-                 '    role: primary\n'
+                 '    is_primary: true\n'
                  '    original_filename: card.jpg\n'
                  '  - file: documents/census/card.jpg.txt\n'
                  '    role: transcript\n')
@@ -394,7 +393,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         entry = (f'  - file: documents/census/card_{SID}.jpg.txt\n'
                  '    role: transcript\n'
                  f'  - file: documents/census/card_{SID}.jpg\n'
-                 '    role: primary\n')
+                 '    is_primary: true\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -422,7 +421,7 @@ class ProcessRefileTestCase(unittest.TestCase):
     def test_asset_missing_on_disk_names_reconcile(self) -> None:
         self._install_photo_store()
         entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
-                 '    role: primary\n')
+                 '    is_primary: true\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -446,7 +445,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         outside = self.tmp / 'outside-secret.tif'
         outside.write_bytes(b'not part of the archive')
-        entry = f'  - file: documents/../../{outside.name}\n    role: primary\n'
+        entry = f'  - file: documents/../../{outside.name}\n    is_primary: true\n'
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -462,7 +461,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         outside = self.tmp / 'outside-secret.jpg'
         outside.write_bytes(b'not part of the archive')
-        entry = f'  - file: photos/../../{outside.name}\n    role: primary\n    is_primary: true\n'
+        entry = f'  - file: photos/../../{outside.name}\n    is_primary: true\n'
         record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
 
@@ -642,7 +641,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         other_asset = self.archive / 'documents' / 'census' / f'other-deed_{other_sid}.jpg'
         other_asset.write_bytes(b'belongs to a different source')
         stored_alias = f'documents/census/other-deed_{other_sid}.jpg'
-        entry = f'  - file: {stored_alias}\n    role: primary\n'
+        entry = f'  - file: {stored_alias}\n    is_primary: true\n'
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -671,7 +670,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         stray = self.archive / 'documents' / 'census' / 'unlabeled.jpg'
         stray.write_bytes(b'no source id in this filename')
-        entry = '  - file: documents/census/unlabeled.jpg\n    role: primary\n'
+        entry = '  - file: documents/census/unlabeled.jpg\n    is_primary: true\n'
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -1134,7 +1133,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
         asset.write_bytes(b'jpegbytes')
         entry = (f'  - file: documents/census/campaign-card_{SID}.jpg  # fragile original\n'
-                 '    role: primary\n'
+                 '    is_primary: true\n'
                  '    original_filename: campaign-card.jpg\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
@@ -1316,7 +1315,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
         asset.write_bytes(b'jpegbytes')
         entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
-                 '    role: primary\n'
+                 '    is_primary: true\n'
                  "    original_filename: 'Scan #12.jpg'\n")
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
@@ -1336,7 +1335,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'photos' / '1880' / 'Scan #12.jpg'
         asset.write_bytes(b'jpegbytes')
         entry = ("  - file: 'photos/1880/Scan #12.jpg'\n"
-                 '    role: primary\n')
+                 '    is_primary: true\n')
         record = self.archive / 'sources' / 'photos' / f'portrait_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
 
@@ -1366,7 +1365,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         asset = self.archive / 'documents' / 'census' / f'campaign-card_{SID}.jpg'
         asset.write_bytes(b'jpegbytes')
         entry = (f'  - file: documents/census/campaign-card_{SID}.jpg\n'
-                 '    role: primary\n'
+                 '    is_primary: true\n'
                  "    original_filename: '../1880/other.jpg'\n")
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
@@ -1390,7 +1389,7 @@ class ProcessRefileTestCase(unittest.TestCase):
                  '    role: transcript\n'
                  '    derived: true\n'
                  '  - file: documents/census/card.jpg\n'
-                 '    role: primary\n')
+                 '    is_primary: true\n')
         record = self.archive / 'sources' / 'census' / f'campaign-card_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
         before = record.read_bytes()
@@ -1423,7 +1422,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             'repository: unknown\n'
             'citation: Campaign card\n'
             'people: []\n'
-            f'files: [{{file: documents/census/card_{SID}.jpg, role: primary}}]\n'
+            f'files: [{{file: documents/census/card_{SID}.jpg, is_primary: true}}]\n'
             'created: 2026-07-01\n'
             '---\n'
             '\n'
@@ -1463,7 +1462,7 @@ class ProcessRefileTestCase(unittest.TestCase):
             'repository: unknown\n'
             'citation: Kraków campaign card\n'
             'people: []\n'
-            'files: [{file: documents/census/card.jpg, role: primary}]\n'
+            'files: [{file: documents/census/card.jpg, is_primary: true}]\n'
             'created: 2026-07-01\n'
             '---\n'
             '\n'
@@ -1622,7 +1621,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         asset = self.archive / 'photos' / '1880' / 'sheet.jpg'
         asset.write_bytes(b'jpegbytes')
-        entry = '  - file: photos/1880/sheet.jpg\n    role: primary\n'
+        entry = '  - file: photos/1880/sheet.jpg\n    is_primary: true\n'
         record = self.archive / 'sources' / 'census' / f'sheet_{SID}.md'
         record.write_bytes(_record_text(entry).encode('utf-8'))
 
@@ -1641,7 +1640,7 @@ class ProcessRefileTestCase(unittest.TestCase):
         self._install_photo_store()
         asset = self.archive / 'documents' / 'census' / f'card_{SID}.jpg'
         asset.write_bytes(b'jpegbytes')
-        entry = f'  - file: documents/census/card_{SID}.jpg\n    role: primary\n'
+        entry = f'  - file: documents/census/card_{SID}.jpg\n    is_primary: true\n'
         record = self.archive / 'sources' / 'photos' / f'card_{SID}.md'
         record.write_bytes(_record_text(entry, source_type='photo').encode('utf-8'))
 
@@ -1740,7 +1739,7 @@ class RefilePickEntryUnitTests(unittest.TestCase):
 
     def test_windows_alias_matched_by_basename(self) -> None:
         entries = [
-            {'file': 'documents\\letters\\scan.pdf', 'role': 'primary'},
+            {'file': 'documents\\letters\\scan.pdf', 'is_primary': True},
             {'file': 'documents\\letters\\scan.pdf.txt', 'role': 'transcript',
              'derived': True},
         ]

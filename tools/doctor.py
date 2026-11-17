@@ -876,17 +876,16 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             role = str(item.get('role') or '').strip().lower()
             if role == 'back':
                 back_aliases.setdefault(key, []).append(str(file_alias))
-            # The main-file entry (`is_primary: true`, or an older record's
-            # `role: primary`) always claims `disk_path` for
+            # The main-file entry (`is_primary: true`) always claims `disk_path` for
             # its key, even when a differently-roled entry for the same
             # base_id was listed EARLIER in the files: list (issue #169
             # followup review round 2): plain `setdefault` instead kept
             # whichever entry came first, so a hand-authored list ordering
-            # `role: back` ahead of `role: primary` silently left the BACK
+            # `role: back` ahead of the main file silently left the BACK
             # file as `disk_path` - every existence check and repair command
             # below then operated as though the back scan were the primary.
             # A non-primary entry only fills the slot as a fallback, so a
-            # group that never labels a `role: primary` at all keeps its old
+            # group that never marks a main file at all keeps its old
             # first-entry-wins behavior.
             if files_entry_is_main(item) or key not in sample_path:
                 sample_path[key] = on_disk

@@ -60,7 +60,7 @@ def _write_record(archive: Path, sid: str, source_type: str, aliases: list[str],
     copies = copies if copies is not None else [None] * len(aliases)
     lines = ''
     for a, c in zip(aliases, copies):
-        lines += f'  - file: {a}\n    role: primary\n'
+        lines += f'  - file: {a}\n    is_primary: true\n'
         if c:
             lines += f'    copy: {c}\n'
     text = (
@@ -249,7 +249,7 @@ class ReorganizeSurveyTests(unittest.TestCase):
     def test_missing_fixture_status_entry_is_skipped_silently(self) -> None:
         rec = _write_record(self.archive, SID_A, 'census', [f'documents/thing_{SID_A}.pdf'])
         text = rec.read_text(encoding='utf-8').replace(
-            '    role: primary\n', '    role: primary\n    status: missing-fixture\n')
+            '    is_primary: true\n', '    is_primary: true\n    status: missing-fixture\n')
         rec.write_text(text, encoding='utf-8')
 
         result = self._run()
@@ -516,7 +516,7 @@ class ReorganizeSurveyTests(unittest.TestCase):
         rec = _write_record(self.archive, SID_A, 'census',
                              [f'documents/scan0007_{SID_A}.pdf'], slug='wedding-portrait')
         text = rec.read_text(encoding='utf-8').replace(
-            '    role: primary\n', '    role: primary\n    original_filename: scan0007.pdf\n')
+            '    is_primary: true\n', '    is_primary: true\n    original_filename: scan0007.pdf\n')
         rec.write_text(text, encoding='utf-8')
 
         result = self._run()

@@ -1389,7 +1389,7 @@ def run_source_set_primary(
     invalid id, no `--file`, no match, more than one match, a match outside
     the photos root, an entry written in a one-line form this text surgery
     will not rewrite, a record where two or more files other than the named one already
-    claim to be the main image (`is_primary: true` or `role: primary`), a current main file that is not a photo, or any result that would
+    claim to be the main image (`is_primary: true`), a current main file that is not a photo, or any result that would
     not leave exactly one `is_primary: true`. The rewritten text must parse
     back to exactly the planned list, with every other frontmatter field and
     the whole body unchanged, before it is written; after the write it is
@@ -1524,21 +1524,17 @@ def run_source_set_primary(
             f'Open {path} and write it as `- file: {target_alias}` with a '
             '`role:` line under it, then try again. Nothing was written.')
 
-    # The entry that is the main image now: marked `is_primary: true`, or,
-    # in a hand-made record, only `role: primary`. Missing the role-only
-    # shape left two `role: primary` entries, and the source page shows the
-    # first of them (#210 review).
+    # The entry that is the main image now: marked `is_primary: true`.
     previous = [i for i, e in enumerate(entries)
                 if i != target_i and isinstance(e, dict)
-                and (_is_true(e.get('is_primary'))
-                     or str(e.get('role') or '').strip().lower() == 'primary')]
+                and _is_true(e.get('is_primary'))]
     if len(previous) > 1:
         shown = ', '.join(aliases[i] for i in previous)
         return _refuse(
             'refused',
             f'{label} already marks more than one file as its main image '
             f'({shown}), so this tool cannot tell which one to step down. Open '
-            f'{path}, leave `is_primary: true` on just one file (and `role: primary` on none), '
+            f'{path}, leave `is_primary: true` on just one file, '
             'run `fha lint`, '
             'then try again. Nothing was written.')
     prev_i = previous[0] if previous else None
@@ -1950,7 +1946,7 @@ def _copy_label(entry: dict) -> str:
 
     `fha process --more FILE primary:familysearch` writes `copy: familysearch`
     (SPEC §13 "Copies: `b`, `c`, `negative`..."): a second digitization of
-    the same evidence. Older records list it with `role: primary` too. A blank or null value is no
+    the same evidence. A blank or null value is no
     label at all, and YAML may hand back a number for `copy: 2`, hence str().
     """
     value = entry.get('copy')
@@ -1969,10 +1965,8 @@ def _choose_extract_pdf(
 
     - `--copy LABEL` given: the PDF whose `copy:` label matches (ignoring
       capitals). An unknown label refuses, listing the labels there are.
-    - Otherwise the main-file PDF (`is_primary: true`, SPEC §14). A record
-      written before SPEC 2.1 marks it `role: primary` instead, and may mark
-      a second digitization (`--more FILE primary:COPY`) the same way, so of
-      several the one with NO `copy:` label is the book's main copy and is
+    - Otherwise the main-file PDF (`is_primary: true`, SPEC §14). Of several
+      so marked, the one with NO `copy:` label is the book's main copy and is
       read. Only when that still leaves none or several is it a refusal, and
       the refusal names `--copy`.
     - No primary: the single PDF the inventory lists; several refuse.
@@ -2011,8 +2005,7 @@ def _choose_extract_pdf(
                       f'record, then re-run `fha source extract {sid_display} '
                       f'--copy LABEL`.')
 
-    primary_pdfs = ([e for e in pdf_entries if _is_true(e.get('is_primary'))]
-                    or [e for e in pdf_entries if files_entry_is_main(e)])
+    primary_pdfs = [e for e in pdf_entries if files_entry_is_main(e)]
     if len(primary_pdfs) > 1:
         unlabelled = [e for e in primary_pdfs if not _copy_label(e)]
         if len(unlabelled) == 1:
@@ -2706,7 +2699,7 @@ def run_source_extract(
     # that name; only its dump drops the word, whatever the record says now.
     if base.lower().endswith('-primary') and (
             files_entry_is_main(pdf_entry)
-            or str(pdf_entry.get('role', '')).strip().lower() in ('', 'primary')):
+            or not str(pdf_entry.get('role') or '').strip()):
         base = base[:-len('-primary')]
     used_label = _copy_label(pdf_entry)
     if used_label:

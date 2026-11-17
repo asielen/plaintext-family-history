@@ -806,7 +806,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'card_S-1111111111.md', _SOURCE.format(
             sid='S-1111111111', title='Card',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -829,7 +829,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00700-back.md').write_bytes(b'note')
         _write(self.root / 'sources' / 'photos' / 'card7_S-1111111117.md', _SOURCE.format(
             sid='S-1111111117', title='Card 7',
-            line='files:\n  - file: photos/x-00700.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00700.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -844,7 +844,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00800-back.md').write_bytes(b'note')
         _write(self.root / 'sources' / 'photos' / 'card8_S-1111111118.md', _SOURCE.format(
             sid='S-1111111118', title='Card 8',
-            line='files:\n  - file: photos/x-00800.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00800.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
 
@@ -864,7 +864,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00200-BACK.jpg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'card2_S-1111111112.md', _SOURCE.format(
             sid='S-1111111112', title='Card 2',
-            line='files:\n  - file: photos/x-00200.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00200.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -884,7 +884,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00300-back.jpeg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'card3_S-1111111113.md', _SOURCE.format(
             sid='S-1111111113', title='Card 3',
-            line='files:\n  - file: photos/x-00300.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00300.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -905,7 +905,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         # x-00400.jpg (the listed primary) is deliberately never created.
         _write(self.root / 'sources' / 'photos' / 'card4_S-1111111114.md', _SOURCE.format(
             sid='S-1111111114', title='Card 4',
-            line='files:\n  - file: photos/x-00400.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00400.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -925,7 +925,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         _write(self.root / 'sources' / 'photos' / 'card_S-2222222222.md', _SOURCE.format(
             sid='S-2222222222', title='Card',
             line=('files:\n'
-                  '  - file: photos/x-00100.jpg\n    role: primary\n'
+                  '  - file: photos/x-00100.jpg\n    is_primary: true\n'
                   '  - file: photos/x-00100-back.jpg\n    role: back\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
@@ -936,7 +936,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100.jpg').write_bytes(b'front')
         _write(self.root / 'sources' / 'photos' / 'card_S-3333333333.md', _SOURCE.format(
             sid='S-3333333333', title='Card',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result))
@@ -949,7 +949,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100b.jpg').write_bytes(b'second print')
         _write(self.root / 'sources' / 'photos' / 'card_S-4444444444.md', _SOURCE.format(
             sid='S-4444444444', title='Card',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result))
@@ -962,7 +962,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'documents' / 'letter-back.txt').write_text('x', encoding='utf-8')
         _write(self.root / 'sources' / 'other' / 'letter_S-5555555555.md', _SOURCE.format(
             sid='S-5555555555', title='Letter',
-            line='files:\n  - file: documents/letter_S-5555555555.txt\n    role: primary\n'))
+            line='files:\n  - file: documents/letter_S-5555555555.txt\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result))
@@ -979,7 +979,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'plain prints back')
         _write(self.root / 'sources' / 'photos' / 'copy_S-6666666666.md', _SOURCE.format(
             sid='S-6666666666', title='Copy',
-            line='files:\n  - file: photos/x-00100b.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100b.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result))
@@ -993,10 +993,10 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'Smith-Farm-01400b-back.tif').write_bytes(b'b back')
         _write(self.root / 'sources' / 'photos' / 'printa_S-1111111111.md', _SOURCE.format(
             sid='S-1111111111', title='Print A',
-            line='files:\n  - file: photos/Smith-Farm-01400.tif\n    role: primary\n'))
+            line='files:\n  - file: photos/Smith-Farm-01400.tif\n    is_primary: true\n'))
         _write(self.root / 'sources' / 'photos' / 'printb_S-2222222222.md', _SOURCE.format(
             sid='S-2222222222', title='Print B',
-            line=('files:\n  - file: photos/Smith-Farm-01400b.tif\n    role: primary\n'
+            line=('files:\n  - file: photos/Smith-Farm-01400b.tif\n    is_primary: true\n'
                   '  - file: photos/Smith-Farm-01400b-back.tif\n    role: back\n')))
         result = doctor.run_doctor(self.root, self._fha_config())
         self.assertIsNone(self._finding(result), '\n'.join(result.data['lines']))
@@ -1008,7 +1008,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'card_S-1111111111.md', _SOURCE.format(
             sid='S-1111111111', title='Card',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
         _write(self.root / 'sources' / 'photos' / 'broken_S-2222222222.md', _SOURCE.format(
             sid='S-2222222222', title='Broken', line='files: 1\n'))
         result = doctor.run_doctor(self.root, self._fha_config())
@@ -1021,7 +1021,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100-back.jpg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'front_S-1111111111.md', _SOURCE.format(
             sid='S-1111111111', title='Front',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
         _write(self.root / 'sources' / 'photos' / 'other_S-2222222222.md', _SOURCE.format(
             sid='S-2222222222', title='Other',
             line='files:\n  - file: photos/x-00100-back.jpg\n    role: back\n'))
@@ -1034,7 +1034,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00100-back-crop.jpg').write_bytes(b'detail')
         _write(self.root / 'sources' / 'photos' / 'card_S-1111111111.md', _SOURCE.format(
             sid='S-1111111111', title='Card',
-            line='files:\n  - file: photos/x-00100.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00100.jpg\n    is_primary: true\n'))
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
         self.assertIn('photos/x-00100-back.jpg', report)
@@ -1056,8 +1056,8 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         _write(self.root / 'sources' / 'photos' / 'twofolders_S-7777777777.md', _SOURCE.format(
             sid='S-7777777777', title='Two Folders',
             line=('files:\n'
-                  '  - file: photos/album-a/scan001.jpg\n    role: primary\n'
-                  '  - file: photos/album-b/scan001.jpg\n    role: primary\n')))
+                  '  - file: photos/album-a/scan001.jpg\n    is_primary: true\n'
+                  '  - file: photos/album-b/scan001.jpg\n    is_primary: true\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1077,7 +1077,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'my album' / 'scan 001-back.jpg').write_bytes(b'back')
         _write(self.root / 'sources' / 'photos' / 'spaced_S-8888888888.md', _SOURCE.format(
             sid='S-8888888888', title='Spaced',
-            line='files:\n  - file: photos/my album/scan 001.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/my album/scan 001.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1100,7 +1100,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00500_back.jpeg').write_bytes(b'back candidate two')
         _write(self.root / 'sources' / 'photos' / 'ambiguous_S-9999999999.md', _SOURCE.format(
             sid='S-9999999999', title='Ambiguous',
-            line='files:\n  - file: photos/x-00500.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00500.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1137,7 +1137,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00501_back.jpeg').write_bytes(b'back candidate two')
         _write(self.root / 'sources' / 'photos' / 'ambiguous2_S-9999999998.md', _SOURCE.format(
             sid='S-9999999998', title='Ambiguous 2',
-            line='files:\n  - file: photos/x-00501.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00501.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1167,7 +1167,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         # x-00700.jpg (the listed primary) is deliberately never created.
         _write(self.root / 'sources' / 'photos' / 'card7_S-1313131313.md', _SOURCE.format(
             sid='S-1313131313', title='Card 7',
-            line='files:\n  - file: photos/x-00700.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00700.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1201,7 +1201,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         _write(self.root / 'sources' / 'photos' / 'partial_S-1212121212.md', _SOURCE.format(
             sid='S-1212121212', title='Partial',
             line=('files:\n'
-                  '  - file: photos/x-00600.jpg\n    role: primary\n'
+                  '  - file: photos/x-00600.jpg\n    is_primary: true\n'
                   '  - file: photos/x-00600-back.jpg\n    role: attachment\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
@@ -1238,7 +1238,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         _write(self.root / 'sources' / 'photos' / 'twoback_S-1414141414.md', _SOURCE.format(
             sid='S-1414141414', title='Two Back',
             line=('files:\n'
-                  '  - file: photos/x-00650.jpg\n    role: primary\n'
+                  '  - file: photos/x-00650.jpg\n    is_primary: true\n'
                   '  - file: photos/x-00650-back.jpg\n    role: back\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
@@ -1276,7 +1276,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00660_back.jpeg').write_bytes(b'back candidate two')
         _write(self.root / 'sources' / 'photos' / 'placeholder_S-1515151515.md', _SOURCE.format(
             sid='S-1515151515', title='Placeholder',
-            line='files:\n  - file: photos/x-00660.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00660.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1308,7 +1308,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         _write(self.root / 'sources' / 'photos' / 'dup_S-1717171717.md', _SOURCE.format(
             sid='S-1717171717', title='Duplicate',
             line=('files:\n'
-                  '  - file: photos/x-00900.jpg\n    role: primary\n'
+                  '  - file: photos/x-00900.jpg\n    is_primary: true\n'
                   '  - file: photos/x-00900-back.jpg\n    role: back\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
@@ -1346,7 +1346,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
         (self.root / 'photos' / 'x-00910_back.jpeg').write_bytes(b'candidate two')
         _write(self.root / 'sources' / 'photos' / 'launcher_S-1818181818.md', _SOURCE.format(
             sid='S-1818181818', title='Launcher',
-            line='files:\n  - file: photos/x-00910.jpg\n    role: primary\n'))
+            line='files:\n  - file: photos/x-00910.jpg\n    is_primary: true\n'))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         check = self._finding(result, 'ambiguous_back_photos')
@@ -1376,7 +1376,7 @@ class OrphanedBackPhotosTests(unittest.TestCase):
             sid='S-1919191919', title='Reordered',
             line=('files:\n'
                   '  - file: photos/x-00920-back.jpg\n    role: back\n'
-                  '  - file: photos/x-00920.jpg\n    role: primary\n')))
+                  '  - file: photos/x-00920.jpg\n    is_primary: true\n')))
 
         result = doctor.run_doctor(self.root, self._fha_config())
         report = '\n'.join(result.data['lines'])
@@ -1528,7 +1528,6 @@ class WrongMainImageTests(unittest.TestCase):
     # The shape `fha process` wrote for a front/back pair while #200 was live.
     BUG_ERA = ('files:\n'
                '  - file: photos/1950/Smith-Farm-01400-back.tif\n'
-               '    role: primary\n'
                '    is_primary: true\n'
                '  - file: photos/1950/smith-farm-01400.tif\n'
                '    role: farm-01400\n')
@@ -1538,7 +1537,6 @@ class WrongMainImageTests(unittest.TestCase):
         # put front and back level and the bug-era record stayed silent.
         self._record('files:\n'
                      '  - file: photos/1950/Reunion-1950s-back.jpg\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/Reunion-1950s.jpg\n'
                      '    role: variant\n')
@@ -1549,7 +1547,6 @@ class WrongMainImageTests(unittest.TestCase):
     def test_a_print_b_pair_is_still_reported(self) -> None:
         self._record('files:\n'
                      '  - file: photos/1950/Smith-Farm-01400b-back.tif\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/Smith-Farm-01400b.tif\n'
                      '    role: variant\n')
@@ -1572,7 +1569,6 @@ class WrongMainImageTests(unittest.TestCase):
         # #210 review: x-00100.xmp sorted ahead of the marked back scan.
         self._record('files:\n'
                      '  - file: photos/1950/x-00100-back.jpg\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/x-00100.xmp\n'
                      '    role: metadata\n')
@@ -1584,7 +1580,6 @@ class WrongMainImageTests(unittest.TestCase):
         # O'Brien opens an unclosed string and (1950) is a subexpression.
         self._record('files:\n'
                      "  - file: photos/1950/O'Brien-Farm_(1950)-back.tif\n"
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      "  - file: photos/1950/O'Brien-Farm_(1950).tif\n"
                      '    role: variant\n')
@@ -1655,7 +1650,6 @@ class WrongMainImageTests(unittest.TestCase):
     def test_correct_record_is_silent(self) -> None:
         self._record('files:\n'
                      '  - file: photos/1950/smith-farm-01400.tif\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/smith-farm-01400-back.tif\n'
                      '    role: back\n')
@@ -1671,7 +1665,6 @@ class WrongMainImageTests(unittest.TestCase):
                      '  - file: photos/1950/smith-farm-01400.jpg\n'
                      '    role: variant\n'
                      '  - file: photos/1950/smith-farm-01400.tif\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/smith-farm-01400-back.tif\n'
                      '    role: back\n')
@@ -1685,7 +1678,6 @@ class WrongMainImageTests(unittest.TestCase):
         # compare. Nothing to report.
         self._record('files:\n'
                      '  - file: photos/1950/smith-house.tif\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/smith-farm-01400-back.tif\n'
                      '    role: back\n'
@@ -1698,7 +1690,6 @@ class WrongMainImageTests(unittest.TestCase):
     def test_print_b_as_main_image_is_reported(self) -> None:
         self._record('files:\n'
                      '  - file: photos/x-00100b.jpg\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/x-00100.jpg\n'
                      '    role: variant\n')
@@ -1713,7 +1704,6 @@ class WrongMainImageTests(unittest.TestCase):
         # the full path instead.
         self._record('files:\n'
                      '  - file: photos/1950/x-00100-back.jpg\n'
-                     '    role: primary\n'
                      '    is_primary: true\n'
                      '  - file: photos/1950/x-00100.jpg\n'
                      '    role: variant\n'
