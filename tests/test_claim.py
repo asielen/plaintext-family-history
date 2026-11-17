@@ -3554,50 +3554,59 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         self.assertEqual(self._living(self.john), 'unknown')
 
     def test_family_plot_burial_never_marks_the_narrator(self) -> None:
-        # "The family plot holds Ada and Mary, with a space for me."
+        # "The family plot holds Ada and Mary, with a space for me." The
+        # narrator carries a part too (SPEC §8.3: everyone on an event claim).
         _death_source(self.root, _claim_item(
             'C-aa11bb22cc', 'burial', f'{_ADA}, {_MARY}, {_JOHN}',
-            roles=f'  roles:\n    deceased: [{_ADA}, {_MARY}]\n'))
+            roles=f'  roles:\n    deceased: [{_ADA}, {_MARY}]\n    informant: [{_JOHN}]\n'))
         result = self._accept('C-aa11bb22cc')
         self.assertEqual(self._living(self.ada), 'false')
         self.assertEqual(self._living(self.mary), 'false')
         self.assertEqual(self._living(self.john), 'unknown')
         self.assertNotIn('John Hartley', self._text(result))
 
-    def test_living_true_is_left_alone_with_a_warning(self) -> None:
-        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
-        before = self.thomas.read_bytes()
+    def test_a_death_for_someone_marked_living_is_not_accepted(self) -> None:
+        # A death recorded for a person marked living is how a mother's
+        # obituary filed under her son's name makes him dead. Refused, not
+        # accepted with a warning a reader may miss - nothing is written.
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
+        before = (self.thomas.read_bytes(), source.read_bytes())
         result = self._accept('C-aa11bb22cc')
-        self.assertEqual(self.thomas.read_bytes(), before)
-        warnings = [m.text for m in result.messages if m.level == 'warning']
-        self.assertEqual(len(warnings), 1, warnings)
-        self.assertIn('Thomas Hartley', warnings[0])
-        self.assertIn('marked as living', warnings[0])
-        self.assertIn(f'fha person set-living {_THOMAS.lower()} false', warnings[0])
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual((self.thomas.read_bytes(), source.read_bytes()), before)
+        text = self._text(result)
+        self.assertIn('records the DEATH of Thomas Hartley', text)
+        self.assertIn('marked as living', text)
+        self.assertIn(f'fha person set-living {_THOMAS.lower()} false', text)
 
-    def test_multi_person_burial_with_no_roles_marks_nobody_and_warns(self) -> None:
-        _death_source(self.root, _claim_item('C-aa11bb22cc', 'burial',
-                                             f'{_ADA}, {_MARY}, {_JOHN}'))
+    def test_a_burial_naming_several_people_with_no_roles_is_not_accepted(self) -> None:
+        # Whose burial? Accepting would make it a fact without saying whose
+        # (SPEC §8.3): refused, nothing written, the fix named.
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'burial',
+                                                      f'{_ADA}, {_MARY}, {_JOHN}'))
+        before = source.read_bytes()
         result = self._accept('C-aa11bb22cc')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(source.read_bytes(), before)
         for path in (self.ada, self.mary, self.john):
             self.assertEqual(self._living(path), 'unknown')
-        warnings = [m.text for m in result.messages if m.level == 'warning']
-        self.assertEqual(len(warnings), 1, warnings)
-        self.assertIn('does not say which of them died', warnings[0])
-        self.assertIn('roles: {deceased:', warnings[0])
+        text = self._text(result)
+        self.assertIn('does not say whose burial it is', text)
+        self.assertIn('deceased: [p-', text)
 
-    def test_by_elimination_is_reported_but_not_changed(self) -> None:
+    def test_a_death_read_only_by_elimination_is_not_accepted(self) -> None:
         # The older shape SPEC §8.3 still reads: nobody marked deceased:, the
-        # widower has a role, so Ada is read as the one who died. The site
-        # shows that, but one forgotten role must never publish a living
-        # person, so the flag is left for the human.
+        # widower has a role, so Ada would be read as the one who died. One
+        # forgotten role is how a record lands on the wrong person, so a
+        # claim of this shape is no longer accepted until it says.
         _death_source(self.root, _claim_item(
             'C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
             roles=f'  roles:\n    spouse: [{_JOHN}]\n'))
         result = self._accept('C-aa11bb22cc')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self._living(self.ada), 'unknown')
         self.assertEqual(self._living(self.john), 'unknown')
-        self.assertIn(f'fha person set-living {_ADA.lower()} false', self._text(result))
+        self.assertIn(f'gives no part to {_ADA.lower()}', self._text(result))
 
     def test_negated_death_marks_nobody(self) -> None:
         # "We searched and Ada did not die then" says nobody died. Mary's
@@ -3608,7 +3617,8 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
             + _claim_item('C-bb22cc33dd', 'death', _MARY))
         result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
         self.assertEqual(self._living(self.ada), 'unknown')
-        self.assertNotIn('Ada Hartley', self._text(result))
+        self.assertNotIn('Ada Hartley is now marked', self._text(result))
+        self.assertIn('records that there was NO DEATH of Ada Hartley', self._text(result))
         self.assertEqual(self._living(self.mary), 'false')
 
     def test_already_not_living_is_unchanged_and_silent(self) -> None:
@@ -3616,7 +3626,8 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         before = self.edith.read_bytes()
         result = self._accept('C-aa11bb22cc')
         self.assertEqual(self.edith.read_bytes(), before)
-        self.assertNotIn('Edith Hartley', self._text(result))
+        self.assertNotIn('Edith Hartley is now marked', self._text(result))
+        self.assertIn('records the DEATH of Edith Hartley', self._text(result))
         self.assertNotIn(str(self.edith), result.changed)
         self.assertEqual(result['marked_not_living'], [])
 
@@ -3701,6 +3712,26 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
         self.assertEqual(self._living(self.ada), 'false')
 
+    def test_claim_new_will_not_mint_an_accepted_death_without_saying_whose(self) -> None:
+        # `claim new` writes no roles:, so a death naming two people cannot
+        # say who died: it may be minted suggested, never straight to accepted.
+        source = _death_source(self.root, '')
+        before = source.read_bytes()
+        result = claim.run_claim_new(self.root, source_id='S-1111111111',
+                                     claim_type='death', value='Ada died 1980',
+                                     persons=[_ADA, _JOHN], status='accepted')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(source.read_bytes(), before)
+        self.assertIn('--status suggested', self._text(result))
+        self.assertEqual(self._living(self.ada), 'unknown')
+
+    def test_an_accept_says_whose_event_it_records(self) -> None:
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
+            roles=f'  roles:\n    deceased: [{_ADA}]\n    spouse: [{_JOHN}]\n'))
+        result = self._accept('C-aa11bb22cc')
+        self.assertIn('c-aa11bb22cc records the DEATH of Ada Hartley', self._text(result))
+
     def test_claim_new_suggested_or_negated_marks_nobody(self) -> None:
         _death_source(self.root, '')
         claim.run_claim_new(self.root, source_id='S-1111111111', claim_type='death',
@@ -3734,17 +3765,20 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         # The accept and lint W136 read one rule (`_lib.death_claim_deceased`):
         # after the accept, lint reports exactly the people it did not mark.
         import lint
+        # Ada is marked on accept; Mary's burial is accepted with
+        # --keep-living, so she is the one lint reports.
         _death_source(self.root,
                       _claim_item('C-aa11bb22cc', 'death', _ADA)
-                      + _claim_item('C-bb22cc33dd', 'death', _THOMAS)
                       + _claim_item('C-cc33dd44ee', 'burial', f'{_MARY}, {_JOHN}',
-                                    roles=f'  roles:\n    spouse: [{_JOHN}]\n'))
+                                    roles=f'  roles:\n    deceased: [{_MARY}]\n'
+                                          f'    spouse: [{_JOHN}]\n'))
         (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
                                             encoding='utf-8')
-        self._accept('C-aa11bb22cc', 'C-bb22cc33dd', 'C-cc33dd44ee')
+        self._accept('C-aa11bb22cc')
+        self._accept('C-cc33dd44ee', keep_living=True)
         findings, _reg = lint._run_lint_core(self.root, load_fha_yaml(self.root))
         flagged = sorted(f.message.split(' (')[0] for f in findings if f.code == 'W136')
-        self.assertEqual(flagged, ['Mary Hartley', 'Thomas Hartley'])
+        self.assertEqual(flagged, ['Mary Hartley'])
 
 
 class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
@@ -3813,11 +3847,17 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
 
     # 4. One claim naming the person is enough, whatever order the batch is in.
     def test_a_naming_claim_after_a_by_elimination_one_still_marks(self) -> None:
+        # The by-elimination claim is now refused (SPEC §8.3), so the batch
+        # stops before it; the claim naming Ada outright, accepted on its
+        # own, still marks her.
         _death_source(self.root,
                       _claim_item('C-aa11bb22cc', 'death', f'{_ADA}, {_JOHN}',
                                   roles=f'  roles:\n    spouse: [{_JOHN}]\n')
                       + _claim_item('C-bb22cc33dd', 'death', _ADA))
-        result = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        refused = self._accept('C-aa11bb22cc', 'C-bb22cc33dd')
+        self.assertNotEqual(refused.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._living(self.ada), 'unknown')
+        result = self._accept('C-bb22cc33dd')
         self.assertEqual(self._living(self.ada), 'false')
         self.assertNotIn('does not name anyone as `deceased:`', self._text(result))
 
@@ -3867,8 +3907,8 @@ class DeathClaimReviewFixTests(_DeathFixture, unittest.TestCase):
 
     # 8. Plain English: "so he stays out", never "so him stays out".
     def test_warnings_use_a_subject_pronoun(self) -> None:
-        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
-        result = self._accept('C-aa11bb22cc')
+        _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _JOHN))
+        result = self._accept('C-aa11bb22cc', keep_living=True)
         self.assertIn('so he stays out', self._text(result))
         self.assertNotIn('so him stays', self._text(result))
 

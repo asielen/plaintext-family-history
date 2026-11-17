@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "6fbd25982ab412fc336ffba2328c73801d4cc04a9d74942273181bce029f147e",
+      "sha256": "b7e216c4d240d2d306fb4e49e391314b3b93e33afc4b5e17b4e540e775ba3a46",
       "spec_version": "2.2",
       "src": "tools/_lib.py"
     },
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "386db51fe64606548b6e3430a7fd65a42fd504f295169dbb488c704cbac301b7",
+      "sha256": "2b787e4c14245da97074f695ca1740a6736ab8f49657ab19abb6da1328a9d365",
       "spec_version": "2.2",
       "src": "tools/claim.py"
     },
@@ -630,7 +630,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ced7136d33637c6b8289c9809c16c9e98a8f6f6fb1a6728216e1bbcf55415d6e",
+      "sha256": "fba4194c121631c16c220e9012a29812fd65caa6eb73c9ca17e6e0e137325e16",
       "spec_version": "2.2",
       "src": "tools/lint.py"
     },
@@ -1016,14 +1016,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "37cf2de61a3165c4e30f3e601b273666a40015c1f8af9125af1d0a6cbc207545",
+      "sha256": "d7c987280e3320c475af549f206b075aacc1e75cfea1c471942accbf6a6fe797",
       "spec_version": "2.2",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "b5524eed8ef873dd332f1f18d22b1371e71acaa392a27827b78e0838fef75c6c",
+      "sha256": "16ea317ac959ca63bd73626f62c170554b848926c138ad86d92dc8f6edd9f82b",
       "spec_version": "2.2",
       "src": "TOOLING.md"
     },

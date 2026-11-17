@@ -223,6 +223,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E018 | E | AGENTS.md references a deprecated command (`fha promote`) or photo-rename instructions. Skills are not yet scanned. | §20 |
 | E019 | E | A value outside its closed vocabulary: claim `status` not in the §8.1 set, or `confidence` not `high`/`medium`/`low`. The status set is `suggested`, `accepted`, `disputed`, `rejected`, `superseded`. | §8.1, §8.5 |
 | E020 | E | A merge the tools cannot follow: `merged_into:` names no person record, or merges loop. The tombstone's claims stay put and are missing from every timeline, tree and export until fixed. | §9 |
+| E021 | E | An accepted `birth`, `baptism`, `death`, `burial`, `marriage` or `divorce` claim naming two or more people that leaves someone without a role, or names no one in the event's subject role (`child`, `deceased`, `spouse`) - `_lib.event_role_gaps`. W125, W126 and W132 still say what the same gap costs. | §8.3 |
 | W101 | W | Vitals gaps per person (the completeness report). | §9 |
 | W102 | W | Suggested-claim backlog per source: drafts with no `reviewed:` date. | §8.1 |
 | W103 | W | Stale couple-folder bracket list against the parent edges the index derives (accepted, non-negated `relationship` and `birth` claims, one shared rule); or a couple folder name missing its `+ second spouse` half. Add-only: an existing `+ …`, hand-made base or placeholder base is never rewritten. Fix: `fha views brackets --fix`. | §12 |
@@ -268,6 +269,9 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W144 | W | An `ai_passes:` list a reader cannot use: not a list, or an entry that is not a mapping with `date` (EDTF), `by` and `task`. | §14 |
 | W145 | W | A source marks more than one file as its main file (`is_primary: true`). Fix: keep it on the one a reader opens first; for a photo, `fha source set-primary`. | §14 |
 | W146 | W | One `h-` id written on two working answers (question entries in `notes/questions.md` or research files, or old `## Hypotheses` entries). An h-id is never reused; the index keeps one entry whole, so the other guess drops out of `fha find` and the report. Fix: keep the id on one entry, mint a new one for the other (`fha id mint H`). | §7, §17b |
+| W147 | W | E021's gap on a `suggested` claim: fix it before accepting - `fha claim` refuses to accept it. | §8.3 |
+| W148 | W | A source titled `<Name> - …` after a person on its `people:` who is not the deceased of its death or burial claim, with a title about an obituary, death, funeral, burial or grave: index collections file an obituary under every name in it, so the title reads as that person's death. Retitle it after the person it is about. | §8.3 |
+| W149 | W | Any other claim (not an event, not `relationship`) naming two or more people that gives someone no role. A warning only - it blocks no accept. Fix: `roles:` with `subject:` for whose fact it is - everyone, when nobody is primary (a party they all attended) - or `head`/`household_member` on a census, the others by their part. | §8.3 |
 | W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
@@ -401,6 +405,11 @@ fha claim new --source s-id --type TYPE --value "…" [--date DATE]
 - Empty `--value` refused; empty `--date`/`--place`/`--place-text`/`--anchor`/`--notes` refused pointing at `--clear`; `--persons ""` refused.
 
 **Surgical write.** Only the named claim's entry in its source's `## Claims` block changes; siblings, key order and comments survive. Found by scanning `sources/`, so a stale index never blocks it; run `fha index` after. Before writing, the block is re-parsed and compared: it must parse, the change must have landed, a cleared key be gone, nothing else in this claim or any other claim changed. Otherwise refuse, nothing written, naming cause and file. `fha confirm`'s claim edits share this guard. `changed[]` names the file (empty under `--dry-run`).
+
+**Accepting says whose event it is, and refuses the wrong person** (SPEC §8.3). Moving a `birth`, `baptism`, `death`, `burial`, `marriage` or `divorce` claim to `accepted` (one claim, a batch, or `claim new --status accepted`):
+- refuses, nothing written, a claim naming two or more people that leaves someone without a role or names no one in the subject role (`_lib.event_role_gaps`, lint E021/W147) - add `roles:`, then accept;
+- refuses a `death`/`burial` whose deceased is marked `living: true` - `fha person set-living <p-id> false` first if they died; otherwise the record is someone else's;
+- on success, says it in plain words: "c-… records the DEATH of Beverly Knipscheer (p-…)."
 
 **Batches.** `fha claim c-a c-b --status accepted`:
 - status only - several distinct ids with a field flag or `--clear` are refused;

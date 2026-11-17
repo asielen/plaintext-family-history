@@ -275,6 +275,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    event_role_gaps,      # an event claim naming several people says whose event it is (SPEC §8.3)
+    VITAL_SUBJECT_ROLES,
+    vital_subjects,
+    roles_by_person,
+    resolve_claim_persons_with_roles,
     link_list_lines,
     record_display_names,
     yaml_link_item,
@@ -1543,6 +1548,81 @@ def _death_reading_of(claim: dict) -> tuple[str, DeceasedReading] | None:
     return ctype, claim_death_reading(claim)
 
 
+_EVENT_WORDS = {'birth': 'BIRTH', 'baptism': 'BAPTISM', 'death': 'DEATH',
+                'burial': 'BURIAL', 'marriage': 'MARRIAGE', 'divorce': 'DIVORCE'}
+
+
+def _event_subjects(claim: dict) -> tuple[str, list[str]] | None:
+    """(type, the people the event is about) for an event claim, else None.
+    One person and no roles: that person. Several: whoever carries the
+    event's subject role (`vital_subjects`)."""
+    ctype = str(claim.get('type') or '').strip().lower()
+    if ctype not in VITAL_SUBJECT_ROLES:
+        return None
+    pairs = resolve_claim_persons_with_roles(claim, None)
+    subjects = vital_subjects(ctype, pairs)
+    if subjects is None:
+        subjects = list(roles_by_person(pairs))
+    return ctype, list(subjects)
+
+
+def _accept_refusal(archive_root: Path, claim: dict) -> str | None:
+    """Why this claim must not be accepted as it stands, or None (SPEC §8.3).
+
+    Accepting is the moment a record becomes fact, so it is where a record
+    put on the wrong person is stopped: a son's death read as his father's, a
+    living person recorded as dead. Two refusals, each with its way out:
+      - an event claim naming several people that does not say whose event
+        it is (`event_role_gaps`) - add the roles, then accept;
+      - a death or burial whose deceased is marked `living: true` - if they
+        did die, `fha person set-living <P-id> false` first; if not, the
+        record is about someone else."""
+    ctype = str(claim.get('type') or '').strip().lower()
+    cid = _claim_label(claim)
+    gaps = event_role_gaps(ctype, resolve_claim_persons_with_roles(claim, None))
+    if gaps is not None and (gaps[0] or not gaps[1]):
+        unroled, _has = gaps
+        who = (f'gives no part to {", ".join(fmt_id_display(p) for p in unroled)}'
+               if unroled else f'names no one as the {VITAL_SUBJECT_ROLES[ctype]}')
+        return (f'{cid} was not accepted: it names several people but {who}, so it '
+                f'does not say whose {ctype} it is - this is how a record ends up on '
+                'the wrong person. Add a roles: map giving everyone a part (e.g. '
+                f'`{VITAL_SUBJECT_ROLES[ctype]}: [p-…]` for the person the {ctype} is '
+                'about), then accept it again.')
+    if ctype in DEATH_CLAIM_TYPES and str(claim.get('negated')).strip().lower() != 'true':
+        found = _event_subjects(claim)
+        for pid in (found[1] if found else []):
+            _path, meta = _read_person(archive_root, pid)
+            if meta and normalize_living(meta.get('living')) == 'true':
+                name = str(meta.get('name') or '').strip() or fmt_id_display(pid)
+                return (f'{cid} was not accepted: it records the {ctype.upper()} of {name} '
+                        f'({fmt_id_display(pid)}), who is marked as living. If {name} has '
+                        f'died, run `fha person set-living {fmt_id_display(pid)} false` '
+                        'first, then accept it again; if not, this record is about '
+                        'someone else - correct its persons: and roles:.')
+    return None
+
+
+def _event_reading_line(archive_root: Path, claim: dict) -> str | None:
+    """'c-… records the DEATH of Beverly Knipscheer (p-…).' - said on every
+    accept of an event claim, so whoever accepts reads in plain words whose
+    event they just made a fact."""
+    found = _event_subjects(claim)
+    if not found or not found[1]:
+        return None
+    ctype, pids = found
+    names = []
+    for pid in pids:
+        _path, meta = _read_person(archive_root, pid)
+        name = str((meta or {}).get('name') or '').strip()
+        names.append(f'{name} ({fmt_id_display(pid)})' if name else fmt_id_display(pid))
+    who = " and ".join(names)
+    if str(claim.get('negated')).strip().lower() == 'true':
+        return (f'{_claim_label(claim)} records that there was NO {_EVENT_WORDS[ctype]} '
+                f'of {who} (a searched-for absence).')
+    return f'{_claim_label(claim)} records the {_EVENT_WORDS[ctype]} of {who}.'
+
+
 def _read_person(archive_root: Path, pid: str) -> tuple[Path | None, dict | None]:
     path = find_person_record_path(archive_root, pid)
     if path is None:
@@ -2300,6 +2380,10 @@ def run_claim(
     if _claims_read is not None:
         _claims_read[cid] = (read_claim, written_claim)
     was_accepted = str(read_claim.get('status') or '').strip().lower() == 'accepted'
+    if status == 'accepted' and not was_accepted:
+        refusal = _accept_refusal(archive_root, _effective_claim(written_claim))
+        if refusal is not None:
+            return _fail(result, 'refused', refusal)
     accepted_now = None
     still_marked: tuple[dict, dict | None] | None = None
     if not _in_batch:
@@ -2375,6 +2459,10 @@ def run_claim(
 
     result.data['status'] = 'ok'
     result.add('info', f'Set {summary}', path=record_path)
+    if status == 'accepted' and not was_accepted:
+        said = _event_reading_line(archive_root, _effective_claim(written_claim))
+        if said:
+            result.add('info', said)
     if registry_error_note is not None:
         result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=False))
     for line in echo_lines:
@@ -3185,6 +3273,12 @@ def run_claim_new(
         accepted_now = claim_in_text(after, cid) or {
             'id': cid, 'type': claim_type, 'persons': list(persons_norm or []),
             'status': 'accepted', 'negated': bool(negated)}
+        refusal = _accept_refusal(archive_root, accepted_now)
+        if refusal is not None:
+            return _fail(result, 'refused', refusal.replace(
+                'was not accepted', 'was not minted as accepted') + ' (Mint it with '
+                '`--status suggested`, give everyone a part in its roles:, then accept '
+                'it.) Nothing was written.')
 
     if dry_run:
         result.data['status'] = 'ok'
