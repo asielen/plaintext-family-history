@@ -4,9 +4,9 @@
 # profile is the "hand this to grandma" half; this is your desk, for when one
 # section isn't enough room). Most people never need this file - fha person
 # new/promote no longer create it automatically. Copy it beside a person's
-# profile and rename it to:   surname__given_research_P-yourcode.md
+# profile and rename it to:   surname__given_research_p-yourcode.md
 # (double underscore, same as the profile).
-id: P-__________   # the person's code, same as on their profile
+id: p-__________   # the person's code, same as on their profile
 created: 2026-01-01
 ---
 
@@ -22,12 +22,5 @@ created: 2026-01-01
 
 ## Open Questions
 
-*(what you do not know yet)*
-
-## Hypotheses
-
-*(testable beliefs, not yet facts - a guess is never a claim)*
-
-## Research Log
-
-*(searches you have run, including empty ones, so nothing is fruitlessly re-searched)*
+*(what you do not know yet - one `## Q:` entry per question, in the same form as
+`notes/questions.md`; a guess you are working from goes in the same entry)*

@@ -20,10 +20,19 @@ SKIP_SUFFIX = (".sqlite", ".sqlite-journal", ".pyc")
 # must stay out of the downloads or they bloat and stop being reproducible.
 SKIP_PART = (".cache", "__pycache__", ".DS_Store", "Thumbs.db")
 
-# The full system showcase carries the tool design too; the by-hand starters omit
-# TOOLING.md (irrelevant to a no-tools user) but keep the law + agent docs.
-FULL_DOCS = ["SPEC.md", "TOOLING.md", "AGENTS.md", "CLAUDE.md", "docs/USING_WITH_OBSIDIAN.md"]
-HAND_DOCS = ["SPEC.md", "AGENTS.md", "CLAUDE.md", "docs/USING_WITH_OBSIDIAN.md"]
+# The full system showcase carries the tool design too, laid out the way an
+# installed archive keeps it (SPEC §12: AGENTS.md and CLAUDE.md at the root, every
+# other document under docs/ - where the example's START_HERE.md points). The
+# by-hand starters omit TOOLING.md (irrelevant to a no-tools user) but keep the
+# law + agent docs beside their README.
+# Each entry is (repo path, path inside the sample).
+FULL_DOCS = [("SPEC.md", "docs/SPEC.md"), ("TOOLING.md", "docs/TOOLING.md"),
+             ("docs/GETTING_STARTED.md", "docs/GETTING_STARTED.md"),
+             ("docs/CHEATSHEET.md", "docs/CHEATSHEET.md"),
+             ("docs/USING_WITH_OBSIDIAN.md", "docs/USING_WITH_OBSIDIAN.md"),
+             ("AGENTS.md", "AGENTS.md"), ("CLAUDE.md", "CLAUDE.md")]
+HAND_DOCS = [("SPEC.md", "SPEC.md"), ("AGENTS.md", "AGENTS.md"), ("CLAUDE.md", "CLAUDE.md"),
+             ("docs/USING_WITH_OBSIDIAN.md", "USING_WITH_OBSIDIAN.md")]
 
 SAMPLES = [
     ("example-archive", FULL_DOCS),
@@ -55,10 +64,10 @@ def main() -> None:
                 if included(rel):
                     z.write(f, f"{name}/{rel}")
                     n += 1
-            for d in docs:
+            for d, target in docs:
                 doc = REPO / d
                 if doc.exists():
-                    z.write(doc, f"{name}/{doc.name}")
+                    z.write(doc, f"{name}/{target}")
                     n += 1
                 else:
                     print(f"  WARN {name}: missing bundled doc {d}")

@@ -4004,7 +4004,7 @@ class ClearFieldTests(unittest.TestCase):
     must add no lint finding and an empty value must not reach the file."""
 
     CID = 'C-1b9d4e7a30'   # 1880 census birth: carries place_text, notes; no anchor
-    REL = Path('sources/census/1880-census-fairview-hartley-household_S-4f5f215e60.md')
+    REL = Path('sources/census/1880-census-fairview-hartley-household_s-4f5f215e60.md')
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -4044,7 +4044,7 @@ class ClearFieldTests(unittest.TestCase):
         lint_before = self._lint_lines()
         result = claim.run_claim(self.root, claim_id=self.CID, clear=['place_text'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: "New York"'))
+        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: New York'))
         self.assertNotIn('place_text', self._claim())
         self.assertEqual(self._lint_lines(), lint_before)
 
@@ -4053,7 +4053,7 @@ class ClearFieldTests(unittest.TestCase):
                                  clear=['place-text', 'information', 'evidence'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         expected = self.before.decode('utf-8')
-        for line in ('  place_text: "New York"', '  information: secondary',
+        for line in ('  place_text: New York', '  information: secondary',
                      '  evidence: indirect'):
             expected = expected.replace(line + '\n', '', 1)
         self.assertEqual(self.path.read_bytes(), expected.encode('utf-8'))
@@ -4083,7 +4083,7 @@ class ClearFieldTests(unittest.TestCase):
                                  dry_run=True)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         joined = '\n'.join(m.text for m in result.messages)
-        self.assertIn('-  place_text: "New York"', joined)
+        self.assertIn('-  place_text: New York', joined)
         self.assertIn('place_text removed', joined)
         self.assertEqual(self.path.read_bytes(), self.before)
 
@@ -4099,7 +4099,7 @@ class ClearFieldTests(unittest.TestCase):
         result = claim.run_claim(self.root, claim_id=self.CID,
                                  clear=['anchor', 'place_text'])
         self.assertEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: "New York"'))
+        self.assertEqual(self.path.read_bytes(), self._without_line('  place_text: New York'))
 
     def test_required_fields_cannot_be_cleared(self) -> None:
         for field, flag in (('value', '--value'), ('confidence', '--confidence'),

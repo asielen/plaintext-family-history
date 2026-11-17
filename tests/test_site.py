@@ -10118,7 +10118,7 @@ class MarkedLivingAfterTaggingTests(unittest.TestCase):
     `fha photoindex tag-person` writes), and `fha site` twice into the same
     folder, as a person rebuilding their site would."""
 
-    FRANCES = 'P-83e768cacb'
+    FRANCES = 'p-83e768cacb'
     # Each kind of picture, by the photo the example archive shows that way.
     HERO = 'coronado-tent-city-postcard'      # fha.yaml site: hero:
     EMBED = 'hartley-family-gathering'        # notes/home.md ![[…]]
@@ -10179,11 +10179,15 @@ class MarkedLivingAfterTaggingTests(unittest.TestCase):
                         self.media_before)
         # The state the bug needs: the catalog is out of date, not absent.
         self.assertEqual(self.catalog_status, 'stale')
-        # After: gone from media/ and from every page.
+        # After: gone from media/ and from every page. A source page may
+        # still name the file as text beside "image omitted" - the picture
+        # is what must not publish, so look for its derivative and any link.
         self.assertEqual(self.after['status'], 'ok', self.after['messages'])
         self.assertFalse([n for n in self.media_after if n.startswith(stem + '_')],
                          self.media_after)
-        self.assertNotIn(stem, self.pages_after)
+        self.assertNotIn(stem + '_', self.pages_after)
+        self.assertNotIn(f'/{stem}.', self.pages_after)
+        self.assertNotIn(f'"{stem}.', self.pages_after)
 
     def test_the_homepage_hero_is_withheld(self):
         self._assert_withheld_after_marking_living(self.HERO)
@@ -10221,8 +10225,8 @@ class WithheldSourcePictureTests(unittest.TestCase):
     places with the catalog fresh, out of date or missing. The source's own
     page was withheld the whole time."""
 
-    THOMAS = 'P-de957bcda1'
-    SID = 'S-5h7k9m2p4s'
+    THOMAS = 'p-de957bcda1'
+    SID = 's-5h7k9m2p4s'
     STEM = 'private-snap'
 
     @classmethod
@@ -10267,7 +10271,7 @@ class WithheldSourcePictureTests(unittest.TestCase):
             photoindex.run_scan(root, cfg)
             cls._build(root, cfg, tmp, 'fresh')
             # Any record edit leaves the catalog out of date (#48).
-            frances = next(root.glob('people/**/hartley__frances_P-83e768cacb.md'))
+            frances = next(root.glob('people/**/hartley__frances_p-83e768cacb.md'))
             frances.write_text(frances.read_text(encoding='utf-8') + '\n', encoding='utf-8')
             index_mod.build_index(root, cfg)
             cls._build(root, cfg, tmp, 'stale')

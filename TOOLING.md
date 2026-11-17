@@ -1554,7 +1554,7 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 **Testing invariants.**
 - `tests/fixtures/` is the clean golden fixture (lint exit 0); broken fixtures live in `tests/fixtures/broken-{CODE}/`, one per lint code.
-- `example-archive/` may exit 1 with exactly: W101 (Thomas Hartley's death record absent), W102 (one suggested claim on the family-portrait source, review demo), and ten W119 direct-line-stub leads. These must not change without a deliberate change; this is the canonical statement of the baseline.
+- `example-archive/` may exit 1 with exactly: three W101 (Thomas Hartley's death record absent; Susan Cole and Charley Layng, the two curated `people/connections/` records, have no vitals on file), W102 (one suggested claim on the Thomas Hartley portrait source, review demo), and ten W119 direct-line-stub leads. These must not change without a deliberate change; this is the canonical statement of the baseline.
 - Every tool ships `--dry-run`. `fha lint` must run clean on the pilot before a tool is done. `tools/README.md` is the build-status record.
 
 ---

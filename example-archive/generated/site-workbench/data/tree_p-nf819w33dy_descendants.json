@@ -1,9 +1,9 @@
 {
-  "seed": "P-nf819w33dy",
+  "seed": "p-nf819w33dy",
   "mode": "descendants",
   "nodes": [
     {
-      "p_id": "P-nf819w33dy",
+      "p_id": "p-nf819w33dy",
       "name": "Louisa May Denton",
       "sex": "F",
       "vitals": {
@@ -14,7 +14,7 @@
       "photo": null
     },
     {
-      "p_id": "P-htyn3mpg9g",
+      "p_id": "p-htyn3mpg9g",
       "name": "Ada Jane Hartley",
       "sex": "F",
       "vitals": {
@@ -28,9 +28,9 @@
   "edges": [
     {
       "type": "child",
-      "from": "P-nf819w33dy",
-      "to": "P-htyn3mpg9g",
-      "claim_id": "C-5taq0e7251",
+      "from": "p-nf819w33dy",
+      "to": "p-htyn3mpg9g",
+      "claim_id": "c-5taq0e7251",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",

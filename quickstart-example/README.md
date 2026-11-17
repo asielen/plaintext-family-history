@@ -39,7 +39,7 @@ understands wikilinks (such as **Obsidian**), these become clickable and can be
 drawn as a family graph. That web of links - people to parents, sources to people -
 *is* the family tree.
 
-Notice there are **no ID codes** anywhere (no `P-...` or `S-...`). A real archive
+Notice there are **no ID codes** anywhere (no `p-...` or `s-...`). A real archive
 can have a tool add those later for durability, but they're never required - a
 human-built archive linked purely by name is completely valid.
 

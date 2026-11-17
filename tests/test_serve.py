@@ -493,29 +493,31 @@ class ApiRunTests(_ServeCase):
         # not only the CLI: a claim_ids list routes through run_claim_batch, so
         # API/workbench callers can accept several claims in one status-only call
         # and get the all-ID echo. Previously claim.review took a single claim_id.
+        # The example archive keeps one claim awaiting review, so the batch
+        # disputes two accepted ones instead - the same grouped status write.
         import sqlite3
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         try:
             ids = [r[0] for r in conn.execute(
-                "SELECT id FROM claims WHERE status != 'accepted' LIMIT 2").fetchall()]
+                "SELECT id FROM claims WHERE status = 'accepted' ORDER BY id LIMIT 2").fetchall()]
         finally:
             conn.close()
-        self.assertEqual(len(ids), 2, 'fixture needs two non-accepted claims')
+        self.assertEqual(len(ids), 2, 'fixture needs two accepted claims')
         s, d, _h = self.post_run(
-            'claim.review', {'claim_ids': ids, 'status': 'accepted'}, False)
+            'claim.review', {'claim_ids': ids, 'status': 'disputed'}, False)
         self.assertEqual(s, 200)
         payload = json.loads(d)
         self.assertTrue(payload['ok'], payload)
-        self.assertIn('--status accepted', payload['cli_echo'])
+        self.assertIn('--status disputed', payload['cli_echo'])
         for cid in ids:                                  # echo names every id
             self.assertIn(cid, payload['cli_echo'])
-        # Both landed as accepted in their source records.
+        # Both landed as disputed in their source records.
         for cid in ids:
             found = False
             for f in (self.root / 'sources').rglob('*.md'):
                 t = f.read_text(encoding='utf-8')
                 if cid.lower() in t.lower():
-                    self.assertIn('status: accepted', t)
+                    self.assertIn('status: disputed', t)
                     found = True
                     break
             self.assertTrue(found, f'{cid} not found in any source record')
@@ -689,6 +691,7 @@ class ApiRunTests(_ServeCase):
         # round-trip key the same way, threaded through to
         # `_mint_one_source_id`'s override.
         target = self.root / 'documents' / 'transcripts' / 'new-interview.txt'
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text('a fresh transcript', encoding='utf-8')
         s, d, _h = self.post_run(
             'process.file', {'file': 'documents/transcripts/new-interview.txt'}, True)
@@ -722,8 +725,9 @@ class ApiRunTests(_ServeCase):
         # harness in this repo); this locks in the server-side contract
         # those templates now drive - `place` alone reaches `run_claim` and
         # writes a real `place:` L-id, exactly like `fha claim --place`.
-        row = self.a_suggested_claim()
-        cid = row[0]
+        # The obituary's education claim: written as "Manhattan, Kansas",
+        # with no registry place yet.
+        cid = 'c-fe0000003c'
         s, d, _h = self.post_run(
             'claim.review', {'claim_id': cid, 'place': 'L-7c1a9f4e22'}, False)
         self.assertEqual(s, 200)
@@ -742,7 +746,7 @@ class ApiRunTests(_ServeCase):
         # backfilling place: never alters place_text; P2 codex finding,
         # round 4, PR #31 - the old switch-removes-the-other behavior made
         # any workbench claim edit erase it).
-        self.assertIn('place_text: "Fairview, Kansas"', text)
+        self.assertIn('place_text: Manhattan, Kansas', text)
 
 
 class DuplicateNameMintTests(_ServeCase):
@@ -2229,7 +2233,7 @@ class PlaceVerbTests(_ServeCase):
         import yaml as _yaml
         registry = _yaml.safe_load(
             (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
-        entry = next(e for e in registry if e['id'] == self.LID)
+        entry = next(e for e in registry if e['id'].lower() == self.LID.lower())
         self.assertEqual(entry['alt_names'], ['Washington, D.C.', 'Old Fairview'])
 
     def test_place_aka_empty_clears_the_list(self):
@@ -2245,7 +2249,7 @@ class PlaceVerbTests(_ServeCase):
         import yaml as _yaml
         registry = _yaml.safe_load(
             (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
-        entry = next(e for e in registry if e['id'] == self.LID)
+        entry = next(e for e in registry if e['id'].lower() == self.LID.lower())
         self.assertEqual(entry.get('alt_names'), [])
 
     def test_place_history_empty_clears_the_list(self):
@@ -2258,7 +2262,7 @@ class PlaceVerbTests(_ServeCase):
         import yaml as _yaml
         registry = _yaml.safe_load(
             (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
-        entry = next(e for e in registry if e['id'] == self.LID)
+        entry = next(e for e in registry if e['id'].lower() == self.LID.lower())
         self.assertEqual(entry.get('history'), [])
 
     def test_place_note_apply_appends_dated_note(self):
@@ -2333,7 +2337,7 @@ class PlaceVerbTests(_ServeCase):
         import yaml as _yaml
         registry = _yaml.safe_load(
             (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
-        notes = next(e for e in registry if e['id'] == self.LID)['notes'].strip()
+        notes = next(e for e in registry if e['id'].lower() == self.LID.lower())['notes'].strip()
         first, second = notes.split('\n\n')[0], notes.split('\n\n')[-1]
         s, d, _h = self.post_run('place.edit_note',
                                  {'place_id': self.LID, 'old_text': first + '\n\n' + second,

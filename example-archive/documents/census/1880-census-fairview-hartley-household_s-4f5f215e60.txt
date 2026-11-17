@@ -1,0 +1,15 @@
+1880 UNITED STATES CENSUS - SCHEDULE 1, INHABITANTS
+[Transcription of one household - FICTIONAL DOCUMENT for the example archive]
+
+State: Kansas    County: Breton    Place: Fairview City
+Enumerated June 1880. Supervisor's District 3, Enumeration District 41, page 12.
+
+Dwelling 96, family 101:
+
+Name               Relation   Sex  Age  Occupation                      Birthplace  Father's bp.  Mother's bp.
+Hartley, Thomas    [head]     M    40   Book Keeper, Plains Junction RR  New York    New York      New York
+  ---, Margaret    Wife       F    29   Keeping house                    New York    New York      Vermont
+  ---, Ethel       Daughter   F    7    At school                        Kansas      New York      New York
+  ---, Frances     Daughter   F    4                                     Kansas      New York      New York
+
+[end of transcription]

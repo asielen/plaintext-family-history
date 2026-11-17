@@ -42,6 +42,22 @@ def _person(pid: str, name: str) -> str:
             f'tier: curated\n---\n\n# {name}\n\n## Biography\n\nx\n')
 
 
+class SourcesRegionGroupsTests(unittest.TestCase):
+    """A profile's generated `## Sources` list groups sources by kind under a
+    bold label. Each label must start its own paragraph: written straight
+    under the previous group's last bullet, Markdown reads it as more text of
+    that bullet, so the reader sees "newspaper" glued onto the census entry."""
+
+    def test_each_group_label_follows_a_blank_line(self):
+        rows = {
+            'census': [{'id': 's-1111111111', 'title': 'Census', 'path': 'sources/census/a_s-1111111111.md'}],
+            'newspaper': [{'id': 's-2222222222', 'title': 'Notice', 'path': 'sources/newspaper/b_s-2222222222.md'}],
+        }
+        body = views._sources_index_region_body(rows)
+        self.assertIn('_s-1111111111.md\n\n**newspaper**', body)
+        self.assertTrue(body.startswith('**census**\n\n- Census'))
+
+
 class DraftQueueUndecodableProfileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp())

@@ -1,9 +1,9 @@
 {
-  "seed": "P-cd795c61e0",
+  "seed": "p-cd795c61e0",
   "mode": "descendants",
   "nodes": [
     {
-      "p_id": "P-cd795c61e0",
+      "p_id": "p-cd795c61e0",
       "name": "Margaret A. Cole",
       "sex": "F",
       "vitals": {
@@ -14,7 +14,7 @@
       "photo": "/root/photos/margaret-cole-portrait.jpg"
     },
     {
-      "p_id": "P-83e768cacb",
+      "p_id": "p-83e768cacb",
       "name": "Frances Hartley",
       "sex": "F",
       "vitals": {
@@ -25,7 +25,7 @@
       "photo": "/root/photos/frances-hartley-winter.jpg"
     },
     {
-      "p_id": "P-c4b26bb4bc",
+      "p_id": "p-c4b26bb4bc",
       "name": "Ethel Hartley",
       "sex": "F",
       "vitals": {
@@ -36,7 +36,7 @@
       "photo": "/root/photos/ethel-hartley-portrait.jpg"
     },
     {
-      "p_id": "P-fa7541e871",
+      "p_id": "p-fa7541e871",
       "name": "Calvin George Hartley",
       "sex": "M",
       "vitals": {
@@ -47,7 +47,7 @@
       "photo": "/root/photos/calvin-hartley-garden.jpg"
     },
     {
-      "p_id": "P-6f7g8h9jka",
+      "p_id": "p-6f7g8h9jka",
       "name": "Warren Calvin Hartley",
       "sex": "M",
       "vitals": {
@@ -58,7 +58,7 @@
       "photo": null
     },
     {
-      "p_id": "P-htyn3mpg9g",
+      "p_id": "p-htyn3mpg9g",
       "name": "Ada Jane Hartley",
       "sex": "F",
       "vitals": {
@@ -69,7 +69,7 @@
       "photo": null
     },
     {
-      "p_id": "P-5e6f7g8h9j",
+      "p_id": "p-5e6f7g8h9j",
       "name": "Edith Louise Hartley",
       "sex": "F",
       "vitals": {
@@ -80,7 +80,7 @@
       "photo": null
     },
     {
-      "p_id": "P-2b3c4d5e6f",
+      "p_id": "p-2b3c4d5e6f",
       "name": "James Robert Bradford",
       "sex": "M",
       "vitals": {
@@ -91,7 +91,7 @@
       "photo": null
     },
     {
-      "p_id": "P-0a1b2c3d4e",
+      "p_id": "p-0a1b2c3d4e",
       "name": "Alex James Bradford",
       "sex": "unknown",
       "vitals": {
@@ -105,9 +105,9 @@
   "edges": [
     {
       "type": "child",
-      "from": "P-cd795c61e0",
-      "to": "P-83e768cacb",
-      "claim_id": "C-77a0c5e218",
+      "from": "p-cd795c61e0",
+      "to": "p-83e768cacb",
+      "claim_id": "c-77a0c5e218",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -118,9 +118,9 @@
     },
     {
       "type": "child",
-      "from": "P-cd795c61e0",
-      "to": "P-c4b26bb4bc",
-      "claim_id": "C-bdfbce2a11",
+      "from": "p-cd795c61e0",
+      "to": "p-c4b26bb4bc",
+      "claim_id": "c-bdfbce2a11",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -131,9 +131,9 @@
     },
     {
       "type": "child",
-      "from": "P-cd795c61e0",
-      "to": "P-fa7541e871",
-      "claim_id": "C-fa0000001a",
+      "from": "p-cd795c61e0",
+      "to": "p-fa7541e871",
+      "claim_id": "c-fa0000001a",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -144,9 +144,9 @@
     },
     {
       "type": "child",
-      "from": "P-fa7541e871",
-      "to": "P-6f7g8h9jka",
-      "claim_id": "C-fa0000002b",
+      "from": "p-fa7541e871",
+      "to": "p-6f7g8h9jka",
+      "claim_id": "c-fa0000002b",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -157,9 +157,9 @@
     },
     {
       "type": "child",
-      "from": "P-fa7541e871",
-      "to": "P-htyn3mpg9g",
-      "claim_id": "C-5taq0e7251",
+      "from": "p-fa7541e871",
+      "to": "p-htyn3mpg9g",
+      "claim_id": "c-5taq0e7251",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -170,9 +170,9 @@
     },
     {
       "type": "child",
-      "from": "P-6f7g8h9jka",
-      "to": "P-5e6f7g8h9j",
-      "claim_id": "C-fc0000001a",
+      "from": "p-6f7g8h9jka",
+      "to": "p-5e6f7g8h9j",
+      "claim_id": "c-fc0000001a",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -183,9 +183,9 @@
     },
     {
       "type": "child",
-      "from": "P-5e6f7g8h9j",
-      "to": "P-2b3c4d5e6f",
-      "claim_id": "C-fc0000002b",
+      "from": "p-5e6f7g8h9j",
+      "to": "p-2b3c4d5e6f",
+      "claim_id": "c-fc0000002b",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
@@ -196,9 +196,9 @@
     },
     {
       "type": "child",
-      "from": "P-2b3c4d5e6f",
-      "to": "P-0a1b2c3d4e",
-      "claim_id": "C-fc0000003c",
+      "from": "p-2b3c4d5e6f",
+      "to": "p-0a1b2c3d4e",
+      "claim_id": "c-fc0000003c",
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",

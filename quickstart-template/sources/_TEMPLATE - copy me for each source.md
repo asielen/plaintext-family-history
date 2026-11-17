@@ -21,7 +21,7 @@ places:
 
 files:            # the scan or photo this points at (put the file in documents/ or photos/)
   - file: documents/put-your-file-here.jpg
-    role: primary   # if there's just one file for this source, leave this as "primary"
+    is_primary: true   # the file to open first - with just one file, leave this as it is
 ---
 
 ## Claims
@@ -31,10 +31,12 @@ files:            # the scan or photo this points at (put the file in documents/
 ```yaml
 - value: "the fact in plain words"     # e.g. "Jane Doe born 14 June 1950, Millbrook"
   type: birth                          # birth, death, marriage, residence, census, occupation, ...
-  persons: ["[[Name Here]]"]           # whose fact this is - link them with [[ ]]
+  persons:                             # whose fact this is - link them with [[ ]]
+    - "[[Name Here]]"
+  date:                                # when it happened (1950, 1950-06-14, or 195X)
   status: suggested                    # suggested -> accepted, once you're confident
   confidence: medium                   # high / medium / low
-  date:                                # when it happened (1950, 1950-06-14, or 195X)
+  # reviewed: 2026-01-01               # the day you checked it - add it when you mark it accepted
 ```
 
 ## Notes

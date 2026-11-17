@@ -44,13 +44,13 @@ from _lib import (
 EXAMPLE = ROOT / 'example-archive'
 
 # Stable IDs from the example archive (fixtures, not the real archive).
-CLAIM_A = 'C-77a0c5e218'          # census parent/child (S-4f5f215e60), accepted
-CLAIM_B = 'C-fa0000001a'          # typescript parent/child (S-fa1234567b), accepted, no place
-SOURCE = 'S-fc3456789d'           # bradford-family genealogy notes (has a ## Claims block)
-PERSON_1 = 'P-4d5e6f7g8h'
-PERSON_2 = 'P-6f7g8h9jka'
-PERSON_3 = 'P-5e6f7g8h9j'
-DRAFT_PERSON = 'P-2b3c4d5e6f'      # James Bradford profile carries one AI-DRAFT marker
+CLAIM_A = 'c-77a0c5e218'          # census parent/child (S-4f5f215e60), accepted
+CLAIM_B = 'c-fa0000001a'          # typescript parent/child (S-fa1234567b), accepted, no place
+SOURCE = 's-fc3456789d'           # bradford-family genealogy notes (has a ## Claims block)
+PERSON_1 = 'p-4d5e6f7g8h'
+PERSON_2 = 'p-6f7g8h9jka'
+PERSON_3 = 'p-5e6f7g8h9j'
+DRAFT_PERSON = 'p-2b3c4d5e6f'      # James Bradford profile carries one AI-DRAFT marker
 
 
 # ── Pure-text edit helpers ──────────────────────────────────────────────────────
@@ -415,7 +415,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn(frozenset((CLAIM_A.lower(), CLAIM_B.lower())), pairs)
 
     def test_xref_dry_run_writes_nothing(self) -> None:
-        src = self.root / 'sources' / 'other' / 'hartley-family-notes_S-fa1234567b.md'
+        src = self.root / 'sources' / 'other' / 'hartley-family-notes_s-fa1234567b.md'
         before = src.read_text(encoding='utf-8')
         result = confirm.run_confirm_xref(
             self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates', dry_run=True)
@@ -578,7 +578,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn(frozenset((PERSON_1.lower(), PERSON_2.lower())), edges)
 
     def test_cooccur_dry_run_writes_nothing(self) -> None:
-        src = self.root / 'sources' / 'other' / 'bradford-family-genealogy-notes_S-fc3456789d.md'
+        src = self.root / 'sources' / 'other' / 'bradford-family-genealogy-notes_s-fc3456789d.md'
         before = src.read_text(encoding='utf-8')
         result = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
@@ -590,7 +590,7 @@ class ConfirmArchiveTests(unittest.TestCase):
     def test_cooccur_reviewed_without_accept_refuses(self) -> None:
         # --reviewed without --accept used to be a silent no-op; it must now
         # refuse, name both flags, and write nothing.
-        src = self.root / 'sources' / 'other' / 'bradford-family-genealogy-notes_S-fc3456789d.md'
+        src = self.root / 'sources' / 'other' / 'bradford-family-genealogy-notes_s-fc3456789d.md'
         before = src.read_text(encoding='utf-8')
         r = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE,
@@ -628,7 +628,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         # A syntactically valid but nonexistent P-id must abort before minting,
         # so the write never leaves an E005 missing-person reference behind.
         src_before = (self.root / 'sources' / 'other'
-                      / 'bradford-family-genealogy-notes_S-fc3456789d.md').read_text(encoding='utf-8')
+                      / 'bradford-family-genealogy-notes_s-fc3456789d.md').read_text(encoding='utf-8')
         r = confirm.run_confirm_cooccur(
             self.root, person_a=PERSON_1, person_b='P-0000000000', source_id=SOURCE, subtype='friend')
         self.assertEqual(r.exit_code, EXIT_WARNINGS)
@@ -636,7 +636,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(r.changed, [])
         self.assertEqual(
             (self.root / 'sources' / 'other'
-             / 'bradford-family-genealogy-notes_S-fc3456789d.md').read_text(encoding='utf-8'),
+             / 'bradford-family-genealogy-notes_s-fc3456789d.md').read_text(encoding='utf-8'),
             src_before)
 
     def test_cooccur_repeat_confirm_is_already_not_duplicate(self) -> None:
@@ -802,7 +802,7 @@ class ConfirmArchiveTests(unittest.TestCase):
         wikilink/nested forms the quickstart teaches and the R2 review found
         the idempotency gate blind to (round-2 finding 6)."""
         src = (self.root / 'sources' / 'other'
-               / 'bradford-family-genealogy-notes_S-fc3456789d.md')
+               / 'bradford-family-genealogy-notes_s-fc3456789d.md')
         text = src.read_text(encoding='utf-8')
         lines = text.splitlines()
         _open_f, close_f = confirm._find_claims_block(lines)

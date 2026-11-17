@@ -30,8 +30,8 @@ from _lib import EXIT_CLEAN, EXIT_ERRORS, load_fha_yaml
 from test_process_inbox_filing import JPEG, PDF, InboxFilingTestCase
 
 EXAMPLE = ROOT / 'example-archive'
-CENSUS = 'sources/census/1880-census-fairview-hartley-household_S-4f5f215e60.md'
-NOTICE = 'sources/newspapers/1871-marriage-notice-fairview_S-ea61339378.md'
+CENSUS = 'sources/census/1880-census-fairview-hartley-household_s-4f5f215e60.md'
+NOTICE = 'sources/newspaper/1871-marriage-notice-fairview_s-ea61339378.md'
 OLD = 'S-zz00000001'
 
 
@@ -58,9 +58,9 @@ class RetiredSourceLinkLintTests(unittest.TestCase):
     def _add_alias(self) -> None:
         census = self.root / CENSUS
         text = census.read_text(encoding='utf-8')
-        old = 'aliases: [S-4f5f215e60, C-d22ce0ac77]'
+        old = 'aliases: [s-4f5f215e60, 1880-census-fairview-hartley]'
         self.assertIn(old, text)
-        census.write_text(text.replace(old, f'aliases: [S-4f5f215e60, C-d22ce0ac77, {OLD}]'),
+        census.write_text(text.replace(old, f'aliases: [s-4f5f215e60, 1880-census-fairview-hartley, {OLD}]'),
                           encoding='utf-8')
 
     def test_link_to_an_alias_is_a_cleanup_warning(self) -> None:
