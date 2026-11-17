@@ -131,6 +131,11 @@ from _lib import (
     link_field_refs,
     resolve_ref,
     strip_link_wrapper,
+    strip_generated_region,   # cut the generated summary region out before E013 reads
+    SUMMARY_REGION,
+    relationship_entry_claim_ids,   # an entry's claims: list or legacy claim: (SPEC §9)
+    relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
+    collapse_relationship_entries,  # one entry per person and role after a write
     carries_person_record_fields,
     fmt_id_display,
     format_edtf_error,
@@ -765,7 +770,10 @@ def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]
     Returns list of (label, segment_text, p_ids, s_ids) for each **Label:** occurrence.
     """
     # Collapse the body to one searchable string up to the first ## section
-    # (summary block is before ## Biography etc.)
+    # (summary block is before ## Biography etc.). A generated summary region
+    # is the tools' own reading of the accepted claims, rewritten on every
+    # refresh: only lines a human wrote are checked for drift (SPEC §16).
+    body = strip_generated_region(body, SUMMARY_REGION)
     section_break = re.search(r'^##\s+\w', body, re.M)
     summary_text = body[:section_break.start()] if section_break else body
 
@@ -2932,20 +2940,21 @@ def _profile_path_for(registry: Registry, pid: str) -> Path:
 
 def _check_reciprocity(
     registry: Registry, findings: list[Finding],
-    owner_pid: str, other_pid: str, role: str, claim: dict, alias_map: dict[str, str],
+    owner_pid: str, other_pid: str, role: str, claims: list[dict], alias_map: dict[str, str],
 ) -> None:
     """W116: a sourced edge on owner_pid should be mirrored on other_pid, pointing
-    at the same claim. Offers `--fix-reciprocal` rather than demanding both ends."""
+    at the same claim(s). Offers `--fix-reciprocal` rather than demanding both
+    ends. `claims` are the claims backing owner_pid's one entry for the tie."""
     mirror_role = _RECIPROCAL_ROLE.get(role)
-    if not mirror_role:
+    if not mirror_role or not claims:
         return     # a tie we can't mirror automatically (e.g. member-of an org)
-    cid = normalize_id(str(claim.get('id', '')))
+    cids = [normalize_id(str(c.get('id', ''))) for c in claims]
+    cids = [c for c in dict.fromkeys(cids) if c]
     other_meta = registry.person_meta.get(other_pid) or {}
     for e in (other_meta.get('relationships') or []):
         if not isinstance(e, dict):
             continue
-        e_claim = normalize_id(strip_link_wrapper(str(e.get('claim', '')))) if e.get('claim') else ''
-        if cid and e_claim == cid:
+        if set(cids) & set(relationship_entry_claim_ids(e)):
             return     # mirror present, same claim
         e_to = resolve_ref(str(e.get('to', '')), alias_map) if e.get('to') else None
         e_to = normalize_id(e_to) if e_to else None
@@ -2955,14 +2964,14 @@ def _check_reciprocity(
     findings.append(Finding('W', 'W116', _profile_path_for(registry, other_pid),
         f"{fmt_id_display(other_pid)} is missing the reciprocal '{mirror_role}' edge to "
         f"{owner_name} - it is recorded on {fmt_id_display(owner_pid)}'s relationships: "
-        f"(claim {fmt_id_display(cid)}). Run `fha lint --fix-reciprocal` to add the mirror "
-        f"(preview with --dry-run)."))
+        f"(claim {', '.join(fmt_id_display(c) for c in cids)}). Run `fha lint --fix-reciprocal` "
+        f"to add the mirror (preview with --dry-run)."))
     registry.missing_mirrors.append({
         'other_pid': other_pid,
         'owner_pid': owner_pid,
         'mirror_role': mirror_role,
-        'subtype': _claim_subtype_norm(claim),
-        'claim_id': cid,
+        'subtype': _claim_subtype_norm(claims[0]),
+        'claim_ids': cids,
     })
 
 
@@ -3012,13 +3021,15 @@ def _check_relationships_reconciliation(
             # edge the index derives for the survivor, not a W115.
             other_pid = through_survivors(normalize_id(other_pid), alias_map) if other_pid else None
             status = str(entry.get('status', '')).strip().lower()
-            is_sourced = bool(entry.get('claim') or entry.get('source')) and status != 'hypothesis'
+            entry_cids = relationship_entry_claim_ids(entry)
+            is_sourced = bool(entry_cids or entry.get('source')) and status != 'hypothesis'
             if not is_sourced:
                 continue   # an unsourced belief → needs-sourcing backlog, not a finding
 
-            matched: dict | None = None
-            if entry.get('claim'):
-                cid = normalize_id(strip_link_wrapper(str(entry.get('claim'))))
+            # One entry per person and role may list several backing claims
+            # (`claims:`, SPEC §9); each is checked on its own.
+            matched_claims: list[dict] = []
+            for cid in entry_cids:
                 referenced_cids.add(cid)
                 claim = _claim_by_id(registry, cid)
                 if claim is None:
@@ -3045,8 +3056,8 @@ def _check_relationships_reconciliation(
                         f"relationships: entry links claim {fmt_id_display(cid)}, but that claim does "
                         f"not record this {role or 'relationship'} edge - check its persons and roles."))
                     continue
-                matched = claim
-            else:
+                matched_claims.append(claim)
+            if not entry_cids:
                 sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
                 cands = [c for c in registry.source_claims.get(sid, [])
                          if isinstance(c, dict) and _claim_backs_edge(c, pid, other_pid, role, alias_map)]
@@ -3054,20 +3065,23 @@ def _check_relationships_reconciliation(
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: {role or 'edge'} entry cites source {fmt_id_display(sid)}, but it "
                         f"carries no accepted relationship claim for this edge - accept one, or link the "
-                        f"claim directly with claim: [[C-…]]."))
+                        f"claim directly with claims: [\"[[c-…]]\"]."))
                     continue
-                matched = cands[0]
-                referenced_cids.add(normalize_id(str(matched.get('id', ''))))
+                matched_claims.append(cands[0])
+                referenced_cids.add(normalize_id(str(cands[0].get('id', ''))))
+            if not matched_claims:
+                continue
 
             entry_subtype = _entry_subtype(entry)
-            claim_subtype = _claim_subtype_norm(matched)
-            if entry_subtype and claim_subtype and entry_subtype != claim_subtype:
-                findings.append(Finding('W', 'W115', profile_path,
-                    f"relationships: entry for claim {fmt_id_display(normalize_id(str(matched.get('id', ''))))} "
-                    f"says subtype {entry_subtype!r} but the claim says {claim_subtype!r} - make the nature match."))
+            for matched in matched_claims:
+                claim_subtype = _claim_subtype_norm(matched)
+                if entry_subtype and claim_subtype and entry_subtype != claim_subtype:
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: entry for claim {fmt_id_display(normalize_id(str(matched.get('id', ''))))} "
+                        f"says subtype {entry_subtype!r} but the claim says {claim_subtype!r} - make the nature match."))
 
             if other_pid:
-                _check_reciprocity(registry, findings, pid, other_pid, role, matched, alias_map)
+                _check_reciprocity(registry, findings, pid, other_pid, role, matched_claims, alias_map)
 
         # Reverse: an opted-in block should apply every accepted kin claim that names this person.
         for claims in registry.source_claims.values():
@@ -5124,7 +5138,7 @@ _CLAIM_KEY_ORDER = ['value']
 # Frontmatter / claim fields that hold IDs (SPEC §10: written lowercase). Free
 # text - titles, citations, notes, values - is never touched.
 _FM_ID_FIELDS = {'id', 'aliases', 'people', 'places', 'merged_into'}
-_RELATIONSHIP_ID_SUBKEYS = ('to', 'claim', 'source')
+_RELATIONSHIP_ID_SUBKEYS = ('to', 'claim', 'claims', 'source')
 _CLAIM_ID_FIELDS = {'id', 'persons', 'roles', 'place', 'corroborates',
                     'contradicts', 'hypothesis'}
 # SPEC §14 / §16: the usual `##` section order.
@@ -6051,7 +6065,7 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
             if not isinstance(entry, dict):
                 continue
             status = str(entry.get('status', '')).strip().lower()
-            sourced = bool(entry.get('claim') or entry.get('source'))
+            sourced = bool(relationship_entry_claim_ids(entry) or entry.get('source'))
             if sourced and status != 'hypothesis':
                 continue
             role = str(entry.get('type', '')).strip() or 'relationship'
@@ -6060,7 +6074,7 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
             lines.append(
                 f'{name} ({fmt_id_display(pid)}): {role} relationship to '
                 f'{target or "(unnamed)"}{tail} - recorded but not yet sourced. '
-                f'Link its claim:/source: when you find the evidence.'
+                f'Link its claims:/source: when you find the evidence.'
             )
     return lines
 
@@ -7123,7 +7137,7 @@ def _fix_spawn_questions(
 
 
 def _format_mirror_entry(
-    owner_pid: str, owner_name: str, role: str, subtype: str, claim_id: str,
+    owner_pid: str, owner_name: str, role: str, subtype: str, claim_ids: list[str],
 ) -> list[str]:
     """The YAML list-item lines for a mirror relationship entry pointing back at
     the person who already records the edge. Pinned `[[P-id|Name]]` so it reads
@@ -7145,8 +7159,9 @@ def _format_mirror_entry(
         # ': ' or ' #' typed into a claim's subtype long ago must not corrupt
         # the mirrored record's frontmatter here either.
         lines.append(f'    subtype: {yaml_inline(subtype)}')
-    if claim_id:
-        lines.append(f'    claim: "[[{fmt_id_display(claim_id)}]]"')
+    if claim_ids:
+        # One entry per person and role, every backing claim listed (SPEC §9).
+        lines.append(f'    claims: {relationship_claims_value(claim_ids)}')
     return lines
 
 
@@ -7197,14 +7212,24 @@ def _fix_reciprocal(
     """W116 fix: append each missing mirror entry to the other person's
     relationships: block. Additive only (never overwrites human text), previewed
     under --dry-run, and conflict-safe - the W116 pass already confirmed the
-    mirror is absent, and a person with no record is reported, not invented."""
-    seen: set[tuple[str, str, str]] = set()
+    mirror is absent, and a person with no record is reported, not invented.
+
+    One mirror entry per person and role (SPEC §9): misses for the same tie
+    are written as one entry listing every claim, and the block is collapsed
+    after the write so an older entry for the same tie absorbs the new one
+    instead of sitting beside it."""
+    grouped: dict[tuple[str, str, str, str], dict] = {}
     for m in registry.missing_mirrors:
-        key = (m['other_pid'], m['claim_id'], m['mirror_role'])
-        if key in seen:
-            continue
-        seen.add(key)
+        key = (m['other_pid'], m['owner_pid'], m['mirror_role'], m['subtype'])
+        if key not in grouped:
+            grouped[key] = dict(m, claim_ids=list(m['claim_ids']))
+        else:
+            for cid in m['claim_ids']:
+                if cid not in grouped[key]['claim_ids']:
+                    grouped[key]['claim_ids'].append(cid)
+    for m in grouped.values():
         other_pid = m['other_pid']
+        claims_shown = ', '.join(fmt_id_display(c) for c in m['claim_ids'])
         owner_name = str(registry.person_meta.get(m['owner_pid'], {}).get('name')
                          or fmt_id_display(m['owner_pid']))
         paths = registry.person_profile_paths.get(other_pid)
@@ -7218,7 +7243,7 @@ def _fix_reciprocal(
         if dry_run:
             progress.append(
                 f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
-                f"{owner_name} (claim {fmt_id_display(m['claim_id'])}) in {rel}")
+                f"{owner_name} (claim {claims_shown}) in {rel}")
             continue
         try:
             text = read_text_exact(path)
@@ -7228,8 +7253,11 @@ def _fix_reciprocal(
             progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
             continue
         item = _format_mirror_entry(m['owner_pid'], owner_name, m['mirror_role'],
-                                    m['subtype'], m['claim_id'])
+                                    m['subtype'], m['claim_ids'])
         new_text = _append_relationship_entry(text, item)
+        if new_text:
+            new_text, _merged = collapse_relationship_entries(
+                new_text, resolve=lambda ref: resolve_ref(ref, registry.alias_map))
         if not new_text or new_text == text:
             progress.append(
                 f"--fix-reciprocal: couldn't safely place the mirror in {rel} "
@@ -7241,7 +7269,7 @@ def _fix_reciprocal(
         changed.append(str(path))
         progress.append(
             f"Added reciprocal '{m['mirror_role']}' edge to {owner_name} "
-            f"(claim {fmt_id_display(m['claim_id'])}) in {rel}")
+            f"(claim {claims_shown}) in {rel}")
 
 
 def _today() -> str:

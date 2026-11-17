@@ -225,6 +225,7 @@ its claims to the people asked about and leave the rest for later sessions.
    list is already current the moment they later graduate, instead of needing a rebuild right after):
    ```
    fha views sources-index <P-id>   # the source list gains the just-reviewed source's evidence
+   fha views summary <P-id>         # the Born/Died/Married/Parents/Children lines under the name
    ```
    Refresh only the people touched — never `fha views refresh` here: it regenerates *every* curated
    person's views and churns their dated GENERATED headers into git noise. (A successful view write
@@ -363,7 +364,8 @@ its claims to the people asked about and leave the rest for later sessions.
   batch `fha claim C-a C-b … --status X` write per grouped same-status decision** (field edits always
   one call per claim), a reindex (full `fha index` when the pass minted new people, else `--source`), an
   `fha xref` pass, a `fha views timeline` + `draft-queue` refresh for each curated person touched, a `fha
-  views sources-index` refresh for every person touched (curated or stub), and a final `fha lint`.
+  views sources-index` and `fha views summary` refresh for every person touched (curated or stub), and
+  a final `fha lint`.
 - **Every claim presented carried its source link** — the anchored file path first, the `[[S-id]]` token
   in parentheses — in whichever review style the session used.
 - **No** claim reaches `accepted` without an explicit human decision in the transcript; every accepted

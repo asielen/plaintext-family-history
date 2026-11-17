@@ -694,9 +694,11 @@ class RefreshFormatTests(_ViewsHtmlBase):
         res = views.run_refresh(self.root, fmt='both')
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         # Per person: timeline + draft-queue, 2 md + 2 html; the person's own
-        # ## Sources region refreshed once (md-only - #76, no html twin);
-        # no couple-folder sources index (SPEC 2.1 Part IV).
-        self.assertEqual(res.data.get('count'), 5)
+        # ## Sources region and the summary region under the title refreshed
+        # once each (md-only - #76, no html twin); no couple-folder sources
+        # index (SPEC 2.1 Part IV).
+        self.assertEqual(res.data.get('count'), 6)
+        self.assertIn('<!-- GENERATED-BEGIN summary', self.profile.read_text(encoding='utf-8'))
         gen_names = sorted(p.name for p in self._gen_dir().iterdir())
         self.assertEqual(gen_names, [
             f'hartley__cur_view_draft-queue_{PID.lower()}.html',

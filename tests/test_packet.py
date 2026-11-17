@@ -34,6 +34,7 @@ import packet
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
+    LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE,
     index_manifest_path, path_to_alias, photoindex_manifest_path,
     photoindex_record_manifest, record_path_manifest, render_person_body_scaffold,
     write_path_manifest,
@@ -1285,6 +1286,34 @@ class PacketTests(unittest.TestCase):
         self.assertIn('## Biography', copied)
         self.assertIn('Accepted paragraph about the farm.', copied)
 
+    def test_summary_region_stripped_from_profile_copy(self):
+        # SPEC §16: the Born/Died/.../Children lines under the title are a
+        # generated region read from the index with none of the packet's
+        # privacy filtering (a living child is named there), so the copy
+        # ships without it - like `## Sources`.
+        profile_path = self._seed_person()
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\n'
+            '<!-- GENERATED-BEGIN summary by fha views summary on 2026-11-17 -->\n\n'
+            '*(Written by `fha views summary` from accepted claims.)*\n\n'
+            '**Born:** 1840 [[S-1111111111]]\n'
+            '**Children:** [[p-bbbbbbbbbb|Living Grandchild]] [[S-1111111111]]\n\n'
+            '<!-- GENERATED-END summary -->\n\n'
+            '## Biography\n\nAccepted paragraph about the farm.\n',
+            encoding='utf-8',
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        copied = next((result['packet_dir'] / 'profile').glob('*.md')).read_text(encoding='utf-8')
+        self.assertNotIn('GENERATED-BEGIN', copied)
+        self.assertNotIn('Living Grandchild', copied)
+        self.assertNotIn('**Born:**', copied)
+        self.assertIn('# Test Person', copied)
+        self.assertIn('Accepted paragraph about the farm.', copied)
+
     def test_unfilled_sections_stripped_from_profile_copy(self):
         # #125: a §16 section nobody has written yet holds only the record
         # template's own authoring instructions. They are addressed to the
@@ -1691,14 +1720,19 @@ class PacketTests(unittest.TestCase):
         self.assertIn('unreviewed draft text', readme)
 
     def test_template_example_fence_is_not_counted_as_his_note(self):
-        # A filled-in Research Notes that still carries the template's own
-        # example fence: the example is dropped, but it is not a note he wrote.
+        # A filled-in Research Notes that still carries the example fence
+        # older scaffolds wrote (profiles made before plan 19 4b keep it until
+        # the archive's migration removes it): the example is dropped, but it
+        # is not a note he wrote.
         profile_path = self._seed_person()
+        body = render_person_body_scaffold('Test Person')
+        start = body.index('## Research Notes\n')
+        end = body.index('\n## ', start + 1)
+        legacy = ('## Research Notes\nOpen questions, hunches, and brick walls.\n\n'
+                  + LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE + '\n\nCheck the 1880 census.\n')
         profile_path.write_text(
             '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
-            + render_person_body_scaffold('Test Person').replace(
-                '(standalone) site.\n<!-- /private -->\n',
-                '(standalone) site.\n<!-- /private -->\n\nCheck the 1880 census.\n'),
+            + body[:start] + legacy + body[end:],
             encoding='utf-8',
         )
         self._commit_fresh()

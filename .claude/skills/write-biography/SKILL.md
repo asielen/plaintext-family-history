@@ -106,8 +106,10 @@ it — a profile half chronicle, half narrative reads as two authors fighting.
      whenever they share a subject, era, or episode (typically 3-6 sentences) — never one sentence per
      line. The Biography section is already "chaptered by era/place" (SPEC §16); the paragraph is that
      chaptering's working unit, not a wrapper around a single citation.
-   - The **summary block** (the vitals line at the top) takes one citation per fact-line; the **body**
-     takes all relevant citations.
+   - The **summary lines** at the top (Born / Died / Married / Parents / Children) are written by
+     `fha views summary` from accepted claims - never draft them. Only where the human has taken them
+     over by hand (no GENERATED markers) do they follow the citation rule: one citation per fact-line.
+     The **body** takes all relevant citations.
    - Anything you can't cite to an accepted claim must read explicitly as context or story ("Family
      recollection holds that …"), never as a stated fact. When in doubt, cut it or move it to Stories.
 

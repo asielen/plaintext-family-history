@@ -366,6 +366,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    render_generated_region   - one region's full text: markers + a visible notice + body
 #    write_generated_region    - rewrite a `## Heading` section as one region, in place
 #                                 or newly created (views.py's inline `## Sources` writer)
+#    find_generated_region, strip_generated_region - locate / cut a region by its markers
+#    write_summary_region      - the profile's Born/Died/... summary region under the title
+#                                 (SPEC §16); hand-written summary lines are never touched
+#
+#  relationships: entries - one per person and role (SPEC §9)
+#    relationship_entry_claim_ids - an entry's claim ids, from `claims:` or a legacy `claim:`
+#    relationship_claims_value - the `claims: ["[[c-…]]", …]` value tools write
+#    collapse_relationship_entries - fold entries for the same tie into one `claims:` list
 #
 #  Ahnentafel derivation + stub promotion (the shared promote engine)
 #    resolve_root_generation   - validate fha.yaml root_generation: 'self'|'children' (#72)
@@ -9003,6 +9011,216 @@ def link_field_refs(value: Any) -> list[str]:
     return refs
 
 
+# ── relationships: entries - one per person and role (SPEC §9) ────────────────
+#
+# A person's `relationships:` entry names one other person in one role and
+# lists every claim that backs that tie: `claims: ["[[c-…]]", "[[c-…]]"]`.
+# Older records carry one entry PER claim (`claim: "[[c-…]]"`), so a profile
+# backed by twenty census rows listed the same father twenty times. Readers
+# take both keys through `relationship_entry_claim_ids`; writers add a new
+# entry in the `claims:` shape and then run `collapse_relationship_entries`,
+# which folds entries for the same person and role into the first one, so no
+# writer leaves a duplicate behind.
+
+def relationship_entry_claim_ids(entry: Any) -> list[str]:
+    """The claim ids one `relationships:` entry links, lowercased, in order,
+    each once - from its `claims:` list and from a single `claim:` key."""
+    if not isinstance(entry, dict):
+        return []
+    out: list[str] = []
+    for key in ('claims', 'claim'):
+        for ref in link_field_refs(entry.get(key)):
+            cid = normalize_id(ref)
+            if cid and cid not in out:
+                out.append(cid)
+    return out
+
+
+def relationship_claims_value(claim_ids: list[str]) -> str:
+    """The `claims:` value tools write: a one-line flow list of quoted links."""
+    return '[' + ', '.join(f'"[[{fmt_id_display(c)}]]"' for c in claim_ids) + ']'
+
+
+_REL_KEY_LINE_RE = re.compile(r'^relationships\s*:\s*(#.*)?$')
+_REL_CLAIM_LINE_RE = re.compile(r'^(\s*)(-\s+)?(claims?)\s*:\s*(.*)$')
+
+
+def _relationship_block_items(
+    lines: list[str],
+) -> tuple[int, int, list[tuple[int, int]]] | None:
+    """Locate the frontmatter `relationships:` block list: (key line, block
+    end, [(item start, item end), ...]). None when the record has no
+    frontmatter, no such key, or writes it in a form not edited here (a flow
+    list on the key line, or the key repeated)."""
+    fm = frontmatter_fence_span(lines)
+    if fm is None:
+        return None
+    start, end = fm
+    keys = [i for i in range(start + 1, end)
+            if re.match(r'^relationships\s*:', lines[i])]
+    if len(keys) != 1 or not _REL_KEY_LINE_RE.match(lines[keys[0]].rstrip('\r')):
+        return None
+    key = keys[0]
+    block_end = key + 1
+    while block_end < end:
+        ln = lines[block_end]
+        if ln.startswith((' ', '\t')) and ln.strip():
+            block_end += 1
+            continue
+        if ln.strip() == '':
+            look = block_end + 1
+            while look < end and lines[look].strip() == '':
+                look += 1
+            if look < end and lines[look].startswith((' ', '\t')):
+                block_end = look
+                continue
+        break
+    item_indent = None
+    starts: list[int] = []
+    for i in range(key + 1, block_end):
+        m = re.match(r'^(\s*)-(\s|$)', lines[i])
+        if not m:
+            continue
+        if item_indent is None:
+            item_indent = m.group(1)
+        if m.group(1) == item_indent:
+            starts.append(i)
+    items = []
+    for n, s in enumerate(starts):
+        e = starts[n + 1] if n + 1 < len(starts) else block_end
+        while e > s + 1 and lines[e - 1].strip() == '':
+            e -= 1
+        items.append((s, e))
+    return key, block_end, items
+
+
+def _relationship_item_key(entry: Any, resolve) -> tuple | None:
+    """Which tie an entry records: (person, role, nature, status, source).
+    Entries with the same key are one tie and collapse into one entry; an
+    entry that is not a mapping, or names nobody, never collapses."""
+    if not isinstance(entry, dict):
+        return None
+    to_refs = link_field_refs(entry.get('to'))
+    if not to_refs:
+        return None
+    target = to_refs[0]
+    pid = resolve(target) if resolve else None
+    if not pid:
+        ids = extract_bare_ids(target)
+        pid = ids[0] if ids and ids[0].startswith('p-') else None
+    to_key = normalize_id(pid) if pid else target.strip().lower()
+    return (
+        to_key,
+        str(entry.get('type') or '').strip().lower(),
+        str(entry.get('subtype') or 'biological').strip().lower(),
+        str(entry.get('status') or '').strip().lower(),
+        tuple(normalize_id(r) for r in link_field_refs(entry.get('source'))),
+    )
+
+
+def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
+    """One entry's lines with its `claim:`/`claims:` key(s) replaced by a
+    single `claims:` line listing `claim_ids` - written where the first of
+    them stood, else at the end of the entry."""
+    if not claim_ids:
+        return list(item)
+    dash = re.match(r'^(\s*)-\s+', item[0])
+    key_indent = (dash.group(1) + '  ') if dash else '    '
+    value = relationship_claims_value(claim_ids)
+    out: list[str] = []
+    placed = False
+    skip_deeper: int | None = None
+    for ln in item:
+        bare = ln.rstrip('\r')
+        if skip_deeper is not None:
+            if bare.strip() and len(bare) - len(bare.lstrip()) > skip_deeper:
+                continue   # an item of a block-style `claims:` list
+            skip_deeper = None
+        m = _REL_CLAIM_LINE_RE.match(bare)
+        if not m:
+            out.append(ln)
+            continue
+        rest = m.group(4).strip()
+        if m.group(3) == 'claims' and (not rest or rest.startswith('#')):
+            skip_deeper = len(m.group(1)) + len(m.group(2) or '')
+        if m.group(2):
+            # `- claim: ...` opened the entry: the dash stays on that line.
+            out.append(f'{m.group(1)}{m.group(2)}claims: {value}{cr}')
+            placed = True
+        elif not placed:
+            out.append(f'{m.group(1)}claims: {value}{cr}')
+            placed = True
+    if not placed:
+        out.append(f'{key_indent}claims: {value}{cr}')
+    return out
+
+
+def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
+    """Fold `relationships:` entries that record the same tie - same person,
+    role, nature (subtype), status and `source:` - into the FIRST of them,
+    whose claim links become one `claims: [...]` list holding every claim the
+    group linked, in order. The later entries are removed. Everything else in
+    the first entry (its `to:` spelling, comments, other keys) is kept as
+    written, and an entry nothing duplicates is left alone, `claim:` and all.
+    Returns (new_text, entries_removed); the text comes back unchanged when
+    nothing repeats or the block is not in a form edited here.
+
+    `resolve(target) -> p-id | None` lets a caller holding the alias map match
+    `to: "[[Margaret Cole]]"` with `to: "[[p-…|Margaret Cole]]"`; without it
+    only links that carry a p-id compare by id."""
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return text, 0
+    _key, block_end, items = located
+    if len(items) < 2:
+        return text, 0
+    cr = '\r' if lines[0].endswith('\r') else ''
+
+    parsed: list[tuple[tuple | None, list[str]]] = []
+    for s, e in items:
+        indent = re.match(r'^(\s*)', lines[s]).group(1)
+        chunk = '\n'.join(
+            ln.rstrip('\r')[len(indent):] if ln.startswith(indent) else ln.rstrip('\r')
+            for ln in lines[s:e])
+        try:
+            data = safe_load_yaml(chunk)
+        except Exception:
+            data = None
+        entry = data[0] if isinstance(data, list) and data else None
+        parsed.append((_relationship_item_key(entry, resolve),
+                       relationship_entry_claim_ids(entry)))
+
+    groups: dict[tuple, list[int]] = {}
+    for n, (k, _c) in enumerate(parsed):
+        if k is not None:
+            groups.setdefault(k, []).append(n)
+    dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
+    if not dupes:
+        return text, 0
+
+    removed = 0
+    new_lines = list(lines[:items[0][0]])
+    for n, (s, e) in enumerate(items):
+        tail_end = items[n + 1][0] if n + 1 < len(items) else block_end
+        group = dupes.get(n)
+        if group is None:
+            new_lines.extend(lines[s:tail_end])
+            continue
+        if n != group[0]:
+            removed += 1          # the duplicate goes, with its trailing blanks
+            continue
+        claim_ids: list[str] = []
+        for m in group:
+            for cid in parsed[m][1]:
+                if cid not in claim_ids:
+                    claim_ids.append(cid)
+        new_lines.extend(_item_with_claims(lines[s:e], claim_ids, cr))
+        new_lines.extend(lines[e:tail_end])
+    new_lines.extend(lines[block_end:])
+    return '\n'.join(new_lines), removed
+
+
 # ── Names beside IDs: the written form of people:/places:/persons: ────────────
 #
 # A source's `people:` and `places:` and a claim's `persons:` are what a
@@ -10066,7 +10284,9 @@ def generated_region_markers(region_name: str, subcommand: str, date: str) -> tu
     )
 
 
-def render_generated_region(region_name: str, subcommand: str, body: str) -> str:
+def render_generated_region(
+    region_name: str, subcommand: str, body: str, notice: str | None = None,
+) -> str:
     """Render one region's full text: BEGIN marker, a VISIBLE one-line notice,
     the body, END marker.
 
@@ -10079,7 +10299,8 @@ def render_generated_region(region_name: str, subcommand: str, body: str) -> str
     """
     begin, end = generated_region_markers(
         region_name, subcommand, datetime.date.today().isoformat())
-    notice = f'*(Generated by `{subcommand}` - do not edit; regenerate instead.)*'
+    if notice is None:
+        notice = f'*(Generated by `{subcommand}` - do not edit; regenerate instead.)*'
     parts = [begin, '', notice]
     body = body.strip('\n')
     if body:
@@ -10117,6 +10338,123 @@ def write_generated_region(
     new_lines, created, _old = replace_section_content(
         lines, body_start, heading, region_text, cr, position='first')
     return '\n'.join(new_lines), created
+
+
+# ── The profile's summary region (SPEC §16, §21b) ─────────────────────────────
+# The Born / Died / Married / Parents / Children lines a reader sees right under
+# a profile's title, written from accepted claims by `fha views summary` (and
+# `fha views refresh`) as a GENERATED-BEGIN/END region. Unlike `## Sources` the
+# region is not a `##` section: it sits in the profile's opening, after the
+# title and the purpose block, so it is found by its markers, not a heading.
+# A human who deletes the markers owns the lines from then on - the writer
+# sees hand-written summary lines with no markers and leaves them alone.
+
+SUMMARY_REGION = 'summary'
+SUMMARY_SUBCOMMAND = 'fha views summary'
+SUMMARY_NOTICE = (
+    '*(Written by `fha views summary` from accepted claims. To write these '
+    'lines yourself, delete the two marker comments around them.)*'
+)
+# The labels of a summary line, hand-written or generated (SPEC §16).
+SUMMARY_LABEL_RE = re.compile(r'\*\*(Born|Died|Married|Parents|Children):\*\*')
+
+
+def _region_marker_res(region_name: str) -> tuple[re.Pattern, re.Pattern]:
+    name = re.escape(region_name)
+    return (re.compile(r'^\s*<!--\s*GENERATED-BEGIN\s+' + name + r'(\s|-->)'),
+            re.compile(r'^\s*<!--\s*GENERATED-END\s+' + name + r'\s*-->'))
+
+
+def find_generated_region(
+    lines: list[str], region_name: str, start: int = 0,
+) -> tuple[int, int] | str | None:
+    """(BEGIN line, END line) of one named region found by its markers, None
+    when there is no BEGIN marker, or 'damaged' when a BEGIN has no END after
+    it - a region a tool must not rewrite, since it cannot tell where the
+    human's text starts again."""
+    begin_re, end_re = _region_marker_res(region_name)
+    for i in range(start, len(lines)):
+        if begin_re.match(lines[i]):
+            for j in range(i + 1, len(lines)):
+                if end_re.match(lines[j]):
+                    return i, j
+            return 'damaged'
+    return None
+
+
+def strip_generated_region(text: str, region_name: str) -> str:
+    """`text` with one named region cut out, markers and all, plus one blank
+    line after it. For exports that must not carry a region's unfiltered
+    content (`fha packet`, `fha wikitree`). A BEGIN with no END is cut to the
+    next `## ` heading (or the end): fail closed, as the private fence does."""
+    lines = text.split('\n')
+    found = find_generated_region(lines, region_name)
+    if found is None:
+        return text
+    if found == 'damaged':
+        begin_re, _ = _region_marker_res(region_name)
+        b = next(i for i, ln in enumerate(lines) if begin_re.match(ln))
+        e = next((i for i in range(b + 1, len(lines))
+                  if _LEVEL2_HEADING_ONLY_RE.match(lines[i])), len(lines)) - 1
+    else:
+        b, e = found
+    after = e + 1
+    if after < len(lines) and lines[after].strip() == '' and after + 1 < len(lines):
+        after += 1
+    return '\n'.join(lines[:b] + lines[after:])
+
+
+def write_summary_region(text: str, body: str) -> tuple[str, str]:
+    """Write the profile's summary region; return (new_text, status).
+
+    status: 'written' (inserted or rewritten), 'unchanged' (the region
+    already says exactly this - the file is left alone, its date included),
+    'hand-written' (summary lines with no markers: a human owns them, nothing
+    is written), 'damaged' (a BEGIN marker with no END: nothing is written),
+    or 'empty' (no region yet and nothing to say: nothing is written).
+
+    A new region goes right after the title and the purpose blockquote under
+    it, before anything else in the profile's opening. An existing region is
+    rewritten where it stands."""
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    body_start = (bounds[1] + 1) if bounds else 0
+    cr = '\r' if lines and lines[0].endswith('\r') else ''
+    region = render_generated_region(
+        SUMMARY_REGION, SUMMARY_SUBCOMMAND,
+        body or '*(No accepted birth, death, marriage or family facts yet.)*',
+        notice=SUMMARY_NOTICE)
+    region_lines = [f'{ln}{cr}' for ln in region.split('\n')]
+
+    found = find_generated_region(lines, SUMMARY_REGION, body_start)
+    if found == 'damaged':
+        return text, 'damaged'
+    if found is not None:
+        b, e = found
+        if [ln.rstrip('\r') for ln in lines[b + 1:e + 1]] == region.split('\n')[1:]:
+            return text, 'unchanged'
+        return '\n'.join(lines[:b] + region_lines + lines[e + 1:]), 'written'
+
+    first_section = next((i for i in range(body_start, len(lines))
+                          if _LEVEL2_HEADING_ONLY_RE.match(lines[i])), len(lines))
+    if any(SUMMARY_LABEL_RE.search(ln) for ln in lines[body_start:first_section]):
+        return text, 'hand-written'
+    if not body:
+        return text, 'empty'
+
+    at = body_start
+    title = next((i for i in range(body_start, first_section)
+                  if _TITLE_LINE_RE.match(lines[i])), None)
+    if title is not None:
+        at = title + 1
+        look = at
+        while look < first_section and lines[look].strip() == '':
+            look += 1
+        if look < first_section and lines[look].lstrip().startswith('>'):
+            while look < first_section and lines[look].lstrip().startswith('>'):
+                look += 1
+            at = look
+    return '\n'.join(_insert_block_at_line(lines, at, region, cr)), 'written'
 
 
 # ── Single-file HTML rendering (views companions + photoindex gallery) ─────────
@@ -12107,13 +12445,15 @@ VIEW_PURPOSE_BLOCKS: dict[str, str] = {
 PERSON_PURPOSE_BLOCK = (
     "> **This person's record - yours to write.** The main page for this person: "
     "summary,\n"
-    "> biography, relationships. The `## Sources` list below is generated - "
-    "regenerate it\n"
-    "> with `fha views sources-index`, never edit it by hand. Everything else here "
-    "is\n"
-    "> yours; working notes go in `## Research Notes` below, or in a separate "
-    "`_research`\n"
-    "> file if this person's research grows large enough to want one of its own."
+    "> biography, relationships. The summary lines under this note and the "
+    "`## Sources`\n"
+    "> list are generated - `fha views refresh` rewrites them, so never edit them "
+    "by hand.\n"
+    "> Everything else here is yours; working notes go in `## Research Notes` "
+    "below, or in\n"
+    "> a separate `_research` file if this person's research grows large enough "
+    "to want one\n"
+    "> of its own."
 )
 
 # The `## Sources` heading's content before the first `fha views sources-index`
@@ -12143,19 +12483,34 @@ with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Research Notes
 Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default; to keep a single note out
-of a shared copy, wrap it in a private fence like the example below.
-
-<!-- private -->
-A hunch you're not ready to publish - say, a possible tie to a living relative.
-This block stays in your local `--linked` preview but is dropped from the shared
-(standalone) site.
-<!-- /private -->
+as you add your own.) This section is public by default.
+<!-- To keep one note out of anything you share, put it between two marker
+     lines: before it, the word private inside marks like the ones around this
+     note; after it, /private the same way. START_HERE.md shows both lines.
+     The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
 People connected to them who aren't blood relatives - neighbors, business
 partners, the family they boarded with. Type [[ and pick a name to link.
 '''
+
+# The Research Notes placeholder profiles were scaffolded with before plan 19
+# (4b): it held a LIVE example private fence, which readers took for a real
+# note. Existing records keep it until the archive's one-off migration pass
+# replaces it, so it still reads as unfilled scaffolding (never published as
+# if a human wrote it) and its fence is not counted as a note he marked.
+LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE = '''<!-- private -->
+A hunch you're not ready to publish - say, a possible tie to a living relative.
+This block stays in your local `--linked` preview but is dropped from the shared
+(standalone) site.
+<!-- /private -->'''
+_LEGACY_PERSON_PLACEHOLDERS = (
+    ('Research Notes', '''Open questions, hunches, and brick walls - where to look next. (Delete this line
+as you add your own.) This section is public by default; to keep a single note out
+of a shared copy, wrap it in a private fence like the example below.
+
+''' + LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE),
+)
 
 _BODY_SECTION_HEADING_RE = re.compile(r'^## (.+)$')
 
@@ -12215,8 +12570,11 @@ def _normalized_section_text(text: str) -> str:
 # person_section_is_unfilled below. A plain dict (not PERSON_BODY_SECTIONS
 # itself) so a heading lookup is O(1) at every call site instead of a linear
 # scan of the tuple.
-_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, str] = {
-    heading: _normalized_section_text(content) for heading, content in PERSON_BODY_SECTIONS
+_PERSON_BODY_PLACEHOLDER_BY_HEADING: dict[str, frozenset[str]] = {
+    heading: frozenset(
+        [_normalized_section_text(content)]
+        + [_normalized_section_text(old) for h, old in _LEGACY_PERSON_PLACEHOLDERS if h == heading])
+    for heading, content in PERSON_BODY_SECTIONS
 }
 
 
@@ -12247,14 +12605,16 @@ def person_section_is_unfilled(heading: str, content: str) -> bool:
     published. Compares against PERSON_BODY_SECTIONS - parsed from
     PERSON_BODY_SECTIONS_TEXT, the exact text the two scaffolding functions
     above write - so a future wording change to the template can never drift
-    this check out of step with what actually gets scaffolded.
+    this check out of step with what actually gets scaffolded - and against
+    the older placeholders records were scaffolded with before
+    (`_LEGACY_PERSON_PLACEHOLDERS`), which are still scaffolding.
 
     Exact on the WORDS, not on the bytes: both sides go through
     `_normalized_section_text` first, so a record saved with CRLF endings or
     with a trailing space an editor added still matches its own placeholder.
     See that function for why byte equality alone would reopen #125."""
-    placeholder = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
-    return placeholder is not None and _normalized_section_text(content) == placeholder
+    placeholders = _PERSON_BODY_PLACEHOLDER_BY_HEADING.get(heading)
+    return placeholders is not None and _normalized_section_text(content) in placeholders
 
 
 def strip_unfilled_person_sections(body: str) -> str:

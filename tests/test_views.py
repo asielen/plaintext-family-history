@@ -187,6 +187,150 @@ class TreeNodeVitalScopingTests(unittest.TestCase):
             "VALUES ('c-0000000001',?,0,NULL)", (self.SON,))
         self.assertEqual(self._vitals()[self.SON]['birth'], '1888')
 
+# ── The profile's summary region (SPEC §16, plan 19 D5) ───────────────────────
+
+ANN, FATHER, MOTHER, HUSBAND, CHILD = (
+    'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc', 'p-dddddddddd', 'p-eeeeeeeeee')
+S_BIRTH, S_DEATH, S_MARR, S_KID = (
+    's-1111111111', 's-2222222222', 's-3333333333', 's-4444444444')
+
+
+def _summary_profile(pid: str, name: str, *, tier: str = 'curated', body: str = '') -> str:
+    return (f'---\nid: {pid}\nname: {name}\nliving: false\ntier: {tier}\n---\n\n'
+            f'# {name}\n\n'
+            "> **This person's record - yours to write.** Purpose.\n\n"
+            f'{body}'
+            '## Sources\n*(none yet)*\n\n## Biography\n\nShe lived.\n')
+
+
+def _summary_source(sid: str, claim: str) -> str:
+    return (f'---\nid: {sid}\ntitle: Record {sid}\nsource_type: vital\n---\n\n'
+            f'## Claims\n\n```yaml\n{claim}```\n')
+
+
+class SummaryRegionTests(unittest.TestCase):
+    """A grandchild opening a profile in a text editor sees who the person
+    was in five plain lines under the name, written from accepted claims."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        folder = self.root / 'people' / '040 Ann Hartley + Dan Webb'
+        folder.mkdir(parents=True)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'vital').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        self.profile = folder / f'hartley__ann_{ANN}.md'
+        self.profile.write_text(_summary_profile(ANN, 'Ann Hartley'), encoding='utf-8')
+        for pid, name, sex in ((FATHER, 'Caleb Hartley', 'M'), (MOTHER, 'Chastina Reed', 'F'),
+                               (HUSBAND, 'Dan Webb', 'M'), (CHILD, 'Ethel Webb', 'F')):
+            (self.root / 'people' / 'stubs' / f'x__{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\ntier: stub\n---\n\n# {name}\n',
+                encoding='utf-8')
+        claims = {
+            S_BIRTH: (f'- value: Ann born\n  id: c-1111111111\n  type: birth\n'
+                      f'  date: 1840-03-03\n  place_text: Easton, New York\n'
+                      f'  persons: [{ANN}, {FATHER}, {MOTHER}]\n'
+                      f'  roles:\n    child: {ANN}\n    parent: [{FATHER}, {MOTHER}]\n'
+                      '  status: accepted\n  reviewed: 2026-01-01\n'),
+            S_DEATH: (f'- value: Ann died\n  id: c-2222222222\n  type: death\n'
+                      f'  date: 1909\n  persons: [{ANN}]\n'
+                      '  status: accepted\n  reviewed: 2026-01-01\n'
+                      f'- value: Ann died later\n  id: c-2222222223\n  type: death\n'
+                      f'  date: 1950\n  persons: [{ANN}]\n  status: suggested\n'),
+            S_MARR: (f'- value: married\n  id: c-3333333333\n  type: marriage\n'
+                     f'  date: 1871-02\n  place_text: Fairview, Kansas\n'
+                     f'  persons: [{ANN}, {HUSBAND}]\n'
+                     f'  roles:\n    spouse: [{ANN}, {HUSBAND}]\n'
+                     '  status: accepted\n  reviewed: 2026-01-01\n'),
+            S_KID: (f'- value: Ethel born\n  id: c-4444444444\n  type: birth\n'
+                    f'  date: 1872\n  persons: [{CHILD}, {ANN}, {HUSBAND}]\n'
+                    f'  roles:\n    child: {CHILD}\n    parent: [{ANN}, {HUSBAND}]\n'
+                    '  status: accepted\n  reviewed: 2026-01-01\n'),
+        }
+        for sid, claim in claims.items():
+            (self.root / 'sources' / 'vital' / f'r_{sid}.md').write_text(
+                _summary_source(sid, claim), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _run(self, **kw):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return views.run_summary(self.root, **kw)
+
+    def _region(self) -> str:
+        text = self.profile.read_text(encoding='utf-8')
+        start = text.index('<!-- GENERATED-BEGIN summary')
+        end = text.index('<!-- GENERATED-END summary -->')
+        return text[start:end]
+
+    def test_writes_the_five_lines_under_the_title_and_purpose_block(self) -> None:
+        res = self._run(person_id=ANN)
+        self.assertEqual(res.exit_code, 0)
+        text = self.profile.read_text(encoding='utf-8')
+        self.assertLess(text.index('yours to write'), text.index('GENERATED-BEGIN summary'))
+        self.assertLess(text.index('GENERATED-END summary'), text.index('## Sources'))
+        region = self._region()
+        self.assertIn(f'**Born:** 3 March 1840 - Easton, New York [[{S_BIRTH}]]', region)
+        self.assertIn(f'**Died:** 1909 [[{S_DEATH}]]', region)
+        self.assertNotIn('1950', region)   # a suggested claim never reaches the summary
+        self.assertIn(f'**Married:** [[{HUSBAND}|Dan Webb]] - February 1871, '
+                      f'Fairview, Kansas [[{S_MARR}]]', region)
+        self.assertIn(f'**Parents:** [[{FATHER}|Caleb Hartley]] [[{S_BIRTH}]] · '
+                      f'[[{MOTHER}|Chastina Reed]] [[{S_BIRTH}]]', region)
+        self.assertIn(f'**Children:** [[{CHILD}|Ethel Webb]] [[{S_KID}]]', region)
+
+    def test_rerun_is_a_no_op(self) -> None:
+        self._run(person_id=ANN)
+        first = self.profile.read_bytes()
+        self._run(person_id=ANN)
+        self.assertEqual(self.profile.read_bytes(), first)
+
+    def test_region_is_rewritten_in_place_and_nothing_else_moves(self) -> None:
+        self._run(person_id=ANN)
+        text = self.profile.read_text(encoding='utf-8')
+        stale = text.replace('**Died:** 1909', '**Died:** 1999')
+        self.profile.write_text(stale, encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        self._run(person_id=ANN)
+        self.assertEqual(self.profile.read_text(encoding='utf-8'), text)
+
+    def test_hand_written_lines_without_markers_are_left_alone(self) -> None:
+        hand = '**Born:** about 1840 in New York, as Grandma told it\n\n'
+        self.profile.write_text(_summary_profile(ANN, 'Ann Hartley', body=hand),
+                                encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        before = self.profile.read_bytes()
+        res = self._run(person_id=ANN)
+        self.assertEqual(res.exit_code, 0)
+        self.assertEqual(self.profile.read_bytes(), before)
+
+    def test_refresh_writes_the_region_too(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            views.run_refresh(self.root)
+        self.assertIn(f'[[{S_BIRTH}]]', self._region())
+
+    def test_draft_queue_does_not_count_the_summary_as_written_up(self) -> None:
+        self._run(person_id=ANN)
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            views.run_draft_queue(self.root, person_id=ANN)
+        queue = next(self.profile.parent.glob('*draft-queue*')).read_text(encoding='utf-8')
+        self.assertIn(S_DEATH, queue.lower())
+
+    def test_strip_generated_region_cuts_only_the_region(self) -> None:
+        from _lib import strip_generated_region
+        self._run(person_id=ANN)
+        stripped = strip_generated_region(self.profile.read_text(encoding='utf-8'), 'summary')
+        self.assertNotIn('GENERATED-BEGIN summary', stripped)
+        self.assertNotIn('**Born:**', stripped)
+        self.assertIn('## Sources', stripped)
+
+
 
 if __name__ == '__main__':
     unittest.main()

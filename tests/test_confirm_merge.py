@@ -719,6 +719,40 @@ class MergeArchiveTests(unittest.TestCase):
         self.assertIn('c-ff00000008', warnings)
         self.assertIn('sibling', warnings)     # the skipped survivor-self edge
 
+    # One entry per person and role (SPEC §9) -----------------------------------
+
+    def test_a_tie_both_records_list_becomes_one_entry_with_both_claims(self) -> None:
+        # The duplicate record backs the same spouse tie with a different
+        # claim: the survivor keeps ONE spouse entry for Nancy, listing both.
+        text = self.merged_path.read_text(encoding='utf-8')
+        self.merged_path.write_text(
+            text.replace('    claim: "[[C-ff00000001]]"', '    claim: "[[C-ff00000009]]"'),
+            encoding='utf-8')
+        run_merge(self.root)
+        rels = read_record(self.survivor_path)['meta']['relationships']
+        spouse = [e for e in rels if str(e['type']) == 'spouse']
+        self.assertEqual(len(spouse), 1)
+        self.assertEqual(spouse[0]['claims'], ['[[c-ff00000001]]', '[[c-ff00000009]]'])
+        friend = [e for e in rels if str(e['type']) == 'friend']
+        self.assertEqual(friend[0]['claims'], ['[[c-ff00000004]]'])
+
+    def test_a_repointed_entry_folds_into_the_one_already_naming_the_survivor(self) -> None:
+        # Nancy's record lists Thomas as a friend AND (through the duplicate)
+        # Thos. as a friend: after the merge that is one friend, once.
+        text = self.other_path.read_text(encoding='utf-8')
+        self.other_path.write_text(text.replace(
+            '  - to: "[[P-bbbbbbbbbb|Thos. Hartley]]"',
+            '  - to: "[[P-aaaaaaaaaa|Thomas Edward Hartley]]"\n'
+            '    type: friend\n'
+            '    subtype: friend\n'
+            '    claim: "[[C-ff00000010]]"\n'
+            '  - to: "[[P-bbbbbbbbbb|Thos. Hartley]]"'), encoding='utf-8')
+        run_merge(self.root)
+        rels = read_record(self.other_path)['meta']['relationships']
+        friend = [e for e in rels if str(e['type']) == 'friend']
+        self.assertEqual(len(friend), 1)
+        self.assertEqual(friend[0]['claims'], ['[[c-ff00000010]]', '[[c-ff00000004]]'])
+
     def test_sibling_claims_and_records_byte_untouched(self) -> None:
         before = self.source_path.read_text(encoding='utf-8')
         run_merge(self.root)

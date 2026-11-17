@@ -226,7 +226,7 @@ from _lib import (
     # Same reasoning for the private-fence marker: imported for the no-op
     # check only; the cut itself is apply_private_fence.
     _PRIVATE_MARK_RE,
-    PERSON_BODY_SECTIONS_TEXT,
+    LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE,  # the old scaffold's example fence (not a real note)
     CLAIMS_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -267,6 +267,8 @@ from _lib import (
     strip_link_wrapper,
     strip_unaccepted_drafts,
     strip_unfilled_person_sections,
+    strip_generated_region,  # cut the profile's generated summary region (SPEC §16)
+    SUMMARY_REGION,
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -948,13 +950,11 @@ def _redact_profile_text(
     return text[:fm_start] + fm_text + text[fm_end:], removed, guess_count
 
 
-# The template's own example fence (in the Research Notes placeholder) is
+# The example fence older profile scaffolds wrote into Research Notes is
 # scaffolding, not a note the genealogist wrote: when he fills the section in
 # around it, the example is still dropped, but the README must not tell him
 # "1 note you marked private was left out" for it.
-_TEMPLATE_FENCE_EXAMPLE = PERSON_BODY_SECTIONS_TEXT[
-    PERSON_BODY_SECTIONS_TEXT.index('<!-- private -->'):
-    PERSON_BODY_SECTIONS_TEXT.index('<!-- /private -->') + len('<!-- /private -->')]
+_TEMPLATE_FENCE_EXAMPLE = LEGACY_RESEARCH_NOTES_FENCE_EXAMPLE
 
 
 def _drop_private_fences(text: str) -> tuple[str, int]:
@@ -1157,6 +1157,10 @@ def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     body = text[body_start:]
     if is_person_profile:
         body = _SOURCES_REGION_RE.sub('', body)
+        # The summary region under the title is generated too (SPEC §16): it
+        # names every parent, spouse and child from the index with no packet
+        # privacy filtering, so it stays home like `## Sources`.
+        body = strip_generated_region(body, SUMMARY_REGION)
         body = strip_unfilled_person_sections(body)
     prefix_end = _purpose_block_prefix_end(body)
     block = _PURPOSE_BLOCK_RE.match(body, prefix_end)
@@ -3013,7 +3017,7 @@ def _packet_payload(
             # #75/#76/#125: the purpose block, the `## Sources` region and
             # never-written sections are scaffolding for the working
             # archive, not content for the family. Cut FIRST, from the
-            # untouched text: the Research Notes placeholder embeds a
+            # untouched text: the older Research Notes placeholder embeds a
             # `<!-- private -->` EXAMPLE, so after the fence pass below it
             # would no longer match and the rest of the template's
             # instructions would ship.

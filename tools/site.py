@@ -6377,7 +6377,7 @@ class _SiteBuilder:
         # at the SAME point as bio_as_written above, plus one more: the
         # unfilled-placeholder check just below (person_section_is_unfilled)
         # must run before apply_private_fence touches the body, because the
-        # Research Notes placeholder embeds a `<!-- private -->` example
+        # older Research Notes placeholder embeds a `<!-- private -->` example
         # block - checking post-fence text would never match it in either
         # build mode, once that block has been dropped (standalone) or
         # unwrapped (linked). The workbench per-entry edit rows further down

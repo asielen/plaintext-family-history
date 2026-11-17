@@ -132,6 +132,8 @@ from _lib import (
     read_restriction_marker,
     resolve_root_arg,
     strip_unfilled_person_sections,
+    strip_generated_region,  # cut the profile's generated summary region (SPEC §16)
+    SUMMARY_REGION,
     undecodable_file_recorder,
     withhold_private_and_drafts,
     safe_load_yaml,
@@ -1330,12 +1332,15 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         # last paragraph cannot hide the marker that withholds the rest of
         # the draft (round-1 review of #305). Fenced text is not going out,
         # so like a draft it is gone before the privacy scans and cannot
-        # refuse the export. One constraint on the order: the Research Notes
+        # refuse the export. One constraint on the order: the older Research Notes
         # scaffold placeholder embeds a `<!-- private -->` EXAMPLE, so
         # unfilled sections are cut from the untouched body first - after
         # the fence pass the placeholder no longer matches, and the rest of
         # the template's instructions would be published.
-        body = strip_unfilled_person_sections(rec['body'])
+        # The generated summary region (SPEC §16) restates claims the
+        # infobox templates below already carry, unfiltered: never exported.
+        body = strip_generated_region(rec['body'], SUMMARY_REGION)
+        body = strip_unfilled_person_sections(body)
         body, draft_problem = withhold_private_and_drafts(body, drop_private=True)
         if draft_problem:
             return {'status': 'broken-draft-marker', 'text': None,
