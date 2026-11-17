@@ -5792,6 +5792,9 @@ def _check_event_roles(registry: 'Registry', findings: list[Finding]) -> set[str
         if not (head and deceased_here and _TITLED_EVENT_WORDS.search(title)):
             continue
         titled = head.group(1).strip().lower()
+        if any(str((registry.person_meta.get(d) or {}).get('name') or '').strip().lower()
+               == titled for d in deceased_here):
+            continue   # a father and son of one name: the title names the deceased
         people = _claim_person_ids(
             {'persons': (registry.source_meta.get(sid) or {}).get('people') or []}, alias_map)
         for pid in people:

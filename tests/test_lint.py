@@ -3047,6 +3047,15 @@ class EventClaimSaysWhoseEventE021Tests(unittest.TestCase):
         self.assertIn('titled after Paul Snyder', found[0].message)
         self.assertIn("is Mary Snyder's", found[0].message)
 
+    def test_a_father_and_son_of_one_name_is_quiet(self) -> None:
+        # Daniel Farrington's grave, filed under Daniel Farrington: the
+        # father's record on the son's source still names the man who died.
+        claims = (f'- value: "Paul died"\n  id: c-3333333333\n  type: death\n'
+                  f'  persons: [{self.SON}]\n  status: accepted\n  confidence: high\n')
+        found = self._lint(claims, title='Paul Snyder - Find a Grave Index',
+                           people=f'people: ["[[{self.SON}]]", "[[{self.FATHER}]]"]\n')
+        self.assertEqual(found, [])
+
     def test_a_source_titled_after_the_deceased_is_quiet(self) -> None:
         claims = (f'- value: "Mary died"\n  id: c-3333333333\n  type: death\n'
                   f'  persons: [{self.MOTHER}]\n  status: accepted\n  confidence: high\n')
