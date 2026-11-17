@@ -408,7 +408,7 @@ fha claim new --source s-id --type TYPE --value "…" [--date DATE]
 
 **Accepting says whose event it is, and refuses the wrong person** (SPEC §8.3). Moving a `birth`, `baptism`, `death`, `burial`, `marriage` or `divorce` claim to `accepted` (one claim, a batch, or `claim new --status accepted`):
 - refuses, nothing written, a claim naming two or more people that leaves someone without a role or names no one in the subject role (`_lib.event_role_gaps`, lint E021/W147) - add `roles:`, then accept;
-- refuses a `death`/`burial` whose deceased is marked `living: true` - `fha person set-living <p-id> false` first if they died; otherwise the record is someone else's;
+- refuses a `death`/`burial` whose deceased is marked `living: true`, unless `--confirm-deceased` says the human checked the record really is theirs: then it is accepted and only the deceased is marked `living: false` (a living spouse on the same record keeps her flag); otherwise the record is someone else's;
 - on success, says it in plain words: "c-… records the DEATH of Beverly Knipscheer (p-…)."
 
 **Batches.** `fha claim c-a c-b --status accepted`:

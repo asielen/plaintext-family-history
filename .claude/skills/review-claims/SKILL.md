@@ -188,10 +188,11 @@ its claims to the people asked about and leave the rest for later sessions.
    changes the person the claim names `deceased:` (or the one person on a claim with no roles), and only
    when their flag read `unknown`. When `fha claim` **refused** the accept instead (SPEC §8.3), nothing
    was written - put it to him and wait:
-   - someone marked `living: true` - "the record says Thomas died, but he's marked as living; has he
-     passed away?" → only on his yes, `fha person set-living <P-id> false`, then accept again; on a no,
-     the record is about someone else (an obituary indexed under a survivor's name is the usual case),
-     so look at its persons: and title together;
+   - someone marked `living: true` - "the record says Thomas died, but he's marked as living. Is this
+     really Thomas's death?" Show him the record. Only on his yes, accept it again with
+     `--confirm-deceased` (that one step accepts it and marks Thomas no longer living); on a no, the
+     record is about someone else (an obituary indexed under a survivor's name is the usual case), so
+     look at its persons:, roles: and title together;
    - a claim that names several people without giving each a part - ask who the event is about and
      what the others were, write the `roles:` map (`deceased:` / `child:` / `spouse:` plus `parent:`,
      `informant:`, `witness:` …) by hand, then accept again.

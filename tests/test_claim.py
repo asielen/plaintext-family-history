@@ -3577,7 +3577,27 @@ class DeathClaimMarksNotLivingTests(_DeathFixture, unittest.TestCase):
         text = self._text(result)
         self.assertIn('records the DEATH of Thomas Hartley', text)
         self.assertIn('marked as living', text)
-        self.assertIn(f'fha person set-living {_THOMAS.lower()} false', text)
+        self.assertIn('--confirm-deceased', text)
+
+    def test_a_confirmed_death_for_someone_marked_living_is_accepted(self) -> None:
+        # The human looked: the record really is Thomas's death. One reviewed
+        # yes accepts it and marks him no longer living - no separate step.
+        source = _death_source(self.root, _claim_item('C-aa11bb22cc', 'death', _THOMAS))
+        result = self._accept('C-aa11bb22cc', confirm_deceased=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, self._text(result))
+        self.assertIn('status: accepted', source.read_text(encoding='utf-8'))
+        self.assertEqual(self._living(self.thomas), 'false')
+        self.assertIn('Thomas Hartley is now marked as no longer living', self._text(result))
+
+    def test_confirming_one_death_never_marks_a_living_bystander(self) -> None:
+        # The confirmation is about the deceased only: a living spouse named
+        # on the same record keeps her flag.
+        _death_source(self.root, _claim_item(
+            'C-aa11bb22cc', 'death', f'{_ADA}, {_THOMAS}',
+            roles=f'  roles:\n    deceased: [{_ADA}]\n    spouse: [{_THOMAS}]\n'))
+        self._accept('C-aa11bb22cc', confirm_deceased=True)
+        self.assertEqual(self._living(self.ada), 'false')
+        self.assertEqual(self._living(self.thomas), 'true')
 
     def test_a_burial_naming_several_people_with_no_roles_is_not_accepted(self) -> None:
         # Whose burial? Accepting would make it a fact without saying whose
