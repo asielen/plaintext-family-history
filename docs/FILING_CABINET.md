@@ -80,10 +80,9 @@ Research produces four kinds of paper, and each has a home:
   sheet of their own at that point - an escape valve for when there's a lot to say, not the default
   starting home.)
 - **Something you believe but can't prove yet** - "maybe this is the same John as the 1881
-  census" - is a *hypothesis*: unlike an open question, this one CAN go right on the person's own
-  page, under its own `## Hypotheses` heading (not the free-form Research Notes section) - or their
-  separate research sheet if they already have one, to keep it grouped with other research on them -
-  with a line about what evidence would settle it.
+  census" - is a *working answer* to an open question: it goes on that question's own entry, as a
+  `guess:` line with its `id:`, the reason for it (`basis:`) and what evidence would settle it
+  (`verify:`), wherever the question already lives.
 - **A search you already ran** - even one that found nothing - goes in the *research log*, so you
   (and the assistant) never re-run it blind.
 

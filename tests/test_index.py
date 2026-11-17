@@ -1,8 +1,9 @@
 """
 test_index.py - fha index: hypotheses/search_log parsing and indexing.
 
-Covers the parser that extracts `## Hypotheses` and `## Research Log` entries
-from a person research file's markdown body (SPEC §16) and from
+Covers the parser that extracts working answers (question entries, SPEC
+§17b) and `## Research Log` entries from a person research file's markdown
+body (SPEC §16) and from
 notes/research-log.md (SPEC §16, multi-person/locality searches), and the
 hooks that insert those rows into the hypotheses/search_log tables consumed
 by report.py sections 5 and 7.
@@ -50,23 +51,22 @@ created: 2026-06-12
 Some notes.
 
 ## Open Questions
-*(none yet)*
 
-## Hypotheses
-
+## Q: When did the family arrive?
+- origin: agent
+- status: open
 - id: H-1111111111
-  hypothesis: "Family arrived by 1869"
-  basis: "railroad boom drew settlers"
-  verify: "1870 census"
-  origin: agent
-  status: open
+- guess: Family arrived by 1869
+- basis: railroad boom drew settlers
+- verify: 1870 census
 
+## Q: Who were Jane's parents?
+- origin: human
+- status: answered [[C-3333333333]]
 - id: H-2222222222
-  hypothesis: "Second guess"
-  basis: "weak basis"
-  verify: "county land records"
-  origin: human
-  status: "verified → C-3333333333"
+- guess: Second guess
+- basis: weak basis
+- verify: county land records
 
 ## Research Log
 
@@ -118,14 +118,6 @@ def _write(path: Path, text: str) -> None:
 
 
 class ParseMdListBlocksTests(unittest.TestCase):
-    def test_well_formed_indented_entries_parse(self) -> None:
-        section = index._extract_section_body(_RESEARCH_MD_WELL_FORMED, 'Hypotheses')
-        entries = index._parse_md_list_blocks(section)
-        self.assertEqual(len(entries), 2)
-        self.assertEqual(entries[0]['id'], 'H-1111111111')
-        self.assertEqual(entries[0]['status'], 'open')
-        self.assertIn('railroad', entries[0]['basis'])
-
     def test_blank_line_terminates_entry(self) -> None:
         section = index._extract_section_body(_RESEARCH_MD_WELL_FORMED, 'Research Log')
         entries = index._parse_md_list_blocks(section)
@@ -134,7 +126,7 @@ class ParseMdListBlocksTests(unittest.TestCase):
         self.assertEqual(entries[1]['date'], '2026-06-14')
 
     def test_missing_section_returns_empty(self) -> None:
-        section = index._extract_section_body(_RESEARCH_MD_NO_SECTIONS, 'Hypotheses')
+        section = index._extract_section_body(_RESEARCH_MD_NO_SECTIONS, 'Research Log')
         self.assertEqual(section.strip(), '')
         self.assertEqual(index._parse_md_list_blocks(section), [])
 
@@ -165,8 +157,8 @@ class IndexPersonResearchTests(unittest.TestCase):
         self.assertEqual(hyps[0]['status'], 'open')
         self.assertIsNone(hyps[0]['verified_claim'])
 
-        # Second hypothesis is verified -> C-3333333333; the C-id must be
-        # extracted into verified_claim even though it's embedded in prose.
+        # The second question is answered by C-3333333333; the C-id must be
+        # extracted into verified_claim.
         self.assertEqual(hyps[1]['id'], 'h-2222222222')
         self.assertEqual(hyps[1]['verified_claim'], 'c-3333333333')
 
@@ -194,54 +186,20 @@ class IndexPersonResearchTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hypotheses').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
-    def test_profile_kind_file_indexes_hypotheses_but_not_search_log(self) -> None:
-        # #56: this used to assert the OPPOSITE for hypotheses - a plain
-        # profile's ## Hypotheses section fed no tables at all, gated on the
-        # `_research_` filename stem rather than on the section being
-        # present. The archive already writes hypotheses straight into
-        # profiles and stubs, so that read a real record as nonexistent.
-        # Research Log stays scoped to the research companion: SPEC §16 has
-        # never homed it anywhere else, and #56 does not widen it - a
-        # profile carrying that heading (as this shared fixture does) must
-        # still feed search_log with nothing.
+    def test_profile_kind_file_indexes_neither_working_answers_nor_search_log(self) -> None:
+        # SPEC §16 homes `## Open Questions` and `## Research Log` in the
+        # research companion only: a profile carrying those headings (as
+        # this shared fixture does) feeds neither table.
         path = self.archive_root / 'people' / 'jones__test_P-cccccccccc.md'
         _write(path, _RESEARCH_MD_WELL_FORMED.replace('P-aaaaaaaaaa', 'P-cccccccccc'))
 
         index._index_person(self.conn, path, self.archive_root)
 
-        hyps = self.conn.execute('SELECT * FROM hypotheses ORDER BY id').fetchall()
-        self.assertEqual(len(hyps), 2)
-        self.assertEqual(hyps[0]['id'], 'h-1111111111')
-        self.assertEqual(hyps[0]['person_id'], 'p-cccccccccc')
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hypotheses').fetchone()[0], 0)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
-    def test_hypothesis_in_a_real_profile_is_indexed(self) -> None:
-        # A more direct case than the shared fixture above: a genuine person
-        # record (name:/living: present, so content - not just a bare
-        # filename fallback - marks this 'profile' kind) carrying its own
-        # ## Hypotheses section, exactly the archive's existing pattern the
-        # issue names (church__robert_e_p-kyzmxzdwy0.md carries H-7xh5vb9g3d
-        # in its own file).
-        path = self.archive_root / 'people' / 'church__robert_P-dddddddddd.md'
-        _write(path, (
-            '---\nid: P-dddddddddd\nname: Robert Church\nliving: false\n---\n\n'
-            '# Robert Church\n\n## Hypotheses\n\n'
-            '- id: H-eeeeeeeeee\n'
-            '  hypothesis: "same man as the unplaced stub"\n'
-            '  origin: agent\n  status: open\n'
-        ))
-
-        index._index_person(self.conn, path, self.archive_root)
-
-        hyps = self.conn.execute('SELECT * FROM hypotheses').fetchall()
-        self.assertEqual(len(hyps), 1)
-        self.assertEqual(hyps[0]['id'], 'h-eeeeeeeeee')
-        self.assertEqual(hyps[0]['person_id'], 'p-dddddddddd')
-
-    def test_hypothesis_in_a_stub_is_indexed(self) -> None:
-        # #56's worst case: a stub has NO companion files at all (SPEC §16),
-        # so its own body is the only legal place a hypothesis about it can
-        # live.
+    def test_an_old_hypotheses_section_is_not_read(self) -> None:
+        # The retired form: no tool reads it (`fha lint` W150 names it).
         path = self.archive_root / 'people' / 'stubs' / 'unknown__unknown_P-ffffffffff.md'
         _write(path, (
             '---\nid: P-ffffffffff\nname: unknown\nliving: unknown\n'
@@ -253,11 +211,7 @@ class IndexPersonResearchTests(unittest.TestCase):
 
         index._index_person(self.conn, path, self.archive_root)
 
-        hyps = self.conn.execute('SELECT * FROM hypotheses').fetchall()
-        self.assertEqual(len(hyps), 1)
-        self.assertEqual(hyps[0]['id'], 'h-1010101010')
-        self.assertEqual(hyps[0]['person_id'], 'p-ffffffffff')
-
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM hypotheses').fetchone()[0], 0)
 
 _GENERATED_TIMELINE = (
     '<!-- GENERATED by fha views timeline on 2026-06-30'

@@ -6898,8 +6898,7 @@ _QUESTION_FIELD_RES = {
 }
 # Where one entry's own field lines end: the next `#`/`##` heading of any
 # kind. The last question in a research file is followed by other sections
-# (an old `## Hypotheses` list among them), and a field line there is not
-# this question's.
+# (its `## Research Log`), and a field line there is not this question's.
 _QUESTION_FIELDS_END_RE = re.compile(r'^#{1,2}\s', re.M)
 
 

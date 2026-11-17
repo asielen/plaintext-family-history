@@ -60,7 +60,7 @@ class ParseQuestionBlocksTests(unittest.TestCase):
             '## Q: First question?\n'
             '- status: open\n'
             '- refs: [P-aaaaaaaaaa]\n\n'
-            '## Hypotheses\n\n*(none yet)*\n\n'
+            '## Research Notes\n\n*(none yet)*\n\n'
             '## Q: Second question?\n'
             '- status: closed (not pursuing)\n'
             '- refs: [P-bbbbbbbbbb]\n'
@@ -68,8 +68,8 @@ class ParseQuestionBlocksTests(unittest.TestCase):
         blocks = parse_question_blocks(text)
         self.assertEqual(set(blocks), {'First question?', 'Second question?'})
         # The first block's raw text runs through the intervening heading -
-        # it does NOT stop at '## Hypotheses'.
-        self.assertIn('Hypotheses', blocks['First question?']['block'])
+        # it does NOT stop at '## Research Notes'.
+        self.assertIn('Research Notes', blocks['First question?']['block'])
         self.assertEqual(blocks['Second question?']['status'], 'closed (not pursuing)')
 
     def test_no_refs_yields_empty_list_not_a_crash(self) -> None:
@@ -109,13 +109,13 @@ class ParseQuestionBlocksTests(unittest.TestCase):
 
     def test_fields_stop_at_the_next_heading(self) -> None:
         # The last question in a research file is followed by other sections;
-        # an old `## Hypotheses` entry's `- id:` there is not this question's.
+        # an `- id:` line under another heading there is not this question's.
         text = (
             '## Q: Last question?\n'
             '- status: open\n\n'
-            '## Hypotheses\n\n'
+            '## Research Notes\n\n'
             '- id: H-1111111111\n'
-            '  hypothesis: something else\n'
+            '  note: something else\n'
         )
         self.assertEqual(parse_question_blocks(text)['Last question?']['id'], '')
 

@@ -8883,7 +8883,7 @@ class OpenQuestionsSectionTests(_Base):
             '- refs: [P-aaaaaaaaaa, P-bbbbbbbbbb]\n'
             '- context:\n'
             '  - (human, 2026-06-01) Both lived in the same county in 1880.\n'
-            '\n## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
+            '\n## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
         lo = self._run(linked=True, workbench=False)
         self.assertTrue(lo.ok, lo.messages)
@@ -8894,12 +8894,11 @@ class OpenQuestionsSectionTests(_Base):
             # #117 block-scoping guard: `_lib.parse_question_blocks` splits
             # purely on `## Q:` boundaries, so the raw block for the LAST
             # question in a file runs through to end-of-file - the sibling
-            # `## Hypotheses`/`## Research Log` sections that follow it here
-            # would leak onto the page as if part of the question without
-            # site.py's own trim (`_question_block_body`). Neither heading
-            # word appears anywhere else on a person page (no template ever
-            # emits it), so its presence at all means the trim regressed.
-            self.assertNotIn('Hypotheses', html, pid)
+            # `## Research Log` section that follows it here would leak
+            # onto the page as if part of the question without site.py's
+            # own trim (`_question_block_body`). That heading never appears
+            # anywhere else on a person page (no template ever emits it), so
+            # its presence at all means the trim regressed.
             self.assertNotIn('Research Log', html, pid)
 
     def test_by_request_persons_own_question_is_withheld_from_every_page(self):
