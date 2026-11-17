@@ -292,8 +292,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 the variation-group key, a member's role, a bundle
 #                                 file's role, and the group's main image (#200)
 #    files_entry_is_main / main_files_entry / files_entry_role - read a source's
-#                                 main-file mark (`is_primary: true`; an older
-#                                 record's `role: primary` still counts, SPEC §14)
+#                                 main-file mark (`is_primary: true`, SPEC §14)
 #
 #  EDTF handling
 #    is_valid_edtf             - validate an EDTF string against this project's subset
@@ -7419,28 +7418,18 @@ def flag_true(value) -> bool:
 def files_entry_is_main(entry) -> bool:
     """True when one `files:` entry says it is the source's main file.
 
-    SPEC §14: `is_primary: true` is the mark. Records written before SPEC 2.1
-    said it with `role: primary` instead, so that still counts here - a
-    reader never misses the main file of an older record. An explicit
-    `is_primary: false` wins over an old `role: primary`."""
-    if not isinstance(entry, dict):
-        return False
-    if 'is_primary' in entry and entry.get('is_primary') is not None:
-        return flag_true(entry.get('is_primary'))
-    return str(entry.get('role') or '').strip().lower() == 'primary'
+    SPEC §14: `is_primary: true` is the only mark (`fha lint` W145 names an
+    old `role: primary` left in a record)."""
+    return isinstance(entry, dict) and flag_true(entry.get('is_primary'))
 
 
 def main_files_entry(files) -> dict | None:
     """The `files:` entry a reader should open first, or None.
 
-    The entry marked `is_primary: true` wins; failing that (a record written
-    before SPEC 2.1), the first one with `role: primary`; failing that, a
-    source's only file - there is no other to open first."""
+    The entry marked `is_primary: true` wins; failing that, a source's only
+    file - there is no other to open first."""
     entries = [e for e in (files or []) if isinstance(e, dict)] \
         if isinstance(files, list) else []
-    for e in entries:
-        if flag_true(e.get('is_primary')):
-            return e
     for e in entries:
         if files_entry_is_main(e):
             return e
@@ -7462,12 +7451,10 @@ def ai_pass_lines(date: str, by: str, task: str, note: str | None = None) -> lis
 
 def files_entry_role(entry) -> str:
     """What one `files:` entry says its file IS (`front`, `page-2`,
-    `transcript`), or '' - never the old `role: primary` main-file mark,
-    which says which file to open first, not what it is."""
+    `transcript`), or ''."""
     if not isinstance(entry, dict):
         return ''
-    role = str(entry.get('role') or '').strip()
-    return '' if role.lower() == 'primary' else role
+    return str(entry.get('role') or '').strip()
 
 
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────

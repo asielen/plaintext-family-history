@@ -202,7 +202,7 @@ class DocumentKeywordTests(_Base):
         (self.archive / 'sources' / 'photos').mkdir(parents=True, exist_ok=True)
         (self.archive / 'sources' / 'photos' / f'postcard_{sid}.md').write_text(
             f'---\nid: {sid}\ntitle: Postcard\nsource_type: photo\nfiles:\n'
-            '  - file: photos/1911/postcard.jpg\n    role: primary\n---\n', encoding='utf-8')
+            '  - file: photos/1911/postcard.jpg\n    is_primary: true\n---\n', encoding='utf-8')
         scan = self.archive / 'documents' / 'census' / 'postcard.jpg'
         scan.write_bytes(b'x')
         store.keywords[str(scan)] = [f'SOURCE: {sid}']
@@ -311,7 +311,7 @@ class DocumentKeywordTests(_Base):
         (self.archive / 'sources' / 'census').mkdir(parents=True, exist_ok=True)
         (self.archive / 'sources' / 'census' / f'portrait_{sid}.md').write_text(
             f'---\nid: {sid}\ntitle: Portrait\nsource_type: census\nfiles:\n'
-            f'  - file: documents/census/portrait_{sid}.jpg\n    role: primary\n---\n',
+            f'  - file: documents/census/portrait_{sid}.jpg\n    is_primary: true\n---\n',
             encoding='utf-8')
         store.keywords[str(scan)] = ['SOURCE: S-a1b2c3d4e5']
         out, err = io.StringIO(), io.StringIO()

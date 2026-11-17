@@ -246,7 +246,7 @@ class SourceExtractTests(unittest.TestCase):
     def _write_record(self, files_block: str | None = None) -> None:
         if files_block is None:
             files_block = (f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
-                           '    role: primary\n')
+                           '    is_primary: true\n')
         self.record.write_text(
             f'---\nid: {SID}\ntitle: County History\nsource_type: book\n'
             f'{files_block}---\n\n## Notes\nA fat county history.\n',
@@ -441,7 +441,7 @@ class SourceExtractTests(unittest.TestCase):
     @unittest.skipUnless(HAVE_PYPDF, 'pypdf not installed')
     def test_no_pdf_in_inventory_refuses_plainly(self) -> None:
         self._write_record(
-            f'files:\n  - file: documents/book/scan_{SID.lower()}.jpg\n    role: primary\n')
+            f'files:\n  - file: documents/book/scan_{SID.lower()}.jpg\n    is_primary: true\n')
         result = self._run()
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertTrue(any('no PDF' in m.text for m in result.messages))
@@ -463,8 +463,8 @@ class SourceExtractTests(unittest.TestCase):
         # names both files, and says how to label the second (#280: without
         # calling the record a hand-edit mistake).
         self._write_record(
-            f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n    role: primary\n'
-            f'  - file: documents/book/b_{SID.lower()}.pdf\n    role: primary\n')
+            f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n    is_primary: true\n'
+            f'  - file: documents/book/b_{SID.lower()}.pdf\n    is_primary: true\n')
         (self.root / 'documents' / 'book' / f'a_{SID.lower()}.pdf').write_bytes(
             _minimal_pdf(['A text']))
         (self.root / 'documents' / 'book' / f'b_{SID.lower()}.pdf').write_bytes(
@@ -488,9 +488,9 @@ class SourceExtractTests(unittest.TestCase):
         second = f'hartley-familysearch-primary_{SID.lower()}.pdf'
         self._write_record(
             f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             f'  - file: documents/book/{second}\n'
-            f'    role: primary\n    copy: {second_copy}\n')
+            f'    is_primary: true\n    copy: {second_copy}\n')
         self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
         (self.pdf.parent / second).write_bytes(_minimal_pdf(['FamilySearch copy text']))
 
@@ -631,9 +631,9 @@ class SourceExtractTests(unittest.TestCase):
     def test_every_primary_labelled_refuses_naming_copy(self) -> None:
         self._write_record(
             f'files:\n  - file: documents/book/a_{SID.lower()}.pdf\n'
-            '    role: primary\n    copy: b\n'
+            '    is_primary: true\n    copy: b\n'
             f'  - file: documents/book/c_{SID.lower()}.pdf\n'
-            '    role: primary\n    copy: c\n')
+            '    is_primary: true\n    copy: c\n')
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         joined = ' '.join(m.text for m in result.messages)
@@ -1329,8 +1329,8 @@ class SourceExtractTests(unittest.TestCase):
         second = f'scan2_{SID.lower()}.pdf'
         self._write_record(
             f'files:\n  - file: documents/book/county-history_{SID.lower()}.pdf\n'
-            '    role: primary\n'
-            f'  - file: documents/book/{second}\n    role: primary\n    copy: b\n')
+            '    is_primary: true\n'
+            f'  - file: documents/book/{second}\n    is_primary: true\n    copy: b\n')
         self.pdf.write_bytes(_minimal_pdf(['Own scan text']))
         (self.pdf.parent / second).write_bytes(_minimal_pdf(['Copy b text']))
         self.assertEqual(self._run(copy_label='b').exit_code, EXIT_CLEAN)
@@ -1539,7 +1539,7 @@ class SourceExtractTests(unittest.TestCase):
         # dump's entry to just the filename and send indexing to the wrong place.
         self._write_record(
             f'files:\n  - file: documents\\book\\county-history_{SID.lower()}.pdf\n'
-            '    role: primary\n')
+            '    is_primary: true\n')
         self.pdf.write_bytes(_minimal_pdf(['Hartley arrived 1854']))
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN)

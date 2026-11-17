@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "56e4a2154273e79cca7c0180f37149883c7aabb4da7dfab7ccbfe3854e26da03",
+      "sha256": "65e52daf8016fece9e552c101c88dbc70ed0c418d8ea58dbc3098be576dcaa60",
       "spec_version": "2.2",
       "src": "tools/_lib.py"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "018c3e74ef5bca42d242d7251c10b35709032f2e9d82a6830c831425b5166641",
+      "sha256": "c55d767fc507e7148efa079639e4b400818417797d290f4cd82d48f9d5c414fc",
       "spec_version": "2.2",
       "src": "tools/doctor.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "d45e315b750e4c4e1bb43f1b01e0d110d2cdf0ac15b9f3432be1fe0c763c2832",
+      "sha256": "d02134000dc20a86c11de084ed593aad581f3b192db813de5ad9e0d78a24cb3d",
       "spec_version": "2.2",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8eddd886c3b14e4c3a13dd8816b3506bd81e80494458d7d6a7771d252950ddd5",
+      "sha256": "b2c4e8a7127c3165da5204b4bec96e017f221e186ef3c0820b620484ea0464bc",
       "spec_version": "2.2",
       "src": "tools/lint.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "2e046d3e687a36c448a8e0f62eda2b2e173a9346c28a63d36100d30a1abd1782",
+      "sha256": "ba93ca3b810c05aa3322587d080c9aa5919fb8b1616ed5385ea8005dc8142c70",
       "spec_version": "2.2",
       "src": "tools/process.py"
     },
@@ -742,7 +742,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "4d13302f443dc636dfbfbf1c55018a32bbe636332762eec61e89deb241c6ef6b",
+      "sha256": "3f823ef9e056674272e79110487ed62f88747949d2f9a93284d03ec8ebaef249",
       "spec_version": "2.2",
       "src": "tools/source.py"
     },
@@ -1023,7 +1023,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "27b57c6c235c1097df673777fbc9d1ebf7a38a1986acdd80baa45efa443955c3",
+      "sha256": "548e6a8de1379e40425a45d0f0ba74f1ce8cd3d5c9f532190b5c295a9b3afcd3",
       "spec_version": "2.2",
       "src": "TOOLING.md"
     },

@@ -2748,7 +2748,7 @@ class InventoryContainmentE011Tests(unittest.TestCase):
         outside = self.root.parent / 'outside-secret.tif'
         outside.write_bytes(b'not part of the archive')
         self.addCleanup(lambda: outside.unlink(missing_ok=True))
-        self._write_source('  - file: documents/../../outside-secret.tif\n    role: primary')
+        self._write_source('  - file: documents/../../outside-secret.tif\n    is_primary: true')
 
         found = self._e011_findings()
 
@@ -2766,7 +2766,7 @@ class InventoryContainmentE011Tests(unittest.TestCase):
         # is checked before existence, so a '..'-entry pointing at nothing is
         # reported as escaping, not as an ordinary "not found on disk" E011.
         self._write_source(
-            '  - file: documents/../../nowhere-at-all.tif\n    role: primary')
+            '  - file: documents/../../nowhere-at-all.tif\n    is_primary: true')
 
         found = self._e011_findings()
 
@@ -2777,7 +2777,7 @@ class InventoryContainmentE011Tests(unittest.TestCase):
         asset = self.root / 'documents' / 'other' / f'escaping-source_{_E011_SID}.jpg'
         asset.write_bytes(b'jpegbytes')
         self._write_source(
-            f'  - file: documents/other/escaping-source_{_E011_SID}.jpg\n    role: primary')
+            f'  - file: documents/other/escaping-source_{_E011_SID}.jpg\n    is_primary: true')
 
         self.assertEqual(self._e011_findings(), [])
 
@@ -5018,7 +5018,7 @@ class StrayPersonKeywordW131Tests(unittest.TestCase):
             f'---\nid: {self.SID}\ntitle: Deed\nsource_type: land-record\n'
             f'people: [{self.LISTED}]\n'
             f'files:\n  - file: documents/deed_{self.SID.lower()}.tif\n'
-            '    role: primary\n---\n\n## Notes\nA deed.\n', encoding='utf-8')
+            '    is_primary: true\n---\n\n## Notes\nA deed.\n', encoding='utf-8')
 
         from _lib import load_fha_yaml
         self.config = load_fha_yaml(self.root)
@@ -6161,12 +6161,8 @@ class SourceRecordFormTests(unittest.TestCase):
         self.assertIn('## AI Passes', codes['W144'][0].message)
         self.assertIn('ai_passes:', codes['W144'][0].message)
 
-    def test_one_main_file_is_quiet_in_either_form(self) -> None:
+    def test_one_main_file_is_quiet(self) -> None:
         self.assertNotIn('W145', self._codes(self.ONE_FILE))
-        # An older record's `role: primary` still names its main file.
-        self.assertNotIn('W145', self._codes(
-            'files:\n  - file: documents/other/note.txt\n    role: primary\n'
-            '  - file: documents/other/note-b.txt\n    role: primary\n    copy: b\n'))
         # A pointer-only source lists no files at all.
         self.assertNotIn('W145', self._codes(''))
 
@@ -6179,13 +6175,23 @@ class SourceRecordFormTests(unittest.TestCase):
             'files:\n  - file: documents/other/note.txt\n    role: page-1\n'
             '  - file: documents/other/note-2.txt\n    role: page-2\n'))
 
+    def test_an_old_role_primary_mark_is_named_with_the_fix(self) -> None:
+        # No tool reads `role: primary` as the main-file mark any more, so a
+        # record still saying it must be named, not quietly opened at random.
+        codes = self._codes('files:\n  - file: documents/other/a.txt\n    role: primary\n'
+                            '  - file: documents/other/b.txt\n    role: back\n')
+        self.assertEqual(len(codes.get('W145', [])), 1, codes)
+        msg = codes['W145'][0].message
+        self.assertIn('documents/other/a.txt', msg)
+        self.assertIn('with `is_primary: true`', msg)
+
     def test_a_stray_role_primary_beside_is_primary_is_named(self) -> None:
         codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'
                             '  - file: documents/other/b.txt\n    role: primary\n')
         self.assertEqual(len(codes.get('W145', [])), 1, codes)
         msg = codes['W145'][0].message
         self.assertIn('documents/other/b.txt', msg)
-        self.assertIn('role: primary', msg)
+        self.assertIn('Delete that `role: primary` line', msg)
 
     def test_two_main_files_warn(self) -> None:
         codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'

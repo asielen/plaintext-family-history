@@ -2638,7 +2638,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '    original_filename: private-scan.tif\n'
             '---\n'
             '## Claims\n```yaml\n```\n\n'
@@ -2657,7 +2657,7 @@ class PacketTests(unittest.TestCase):
         # The record is still a real, useful record: everything else about
         # the entry - and the rest of the file - is untouched.
         self.assertIn('file: private-scan.tif', copied)
-        self.assertIn('role: primary', copied)
+        self.assertIn('is_primary: true', copied)
         self.assertIn('original_filename: private-scan.tif', copied)
         self.assertIn('A note about the letter.', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
@@ -2679,7 +2679,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n'
             '- value: "Cause of death: suicide"\n'
@@ -2700,7 +2700,7 @@ class PacketTests(unittest.TestCase):
         self.assertNotIn('andrew_sielen', copied)
         self.assertNotIn('suicide', copied)   # the restricted claim is still cut too
         self.assertIn('file: private-scan.tif', copied)
-        self.assertIn('role: primary', copied)
+        self.assertIn('is_primary: true', copied)
 
     # ── Round-10 audit: four more bypasses of the files: redaction surface ─────
     #
@@ -2736,7 +2736,7 @@ class PacketTests(unittest.TestCase):
             'files:\n'
             '  - file: |\n'
             '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -2782,7 +2782,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -2828,7 +2828,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n'
             '- value: "Cause of death: suicide"\n'
@@ -2919,7 +2919,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: file:///Users/andrew_sielen/Secret Folder/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -2981,7 +2981,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '    notes: |\n'
             '      file: this line also matches file: syntax\n'
             '---\n'
@@ -3019,7 +3019,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             f'  - file: "{zwsp}/Users/andrew_sielen/Secret Folder/private-scan.tif"\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3095,7 +3095,7 @@ class PacketTests(unittest.TestCase):
             'files:\n'
             '  - file: |2-\n'
             '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3237,7 +3237,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: file:///Users/andrew_sielen\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3274,7 +3274,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             '"files":\n'
             '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
-            '    role: primary\n'
+            '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3304,7 +3304,7 @@ class PacketTests(unittest.TestCase):
             'id: s-1111111111\n'
             'title: Ordinary Title\n'
             'source_type: letter\n'
-            "'files': [{file: /Users/andrew_sielen/Secret Folder/private-scan.tif, role: primary}]\n"
+            "'files': [{file: /Users/andrew_sielen/Secret Folder/private-scan.tif, is_primary: true}]\n"
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',

@@ -89,7 +89,7 @@ class ReconcileTests(unittest.TestCase):
     def _write_record(self, alias: str, extra_entry: str = '') -> None:
         self.record.write_text(
             f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\n'
-            f'files:\n  - file: {alias}\n    role: primary\n{extra_entry}---\n\n## Notes\nx.\n',
+            f'files:\n  - file: {alias}\n    is_primary: true\n{extra_entry}---\n\n## Notes\nx.\n',
             encoding='utf-8')
 
     def _run(self, **kw):
@@ -155,7 +155,7 @@ class ReconcileTests(unittest.TestCase):
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/letters/1920s/{DOC}')
         # role and the rest of the entry survive the surgical rewrite
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
         # a second run has nothing left to do
         self.assertEqual(self._run().exit_code, EXIT_CLEAN)
 
@@ -169,7 +169,7 @@ class ReconcileTests(unittest.TestCase):
         sidecar_name = f'{DOC}.txt'
         self._write_record(
             f'documents/{sidecar_name}',
-            extra_entry=f'  - file: documents/{DOC}\n    role: primary\n')
+            extra_entry=f'  - file: documents/{DOC}\n    is_primary: true\n')
         (self.root / 'documents' / sidecar_name).write_text('t', encoding='utf-8')
         moved = self.root / 'documents' / 'letters' / DOC
         moved.parent.mkdir(parents=True)
@@ -216,7 +216,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse([m.text for m in applied.messages if m.level == 'warning'])
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/moved/{DOC}')
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
 
     def test_backslash_front_and_back_heal_by_basename_not_ambiguous(self) -> None:
         # Two files of ONE source share its S-id (a front and a back). With
@@ -229,7 +229,7 @@ class ReconcileTests(unittest.TestCase):
         self.record.write_text(
             f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\n'
             f'files:\n'
-            f'  - file: documents\\old\\{DOC}\n    role: primary\n'
+            f'  - file: documents\\old\\{DOC}\n    is_primary: true\n'
             f'  - file: documents\\old\\{back}\n    role: back\n'
             f'---\n\n## Notes\nx.\n', encoding='utf-8')
         dest = self.root / 'documents' / '1920s'
@@ -299,7 +299,7 @@ class ReconcileTests(unittest.TestCase):
         # filename still carries SID_B, plus its on-disk document.
         (self.root / 'sources' / 'letter' / f'other_{SID_B.lower()}.md').write_text(
             f'---\nid: {SID_B}\ntitle: "unterminated\nsource_type: letter\n'
-            f'files:\n  - file: documents/other_{SID_B.lower()}.pdf\n    role: primary\n'
+            f'files:\n  - file: documents/other_{SID_B.lower()}.pdf\n    is_primary: true\n'
             '---\n\n## Notes\ny.\n', encoding='utf-8')
         (self.root / 'documents' / f'other_{SID_B.lower()}.pdf').write_text(
             'y', encoding='utf-8')
@@ -342,7 +342,7 @@ class ReconcileTests(unittest.TestCase):
         # The record must read back the WHOLE path, not a '#'-truncated stub.
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/Box #3/{DOC}')
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
         # And a second run finds nothing to heal - the source stayed attached.
         self.assertEqual(self._run().exit_code, EXIT_CLEAN)
 
@@ -368,7 +368,7 @@ class ReconcileTests(unittest.TestCase):
         self.record.write_text(
             f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\n'
             f'files:\n  - file: documents/{DOC}  # scanned original\n'
-            f'    role: primary\n---\n\n## Notes\nx.\n', encoding='utf-8')
+            f'    is_primary: true\n---\n\n## Notes\nx.\n', encoding='utf-8')
         moved = self.root / 'documents' / 'letters' / DOC
         moved.parent.mkdir(parents=True)
         moved.write_text('x', encoding='utf-8')
@@ -471,7 +471,7 @@ class ReconcileTests(unittest.TestCase):
         record_b = self.root / 'sources' / 'letter' / f'other_{SID_B.lower()}.md'
         record_b.write_text(
             f'---\nid: {SID_B}\ntitle: Other\nsource_type: letter\n'
-            f'files:\n  - file: documents/moved/{DOC}\n    role: primary\n'
+            f'files:\n  - file: documents/moved/{DOC}\n    is_primary: true\n'
             '---\n\n## Notes\ny.\n', encoding='utf-8')
         # Record A (self.record) still lists the stale documents/{DOC}, which is
         # not on disk - its basename matches the file record B already lists.
@@ -528,7 +528,7 @@ class DuplicateTargetParityTests(unittest.TestCase):
             record = root / 'sources' / 'letter' / f'letter_{SID.lower()}.md'
             record.write_text(
                 f'---\nid: {SID}\ntitle: A letter\nsource_type: letter\nfiles:\n'
-                f'  - file: documents/{DOC}\n    role: primary\n'
+                f'  - file: documents/{DOC}\n    is_primary: true\n'
                 f'  - file: documents/box/./{DOC}\n    role: copy\n---\n',
                 encoding='utf-8')
             config = load_fha_yaml(root)
@@ -1030,7 +1030,7 @@ class PhotoE011MessageTests(unittest.TestCase):
     def test_documents_entry_keeps_its_own_message(self) -> None:
         self.record.write_text(
             f'---\nid: {PHOTO_SID}\ntitle: A letter\nsource_type: letter\nfiles:\n'
-            f'  - file: documents/letter_{PHOTO_SID}.pdf\n    role: primary\n---\n',
+            f'  - file: documents/letter_{PHOTO_SID}.pdf\n    is_primary: true\n---\n',
             encoding='utf-8')
         text = self._e011(catalog='absent', exiftool=False)
         self.assertIn('`fha reconcile` re-ties it', text)

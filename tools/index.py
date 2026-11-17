@@ -1550,9 +1550,8 @@ def _index_source(
             (sid, lid),
         )
 
-    # File inventory. The main file (SPEC §14 `is_primary: true`; an older
-    # record's `role: primary`) is flagged so the site and the workbench open
-    # it first.
+    # File inventory. The main file (SPEC §14 `is_primary: true`) is flagged
+    # so the site and the workbench open it first.
     files_list = meta.get('files') if isinstance(meta.get('files'), list) else []
     main_entry = main_files_entry(files_list)
     for f in files_list:
@@ -1562,9 +1561,7 @@ def _index_source(
         # A bare `role:` line still parses as null - and `role` is rendered
         # straight onto the source page (`site._role_note`), so a blank line
         # here would show the literal text 'role: None' rather than omitting
-        # the label the way a truly-absent role already does. The old
-        # `role: primary` main-file mark says nothing about what the file
-        # is, so it is not shown as a role either.
+        # the label the way a truly-absent role already does.
         role = files_entry_role(f)
         is_main = 1 if f is main_entry else 0
         # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)

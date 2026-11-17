@@ -44,7 +44,6 @@ FRONTMATTER_HEAD = (
 BUG_ERA_FILES = (
     'files:\n'
     '  - file: photos/1950/smith-farm-01400-back.tif\n'
-    '    role: primary\n'
     '    is_primary: true\n'
     '  - file: photos/1950/smith-farm-01400.tif\n'
     '    role: farm-01400\n'
@@ -123,32 +122,6 @@ class SetPrimarySwapTests(unittest.TestCase):
         self.assertEqual(self.record.read_bytes().decode('utf-8'), FIXED)
         self.assertIn(str(self.record), result.changed)
 
-    def test_a_role_only_main_image_is_stepped_down(self) -> None:
-        # #210 review: a hand-made record marking its back only `role:
-        # primary` (no is_primary) kept that role, so two entries said
-        # primary and the source page showed the first - still the back.
-        self.record.write_bytes(BUG_ERA.replace('    is_primary: true\n', '', 1).encode('utf-8'))
-        result = self._run()
-        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
-        after = self.record.read_bytes().decode('utf-8')
-        # SPEC §14: `is_primary: true` is the one mark; the old role-only
-        # mark is replaced, never written anew.
-        self.assertEqual(after.count('role: primary'), 0)
-        self.assertEqual(after.count('is_primary: true'), 1)
-        self.assertIn('smith-farm-01400-back.tif\n    role: back\n', after)
-
-    def test_conflicting_main_image_markers_are_refused(self) -> None:
-        # One entry says is_primary, another only role: primary. Which one to
-        # step down is a guess, so nothing is written.
-        conflicting = BUG_ERA.replace(
-            '    role: primary\n', '    role: back\n', 1
-        ).replace('    role: back\n    copy: b\n', '    role: primary\n    copy: b\n', 1)
-        self.record.write_bytes(conflicting.encode('utf-8'))
-        before = self.record.read_bytes()
-        result = self._run()
-        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
-        self.assertEqual(self.record.read_bytes(), before)
-
     def test_a_metadata_companion_is_never_made_the_main_image(self) -> None:
         # #210 review: an .xmp beside the scans sits in the photos root too.
         text = BUG_ERA.replace(
@@ -179,7 +152,7 @@ class SetPrimarySwapTests(unittest.TestCase):
         # #210 review: a note on a role:/is_primary: line was silently
         # dropped, and the YAML referee cannot see comments.
         commented = BUG_ERA.replace(
-            '    role: primary\n', '    role: primary   # caption transcribed by Aunt May\n', 1
+            '01400-back.tif\n', '01400-back.tif\n    role: back   # caption transcribed by Aunt May\n', 1
         ).replace(
             '    is_primary: true\n', '    is_primary: true  # keep?\n', 1
         ).replace(
@@ -254,7 +227,6 @@ class SetPrimarySwapTests(unittest.TestCase):
             FRONTMATTER_HEAD
             + 'files:\n'
               '  - file: photos/x-00100b.jpg\n'
-              '    role: primary\n'
               '    is_primary: true\n'
               '  - file: photos/x-00100.jpg\n'
               '    role: variant\n'
@@ -325,7 +297,6 @@ class SetPrimaryRefusalTests(unittest.TestCase):
         self._files(
             'files:\n'
             '  - file: photos/1950/x-00100-back.jpg\n'
-            '    role: primary\n'
             '    is_primary: true\n'
             '  - file: photos/1950/x-00100.jpg\n'
             '    role: variant\n'
@@ -339,7 +310,6 @@ class SetPrimaryRefusalTests(unittest.TestCase):
         self._files(
             'files:\n'
             '  - file: photos/1950/x-00100-back.jpg\n'
-            '    role: primary\n'
             '    is_primary: true\n'
             f'  - file: documents/letters/letter_{SID}.pdf\n'
             '    role: attachment\n')
@@ -349,10 +319,8 @@ class SetPrimaryRefusalTests(unittest.TestCase):
         self._files(
             'files:\n'
             '  - file: photos/x-00100-back.jpg\n'
-            '    role: primary\n'
             '    is_primary: true\n'
             '  - file: photos/x-00100-neg.jpg\n'
-            '    role: primary\n'
             '    is_primary: true\n'
             '  - file: photos/x-00100.jpg\n'
             '    role: variant\n')
@@ -360,7 +328,7 @@ class SetPrimaryRefusalTests(unittest.TestCase):
 
     def test_one_line_files_list_refused(self) -> None:
         self._files(
-            'files: [{file: photos/x-00100-back.jpg, role: primary, is_primary: true}, '
+            'files: [{file: photos/x-00100-back.jpg, is_primary: true}, '
             '{file: photos/x-00100.jpg, role: variant}]\n')
         self.assertIn('written on one line', self._refused('x-00100.jpg'))
 

@@ -1909,6 +1909,21 @@ def _sidecar_external_links(sidecar_meta: dict) -> list[dict]:
     return links
 
 
+def _hint_is_main(hint: dict) -> bool:
+    """True when an inbox bundle's notes hint marks this file as the main one:
+    `is_primary: true`, or the role word `primary` - a `roles:` mapping has no
+    other way to say it, and older capture add-ons wrote it so. Inbox notes
+    are consumed by `fha process`; the record it writes says `is_primary`."""
+    return files_entry_is_main(hint) or str(hint.get('role') or '').strip().lower() == 'primary'
+
+
+def _hint_role(hint: dict) -> str:
+    """What an inbox hint (or a `--more FILE ROLE` argument) says the file IS,
+    or '' - the word `primary` marks the main file, it is not a role."""
+    role = files_entry_role(hint)
+    return '' if role.lower() == 'primary' else role
+
+
 def _bundle_file_hints(sidecar_meta: dict) -> dict[str, dict]:
     """Return per-file hints from a bundle `notes.md`, keyed by filename.
 
@@ -3526,7 +3541,7 @@ def process_bundle(
 
     hinted_primary = [
         a for a in assets
-        if files_entry_is_main(file_hints.get(a.name, {}))
+        if _hint_is_main(file_hints.get(a.name, {}))
     ]
     if len(hinted_primary) > 1:
         names = ', '.join(a.name for a in hinted_primary)
@@ -3553,7 +3568,7 @@ def process_bundle(
         hint = file_hints.get(asset.name, {})
         if kind == 'photo':
             role, copy = _variation_role_copy(asset, is_primary, in_bundle=True)
-            role = files_entry_role(hint) or role
+            role = _hint_role(hint) or role
             copy = hint.get('copy') or copy
             # Photos are never renamed; they go where --dest says, else to
             # the top of the library (and the output says which).
@@ -3567,7 +3582,7 @@ def process_bundle(
             # The main document keeps the bare name it always had; its role
             # is only what a stub hint says it is (SPEC §14: `is_primary:
             # true` marks it, never `role: primary`).
-            role = files_entry_role(hint) or (
+            role = _hint_role(hint) or (
                 None if is_primary else (bundle_role(parse_media_filename(asset.stem))
                                          or 'attachment')
             )
@@ -4530,7 +4545,7 @@ def _attach_more_engine(
     # primary:LABEL` attaches another copy of the main file (a second
     # digitization): it is listed by its copy: label with no role line, and
     # named with no role word - never a second `role: primary`.
-    file_role = files_entry_role({'role': role})
+    file_role = _hint_role({'role': role})
     role_lines = [f'    role: {_yaml_inline(file_role)}'] if file_role else []
     role_said = f'role: {file_role}' if file_role else 'another copy of the main file'
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
