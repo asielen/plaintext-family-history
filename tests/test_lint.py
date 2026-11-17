@@ -6188,5 +6188,36 @@ class PeopleNameCommentW151Tests(unittest.TestCase):
             f'people:\n  - {self.PID}  # back row, per Aunt Ruth\n'))
 
 
+class OldCaptureLogW152Tests(unittest.TestCase):
+    """Capture history left at `.cache/capture_log.jsonl` is read by no tool
+    and skipped by backups, so lint names it and how to move it."""
+
+    def _codes(self, root: Path) -> dict:
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out
+
+    def test_a_left_behind_cache_capture_log_warns_with_the_fix(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / '.cache').mkdir()
+        (root / '.cache' / 'capture_log.jsonl').write_text(
+            '{"date": "2020-01-01", "question": "old"}\n', encoding='utf-8')
+        codes = self._codes(root)
+        self.assertEqual(len(codes.get('W152', [])), 1, codes)
+        self.assertEqual(codes['W152'][0].severity, 'W')
+        self.assertIn('notes/capture-log.jsonl', codes['W152'][0].message)
+
+    def test_the_notes_capture_log_alone_is_quiet(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        (root / 'notes').mkdir()
+        (root / 'notes' / 'capture-log.jsonl').write_text(
+            '{"date": "2020-01-01", "question": "old"}\n', encoding='utf-8')
+        self.assertNotIn('W152', self._codes(root))
+
+
 if __name__ == '__main__':
     unittest.main()

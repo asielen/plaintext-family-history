@@ -637,23 +637,6 @@ class IndexCaptureLogTests(unittest.TestCase):
         self.assertIsNone(rows[0]['person_id'])
         self.assertIsNone(rows[0]['source_id'])
 
-    def test_legacy_cache_capture_log_still_read_and_never_moved(self) -> None:
-        # Not yet carried across (no capture since the upgrade): its searches
-        # stay in "already searched", oldest first, and the index - which
-        # never moves a file of the human's - leaves both files as they were.
-        cache = self.archive_root / '.cache'
-        cache.mkdir(parents=True)
-        notes = self.archive_root / 'notes'
-        notes.mkdir(parents=True)
-        (cache / 'capture_log.jsonl').write_text(
-            json.dumps({'date': '2020-01-01', 'question': 'old'}) + '\n', encoding='utf-8')
-        (notes / 'capture-log.jsonl').write_text(
-            json.dumps({'date': '2024-01-01', 'question': 'new'}) + '\n', encoding='utf-8')
-        index._index_capture_log(self.conn, self.archive_root)
-        rows = self.conn.execute('SELECT question FROM search_log ORDER BY rowid').fetchall()
-        self.assertEqual([r['question'] for r in rows], ['old', 'new'])
-        self.assertTrue((cache / 'capture_log.jsonl').exists())
-
     def test_absent_capture_log_does_not_crash(self) -> None:
         index._index_capture_log(self.conn, self.archive_root)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
@@ -3237,7 +3220,7 @@ class UndecodableFileBuildTests(unittest.TestCase):
 
     Sibling of `UnreadableRecordBuildTests`, found by sweeping for the same
     shape.  Three reads in this module - each note, `notes/research-log.md`,
-    and `.cache/capture_log.jsonl` - guarded only `except OSError`.
+    and the old capture log - guarded only `except OSError`.
     `UnicodeDecodeError` is a **ValueError**, not an OSError, so a file saved in
     the machine's own codepage sailed straight past the guard and out of
     `build_index`: an unhandled traceback, and NOTHING indexed at all.  Strictly
@@ -3311,13 +3294,6 @@ class UndecodableFileBuildTests(unittest.TestCase):
         result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
         self.assertEqual(1, result.exit_code)
         self.assertIn('capture-log.jsonl',
-                      '\n'.join(m.text for m in result.messages))
-
-    def test_an_undecodable_legacy_capture_log_is_reported(self) -> None:
-        self._cp1252('.cache/capture_log.jsonl')
-        result = index.build_index(self.root, {'roots': {'documents': 'documents'}})
-        self.assertEqual(1, result.exit_code)
-        self.assertIn('capture_log.jsonl',
                       '\n'.join(m.text for m in result.messages))
 
     def test_the_file_is_never_rewritten(self) -> None:

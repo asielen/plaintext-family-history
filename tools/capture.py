@@ -128,8 +128,6 @@ from _lib import (
     format_edtf_error,
     format_source_type_error,
     index_manifest_path,
-    capture_log_paths,
-    migrate_capture_log,
     read_path_manifest,
     is_valid_edtf,
     load_fha_yaml,
@@ -798,14 +796,6 @@ def _write_capture_log(
     # stale until `fha index` replays it (#304 review).
     log_was_indexed = db_path.exists() and _research_log_is_indexed(archive_root, log_path)
 
-    # Older capture history still in `.cache/` (which backups and git skip)
-    # moves to notes/capture-log.jsonl, once, and the human is told.
-    migrated = migrate_capture_log(archive_root)
-    if migrated:
-        print('Moved your older capture history from .cache/capture_log.jsonl to '
-              'notes/capture-log.jsonl, where backups and git keep it '
-              '(every line is in the new file).')
-
     entry = _render_log_entry(date=date, question=question, repository=repository,
                               collection=collection, terms=terms, result=result)
     log_ok = False
@@ -856,7 +846,7 @@ def _write_capture_log(
             # in the index, so record the log as read - otherwise every
             # capture would make `fha doctor` call a correct index stale.
             if log_ok and log_was_indexed:
-                _mark_research_log_indexed(archive_root, log_path, migrated)
+                _mark_research_log_indexed(archive_root, log_path)
             return 'index'
         except Exception as e:  # noqa: BLE001
             print(f'WARNING: could not write search_log row ({e})'
@@ -893,8 +883,7 @@ def _research_log_is_indexed(archive_root: Path, log_path: Path) -> bool:
     return stored.get(_rel(log_path, archive_root)) == current
 
 
-def _mark_research_log_indexed(archive_root: Path, log_path: Path,
-                               migrated: bool = False) -> None:
+def _mark_research_log_indexed(archive_root: Path, log_path: Path) -> None:
     """Patch the index's path manifest for the research log this run just wrote.
 
     `fha index` lists every notes/ file among the ones it read, so a log
@@ -903,12 +892,10 @@ def _mark_research_log_indexed(archive_root: Path, log_path: Path,
     file, the same contract `index.upsert_source` keeps for one source.
     Called only when `_research_log_is_indexed` held before this capture's
     append - so the one new entry is the capture's own, never a hand-typed or
-    synced one the index has not seen. When this run also carried the old
-    `.cache/` capture log into `notes/`, the index already holds every one of
-    its lines, so both old paths are recorded as read too. Best effort: a
-    failure here only costs one "run fha index" suggestion.
+    synced one the index has not seen. Best effort: a failure here only
+    costs one "run fha index" suggestion.
     """
-    paths = [log_path] + (list(capture_log_paths(archive_root)) if migrated else [])
+    paths = [log_path]
     updates: dict[str, float | None] = {}
     for path in paths:
         try:
