@@ -5,7 +5,7 @@ root, or `python tools/<tool>.py` for standalone use.
 
 These tools are **generic**: they operate on any spec-conforming archive and contain no family data.
 They are the "replaceable glue" of the philosophy - disposable, regenerable from the spec, and safe to publish.
-`TOOLING.md` (repo root) is the design document for every tool; consult it before changing any behavior.
+`TOOLING.md` (repo root; `docs/TOOLING.md` in an installed archive) is the design document for every tool; consult it before changing any behavior.
 
 Two **companions** live beside this suite, neither load-bearing: [`browser-companion/`](../browser-companion/) (web capture - vendored ready-to-load into every archive at `.fha/browser-companion/` by `fha install`/`update-tools`, since it has no build step; developed here) and [`obsidian-templater/`](https://github.com/asielen/plaintext-family-history/tree/master/obsidian-templater) (installed into a user's own Obsidian setup, never vendored - hence the absolute link: an installed archive has no copy of it) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/USING_WITH_OBSIDIAN.md) - absolute for the same reason `../docs/…` cannot be right in both the repo and an archive, where this file lands in `.fha/tools/`).
 

@@ -10,7 +10,8 @@ description: >
   `living:`), writes one `source_class: authored` interview source, and drafts `relationship`/`marriage`
   claims from it naming everyone with explicit `roles:`, all `status: suggested`; hands off to
   `review-claims` so his own review pass is still the gate - the interview proposes, it never
-  self-accepts. Before the family questions, also makes one silent, one-time check for an already-sitting
+  self-accepts. Also writes, on his yes, the family part of `START_HERE.md` (who the family is, who the
+  archive is centred on) for a future reader with no tools. Before the family questions, also makes one silent, one-time check for an already-sitting
   place-registration backlog (an archive with real imported/migrated history can reach this interview with
   zero registered places and a real backlog already on file) and, only past an oversight-scale bar, offers
   once to register the biggest clusters right then.
@@ -310,7 +311,29 @@ adopted me at three") - translate that into the right `subtype:` (`adoptive`, `s
         note: "setup-interview relationship claims from the researcher's own account"}
    ```
 
-### 4. Hand off to the gate
+### 4. Write the family part of `START_HERE.md`
+
+`START_HERE.md`, at the archive root, is the page someone opens in fifty years with no tools: a
+grandchild who finds the folder. `fha install` puts it there with its family part left blank, between
+the `<!-- FAMILY` and `<!-- /FAMILY -->` comment lines. Fill that part from what he has just told you:
+
+1. **Draft two to four plain sentences**: whose family this is; who the archive is centred on (his
+   name, and that he is the `root_person` in `fha.yaml`); the surnames and places it covers, as far as
+   he has said; and who keeps it and since when. Write names as text, not as `[[p-…]]` links: the
+   reader this page is for has no tools to follow a link with. Ask him for the surnames and places
+   if steps 1-3 did not bring them up; "I'm not sure yet" is a fine answer, and the sentence is left
+   out.
+2. **Show him the exact text** and write it only on his yes, replacing the `*Not written yet.*`
+   paragraph between the two comment lines and nothing else in the file.
+3. **If the part already holds his own words** (anything other than the `*Not written yet.*`
+   paragraph), never replace them: show what is there, and offer only to add a sentence he approves.
+   If the file is missing (an archive installed before it shipped), the next `fha update-tools`
+   delivers it; say so, and leave this step for then rather than writing the whole page by hand.
+
+The page is his file from then on: `fha update-tools` never overwrites it, and he may rewrite the
+family part whenever he likes.
+
+### 5. Hand off to the gate
 
 Say plainly what happens next - *"That's everything: I've drafted N facts from what you told me, but
 they're still proposals until you say yes. Let's go through them."* - then hand off to
@@ -360,7 +383,8 @@ lint` all belong to that hand-off, not to this skill.
   `source_type: interview`, `source_class: authored` source whose `people:` links everyone named; a
   `relationship` claim per parent-child edge (never a `birth` claim) and a `marriage` claim per spouse,
   each `status: suggested` with `information: primary`, `evidence: direct`, and an `anchor:`; the AI
-  pass recorded in `ai_passes:`; and a hand-off into `review-claims`.
+  pass recorded in `ai_passes:`; the family part of `START_HERE.md` written in his approved words
+  (or left as it was, when he had already written it); and a hand-off into `review-claims`.
 - Nothing reaches `accepted` without the human's own pass through `review-claims`.
 - A loosely-answered question ("I don't really know my dad's exact birth year", "skip my mom's side for
   now") degrades gracefully - a skipped fact is simply omitted, never a stall or a refusal.

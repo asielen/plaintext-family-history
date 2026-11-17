@@ -1,18 +1,18 @@
 # Plaintext Family History - Documentation Index
 
-> Lost? Start at [`GETTING_STARTED.md`](../GETTING_STARTED.md), one folder up. It and
-> [`CHEATSHEET.md`](../CHEATSHEET.md) are the two docs you need on day one, which is why they
-> sit at the top level rather than in here. This folder is the rest of the manual - the pages
-> you reach for when you have a specific question.
+> Lost? Start at [`GETTING_STARTED.md`](GETTING_STARTED.md), in this folder. It and
+> [`CHEATSHEET.md`](CHEATSHEET.md) are the two docs you need on day one. The rest of this
+> folder is the manual - the pages you reach for when you have a specific question. (Someone
+> opening the archive with no tools at all starts one folder up, at `START_HERE.md`.)
 
 ---
 
-## The two at the top level
+## The two for day one
 
 | Document | Who it's for |
 |---|---|
-| [../GETTING_STARTED.md](../GETTING_STARTED.md) | Your first day: install Python/exiftool/the AI assistant, make your archive, file your first document |
-| [../CHEATSHEET.md](../CHEATSHEET.md) | One printable page: the daily loop, the few commands, how to write an uncertain date, where things live |
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Your first day: install Python/exiftool/the AI assistant, make your archive, file your first document |
+| [CHEATSHEET.md](CHEATSHEET.md) | One printable page: the daily loop, the few commands, how to write an uncertain date, where things live |
 
 ## For genealogists and archive users
 
@@ -48,7 +48,8 @@ themselves in a hidden `.fha/tools/` folder, so `../tools/…` would not resolve
 
 | Document | Who it's for |
 |---|---|
-| [../SPEC.md](../SPEC.md) | The law: data model, physical format, what every tool must do |
+| `SPEC.md` (in this folder) | The law: data model, physical format, what every tool must do |
+| `TOOLING.md` (in this folder) | How each `fha` tool works |
 | [../AGENTS.md](../AGENTS.md) | What an AI agent may and may not do inside the archive |
 
 The public-repo governance docs (privacy policy, release checklist, and the

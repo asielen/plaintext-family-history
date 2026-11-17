@@ -184,14 +184,18 @@ MANIFEST_VERSION = '1'
 # which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
 # release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
 #
-# Docs are split by AUDIENCE, and the split is expressed through LOCATION (owner
-# decision 2026-08-16). The two an archive owner needs on day one -
-# GETTING_STARTED.md (what to do) and CHEATSHEET.md (the one printable page) -
-# sit at the archive root where they cannot be missed; the rest of the owner's
-# manual stays in `docs/` and is linked from those two. They live at the REPO
-# root too, not under docs/: there is no install-time link rewriting anywhere in
-# this file, so a doc whose repo depth differs from its archive depth would have
-# relative links that resolve in exactly one of the two contexts.
+# A grandchild who opens the archive folder in fifty years, with no tools, sees
+# one page meant for them: START_HERE.md (a skeleton seed from archive-template/,
+# so it is the owner's file once written). The archive root otherwise holds only
+# what something REQUIRES there: fha.yaml, AGENTS.md and CLAUDE.md (agent
+# harnesses look for those two at the root), and the launchers. Every other doc
+# lives in `docs/` (plan 19 D10, owner decision O26): GETTING_STARTED.md and
+# CHEATSHEET.md sit in the repo's docs/ too, so their repo path is their install
+# path; SPEC.md and TOOLING.md stay at the repo root, where the whole project
+# treats them as the law, and install under docs/ through _ROOT_DOC_RENAMES.
+# There is no install-time link rewriting anywhere in this file, so those two
+# are linked to and from in plain text (a file name, or an absolute URL), never
+# a relative link that could resolve in only one of repo and archive.
 #
 # README.md is deliberately NOT shipped. It is repo-facing - badges, a milestone
 # roadmap, contributing, and links to example-archive/, quickstart-template/,
@@ -200,7 +204,7 @@ MANIFEST_VERSION = '1'
 # What an owner genuinely needed from it (what the archive is, the record types,
 # the two-repo relationship, backup, Obsidian) is folded into GETTING_STARTED.md
 # and CHEATSHEET.md instead. An installed archive has no root README.md; the
-# entry point is GETTING_STARTED.md, whose name says what to do with it.
+# entry point is START_HERE.md for a reader, docs/GETTING_STARTED.md for the owner.
 #
 # The tool-BUILDING docs (the BUILD*.md family, TOOLING_INGESTION/INTERFACE,
 # AGENTS_TOOLING) are likewise NOT shipped: no tool reads them at run time
@@ -208,13 +212,18 @@ MANIFEST_VERSION = '1'
 # BUILD the tools, which is a workshop-clone activity. Extending vendored tools
 # in place is out of scope; do it in the public repo and re-vendor.
 _ROOT_OPERATING_DOCS = (
-    'GETTING_STARTED.md',
-    'CHEATSHEET.md',
     'SPEC.md',
     'TOOLING.md',
     'AGENTS.md',
     'CLAUDE.md',
 )
+
+# Repo-root docs that install somewhere else (repo src -> archive path): the
+# rulebooks a reader opens only after START_HERE.md move under docs/ (D10).
+_ROOT_DOC_RENAMES: dict[str, str] = {
+    'SPEC.md': 'docs/SPEC.md',
+    'TOOLING.md': 'docs/TOOLING.md',
+}
 
 # Root-level launchers that ship into every archive. serve.cmd is the
 # double-clickable workbench launcher (plan 17); fha.cmd (Windows) and fha
@@ -313,7 +322,7 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
 # `docs/` deliberately stays at the archive ROOT, alongside the rulebooks it is
 # part of. It is human-facing reading matter, not machinery, and it is one half
 # of a two-way link graph: the root docs and rulebooks link to `docs/…`, and the
-# docs link back to `../SPEC.md`, `../AGENTS.md`, `../GETTING_STARTED.md`.
+# docs link back to `../AGENTS.md`, `../START_HERE.md`.
 # Remapping either side under `.fha/` breaks every one of those links in an
 # installed archive - a
 # `docs/…` link from a root rulebook would resolve to nothing, and `../SPEC.md`
@@ -322,13 +331,14 @@ _OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
 # navigable in a plain file browser, with no install-time link rewriting anywhere
 # in the install/update engine.
 #
-# The same rule is why GETTING_STARTED.md and CHEATSHEET.md live at the REPO
-# root and not under docs/: repo path == install path, so their relative links
-# mean one thing in both places. A doc whose two depths differ can only be
-# link-correct in one of them, and nothing here rewrites links to fix it.
+# The same rule is why GETTING_STARTED.md and CHEATSHEET.md live in the REPO's
+# docs/ too: repo path == install path, so their relative links mean one thing
+# in both places. A doc whose two depths differ (SPEC.md, TOOLING.md - see
+# _ROOT_DOC_RENAMES) can only be link-correct in one of them, and nothing here
+# rewrites links to fix it, so nothing links to or from them relatively.
 #
-# Also deliberately at the archive root: the rulebooks themselves
-# (SPEC/TOOLING/AGENTS/CLAUDE), the two owner entry docs, the launchers, and
+# Also deliberately at the archive root: START_HERE.md, fha.yaml, the agent
+# rulebooks (AGENTS/CLAUDE), the launchers, and
 # `.claude/skills` (Claude Code discovers skills at the root). `_VENDOR_DIR` is
 # the shared `_lib.VENDOR_DIR` so scaffold, serve, and doctor cannot drift on
 # the name.
@@ -477,8 +487,8 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
     """Yield (archive_path, source_path) for every operating-layer file.
 
     The operating layer is the generic, regenerable glue a genealogist needs to
-    operate an archive: the root rulebooks + the two owner entry docs
-    (GETTING_STARTED.md, CHEATSHEET.md), everything under tools/
+    operate an archive: the rulebooks (SPEC.md and TOOLING.md landing in
+    docs/, see _ROOT_DOC_RENAMES), everything under tools/
     (minus Python bytecode caches), everything under docs/, the capture
     extension under browser-companion/ (minus its dev furniture - it is a
     front-end tool like the serve workbench, shipped ready to load unpacked),
@@ -492,7 +502,7 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
     The machinery subtrees (tools/, design/, browser-companion/) install UNDER
     .fha/ (see _VENDOR_DIR) so the archive root reads as the genealogy, not the
     tooling; their archive path is `.fha/…` while the repo source stays flat,
-    recorded by the manifest's src/path seam. The root rulebooks, docs/, the
+    recorded by the manifest's src/path seam. AGENTS.md, CLAUDE.md, docs/, the
     launchers, and .claude/skills keep source == archive path at the root -
     docs/ among them so its two-way link graph with the rulebooks survives an
     install (_VENDOR_DIR).
@@ -502,7 +512,7 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
     for name in _ROOT_OPERATING_DOCS:
         src = repo_root / name
         if src.is_file():
-            out.append((name, src))
+            out.append((_ROOT_DOC_RENAMES.get(name, name), src))
 
     for name in _ROOT_LAUNCHERS:
         src = repo_root / name
@@ -2302,7 +2312,8 @@ def run_install(
     print(f'  1. Edit {archive_path / "fha.yaml"} to point at your photos and documents.')
     print(f'  2. Open the archive in your AI agent and start filing inbox/ items.')
     print(f'  3. Tell your AI agent you\'d like to do the setup interview, so it can learn who '
-          f'you are and number the tree correctly.')
+          f'you are, number the tree correctly, and write who the family is into '
+          f'START_HERE.md.')
     print(f'  4. Run `fha doctor` from inside the archive to check everything is set up.')
     for m in advisories:
         print(f'\nNote: {m}')

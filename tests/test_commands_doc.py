@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 CORE_DOCS = ('SPEC.md', 'TOOLING.md', 'TOOLING_INGESTION.md', 'TOOLING_INTERFACE.md',
              'BUILD.md', 'BUILD_INGESTION.md', 'BUILD_INTERFACE.md',
-             'AGENTS.md', 'AGENTS_TOOLING.md', 'CHEATSHEET.md')
+             'AGENTS.md', 'AGENTS_TOOLING.md', 'docs/CHEATSHEET.md')
 
 # '#' plus digits that is not an issue number: an Ahnentafel position in a
 # folder bracket example.

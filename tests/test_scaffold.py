@@ -189,7 +189,8 @@ class ManifestSyncTest(unittest.TestCase):
         # The owner's entry point + the agent's workflow procedures ship into
         # archives. (The project README does NOT - see
         # test_no_readme_ships_into_an_archive.)
-        self.assertIn('GETTING_STARTED.md', paths)
+        self.assertIn('START_HERE.md', paths)
+        self.assertIn('docs/GETTING_STARTED.md', paths)
         self.assertIn('.claude/skills/README.md', paths)
         # but the spec-repo's own agent config does not.
         self.assertNotIn('.claude/settings.json', paths)
@@ -203,8 +204,8 @@ class ManifestSyncTest(unittest.TestCase):
                         'AGENTS_TOOLING.md'):
             self.assertNotIn(builder, paths, builder)
         # The operating spec/agent docs that DO ship stay.
-        for shipped in ('SPEC.md', 'TOOLING.md', 'AGENTS.md', 'CLAUDE.md',
-                        'GETTING_STARTED.md', 'CHEATSHEET.md'):
+        for shipped in ('docs/SPEC.md', 'docs/TOOLING.md', 'AGENTS.md', 'CLAUDE.md',
+                        'docs/GETTING_STARTED.md', 'docs/CHEATSHEET.md'):
             self.assertIn(shipped, paths, shipped)
 
     def test_manifest_vendors_the_browser_companion(self):
@@ -465,29 +466,44 @@ class ManifestSyncTest(unittest.TestCase):
             'links an installed archive cannot follow:\n  '
             + '\n  '.join(offenders))
 
-    def test_the_two_owner_entry_docs_install_at_the_archive_root(self):
-        # Owner decision (2026-08-16): docs are split by audience, expressed
-        # through location. The two an archive owner needs on day one sit at the
-        # archive ROOT where they cannot be missed; everything else stays in
-        # docs/. Their repo path is identical to their install path, because the
-        # installer does no link rewriting - a doc whose repo depth differs from
-        # its archive depth has relative links that can only be right in one of
-        # the two places.
+    def test_the_owner_guides_keep_their_repo_path_in_the_archive(self):
+        # The installer does no link rewriting, so a doc whose repo depth differs
+        # from its archive depth has relative links that can only be right in
+        # one of the two places. The owner's two day-one guides therefore live in
+        # docs/ in the repo too, and install there unremapped (plan 19 D10).
         by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
-        for doc in ('GETTING_STARTED.md', 'CHEATSHEET.md'):
-            self.assertIn(doc, by_path, f'{doc} must install at the archive root')
+        for doc in ('docs/GETTING_STARTED.md', 'docs/CHEATSHEET.md'):
+            self.assertIn(doc, by_path, f'{doc} must install under docs/')
             self.assertEqual(by_path[doc]['category'], 'operating')
             self.assertNotIn('src', by_path[doc],
                              f'{doc} must not be remapped - repo path == install path')
-            self.assertNotIn(f'docs/{doc}', by_path,
-                             f'{doc} must not also ship under docs/')
-            self.assertTrue((ROOT / doc).is_file(),
-                            f'{doc} must live at the repo root too')
+            self.assertTrue((ROOT / doc).is_file(), f'{doc} must live in the repo docs/')
+
+    def test_spec_and_tooling_are_never_linked_relatively(self):
+        # SPEC.md and TOOLING.md are the one exception to repo path == install
+        # path (repo root -> docs/), so any relative link to or from them is
+        # right in only one of repo and archive. They are named in plain text.
+        manifest = scaffold.generate_manifest(ROOT)['files']
+        offenders = []
+        link = re.compile(r'\]\((?:\.\./)*(?:docs/)?(SPEC|TOOLING)\.md[)#]')
+        for entry in manifest:
+            src = ROOT / entry.get('src', entry['path'])
+            if src.suffix != '.md' or not src.is_file():
+                continue
+            text = _strip_code(src.read_text(encoding='utf-8', errors='replace'))
+            if link.search(text):
+                offenders.append(entry['path'])
+            if entry['path'] in ('docs/SPEC.md', 'docs/TOOLING.md'):
+                for target in _MD_LINK.findall(text):
+                    if not (target.startswith(('#', '//'))
+                            or re.match(r'^[a-z][a-z0-9+.-]*:', target)):
+                        offenders.append(f'{entry["path"]} -> {target}')
+        self.assertEqual(offenders, [])
 
     def test_no_readme_ships_into_an_archive(self):
         # The repo README is repo-facing: badges, milestone tables, contributing,
         # and links to example-archive/, quickstart-template/, obsidian-templater/
-        # - none of which an archive has. GETTING_STARTED.md is the archive's
+        # - none of which an archive has. START_HERE.md is the archive's
         # entry point, and its name says what to do with it.
         by_path = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
         self.assertNotIn('README.md', by_path)
@@ -500,31 +516,37 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['fha.yaml']['src'], 'archive-template/fha.yaml')
         self.assertEqual(by_path['places/places.yaml']['category'], 'skeleton')
         # The five BUILD-mandated docs ship: only the machinery (tools/,
-        # design/) is vendored under .fha/. The two an owner needs on day one sit
-        # at the archive ROOT; the rest of the manual stays in docs/, which stays
-        # put so its two-way link graph with the root docs keeps resolving - see
+        # design/) is vendored under .fha/. The owner's manual, the two day-one
+        # guides included, is in docs/, which stays put so its two-way link graph
+        # with the root keeps resolving - see
         # test_owner_docs_stay_at_root_and_project_docs_are_vendored.
-        for doc in ('GETTING_STARTED.md', 'CHEATSHEET.md',
+        self.assertEqual(by_path['START_HERE.md']['category'], 'skeleton')
+        for doc in ('docs/GETTING_STARTED.md', 'docs/CHEATSHEET.md',
                     'docs/SETUP_FROM_ZIP.md', 'docs/TROUBLESHOOTING.md',
                     'docs/FILING_CABINET.md'):
             self.assertIn(doc, by_path, doc)
             self.assertEqual(by_path[doc]['category'], 'operating')
         # A vendored operating entry carries a src remap (repo-flat -> archive
-        # .fha/); a root-pinned operating entry (SPEC.md) carries none.
+        # .fha/), as do the two rulebooks that move into docs/; a root-pinned
+        # operating entry (AGENTS.md) carries none.
         self.assertEqual(by_path['.fha/tools/scaffold.py']['src'], 'tools/scaffold.py')
-        self.assertNotIn('src', by_path['SPEC.md'])
+        self.assertEqual(by_path['docs/SPEC.md']['src'], 'SPEC.md')
+        self.assertEqual(by_path['docs/TOOLING.md']['src'], 'TOOLING.md')
+        self.assertNotIn('src', by_path['AGENTS.md'])
 
     def test_owner_docs_stay_at_root_and_project_docs_are_vendored(self):
         # Owner-facing docs are the manual someone reaches for when something is
         # wrong - exactly when a hidden folder helps least - and they sit in a
         # two-way link graph with the root docs and rulebooks
-        # (`GETTING_STARTED.md` -> `docs/FAQ.md`; docs -> `../SPEC.md`), which
+        # (`AGENTS.md` -> `docs/GETTING_STARTED.md`; docs -> `../AGENTS.md`), which
         # only survives if both ends stay put. Project docs (the visual-language reference, the
         # roadmap) are not owner material and ride with the machinery instead.
         by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
         doc_paths = [p for p in by_path if p.split('/')[0] == 'docs']
         self.assertTrue(doc_paths, 'docs/ must ship')
         for p in doc_paths:
+            if p in scaffold._ROOT_DOC_RENAMES.values():
+                continue   # SPEC.md / TOOLING.md: see test_spec_and_tooling_are_never_linked_relatively
             self.assertNotIn('src', by_path[p], f'{p} must not be remapped')
         # Exactly the declared project docs are vendored - nothing else drifts in.
         self.assertEqual(
@@ -536,11 +558,124 @@ class ManifestSyncTest(unittest.TestCase):
         for d in scaffold._VENDORED_DOCS:
             self.assertNotIn(d, by_path, f'{d} must not also install at the root')
         # Both ends of the link graph land where the links expect them.
-        self.assertIn('GETTING_STARTED.md', by_path)
+        self.assertIn('docs/GETTING_STARTED.md', by_path)
         self.assertIn('docs/FAQ.md', by_path)
         # Meanwhile the machinery IS vendored.
         self.assertTrue([p for p in by_path if p.startswith('.fha/tools/')])
         self.assertTrue([p for p in by_path if p.startswith('.fha/design/')])
+
+
+class ReaderEntryPointTest(unittest.TestCase):
+    """A grandchild opening the archive folder with no tools finds one page.
+
+    Plan 19 Wave 4a / D10: the archive root holds START_HERE.md, fha.yaml,
+    AGENTS.md, CLAUDE.md and the launchers; every other doc (SPEC.md,
+    TOOLING.md, GETTING_STARTED.md, CHEATSHEET.md) lives in docs/. START_HERE.md
+    is the owner's once written: installed once, delivered to an archive that
+    lacks one, never overwritten.
+    """
+
+    _MOVED = ('SPEC.md', 'TOOLING.md', 'GETTING_STARTED.md', 'CHEATSHEET.md')
+
+    def test_the_archive_root_holds_only_the_entry_page_config_and_rulebooks(self):
+        by_path = {e['path']: e for e in scaffold.generate_manifest(ROOT)['files']}
+        self.assertIn('START_HERE.md', by_path)
+        self.assertEqual(by_path['START_HERE.md']['category'], 'skeleton',
+                         'START_HERE.md is the owner\'s once written - install-once')
+        root_docs = sorted(p for p in by_path if '/' not in p and p.endswith('.md'))
+        self.assertEqual(root_docs, ['AGENTS.md', 'CLAUDE.md', 'START_HERE.md'])
+        for doc in self._MOVED:
+            self.assertIn(f'docs/{doc}', by_path, f'{doc} must install under docs/')
+            self.assertEqual(by_path[f'docs/{doc}']['category'], 'operating')
+            self.assertNotIn(doc, by_path, f'{doc} must not also install at the root')
+
+    def test_install_puts_start_here_at_the_root_and_the_docs_in_docs(self):
+        # The repo's own layout in miniature: SPEC.md and TOOLING.md at the repo
+        # root, the owner guides in docs/, START_HERE.md in archive-template/.
+        with tempfile.TemporaryDirectory() as td:
+            repo = _make_fake_repo(Path(td) / 'repo')
+            _write(repo / 'TOOLING.md', '# TOOLING\n')
+            _write(repo / 'docs' / 'GETTING_STARTED.md', '# Getting started\n')
+            _write(repo / 'docs' / 'CHEATSHEET.md', '# Cheat sheet\n')
+            _write(repo / 'archive-template' / 'START_HERE.md', '# Start here\n')
+            scaffold._write_manifest(repo)
+            archive = Path(td) / 'archive'
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(archive, repo)
+            self.assertTrue((archive / 'START_HERE.md').is_file())
+            for doc in self._MOVED:
+                self.assertTrue((archive / 'docs' / doc).is_file(), doc)
+                self.assertFalse((archive / doc).exists(), doc)
+
+    def test_update_tools_never_overwrites_an_edited_start_here(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = _make_fake_repo(Path(td) / 'repo')
+            _write(repo / 'archive-template' / 'START_HERE.md', '# Start here\n')
+            scaffold._write_manifest(repo)
+            archive = Path(td) / 'archive'
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(archive, repo)
+            mine = '# Start here\n\nThe Sample family, centred on Richard Sample.\n'
+            _write(archive / 'START_HERE.md', mine)
+            # Upstream improves the stock page.
+            _write(repo / 'archive-template' / 'START_HERE.md', '# Start here v2\n')
+            scaffold._write_manifest(repo)
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_update_tools(archive, repo)
+            self.assertEqual((archive / 'START_HERE.md').read_text(encoding='utf-8'), mine)
+            self.assertFalse((archive / '.plaintext-backup').exists())
+
+    def test_update_tools_gives_an_older_archive_its_start_here(self):
+        # An archive installed before START_HERE.md existed gets one on its next
+        # update; it was never delivered there, so nothing of the owner's is lost.
+        with tempfile.TemporaryDirectory() as td:
+            repo = _make_fake_repo(Path(td) / 'repo')
+            archive = Path(td) / 'archive'
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_install(archive, repo)
+            self.assertFalse((archive / 'START_HERE.md').exists())
+            _write(repo / 'archive-template' / 'START_HERE.md', '# Start here\n')
+            scaffold._write_manifest(repo)
+            with contextlib.redirect_stdout(io.StringIO()):
+                scaffold.run_update_tools(archive, repo)
+            self.assertEqual((archive / 'START_HERE.md').read_text(encoding='utf-8'),
+                             '# Start here\n')
+
+    def test_start_here_explains_the_archive_to_a_reader_with_no_tools(self):
+        text = (ROOT / 'archive-template' / 'START_HERE.md').read_text(encoding='utf-8')
+        # The family part the setup interview fills in.
+        self.assertIn('<!-- FAMILY', text)
+        # Every ID prefix, explained.
+        for prefix in ('`p-`', '`s-`', '`c-`', '`l-`', '`h-`'):
+            self.assertIn(prefix, text, prefix)
+        # How an alias path maps to a folder.
+        self.assertIn('roots:', text)
+        self.assertIn('fha.yaml', text)
+        self.assertIn('documents/', text)
+        self.assertIn('photos/', text)
+        # Where the rest lives.
+        self.assertIn('docs/GETTING_STARTED.md', text)
+        self.assertIn('docs/SPEC.md', text)
+
+    def test_every_claim_key_start_here_names_is_a_spec_claim_key(self):
+        # The one-screen key table must not teach a key SPEC does not define.
+        text = (ROOT / 'archive-template' / 'START_HERE.md').read_text(encoding='utf-8')
+        spec = (ROOT / 'SPEC.md').read_text(encoding='utf-8')
+        claim_ref = spec.split('### 8.4 Claim field reference', 1)[1].split('### 8.5', 1)[0]
+        table = text.split('<!-- claim-keys -->', 1)[1].split('<!-- /claim-keys -->', 1)[0]
+        keys = re.findall(r'^\| `([a-z_]+)`', table, re.MULTILINE)
+        self.assertGreaterEqual(len(keys), 10, keys)
+        for key in keys:
+            self.assertRegex(claim_ref, rf'\b{key}:', f'{key} is not a SPEC §8.4 claim key')
+
+    def test_fha_yaml_names_only_docs_an_archive_has(self):
+        # The template once sent the owner to a README.md no archive carries.
+        shipped = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
+        text = (ROOT / 'archive-template' / 'fha.yaml').read_text(encoding='utf-8')
+        named = set(re.findall(r'\b((?:docs/)?[A-Z][A-Z_]+\.md)\b', text))
+        self.assertTrue(named, 'fha.yaml should point the reader at a doc')
+        for doc in named:
+            self.assertIn(doc, shipped, f'fha.yaml names {doc}, which no archive has')
 
 
 @unittest.skipUnless((ROOT / '.git').exists(), 'requires a git checkout')
@@ -735,7 +870,7 @@ class InstallTest(unittest.TestCase):
         rc = scaffold.run_install(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)
         # operating + skeleton landed, remapped correctly
-        self.assertTrue((self.archive / 'SPEC.md').is_file())
+        self.assertTrue((self.archive / 'docs' / 'SPEC.md').is_file())
         self.assertTrue((self.archive / '.fha' / 'tools' /'atool.py').is_file())
         self.assertTrue((self.archive / 'docs' / 'guide.md').is_file())
         self.assertTrue((self.archive / 'fha.yaml').is_file())
@@ -745,7 +880,7 @@ class InstallTest(unittest.TestCase):
         self.assertFalse((self.archive / 'archive-template').exists())
         # stamp records every copied file's checksum
         stamp = json.loads((self.archive / '.plaintext-version').read_text(encoding='utf-8'))
-        self.assertIn('SPEC.md', stamp['files'])
+        self.assertIn('docs/SPEC.md', stamp['files'])
         self.assertIn('fha.yaml', stamp['files'])
         self.assertEqual(stamp['manifest_version'], scaffold.MANIFEST_VERSION)
 
@@ -785,7 +920,7 @@ class InstallTest(unittest.TestCase):
         with mock.patch('scaffold.shutil.which', return_value=None):
             rc = scaffold.run_install(self.archive, self.repo)
         self.assertEqual(rc, EXIT_CLEAN)  # install still succeeds
-        self.assertTrue((self.archive / 'SPEC.md').is_file())
+        self.assertTrue((self.archive / 'docs' / 'SPEC.md').is_file())
 
 
 class ExecBitRepairTest(unittest.TestCase):
@@ -1318,7 +1453,7 @@ class InstallUnreadableTargetTest(unittest.TestCase):
     def test_unreadable_target_file_is_a_plain_refusal(self):
         archive = self.tmp / 'archive'
         archive.mkdir()
-        _write(archive / 'SPEC.md', 'mine\n')
+        _write(archive / 'docs' / 'SPEC.md', 'mine\n')
 
         real_sha = scaffold._sha256_file
 
@@ -1454,7 +1589,7 @@ class InstallTemplateHandCopyTest(unittest.TestCase):
 
         self.assertEqual(rc.exit_code, EXIT_CLEAN)
         # The operating layer landed alongside the copy, and the stamp knows it.
-        self.assertTrue((archive / 'SPEC.md').is_file())
+        self.assertTrue((archive / 'docs' / 'SPEC.md').is_file())
         stamp = json.loads(
             (archive / '.plaintext-version').read_text(encoding='utf-8'))
         self.assertIn('fha.yaml', stamp['files'])
@@ -1464,7 +1599,7 @@ class InstallTemplateHandCopyTest(unittest.TestCase):
         # neither stock nor the template are the owner's own work.
         archive = self.tmp / 'archive'
         archive.mkdir()
-        _write(archive / 'SPEC.md', '# my own notes, do not clobber\n')
+        _write(archive / 'docs' / 'SPEC.md', '# my own notes, do not clobber\n')
         with self.assertRaises(scaffold.ScaffoldError) as caught:
             scaffold.run_install(archive, self.repo)
         self.assertIn('SPEC.md', str(caught.exception))
@@ -2905,7 +3040,7 @@ class RemappedDestinationAncestorFileTest(unittest.TestCase):
         # copied before the loop ever reaches it and fails its `mkdir`
         # (SPEC.md and .fha/ both sort before documents/.gitkeep).
         self.assertFalse((self.archive / '.plaintext-version').exists())
-        self.assertFalse((self.archive / 'SPEC.md').exists())
+        self.assertFalse((self.archive / 'docs' / 'SPEC.md').exists())
         self.assertFalse((self.archive / '.fha').exists())
         # The pre-existing file itself is untouched.
         self.assertEqual((self.archive / 'occupied').read_text(encoding='utf-8'),
@@ -3673,7 +3808,7 @@ class RootRemapRound7Test(unittest.TestCase):
             scaffold.run_install(self.archive, self.repo)
         self.assertIn('archive-docs/.gitkeep', str(ctx.exception))
         self.assertFalse((self.archive / '.plaintext-version').exists())
-        self.assertFalse((self.archive / 'SPEC.md').exists())
+        self.assertFalse((self.archive / 'docs' / 'SPEC.md').exists())
         # The folder that was there is untouched, and nothing was written into it.
         self.assertEqual(list((self.archive / 'archive-docs' / '.gitkeep').iterdir()), [])
 
@@ -3691,7 +3826,7 @@ class RootRemapRound7Test(unittest.TestCase):
             scaffold.run_install(self.archive, self.repo)
         self.assertTrue(link.is_symlink())
         self.assertEqual(target.read_text(encoding='utf-8'), 'someone else\'s file')
-        self.assertFalse((self.archive / 'SPEC.md').exists())
+        self.assertFalse((self.archive / 'docs' / 'SPEC.md').exists())
 
     def test_an_ordinary_renamed_install_is_unaffected(self):
         self._template('roots:\n  documents: archive-docs\n  photos: photos\n')

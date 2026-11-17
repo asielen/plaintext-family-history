@@ -4,12 +4,12 @@
 document. No programming required - you'll work with an AI assistant that runs the commands for you.
 
 - **Were you sent here to hand over photos or documents?** You don't need any of this - see
-  [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) instead.
+  [`CONTRIBUTING_SOURCES.md`](CONTRIBUTING_SOURCES.md) instead.
 - **Do you want to build or extend the `fha` tools?** That's a different door - the build
   guide and tool design live in the project repo on GitHub
   ([plaintext-family-history](https://github.com/asielen/plaintext-family-history)).
 - **Did someone send you a zip of this project?** You can skip the download below and follow
-  [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md), then come back here for the walkthrough.
+  [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md), then come back here for the walkthrough.
 
 This page takes you from a blank machine to your first filed record. Two parts: a one-time
 **setup** (install four things), then a **five-minute walkthrough** (drop a scan in, get a
@@ -148,7 +148,7 @@ have all this already; skip to Part 3.
 
 1. **Copy the `archive-template` folder** and rename the copy to something like
    `my-family-archive`. Keep it next to the `tools` folder so the tools can reach it. (If you
-   got here from a zip, [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) shows the exact
+   got here from a zip, [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) shows the exact
    layout.)
 2. **Point it at your photos and documents.** Open `fha.yaml` inside your new folder in a plain
    text editor and tell it where your files live. Copy-paste examples - a plain local folder, an
@@ -346,6 +346,8 @@ Do this at the end of any session where you added something you'd hate to lose.
 | `places/` | The list of places, with their locations. |
 | `notes/` | Research in progress and your running list of questions. |
 | `fha.yaml` | The one settings file - where your photos and documents live. |
+| `START_HERE.md` | One page explaining the archive to anyone who opens the folder with no tools - a grandchild, years from now. Its family part is yours to write (the setup interview drafts it with you); the tools never overwrite it. |
+| `docs/` | This guide, the cheat sheet, the rest of the manual, and the full rules (`SPEC.md`). |
 | `.fha/` | The machinery: the program itself, its design package, and the browser add-on. Hidden on purpose, so the archive root shows your genealogy rather than the tooling. You never edit anything in here. |
 | `generated/` | Built things - the family website, printable views, galleries. All rebuildable, none of it truth. |
 
@@ -355,7 +357,7 @@ family - period news, local color, general history kept on purpose for texture -
 won't appear on any person's page, packet, or timeline (those are all reached by following a
 person's link, or a claim naming them - so this holds as long as its `## Claims` block, if any,
 also stays person-free, the ordinary shape for a clipping like this). Find it again through the
-generated site's homepage Sources list or full-text search - see [`docs/FAQ.md`](docs/FAQ.md) for
+generated site's homepage Sources list or full-text search - see [`FAQ.md`](FAQ.md) for
 the full rule.
 
 Everything is plain text or standard image files. You can open any of it with Notepad, TextEdit,
@@ -364,7 +366,7 @@ never the thing holding your archive together.
 
 **It opens in Obsidian too.** Your archive is Markdown with frontmatter and `[[wikilinks]]` -
 point Obsidian (or any other Markdown app) at the folder and it opens as-is, no import, no
-conversion. See [`docs/USING_WITH_OBSIDIAN.md`](docs/USING_WITH_OBSIDIAN.md).
+conversion. See [`USING_WITH_OBSIDIAN.md`](USING_WITH_OBSIDIAN.md).
 
 Your `documents/` drawer (wherever `fha.yaml` says it lives) is yours to lay out: make any
 folders you like inside it - by type, by family line, by decade - anything you place in a
@@ -380,7 +382,7 @@ ever leaves a real backlog of loose files behind, `fha reorganize` (or just ask)
 whole tidy-up at once - it only ever touches material still sitting exactly where a machine
 filed it, so anything you already organized by hand is left alone, untouched. (Photos are even freer: as you organize your library, the system never renames or moves them at all.) When
 you're not sure where a stray research note belongs, the "Where does a note go?" list in
-[`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) answers it in four lines.
+[`FILING_CABINET.md`](FILING_CABINET.md) answers it in four lines.
 
 ---
 
@@ -420,7 +422,7 @@ When a newer version comes out, `fha update-tools` refreshes that copy. Be clear
   (it would never hold anything) - that's expected, not data loss. Point the setting back inside
   the archive and the next `fha update-tools` brings the folder back.
 
-The full ritual - preview, apply, review - is in [`docs/UPDATING.md`](docs/UPDATING.md).
+The full ritual - preview, apply, review - is in [`UPDATING.md`](UPDATING.md).
 
 ---
 
@@ -443,16 +445,16 @@ None of it is real genealogy, so you can't break anything by poking around.
 ## What's next
 
 - A one-page **cheat sheet** of the commands and phrases you'll actually use:
-  [`CHEATSHEET.md`](CHEATSHEET.md), right beside this file - print it and keep it by the keyboard.
-- Hit a snag? [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) maps each common "something
+  [`CHEATSHEET.md`](CHEATSHEET.md), right beside this file in `docs/` - print it and keep it by the keyboard.
+- Hit a snag? [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) maps each common "something
   went wrong" to its exact fix.
-- A newer version of the project came out? [`docs/UPDATING.md`](docs/UPDATING.md) is the
+- A newer version of the project came out? [`UPDATING.md`](UPDATING.md) is the
   two-minute update ritual - your records are never part of it.
-- New to filing research at all? [`docs/FILING_CABINET.md`](docs/FILING_CABINET.md) explains the
+- New to filing research at all? [`FILING_CABINET.md`](FILING_CABINET.md) explains the
   whole archive as the paper filing cabinet you already know.
 - Want the deeper "why" behind files-not-a-database and human-approved facts?
-  See [`docs/FAQ.md`](docs/FAQ.md).
-- Every term and ID type, defined: [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
-- Everything else in the manual: [`docs/README.md`](docs/README.md) indexes the lot.
-- The full rulebook, if you ever want it: [`SPEC.md`](SPEC.md). You never *have* to read
+  See [`FAQ.md`](FAQ.md).
+- Every term and ID type, defined: [`GLOSSARY.md`](GLOSSARY.md).
+- Everything else in the manual: [`README.md`](README.md) indexes the lot.
+- The full rulebook, if you ever want it: `SPEC.md`, in this same `docs/` folder. You never *have* to read
   it to use the archive - the assistant already follows it for you.

@@ -114,7 +114,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "f4da59174b78d975716d0402f17850f343fc6b8714cc487ecfd1466da06a47f7",
+      "sha256": "678e745eba10bf40e13425e6d046a6bf5d24582d962fe903e569b7163471d4d4",
       "spec_version": "2.1"
     },
     {
@@ -144,7 +144,7 @@
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
-      "sha256": "f0eb0e65d76ad841f7678cfbb4e3b51978f7583479bcc463d20434ddf741d46a",
+      "sha256": "a170e0a51c18072062c4a3d0b7bc51704c19b8365f157d08e1e6e28d32ebf1bd",
       "spec_version": "2.1"
     },
     {
@@ -168,7 +168,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "816ca9546b45176025662ded67a05b3e7ec131ddf24886c8259331dc217fa99a",
+      "sha256": "0b7355153a410299198e5f7ba5744680030875ed4407bfde8a12e60dbfd1e740",
       "spec_version": "2.1",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -483,7 +483,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "b186cb615820de3f5025582ce78761c64a3815278b54275470872b95d17fe2b4",
+      "sha256": "59fe8a0fd151187685b79cf5c08667ff4e9737e4483e91610d1379c3c8c32329",
       "spec_version": "2.1",
       "src": "tools/README.md"
     },
@@ -721,7 +721,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "ad75c6faec020168a37b63b505e7b430a711297b8a2fef967cee07e6747eae0e",
+      "sha256": "f5392201f02ae70bbb47ddee534b3df7237f42c9755dc5cb6b52ca016510beb6",
       "spec_version": "2.1",
       "src": "tools/scaffold.py"
     },
@@ -931,37 +931,26 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "bf26b6d7204942c16672421393ffabaa09f9e21ab316ce25728efbeaa4646db9",
-      "spec_version": "2.1"
-    },
-    {
-      "path": "CHEATSHEET.md",
-      "category": "operating",
-      "sha256": "0276d96fb7d773748b614fd2ad2a7960c9d83d0183d9fbe6e0d94ec428021761",
+      "sha256": "d2c31d98f1e981a03f932817bf96bcd52377b18ec7d012d0c808684f05ba7ade",
       "spec_version": "2.1"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "9cee855a6a72af77de4a581084c0423b373782be2b85e61312d8c90ff618e941",
+      "sha256": "c6a01dfb81aa5d19af1d068e1698e838efda8e2bead948a316c36bac8f8bd5d4",
       "spec_version": "2.1"
     },
     {
-      "path": "GETTING_STARTED.md",
-      "category": "operating",
-      "sha256": "5b6149f772e7da680225adf89bc25e0254cffccbc9e8a7368f1d6e130a82e7f2",
-      "spec_version": "2.1"
+      "path": "START_HERE.md",
+      "category": "skeleton",
+      "sha256": "406da40d2dc0b351f8f9f001afd5d5ec3fe06d555b56bff5de68cede760c98b2",
+      "spec_version": "2.1",
+      "src": "archive-template/START_HERE.md"
     },
     {
-      "path": "SPEC.md",
+      "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "5b5778c6569605782ad63d0fd2b3782c9c4c2955b685c69ace9f76d7cc9e334b",
-      "spec_version": "2.1"
-    },
-    {
-      "path": "TOOLING.md",
-      "category": "operating",
-      "sha256": "acc2ac7518cd04abda1a7d3ffc561b90fcaf2e7cb4b07353a79f72f6a06f36be",
+      "sha256": "5be43ac2a5c256257f3d378752c853e93d81022deff61d94b2af8eeb2f945d4f",
       "spec_version": "2.1"
     },
     {
@@ -997,7 +986,13 @@
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "a9257d08897d793125a4c1a478932ac26f5c761d5319b25104adb58ad03001a7",
+      "sha256": "40bc9dc45b240db7f16df0a092357cab4fccca1be05bed65113e20a9015b0fcd",
+      "spec_version": "2.1"
+    },
+    {
+      "path": "docs/GETTING_STARTED.md",
+      "category": "operating",
+      "sha256": "97035ec14fe8965cd3c47e0a1d7f1f465bb9d7204fd3221a6720f8ff47f4368f",
       "spec_version": "2.1"
     },
     {
@@ -1009,25 +1004,39 @@
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "3547d70b7a7893d7e6da0e146f651be8fb956a9446dcef8785f249352c4e76ef",
+      "sha256": "99cc2aa1d397c634742a304df1d2c4d738f62914f92f39e684a59b0e5ae092b4",
       "spec_version": "2.1"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "ce5871ce608a4bf2b3e3574ebdf2d5136c2818913b008bce04114ee960d7a341",
+      "sha256": "727a2aee66a099bdff9b3757f6d6abf04730c6607cfc5239e355ad2883b2ed8c",
       "spec_version": "2.1"
+    },
+    {
+      "path": "docs/SPEC.md",
+      "category": "operating",
+      "sha256": "4098b019a1dcb951da464881d69368f31887ba770cef3007578c9402cfa020e5",
+      "spec_version": "2.1",
+      "src": "SPEC.md"
+    },
+    {
+      "path": "docs/TOOLING.md",
+      "category": "operating",
+      "sha256": "2251726e4bb987d5cceaeea9c2f965a00b339886534d663af99ea16d405207c1",
+      "spec_version": "2.1",
+      "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "add9e403a977725020541b1d86e9a760f35d35f8d0394d403b6654559efc53de",
+      "sha256": "327ba6b7de15d4e25fd2254741a3c70377b35e0aa84056cfcd93f7e874cccaea",
       "spec_version": "2.1"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "6d3293c6da8d1e5f4cca1aafc879dc640695dab090d4f653c0eaac4adf50397f",
+      "sha256": "cdd6cefe639a741624e6c8ace9a48704f28fd548f023cfdf7e26d266fff1fb31",
       "spec_version": "2.1"
     },
     {
@@ -1058,7 +1067,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "1ed658937d551244883e088c7308c510aea5e5e4f024dbc20344aab72a8c45c6",
+      "sha256": "f4469a24ff6996b528273b9fd4b2d2f26a1d136c123487f865a1a5f4745fc949",
       "spec_version": "2.1",
       "src": "archive-template/fha.yaml"
     },

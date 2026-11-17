@@ -106,5 +106,5 @@ yours, and it would still be a perfectly good cabinet if every tool vanished tom
 ---
 
 *Want the formal version of any drawer? See [GLOSSARY.md](GLOSSARY.md) for every term and ID type,
-or [../SPEC.md](../SPEC.md) for the full rulebook. Just want to start filing?
-[GETTING_STARTED.md](../GETTING_STARTED.md).*
+or `SPEC.md`, in this same folder, for the full rulebook. Just want to start filing?
+[GETTING_STARTED.md](GETTING_STARTED.md).*

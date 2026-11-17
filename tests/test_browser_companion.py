@@ -1367,7 +1367,7 @@ class LauncherPrefixTestCase(unittest.TestCase):
     def test_the_two_spellings_are_the_ones_the_owner_docs_teach(self) -> None:
         # A third spelling would be worse than the bug, so the forms are pinned
         # against the docs an archive owner actually reads.
-        cheatsheet = (ROOT / 'CHEATSHEET.md').read_text(encoding='utf-8')
+        cheatsheet = (ROOT / 'docs' / 'CHEATSHEET.md').read_text(encoding='utf-8')
         self.assertIn('`./fha <command>`', cheatsheet)
         self.assertIn('`.\\fha <command>`', cheatsheet)
 

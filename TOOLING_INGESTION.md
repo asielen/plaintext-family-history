@@ -1,6 +1,6 @@
 # TOOLING_INGESTION.md - The Inbox Contract & the Capture On-Ramp
 
-**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - anything that puts material into an archive's inbox for `fha process` to turn into a source. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers building or extending the *intake* side of the `fha` tool suite - anything that puts material into an archive's inbox for `fha process` to turn into a source. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 **Version 2.1 - companion to SPEC.md v2.1 and TOOLING.md v2.1 (versions track the SPEC).**
 

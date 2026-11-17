@@ -62,10 +62,11 @@ root; the launcher finds them there, and `update-tools` refreshes them in place.
    that's your edited copy, preserved. Salvage anything you meant to keep (by porting it to the
    workshop - see the rule above), then delete the backup folder when you're done with it.
    A file the project has *retired* goes to the same place and is reported the same way - moved
-   aside, never deleted. (One you will see once: the old root `README.md`. It was a page about
-   the public project rather than about your archive, so it no longer ships;
-   [`../GETTING_STARTED.md`](../GETTING_STARTED.md) and [`../CHEATSHEET.md`](../CHEATSHEET.md)
-   at your archive's root are what replace it.)
+   aside, never deleted. (Ones you will see once: the old root `README.md`, a page about the public project rather
+   than about your archive, which no longer ships; and the old root copies of `SPEC.md`,
+   `TOOLING.md`, `GETTING_STARTED.md` and `CHEATSHEET.md`, which now live in `docs/` - the
+   update puts the new copies there and sets the old ones aside. The archive's root keeps only
+   `START_HERE.md`, `fha.yaml`, `AGENTS.md`, `CLAUDE.md` and the launchers.)
 
    **One folder can disappear, on purpose.** If `fha.yaml` points `documents:`, `photos:`, or
    `inbox:` at somewhere outside the archive, the matching empty placeholder folder is *removed*
