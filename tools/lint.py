@@ -211,8 +211,7 @@ configure_utf8_stdout()
 #    _edtf_gloss                 - plain-language gloss for a canonical EDTF value
 #    _check_date_value           - forgiving date check: valid/loose-W109/broken-E014
 #    _collect_token_refs         - scan a text block for [ID] tokens → registry
-#    _research_hypothesis_ids    - H-ids defined in a person file's ## Hypotheses
-#                                   (any kind - #56, content decides not filename)
+#    _hypothesis_definitions     - h-ids defined by question entries (SPEC §17b)
 #    _question_blocks            - split a questions.md into per-heading blocks
 #    _w122_message               - W122: filename says generated page, content says person
 #    _person_label               - `Ada Hartley (P-…)` for findings; ID alone if nameless
@@ -887,56 +886,31 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
             registry.name_link_refs.setdefault(target.lower(), []).append((path, lineno))
 
 
-# Where hypothesis records LIVE (SPEC §16): a `## Hypotheses` section, one
-# `- id: H-… / hypothesis: … / …` entry per belief. SPEC §16 RECOMMENDS the
-# person research file as the home for a curated person's hypotheses, but
-# does not forbid the section from appearing in a profile or a stub - the
-# archive already does this (issue #56) - so the parse below (and its caller
-# in _process_person_file) is not scoped to any one file kind: it just looks
-# for the section, in whatever person file carries it.
-# These two patterns mirror index.py's discovery (_extract_section_body +
-# _parse_md_list_blocks feeding _index_hypotheses_block) without importing it
-# (tools never import tools): the section is the text between the heading and
-# the next `##`, and an id field sits either on the entry's `- id:` line or on
-# an indented continuation line. Only the H-id is needed here, so the entry
-# parse reduces to the id-line shapes.
-_HYPOTHESES_SECTION_RE = re.compile(
-    r'^##\s*Hypotheses\s*$(.*?)(?=^##\s|\Z)', re.M | re.S,
-)
-_HYPOTHESIS_ID_LINE_RE = re.compile(
-    r'^[ \t]*(?:-[ \t]+)?id:[ \t]*["\']?(H-[0-9a-hjkmnp-tv-z]{10})\b', re.M | re.I,
-)
-
-
-def _research_hypothesis_ids(body: str) -> set[str]:
-    """H-ids DEFINED in a person file's `## Hypotheses` section, wherever the
-    section lives (issue #56: a profile or stub carries it just as validly as
-    a research companion - the content decides, not the filename).
-
-    index.py indexes the section the same content-first way - so lint must
-    count these ids as existing records too, or every `[[H-…]]` cite of a
-    hypothesis living in a profile or stub is a false E004 "create the
-    missing record". Only `id:` entry lines inside the Hypotheses section
-    define an H-id; a mere `[[H-…]]` citation elsewhere in the file is a
-    reference, never a definition, so a genuinely dangling H-id still fails
-    E004. Returns an empty set for a file with no such section - callers
-    apply this unconditionally to every person file rather than gating the
-    call on kind."""
-    return set(_hypothesis_definitions(body))
+# A `## Hypotheses` heading: where person files once listed working answers,
+# before they became question entries with `id:`/`guess:` (SPEC §17b).
+_HYPOTHESES_SECTION_RE = re.compile(r'^##[ \t]*Hypotheses[ \t]*$', re.M | re.I)
 
 
 def _hypothesis_definitions(body: str) -> list[str]:
     """Every h-id DEFINED in `body`, once per definition (so a repeat shows):
-    old `## Hypotheses` entries, and question entries' `- id:` lines - the
-    current form (SPEC §17b), where a working answer is the question itself."""
-    ids: list[str] = []
-    for section in _HYPOTHESES_SECTION_RE.finditer(body):
-        for m in _HYPOTHESIS_ID_LINE_RE.finditer(section.group(1)):
-            ids.append(normalize_id(m.group(1)))
-    for info in parse_question_blocks(body).values():
-        if info.get('id'):
-            ids.append(info['id'])
-    return ids
+    question entries' `- id:` lines, where a working answer is the question
+    itself (SPEC §17b)."""
+    return [info['id'] for info in parse_question_blocks(body).values() if info.get('id')]
+
+
+def _check_old_hypotheses_section(body: str, path: Path, findings: list[Finding]) -> None:
+    """W150: a person file still listing working answers under a separate
+    `## Hypotheses` heading. No tool reads that list, so the guesses in it
+    are missing from `fha find`, the report and every view until each
+    becomes a question entry."""
+    if _HYPOTHESES_SECTION_RE.search(body or ''):
+        findings.append(Finding('W', 'W150', path,
+            'This file lists working answers under a `## Hypotheses` heading, which the '
+            'tools no longer read, so those guesses are missing from `fha find` and the '
+            'report. Move each one into a question entry (SPEC §17b): a `## Q:` heading '
+            'in notes/questions.md, or in this person\'s research file under '
+            '`## Open Questions`, with its `id: h-...` and `guess:` lines (`basis:` and '
+            '`verify:` too, if it has them). Then delete the `## Hypotheses` section.'))
 
 
 def _person_label(registry: Registry, pid: str) -> str:
@@ -1076,8 +1050,7 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
             # comes back so the kind is decided by CONTENT here too: a file
             # named `…_research_P-….md` that carries a person record is that
             # person's profile (SPEC §13's kind slot is also a legal last given
-            # name), and SPEC §16 homes neither ## Hypotheses nor ## Open
-            # Questions in a profile. Reading it as research pulled her whole
+            # name), and SPEC §16 homes no ## Open Questions in a profile. Reading it as research pulled her whole
             # file into the E009 scope.
             if rec is not None and is_person_file_kind(path, 'research', rec['meta']):
                 text = read_text_or_report(path, on_decode_error=on_decode_error)
@@ -1208,24 +1181,10 @@ def _process_person_file(path: Path, registry: Registry,
         findings.append(Finding('W', 'W122', path,
                                 _w122_message(path, parsed, meta)))
 
-    # H-ids defined in this file's ## Hypotheses section (issue #56). SPEC §16
-    # RECOMMENDS `…_research_P-….md` as the home for a curated person's
-    # hypotheses, but the archive already writes them straight into profiles
-    # and stubs too - a stub especially, since "is this the same man as that
-    # other stub?" is a stub-shaped question and a stub has no companion
-    # files at all (SPEC §16) to put one in. The section used to be gated on
-    # `is_person_file_kind(path, 'research', meta)`, which reads a PROFILE's
-    # own Hypotheses block as not existing: the same content/filename
-    # ambiguity W122 already fixed for the kind slot itself (the slot before
-    # the P-id is also a legal last given name), applied one layer up - here
-    # it silently dropped a well-formed section instead of just mis-typing
-    # the file. The fix is the same principle: content decides. Any person
-    # file - profile, stub, or research companion - registers whatever H-ids
-    # its own `## Hypotheses` section defines; `_research_hypothesis_ids`
-    # already returns an empty set for a file that has no such section, so
-    # this is unconditional rather than gated on kind at all.
-    # Applied before any id checks so a mid-graduation (id-less) file's
-    # hypotheses still count as existing records for E004.
+    # h-ids defined by this file's question entries (SPEC §17b), before any
+    # id checks so a mid-graduation (id-less) file's working answers still
+    # count as existing records for E004.
+    _check_old_hypotheses_section(rec['body'], path, findings)
     for hid in _hypothesis_definitions(rec['body']):
         registry.hypothesis_ids.add(hid)
         registry.hypothesis_def_paths.setdefault(hid, []).append(path)

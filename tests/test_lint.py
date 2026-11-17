@@ -832,10 +832,9 @@ class FixIdsBlankNameFallsBackToFilenameTests(unittest.TestCase):
 
 
 class ResearchHypothesisE004Tests(unittest.TestCase):
-    """Fix for the E004 false positive on research-file hypotheses: SPEC §16
-    homes `## Hypotheses` in `…_research_P-….md`, and index.py indexes them
-    from there - so a `[[H-…]]` cite of one must resolve. A genuinely dangling
-    H-id, or a mere citation with no definition, stays E004."""
+    """A `[[h-…]]` cite of a working answer (a question entry's `- id:`,
+    SPEC §17b) must resolve. A genuinely dangling h-id, or a mere citation
+    with no definition, stays E004."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -856,23 +855,9 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         (self.root / 'people' / 'hartley__thomas_research_P-1111111111.md').write_text(
             '---\nid: P-1111111111\n---\n\n' + body, encoding='utf-8')
 
-    def test_research_defined_hypothesis_cited_from_profile_is_not_e004(self) -> None:
-        self._write_profile('Working theory: [[H-abcabcabca]] covers the arrival.')
-        self._write_research(
-            '## Research Notes\n*(none yet)*\n\n'
-            '## Hypotheses\n\n'
-            '- id: H-abcabcabca\n'
-            '  hypothesis: "arrived by ~1869"\n'
-            '  basis: "railroad boom"\n'
-            '  origin: agent\n'
-            '  status: open\n')
-        findings, reg = lint._run_lint_core(self.root, {})
-        self.assertIn('h-abcabcabca', reg.hypothesis_ids)
-        self.assertEqual([f for f in findings if f.code == 'E004'], [])
-
     def test_genuinely_dangling_hypothesis_is_still_e004(self) -> None:
         self._write_profile('Working theory: [[H-9999999999]] covers the arrival.')
-        self._write_research('## Hypotheses\n\n*(none yet)*\n')
+        self._write_research('## Open Questions\n\n*(none yet)*\n')
         findings, _ = lint._run_lint_core(self.root, {})
         e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
         self.assertTrue(e004)
@@ -880,11 +865,10 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
     def test_dangling_hypothesis_e004_names_the_right_fix(self) -> None:
         # Issue #56's own complaint: the generic E004 orphan message suggests
         # `fha stubs` - a PERSON-record minting command - for what is plainly
-        # an H- reference. There is no hypothesis-minting tool at all; a
-        # hypothesis is defined by hand in some person's ## Hypotheses
-        # section (SPEC §16), so the hint should say that instead.
+        # an H- reference. A working answer is written by hand on a
+        # question entry (SPEC §17b), so the hint should say that instead.
         self._write_profile('Working theory: [[H-9999999999]] covers the arrival.')
-        self._write_research('## Hypotheses\n\n*(none yet)*\n')
+        self._write_research('## Open Questions\n\n*(none yet)*\n')
         findings, _ = lint._run_lint_core(self.root, {})
         e004 = [f for f in findings if f.code == 'E004' and 'h-9999999999' in f.message]
         self.assertTrue(e004)
@@ -934,7 +918,7 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         self.assertEqual([f for f in findings if f.code == 'E004'], [])
 
     def test_citation_in_research_body_is_not_a_definition(self) -> None:
-        # A [[H-…]] reference OUTSIDE the ## Hypotheses entries (a research-log
+        # A [[H-…]] reference OUTSIDE a question entry's id: line (a research-log
         # question, prose) is a cite, not a record - it must not self-resolve.
         self._write_profile('Nothing hypothetical here.')
         self._write_research(
@@ -947,50 +931,25 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         self.assertTrue([f for f in findings
                          if f.code == 'E004' and 'h-7777777777' in f.message])
 
-    def test_hypothesis_defined_directly_in_a_profile_is_not_e004(self) -> None:
-        # #56: the gate used to be the FILENAME (`_research_` in the stem),
-        # not the content - so a well-formed ## Hypotheses section written
-        # straight into a curated person's own profile (no research
-        # companion at all here) was invisible to E004, and citing its H-id
-        # from anywhere else in the archive drew a false "create the missing
-        # record - run `fha stubs`" (wrong advice for an H-id besides).
-        (self.root / 'people' / 'hartley__thomas_P-1111111111.md').write_text(
-            '---\nid: P-1111111111\nname: Thomas Hartley\nliving: false\n---\n\n'
-            '# Thomas Hartley\n\n## Hypotheses\n\n'
-            '- id: H-bqwstmdxb6\n'
-            '  hypothesis: "possible duplicate of the unplaced stub"\n'
-            '  origin: agent\n  status: open\n', encoding='utf-8')
-        (self.root / 'sources').mkdir(exist_ok=True)
-        (self.root / 'sources' / 'interview_S-1111111111.md').write_text(
-            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
-            'Working theory: [[H-bqwstmdxb6]] covers the identity question.\n',
-            encoding='utf-8')
-        findings, reg = lint._run_lint_core(self.root, {})
-        self.assertIn('h-bqwstmdxb6', reg.hypothesis_ids)
-        e004 = [f for f in findings if f.code == 'E004' and 'h-bqwstmdxb6' in f.message]
-        self.assertEqual(e004, [], [f.message for f in findings])
-
-    def test_hypothesis_defined_in_a_stub_is_not_e004(self) -> None:
-        # #56's worst case: a stub has NO companion files at all (SPEC §16),
-        # so its own body is the only legal place a hypothesis about it can
-        # live - the old filename gate made that hypothesis permanently
-        # uncitable except as plain text (against _STANDARD.md §11).
+    def test_an_old_hypotheses_section_is_named_not_read(self) -> None:
+        # The retired separate `## Hypotheses` list: no tool reads it, so its
+        # guesses are missing everywhere until moved - lint says how (W150).
         (self.root / 'people' / 'stubs').mkdir(parents=True, exist_ok=True)
-        (self.root / 'people' / 'stubs' / 'unknown__unknown_P-2222222222.md').write_text(
+        stub = self.root / 'people' / 'stubs' / 'unknown__unknown_P-2222222222.md'
+        stub.write_text(
             '---\nid: P-2222222222\nname: unknown\nliving: unknown\n'
             'tier: stub\n---\n\n## Hypotheses\n\n'
             '- id: H-mtvwstmdx7\n'
             '  hypothesis: "same man as P-1111111111"\n'
             '  origin: agent\n  status: open\n', encoding='utf-8')
-        (self.root / 'sources').mkdir(exist_ok=True)
-        (self.root / 'sources' / 'interview_S-1111111111.md').write_text(
-            '---\nid: S-1111111111\ntitle: t\nsource_type: other\n---\n\n'
-            'Working theory: [[H-mtvwstmdx7]] covers the identity question.\n',
-            encoding='utf-8')
         findings, reg = lint._run_lint_core(self.root, {})
-        self.assertIn('h-mtvwstmdx7', reg.hypothesis_ids)
-        e004 = [f for f in findings if f.code == 'E004' and 'h-mtvwstmdx7' in f.message]
-        self.assertEqual(e004, [], [f.message for f in findings])
+        self.assertNotIn('h-mtvwstmdx7', reg.hypothesis_ids)
+        w150 = [f for f in findings if f.code == 'W150']
+        self.assertEqual(len(w150), 1, [f.message for f in findings])
+        self.assertEqual(w150[0].severity, 'W')
+        self.assertEqual(w150[0].path, stub)
+        self.assertIn('## Q:', w150[0].message)
+        self.assertIn('guess:', w150[0].message)
 
 
 class ResearchCompanionIdentityTests(unittest.TestCase):
@@ -999,9 +958,8 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
     SPEC §13 puts the companion kind immediately before the P-id
     (`hartley__thomas_research_P-…`), so anywhere else in the name it belongs
     to the given names. A woman recorded as Research Anne Smith
-    (`smith__research_anne_P-…`) has an ordinary profile: its `## Hypotheses`
-    entries are not SPEC §16 hypothesis records, and its `## Open Questions`
-    block is not part of the E009 question scope.
+    (`smith__research_anne_P-…`) has an ordinary profile: its `## Open
+    Questions` block is not part of the E009 question scope.
     """
 
     def setUp(self) -> None:
@@ -1017,13 +975,10 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
         '## Open Questions\n\n'
         '## Q: Which ship did she arrive on?\n'
         '- origin: human\n'
-        '- status: open\n\n'
-        '## Hypotheses\n\n'
+        '- status: open\n'
         '- id: H-abcabcabca\n'
-        '  hypothesis: "arrived by ~1869"\n'
-        '  basis: "railroad boom"\n'
-        '  origin: agent\n'
-        '  status: open\n'
+        '- guess: arrived by ~1869\n'
+        '- basis: railroad boom\n'
     )
 
     def _write(self, filename: str) -> Path:
@@ -1050,12 +1005,11 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
     def test_a_given_name_containing_the_kind_word_is_still_a_profile(self) -> None:
         path = self._write('smith__research_anne_P-3333333333.md')
         _findings, reg = lint._run_lint_core(self.root, {})
-        # #56: a profile's own ## Hypotheses section is a real record whatever
-        # its filename looks like - content decides, so this DOES register
-        # despite the file being (correctly) a profile, not a research
-        # companion. Open Questions is a different, still-filename-scoped
-        # gate (SPEC §16 homes it only in the research companion) and stays
-        # empty here.
+        # A working answer's h-id is a real record whatever file its
+        # question entry sits in, so this DOES register despite the file
+        # being (correctly) a profile, not a research companion. The E009
+        # question scope is filename-scoped (SPEC §16 homes Open Questions
+        # only in the research companion) and stays empty here.
         self.assertIn('h-abcabcabca', reg.hypothesis_ids)
         self.assertEqual(list(reg.research_content), [])
         # The other half of the same reading: it registers as a profile, so the
@@ -1074,9 +1028,8 @@ class ResearchCompanionIdentityTests(unittest.TestCase):
         # The slot before the P-id is also a legal last given name, so this
         # same filename may be Anne Research Smith's own record. A profile is
         # not a research file however it is named - SPEC §16 still homes the
-        # Open Questions scope only in the research companion - but #56
-        # widened Hypotheses to any person file that carries the section, so
-        # her own ## Hypotheses block here IS a real record now.
+        # Open Questions scope only in the research companion - but a
+        # working answer's h-id registers from any person file.
         self._write('smith__anne_research_P-3333333333.md')
         _findings, reg = lint._run_lint_core(self.root, {})
         self.assertIn('h-abcabcabca', reg.hypothesis_ids)
@@ -2491,17 +2444,14 @@ class ContentDecidesPersonKindTests(unittest.TestCase):
     def test_a_research_name_over_a_person_record_is_not_research(self) -> None:
         # SPEC §16 homes ## Open Questions in the research companion. A person
         # record that happens to be named like one is not a research file, so
-        # its body must stay out of the E009 research scope. ## Hypotheses is
-        # different (#56): the archive already writes it into profiles too,
-        # so her own section here is a real record whether or not the file
-        # also happens to be named like a research companion.
+        # its body must stay out of the E009 research scope. A working
+        # answer's h-id is different: it registers from any person file.
         self._write(
             'smith__anne_research_P-3333333333.md',
             '---\nid: P-3333333333\nname: Anne Research Smith\nliving: false\n---\n\n'
             '## Open Questions\n\n## Q: Which ship did she arrive on?\n'
-            '- origin: human\n- status: open\n\n'
-            '## Hypotheses\n\n- id: H-abcabcabca\n'
-            '  hypothesis: "arrived by ~1869"\n  origin: agent\n  status: open\n')
+            '- origin: human\n- status: open\n'
+            '- id: H-abcabcabca\n- guess: arrived by ~1869\n')
         findings, reg = lint._run_lint_core(self.root, {})
         self.assertEqual(list(reg.research_content), [])
         self.assertIn('h-abcabcabca', reg.hypothesis_ids)
@@ -4974,7 +4924,7 @@ class MissingSectionW130Tests(unittest.TestCase):
         (self.root / 'people' / 'rivera__sam_research_P-1111111111.md').write_text(
             '---\nid: P-1111111111\n---\n\n## Research Notes\n\n'
             '*(working notes)*\n\n## Open Questions\n\n*(none yet)*\n\n'
-            '## Hypotheses\n\n*(none yet)*\n\n## Research Log\n\n*(none yet)*\n',
+            '## Research Log\n\n*(none yet)*\n',
             encoding='utf-8')
         findings, _ = lint._run_lint_core(self.root, {})
         w130 = [f for f in findings if f.code == 'W130']

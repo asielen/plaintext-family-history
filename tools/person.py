@@ -2100,7 +2100,7 @@ def run_rename(
          and `fha stubs` already use, so a renamed record's filename is
          byte-identical to what minting that name fresh would produce).
       3. The research companion (a HAND-AUTHORED file - Research Notes, Open
-         Questions, Hypotheses, Research Log - never GENERATED) is renamed
+         Questions, Research Log - never GENERATED) is renamed
          alongside it when one exists, so the human's notes travel with the
          record exactly like `fha person promote` already does for its own
          file move.

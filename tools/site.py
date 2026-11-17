@@ -1753,13 +1753,13 @@ def _question_block_body(block: str) -> str:
     `_lib.parse_question_blocks` splits purely on `## Q:` boundaries (see its
     own docstring): fed a WHOLE research file, as `_lib.parse_questions` does
     for a person's own '## Open Questions' section, the LAST question block
-    in that file keeps everything that follows it too - `## Hypotheses`,
-    `## Research Log`, whatever the SPEC §16 scaffold puts next - because
+    in that file keeps everything that follows it too - `## Research Log`,
+    whatever the SPEC §16 scaffold puts next - because
     nothing in that split stops at a heading of any OTHER level. That reach
     never mattered before: the only existing reader of a block's raw text
     (report.py's answerable-questions section) only keyword-searches it. A
     person's page RENDERS it, so an untrimmed block would show someone's
-    Hypotheses and Research Log as if they were part of an unrelated open
+    Research Log as if it were part of an unrelated open
     question. This stops at the same boundary `_extract_section` respects
     for every other person-page section - the next `## ` heading, of any
     kind - and drops the block's own heading line, since the template shows

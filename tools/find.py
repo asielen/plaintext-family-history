@@ -638,12 +638,10 @@ def _find_hypothesis(
     ).fetchone()
     if row is None:
         # A missing row is not proof there is no such hypothesis: the index
-        # builder populates `hypotheses` from any person file's own
-        # `## Hypotheses` section (issue #56 - profile, stub, or research
-        # companion alike, whichever actually carries it) on its last `fha
-        # index`/`fha views` run, so a stale index misses one just as easily
-        # as a genuinely undefined H-id does. Fall back to a tree scan so a
-        # real H-id is still located either way.
+        # builder populates `hypotheses` from question entries on its last
+        # `fha index`/`fha views` run, so a stale index misses one just as
+        # easily as a genuinely undefined H-id does. Fall back to a tree scan
+        # so a real H-id is still located either way.
         return _find_by_scan(hid, archive_root)
 
     print(f'{hid}')
@@ -2003,10 +2001,9 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
     Print an H-id's neighborhood: the person it concerns, claims referencing
     it (claims.hypothesis = hid), and the verifying claim if one is set.
 
-    The `hypotheses` table is populated from any person file's own
-    `## Hypotheses` section (issue #56 - see _find_hypothesis's matching note
-    above), so a missing row usually means the index is stale rather than
-    that this H-id is unindexable. claims.hypothesis is indexed
+    The `hypotheses` table is populated from question entries (see
+    _find_hypothesis's matching note above), so a missing row usually means
+    the index is stale rather than that this H-id is unindexable. claims.hypothesis is indexed
     independently of that table, so this still falls back to deriving the
     neighborhood entirely from claims.hypothesis and the persons named on
     those claims when the row is absent.
@@ -2230,7 +2227,7 @@ _PHOTO_FILE_SQL = ' OR '.join(
 # excludes nothing: even though the general (non-bare-ID) ranking path only
 # ever produces person/source/place/text hits (claims and hypotheses are
 # never registered in the aliases table - see _register_cited_claim_aliases
-# and _index_hypotheses_block in index.py), _bare_id_hit uses this same map
+# and _index_question_working_answers in index.py), _bare_id_hit uses this same map
 # for a bare C-id/H-id query, so all five entries live in one place.
 _ID_TYPE_TO_HIT_TYPE: dict[str, str] = {
     'P': 'person', 'S': 'source', 'L': 'place', 'C': 'claim', 'H': 'hypothesis',
@@ -2354,7 +2351,7 @@ def _truncate_label(text: str, limit: int = 80) -> str:
 def _bare_id_hit(conn: sqlite3.Connection, id_norm: str) -> dict | None:
     """Look up a whole-string ID query directly against its own table - never
     through `aliases`, because a hypothesis is never registered there
-    (`_index_hypotheses_block` in index.py never calls `_insert_record_aliases`)
+    (`_index_question_working_answers` in index.py never calls `_insert_record_aliases`)
     and a cited claim's only alias row resolves to its OWNING SOURCE, not the
     claim itself (`_register_cited_claim_aliases`). Returns one hit dict, or
     None if the ID names nothing in the index.

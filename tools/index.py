@@ -151,12 +151,10 @@ configure_utf8_stdout()
 #
 #  Markdown block parsing
 #    _parse_md_list_blocks   - generic "- field: value" block parser, shared by
-#                              the Hypotheses and Research Log section parsers
+#                              the Research Log section parser
 #    _index_question_working_answers - `## Q:` entries with an h- id (SPEC
 #                              §17a/b) → hypotheses + hypothesis_persons rows
 #                              (notes/questions.md, research files)
-#    _index_hypotheses_block - old `## Hypotheses` entries → the same rows (any
-#                              person file kind - #56, content decides)
 #    _index_research_log_block - ## Research Log entries → search_log rows
 #                              (research companions only, per SPEC §16)
 #
@@ -366,8 +364,6 @@ CREATE TABLE IF NOT EXISTS search_log(
 -- Questions`; the entry is the truth, this is its query surface. status is
 -- the question's own status. person_id is the first person the entry is
 -- about; hypothesis_persons lists them all (the people in its `refs:`).
--- Old `## Hypotheses` list entries are read into the same rows until they
--- are migrated (question is then empty).
 CREATE TABLE IF NOT EXISTS hypotheses(
   id TEXT PRIMARY KEY,
   person_id TEXT,
@@ -957,31 +953,6 @@ def _index_question_working_answers(
         )
 
 
-def _index_hypotheses_block(
-    conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
-) -> None:
-    """Old form: `## Hypotheses` list entries in a person file -> working
-    answer rows (their `hypothesis:` text is the guess). Read until the
-    archive's entries are folded into question entries."""
-    section = _extract_section_body(body, 'Hypotheses')
-    if not section.strip():
-        return
-    for entry in _parse_md_list_blocks(section):
-        hid = normalize_id(_strip_quotes(entry.get('id', '')))
-        if not hid or not hid.startswith('h-'):
-            continue
-        _insert_working_answer(
-            conn, hid, [pid] if pid else [],
-            question='',
-            guess=_strip_quotes(entry.get('hypothesis', '')),
-            basis=_strip_quotes(entry.get('basis', '')),
-            verify=_strip_quotes(entry.get('verify', '')),
-            origin=_strip_quotes(entry.get('origin', '')),
-            status=_strip_quotes(entry.get('status', '')),
-            rel_path=rel_path,
-        )
-
-
 def _index_research_log_block(
     conn: sqlite3.Connection, body: str, pid: str | None, rel_path: str,
     *, whole_file: bool = False,
@@ -1351,27 +1322,12 @@ def _index_person(
             (str(path.relative_to(archive_root)), body),
         )
 
-    # Hypotheses (issue #56) and Research Log (SPEC §16) sections. Without
-    # this, the report's hypotheses/search-log sections always read empty
-    # even when the archive has real entries (the report rebuilds the index
-    # right before querying these tables).
-    #
-    # The two sections are NOT scoped alike. SPEC §16 recommends the research
-    # companion as the home for a curated person's Research Log, and nothing
-    # widens that here. Hypotheses is different: the archive already writes
-    # `## Hypotheses` straight into profiles and stubs too - a stub most of
-    # all, since "is this the same man as that other stub?" is a stub-shaped
-    # question and a stub has no companion file (SPEC §16) to hold one in.
-    # Gating hypothesis indexing on `kind == 'research'` read a profile's own
-    # section as not existing, so `fha find --related` could never connect a
-    # claim to a hypothesis living anywhere but a research file. Content
-    # decides instead: `_index_hypotheses_block` already no-ops on a body
-    # with no section, so indexing it is unconditional on kind - lint's
-    # `_research_hypothesis_ids` was widened the same way for the matching
-    # E004 check, and the two must keep agreeing on what counts as a record.
+    # Research files' `## Open Questions` and `## Research Log` (SPEC §16).
+    # Without this, the report's working-answers and search-log sections
+    # always read empty even when the archive has real entries (the report
+    # rebuilds the index right before querying these tables).
     if body.strip():
         rel_path = str(path.relative_to(archive_root))
-        _index_hypotheses_block(conn, body, pid, rel_path)
         if kind == 'research':
             # A research file's `## Open Questions` (SPEC §16b) holds this
             # person's questions and working answers in the §17b form.
