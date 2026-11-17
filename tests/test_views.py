@@ -298,6 +298,44 @@ class SummaryRegionTests(unittest.TestCase):
                       f'[[{MOTHER}|Chastina Reed]] [[{S_BIRTH}]]', region)
         self.assertIn(f'**Children:** [[{CHILD}|Ethel Webb]] [[{S_KID}]]', region)
 
+    def _add_claims(self, sid: str, claims: str) -> None:
+        (self.root / 'sources' / 'vital' / f'r_{sid}.md').write_text(
+            _summary_source(sid, claims), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def test_each_wedding_is_listed_with_the_divorce_between(self) -> None:
+        # Beverly married Charles in 1962, divorced him in 1974 and married
+        # him again in 1978: the summary must say all three, in order, not
+        # fold the two weddings into one line for the one husband.
+        both = f'  persons: [{ANN}, {HUSBAND}]\n  roles:\n    spouse: [{ANN}, {HUSBAND}]\n'
+        self._add_claims('s-5555555555', (
+            f'- value: same first wedding, another record\n  id: c-5555555551\n'
+            f'  type: marriage\n  date: 1871\n{both}  status: accepted\n'
+            f'- value: undated mention\n  id: c-5555555552\n  type: marriage\n'
+            f'{both}  status: accepted\n'
+            f'- value: divorced\n  id: c-5555555553\n  type: divorce\n'
+            f'  date: 1874-10\n{both}  status: accepted\n'
+            f'- value: married again\n  id: c-5555555554\n  type: marriage\n'
+            f'  date: 1878-07-29\n  place_text: Los Angeles\n{both}  status: accepted\n'))
+        self._run(person_id=ANN)
+        self.assertIn(
+            f'**Married:** [[{HUSBAND}|Dan Webb]] - February 1871, Fairview, Kansas '
+            f'[[{S_MARR}]]; divorced October 1874 [[s-5555555555]] · '
+            f'[[{HUSBAND}|Dan Webb]] - 29 July 1878, Los Angeles [[s-5555555555]]',
+            self._region())
+
+    def test_a_loosely_dated_record_of_one_wedding_is_not_a_second_wedding(self) -> None:
+        # "about 1875" beside the certificate's February 1871, with no divorce
+        # between: the same wedding remembered loosely, listed once.
+        self._add_claims('s-6666666666', (
+            f'- value: married about 1875\n  id: c-6666666661\n  type: marriage\n'
+            f'  date: 1875~\n  persons: [{ANN}, {HUSBAND}]\n'
+            f'  roles:\n    spouse: [{ANN}, {HUSBAND}]\n  status: accepted\n'))
+        self._run(person_id=ANN)
+        line = next(l for l in self._region().split('\n') if l.startswith('**Married:**'))
+        self.assertEqual(line, f'**Married:** [[{HUSBAND}|Dan Webb]] - February 1871, '
+                               f'Fairview, Kansas [[{S_MARR}]]')
+
     def test_rerun_is_a_no_op(self) -> None:
         self._run(person_id=ANN)
         first = self.profile.read_bytes()
