@@ -943,7 +943,7 @@
     {
       "path": "START_HERE.md",
       "category": "skeleton",
-      "sha256": "cb063cbc88082f80e48875ad62b4bad0e3d194023679af58d42a998e9d2068e1",
+      "sha256": "406da40d2dc0b351f8f9f001afd5d5ec3fe06d555b56bff5de68cede760c98b2",
       "spec_version": "2.1",
       "src": "archive-template/START_HERE.md"
     },
