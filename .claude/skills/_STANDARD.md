@@ -147,8 +147,9 @@ it in a real session against `example-archive/`** and confirming three things:
    overwritten.
 2. It **degrades gracefully** on messy input (infer, or ask one plain question — never hard-fail).
 3. **`fha lint --root example-archive` still exits 1 with only the documented baseline warnings**
-   afterward — currently **W101** (Thomas Hartley's death record is deliberately absent), **W102**
-   (one suggested claim staged on the family-portrait source as review-demo material), and **ten
+   afterward — currently three **W101** (Thomas Hartley's death record is deliberately absent, and
+   the two curated `people/connections/` records have no vitals), **W102** (one suggested claim
+   staged on the Thomas Hartley portrait source as review-demo material), and **ten
    W119** direct-line-stub leads (the example's direct line is deliberately mostly uncurated,
    exercising the promotion surface) — nothing the
    skill wrote introduced a new error or warning, and nothing "resolved" a staged item by accepting a

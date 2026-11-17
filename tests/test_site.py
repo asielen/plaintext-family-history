@@ -10267,7 +10267,7 @@ class WithheldSourcePictureTests(unittest.TestCase):
             photoindex.run_scan(root, cfg)
             cls._build(root, cfg, tmp, 'fresh')
             # Any record edit leaves the catalog out of date (#48).
-            frances = next(root.glob('people/**/hartley__frances_P-83e768cacb.md'))
+            frances = next(root.glob('people/**/hartley__frances_p-83e768cacb.md'))
             frances.write_text(frances.read_text(encoding='utf-8') + '\n', encoding='utf-8')
             index_mod.build_index(root, cfg)
             cls._build(root, cfg, tmp, 'stale')

@@ -1,3 +1,2 @@
 # Discoveries Log
-
-*Running log of research wins (example archive - fictional). Entries are appended as the report identifies answered questions, first corroborations, and completed profiles.*
+- 2026-07-03: Proved the parents of Thomas Edward Hartley: Caleb Comstock Hartley and Chastina Augusta Reed, from the 1850 census and a written proof argument. [[p-de957bcda1]] [[s-3p8v6n0d5t]]

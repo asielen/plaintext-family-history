@@ -1,0 +1,17 @@
+1850 UNITED STATES CENSUS - SCHEDULE 1, FREE INHABITANTS
+[Transcription of one household - FICTIONAL DOCUMENT for the example archive]
+
+State: New York    County: Washington    Town: Easton
+Enumerated 14 August 1850, page 207.
+
+Dwelling 312, family 318:
+
+Name                    Age  Sex  Occupation  Real estate  Birthplace
+Caleb C. Hartley        40   M    Farmer      1,800        Vermont
+Chastina A. Hartley     36   F                             New York
+Thomas E. Hartley       10   M                             New York
+Mary J. Hartley         7    F                             New York
+
+The 1850 schedule names everyone in a household but does not say how they are related.
+
+[end of transcription]

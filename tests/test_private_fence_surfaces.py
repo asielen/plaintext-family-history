@@ -73,7 +73,7 @@ class OneProfileEverySurfaceTests(unittest.TestCase):
         cls.root = Path(cls._tmp.name) / 'archive'
         shutil.copytree(ROOT / 'example-archive', cls.root,
                         ignore=shutil.ignore_patterns('generated', '.cache', 'out'))
-        profile = next(cls.root.glob('people/**/hartley__thomas_edward_P-de957bcda1.md'))
+        profile = next(cls.root.glob('people/**/hartley__thomas_edward_p-de957bcda1.md'))
         text = profile.read_text(encoding='utf-8')
         cut = text.index('## Biography')
         profile.write_text(text[:cut] + FIXTURE, encoding='utf-8')

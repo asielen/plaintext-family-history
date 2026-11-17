@@ -1,29 +1,162 @@
-# Example-archive config - fictional fixture. Asset roots are internal (and absent;
-# the example uses missing-fixture placeholders, see SPEC file-inventory status).
+# fha.yaml - archive configuration (plain, hand-editable). See docs/SPEC.md §12.4.
+# START_HERE.md, beside this file, explains the archive's folders to anyone who opens it.
+#
+# This one file tells the tools where your photos and documents live. Edit it with
+# any plain text editor (Notepad, TextEdit - not Word). Copy-paste examples for the
+# common setups are right below, under "Examples" - uncomment the one that matches
+# your setup and edit the path.
+#
+# root_person: p-xxxxxxxxxx
+#   The p- code of the person this archive is centred on. Enables Ahnentafel
+#   folder-number verification and person placement via `fha views brackets`.
+#   Omit to disable those checks.
+#
+# root_generation: self
+#   Which Ahnentafel slot root_person occupies - two settings, below. Getting
+#   this right matters: root_person anchored at a generation that is not the
+#   youngest, with root_generation left at self, numbers every ancestor
+#   folder one generation high. (`fha lint` and `fha views brackets` say so
+#   if it happens - W127.)
+#     self (default) - root_person is Ahnentafel #1, the tree's usual
+#       starting point (father #2, mother #3, grandparents #4-7, …). Use
+#       this when root_person is the YOUNGEST person on the direct line -
+#       any full sibling works, since siblings share one ancestor tree.
+#     children - root_person is #2; root_person's own children are #1,
+#       collectively (SPEC §12.2 - a full sibling group all stand in for the
+#       anchor equally, so no single child has to be named). Use this to
+#       anchor the archive at yourself (or anyone not the youngest) while
+#       still numbering your own parents #4/#5 and up correctly - and it
+#       works even with no children on record yet, unlike naming a child as
+#       root_person. After changing this, run `fha index` then
+#       `fha views brackets --realign` to renumber the already-promoted
+#       folders.
+# Root aliases: record paths like "photos/1880/…" resolve their first segment here.
+# Use an absolute path to keep a library outside the archive.
+#
+# ── Examples (uncomment and edit ONE photos: line; defaults below work as-is) ──
+#
+#   Plain folders inside this archive (the default - keep everything together):
+# roots:
+#   photos: photos
+#   documents: documents
+#
+#   An external drive (Windows uses a drive letter; Mac uses /Volumes):
+# roots:
+#   photos: D:/FamilyPhotos              # Windows
+#   photos: /Volumes/Archive/Photos      # Mac
+#   documents: documents
+#
+#   An existing photo library (e.g. a Lightroom folder) left where it is:
+# roots:
+#   photos: C:/Users/you/Pictures/Lightroom   # Windows
+#   photos: /Users/you/Pictures/Lightroom     # Mac
+#   documents: documents
+#
+# ── Keeping part of the photo library out of the catalog (optional) ──
+#   If the photos folder also holds material that is not part of the family
+#   history (a bulk export from a photo-sharing account, phone camera rolls),
+#   list it here and `fha photoindex` will skip it - so photo search and the
+#   "what should I process next?" ranking see only the real subject. Patterns
+#   are folder or file names relative to the photos root; `*` is a wildcard.
+#   Do NOT narrow `photos:` above to a subfolder instead: any photo already
+#   attached to a source record from a sibling folder would stop resolving.
+#
+# photos_ignore:
+#   - Flickr Export
+#   - Phone Backups/*
+#   - '*.tif'
+#
+# ── Inbox sorting folders (optional) ──
+#   When you file something out of the inbox, fha keeps the original in
+#   inbox/processed/, in the same subfolders it had in the inbox. If you sort
+#   the inbox first - items waiting on an answer in inbox/review/, suspected
+#   duplicates in inbox/already-existing/ - list those sorting folders here.
+#   They are left out of the kept copy's path, so inbox/review/Letters/a.pdf
+#   is kept at inbox/processed/Letters/a.pdf, beside everything else.
+#   Plain folder names only (no paths).
+#
+# inbox_triage_dirs: [review, already-existing]
+#
+# ── Standing photo-or-record rules for inbox folders (optional) ──
+#   A .jpg or .tif is filed into the photo library unless you say it is a
+#   record. If you have decided once where a kind of item lives - say every
+#   postcard is a record - write it down here, and anything filed from that
+#   inbox folder is typed and filed that way without remembering --type.
+#   The first matching rule wins; --type, or a note's source_type:, still
+#   overrides it. Patterns are folder names relative to the inbox, matched
+#   the way photos_ignore is: "Postcards" and "Postcards/**" both cover the
+#   Postcards folder and everything in it, and * matches any name. Leave the
+#   inbox folder itself out of the pattern. An inbox sorting folder above
+#   (review/) is left out before matching. A rule cannot say "photo" - use
+#   --type photo for that.
+#
+# intake_defaults:
+#   - match: "Postcards/**"
+#     source_type: letter
+#   - match: "Scans/Records/**"
+#     source_type: other
+#
+# ── A safety copy of every photo fha writes into (optional, recommended) ──
+#   To keep your photo tool (Lightroom and the like) from losing track of a
+#   photo, fha writes its keywords and captions INTO the original file rather
+#   than making a new one. That is the right trade, but it means the only copy
+#   of an irreplaceable family photograph is the one being written to.
+#
+#   Name a folder here and fha will tuck away one untouched copy of each photo
+#   BEFORE it writes to it for the first time - the photo exactly as your camera
+#   or scanner left it. A photo that already has a copy there is left alone, so
+#   the space this needs is one copy of the photos you actually work on, not a
+#   second copy of your whole library.
+#
+#   The folder must be OUTSIDE this archive and outside your photos and
+#   documents folders - ideally on a different disk. A copy kept inside the
+#   photo library would be catalogued as another photo; a copy kept inside the
+#   archive shares its fate. If the copy cannot be made, fha refuses to write to
+#   the photo and says why: a safety copy you are relying on must never quietly
+#   not happen. Leave the line out and nothing changes, except that fha says
+#   once per run that no copies are being kept. Scanned records (TIFF, JPEG,
+#   PNG, PDF) get the same protection, because fha writes their ID into them
+#   too. `fha doctor` tells you whether this is set up and suggests a folder.
+#
+# originals_backup: D:/PhotoOriginals        # Windows
+# originals_backup: /Volumes/Archive/PhotoOriginals   # Mac
 
-# Site-generation settings (fha site).
-site:
-  archive_name: The Hartley Family Archive
-  hero: coronado-tent-city-postcard.jpg   # banner: a photo path/filename or S-id; a default band shows if unset
-  home_person: P-de957bcda1               # the tree "Home" button centers here (defaults to root_person)
+# ── Browser add-ons (optional) ──
+#   The folder where `fha update-tools` keeps the Seen It add-on up to date
+#   (it marks the newspaper pages and records you have already looked at).
+#   `fha install` and `fha update-tools` ask you once and add the line for you;
+#   `none` means you said no. Change it here any time. The capture add-on
+#   needs no setting: it lives in .fha/browser-companion and is kept current
+#   there.
+#
+# browser_extensions: extensions                            # inside this archive
+# browser_extensions: E:/Family History/Browser Add-ons  # or anywhere
+# browser_extensions: none
 
+# ── Biography voice (optional) ──
+#   How the assistant's drafted biographies read. The facts and citations are
+#   identical either way - this only sets the voice. You can always override
+#   in the moment by asking ("tell it like a story" / "just the facts").
+#
+# biography:
+#   style: chronicle    # chronicle (era-by-era, fact-forward - the default) | narrative (story-driven)
+
+# ── Promotion nudges (optional) ──
+#   When a not-yet-curated person accumulates this many accepted facts, the
+#   report and review sessions start suggesting a real profile for them.
+#   Suggestions only - nothing is ever promoted without your say-so.
+#
+# promotion:
+#   claims_threshold: 5    # default 5 when the key is absent
+
+# ── Active configuration (the defaults; edit these to match your setup) ──
 roots:
   photos: photos
   documents: documents
 
-# Biography voice for the write-biography skill: chronicle (era-by-era,
-# fact-forward - the default) or narrative (story-driven). Facts and
-# citations are identical either way; a session ask overrides this.
-biography:
-  style: chronicle
+root_person: p-0a1b2c3d4e     # Alex James Bradford - Ahnentafel #1
 
-# Promotion nudges (report §7b + review close-out): suggest a curated profile
-# once a stub holds this many accepted claims. Suggestions only.
-promotion:
-  claims_threshold: 5
-
-# Ahnentafel root: the person at position #1 in the numbering tree.
-# All ancestor Ahnentafel numbers are derived from this person via relationship claims.
-# Even-numbered folders (002, 004, …) are ancestral couple folders; the root person's
-# parents live in folder 002.
-root_person: P-0a1b2c3d4e   # Alex James Bradford
+site:
+  archive_name: The Hartley Family Archive
+  hero: coronado-tent-city-postcard.jpg
+  home_person: p-de957bcda1   # the homepage pedigree starts at Thomas Hartley
