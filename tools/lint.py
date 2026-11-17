@@ -1725,17 +1725,19 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 f'was decided, if you know it), or run `fha claim {cid} --status {status}` '
                 f'to record it as decided today.'))
 
-        # W142: the retired `needs-review` status (SPEC 2.1 §8.1 dropped it).
-        # Every tool reads it as a looked-at `suggested` claim, so nothing is
-        # lost meanwhile - one gentle warning, not E019's error.
+        # W142: the retired `needs-review` status (SPEC §8.1 has no such word).
+        # No tool reads it any more, so the claim sits outside every review
+        # queue until it is fixed; this names the fix rather than E019's bare
+        # "not a valid status".
         if status.strip().lower() == RETIRED_NEEDS_REVIEW:
             findings.append(Finding('W', 'W142', path,
                 f'Claim {cid} says `status: needs-review`, a word the archive no longer '
-                'uses. It means "looked at, not settled yet", and the tools already read '
-                'it that way. Today that is written `status: suggested` with a '
-                '`reviewed:` date: change the line to `status: suggested` and keep its '
-                '`reviewed:` line (or add one with the day it was last looked at), or '
-                f'run `fha claim {cid} --status suggested` to record it as looked at today.'))
+                'uses, so it is left out of every review list until it is changed. It '
+                'meant "looked at, not settled yet", which is now written '
+                '`status: suggested` with a `reviewed:` date: change the line to '
+                '`status: suggested` and keep its `reviewed:` line (or add one with the '
+                f'day it was last looked at), or run `fha claim {cid} --status suggested` '
+                'to record it as looked at today.'))
         # E019: status / confidence must come from their controlled vocabularies
         # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
         # the claim from accepted-claim rollups, so catch it.

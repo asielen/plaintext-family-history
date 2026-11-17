@@ -2909,9 +2909,6 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         # day the claim is accepted, and fires then.
         self.assertEqual(self._w125(self._build(status='suggested')), [])
 
-    def test_needs_review_claim_does_not_warn(self) -> None:
-        self.assertEqual(self._w125(self._build(status='needs-review')), [])
-
     def test_negated_claim_does_not_warn(self) -> None:
         # A negated marriage is a researched absence - "we looked, and these
         # people did not marry" (SPEC §8.6). Derivation skips it deliberately.
@@ -3505,9 +3502,6 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         # the tree nothing yet; the repair there is review, which W102 tracks.
         self.assertEqual(self._w126(self._build(status='suggested')), [])
 
-    def test_needs_review_claim_does_not_warn(self) -> None:
-        self.assertEqual(self._w126(self._build(status='needs-review')), [])
-
     def test_negated_claim_does_not_warn(self) -> None:
         # "We researched it and this child was not born to them" (SPEC §8.6).
         # Asking for a roles: map so the tree can record the parentage would be
@@ -3671,17 +3665,6 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         # yet for a `roles:` map to unblock - review (W102's backlog) comes
         # first.
         self.assertEqual(self._w132(self._build(status='suggested', reviewed=False)), [])
-
-    def test_retired_needs_review_spelling_warns_like_parked(self) -> None:
-        # An archive written before SPEC 2.1 still says `needs-review`; W132
-        # reads it exactly as a parked claim.
-        w = self._w132(self._build(status='needs-review'))
-        self.assertEqual(len(w), 1)
-        self.assertIn('once accepted', w[0].message)
-
-    def test_undated_retired_needs_review_warns_like_parked(self) -> None:
-        w = self._w132(self._build(status='needs-review', reviewed=False))
-        self.assertEqual(len(w), 1)
 
     def test_parked_claim_warns(self) -> None:
         # #173 follow-up, second round: W132's case 2a now matches
@@ -3966,10 +3949,10 @@ class OrphanedRoleTargetW133Tests(unittest.TestCase):
         # A broken roles:/persons: pairing is a hand-edit mistake the moment
         # it is written - it should surface before review, not only after
         # acceptance (contrast with W125/W126, which wait for accepted, and
-        # W132, which waits for accepted-or-needs-review but still not
+        # W132, which waits for accepted-or-parked but still not
         # suggested/disputed).
         roles = f'  roles:\n    deceased: [{self.DEAD}]\n'
-        for status in ('suggested', 'needs-review', 'accepted', 'disputed'):
+        for status in ('suggested', 'accepted', 'disputed'):
             with self.subTest(status=status):
                 w = self._w133(self._build(
                     persons=[self.WIDOW], roles_block=roles, status=status))
@@ -5551,13 +5534,11 @@ class DiedButLivingW136Tests(unittest.TestCase):
         self._claim(self.ADA, also=self.MARY_DEATH)
         self.assertEqual(self._names(), ['Mary Hartley'])
 
-    def test_a_suggested_or_needs_review_death_is_silent(self) -> None:
+    def test_a_suggested_death_is_silent(self) -> None:
         self._person(self.ADA, 'Ada Hartley', 'unknown')
         self._person(self.MARY, 'Mary Hartley', 'unknown')
-        for status in ('suggested', 'needs-review'):
-            with self.subTest(status=status):
-                self._claim(self.ADA, status=status, also=self.MARY_DEATH)
-                self.assertEqual(self._names(), ['Mary Hartley'])
+        self._claim(self.ADA, status='suggested', also=self.MARY_DEATH)
+        self.assertEqual(self._names(), ['Mary Hartley'])
 
     def test_a_negated_death_is_silent(self) -> None:
         self._person(self.ADA, 'Ada Hartley', 'unknown')
@@ -5647,7 +5628,7 @@ class PersonWithoutFrontmatterE010Tests(unittest.TestCase):
 
 class SettledVerdictReviewedDateTests(unittest.TestCase):
     """SPEC §8.4: `reviewed:` is required on accepted, disputed, rejected and
-    superseded claims, optional on needs-review. Accepted stays E006's error;
+    superseded claims, optional on suggested. Accepted stays E006's error;
     the other three settled verdicts are W139 - a warning, because an older
     archive holds many of them marked before the rule and an error would stop
     every lint-gated step over a missing note of when."""
@@ -5686,9 +5667,9 @@ class SettledVerdictReviewedDateTests(unittest.TestCase):
                 self.assertIn('fha claim', codes['W139'][0].message)
                 self.assertNotIn('E006', codes)
 
-    def test_dated_verdicts_and_needs_review_are_quiet(self) -> None:
+    def test_dated_verdicts_and_suggested_are_quiet(self) -> None:
         self.assertNotIn('W139', self._codes('disputed', '2026-01-02'))
-        self.assertNotIn('W139', self._codes('needs-review', None))
+        self.assertNotIn('W139', self._codes('suggested', None))
         self.assertIn('W139', self._codes('rejected', ''))  # blank reads as absent
         # accepted keeps its own error, not this warning
         codes = self._codes('accepted', None)
@@ -5704,8 +5685,9 @@ class SettledVerdictReviewedDateTests(unittest.TestCase):
 
 
     def test_retired_needs_review_gets_one_gentle_warning(self) -> None:
-        # SPEC 2.1 §8.1 retired `needs-review`; an archive written before
-        # then still carries it. One warning naming the fix, never E019.
+        # SPEC §8.1 has no `needs-review`, and no tool reads it, so an old
+        # claim still saying it must not pass silently: one warning naming
+        # the fix (never E019's bare "not a valid status").
         codes = self._codes('needs-review', '2026-01-02')
         self.assertEqual(len(codes.get('W142', [])), 1, codes)
         self.assertNotIn('E019', codes)

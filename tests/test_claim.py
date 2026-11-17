@@ -449,6 +449,18 @@ class RunClaimTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
         self.assertEqual(self.source.read_bytes(), before)
 
+    def test_w142_fix_moves_an_old_needs_review_claim_to_suggested(self) -> None:
+        # The fix `fha lint` W142 names for a claim still saying the old
+        # `needs-review` must work: it parks the claim at `suggested`, dated.
+        text = self.source.read_text(encoding='utf-8')
+        self.source.write_text(text.replace('status: suggested', 'status: needs-review', 1),
+                               encoding='utf-8')
+        self.assertEqual(self._status_of('C-aa11bb22cc'), 'needs-review')
+        result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', status='suggested')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._status_of('C-aa11bb22cc'), 'suggested')
+        self.assertIn(f'reviewed: {claim._today()}', self.source.read_text(encoding='utf-8'))
+
     def test_disputed_round_trip(self) -> None:
         # `disputed` is a SPEC §8.1 review outcome (a contested claim) - the tool
         # writes it like any other non-accepted status, trail preserved.

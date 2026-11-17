@@ -41,7 +41,7 @@ no_known_marriages: true
 Some text about Test Person.
 '''
 
-_SOURCE_ONE_NEEDS_REVIEW = '''---
+_SOURCE_ONE_PARKED = '''---
 id: S-1111111111
 title: Source One
 source_type: vital-record
@@ -378,7 +378,7 @@ class ReportTests(unittest.TestCase):
             _PERSON_MD, encoding='utf-8'
         )
         (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
-            _SOURCE_ONE_NEEDS_REVIEW, encoding='utf-8'
+            _SOURCE_ONE_PARKED, encoding='utf-8'
         )
         (self.archive_root / 'notes' / 'questions.md').write_text(
             _QUESTIONS_MD, encoding='utf-8'
@@ -482,42 +482,6 @@ class ReportTests(unittest.TestCase):
         # Looked at and parked: not a first-time review item any more.
         result = report.run_report(self.archive_root, {}, full=True, section='review-queue')
         self.assertIn('No suggested claims awaiting review.', result['markdown'])
-
-    def test_retired_needs_review_reads_as_parked(self) -> None:
-        # An archive written before SPEC 2.1 still says `needs-review`; the
-        # report reads it exactly as a parked suggested claim.
-        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
-            _SOURCE_ONE_NEEDS_REVIEW.replace('status: suggested', 'status: needs-review'),
-            encoding='utf-8')
-        result = report.run_report(self.archive_root, {}, full=True)
-        md = result['markdown']
-        self.assertIn('**Parked (1):**', md)
-        self.assertIn('No suggested claims awaiting review.', md)
-
-    def test_undated_retired_needs_review_still_reads_as_parked(self) -> None:
-        # `needs-review` always meant "looked at", even where nobody wrote
-        # down when: it must not fall back into the first-time review queue.
-        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
-            _SOURCE_ONE_NEEDS_REVIEW.replace('status: suggested', 'status: needs-review')
-            .replace('  reviewed: 2026-03-01\n', ''),
-            encoding='utf-8')
-        md = report.run_report(self.archive_root, {}, full=True)['markdown']
-        self.assertIn('**Parked (1):**', md)
-        self.assertIn('No suggested claims awaiting review.', md)
-
-    def test_old_snapshot_needs_review_then_accepted_is_a_discovery(self) -> None:
-        # A snapshot written before SPEC 2.1 recorded the parked claim as
-        # `needs-review`; accepting it later is still a discovery.
-        report.run_report(self.archive_root, {}, full=True)
-        snap_path = self.archive_root / '.cache' / 'last_report.json'
-        snap = json.loads(snap_path.read_text(encoding='utf-8'))
-        snap.pop('parked_claim_ids', None)
-        snap['claim_status_by_id'] = {k: 'needs-review' for k in snap['claim_status_by_id']}
-        snap_path.write_text(json.dumps(snap), encoding='utf-8')
-        (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(
-            _SOURCE_ONE_ACCEPTED, encoding='utf-8')
-        md = report.run_report(self.archive_root, {}, full=False)['markdown']
-        self.assertIn('Parked claims now accepted', md)
 
     def test_second_look_reports_nothing_when_all_settled(self) -> None:
         (self.archive_root / 'sources' / 'sourceone_S-1111111111.md').write_text(

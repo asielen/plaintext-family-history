@@ -272,7 +272,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W147 | W | E021's gap on a `suggested` claim: fix it before accepting - `fha claim` refuses to accept it. | §8.3 |
 | W148 | W | A source titled `<Name> - …` after a person on its `people:` who is not the deceased of its death or burial claim, with a title about an obituary, death, funeral, burial or grave: index collections file an obituary under every name in it, so the title reads as that person's death. Retitle it after the person it is about. | §8.3 |
 | W149 | W | Any other claim (not an event, not `relationship`) naming two or more people that gives someone no role. A warning only - it blocks no accept. Fix: `roles:` with `subject:` for whose fact it is - everyone, when nobody is primary (a party they all attended) - or `head`/`household_member` on a census, the others by their part. | §8.3 |
-| W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
+| W142 | W | A claim with the retired `status: needs-review`, which no tool reads (SPEC §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |
