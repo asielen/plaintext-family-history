@@ -5916,11 +5916,11 @@ class FormatterTests(unittest.TestCase):
 
     def test_own_section_at_the_end_stays_there(self) -> None:
         text = ('---\nid: s-1111111111\n---\n\n## Notes\nA note.\n\n## Claims\n```yaml\n```\n\n'
-                '## AI Passes\n- 2026\n')
+                '## Mine\n- 2026\n')
         out, _, manual = self._fmt(text)
         self.assertEqual(manual, [])
         self.assertEqual(out, '---\nid: s-1111111111\n---\n\n## Claims\n```yaml\n```\n\n'
-                              '## Notes\nA note.\n\n## AI Passes\n- 2026\n')
+                              '## Notes\nA note.\n\n## Mine\n- 2026\n')
 
     def test_section_move_in_doubt_is_reported_not_done(self) -> None:
         for text in (
@@ -6112,7 +6112,7 @@ class SourceRecordFormTests(unittest.TestCase):
     (W144 checks each entry's shape), and exactly one `files:` entry is the
     main file, marked `is_primary: true` (W145). Both are warnings: an older
     record still says `role: primary` or keeps a `## AI Passes` section until
-    it is rewritten, and lint must not stop a lint-gated step over that."""
+    it is rewritten, and lint names the fix without stopping a lint-gated step."""
 
     SID = 's-7bbbbbbbb1'
 
@@ -6151,10 +6151,15 @@ class SourceRecordFormTests(unittest.TestCase):
                 self.assertEqual(len(codes.get('W144', [])), 1, codes)
                 self.assertEqual(codes['W144'][0].severity, 'W')
 
-    def test_an_old_ai_passes_section_is_quiet(self) -> None:
+    def test_an_old_ai_passes_section_warns_with_the_fix(self) -> None:
+        # No tool reads a `## AI Passes` body section any more, so a record
+        # still keeping one must be named, not skipped: the passes in it are
+        # invisible to every reader until they move into `ai_passes:`.
         codes = self._codes(self.ONE_FILE, '\n## AI Passes\n```yaml\n- date: 2026-01-01\n'
                             '  model: gpt-4\n  human_reviewed: false\n```\n')
-        self.assertNotIn('W144', codes)
+        self.assertEqual(len(codes.get('W144', [])), 1, codes)
+        self.assertIn('## AI Passes', codes['W144'][0].message)
+        self.assertIn('ai_passes:', codes['W144'][0].message)
 
     def test_one_main_file_is_quiet_in_either_form(self) -> None:
         self.assertNotIn('W145', self._codes(self.ONE_FILE))

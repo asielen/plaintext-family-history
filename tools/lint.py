@@ -1424,11 +1424,23 @@ def _check_retired_fields(meta: dict, claims: list, path: Path,
             '(SPEC 2.1); nothing reads it, so it is safe to delete those lines.'))
 
 
-def _check_ai_passes(meta: dict, path: Path, findings: list[Finding]) -> None:
-    """W144: an `ai_passes:` list a reader cannot use (SPEC §14, AI contract
-    rule 3). Each entry is a mapping with `date` (EDTF), `by` and `task`;
-    `note` is optional. A warning: the pass happened either way, and a later
-    reader only loses the who or when of it."""
+# A `## AI Passes` body heading: where records once kept their AI passes.
+_AI_PASSES_SECTION_RE = re.compile(r'^##[ \t]+AI[ \t]+Passes[ \t]*$', re.MULTILINE | re.IGNORECASE)
+
+
+def _check_ai_passes(meta: dict, body: str, path: Path, findings: list[Finding]) -> None:
+    """W144: AI passes a reader cannot use (SPEC §14, AI contract rule 3).
+    Each `ai_passes:` entry is a mapping with `date` (EDTF), `by` and `task`;
+    `note` is optional. A record still keeping its passes in a `## AI Passes`
+    body section is named too: no tool reads that section, so those passes
+    are invisible until they move into the frontmatter. A warning: the pass
+    happened either way, and a later reader only loses the who or when of it."""
+    if _AI_PASSES_SECTION_RE.search(body or ''):
+        findings.append(Finding('W', 'W144', path,
+            'This record keeps its AI passes in a `## AI Passes` section, which the '
+            'tools no longer read. Move each pass into the `ai_passes:` list in the '
+            'frontmatter, one `- {date: 2026-06-11, by: <model>, task: claims}` entry '
+            'per pass (SPEC §14), then delete the section.'))
     if 'ai_passes' not in meta:
         return
     passes = meta.get('ai_passes')
@@ -1631,7 +1643,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 findings.append(Finding('E', 'E017', path,
                     f'DNA source file must be under documents/dna/: {fpath!r}'))
 
-    _check_ai_passes(meta, path, findings)
+    _check_ai_passes(meta, rec.get('body') or '', path, findings)
     _check_main_file_mark(meta, path, findings)
 
     # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)
