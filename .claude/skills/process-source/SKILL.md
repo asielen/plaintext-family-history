@@ -264,6 +264,20 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      `1880~`, "the 1880s" → `188X`) and `place:`/`place_text:`;
    - the Mills fields by default (`information:` primary/secondary, `evidence:` direct/indirect;
      `confidence:` defaulted from the source type). A relationship claim carries `roles:` and a `subtype:`.
+   - **Say whose event it is** (SPEC §8.3). A birth, baptism, death, burial, marriage or divorce
+     claim that names more than one person gets a `roles:` map giving **everyone** a part: the
+     event's own people as `child:` / `deceased:` / `spouse: [p-…, p-…]`, the rest as `parent:`,
+     `spouse:`, `informant:`, `witness:` or a descriptive word. A death record names the widow and
+     the informant; a marriage names both sets of parents; an obituary names every survivor - left
+     unroled, any of them can become the person who died or married. `fha claim` will not accept
+     the claim until it says, and `fha lint` reports it (W147 suggested, E021 accepted).
+   - **Title the source after the person the record is about.** Index collections (Ancestry's
+     obituary, cemetery and death indexes) file one record under every name in it, so a capture
+     can arrive titled after a survivor: "Alan Sielen - U.S., Obituary Collection" is his mother's
+     obituary. Retitle it after the deceased - "Beverly Farfsing - obituary (indexed under son Alan
+     Sielen)" - before drafting; `fha lint` W148 flags a title that names someone the death or
+     burial record is not about. Never draft a death, burial or vital for a person only because
+     the title names them.
    - **A passage that reads out or describes one particular photo or document** (the inscription on
      the back of a print, a letter held up to the recorder) points at the real evidence: that object.
      Look it up first — `fha photoindex find --text "<words from it>"` (and `fha find --text` for a

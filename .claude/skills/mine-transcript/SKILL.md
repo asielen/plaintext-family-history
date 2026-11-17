@@ -93,6 +93,13 @@ what's usable from Ethel's interview." **Nothing mines silently** (AGENTS.md, TO
    - `date:`/`place_text:` translated to stored forms (a fuzzy "around the turn of the century" → `1900~`;
      you translate, he never types EDTF), plus the Mills fields (interview testimony is usually
      `information: primary` from the speaker but `confidence: low` when the memory is vague — SPEC §8.5).
+   - **Say whose event it is** (SPEC §8.3). A speaker telling of a death, a wedding or a birth
+     names the people around it ("my grandfather Will was buried beside Ethel"); a birth, baptism,
+     death, burial, marriage or divorce claim naming more than one person gets `roles:` giving
+     everyone a part - `deceased:` / `child:` / `spouse:` for the event's own people, `parent:`,
+     `spouse:`, `informant:` or a descriptive word (`grandchild:`, `narrator:`) for the rest. **Never
+     put the speaker on another person's death or burial without a role**: unroled, the narrator can
+     be read as the one who died. `fha claim` will not accept it until it says (lint W147/E021).
    - Skip chatter, tangents, and un-anchorable generalities.
    - **A passage that reads out or describes one particular photo or document** (the inscription on
      the back of a print, a letter held up to the recorder) points at the real evidence: that object.
