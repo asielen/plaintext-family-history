@@ -3047,6 +3047,43 @@ class EventClaimSaysWhoseEventE021Tests(unittest.TestCase):
         self.assertIn('titled after Paul Snyder', found[0].message)
         self.assertIn("is Mary Snyder's", found[0].message)
 
+    def test_any_other_claim_naming_several_people_asks_whose_fact_it_is(self) -> None:
+        occupation = (f'- value: "Charles was a clerk; his son Paul helped"\n'
+                      f'  id: c-4444444444\n  type: occupation\n'
+                      f'  persons: [{self.FATHER}, {self.SON}]\n  status: accepted\n'
+                      '  confidence: high\n')
+        found = [f for f in self._lint_all(occupation) if f.code == 'W149']
+        self.assertEqual(len(found), 1)
+        self.assertIn('subject: [p-', found[0].message)
+        roled = occupation.replace(
+            '  status:', f'  roles:\n    subject: [{self.FATHER}]\n    child: [{self.SON}]\n  status:')
+        self.assertEqual([f for f in self._lint_all(roled) if f.code == 'W149'], [])
+
+    def test_everyone_as_subject_is_a_complete_answer(self) -> None:
+        # A party they all attended: nobody is primary, and the human says so.
+        party = (f'- value: "the family attended the 1880 reunion"\n'
+                 f'  id: c-5555555555\n  type: event\n'
+                 f'  persons: [{self.FATHER}, {self.MOTHER}, {self.SON}]\n'
+                 f'  roles:\n    subject: [{self.FATHER}, {self.MOTHER}, {self.SON}]\n'
+                 '  status: accepted\n  confidence: high\n')
+        self.assertEqual([f for f in self._lint_all(party) if f.code in ('W149', 'E021')], [])
+
+    def _lint_all(self, claims: str) -> list:
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        for pid in (self.SON, self.FATHER, self.MOTHER):
+            (root / 'people' / f'snyder__x_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: P {pid}\nliving: false\ntier: stub\n---\n\n# P\n',
+                encoding='utf-8')
+        (root / 'sources' / 'notes' / 'rec_s-1111111111.md').write_text(
+            '---\nid: s-1111111111\ntitle: Rec\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return findings
+
     def test_a_father_and_son_of_one_name_is_quiet(self) -> None:
         # Daniel Farrington's grave, filed under Daniel Farrington: the
         # father's record on the son's source still names the man who died.

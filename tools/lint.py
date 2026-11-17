@@ -5768,6 +5768,22 @@ def _check_event_roles(registry: 'Registry', findings: list[Finding]) -> set[str
                 deceased_here.update(subjects)
             gaps = event_role_gaps(ctype, pairs)
             if gaps is None:
+                # W149: any other claim naming two or more people gives each a
+                # part too (SPEC §8.3) - a warning, never a block: these make no
+                # one born, dead or married, but an unroled son on his father's
+                # occupation still reads as the son's job on his timeline.
+                by_person = roles_by_person(pairs)
+                unroled = [p for p, r in by_person.items() if not r]
+                if (ctype not in VITAL_SUBJECT_ROLES and ctype != 'relationship'
+                        and len(by_person) >= 2 and unroled):
+                    findings.append(Finding('W', 'W149', src_path,
+                        f'Claim {claim.get("id", "?")} (type: {ctype or "?"}) names '
+                        f'{len(by_person)} people but gives no part to '
+                        f'{", ".join(fmt_id_display(p) for p in unroled)}, so it shows on '
+                        'each of their timelines as their own. Add `roles:` naming whose '
+                        'fact it is as `subject: [p-…]` - everyone, if nobody is primary (a party '
+                        'they all attended) - or `head:` / `household_member:` on a census, and '
+                        'the others by their part.'))
                 continue
             unroled, has_subject = gaps
             if not unroled and has_subject:
