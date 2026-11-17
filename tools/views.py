@@ -4431,7 +4431,9 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
 
 def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
-    """Regenerate every curated person's view files; return a Result (prints inline).
+    """Regenerate every curated person's view files, and every person's two
+    in-profile regions (## Sources, the summary lines - stubs included);
+    return a Result (prints inline).
 
     Written files are recorded in `changed`; the per-file progress lines stay
     byte-for-byte as before.
@@ -4464,7 +4466,17 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     changed: list[str] = []
     try:
         person_ids = _view_eligible_curated_ids(conn, archive_root)
-        if not person_ids:
+        # Every other live person record - stubs, connections, a curated
+        # record still under people/stubs/ - gets no companion files, but its
+        # profile's own two generated regions (## Sources, the summary lines)
+        # are kept current like any profile's: a stub reads the same way a
+        # curated record does, just with less filled in (SPEC §16).
+        region_only_ids = [
+            r['id'] for r in conn.execute(
+                "SELECT id FROM persons WHERE COALESCE(merged_into, '') = '' "
+                "ORDER BY id").fetchall()
+            if r['id'] not in set(person_ids)]
+        if not person_ids and not region_only_ids:
             return _empty_curated_views_result(conn)
 
         _per_person = [
@@ -4474,8 +4486,9 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         count = 0
         skipped = 0
         profiles_touched: list[Path] = []
-        for pid in person_ids:
-            for fn, label in _per_person:
+        companion_ids = set(person_ids)
+        for pid in list(person_ids) + region_only_ids:
+            for fn, label in (_per_person if pid in companion_ids else ()):
                 for fmt_pass in fmt_passes:
                     out = _generate_or_warn(
                         f'{label.strip()} for {pid}', fn, conn, pid, archive_root, fmt=fmt_pass,
@@ -4540,7 +4553,15 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             profile_sync = resync_person_profile_rows(archive_root, profiles_touched)
             if profile_sync != 'indexed' and sync == 'indexed':
                 sync = profile_sync
-        return _batch_view_result(count, skipped, changed, 'view', sync)
+        result = _batch_view_result(count, skipped, changed, 'view', sync)
+        if not person_ids and result.exit_code == EXIT_CLEAN:
+            # Every curated record parked under people/stubs/: the profiles'
+            # regions were refreshed, but no companion view could be, and
+            # that must not read as up to date.
+            parked = _empty_curated_views_result(conn)
+            if parked.exit_code != EXIT_CLEAN:
+                result.exit_code = parked.exit_code
+        return result
 
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
@@ -4789,7 +4810,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Regenerate all content views for every curated person.',
         description=(
             'Regenerate timeline and draft-queue for every curated person, and\n'
-            'refresh every curated person\'s own ## Sources section.\n'
+            'refresh every person\'s own ## Sources section and summary lines\n'
+            '(stubs included).\n'
             '--format html regenerates the standalone generated/views/ pages\n'
             'instead; --format both writes the two sets in one pass.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'

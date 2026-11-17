@@ -60,7 +60,7 @@ _OLD_DEFAULT_TEMPLATE = (
     'name: {name}\n'
     'living: unknown\n'
     '# birth:   # an honest guess is fine - a tool will remind you to add a source later\n'
-    '# death:   # same here; leave commented until you know\n'
+    '# death:   # an honest guess is fine here too; leave commented until you know\n'
     'created: {today}\n'
     'tier: stub\n'
     '---\n'

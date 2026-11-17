@@ -5,7 +5,7 @@ name: Susan Cole
 sex: F
 living: false
 # birth:   # an honest guess is fine - a tool will remind you to add a source later
-# death:   # same here; leave commented until you know
+# death:   # an honest guess is fine here too; leave commented until you know
 relationships:
   - to: "[[p-cd795c61e0|Margaret A. Cole]]"
     type: sibling

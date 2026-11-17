@@ -697,7 +697,11 @@ class RefreshFormatTests(_ViewsHtmlBase):
         # ## Sources region and the summary region under the title refreshed
         # once each (md-only - #76, no html twin); no couple-folder sources
         # index (SPEC 2.1 Part IV).
-        self.assertEqual(res.data.get('count'), 6)
+        # The stub gets no companion files, but its profile's two regions are
+        # kept current like any profile's (2 more).
+        self.assertEqual(res.data.get('count'), 8)
+        stub = next((self.root / 'people' / 'stubs').glob('*.md'))
+        self.assertIn('<!-- GENERATED-BEGIN sources-index', stub.read_text(encoding='utf-8'))
         self.assertIn('<!-- GENERATED-BEGIN summary', self.profile.read_text(encoding='utf-8'))
         gen_names = sorted(p.name for p in self._gen_dir().iterdir())
         self.assertEqual(gen_names, [

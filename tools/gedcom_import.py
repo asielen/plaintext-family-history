@@ -95,6 +95,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    render_person_body_scaffold,  # the full §16 profile body every new person record gets
     link_list_lines,
     normalize_id,
     stub_slug_name,
@@ -1501,7 +1502,10 @@ def _person_stub_text(stub: _PersonStub, today: str) -> str:
     if stub.death:
         lines.append(f'death: {_yaml_inline(stub.death)}')
     lines += [f'created: {today}', 'tier: stub', '---', '']
-    return '\n'.join(lines)
+    # The same body every other tool gives a new person record (#76): title,
+    # purpose block, ## Sources and the hand-written sections - an imported
+    # stub reads like any profile, not as bare frontmatter.
+    return '\n'.join(lines) + '\n' + render_person_body_scaffold(stub.name or 'unknown')
 
 
 def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[str]:

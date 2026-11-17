@@ -5,7 +5,7 @@ name: Charley Layng
 sex: M
 living: false
 # birth:   # an honest guess is fine - a tool will remind you to add a source later
-# death:   # same here; leave commented until you know
+# death:   # an honest guess is fine here too; leave commented until you know
 created: 2026-06-30
 tier: curated
 ---

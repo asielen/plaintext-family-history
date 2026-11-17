@@ -148,12 +148,17 @@ class StubGuardTests(unittest.TestCase):
         (root / 'people' / 'stubs' / f'hartley__promoted_{PROMOTED}.md').write_text(
             _person(PROMOTED, 'Promoted Hartley', 'curated'), encoding='utf-8')
         index_mod.build_index(root, load_fha_yaml(root))
-        for res in (views.run_refresh(root),
-                    views.run_timeline(root, all_curated=True),
+        for res in (views.run_timeline(root, all_curated=True),
                     views.run_sources_index(root, all_curated=True),
                     views.run_draft_queue(root, all_curated=True)):
             self.assertEqual(res.exit_code, EXIT_WARNINGS)
             self.assertFalse(res.changed)
+        # refresh still keeps the parked record's own regions current (a
+        # profile is a profile wherever it is filed), but still warns: its
+        # companion views could not be written.
+        res = views.run_refresh(root)
+        self.assertEqual(res.exit_code, EXIT_WARNINGS)
+        self.assertFalse([c for c in res.changed if '_view_' in c])
 
     def test_curated_record_in_connections_is_eligible(self) -> None:
         # #80: connections/ is no longer a reserved non-couple folder like

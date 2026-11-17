@@ -278,6 +278,19 @@ class ApplyTestCase(_ArchiveCase):
         self.assertEqual(jon['name_variants'], ['Jón Þórsson'])
         self.assertTrue(all(meta['tier'] == 'stub' for _, meta in by_name.values()))
 
+    def test_an_imported_stub_reads_like_any_profile(self) -> None:
+        # A stub from an Ancestry download opens with the same title, purpose
+        # note and sections a hand-made record has - not bare frontmatter a
+        # reader has to guess what to do with.
+        self._apply()
+        rose = next((self.archive / 'people' / 'stubs').glob('hartley__rose_p-*.md'))
+        body = read_record(rose)['body']
+        self.assertTrue(body.lstrip().startswith('# Rose Hartley\n'), body[:200])
+        for heading in ('## Sources', '## Biography', '## Stories', '## Research Notes',
+                        '## Friends & Family'):
+            self.assertIn(heading, body)
+        self.assertIn("This person's record - yours to write.", body)
+
     def test_source_record_shape_and_claims(self) -> None:
         result, _out, _err = self._apply()
         rec_path = next((self.archive / 'sources' / 'other').glob('*_s-*.md'))
