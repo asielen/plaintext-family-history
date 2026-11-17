@@ -205,8 +205,8 @@ came, rather than the bare form.
      exactly as it is. If he would rather not leave a doubtful fact looking
      settled, park it: `fha claim <C-id> --status suggested` puts it back among
      the unsettled claims with today's `reviewed:` date - "checked, still open"
-     (SPEC §8.1) - without inventing a value. Offer it, don't assume it; if the
-     tool refuses the park, see [`GAP.md`](GAP.md). Either way the declined or
+     (SPEC §8.1) - without inventing a value. Offer it, don't assume it. Either
+     way the declined or
      parked proposal goes in the pass's `note:`: a reading he considered and
      rejected is worth as much as one he took.
    - **When the corrected reading changes WHICH fact is asserted — a different

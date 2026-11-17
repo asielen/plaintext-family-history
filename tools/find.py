@@ -1238,7 +1238,7 @@ def _person_cooccur_neighbors(
             f'''
             SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
             FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
-            WHERE c.status IN ('accepted', 'needs-review')
+            WHERE (c.status = 'accepted' OR (c.status = 'suggested' AND COALESCE(c.reviewed, '') != ''))
               AND {_overlap_clause('c.date_min', 'c.date_max')}
             ''',
             (date_bounds[1], date_bounds[0]),
@@ -1248,7 +1248,7 @@ def _person_cooccur_neighbors(
             '''
             SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
             FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
-            WHERE c.status IN ('accepted', 'needs-review')
+            WHERE (c.status = 'accepted' OR (c.status = 'suggested' AND COALESCE(c.reviewed, '') != ''))
             '''
         )) + list(conn.execute('SELECT source_id, person_id FROM source_people'))
 
@@ -1279,14 +1279,14 @@ def _person_places(
     shared-place detector uses, so the two tools agree on what counts as
     "the same place."
     """
-    # Same accepted/needs-review gate as _person_cooccur_neighbors and
+    # Same accepted/parked gate as _person_cooccur_neighbors and
     # _person_org_hubs use - without it, `suggested`/`rejected` draft
     # placed claims silently get promoted into the person's place ranking.
     sql = '''
         SELECT c.place_id, c.place_text
         FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
         WHERE cp.person_id = ?
-          AND c.status IN ('accepted', 'needs-review')
+          AND (c.status = 'accepted' OR (c.status = 'suggested' AND COALESCE(c.reviewed, '') != ''))
           AND ((c.place_id IS NOT NULL AND c.place_id != '')
                OR (c.place_text IS NOT NULL AND c.place_text != ''))
     '''
@@ -1329,7 +1329,7 @@ def _person_org_hubs(
     sql = '''
         SELECT c.type, c.subtype, c.value, cp.person_id
         FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
-        WHERE c.status IN ('accepted', 'needs-review')
+        WHERE (c.status = 'accepted' OR (c.status = 'suggested' AND COALESCE(c.reviewed, '') != ''))
           AND (c.negated IS NULL OR c.negated = 0)
           AND (c.type IN ('occupation', 'military')
                OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership')
@@ -2060,7 +2060,7 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
 
 def _related_date(date_bounds: tuple[str, str], date_str: str, conn: sqlite3.Connection) -> int:
     """
-    Print the standalone time-slice neighborhood: every accepted/needs-review
+    Print the standalone time-slice neighborhood: every accepted/parked
     claim whose bounds overlap date_bounds, and the people/sources/places
     behind them (TOOLING §4a's `--related --date` bullet).
 
@@ -2075,7 +2075,7 @@ def _related_date(date_bounds: tuple[str, str], date_str: str, conn: sqlite3.Con
         SELECT id, source_id, place_id, place_text
         FROM claims
         WHERE {_overlap_clause('date_min', 'date_max')}
-          AND status IN ('accepted', 'needs-review')
+          AND (status = 'accepted' OR (status = 'suggested' AND COALESCE(reviewed, '') != ''))
         ''',
         (date_bounds[1], date_bounds[0]),
     ).fetchall()

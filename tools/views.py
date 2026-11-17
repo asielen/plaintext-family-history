@@ -118,6 +118,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    PARKED_CLAIM_SQL,
     AmbiguousCoupleFolderError,  # two couple folders share a prefix; refuse, don't guess,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -987,12 +988,12 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     """Format one timeline line from a claims query row.
 
     A claim that is not settled fact carries a plain-word tag at the end of
-    its line: '[unconfirmed - parked {date}]' for a needs-review claim (the
-    reviewed: date records when the human last looked - the parked state,
-    SPEC §8.1), '[low confidence]' for an accepted claim whose evidence
-    quality is low (SPEC §8.5 keeps status and confidence orthogonal: an
-    accepted low-confidence fact is built on, and flagged as worth
-    corroborating when a better record surfaces). Suggested rows get no tag -
+    its line: '[unconfirmed - parked {date}]' for a suggested claim that
+    carries a reviewed: date (looked at, not settled yet - SPEC §8.1),
+    '[low confidence]' for an accepted claim whose evidence quality is low
+    (SPEC §8.5 keeps status and confidence orthogonal: an accepted
+    low-confidence fact is built on, and flagged as worth corroborating when
+    a better record surfaces). Never-reviewed suggested rows get no tag -
     they already render under their own 'Unreviewed' header. Requires the
     query row to carry status/confidence/reviewed alongside the display
     columns.
@@ -1003,8 +1004,8 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     if place:
         line += f' @ {place}'
     line += f' {_format_sid(row["source_id"])}'
-    if row['status'] == 'needs-review':
-        line += f' [unconfirmed - parked {row["reviewed"]}]' if row['reviewed'] else ' [unconfirmed]'
+    if row['status'] == 'suggested' and row['reviewed']:
+        line += f' [unconfirmed - parked {row["reviewed"]}]'
     elif row['status'] == 'accepted' and row['confidence'] == 'low':
         line += ' [low confidence]'
     return line
@@ -1053,11 +1054,12 @@ def _generate_timeline(
     Generate the timeline view for one person and write it to disk.
 
     Output structure (TOOLING §7):
-      - One ### Decade section per decade of accepted/needs-review claims
+      - One ### Decade section per decade of accepted and parked claims
+        (parked = suggested with a reviewed: date, tagged on its line)
       - Undated claims appear at the bottom of the dated section (ORDER BY puts
         NULL date_min last)
-      - ## Unreviewed section at the end for suggested claims
-        (suggested = AI-drafted, not yet accepted by a human reviewer)
+      - ## Unreviewed section at the end for never-reviewed suggested claims
+        (AI-drafted, not yet looked at by a human reviewer)
 
     `fmt='html'` writes the standalone single-file twin under generated/views/
     instead - same queries, same sections, same rendered lines (D11); callers
@@ -1084,7 +1086,7 @@ def _generate_timeline(
                c.status, c.confidence, c.reviewed
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
-        WHERE cp.person_id = ? AND c.status IN ('accepted', 'needs-review')
+        WHERE cp.person_id = ? AND (c.status = 'accepted' OR {PARKED_CLAIM_SQL})
         ORDER BY {claim_date_order_sql('c')}
         """,
         (person_id,),
@@ -1097,7 +1099,7 @@ def _generate_timeline(
                c.status, c.confidence, c.reviewed
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
-        WHERE cp.person_id = ? AND c.status = 'suggested'
+        WHERE cp.person_id = ? AND c.status = 'suggested' AND NOT {PARKED_CLAIM_SQL}
         ORDER BY {claim_date_order_sql('c')}
         """,
         (person_id,),

@@ -105,6 +105,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml  # noqa: F401 - a missing PyYAML fails here, where fha.py explains it
 
 from _lib import (
+    PARKED_CLAIM_SQL,
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
@@ -397,8 +398,8 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     reduced to one without guessing.
 
     Accepted claims only (owner decision 2026-07-22): a spacetime span stamps
-    a place and date onto a published sentence as fact, and a needs-review
-    claim - the parked, looked-at-but-unsettled state (SPEC §8.1) - must not
+    a place and date onto a published sentence as fact, and a parked claim -
+    still `suggested`, looked at but unsettled (SPEC §8.1) - must not
     do that. Parked claims reach WikiTree another way: recast as open
     questions in the Research Notes section (`_research_notes_lines`).
 
@@ -1123,7 +1124,8 @@ def _research_notes_lines(
     conn: sqlite3.Connection, archive_root: Path, pid: str,
     restricted_claims: set[str] | None = None,
 ) -> list[str]:
-    """Recast the subject's parked needs-review claims as open research
+    """Recast the subject's parked claims (`suggested` with a reviewed:
+    date, SPEC §8.1) as open research
     questions for WikiTree collaborators (owner decision 2026-07-22).
 
     WikiTree's convention keeps uncertain or conflicting information in a
@@ -1151,7 +1153,7 @@ def _research_notes_lines(
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         LEFT JOIN sources s ON s.id = c.source_id
-        WHERE cp.person_id = ? AND c.status = 'needs-review'
+        WHERE cp.person_id = ? AND {PARKED_CLAIM_SQL}
           AND COALESCE(s.restricted, 0) = 0
           AND COALESCE(s.source_type, '') != 'dna'
           AND COALESCE(s.publication_ok, 1) != 0
@@ -1545,7 +1547,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
             body_lines.pop()
         out.extend(body_lines)
 
-        # Parked needs-review claims go out as open questions in Research
+        # Parked claims go out as open questions in Research
         # Notes - WikiTree's home for uncertain information - so collaborators
         # can pick them up (owner decision 2026-07-22). If the profile already
         # carries a human-authored '## Research Notes' (exported by

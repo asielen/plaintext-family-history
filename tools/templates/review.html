@@ -28,7 +28,7 @@
         <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
                 data-wb-args='{{ {"claim_id": item.claim_id, "status": "accepted"} | tojson }}'>Accept as-is</button>
         <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
-                data-wb-args='{{ {"claim_id": item.claim_id, "status": "needs-review"} | tojson }}'>Needs review</button>
+                data-wb-args='{{ {"claim_id": item.claim_id, "status": "suggested"} | tojson }}'>Not sure yet</button>
         <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="claim.review" data-wb-direct
                 data-wb-args='{{ {"claim_id": item.claim_id, "status": "disputed"} | tojson }}'>Dispute</button>
         <span class="wb-later">&hellip;or leave it - the queue keeps it.</span>

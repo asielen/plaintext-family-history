@@ -5,23 +5,13 @@ rather than quietly hand-rolling it. Each entry names the wanted verb, what the 
 meantime, and why the interim behaviour is safe. **The default is to block, not improvise** — the
 entries below block, they do not enact.
 
-## 1. `fha claim <C-id> --status suggested` (park a claim as "checked, still open")
-
-**Wanted:** let the step-6 audit put a doubtful claim back among the unsettled ones without inventing
-a value. SPEC §8.1 says how a record says "looked at, not settled": the claim stays (or goes back to)
-`suggested` and carries the `reviewed:` date of the look. `fha claim` should accept `--status
-suggested` for exactly that, stamping `reviewed:` (and `reviewed_by:`) like every other status move.
-
-**Why it matters:** an accepted claim the human no longer trusts should stop reading as settled. Today
-`fha claim` refuses `--status suggested` (claim.py `REVIEW_STATUSES`), so there is no tool route to
-the form SPEC §8.1 describes.
-
-**Interim behaviour (blocking, not enacting):** offer the park; if the tool refuses it, leave the
-claim exactly as it is and record the doubt with `fha source note <S-id> --text "[[C-…]]: …"`. Never
-hand-edit `status:` or `reviewed:`.
+No open gaps today.
 
 ## Not gaps (recorded so they are not re-reported)
 
+- **Parking a claim as "checked, still open"** is `fha claim <C-id> --status suggested`: the claim
+  stays (or goes back to) `suggested` and gets today's `reviewed:` (and `reviewed_by:`), the form
+  SPEC §8.1 describes.
 - **Correcting an accepted claim's `value`/`date`/`place`/`persons`/`notes`/`anchor`** is
   `fha claim <C-id> --status accepted --value "…"` (or `--notes "…"`, `--anchor "…"`) — one call,
   which both writes the field and stamps today's `reviewed:`. `--reviewed` is refused without

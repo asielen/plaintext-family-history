@@ -114,7 +114,7 @@
       it's used" convention as `fha doctor`'s opening line (tools/doctor.py)
       and the date-notation legend itself (#131, base.html) - both marks are
       glossed together even though a standalone build can only ever show
-      "low confidence" (an "unconfirmed" claim never leaves needs-review, so
+      "low confidence" (an "unconfirmed" claim is never accepted, so
       it never reaches a standalone page), the same way the date legend
       explains every SPEC 11 mark regardless of which ones a given page
       happens to use. -#}
@@ -154,7 +154,7 @@
             sentence instead of the mention itself (#180 post-merge
             follow-up, finding 2; see site.py's `_timeline_value_html`
             docstring). -#}
-        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.status == 'needs-review' %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% endfor %}
       </ul>
     {% endfor %}

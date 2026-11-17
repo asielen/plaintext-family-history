@@ -105,7 +105,7 @@ truth.
 
 **What happened.** You marked a suggested fact as **accepted**, but it shouldn't be.
 
-**Fix.** Tell the assistant: *"Undo that claim - set it back to needs-review,"* or *"reject the
+**Fix.** Tell the assistant: *"Undo that claim - I'm not sure about it yet"* (it goes back to suggested, dated today), or *"reject the
 death-date claim on that source."* A claim has a review status that can move backward; it doesn't
 have to be erased. If you'd rather wipe the edit entirely and start over, **undo the change** using
 git or the no-git method below.

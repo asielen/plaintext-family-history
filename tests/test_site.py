@@ -210,7 +210,7 @@ class SourcePageTests(_Base):
 
     def test_standalone_shows_accepted_only_linked_shows_everything(self):
         # Owner decision 2026-07-22: the public snapshot publishes settled
-        # facts only - accepted claims. needs-review (the parked verdict,
+        # facts only - accepted claims. a parked claim (looked at, not settled,
         # SPEC §8.1) is research state, withheld along with suggested and
         # rejected. --linked (developer preview / workbench) shows every
         # status with its badge.
@@ -219,7 +219,7 @@ class SourcePageTests(_Base):
         self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Accepted fact',
                          status='accepted', persons=('p-aaaaaaaaaa',))
         self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
-                         status='needs-review', persons=('p-aaaaaaaaaa',))
+                         status='suggested', reviewed='2026-03-01', persons=('p-aaaaaaaaaa',))
         self._seed_claim('c-3333333333', 's-1111111111', 'occupation', 'AI draft guess',
                          status='suggested', persons=('p-aaaaaaaaaa',))
         self._seed_claim('c-4444444444', 's-1111111111', 'occupation', 'Known wrong',
@@ -227,7 +227,7 @@ class SourcePageTests(_Base):
         self._run(linked=False)
         public = self._read('sources/s-1111111111.html')
         self.assertIn('Accepted fact', public)
-        self.assertNotIn('Under review', public)           # needs-review withheld (parked, not fact)
+        self.assertNotIn('Under review', public)           # parked withheld (parked, not fact)
         self.assertNotIn('AI draft guess', public)         # suggested withheld
         self.assertNotIn('Known wrong', public)            # rejected withheld
         self._run(linked=True)
@@ -247,16 +247,29 @@ class SourcePageTests(_Base):
         self.assertIn('flag-low', public)                   # ...flagged, not silent
         self.assertIn('low confidence', public)
 
-    def test_workbench_marks_needs_review_rows(self):
+    def test_workbench_marks_parked_rows(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
         self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
-                         status='needs-review', reviewed='2026-03-01',
+                         status='suggested', reviewed='2026-03-01',
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True, workbench=True)
         wb = self._read('sources/s-1111111111.html')
-        self.assertIn('wb-needs-review', wb)                # tinted row
-        self.assertIn('status-needs-review', wb)            # status word badge
+        self.assertIn('wb-parked', wb)                      # tinted row
+        self.assertIn('status-suggested', wb)               # status word badge
+        self.assertIn('status-suggested">not sure yet</span>', wb)  # status cell
+
+    def test_parked_claims_are_not_promised_as_waiting_for_review(self):
+        # The review queue lists only drafts nobody has looked at, so the
+        # source and person pages must not count a parked claim as waiting.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
+                         status='suggested', reviewed='2026-03-01',
+                         persons=('p-aaaaaaaaaa',))
+        self._run(linked=True, workbench=True)
+        self.assertNotIn('wait for', self._read('sources/s-1111111111.html'))
+        self.assertNotIn('wb-pointer', self._read('persons/p-aaaaaaaaaa.html'))
 
     def test_missing_asset_listed_not_linked(self):
         self._seed_source('s-1111111111', 'Has Asset')
@@ -475,7 +488,7 @@ class PersonPageTests(_Base):
         self._seed_claim('c-2222222222', 's-2222222222', 'marriage', 'Married Margaret',
                          status='accepted', date_edtf='1871', persons=('p-aaaaaaaaaa',))
         self._seed_claim('c-3333333333', 's-1111111111', 'residence', 'Lived in Fairview',
-                         status='needs-review', date_edtf='1880', persons=('p-aaaaaaaaaa',))
+                         status='suggested', reviewed='2026-03-01', date_edtf='1880', persons=('p-aaaaaaaaaa',))
         self._seed_claim('c-4444444444', 's-1111111111', 'occupation', 'Bookkeeper (unreviewed)',
                          status='suggested', date_edtf='1880', persons=('p-aaaaaaaaaa',))
         self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
@@ -605,13 +618,13 @@ class PersonPageTests(_Base):
         self.assertIn('before 1905', html)
         self.assertNotIn('[..1905]', html)
 
-    def test_timeline_excludes_suggested_includes_needs_review(self):
-        # Linked/workbench timelines keep needs-review claims - clearly marked
+    def test_timeline_excludes_unreviewed_includes_parked(self):
+        # Linked/workbench timelines keep parked claims - clearly marked
         # as unconfirmed (owner decision 2026-07-22).
         self._setup_thomas()
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertIn('Lived in Fairview', html)                 # needs-review present
+        self.assertIn('Lived in Fairview', html)                 # parked present
         self.assertIn('flag-unconfirmed', html)                  # ...and marked
         self.assertNotIn('Bookkeeper (unreviewed)', html)        # suggested excluded from timeline
         self.assertIn('1840s', html)                             # decade grouping
@@ -627,7 +640,7 @@ class PersonPageTests(_Base):
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=False)
         html = self._read('persons/p-aaaaaaaaaa.html')
-        self.assertNotIn('Lived in Fairview', html)              # needs-review withheld publicly
+        self.assertNotIn('Lived in Fairview', html)              # parked withheld publicly
         self.assertNotIn('flag-unconfirmed', html)
         self.assertIn('Perhaps a miller', html)                  # accepted-low publishes
         self.assertIn('flag-low', html)                          # ...flagged
@@ -677,12 +690,12 @@ class PersonPageTests(_Base):
         self.assertNotIn('below', legend)      # the wording must not assume the flag sits below it
 
     def test_badge_legend_appears_with_unconfirmed_only(self):
-        # needs-review/"unconfirmed" only ever reaches linked or workbench
+        # parked/"unconfirmed" only ever reaches linked or workbench
         # pages (never standalone), so this exercises that surface.
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
         self._seed_source('s-1111111111', 'Record', people=('p-aaaaaaaaaa',))
         self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Lived in Fairview',
-                         status='needs-review', date_edtf='1900', reviewed='2026-08-20',
+                         status='suggested', date_edtf='1900', reviewed='2026-08-20',
                          persons=('p-aaaaaaaaaa',))
         self._run(linked=True)
         html = self._read('persons/p-aaaaaaaaaa.html')
@@ -692,7 +705,7 @@ class PersonPageTests(_Base):
         self.assertTrue(self._badge_legend_present(html))
 
     def test_badge_legend_appears_with_both_badges(self):
-        self._setup_thomas()   # already carries a needs-review claim
+        self._setup_thomas()   # already carries a parked claim
         self._seed_claim('c-5555555555', 's-1111111111', 'occupation', 'Perhaps a miller',
                          status='accepted', confidence='low', date_edtf='1885',
                          persons=('p-aaaaaaaaaa',))

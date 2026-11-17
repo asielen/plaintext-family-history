@@ -154,6 +154,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    claim_status as read_claim_status,
     LIVING_VALUES,
     link_list_lines,
     record_display_names,
@@ -906,11 +907,11 @@ def run_confirm_cooccur(
         # author's casing for display.
         ex_status_norm = ex_status.lower()
         # --accept on a pair this source already covers with a still-suggested
-        # (or needs-review) claim PROMOTES that claim rather than silently
+        # claim (reviewed or not) PROMOTES that claim rather than silently
         # dropping the request: the human directed the accept (TOOLING §3b), and
         # minting a second claim would duplicate. A claim already accepted (or
         # disputed/rejected) is left alone - only forward moves out of suggested.
-        if accept and ex_disp and ex_status_norm in ('suggested', 'needs-review'):
+        if accept and ex_disp and read_claim_status(ex_status_norm) == 'suggested':
             if reviewed is not None:
                 try:
                     datetime.date.fromisoformat(reviewed)
@@ -1946,7 +1947,7 @@ def _relink_claims_in_source(
 
     Returns (new_text, edited_claim_ids, both_named_relationship_claim_ids).
     W107 fires on ANY claim referencing a merged person - suggested, accepted,
-    disputed, rejected, superseded, needs-review alike - so no status is
+    disputed, rejected, superseded alike - so no status is
     skipped. Spans are rewritten bottom-up so earlier spans' line indexes stay
     valid when a duplicate list item is dropped.
 

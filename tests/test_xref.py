@@ -29,13 +29,13 @@ def _make_index(archive_root: Path) -> sqlite3.Connection:
 
 def _insert_claim(conn, cid, source_id, ctype, value, *, date_edtf=None,
                    place_text=None, place_id=None, subtype=None, negated=0,
-                   status='accepted', persons=(), roles=None):
+                   status='accepted', persons=(), roles=None, reviewed=None):
     conn.execute(
         '''INSERT INTO claims(id, source_id, type, subtype, date_edtf, place_id,
-                               place_text, value, status, negated)
-           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                               place_text, value, status, negated, reviewed)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
         (cid, source_id, ctype, subtype, date_edtf, place_id, place_text, value,
-         status, negated),
+         status, negated, reviewed),
     )
     roles = roles or {}
     for pos, pid in enumerate(persons):
@@ -181,11 +181,11 @@ class XrefTests(unittest.TestCase):
             sorted(['Test Person', 'Kin']),
         )
 
-    def test_needs_review_vital_claim_with_no_roles_also_added_to_unscoped(self) -> None:
+    def test_parked_vital_claim_with_no_roles_also_added_to_unscoped(self) -> None:
         # #172's specific gap over `fha lint`'s W132: W132 fires only on
         # ACCEPTED, non-negated claims (the derivation bargain W125/W126
-        # share), but `fha xref` compares BOTH accepted and needs-review
-        # claims (the module's own `_run_xref_queries` query). A needs-review
+        # share), but `fha xref` compares BOTH accepted and parked claims
+        # (`suggested` with a `reviewed:` date, SPEC §8.1). A parked
         # claim of the identical zero-role-signal shape must still be
         # reported here, even though it never trips W132.
         self._seed_persons_sources()
@@ -193,13 +193,26 @@ class XrefTests(unittest.TestCase):
                            "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
                        'died 1940, status still under review', date_edtf='1940',
-                       status='needs-review', persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+                       status='suggested', reviewed='2026-03-01',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
         self.conn.commit()
 
         result = xref.run_xref(self.archive_root)
         self.assertEqual(result['groups'], [])
         unscoped_ids = [item['claim']['id'] for item in result['unscoped']]
         self.assertEqual(unscoped_ids, ['c-aaaaaaaaaa'])
+
+    def test_never_reviewed_suggested_claim_is_not_compared(self) -> None:
+        # A draft no one has looked at yet stays out of the comparison.
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Kin','false','curated','y.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'death',
+                       'died 1940, a fresh draft', date_edtf='1940',
+                       status='suggested', persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
+        self.conn.commit()
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['unscoped'], [])
 
     def test_birth_claim_with_no_roles_at_all_added_to_unscoped(self) -> None:
         # Finding 2's scope explicitly includes birth, not just

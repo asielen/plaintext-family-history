@@ -3,7 +3,7 @@
 claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8).
 
   fha claim <C-id> [<C-id> ...]
-                   --status accepted|disputed|rejected|needs-review|superseded
+                   --status accepted|disputed|rejected|superseded|suggested
                    [--reviewed DATE] [--reviewed-by NAME] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id] [--place-text TEXT]
                    [--persons P-id[,P-id...]] [--confidence high|medium|low]
@@ -27,8 +27,8 @@ first's machinery rather than inventing a second way to edit the block.
 
 **`fha claim <C-id>`** is the deterministic write-back a human reaches for
 during review: moving one claim's `status:` out of `suggested` into any of the
-SPEC §8.1 review outcomes (`accepted` / `disputed` / `rejected` / `needs-review`
-/ `superseded`), and now also correcting any of `value`/`date`/`type`/`place`/
+SPEC §8.1 review outcomes (`accepted` / `disputed` / `rejected` / `superseded`,
+or `suggested` to park a claim the reviewer looked at but cannot settle yet), and now also correcting any of `value`/`date`/`type`/`place`/
 `place_text`/`persons`/`information`/`evidence`/`anchor`/`notes` on a claim
 that already exists. Today that move is done by hand-editing the `## Claims`
 YAML or through the `review-claims` AI skill; this tool makes it a real,
@@ -136,7 +136,7 @@ SEVERAL C-ids at once - `fha claim C-a C-b C-c --status accepted` - because the
 review gesture "accept 1, 2 and 4" is one human decision per claim delivered in
 one breath, and the tool should meet that gesture with one command, not four
 retypings. The gate: a batch is legal ONLY for a status-only mutation (any of
-the five review statuses - batch-reject and batch-needs-review are as
+the review statuses - batch-reject and batch-park-at-suggested are as
 legitimate as batch-accept). Any field-edit flag with more than one id is
 refused: a field correction states a new fact about one particular claim, so it
 is inherently per-claim and keeps the surgical single-id form. Validation is
@@ -338,15 +338,16 @@ from _lib import (
 configure_utf8_stdout()
 
 # The review statuses a human can move a claim into (SPEC §8.1 lifecycle:
-# `suggested → needs-review → accepted | disputed | rejected | superseded`).
-# `suggested` is deliberately absent: the AI draft pass produces `suggested`;
-# review only ever moves *out* of it, never back to it through this tool.
-REVIEW_STATUSES = ('accepted', 'disputed', 'rejected', 'needs-review', 'superseded')
+# `suggested → accepted | disputed | rejected | superseded`). `suggested` is
+# here as the "park" gesture: a reviewer who looked and cannot settle the claim
+# leaves it `suggested` and the tool stamps `reviewed:` (and `reviewed_by:`), so
+# a dated suggested claim reads "looked at, still open" (SPEC §8.1).
+REVIEW_STATUSES = ('accepted', 'disputed', 'rejected', 'superseded', 'suggested')
 
 # The statuses `fha claim new` can mint a claim at (SPEC §8.1: suggested is the
 # AI-draft entry point, accepted is the human-directed one - review only moves
 # a claim OUT of suggested through the other statuses, so minting straight to
-# disputed/rejected/needs-review/superseded makes no sense and stays refused).
+# disputed/rejected/superseded makes no sense and stays refused).
 NEW_CLAIM_STATUSES = ('suggested', 'accepted')
 
 # The claim fields `fha claim <C-id> --clear FIELD` may remove (#273). Only
@@ -1748,8 +1749,8 @@ def _warn_still_marked(
     as the deceased who now reads `living: false`, one warning naming the
     command that puts them back, `fha person set-living <P-id> unknown`:
 
-      - the claim leaves `accepted` (rejected/disputed/needs-review/
-        superseded): `changes` holds `(claim as it was, None)`;
+      - the claim leaves `accepted` (rejected/disputed/superseded, or
+        parked back at suggested): `changes` holds `(claim as it was, None)`;
       - the claim stays accepted but an edit stops naming them - `--persons`
         drops them, `--type` moves away from death/burial, or the claim now
         reads as negated: `changes` holds `(claim as it was, claim as edited)`.
@@ -2416,7 +2417,7 @@ def run_claim_batch(
     session the human states a grouped verdict, and making him retype the
     command per claim adds friction to exactly the moment the whole pipeline
     is built around. So the batch form turns that one breath into one command,
-    for ANY of the five review statuses (batch-reject and batch-needs-review
+    for ANY of the review statuses (batch-reject and batch-park-at-suggested
     are as legitimate as batch-accept).
 
     The status-only gate: with more than one distinct C-id, any field-edit
@@ -3026,7 +3027,7 @@ def run_claim_new(
         return _fail(result, 'invalid-status',
                      f'{status!r} is not a status `fha claim new` can mint at. Use one of: '
                      f'{", ".join(NEW_CLAIM_STATUSES)}. (Review moves a claim on to disputed/'
-                     'rejected/needs-review/superseded later, with `fha claim <C-id> --status …`.)')
+                     'rejected/superseded later, with `fha claim <C-id> --status …`.)')
     if reviewed_by is not None:
         if status != 'accepted':
             return _fail(result, 'failed',
@@ -3322,7 +3323,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'one status move to each - batches are status-only, and any bad id '
                         'stops the whole batch before anything is written.')
     p.add_argument('--status', choices=REVIEW_STATUSES,
-                   help='The review status to set. At least one of --status/--value/--date/'
+                   help='The review status to set; `suggested` parks a claim you looked at but '
+                        'cannot settle yet (it stays suggested, dated today). At least one of '
+                        '--status/--value/--date/'
                         '--type/--place/--place-text/--persons/--confidence/--information/'
                         '--evidence/--anchor/--notes/--clear is required.')
     p.add_argument('--reviewed', metavar='DATE',
@@ -3451,7 +3454,9 @@ _CLI_DESCRIPTION = """\
 Record your verdict on a suggested fact - the human decision point.
 
   fha claim <C-id> --status accepted   Confirm a fact (stamps today's date)
-  fha claim <C-id> --status disputed|rejected|needs-review|superseded
+  fha claim <C-id> --status disputed|rejected|superseded
+  fha claim <C-id> --status suggested  Looked at it, cannot settle it yet
+                                       (stays suggested, dated today)
   fha claim C-a C-b C-c --status accepted   One verdict for several claims at once
   fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
   fha claim <C-id> --clear place_text     Remove an optional field (repeatable)

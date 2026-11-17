@@ -350,14 +350,14 @@ class PacketTests(unittest.TestCase):
 
     def test_timeline_tags_parked_and_low_confidence_claims(self):
         # Owner decision 2026-07-22: a packet is family research material, so
-        # needs-review claims stay in its timeline - tagged, same words as
+        # parked claims (suggested + reviewed:) stay in its timeline - tagged, same words as
         # fha views timeline - and an accepted-low claim carries its flag.
         self._seed_person()
         self._seed_source('s-1111111111', 'Source One', asset_rel='documents/other/file1.txt')
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth', 'born 1900',
                       date_edtf='1900', persons=['p-aaaaaaaaaa'])
         _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-1111111111', 'residence', 'maybe Topeka',
-                      date_edtf='1905', status='needs-review', reviewed='2026-03-01',
+                      date_edtf='1905', status='suggested', reviewed='2026-03-01',
                       persons=['p-aaaaaaaaaa'])
         _insert_claim(self.conn, 'c-cccccccccc', 's-1111111111', 'occupation', 'maybe a miller',
                       date_edtf='1910', confidence='low', persons=['p-aaaaaaaaaa'])

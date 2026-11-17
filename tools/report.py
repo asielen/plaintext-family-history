@@ -40,7 +40,7 @@ in BUILD.md/TOOLING §15a: alongside `source_ids`/`person_ids`/`claim_statuses`
 it also stores per-claim status, claim_links, relationship edges, the W101
 vitals-gap person set, and per-question status - the extra bookkeeping a
 "what changed since last time" diff needs that aggregate counts alone cannot
-answer (e.g. "did claim C-x move from needs-review to accepted" requires
+answer (e.g. "did parked claim C-x move to accepted" requires
 knowing C-x's *prior* status, not just a prior total).  `--full` ignores this
 snapshot (treats `prev` as empty) but still writes a fresh one afterward.
 
@@ -66,7 +66,7 @@ CODE MAP
                                     newly-answered questions, vitals gaps closed,
                                     newly confirmed relationship edges
     _section_review_queue        - §1: W102 backlog, grouped by source
-    _section_second_look         - §1b: parked needs-review + accepted-low-confidence
+    _section_second_look         - §1b: parked (reviewed suggested) + accepted-low-confidence
                                     claims, counts + oldest few
     _section_new_since_last      - §2: source/claim/person id set diff vs snapshot
     _section_vitals_gaps         - §3: W101 findings, formatted
@@ -129,6 +129,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    PARKED_CLAIM_SQL as _PARKED_SQL,
     claim_role_pairs,
     format_date_spread,
     configure_utf8_stdout,
@@ -234,7 +235,8 @@ def _vitals_gap_pids(findings: list, registry) -> list[str]:
 # a baseline instead of reporting every claim as changed. 2: participants
 # serialized as JSON, every role a person carries (#266). 3: no `asset`
 # (SPEC 2.1 retired the claim field; index schema 13 drops the column).
-CLAIM_FINGERPRINT_VERSION = 3
+# 4: a retired `needs-review` claim is read as `suggested` (SPEC 2.1 §8.1).
+CLAIM_FINGERPRINT_VERSION = 4
 
 
 def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
@@ -263,6 +265,11 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         )
     }
     claim_status_by_id = {r[0]: r[1] for r in conn.execute('SELECT id, status FROM claims')}
+    # Parked claims: looked at, not settled - `suggested` with a `reviewed:`
+    # date (SPEC §8.1). Kept so section 0 can tell "a parked claim was finally
+    # accepted" apart from an ordinary first-time review.
+    parked_claim_ids = sorted(r[0] for r in conn.execute(
+        f'SELECT id FROM claims c WHERE {_PARKED_SQL}'))
     # claim_persons participants (person + role) are part of a claim's identity
     # too -- reattaching a claim to a different person/role is a real change
     # even though every scalar claim field stays the same, so it must flow
@@ -300,7 +307,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     }
     claim_statuses = {
         status: sum(1 for s in claim_status_by_id.values() if s == status)
-        for status in ('accepted', 'needs-review', 'suggested')
+        for status in ('accepted', 'suggested')
     }
     claim_links = sorted(
         [r[0], r[1], r[2]] for r in conn.execute('SELECT claim_id, rel, target_id FROM claim_links')
@@ -324,6 +331,7 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         'claim_ids': sorted(claim_status_by_id),
         'claim_statuses': claim_statuses,
         'claim_status_by_id': claim_status_by_id,
+        'parked_claim_ids': parked_claim_ids,
         'claim_fingerprints': claim_fingerprints,
         'claim_fingerprint_version': CLAIM_FINGERPRINT_VERSION,
         'claim_links': claim_links,
@@ -348,12 +356,16 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     lines: list[str] = []
 
     prev_claim_status = prev.get('claim_status_by_id', {})
+    # A snapshot written before SPEC 2.1 recorded a parked claim as
+    # `needs-review` rather than listing it in `parked_claim_ids`.
+    prev_parked = set(prev.get('parked_claim_ids', [])) | {
+        cid for cid, status in prev_claim_status.items() if status == 'needs-review'}
     newly_accepted = sorted(
         cid for cid, status in current['claim_status_by_id'].items()
-        if status == 'accepted' and prev_claim_status.get(cid) == 'needs-review'
+        if status == 'accepted' and cid in prev_parked
     )
     if newly_accepted:
-        lines.append('**Claims newly accepted (were needs-review):**')
+        lines.append('**Parked claims now accepted:**')
         for cid in newly_accepted:
             row = conn.execute(
                 'SELECT source_id, type, value FROM claims WHERE id=?', (cid,)
@@ -444,10 +456,10 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
 
 def _section_review_queue(conn) -> list[str]:
     sources = conn.execute(
-        '''
+        f'''
         SELECT s.id AS sid, s.title, MIN(c.date_min) AS oldest
         FROM claims c JOIN sources s ON s.id = c.source_id
-        WHERE c.status = 'suggested'
+        WHERE c.status = 'suggested' AND NOT {_PARKED_SQL}
         GROUP BY s.id
         ORDER BY oldest ASC, s.id ASC
         '''
@@ -458,8 +470,8 @@ def _section_review_queue(conn) -> list[str]:
     lines: list[str] = []
     for row in sources:
         claims = conn.execute(
-            "SELECT id, type, value FROM claims WHERE source_id=? AND status='suggested' "
-            'ORDER BY ' + claim_date_order_sql(''),
+            "SELECT id, type, value FROM claims c WHERE source_id=? AND status='suggested' "
+            f'AND NOT {_PARKED_SQL} ORDER BY ' + claim_date_order_sql(''),
             (row['sid'],),
         ).fetchall()
         lines.append(
@@ -484,8 +496,8 @@ def _second_look_person(conn, cid: str) -> str:
 
 def _section_second_look(conn) -> list[str]:
     """Claims worth revisiting someday, in two buckets (owner decision
-    2026-07-22): parked needs-review claims (looked at, could not settle -
-    the SPEC §8.1 parked verdict; the reviewed: date says when) and accepted
+    2026-07-22): parked claims (looked at, could not settle - still
+    `suggested`, with a reviewed: date saying when, SPEC §8.1) and accepted
     claims with low confidence (built on, but ripe for superseding when a
     better record turns up - SPEC §8.5 keeps status and confidence
     orthogonal). Counts plus the oldest few only, honoring the report's
@@ -496,7 +508,7 @@ def _section_second_look(conn) -> list[str]:
     lines: list[str] = []
 
     parked = conn.execute(
-        "SELECT id, type, value, reviewed FROM claims WHERE status = 'needs-review' "
+        f"SELECT id, type, value, reviewed FROM claims c WHERE {_PARKED_SQL} "
         "ORDER BY CASE WHEN reviewed IS NULL OR reviewed = '' THEN 1 ELSE 0 END, reviewed ASC, id ASC",
     ).fetchall()
     if parked:

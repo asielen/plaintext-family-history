@@ -139,7 +139,7 @@ _TAG_CLAIMS = f"""- value: "Cur Hartley possibly in Topeka"
   type: residence
   persons: [{PID}]
   date: 1892
-  status: needs-review
+  status: suggested
   reviewed: 2026-03-01
   confidence: medium
   notes: x.
@@ -234,13 +234,14 @@ class TreeNegatedVitalsTests(_ViewsHtmlBase):
 
 class TimelineTagTests(_ViewsHtmlBase):
     """The 2026-07-22 status-surface decision: a not-yet-settled timeline line
-    carries a plain-word tag - '[unconfirmed - parked {date}]' on needs-review,
+    carries a plain-word tag - '[unconfirmed - parked {date}]' on a parked
+    claim (suggested with a reviewed: date, SPEC §8.1),
     '[low confidence]' on accepted-low - in the .md view and its html twin."""
 
-    def _add_tag_claims(self) -> None:
+    def _add_tag_claims(self, claims: str = _TAG_CLAIMS) -> None:
         src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
         text = src.read_text(encoding='utf-8')
-        src.write_text(text.replace('```\n', _TAG_CLAIMS + '```\n', 1), encoding='utf-8')
+        src.write_text(text.replace('```\n', claims + '```\n', 1), encoding='utf-8')
         self._reindex()
 
     def test_md_timeline_tags_parked_and_low_confidence_lines(self):
@@ -257,6 +258,23 @@ class TimelineTagTests(_ViewsHtmlBase):
             if 'worked as a clerk' in line or 'born about 1880' in line:
                 self.assertNotIn('[unconfirmed', line)
                 self.assertNotIn('[low confidence]', line)
+
+    def test_parked_line_stays_in_the_chronology(self):
+        # A parked claim (looked at, not settled) keeps its place in the
+        # decade chronology, tagged; only never-reviewed drafts go under
+        # Unreviewed.
+        self._add_tag_claims()
+        res = views.run_timeline(self.root, person_id=PID)
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertLess(text.index('possibly in Topeka'), text.index('## Unreviewed'))
+
+    def test_retired_needs_review_reads_as_parked(self):
+        # An archive written before SPEC 2.1 still says `needs-review`.
+        self._add_tag_claims(_TAG_CLAIMS.replace('status: suggested', 'status: needs-review', 1))
+        res = views.run_timeline(self.root, person_id=PID)
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertIn('[unconfirmed - parked 2026-03-01]', text)
+        self.assertLess(text.index('possibly in Topeka'), text.index('## Unreviewed'))
 
     def test_html_twin_carries_the_same_tags(self):
         self._add_tag_claims()

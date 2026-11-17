@@ -252,6 +252,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    PARKED_CLAIM_SQL,
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
@@ -508,6 +509,11 @@ _RESTRICTED_FN = '\x00restricted'
 # `fha_person_redacted` SQL function `prepare()` registers, so a claim written
 # by hand with a merged duplicate's old id is held to the living person it was
 # merged into (#237), the same as a photo tag is (#236).
+# The claims a linked/workbench page shows: accepted ones, plus the ones a
+# reviewer looked at and could not settle yet - still `suggested`, but carrying
+# a `reviewed:` date (SPEC §8.1). Never-reviewed `suggested` never renders.
+_ACCEPTED_OR_PARKED_SQL = f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})"
+
 _NO_REDACTED_PERSON_SQL = (
     "AND NOT EXISTS ("
     "  SELECT 1 FROM claim_persons cp2 "
@@ -5747,17 +5753,17 @@ class _SiteBuilder:
 
         # A standalone snapshot publishes only settled facts - accepted claims
         # (any confidence; the badge carries a low-confidence indicator).
-        # `needs-review` is research state ("looked at it, can't settle it
-        # yet" - the parked verdict, SPEC §8.1), not publishable fact, so it
-        # is withheld from public output along with `suggested` (unreviewed
-        # AI drafts) and `rejected`/`superseded` (known not current) - owner
+        # A reviewed-but-open `suggested` claim is research state ("looked at
+        # it, can't settle it yet", SPEC §8.1), not publishable fact, so it is
+        # withheld from public output along with unreviewed AI drafts and `rejected`/`superseded` (known not current) - owner
         # decision 2026-07-22. `--linked` (developer preview / workbench)
         # shows every status with its badge.
         status_filter = '' if self.linked else "AND status = 'accepted'"
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         claims = []
         for c in self.conn.execute(
-            'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence FROM claims c '
+            'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence, '
+            'reviewed FROM claims c '
             f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
             f"{claim_date_order_sql('c')}",
             (sid,),
@@ -5780,6 +5786,8 @@ class _SiteBuilder:
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
                 'confidence': c['confidence'] or '',
+                # Looked at, still open (SPEC §8.1): tinted in the workbench.
+                'parked': (c['reviewed'] or '') if c['status'] == 'suggested' else '',
                 # Workbench-only: the C-id drives the inline claim actions. Never
                 # used in standalone output (the template gates on `workbench`).
                 'claim_id': fmt_id_display(c['id']),
@@ -5821,7 +5829,9 @@ class _SiteBuilder:
             # fixtures) must not vary by platform.
             'source_id': fmt_id_display(sid),
             'record_relpath': str(row['path']).replace('\\', '/'),
-            'suggested_count': sum(1 for c in claims if c['status'] == 'suggested'),
+            # Never-reviewed drafts only - the same set the review queue lists.
+            'suggested_count': sum(1 for c in claims
+                                   if c['status'] == 'suggested' and not c['parked']),
             'notes_html': notes_html,
             'notes_entries': notes_entries,
         }
@@ -5916,12 +5926,12 @@ class _SiteBuilder:
         # an explanation for marks that are not even on the page). Checked
         # across BOTH surfaces a badge can appear on: the Born/Died/Married
         # summary block (low-confidence only - `_person_summary` is
-        # accepted-only, so `needs-review`/unconfirmed never reaches it) and
+        # accepted-only, so an unconfirmed claim never reaches it) and
         # the Timeline (both marks). `.get` on the summary row because a
         # missing/provisional row carries no 'confidence' key at all.
         has_qa_badges = (
             any(row_out.get('confidence') == 'low' for row_out in summary)
-            or any(e['status'] == 'needs-review' or e['confidence'] == 'low'
+            or any(e['unconfirmed'] or e['confidence'] == 'low'
                    for group in timeline for e in group['entries'])
         )
         sources = self._person_sources(pid, page_dir)
@@ -6021,7 +6031,8 @@ class _SiteBuilder:
             'open_review_count': (self.conn.execute(
                 "SELECT COUNT(DISTINCT c.id) FROM claims c "
                 "JOIN claim_persons cp ON c.id = cp.claim_id "
-                "WHERE cp.person_id = ? AND c.status = 'suggested'", (pid,)
+                f"WHERE cp.person_id = ? AND c.status = 'suggested' AND NOT {PARKED_CLAIM_SQL}",
+                (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
         }
@@ -6129,7 +6140,7 @@ class _SiteBuilder:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
 
         Accepted-only in EVERY mode, deliberately - unlike the timeline, where
-        the workbench also shows needs-review marked. The summary block is the
+        the workbench also shows reviewed-but-open claims marked. The summary block is the
         person's settled headline facts; a parked vital belongs in the
         timeline (tagged) and the review surfaces, not the headline. When a
         type has several accepted claims, the most exact one wins
@@ -6503,10 +6514,11 @@ class _SiteBuilder:
         (owner decision 2026-07-22): the published standalone timeline shows
         accepted claims only (with a low-confidence indicator - SPEC §8.5's
         "sometimes that's the best we ever get" facts publish, flagged);
-        linked/workbench also shows needs-review claims, clearly marked as
-        unconfirmed. Suggested claims never render here in any mode. (`fha
-        views timeline`, the private research artifact, keeps needs-review
-        with the same wording - the divergence is public-vs-working surface,
+        linked/workbench also shows reviewed-but-open claims (`suggested` with
+        a `reviewed:` date, SPEC §8.1), clearly marked as unconfirmed.
+        Never-reviewed suggested claims never render here in any mode. (`fha
+        views timeline`, the private research artifact, tags them with the
+        same wording - the divergence is public-vs-working surface,
         not two rules.)
 
         Three rendering fixes live here (#127, #128, #140; #129's fix is
@@ -6560,7 +6572,7 @@ class _SiteBuilder:
             (see below) and before `_timeline_value_html` escapes it for
             display.
         """
-        status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
+        status_filter = (_ACCEPTED_OR_PARKED_SQL if self.linked
                          else "c.status = 'accepted'")
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
@@ -6624,6 +6636,7 @@ class _SiteBuilder:
                 'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 'status': r['status'], 'confidence': r['confidence'] or '',
+                'unconfirmed': r['status'] == 'suggested',
                 'parked': r['reviewed'] or '',
             })
         if entries:
@@ -6706,8 +6719,8 @@ class _SiteBuilder:
 
         Standalone, only an ACCEPTED claim can vouch for a tie (owner decision
         2026-07-22: the public site publishes settled facts only) - a pair whose
-        every backing claim is still needs-review is withheld until one is
-        accepted. The query still fetches needs-review rows so the no-claims
+        every backing claim is still reviewed-but-open is withheld until one is
+        accepted. The query still fetches those rows so the no-claims
         fallback below stays correct: a tie with parked evidence is "claimed
         but unsettled" (hidden), NOT "no claims at all" (a YAML-only belief,
         which renders as such)."""
@@ -6715,7 +6728,7 @@ class _SiteBuilder:
             "SELECT c.id, c.source_id, c.status FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
             "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
-            "WHERE c.status IN ('accepted','needs-review')",
+            f"WHERE {_ACCEPTED_OR_PARKED_SQL}",
             (pid1, pid2),
         ).fetchall()
         for r in rows:
@@ -7869,8 +7882,8 @@ class _SiteBuilder:
 
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         # Same audience split as the person timeline (owner decision 2026-07-22):
-        # public = accepted only; linked/workbench keeps needs-review, marked.
-        place_status_filter = ("c.status IN ('accepted','needs-review')" if self.linked
+        # public = accepted only; linked/workbench keeps reviewed-but-open, marked.
+        place_status_filter = (_ACCEPTED_OR_PARKED_SQL if self.linked
                                else "c.status = 'accepted'")
         claim_rows = self.conn.execute(
             "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id, "
@@ -7912,6 +7925,7 @@ class _SiteBuilder:
                     ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',
                 'status': c['status'], 'confidence': c['confidence'] or '',
+                'unconfirmed': c['status'] == 'suggested',
                 'parked': c['reviewed'] or '',
             })
 

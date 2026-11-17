@@ -22,7 +22,7 @@ hygiene:
     links live only in dated `history:` strings, never in `within:`)
 
 `fha places candidates` is the recurrence detector (TOOLING §10), sibling to
-`fha cooccur`: distinct *unlinked*, active (`accepted`/`needs-review`) claim
+`fha cooccur`: distinct *unlinked*, active (accepted, or looked at and still open) claim
 `place_text` values (no `place_id`) are normalized (case-fold, punctuation, whitespace, St/Street and Co/County
 expansion) and clustered by a sorted token-set key so word-order variants and
 abbreviation variants land in the same group; groups with >= `--threshold`
@@ -108,6 +108,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    PARKED_CLAIM_SQL,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -340,8 +341,9 @@ def _place_text_candidates(
     """Cluster distinct unlinked `place_text` values into candidate groups.
 
     Normal use (the everyday `fha places candidates`/`fha report` §6b view)
-    scopes to ACTIVE claims only - `accepted`/`needs-review` - deliberately
-    excluding `suggested`: a still-unreviewed claim's `place_text` might be
+    scopes to ACTIVE claims only - `accepted`, plus `suggested` claims a
+    reviewer already looked at (a `reviewed:` date, SPEC §8.1) - deliberately
+    excluding never-reviewed `suggested`: a still-unreviewed claim's `place_text` might be
     disputed away by the human before it ever becomes a fact worth a
     registry entry, so folding it into "here is what your archive actually
     says" would overstate the case.
@@ -353,7 +355,7 @@ def _place_text_candidates(
     order this project's own docs sanction running BEFORE that interview -
     mints every claim at `status: suggested`, so a fresh import with a real
     place-text backlog and zero registered places produced ZERO candidate
-    clusters under the accepted/needs-review-only filter, silently missing
+    clusters under the accepted-or-reviewed-only filter, silently missing
     the exact scenario that check exists to catch. Widening is safe there
     because that check is a one-time informational scan ("is there a
     backlog worth an interruption"), not a "confirmed data" report - it
@@ -361,17 +363,15 @@ def _place_text_candidates(
     flag is opt-in and defaults to the normal, conservative scope so every
     other caller (this file's own CLI default, `fha report`) is unaffected.
     """
-    statuses = ('accepted', 'needs-review', 'suggested') if include_suggested \
-        else ('accepted', 'needs-review')
-    placeholders = ','.join('?' * len(statuses))
+    status_filter = ("c.status IN ('accepted', 'suggested')" if include_suggested
+                     else f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})")
     rows = conn.execute(
         f"""
-        SELECT id, place_text, date_edtf FROM claims
+        SELECT id, place_text, date_edtf FROM claims c
         WHERE (place_id IS NULL OR place_id = '')
           AND place_text IS NOT NULL AND place_text != ''
-          AND status IN ({placeholders})
+          AND {status_filter}
         """,
-        statuses,
     ).fetchall()
 
     groups: dict[str, dict] = {}
