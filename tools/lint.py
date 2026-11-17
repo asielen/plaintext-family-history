@@ -169,6 +169,7 @@ from _lib import (
     read_record,
     read_text_exact,
     read_text_or_report,
+    frontmatter_fence_span,
     reapply_newline,
     resolve_path,
     resolve_root_arg,
@@ -1457,6 +1458,49 @@ def _check_main_file_mark(meta: dict, path: Path, findings: list[Finding]) -> No
         '`fha source set-primary <s-id> --file NAME` makes the change.'))
 
 
+# A frontmatter `people:` list line holding a bare person ID and a comment.
+_PEOPLE_ID_COMMENT_RE = re.compile(
+    r'^\s*-\s*["\']?([Pp]-[0-9a-hjkmnp-tv-z]{10})["\']?\s+#\s*(.*?)\s*$')
+
+
+def _check_people_name_comments(path: Path, registry: Registry,
+                                findings: list[Finding]) -> None:
+    """W151: a source's `people:` still written the old way, a bare ID with
+    the person's name as a comment (`- p-…  # Margaret Cole`). The tools read
+    the ID; the name sits in a comment no tool reads or keeps current. A
+    comment that is anything but the person's name is a note and is left
+    alone."""
+    text = read_text_or_report(path)
+    if text is None:
+        return
+    lines = text.split('\n')
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return
+    in_people = False
+    hits: list[tuple[str, str]] = []
+    for line in lines[span[0] + 1:span[1]]:
+        if line[:1] not in (' ', '\t', '-') and line.strip():
+            in_people = line.split(':', 1)[0].strip() == 'people'
+            continue
+        if not in_people:
+            continue
+        m = _PEOPLE_ID_COMMENT_RE.match(line.rstrip('\r'))
+        if not m:
+            continue
+        pid = normalize_id(m.group(1))
+        name = str((registry.person_meta.get(pid) or {}).get('name') or '').strip()
+        if name and ' '.join(m.group(2).split()).casefold() == ' '.join(name.split()).casefold():
+            hits.append((pid, name))
+    if hits:
+        shown = ', '.join(f'`- "[[{pid}|{name}]]"`' for pid, name in hits)
+        findings.append(Finding('W', 'W151', path,
+            f'people: lists {len(hits)} '
+            f'{"person" if len(hits) == 1 else "people"} the old way, an ID with the '
+            'name as a comment after it, which no tool reads or keeps up to date. '
+            f'Write each as a link with the name in it instead: {shown}.'))
+
+
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
@@ -1601,6 +1645,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                     f'DNA source file must be under documents/dna/: {fpath!r}'))
 
     _check_ai_passes(meta, rec.get('body') or '', path, findings)
+    _check_people_name_comments(path, registry, findings)
     _check_main_file_mark(meta, path, findings)
 
     # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)

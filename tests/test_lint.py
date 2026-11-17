@@ -6150,5 +6150,43 @@ class SourceRecordFormTests(unittest.TestCase):
         self.assertIn('fha source set-primary', codes['W145'][0].message)
 
 
+class PeopleNameCommentW151Tests(unittest.TestCase):
+    """A source's `people:` written the old way - a bare ID with the person's
+    name as a comment - is named with the link form to write instead. Any
+    other comment beside an ID is a person's note and is left alone."""
+
+    PID = 'p-7ccccccccc'
+    SID = 's-7ccccccccc'
+
+    def _codes(self, people_block: str) -> dict:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'people').mkdir()
+        (root / 'people' / f'cole__margaret_{self.PID}.md').write_text(
+            f'---\nid: {self.PID}\nname: Margaret Cole\nliving: false\n---\n\n'
+            '# Margaret Cole\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        (root / 'sources' / 'other' / f'note_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: A note\nsource_type: other\n{people_block}'
+            'created: 2026-01-01\n---\n\n## Claims\n```yaml\n```\n', encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out
+
+    def test_an_id_with_its_name_as_a_comment_warns_with_the_link_form(self) -> None:
+        codes = self._codes(f'people:\n  - P-7ccccccccc  # Margaret Cole\n')
+        self.assertEqual(len(codes.get('W151', [])), 1, codes)
+        self.assertIn(f'"[[{self.PID}|Margaret Cole]]"', codes['W151'][0].message)
+
+    def test_the_link_form_and_a_note_comment_are_quiet(self) -> None:
+        self.assertNotIn('W151', self._codes(
+            f'people:\n  - "[[{self.PID}|Margaret Cole]]"\n'))
+        self.assertNotIn('W151', self._codes(
+            f'people:\n  - {self.PID}  # back row, per Aunt Ruth\n'))
+
+
 if __name__ == '__main__':
     unittest.main()
