@@ -32,6 +32,7 @@ created: 2026-06-12
   persons:
     - "[[p-de957bcda1|Thomas Edward Hartley]]"
     - "[[p-cd795c61e0|Margaret A. Cole]]"
+  roles: {spouse: [p-de957bcda1, p-cd795c61e0]}
   date: 1871-02/1871-03
   place: l-7c1a9f4e22
   place_text: Fairview

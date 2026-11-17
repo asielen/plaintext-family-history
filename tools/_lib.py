@@ -1191,6 +1191,38 @@ VITAL_SUBJECT_ROLES: dict[str, str] = {
 }
 
 
+def event_role_gaps(
+    claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]],
+) -> tuple[list[str], bool] | None:
+    """Does this event claim say whose event it is? (SPEC §8.3)
+
+    A birth, baptism, death, burial, marriage or divorce record names its own
+    people and, often, others around them: the parents on a birth, the widow
+    and the informant on a death, the couple's parents on a marriage. A claim
+    that names several of them without saying who is who is how a son's death
+    ends up read as his father's, or a bride's father as her husband. The rule
+    is strict on purpose: on an event claim naming two or more people, every
+    person carries a role, and the event's own people carry its subject role
+    (`VITAL_SUBJECT_ROLES`: child, deceased, spouse).
+
+    Returns None when the rule does not apply (not an event type, or fewer
+    than two distinct people). Otherwise `(unroled, has_subject)`: the people
+    the claim gives no role, in `persons:` order, and whether anyone carries
+    the subject role. The claim is complete when `unroled` is empty and
+    `has_subject` is True. The readers (`vital_subjects`, `spouse_parties`)
+    keep their older fallbacks for records written before this rule; this
+    is what lint and `fha claim` hold new and accepted claims to."""
+    subject_role = VITAL_SUBJECT_ROLES.get(str(claim_type or '').strip().lower())
+    if subject_role is None:
+        return None
+    by_person = roles_by_person(persons_with_roles)
+    if len(by_person) < 2:
+        return None
+    unroled = [pid for pid, roles in by_person.items() if not roles]
+    has_subject = any(subject_role in roles for roles in by_person.values())
+    return unroled, has_subject
+
+
 def vital_subjects(
     claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]],
 ) -> list[str] | None:

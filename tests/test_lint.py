@@ -2976,6 +2976,85 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertEqual(len(w), 1)
 
 
+class EventClaimSaysWhoseEventE021Tests(unittest.TestCase):
+    """SPEC §8.3: an event claim naming several people says whose event it
+    is. A son's death read as his father's and a mother's obituary filed
+    under her living son's name both start with a claim or a title that
+    never said who the record is about."""
+
+    SON, FATHER, MOTHER = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'
+
+    def _lint(self, claims: str, *, title: str = 'Rec', people: str = '') -> list:
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        (root / 'people').mkdir(parents=True)
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        for pid, name in ((self.SON, 'Paul Snyder'), (self.FATHER, 'Charles Snyder'),
+                          (self.MOTHER, 'Mary Snyder')):
+            (root / 'people' / f'snyder__x_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nliving: false\ntier: stub\n---\n\n# {name}\n',
+                encoding='utf-8')
+        (root / 'sources' / 'notes' / 'rec_s-1111111111.md').write_text(
+            f'---\nid: s-1111111111\ntitle: "{title}"\nsource_type: vital-record\n'
+            f'{people}---\n\n## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        return [f for f in findings if f.code in ('E021', 'W147', 'W148')]
+
+    def _death(self, status: str, roles: str = '') -> str:
+        return (f'- value: "Paul, son of Charles and Mary, died 1904"\n  id: c-1111111111\n'
+                f'  type: death\n  persons: [{self.SON}, {self.FATHER}, {self.MOTHER}]\n'
+                f'{roles}  date: 1904\n  status: {status}\n  confidence: high\n')
+
+    def test_an_accepted_death_naming_the_parents_without_roles_is_an_error(self) -> None:
+        found = self._lint(self._death('accepted'))
+        self.assertEqual([f.code for f in found], ['E021'])
+        self.assertEqual(found[0].severity, 'E')
+        self.assertIn('does not say who died', found[0].message)
+        self.assertIn('deceased: p-', found[0].message)
+
+    def test_a_suggested_one_is_a_warning_that_blocks_its_accept(self) -> None:
+        found = self._lint(self._death('suggested'))
+        self.assertEqual([f.code for f in found], ['W147'])
+        self.assertIn('will not accept it', found[0].message)
+
+    def test_one_person_left_without_a_part_still_counts(self) -> None:
+        roles = f'  roles:\n    deceased: [{self.SON}]\n    parent: [{self.FATHER}]\n'
+        found = self._lint(self._death('accepted', roles))
+        self.assertEqual([f.code for f in found], ['E021'])
+        self.assertIn(f'gives no part to {self.MOTHER}', found[0].message)
+
+    def test_a_claim_that_gives_everyone_a_part_is_quiet(self) -> None:
+        roles = (f'  roles:\n    deceased: [{self.SON}]\n'
+                 f'    parent: [{self.FATHER}, {self.MOTHER}]\n')
+        self.assertEqual(self._lint(self._death('accepted', roles)), [])
+
+    def test_a_two_person_marriage_without_roles_is_reported(self) -> None:
+        # The two-person fallback still READS it as the couple, but the same
+        # shape pairs a bride with her father: the rule asks for the roles.
+        claims = (f'- value: married\n  id: c-2222222222\n  type: marriage\n'
+                  f'  persons: [{self.FATHER}, {self.MOTHER}]\n  status: accepted\n'
+                  '  confidence: high\n')
+        self.assertEqual([f.code for f in self._lint(claims)], ['E021'])
+
+    def test_a_source_titled_after_a_survivor_is_flagged(self) -> None:
+        # Alan Sielen's case: his mother's obituary, indexed under his name.
+        claims = (f'- value: "Mary died"\n  id: c-3333333333\n  type: death\n'
+                  f'  persons: [{self.MOTHER}]\n  status: accepted\n  confidence: high\n')
+        found = self._lint(claims, title='Paul Snyder - U.S., Obituary Collection',
+                           people=f'people: ["[[{self.MOTHER}]]", "[[{self.SON}]]"]\n')
+        self.assertEqual([f.code for f in found], ['W148'])
+        self.assertIn('titled after Paul Snyder', found[0].message)
+        self.assertIn("is Mary Snyder's", found[0].message)
+
+    def test_a_source_titled_after_the_deceased_is_quiet(self) -> None:
+        claims = (f'- value: "Mary died"\n  id: c-3333333333\n  type: death\n'
+                  f'  persons: [{self.MOTHER}]\n  status: accepted\n  confidence: high\n')
+        self.assertEqual(self._lint(
+            claims, title='Mary Snyder - U.S., Obituary Collection',
+            people=f'people: ["[[{self.MOTHER}]]", "[[{self.SON}]]"]\n'), [])
+
+
 class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
     """W126: an accepted birth claim that names other people but says nothing
     about which of them are the parents.

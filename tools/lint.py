@@ -126,6 +126,9 @@ from _lib import (
     spouse_parties,
     strip_generational_suffix,
     vital_subjects,
+    event_role_gaps,      # E021/W147: an event claim naming several people says whose event it is
+    VITAL_SUBJECT_ROLES,
+    roles_by_person,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -5715,6 +5718,99 @@ def _fix_format(
 
 # ── Main lint entry point ─────────────────────────────────────────────────────
 
+_EVENT_SUBJECT_WORDS = {
+    'birth': 'who was born', 'baptism': 'who was baptized', 'death': 'who died',
+    'burial': 'who was buried', 'marriage': 'which two married',
+    'divorce': 'which two divorced',
+}
+_EVENT_ROLE_EXAMPLE = {
+    'birth': '`child: p-…` and `parent: [p-…, p-…]`',
+    'baptism': '`child: p-…` and `parent: [p-…, p-…]`',
+    'death': '`deceased: p-…` and, for the others, `spouse:`, `child:`, `informant:`',
+    'burial': '`deceased: p-…` and, for the others, `spouse:`, `child:`, `informant:`',
+    'marriage': '`spouse: [p-…, p-…]` and, for the others, `parent:` or `witness:`',
+    'divorce': '`spouse: [p-…, p-…]`',
+}
+_TITLED_EVENT_WORDS = re.compile(r'obituar|death|funeral|cemetery|grave|burial|burie', re.I)
+
+
+def _check_event_roles(registry: 'Registry', findings: list[Finding]) -> set[str]:
+    """E021 / W147: an event claim naming two or more people must say whose
+    event it is (SPEC §8.3, `_lib.event_role_gaps`); W148: a source titled
+    after someone its death or burial record is not about.
+
+    A son's death read as his father's, a bride's father read as her husband,
+    a mother's obituary filed under her son's name: each is one record put on
+    the wrong person, and each starts with a claim or a title that never said
+    who the record is about. E021 is an error on an ACCEPTED claim - the
+    archive treats it as fact; W147 is the same gap on a suggested claim,
+    fixed before it is accepted (`fha claim` refuses to accept it).
+
+    Returns the claim ids reported, so the narrower older warnings about the
+    same claims (W125, W126, W132) can be folded into this one."""
+    alias_map = registry.alias_map
+    reported: set[str] = set()
+    for sid, claims in registry.source_claims.items():
+        src_path = registry.source_paths.get(sid, Path(sid))
+        deceased_here: set[str] = set()
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            ctype = str(claim.get('type', '')).strip().lower()
+            status = claim_status(claim)
+            if status not in ('accepted', 'suggested'):
+                continue
+            pairs = resolve_claim_persons_with_roles(claim, alias_map)
+            if ctype in ('death', 'burial'):
+                subjects = vital_subjects(ctype, pairs)
+                if subjects is None:   # one person, no roles: that person died
+                    subjects = list(roles_by_person(pairs))
+                deceased_here.update(subjects)
+            gaps = event_role_gaps(ctype, pairs)
+            if gaps is None:
+                continue
+            unroled, has_subject = gaps
+            if not unroled and has_subject:
+                continue
+            cid = str(claim.get('id', '?'))
+            reported.add(normalize_id(cid))
+            names = ', '.join(fmt_id_display(p) for p in unroled)
+            problem = (f'gives no part to {names}' if unroled else
+                       f'names no one as the {VITAL_SUBJECT_ROLES[ctype]}')
+            accepted = status == 'accepted'
+            findings.append(Finding(
+                'E' if accepted else 'W', 'E021' if accepted else 'W147', src_path,
+                f'Claim {cid} (type: {ctype}) names {len(roles_by_person(pairs))} people '
+                f'but {problem}, so it does not say {_EVENT_SUBJECT_WORDS[ctype]} - '
+                f'this is how a record ends up on the wrong person'
+                + ('' if accepted else ', and `fha claim` will not accept it until it says')
+                + '. Give everyone on it a part: `roles:` then one indented line per part, '
+                f'e.g. {_EVENT_ROLE_EXAMPLE[ctype]}.'))
+        # W148: titled after someone the record is not about.
+        title = str((registry.source_meta.get(sid) or {}).get('title') or '')
+        head = re.match(r'^\s*(.+?)\s+-\s+', title)
+        if not (head and deceased_here and _TITLED_EVENT_WORDS.search(title)):
+            continue
+        titled = head.group(1).strip().lower()
+        people = _claim_person_ids(
+            {'persons': (registry.source_meta.get(sid) or {}).get('people') or []}, alias_map)
+        for pid in people:
+            meta = registry.person_meta.get(pid) or {}
+            if str(meta.get('name') or '').strip().lower() != titled or pid in deceased_here:
+                continue
+            about = ', '.join(
+                str((registry.person_meta.get(d) or {}).get('name') or fmt_id_display(d))
+                for d in sorted(deceased_here))
+            findings.append(Finding('W', 'W148', src_path,
+                f'Source {sid} is titled after {meta.get("name")}, but the death or burial '
+                f'it records is {about}\'s - a reader taking the title at its word would '
+                f'think {meta.get("name")} died. Index collections often file an obituary '
+                f'under every name in it; title the source after the person it is about, '
+                f'e.g. "{about} - obituary (indexed under {meta.get("name")})".'))
+            break
+    return reported
+
+
 def _run_lint_core(
     archive_root: Path,
     fha_config: dict,
@@ -5732,6 +5828,10 @@ def _run_lint_core(
     _check_roots_change(archive_root, fha_config, findings)
     _walk_archive(archive_root, registry, findings)
     _cross_file_checks(registry, findings, with_exif=with_exif)
+    # E021/W147 say the rule a claim breaks; W125/W126/W132, where they also
+    # fire, say what that costs (an edge missing from the tree, a vital no one
+    # owns). Both stay: fixing the roles clears them together.
+    _check_event_roles(registry, findings)
     _check_agent_drift(archive_root, findings,
                        on_decode_error=registry.note_undecodable)
     # W128 (#68) is raised here, over every read the CORE pass made, so no
