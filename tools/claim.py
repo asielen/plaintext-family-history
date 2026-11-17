@@ -286,7 +286,6 @@ from _lib import (
     strip_link_wrapper,
     split_yaml_comment,
     written_link_display,
-    comment_only_names,
     locate_claim_records,
     person_pronouns,
     record_claims_by_id,
@@ -1417,8 +1416,6 @@ def _apply_claim_review(
             pid = normalize_id(p)
             display, comment = written.get(pid, (None, ''))
             record_name = (person_names or {}).get(pid)
-            if comment and comment_only_names(comment, record_name, display):
-                comment = ''
             entries.append(f'{child}- {yaml_link_item(p, display or record_name)}'
                            + (f'  {comment}' if comment else ''))
         item[key_pos + 1:key_pos + 1] = entries

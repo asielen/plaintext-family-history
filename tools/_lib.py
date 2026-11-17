@@ -9319,15 +9319,6 @@ def written_link_display(item: object) -> str | None:
     return _usable_link_name(display)
 
 
-def comment_only_names(comment: str, *names: object) -> bool:
-    """True when a trailing `# …` comment just repeats one of `names` (the
-    old `P-id  # Name` form) - the name now sits in the link, so the comment
-    can go. Any other comment is a person's note and is kept."""
-    text = ' '.join(comment.lstrip('#').split()).casefold()
-    return bool(text) and any(
-        n is not None and text == ' '.join(str(n).split()).casefold() for n in names)
-
-
 def record_display_names(archive_root: str | Path, ids: Iterable[str]) -> dict[str, str]:
     """`{lowercase id: name}` for the person and place IDs given, read from
     the person records under people/ and from places/places.yaml (the files

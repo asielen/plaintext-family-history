@@ -223,7 +223,7 @@ class NamesBesideIdsTests(unittest.TestCase):
             'id: S-5555555555\n'
             'title: Census\n'
             'people:\n'
-            '  - P-1111111111  # Margaret Cole\n'
+            '  - P-1111111111\n'
             '  - "[[p-2222222222|Tom Hartley]]"\n'
             '  - P-3333333333\n'
             '  - "[[Nobody Known]]"\n'
@@ -239,7 +239,7 @@ class NamesBesideIdsTests(unittest.TestCase):
             '  type: occupation\n'
             '  persons:\n'
             '    - P-2222222222  # informant, per the clerk\n'
-            '    - P-1111111111  # Margaret Cole\n'
+            '    - P-1111111111\n'
             '  roles: {child: P-2222222222}\n'
             '  place: L-4444444444\n'
             '  status: suggested\n'
@@ -261,7 +261,7 @@ class NamesBesideIdsTests(unittest.TestCase):
         text = self._run()
         self.assertIn(
             'people:\n'
-            '  - "[[p-1111111111|Margaret Cole]]"\n'      # comment form settled
+            '  - "[[p-1111111111|Margaret Cole]]"\n'      # bare ID settled
             '  - "[[p-2222222222|Tom Hartley]]"\n'        # a written display is kept
             '  - p-3333333333\n'                          # no usable name: bare ID
             '  - "[[Nobody Known]]"\n'                    # unresolved: left as written
@@ -269,7 +269,6 @@ class NamesBesideIdsTests(unittest.TestCase):
             '  - "[[p-1111111111|Maggie]]"\n'              # the human's own name kept as display
             'places:\n'
             '  - "[[l-4444444444|Fairview]]"\n', text)
-        self.assertNotIn('# Margaret Cole', text)
 
     def test_claim_persons_one_per_line_roles_and_place_stay_bare(self) -> None:
         text = self._run()

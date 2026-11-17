@@ -32,14 +32,12 @@ exactly as written for the human (or Obsidian autocomplete) to pin to an ID.
 Two more settle the lists a reader scans to see who a record is about to
 the written form SPEC §8.7 and §14 give them:
   (d) a source's frontmatter `people:` / `places:` - whatever form they were
-      written in (`P-…  # Name`, a bare ID, `[[Ken Smith]]`)
+      written in (a bare ID, `[[Ken Smith]]`)
       → one `- "[[p-…|Name]]"` line per entry
   (e) a claim's `persons:` → the same one-per-line `- "[[p-…|Name]]"` form
 Nothing a person wrote is lost: a display they chose (`[[p-…|Maggie]]`,
 `[[Maggie]]`) is kept, the record's name is added only where there is none,
-and a trailing `# note` stays on its line - only a comment that just repeats
-the person's name (the old `P-id  # Name` form) goes, since the name now sits
-in the link. A record with no usable name is written as its bare ID, never
+and a trailing `# note` stays on its line. A record with no usable name is written as its bare ID, never
 guessed; an entry that does not resolve is left as written. Nothing else in the claims
 ```yaml block is touched - `roles:` and `place:` stay bare IDs (SPEC §8.7).
 
@@ -74,7 +72,6 @@ from _lib import (
     yaml_link_item,
     split_yaml_comment,
     written_link_display,
-    comment_only_names,
     id_type_of,
     is_generated_file,
     is_placeholder_name,
@@ -336,12 +333,6 @@ def _settle_list_segment(
             written = written_link_display(item)
             name = written or names.get(rid)
             rendered = yaml_link_item(rid, name)
-            # A comment is a person's note and stays - unless it only
-            # repeats the person's name (the old `P-id  # Name` form).
-            if comment and rendered.startswith('"') and (
-                    comment_only_names(comment, names.get(rid), written)
-                    or resolve_ref(' '.join(comment.lstrip('#').split()), alias_map) == rid):
-                comment = ''
         elif isinstance(item, list):
             rendered = json.dumps('[[' + ' '.join(str(x) for x in item) + ']]', ensure_ascii=False)
         elif isinstance(item, str):
