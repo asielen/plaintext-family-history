@@ -949,6 +949,7 @@ To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --h
 | `--anchor` `TEXT` | Optionally set the position inside the source this claim rests on (a timestamp, page, or line - e.g. "00:14:32" or "p. 12"). |
 | `--notes` `TEXT` | Optionally REPLACE the claim's notes: - the context/detail behind it. Safe even when the existing notes: is a multi-line block (notes: > or notes: \|); the whole field is replaced, never appended. |
 | `--clear` `FIELD` | Remove an optional field from the claim (repeatable): one of place, place_text, date, information, evidence, anchor, notes. The field goes whole (a multi-line value with it); comments and the other keys stay as written. Required fields (value, type, persons, status, confidence) cannot be cleared - correct them with their own flag. |
+| `--confirm-deceased` | Accept a death or burial claim for a person marked living: true, after you have checked the record really is their death. The claim is accepted and the person marked as no longer living. Without it such a claim is refused, so a record put on the wrong person never marks someone living as dead. |
 | `--keep-living` | Accepting a death or burial claim normally marks the person who died as no longer living (living: false), so shared exports and the site can include them. Pass this to accept the claim and leave their living flag as it is. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the YAML change without writing. |
@@ -987,6 +988,7 @@ hand-edit right after minting. Preview any change first with --dry-run.
 | `--evidence` `{direct,indirect,negative}` | Mills evidence value (SPEC §8.5): does the source answer the question directly (direct), only through correlation (indirect), or is it evidence of an absence (negative). --negated sets this to negative automatically - --evidence must agree if both are given. |
 | `--anchor` `TEXT` | Position inside the source this claim rests on (a timestamp, page, or line - e.g. "00:14:32" or "p. 12"). |
 | `--notes` `TEXT` | The context/detail behind the claim - EXPECTED (not required) on a substantive or low-confidence-vital claim (lint W109 pings an accepted one with none). |
+| `--confirm-deceased` | Accept a death or burial claim for a person marked living: true, after you have checked the record really is their death. The claim is accepted and the person marked as no longer living. Without it such a claim is refused, so a record put on the wrong person never marks someone living as dead. |
 | `--keep-living` | Accepting a death or burial claim normally marks the person who died as no longer living (living: false), so shared exports and the site can include them. Pass this to accept the claim and leave their living flag as it is. |
 | `--reviewed-by` `NAME` | Who accepted the claim, written as reviewed_by: (SPEC §8.4). Defaults to "human" on an accepted claim; give a name when several researchers share the archive. Refused with --status suggested. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |

@@ -108,7 +108,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "384372820d84d7eaf26dda92724be71b287f8ca21bb0b5658f403c20d76653e7",
+      "sha256": "dcf07d56292870be1f02f5919818c61a8689e456824d780ec8c45262d8e8b9c0",
       "spec_version": "2.2"
     },
     {
@@ -553,7 +553,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "2b787e4c14245da97074f695ca1740a6736ab8f49657ab19abb6da1328a9d365",
+      "sha256": "b352b2315df2853031b1992db18fd27ca68a2cfc2e57dfe4e8f51adfcc400a50",
       "spec_version": "2.2",
       "src": "tools/claim.py"
     },
@@ -931,7 +931,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "71e8e53e709f5d2b03e2c40e547732e894e3bc91be5a2b594c0727cb69f62c29",
+      "sha256": "49acca4a0ca0af67ae298b904f77507927be88c217596773286d732998b104a6",
       "spec_version": "2.2"
     },
     {
@@ -956,7 +956,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "04b5da8509b1254b751d36cc1cbae31d5af3ef55eb453e295bb958deb951f0d2",
+      "sha256": "3d936ce2c5ff6e0930fc510b2a493b42f9ca1b310a05c2684ef579f39504e20c",
       "spec_version": "2.2"
     },
     {
@@ -1016,14 +1016,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "d7c987280e3320c475af549f206b075aacc1e75cfea1c471942accbf6a6fe797",
+      "sha256": "89c6b7fb987807e2bab5873bc2320a951236d82f9f9764962c298807c9d6ba5f",
       "spec_version": "2.2",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "16ea317ac959ca63bd73626f62c170554b848926c138ad86d92dc8f6edd9f82b",
+      "sha256": "ce4505a142fe0ec86551e8188610e0c91ae4fb034fcb330902bf14f9cd260c67",
       "spec_version": "2.2",
       "src": "TOOLING.md"
     },

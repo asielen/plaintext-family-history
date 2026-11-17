@@ -1566,7 +1566,8 @@ def _event_subjects(claim: dict) -> tuple[str, list[str]] | None:
     return ctype, list(subjects)
 
 
-def _accept_refusal(archive_root: Path, claim: dict) -> str | None:
+def _accept_refusal(archive_root: Path, claim: dict, *,
+                    confirm_deceased: bool = False) -> str | None:
     """Why this claim must not be accepted as it stands, or None (SPEC §8.3).
 
     Accepting is the moment a record becomes fact, so it is where a record
@@ -1574,9 +1575,11 @@ def _accept_refusal(archive_root: Path, claim: dict) -> str | None:
     living person recorded as dead. Two refusals, each with its way out:
       - an event claim naming several people that does not say whose event
         it is (`event_role_gaps`) - add the roles, then accept;
-      - a death or burial whose deceased is marked `living: true` - if they
-        did die, `fha person set-living <P-id> false` first; if not, the
-        record is about someone else."""
+      - a death or burial whose deceased is marked `living: true`, until the
+        human has checked the record really is their death and says so
+        (`confirm_deceased`, `--confirm-deceased`): then it is accepted and
+        the person marked no longer living. If not, the record is about
+        someone else."""
     ctype = str(claim.get('type') or '').strip().lower()
     cid = _claim_label(claim)
     gaps = event_role_gaps(ctype, resolve_claim_persons_with_roles(claim, None))
@@ -1589,17 +1592,19 @@ def _accept_refusal(archive_root: Path, claim: dict) -> str | None:
                 'the wrong person. Add a roles: map giving everyone a part (e.g. '
                 f'`{VITAL_SUBJECT_ROLES[ctype]}: [p-…]` for the person the {ctype} is '
                 'about), then accept it again.')
-    if ctype in DEATH_CLAIM_TYPES and str(claim.get('negated')).strip().lower() != 'true':
+    if (ctype in DEATH_CLAIM_TYPES and not confirm_deceased
+            and str(claim.get('negated')).strip().lower() != 'true'):
         found = _event_subjects(claim)
         for pid in (found[1] if found else []):
             _path, meta = _read_person(archive_root, pid)
             if meta and normalize_living(meta.get('living')) == 'true':
                 name = str(meta.get('name') or '').strip() or fmt_id_display(pid)
                 return (f'{cid} was not accepted: it records the {ctype.upper()} of {name} '
-                        f'({fmt_id_display(pid)}), who is marked as living. If {name} has '
-                        f'died, run `fha person set-living {fmt_id_display(pid)} false` '
-                        'first, then accept it again; if not, this record is about '
-                        'someone else - correct its persons: and roles:.')
+                        f'({fmt_id_display(pid)}), who is marked as living. Check the '
+                        f'record really is the {ctype} of {name}: if it is, accept it again '
+                        'with --confirm-deceased (that also marks them as no longer '
+                        'living); if not, this record is about someone else - correct '
+                        'its persons: and roles:.')
     return None
 
 
@@ -1640,7 +1645,7 @@ _MARKABLE_LIVING: tuple[str | None, ...] = (None, '', 'unknown')
 
 def _mark_deceased_not_living(
     archive_root: Path, result: Result, claims: list[dict], *,
-    dry_run: bool = False, keep_living: bool = False,
+    dry_run: bool = False, keep_living: bool = False, confirm_deceased: bool = False,
 ) -> None:
     """After the human accepts death/burial claims, mark who died as no longer living.
 
@@ -1765,7 +1770,10 @@ def _mark_deceased_not_living(
                            f'{name} has died, run `fha person set-living {shown_pid} false`.')
 
         living = normalize_living(meta.get('living'))
-        if living not in _MARKABLE_LIVING:
+        # --confirm-deceased: the human checked that a living-marked person's
+        # death record really is theirs, so `true` may change too.
+        confirmed_true = confirm_deceased and living == 'true'
+        if living not in _MARKABLE_LIVING and not confirmed_true:
             _left_alone(living)   # false: already recorded, nothing to say
             continue
         if not named:
@@ -1788,7 +1796,7 @@ def _mark_deceased_not_living(
         # if it STILL reads unknown, so a `living: true` saved since the look
         # above is left alone and reported, never overwritten (#250 review).
         sub = set_person_living(archive_root, pid, 'false', dry_run=dry_run,
-                                only_from=_MARKABLE_LIVING)
+                                only_from=_MARKABLE_LIVING + (('true',) if confirmed_true else ()))
         status = sub.data.get('status')
         if status == 'conflict':
             _left_alone(sub.data.get('old'))
@@ -1926,6 +1934,7 @@ def run_claim(
     clear: list[str] | tuple[str, ...] | None = None,
     dry_run: bool = False,
     keep_living: bool = False,
+    confirm_deceased: bool = False,
     _record_hint: Path | None = None,
     _pending: dict[Path, tuple[str, str]] | None = None,
     _in_batch: bool = False,
@@ -2381,7 +2390,8 @@ def run_claim(
         _claims_read[cid] = (read_claim, written_claim)
     was_accepted = str(read_claim.get('status') or '').strip().lower() == 'accepted'
     if status == 'accepted' and not was_accepted:
-        refusal = _accept_refusal(archive_root, _effective_claim(written_claim))
+        refusal = _accept_refusal(archive_root, _effective_claim(written_claim),
+                                  confirm_deceased=confirm_deceased)
         if refusal is not None:
             return _fail(result, 'refused', refusal)
     accepted_now = None
@@ -2429,7 +2439,7 @@ def run_claim(
             result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=True))
         if accepted_now is not None:
             _mark_deceased_not_living(archive_root, result, [accepted_now],
-                                      dry_run=True, keep_living=keep_living)
+                                      dry_run=True, keep_living=keep_living, confirm_deceased=confirm_deceased)
         if still_marked is not None:
             _warn_still_marked(archive_root, result, [still_marked], status, dry_run=True)
         result.add('info', _DRY_RUN_TRAILER)
@@ -2469,7 +2479,7 @@ def run_claim(
         result.add('info', line)
     if accepted_now is not None:
         _mark_deceased_not_living(archive_root, result, [accepted_now],
-                                  keep_living=keep_living)
+                                  keep_living=keep_living, confirm_deceased=confirm_deceased)
     if still_marked is not None:
         _warn_still_marked(archive_root, result, [still_marked], status)
     result.add('info', _INDEX_REMINDER, next_step='fha index')
@@ -2497,6 +2507,7 @@ def run_claim_batch(
     clear: list[str] | tuple[str, ...] | None = None,
     dry_run: bool = False,
     keep_living: bool = False,
+    confirm_deceased: bool = False,
 ) -> Result:
     """The edit verb's front door: one C-id or several, one contract (TOOLING §3b).
 
@@ -2602,7 +2613,7 @@ def run_claim_batch(
             value=value, date=date, claim_type=claim_type, place=place,
             place_text=place_text, persons=persons, confidence=confidence,
             information=information, evidence=evidence, anchor=anchor, notes=notes,
-            clear=clear, dry_run=dry_run, keep_living=keep_living)
+            clear=clear, dry_run=dry_run, keep_living=keep_living, confirm_deceased=confirm_deceased)
         if duplicates:
             # Surface the dedupe first, so the human sees why one id "went
             # missing" before reading the edit itself (add-then-move keeps
@@ -2709,7 +2720,7 @@ def run_claim_batch(
     for cid in ids:
         sub = run_claim(archive_root, claim_id=cid, status=status,
                         reviewed=reviewed, reviewed_by=reviewed_by, dry_run=dry_run,
-                        _record_hint=located[cid][0], _pending=pending,
+                        _record_hint=located[cid][0], _pending=pending, confirm_deceased=confirm_deceased,
                         _in_batch=True, _claims_read=claims_read)
         result.data['results'].append(sub.data)
         if sub.exit_code != EXIT_CLEAN:
@@ -2811,7 +2822,7 @@ def run_claim_batch(
     # here rather than per claim so one person on two records is said once.
     if accepted_claims:
         _mark_deceased_not_living(archive_root, result, accepted_claims,
-                                  dry_run=dry_run, keep_living=keep_living)
+                                  dry_run=dry_run, keep_living=keep_living, confirm_deceased=confirm_deceased)
     if unreadable:
         one = len(unreadable) == 1
         result.add('warning',
@@ -2851,6 +2862,8 @@ def run_claim_batch(
         # would mark the people the human chose to keep private (#250 review).
         if keep_living:
             reviewed_part += ' --keep-living'
+        if confirm_deceased:
+            reviewed_part += ' --confirm-deceased'
         level = 'warning' if exit_code == EXIT_WARNINGS else 'error'
         result.ok = False
         result.exit_code = exit_code
@@ -3011,6 +3024,7 @@ def run_claim_new(
     dry_run: bool = False,
     claim_id: str | None = None,
     keep_living: bool = False,
+    confirm_deceased: bool = False,
     reviewed_by: str | None = None,
 ) -> Result:
     """Mint a brand-new claim onto an existing source's `## Claims` block.
@@ -3273,7 +3287,7 @@ def run_claim_new(
         accepted_now = claim_in_text(after, cid) or {
             'id': cid, 'type': claim_type, 'persons': list(persons_norm or []),
             'status': 'accepted', 'negated': bool(negated)}
-        refusal = _accept_refusal(archive_root, accepted_now)
+        refusal = _accept_refusal(archive_root, accepted_now, confirm_deceased=confirm_deceased)
         if refusal is not None:
             return _fail(result, 'refused', refusal.replace(
                 'was not accepted', 'was not minted as accepted') + ' (Mint it with '
@@ -3292,7 +3306,7 @@ def run_claim_new(
             result.add('warning', _place_registry_error_note(place_text, registry_error_note, dry_run=True))
         if accepted_now is not None:
             _mark_deceased_not_living(archive_root, result, [accepted_now],
-                                      dry_run=True, keep_living=keep_living)
+                                      dry_run=True, keep_living=keep_living, confirm_deceased=confirm_deceased)
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -3317,7 +3331,7 @@ def run_claim_new(
         result.add('info', line)
     if accepted_now is not None:
         _mark_deceased_not_living(archive_root, result, [accepted_now],
-                                  keep_living=keep_living)
+                                  keep_living=keep_living, confirm_deceased=confirm_deceased)
     if status == 'suggested':
         result.add('info',
                    'Minted as `suggested` - review it with '
@@ -3366,6 +3380,7 @@ def _cmd_claim(args: argparse.Namespace) -> int:
         clear=getattr(args, 'clear', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
         keep_living=bool(getattr(args, 'keep_living', False)),
+        confirm_deceased=bool(getattr(args, 'confirm_deceased', False)),
     )
     for msg in result.messages:
         stream = sys.stderr if msg.level == 'error' else sys.stdout
@@ -3402,6 +3417,7 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
         notes=getattr(args, 'notes', None),
         dry_run=bool(getattr(args, 'dry_run', False)),
         keep_living=bool(getattr(args, 'keep_living', False)),
+        confirm_deceased=bool(getattr(args, 'confirm_deceased', False)),
         reviewed_by=getattr(args, 'reviewed_by', None),
     )
     for msg in result.messages:
@@ -3472,6 +3488,12 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'written. Required fields '
                         '(value, type, persons, status, confidence) cannot be cleared - '
                         'correct them with their own flag.')
+    p.add_argument('--confirm-deceased', action='store_true', dest='confirm_deceased',
+                   help='Accept a death or burial claim for a person marked living: true, '
+                        'after you have checked the record really is their death. The '
+                        'claim is accepted and the person marked as no longer living. '
+                        'Without it such a claim is refused, so a record put on the wrong '
+                        'person never marks someone living as dead.')
     p.add_argument('--keep-living', action='store_true', dest='keep_living',
                    help='Accepting a death or burial claim normally marks the person who '
                         'died as no longer living (living: false), so shared exports and '
@@ -3529,6 +3551,12 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
                    help='The context/detail behind the claim - EXPECTED (not required) on '
                         'a substantive or low-confidence-vital claim (lint W109 pings an '
                         'accepted one with none).')
+    p.add_argument('--confirm-deceased', action='store_true', dest='confirm_deceased',
+                   help='Accept a death or burial claim for a person marked living: true, '
+                        'after you have checked the record really is their death. The '
+                        'claim is accepted and the person marked as no longer living. '
+                        'Without it such a claim is refused, so a record put on the wrong '
+                        'person never marks someone living as dead.')
     p.add_argument('--keep-living', action='store_true', dest='keep_living',
                    help='Accepting a death or burial claim normally marks the person who '
                         'died as no longer living (living: false), so shared exports and '
