@@ -58,7 +58,7 @@ FIXED_FILES = (
     '    role: back\n'
     '    is_primary: false\n'
     '  - file: photos/1950/smith-farm-01400.tif\n'
-    '    role: primary\n'
+    '    role: farm-01400\n'
     '    is_primary: true\n'
     '  - file: photos/1950/smith-farm-01400b-back.tif\n'
     '    role: back\n'
@@ -131,7 +131,10 @@ class SetPrimarySwapTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
         after = self.record.read_bytes().decode('utf-8')
-        self.assertEqual(after.count('role: primary'), 1)
+        # SPEC §14: `is_primary: true` is the one mark; the old role-only
+        # mark is replaced, never written anew.
+        self.assertEqual(after.count('role: primary'), 0)
+        self.assertEqual(after.count('is_primary: true'), 1)
         self.assertIn('smith-farm-01400-back.tif\n    role: back\n', after)
 
     def test_conflicting_main_image_markers_are_refused(self) -> None:
@@ -187,7 +190,9 @@ class SetPrimarySwapTests(unittest.TestCase):
         after = self.record.read_bytes().decode('utf-8')
         self.assertIn('    role: back   # caption transcribed by Aunt May\n', after)
         self.assertIn('    is_primary: false  # keep?\n', after)
-        self.assertIn('    role: primary # odd role from the old run\n', after)
+        # The verb moves is_primary only: the named file's own role line is
+        # never rewritten.
+        self.assertIn('    role: farm-01400 # odd role from the old run\n', after)
 
     def test_one_pasted_crlf_line_does_not_turn_the_frontmatter_crlf(self) -> None:
         # #210 audit: the line ending was chosen for the whole file.
@@ -264,7 +269,7 @@ class SetPrimarySwapTests(unittest.TestCase):
               '    copy: b\n'
               '    is_primary: false\n'
               '  - file: photos/x-00100.jpg\n'
-              '    role: primary\n'
+              '    role: variant\n'
               '    is_primary: true\n'
             + FRONTMATTER_TAIL + BODY))
 

@@ -1564,7 +1564,7 @@ Choose which photo is the main image of a source - its front, not its back.
   fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif"
 
 Changes only the source record's files: list: the named photo becomes the
-main image (is_primary: true, role: primary), and the photo that was the main
+main image (is_primary: true), and the photo that was the main
 image is listed by what its name says it is (role: back, say). No photo is
 renamed or touched, and the record's title and filename stay as they are.
 `fha doctor` names the records that need this (#200: an older `fha process`

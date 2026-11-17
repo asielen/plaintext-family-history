@@ -152,6 +152,8 @@ from _lib import (
     FhaConfigError,
     Result,
     configure_utf8_stdout,
+    files_entry_is_main,
+    files_entry_role,
     fmt_id_display,
     format_source_type_error,
     frontmatter_fence_span,
@@ -285,13 +287,16 @@ def _machine_generated_names(slug: str, display_sid: str, entry: dict, ext: str)
     have produced it, so it reads as a human rename - excluded into
     `excluded_human`, never touched (`_plan`'s eligibility check).
     """
-    suffix = ''
-    role = entry.get('role')
-    if role and str(role) != 'primary':
-        suffix = f'-{_slugify(str(role))}'
+    # The main file (`is_primary: true`, or an older record's `role:
+    # primary`) may carry a role that says what it is (`front`) yet was
+    # filed under the bare name - `process refile` names it so - while a
+    # bundle's hinted main document was filed with its role. Both count.
+    role = files_entry_role(entry)
+    role_suffixes = {f'-{_slugify(role)}'} if role else {''}
+    if role and files_entry_is_main(entry):
+        role_suffixes.add('')
     copy = entry.get('copy')
-    if copy:
-        suffix = f'-{_slugify(str(copy))}{suffix}'
+    suffixes = {f'-{_slugify(str(copy))}{r}' if copy else r for r in role_suffixes}
     bases = {slug}
     original_filename = entry.get('original_filename')
     if original_filename:
@@ -301,7 +306,8 @@ def _machine_generated_names(slug: str, display_sid: str, entry: dict, ext: str)
     # name, never a human rename.
     sid = display_sid.lower()
     sids = {sid, sid[:1].upper() + sid[1:]}
-    return {f'{base}{suffix}_{s}{ext}' for base in bases for s in sids}
+    return {f'{base}{suffix}_{s}{ext}'
+            for base in bases for suffix in suffixes for s in sids}
 
 
 def _is_under(path: Path, root: Path) -> bool:

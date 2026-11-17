@@ -5982,6 +5982,86 @@ class RetiredFieldsTests(unittest.TestCase):
 
     def test_a_record_without_them_is_silent(self) -> None:
         self.assertFalse([f for f in self._lint() if f.code == 'W143'])
+class SourceRecordFormTests(unittest.TestCase):
+    """SPEC §14: a source's AI passes are an `ai_passes:` frontmatter list
+    (W144 checks each entry's shape), and exactly one `files:` entry is the
+    main file, marked `is_primary: true` (W145). Both are warnings: an older
+    record still says `role: primary` or keeps a `## AI Passes` section until
+    it is rewritten, and lint must not stop a lint-gated step over that."""
+
+    SID = 's-7bbbbbbbb1'
+
+    def _codes(self, frontmatter: str, body: str = '') -> dict:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        (root / 'sources' / 'other' / f'note_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: A note\nsource_type: other\n{frontmatter}'
+            'created: 2026-01-01\n---\n\n## Claims\n```yaml\n```\n' + body,
+            encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out
+
+    ONE_FILE = 'files:\n  - file: documents/other/note.txt\n    is_primary: true\n'
+
+    def test_a_well_formed_ai_pass_is_quiet(self) -> None:
+        codes = self._codes(self.ONE_FILE + 'ai_passes:\n'
+                            '  - {date: 2026-06-11, by: claude-opus-4, task: claims}\n'
+                            '  - date: 2026-07-01\n    by: claude-opus-4\n'
+                            '    task: stories\n    note: second look\n')
+        self.assertNotIn('W144', codes)
+
+    def test_a_malformed_ai_pass_warns(self) -> None:
+        for passes in ('ai_passes: claims\n',
+                       'ai_passes:\n  - just a string\n',
+                       'ai_passes:\n  - {date: 2026-06-11, task: claims}\n',
+                       'ai_passes:\n  - {date: June 2026, by: claude, task: claims}\n',
+                       'ai_passes:\n  - {by: claude, task: claims}\n'):
+            with self.subTest(passes=passes):
+                codes = self._codes(self.ONE_FILE + passes)
+                self.assertEqual(len(codes.get('W144', [])), 1, codes)
+                self.assertEqual(codes['W144'][0].severity, 'W')
+
+    def test_an_old_ai_passes_section_is_quiet(self) -> None:
+        codes = self._codes(self.ONE_FILE, '\n## AI Passes\n```yaml\n- date: 2026-01-01\n'
+                            '  model: gpt-4\n  human_reviewed: false\n```\n')
+        self.assertNotIn('W144', codes)
+
+    def test_one_main_file_is_quiet_in_either_form(self) -> None:
+        self.assertNotIn('W145', self._codes(self.ONE_FILE))
+        # An older record's `role: primary` still names its main file.
+        self.assertNotIn('W145', self._codes(
+            'files:\n  - file: documents/other/note.txt\n    role: primary\n'
+            '  - file: documents/other/note-b.txt\n    role: primary\n    copy: b\n'))
+        # A pointer-only source lists no files at all.
+        self.assertNotIn('W145', self._codes(''))
+
+    def test_no_main_file_is_quiet(self) -> None:
+        # Records written before SPEC 2.1 (thousands of capture bundles) mark
+        # no file at all; that is legal, and a reader opens the first file.
+        self.assertNotIn('W145', self._codes(
+            'files:\n  - file: documents/other/note.txt\n    role: original\n'))
+        self.assertNotIn('W145', self._codes(
+            'files:\n  - file: documents/other/note.txt\n    role: page-1\n'
+            '  - file: documents/other/note-2.txt\n    role: page-2\n'))
+
+    def test_a_stray_role_primary_beside_is_primary_is_named(self) -> None:
+        codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'
+                            '  - file: documents/other/b.txt\n    role: primary\n')
+        self.assertEqual(len(codes.get('W145', [])), 1, codes)
+        msg = codes['W145'][0].message
+        self.assertIn('documents/other/b.txt', msg)
+        self.assertIn('role: primary', msg)
+
+    def test_two_main_files_warn(self) -> None:
+        codes = self._codes('files:\n  - file: documents/other/a.txt\n    is_primary: true\n'
+                            '  - file: documents/other/b.txt\n    is_primary: true\n')
+        self.assertEqual(len(codes.get('W145', [])), 1, codes)
+        self.assertIn('fha source set-primary', codes['W145'][0].message)
 
 
 if __name__ == '__main__':

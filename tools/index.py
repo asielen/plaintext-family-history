@@ -84,6 +84,8 @@ from _lib import (
     normalize_id,
     parse_question_blocks,
     optional_scalar,
+    main_files_entry,
+    files_entry_role,
     parentage_parties,
     role_meaning,
     parse_filename,
@@ -272,7 +274,8 @@ CREATE TABLE IF NOT EXISTS source_files(
   date_edtf TEXT,        -- optional per-file date (SPEC §14, #123); NULL when
                           -- the `files:` entry carries no `date:` of its own
   exists_on_disk INTEGER,
-  in_inventory INTEGER
+  in_inventory INTEGER,
+  is_primary INTEGER DEFAULT 0  -- 1 on the source's main file (SPEC §14)
 );
 
 -- claims: extracted assertions from sources, with date/place/search fields.
@@ -1549,17 +1552,23 @@ def _index_source(
             (sid, lid),
         )
 
-    # File inventory
-    for f in (meta.get('files') or []):
+    # File inventory. The main file (SPEC §14 `is_primary: true`; an older
+    # record's `role: primary`) is flagged so the site and the workbench open
+    # it first.
+    files_list = meta.get('files') if isinstance(meta.get('files'), list) else []
+    main_entry = main_files_entry(files_list)
+    for f in files_list:
         if not isinstance(f, dict):
             continue
         file_path = str(f.get('file', ''))
-        # role: is written on every real entry but, like any hand-typed YAML
-        # scalar, a bare `role:` line still parses as null - and `role` is
-        # rendered straight onto the source page (`site._role_note`), so a
-        # blank line here would show the literal text 'role: None' rather
-        # than omitting the label the way a truly-absent role already does.
-        role = str(f.get('role') or '')
+        # A bare `role:` line still parses as null - and `role` is rendered
+        # straight onto the source page (`site._role_note`), so a blank line
+        # here would show the literal text 'role: None' rather than omitting
+        # the label the way a truly-absent role already does. The old
+        # `role: primary` main-file mark says nothing about what the file
+        # is, so it is not shown as a role either.
+        role = files_entry_role(f)
+        is_main = 1 if f is main_entry else 0
         # `copy: b`/`c`/`d` distinguishes same-day (or same-bundle, #123)
         # file variants (which print a file is), so the column must carry
         # whatever the record actually wrote, not a blanket NULL. `optional_scalar`
@@ -1599,10 +1608,10 @@ def _index_source(
         conn.execute(
             '''INSERT INTO source_files
                (source_id, path, role, copy, derived, original_filename,
-                date_edtf, exists_on_disk, in_inventory)
-               VALUES (?,?,?,?,?,?,?,?,1)''',
+                date_edtf, exists_on_disk, in_inventory, is_primary)
+               VALUES (?,?,?,?,?,?,?,?,1,?)''',
             (sid, file_path, role, copy_letter, derived, orig_name,
-             file_date_edtf, exists),
+             file_date_edtf, exists, is_main),
         )
 
         # Text companion (role: transcript / transcription / extracted-text):

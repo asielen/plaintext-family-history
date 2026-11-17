@@ -237,7 +237,7 @@ CREATE TABLE sources(id TEXT PRIMARY KEY, title TEXT NOT NULL, source_type TEXT,
   status TEXT DEFAULT 'active', superseded_by TEXT, path TEXT NOT NULL);
 CREATE TABLE source_files(source_id TEXT, path TEXT, role TEXT, copy TEXT,
   derived INTEGER DEFAULT 0, original_filename TEXT,
-  exists_on_disk INTEGER, in_inventory INTEGER);
+  exists_on_disk INTEGER, in_inventory INTEGER, is_primary INTEGER DEFAULT 0);
 
 CREATE TABLE claims(id TEXT PRIMARY KEY, source_id TEXT NOT NULL, type TEXT NOT NULL,
   subtype TEXT, date_edtf TEXT, date_min TEXT, date_max TEXT,
@@ -590,6 +590,8 @@ W115, W126), `_lib.spouse_parties` (W115, W125), `_lib.vital_subjects` (W132),
 | W140 | Half a merge: `merged_into:` without `status: merged`, or the reverse |
 | W141 | Claim `information`/`evidence`, source `source_class` or person `sex` outside its vocabulary (`_lib` constants; `sex: U` tolerated) |
 | W143 | A source still carrying a retired field (claim `significance`/`significance_reason`/`asset`, file `language`/`digitized`): one line per record, "safe to delete" |
+| W144 | `ai_passes:` not a list, or an entry without `date` (EDTF), `by` and `task` (SPEC §14) |
+| W145 | More than one `files:` entry marked `is_primary: true` (SPEC §14) |
 
 W119, W120, W127 and W129 each have a twin in `fha views brackets` (M2.2, M11.4, M11.7) built
 on the same map. W121 is also surfaced by `fha doctor` and `fha index`, so it fires on the first

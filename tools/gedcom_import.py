@@ -1563,6 +1563,7 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         'files:',
         f'  - file: {_yaml_inline(plan.doc_dest_alias)}',
         '    role: original',
+        '    is_primary: true',
         f'    original_filename: {_yaml_inline(plan.ged_path.name)}',
         f'created: {today}',
         '---',
@@ -1577,16 +1578,6 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         lines += _render_claim(claim, names)
     lines.append('```')
     lines += [
-        '',
-        '## AI Passes',
-        '```yaml',
-        f'- date: {today}',
-        '  model: none (deterministic tool)',
-        '  harness: fha gedcom import',
-        f'  task: {_yaml_inline(f"Import GEDCOM export {plan.ged_path.name} ({len(plan.stubs)} persons, {plan.family_count} families, {len(plan.claims)} suggested claims)")}',
-        '  outputs: [source-record, person-stubs, suggested-claims]',
-        '  human_reviewed: false',
-        '```',
         '',
         '## Notes',
         f'Imported from {plan.ged_path.name} with `fha gedcom import` on {today}: '

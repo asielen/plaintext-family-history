@@ -414,7 +414,7 @@ def _find_source(
     # Files: pull from source_files, but also re-read the YAML inventory to
     # catch 'status: missing-fixture' which the index doesn't store separately.
     file_rows = conn.execute(
-        "SELECT path, role, exists_on_disk FROM source_files WHERE source_id = ? ORDER BY path",
+        "SELECT path, role, exists_on_disk, is_primary FROM source_files WHERE source_id = ? ORDER BY path",
         (sid,)
     ).fetchall()
     if file_rows:
@@ -431,7 +431,9 @@ def _find_source(
 
         print(f'  files ({len(file_rows)}):')
         for f in file_rows:
-            role_str = f'  [{f["role"]}]' if f['role'] else ''
+            # The main file (SPEC §14 `is_primary: true`) is the one to open first.
+            tags = (['main'] if f['is_primary'] else []) + ([f['role']] if f['role'] else [])
+            role_str = f'  [{", ".join(tags)}]' if tags else ''
             resolved = None
             try:
                 resolved = resolve_path(f['path'], fha_config, archive_root)

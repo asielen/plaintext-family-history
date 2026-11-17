@@ -1051,6 +1051,38 @@ class FindSourceRestrictedLabelTests(unittest.TestCase):
         self.assertNotIn('[restricted]', out)
 
 
+class FindSourceMainFileTagTests(unittest.TestCase):
+    """`fha find <S-id>` tags the source's main file `[main]` (SPEC §14
+    `is_primary: true`), and an older record's `role: primary` the same way -
+    the index no longer stores that old mark as a role."""
+
+    def _out(self, files_block: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / 'sources' / 'other' / 'src_S-4444444444.md'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('---\nid: S-4444444444\ntitle: Letter\nsource_type: other\n'
+                            f'{files_block}---\n\n## Claims\n', encoding='utf-8')
+            import index
+            with redirect_stdout(io.StringIO()):
+                index.build_index(root, {})
+            rc, out = _run(find.run_find, 's-4444444444', root, {})
+            self.assertEqual(rc, EXIT_CLEAN)
+            return out
+
+    def test_both_forms_tag_the_main_file(self) -> None:
+        for mark in ('    is_primary: true\n', '    role: primary\n'):
+            with self.subTest(mark=mark):
+                out = self._out('files:\n  - file: documents/other/letter.pdf\n' + mark
+                                + '  - file: documents/other/letter-back.pdf\n    role: back\n')
+                line = next(ln for ln in out.splitlines() if 'letter.pdf' in ln)
+                self.assertIn('[main]', line)
+                self.assertNotIn('[primary]', out)
+                back = next(ln for ln in out.splitlines() if 'letter-back.pdf' in ln)
+                self.assertIn('[back]', back)
+                self.assertNotIn('main', back)
+
+
 class RunFindRootGuardTests(unittest.TestCase):
     """`fha find --root <non-archive>` must refuse (exit 3) with a message
     naming the fix, mirroring `fha index --root`. Without the guard a typo'd

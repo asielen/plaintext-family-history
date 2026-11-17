@@ -262,6 +262,8 @@ from _lib import (
     scan_person_record_ids,
     source_type_list,
     select_variation_primary,
+    files_entry_is_main,
+    files_entry_role,
     is_working_copy,
     variant_role,
     write_embedded_keywords,
@@ -1043,17 +1045,19 @@ _yaml_inline = yaml_inline
 def _render_scaffold_file_entry(entry: dict) -> list[str]:
     """Render one `files:` inventory item as block-style YAML lines.
 
-    `entry` keys: `file` (alias path, required), `role` (required), and the
-    optional `copy`, `is_primary` (bool), and `original_filename`. The field
-    order - file, role, copy, is_primary, original_filename - is fixed so a
-    single-photo record (file/role/is_primary), a renamed document
-    (file/role/original_filename), and a grouped variation member (which may
-    carry all of them) all read consistently.
+    `entry` keys: `file` (alias path, required), and the optional `role`,
+    `copy`, `is_primary` (bool), and `original_filename`. The field order -
+    file, role, copy, is_primary, original_filename - is fixed (SPEC §14) so a
+    single-photo record (file/is_primary), a renamed document
+    (file/is_primary/original_filename), and a grouped variation member (which
+    may carry all of them) all read consistently. `role:` says what the file
+    IS and is left out when there is nothing to say; `is_primary: true` alone
+    marks the main file, so the old `role: primary` is never written.
     """
-    lines = [
-        f'  - file: {_yaml_inline(entry["file"])}',
-        f'    role: {_yaml_inline(entry["role"])}',
-    ]
+    lines = [f'  - file: {_yaml_inline(entry["file"])}']
+    role = entry.get('role')
+    if role and str(role).strip().lower() != 'primary':
+        lines.append(f'    role: {_yaml_inline(role)}')
     if entry.get('copy'):
         lines.append(f'    copy: {_yaml_inline(entry["copy"])}')
     if entry.get('is_primary'):
@@ -1090,7 +1094,7 @@ def _scaffold_text(
     heading, and an empty body parses to an empty claims list. The inventory
     lists every file the source covers: a single document or photo is one
     entry; a variation group or dissolved bundle is many, with the primary
-    carrying `is_primary: true` (photos) and each renamed document carrying its
+    carrying `is_primary: true` and each renamed document carrying its
     `original_filename` provenance. `file_entries` is empty for a TOOLING §13b
     "pointer-only" source (no asset, `external_links` only), in which case the
     `files:` block is omitted rather than written empty.
@@ -2043,7 +2047,9 @@ def _variation_role_copy(
 ) -> tuple[str, str | None]:
     """Return the (role, copy) `files:` annotation for one variation member.
 
-    The primary always gets `role: primary`. A non-primary member's role comes
+    The primary carries `is_primary: true` (the caller writes it) and the role
+    its filename spells, if any (`front` for 'portrait-front.jpg'; None for a
+    plain scan) - never `role: primary` (SPEC §14). A non-primary member's role comes
     from `variant_role` (back, front, page-3, negative, bw, or crop) - or, for
     a file of a capture bundle (`in_bundle`), from `bundle_role`, which also
     reads the name's last word ('letter-envelope' -> 'envelope'; #200); when
@@ -2055,7 +2061,7 @@ def _variation_role_copy(
     """
     parsed = parse_media_filename(file_path.stem)
     if is_primary:
-        return 'primary', None
+        return (bundle_role(parsed) if in_bundle else variant_role(parsed)), None
     role = (bundle_role(parsed) if in_bundle else variant_role(parsed)) or 'variant'
     copy = None if parsed.part_kind == 'negative' else parsed.variant_id
     return role, copy
@@ -2436,7 +2442,8 @@ def process_document(
     if record_path.exists():
         raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
 
-    file_entries = [{'file': file_alias, 'role': 'primary', 'original_filename': file_path.name}]
+    file_entries = [{'file': file_alias, 'is_primary': True,
+                     'original_filename': file_path.name}]
     if back_sibling is not None:
         back_alias = path_to_alias(back_new_path, 'documents', fha_config, archive_root)
         file_entries.append({'file': back_alias, 'role': 'back',
@@ -2792,7 +2799,7 @@ def process_photo(
 
     text = _scaffold_text(
         sid, final_title, resolved_type,
-        [{'file': file_alias, 'role': 'primary', 'is_primary': True}],
+        [{'file': file_alias, 'is_primary': True}],
         notes_body=notes_body,
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
@@ -3519,8 +3526,7 @@ def process_bundle(
 
     hinted_primary = [
         a for a in assets
-        if file_hints.get(a.name, {}).get('is_primary')
-        or file_hints.get(a.name, {}).get('role') == 'primary'
+        if files_entry_is_main(file_hints.get(a.name, {}))
     ]
     if len(hinted_primary) > 1:
         names = ', '.join(a.name for a in hinted_primary)
@@ -3547,7 +3553,7 @@ def process_bundle(
         hint = file_hints.get(asset.name, {})
         if kind == 'photo':
             role, copy = _variation_role_copy(asset, is_primary, in_bundle=True)
-            role = hint.get('role') or role
+            role = files_entry_role(hint) or role
             copy = hint.get('copy') or copy
             # Photos are never renamed; they go where --dest says, else to
             # the top of the library (and the output says which).
@@ -3558,13 +3564,16 @@ def process_bundle(
                 entry['copy'] = copy
             plan.append({'src': asset, 'kind': 'photo', 'dest': dest, 'embed': True, 'entry': entry})
         else:
-            role = hint.get('role') or (
-                'primary' if is_primary else (bundle_role(parse_media_filename(asset.stem))
-                                              or 'attachment')
+            # The main document keeps the bare name it always had; its role
+            # is only what a stub hint says it is (SPEC §14: `is_primary:
+            # true` marks it, never `role: primary`).
+            role = files_entry_role(hint) or (
+                None if is_primary else (bundle_role(parse_media_filename(asset.stem))
+                                         or 'attachment')
             )
             copy = hint.get('copy')
             base = _bundle_file_slug(asset.stem, role, final_slug)
-            suffix = '' if role == 'primary' else f'-{_slugify(role)}'
+            suffix = f'-{_slugify(role)}' if role else ''
             if copy:
                 suffix = f'-{_slugify(copy)}{suffix}'
             # Never two files under one name: a title-named file and one
@@ -3584,7 +3593,7 @@ def process_bundle(
                      'role': role, 'original_filename': asset.name}
             if copy:
                 entry['copy'] = copy
-            if hint.get('is_primary'):
+            if is_primary:
                 entry['is_primary'] = True
             plan.append({'src': asset, 'kind': 'document', 'dest': dest,
                          'embed': _document_takes_keyword(dest), 'entry': entry})
@@ -4396,7 +4405,7 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     """
     slug = None
     for entry in meta.get('files') or []:
-        if (isinstance(entry, dict) and str(entry.get('role') or '') == 'primary'
+        if (files_entry_is_main(entry)
                 and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
             slug = _strip_sid_suffix(PurePosixPath(str(entry['file'])).stem, sid)
             break
@@ -4418,9 +4427,10 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
 def _strip_suffix_tail(own: str, prefix: str, role: str, copy: str | None) -> str:
     """`own` without a trailing `-{copy}-{role}` (or `-{role}`) the caller is
     about to append, so it is never doubled; never cut back past `prefix`."""
-    tails = [f'-{_slugify(role)}']
+    role_tail = f'-{_slugify(role)}' if role else ''
+    tails = [role_tail] if role_tail else []
     if copy:
-        tails.insert(0, f'-{_slugify(copy)}-{_slugify(role)}')
+        tails.insert(0, f'-{_slugify(copy)}{role_tail}')
     for tail in tails:
         if own.endswith(tail) and len(own) - len(tail) >= len(prefix):
             return own[:-len(tail)]
@@ -4516,6 +4526,13 @@ def _attach_more_engine(
     has put it back (`inbox/x/b.jpg`), for the suggested command.
     """
     more_on_disk = more_real_path if more_real_path is not None else more_file
+    # SPEC §14: `is_primary: true` alone marks the main file. `--more FILE
+    # primary:LABEL` attaches another copy of the main file (a second
+    # digitization): it is listed by its copy: label with no role line, and
+    # named with no role word - never a second `role: primary`.
+    file_role = files_entry_role({'role': role})
+    role_lines = [f'    role: {_yaml_inline(file_role)}'] if file_role else []
+    role_said = f'role: {file_role}' if file_role else 'another copy of the main file'
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
     # it's a photo. The documented dry-run contract is "no exiftool call" - a
     # machine without exiftool on PATH must still get a preview here, so only
@@ -4597,7 +4614,7 @@ def _attach_more_engine(
         if more_existing:
             raise ProcessError(f'{more_file.name} already carries a SOURCE keyword.')
         new_alias = path_to_alias(more_file, _PHOTO_DIR, fha_config, archive_root)
-        entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
+        entry = [f'  - file: {_yaml_inline(new_alias)}', *role_lines]
         if copy:
             entry.append(f'    copy: {_yaml_inline(copy)}')
         if dry_run:
@@ -4610,7 +4627,7 @@ def _attach_more_engine(
                     print(f'[dry-run] Would set restricted: dna on '
                           f'{_rel(record_path, archive_root)} (required for the attached '
                           'DNA file).')
-            print(f'[dry-run] Would add files: entry (role: {role}) to '
+            print(f'[dry-run] Would add files: entry ({role_said}) to '
                   f'{_rel(record_path, archive_root)}')
             return EXIT_CLEAN
         # Read the record before writing the keyword: if the read fails
@@ -4684,7 +4701,7 @@ def _attach_more_engine(
         if dna_restriction_set:
             print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
                   '(required for the attached DNA file).')
-        print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
+        print(f'Added files: entry ({role_said}) to {_rel(record_path, archive_root)}')
         return EXIT_CLEAN
 
     # Document: rename to share the record's S-id with a -role suffix - unless
@@ -4742,8 +4759,8 @@ def _attach_more_engine(
         new_name = more_file.name
     else:
         base = _attachment_base(_without_retired_sid(more_file, retired_sids),
-                                meta_for_check, record_path, sid, role, copy)
-        suffix = f'-{_slugify(role)}'
+                                meta_for_check, record_path, sid, file_role, copy)
+        suffix = f'-{_slugify(file_role)}' if file_role else ''
         if copy:
             suffix = f'-{_slugify(copy)}{suffix}'
         new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
@@ -4807,10 +4824,16 @@ def _attach_more_engine(
             raise ProcessError(
                 f'{more_file.name} is already listed in this record\'s files: under '
                 'its old name, so it is attached already. Nothing was changed.')
+    if existing_match is not None and files_entry_is_main(existing_match):
+        # The source's own main file is never re-attached as a companion of
+        # itself, whatever role was asked for.
+        raise ProcessError(
+            f'{new_alias} is already the main file of {_rel(record_path, archive_root)}, '
+            'so it cannot also be attached to it. Nothing was changed.')
     if existing_match is not None:
-        existing_role = str(existing_match.get('role') or '').strip() or 'attachment'
+        existing_role = files_entry_role(existing_match) or 'attachment'
         existing_copy = str(existing_match.get('copy') or '').strip() or None
-        requested_role = role.strip() or 'attachment'
+        requested_role = file_role or 'attachment'
         requested_copy = (copy or '').strip() or None
         if existing_role == requested_role and existing_copy == requested_copy:
             # #3 (Codex PR #145 review): the alias/role/copy lining up with an
@@ -4879,7 +4902,7 @@ def _attach_more_engine(
             + '. Edit the record by hand if this is intentional, or attach a different file.'
         )
 
-    entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']
+    entry = [f'  - file: {_yaml_inline(new_alias)}', *role_lines]
     if copy:
         entry.append(f'    copy: {_yaml_inline(copy)}')
     entry.append(f'    original_filename: {_yaml_inline(more_file.name)}')
@@ -4925,7 +4948,7 @@ def _attach_more_engine(
             if dna_would_change:
                 print(f'[dry-run] Would set restricted: dna on {_rel(record_path, archive_root)} '
                       '(required for the attached DNA file).')
-        print(f'[dry-run] Would add files: entry (role: {role}) to '
+        print(f'[dry-run] Would add files: entry ({role_said}) to '
               f'{_rel(record_path, archive_root)}')
         return EXIT_CLEAN
 
@@ -5016,7 +5039,7 @@ def _attach_more_engine(
     if dna_restriction_set:
         print(f'Set restricted: dna on {_rel(record_path, archive_root)} '
               '(required for the attached DNA file).')
-    print(f'Added files: entry (role: {role}) to {_rel(record_path, archive_root)}')
+    print(f'Added files: entry ({role_said}) to {_rel(record_path, archive_root)}')
     return EXIT_CLEAN
 
 
@@ -5374,9 +5397,9 @@ def _photo_library_name(src: Path, entry: dict) -> str:
     m = _FILENAME_SOURCE_ID_RE.search(stem)
     if m:
         stem = stem[:m.start()]
-    role = entry.get('role')
-    if role and str(role) != 'primary':
-        suffix = '-' + _slugify(str(role))
+    role = files_entry_role(entry)
+    if role:
+        suffix = '-' + _slugify(role)
         if stem.endswith(suffix):
             stem = stem[:-len(suffix)]
     copy = entry.get('copy')
@@ -5780,10 +5803,12 @@ def process_refile(
         rec_stem = record_path.stem
         m = _FILENAME_SOURCE_ID_RE.search(rec_stem)
         slug = rec_stem[:m.start()] if m else _slugify(rec_stem)
+        # The main file takes the record's bare name, as it always has,
+        # even when its role says what it is (`front`).
         suffix = ''
-        role = entry.get('role')
-        if role and str(role) != 'primary':
-            suffix = f'-{_slugify(str(role))}'
+        role = files_entry_role(entry)
+        if role and not files_entry_is_main(entry):
+            suffix = f'-{_slugify(role)}'
         copy = entry.get('copy')
         if copy:
             suffix = f'-{_slugify(str(copy))}{suffix}'

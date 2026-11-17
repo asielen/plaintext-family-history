@@ -146,6 +146,8 @@ from _lib import (
     is_template_file,
     is_working_copy,
     is_valid_edtf,
+    files_entry_is_main,
+    flag_true,
     is_valid_id,
     KEYWORD_READ_ARGS,
     keyword_values_from_row,
@@ -1411,6 +1413,70 @@ def _check_retired_fields(meta: dict, claims: list, path: Path,
             '(SPEC 2.1); nothing reads it, so it is safe to delete those lines.'))
 
 
+def _check_ai_passes(meta: dict, path: Path, findings: list[Finding]) -> None:
+    """W144: an `ai_passes:` list a reader cannot use (SPEC §14, AI contract
+    rule 3). Each entry is a mapping with `date` (EDTF), `by` and `task`;
+    `note` is optional. A warning: the pass happened either way, and a later
+    reader only loses the who or when of it."""
+    if 'ai_passes' not in meta:
+        return
+    passes = meta.get('ai_passes')
+    shape = ('each entry is `- {date: 2026-06-11, by: <model>, task: claims}` '
+             '(SPEC §14)')
+    if not isinstance(passes, list):
+        findings.append(Finding('W', 'W144', path,
+            f'ai_passes: should be a list of passes - {shape}.'))
+        return
+    for n, entry in enumerate(passes, 1):
+        if not isinstance(entry, dict):
+            problem = 'is not a date/by/task entry'
+        else:
+            missing = [k for k in ('date', 'by', 'task')
+                       if not str(entry.get(k) or '').strip()]
+            if missing:
+                problem = 'has no ' + ' or '.join(f'{k}:' for k in missing)
+            elif not is_valid_edtf(str(entry.get('date')).strip()):
+                problem = f'has a date: that is not a date ({entry.get("date")!r})'
+            else:
+                continue
+        findings.append(Finding('W', 'W144', path,
+            f'ai_passes: entry {n} {problem} - {shape}.'))
+
+
+def _check_main_file_mark(meta: dict, path: Path, findings: list[Finding]) -> None:
+    """W145: a source whose `files:` marks more than one main file (SPEC §14
+    `is_primary: true` - the file a reader opens first). An older record's
+    `role: primary` still counts as a mark, except on a second copy labelled
+    with `copy:`. A record marking no file is not reported: records written
+    before SPEC 2.1 often mark none, and a reader opens the first file. A
+    warning: every file is still listed and found; only which to open first
+    is unclear."""
+    files = meta.get('files')
+    if not isinstance(files, list):
+        return
+    entries = [e for e in files if isinstance(e, dict) and e.get('file')]
+    flagged = [e for e in entries if flag_true(e.get('is_primary'))]
+    stray = [e for e in entries
+             if e not in flagged and 'is_primary' not in e
+             and str(e.get('role') or '').strip().lower() == 'primary'
+             and not str(e.get('copy') or '').strip()]
+    if flagged and stray:
+        shown = ', '.join(str(e.get('file')) for e in stray)
+        findings.append(Finding('W', 'W145', path,
+            f'{flagged[0].get("file")} is marked `is_primary: true`, but `role: primary` '
+            f'is still on {shown}, which also calls it the main file. Delete that '
+            '`role: primary` line (SPEC §14).'))
+        return
+    marked = flagged or stray
+    if len(marked) <= 1:
+        return
+    shown = ', '.join(str(e.get('file')) for e in marked)
+    findings.append(Finding('W', 'W145', path,
+        f'{len(marked)} files are marked as this source\'s main file ({shown}); '
+        'keep `is_primary: true` on one only. For a photo, '
+        '`fha source set-primary <s-id> --file NAME` makes the change.'))
+
+
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
@@ -1553,6 +1619,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             if len(parts) < 2 or parts[0] != 'documents' or parts[1] != 'dna':
                 findings.append(Finding('E', 'E017', path,
                     f'DNA source file must be under documents/dna/: {fpath!r}'))
+
+    _check_ai_passes(meta, path, findings)
+    _check_main_file_mark(meta, path, findings)
 
     # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)
     _check_date_value(meta.get('source_date', ''), 'source_date', '', path, findings)

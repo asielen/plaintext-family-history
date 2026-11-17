@@ -96,9 +96,19 @@ class ConvertMiningTestCase(unittest.TestCase):
         # Best-effort anchor resolved to the transcript line.
         self.assertEqual(by_type['birth']['anchor'], 'line 3')
         text = mary.read_text(encoding='utf-8')
-        self.assertIn('## AI Passes', text)
-        self.assertIn('model: gpt-4-class', text)
-        self.assertIn('human_reviewed: false', text)
+        # SPEC §14: the legacy pass is one `ai_passes:` frontmatter entry
+        # (date, by, task); no `## AI Passes` section, no `human_reviewed`.
+        self.assertNotIn('## AI Passes', text)
+        self.assertNotIn('human_reviewed', text)
+        passes = rec['meta']['ai_passes']
+        self.assertEqual(len(passes), 1)
+        self.assertIn('gpt-4-class', passes[0]['by'])
+        self.assertEqual(set(passes[0]) - {'note'}, {'date', 'by', 'task'})
+        keys = list(rec['meta'])
+        self.assertEqual(keys.index('ai_passes') + 1, keys.index('created'))
+        # SPEC §14: the transcript is the main file, marked is_primary alone.
+        self.assertNotIn('role: primary', text)
+        self.assertIn(rec['meta']['files'][0]['is_primary'], (True, 'true'))
 
     def test_apply_non_oserror_rolls_back_and_reports(self) -> None:
         # A non-OSError, non-ConvertError failure mid-apply (e.g. a KeyError)

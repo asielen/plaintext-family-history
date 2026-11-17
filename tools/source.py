@@ -113,7 +113,7 @@ DESIGN RULES (why the code looks the way it does)
   reporting success while nothing really changed.
 - **`set-primary` edits a record's frontmatter, but only its `files:` list
   (#200).** The body-only rule above is for the note verbs. set-primary moves
-  `is_primary: true` / `role: primary` from one entry to another, one
+  `is_primary: true` from one entry to another, one
   `key: value` line at a time, and lets the YAML parse referee the result:
   the rewritten frontmatter must parse to exactly the planned list, with
   every other field and everything below the frontmatter unchanged, or
@@ -166,7 +166,7 @@ CODE MAP
                                 keyword; returns a _lib.Result
   _files_block_items          - #200: each files: entry's lines, for text surgery
   _set_entry_key              - set one key line of one files: entry in place
-  run_source_set_primary      - #200: move is_primary/role: primary to the named
+  run_source_set_primary      - #200: move is_primary: true to the named
                                 photo; returns a _lib.Result
   _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract /
   _cmd_source_clear_keyword / _cmd_source_set_primary / _make_group_help
@@ -219,6 +219,7 @@ from _lib import (
     OriginalBackup,
     parse_frontmatter_strict,
     PHOTO_EXTENSIONS,
+    files_entry_is_main,
     parse_media_filename,
     pip_command,
     read_keyword_row,
@@ -1367,7 +1368,8 @@ def run_source_set_primary(
     human's say-so.
 
     What changes, and only in that record's `files:` list:
-      - the named file's entry gets `is_primary: true` and `role: primary`;
+      - the named file's entry gets `is_primary: true` (SPEC §14: the one
+        main-file mark; its own role line is left as written);
       - the entry that WAS the main image gets `is_primary: false` and the
         role its own filename spells (`variant_role` - `back`, `negative`,
         `page-2`, ...; `variant` when the name spells none), plus `copy: B`-
@@ -1536,11 +1538,11 @@ def run_source_set_primary(
             'refused',
             f'{label} already marks more than one file as its main image '
             f'({shown}), so this tool cannot tell which one to step down. Open '
-            f'{path}, leave `is_primary: true` and `role: primary` on just one file, run `fha lint`, '
+            f'{path}, leave `is_primary: true` on just one file (and `role: primary` on none), '
+            'run `fha lint`, '
             'then try again. Nothing was written.')
     prev_i = previous[0] if previous else None
-    if prev_i is None and _is_true(target_entry.get('is_primary')) \
-            and str(target_entry.get('role') or '').strip() == 'primary':
+    if prev_i is None and _is_true(target_entry.get('is_primary')):
         result.data['status'] = 'already'
         result.data['primary'] = target_alias
         result.add('info', f'{target_name} is already the main image of {label}. '
@@ -1566,7 +1568,6 @@ def run_source_set_primary(
         planned[i][key] = value
         edits.append((i, key, value_text))
 
-    _plan(target_i, 'role', 'primary', 'primary')
     _plan(target_i, 'is_primary', True, 'true')
     prev_role = prev_copy = None
     if prev_i is not None:
@@ -1591,8 +1592,8 @@ def run_source_set_primary(
 
     lines = text_in.split('\n')
     cr = '\r' if '\r\n' in text_in else ''
-    hand_fix = (f'Open {path} and make the change by hand (is_primary: true and '
-                f'role: primary on {target_name}), then run `fha lint`. '
+    hand_fix = (f'Open {path} and make the change by hand (is_primary: true '
+                f'on {target_name}), then run `fha lint`. '
                 'Nothing was written.')
     items, problem = _files_block_items(lines)
     if problem is None and len(items) != len(entries):
@@ -1666,7 +1667,6 @@ def run_source_set_primary(
             not reread.get('parse_errors')
             and len(files_back) == len(planned)
             and _is_true(files_back[target_i].get('is_primary'))
-            and str(files_back[target_i].get('role')) == 'primary'
             and sum(1 for e in files_back
                     if isinstance(e, dict) and _is_true(e.get('is_primary'))) == 1
             and (prev_i is None or str(files_back[prev_i].get('role')) == prev_role))
@@ -1850,7 +1850,7 @@ _SET_PRIMARY_DESCRIPTION = """Choose which photo is the main image of a source -
   fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif"
 
 Changes only the source record's files: list: the named photo becomes the
-main image (is_primary: true, role: primary), and the photo that was the main
+main image (is_primary: true), and the photo that was the main
 image is listed by what its name says it is (role: back, say). No photo is
 renamed or touched, and the record's title and filename stay as they are.
 `fha doctor` names the records that need this (#200: an older `fha process`
@@ -1949,8 +1949,8 @@ def _copy_label(entry: dict) -> str:
     """A files: entry's `copy:` label as text, '' when it has none.
 
     `fha process --more FILE primary:familysearch` writes `copy: familysearch`
-    beside `role: primary` (SPEC §13 "Copies: `b`, `c`, `negative`..."): a
-    second digitization of the same evidence. A blank or null value is no
+    (SPEC §13 "Copies: `b`, `c`, `negative`..."): a second digitization of
+    the same evidence. Older records list it with `role: primary` too. A blank or null value is no
     label at all, and YAML may hand back a number for `copy: 2`, hence str().
     """
     value = entry.get('copy')
@@ -1969,11 +1969,12 @@ def _choose_extract_pdf(
 
     - `--copy LABEL` given: the PDF whose `copy:` label matches (ignoring
       capitals). An unknown label refuses, listing the labels there are.
-    - Otherwise the `role: primary` PDF. Several primaries are a normal,
-      tool-written shape - `--more FILE primary:COPY` attaches a second
-      digitization that way - so the one with NO `copy:` label is the book's
-      main copy and is read. Only when that still leaves none or several is
-      it a refusal, and the refusal names `--copy`.
+    - Otherwise the main-file PDF (`is_primary: true`, SPEC §14). A record
+      written before SPEC 2.1 marks it `role: primary` instead, and may mark
+      a second digitization (`--more FILE primary:COPY`) the same way, so of
+      several the one with NO `copy:` label is the book's main copy and is
+      read. Only when that still leaves none or several is it a refusal, and
+      the refusal names `--copy`.
     - No primary: the single PDF the inventory lists; several refuse.
     """
     labels = sorted({_copy_label(e) for e in pdf_entries if _copy_label(e)},
@@ -1990,7 +1991,7 @@ def _choose_extract_pdf(
                              if labels else '') + '.')
         matches = [e for e in pdf_entries if _copy_label(e).casefold() == want]
         if len(matches) > 1:
-            primaries = [e for e in matches if str(e.get('role', '')) == 'primary']
+            primaries = [e for e in matches if files_entry_is_main(e)]
             if len(primaries) == 1:
                 matches = primaries
         if len(matches) == 1:
@@ -2010,23 +2011,24 @@ def _choose_extract_pdf(
                       f'record, then re-run `fha source extract {sid_display} '
                       f'--copy LABEL`.')
 
-    primary_pdfs = [e for e in pdf_entries if str(e.get('role', '')) == 'primary']
+    primary_pdfs = ([e for e in pdf_entries if _is_true(e.get('is_primary'))]
+                    or [e for e in pdf_entries if files_entry_is_main(e)])
     if len(primary_pdfs) > 1:
         unlabelled = [e for e in primary_pdfs if not _copy_label(e)]
         if len(unlabelled) == 1:
             return unlabelled[0], None
         if not unlabelled:
             return None, (f'{sid_display} has {len(primary_pdfs)} PDFs marked '
-                          'role: primary and every one carries a copy: label '
+                          'as the main file and every one carries a copy: label '
                           f'({label_list}), so none is the main copy. Name the '
                           f'one to read, e.g. {example}.')
         shown = ', '.join(str(e.get('file')) for e in unlabelled)
-        return None, (f'{sid_display} has {len(unlabelled)} PDFs marked role: '
-                      f'primary with no copy: label ({shown}), so extraction '
+        return None, (f'{sid_display} has {len(unlabelled)} PDFs marked as the '
+                      f'main file with no copy: label ({shown}), so extraction '
                       'cannot tell which is the main copy and will not guess. '
                       'Add a copy: label (e.g. `copy: b`) to the files: entry '
-                      'of every one but the main copy - the shape '
-                      '`fha process --more FILE primary:LABEL` writes - then '
+                      'of every one but the main copy, and `is_primary: true` '
+                      'on the main copy alone - then '
                       f're-run `fha source extract {sid_display}`'
                       + (f', or read a labelled copy now with {example}'
                          if labels else '') + '.')
@@ -2041,8 +2043,8 @@ def _choose_extract_pdf(
                       'doctrine).')
     shown = ', '.join(str(e.get('file')) for e in pdf_entries)
     return None, (f'{sid_display} lists more than one PDF ({shown}) and none is '
-                  'role: primary - mark the one to extract as primary in the '
-                  'record, then re-run'
+                  'marked as the main file - add `is_primary: true` to the one to '
+                  'extract in the record, then re-run'
                   + (f', or pick one by its copy: label, e.g. {example}'
                      if labels else '') + '.')
 
@@ -2700,7 +2702,11 @@ def run_source_extract(
     stem = pdf_path.stem
     m = _SID_SUFFIX_RE.search(stem)
     base = stem[:m.start()] if m else stem
-    if str(pdf_entry.get('role', '')) == 'primary' and base.lower().endswith('-primary'):
+    # A file named `-primary` (an older `--more FILE primary:COPY`) keeps
+    # that name; only its dump drops the word, whatever the record says now.
+    if base.lower().endswith('-primary') and (
+            files_entry_is_main(pdf_entry)
+            or str(pdf_entry.get('role', '')).strip().lower() in ('', 'primary')):
         base = base[:-len('-primary')]
     used_label = _copy_label(pdf_entry)
     if used_label:

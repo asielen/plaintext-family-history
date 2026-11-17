@@ -82,6 +82,7 @@ from _lib import (
     PHOTO_EXTENSIONS,
     OriginalBackup,
     carries_person_record_fields,
+    files_entry_is_main,
     COMPANION_KINDS,
     configure_utf8_stdout,
     db_mtime,
@@ -875,7 +876,8 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             role = str(item.get('role') or '').strip().lower()
             if role == 'back':
                 back_aliases.setdefault(key, []).append(str(file_alias))
-            # An explicit `role: primary` entry always claims `disk_path` for
+            # The main-file entry (`is_primary: true`, or an older record's
+            # `role: primary`) always claims `disk_path` for
             # its key, even when a differently-roled entry for the same
             # base_id was listed EARLIER in the files: list (issue #169
             # followup review round 2): plain `setdefault` instead kept
@@ -886,7 +888,7 @@ def _check_orphaned_back_photos(archive_root: Path, fha_config: dict,
             # A non-primary entry only fills the slot as a fallback, so a
             # group that never labels a `role: primary` at all keeps its old
             # first-entry-wins behavior.
-            if role == 'primary' or key not in sample_path:
+            if files_entry_is_main(item) or key not in sample_path:
                 sample_path[key] = on_disk
 
         for (parent_dir, base_id), disk_path in sample_path.items():

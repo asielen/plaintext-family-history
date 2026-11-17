@@ -291,6 +291,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    grouping_stem / variant_role / bundle_role / select_variation_primary -
 #                                 the variation-group key, a member's role, a bundle
 #                                 file's role, and the group's main image (#200)
+#    files_entry_is_main / main_files_entry / files_entry_role - read a source's
+#                                 main-file mark (`is_primary: true`; an older
+#                                 record's `role: primary` still counts, SPEC §14)
 #
 #  EDTF handling
 #    is_valid_edtf             - validate an EDTF string against this project's subset
@@ -2322,7 +2325,9 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # 14: hypotheses.question/guess + hypothesis_persons - working answers are
 # read from question entries (SPEC §17b), with every person in refs:. A v13
 # index has neither the columns nor the table, so bump to force the rebuild.
-INDEX_SCHEMA_VERSION = 14
+# 15 (plan 19, S3): source_files.is_primary flags each source's main file
+# (SPEC §14), so the site no longer reads the retired `role: primary` mark.
+INDEX_SCHEMA_VERSION = 15
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
@@ -7369,6 +7374,67 @@ def select_variation_primary(members: list, parsed_of) -> object:
     # the main image, whatever the names sort to (SPEC §13).
     own = [m for m in members if parsed_of(m).part_kind != 'attached']
     return min(own or members)
+
+
+def flag_true(value) -> bool:
+    """A yes/no frontmatter flag as a human or a tool might have written it
+    (`true`, `yes`, `True`, `"true"`; `read_record` hands booleans back as
+    the string 'true')."""
+    return value is True or str(value).strip().lower() in ('true', 'yes', '1')
+
+
+def files_entry_is_main(entry) -> bool:
+    """True when one `files:` entry says it is the source's main file.
+
+    SPEC §14: `is_primary: true` is the mark. Records written before SPEC 2.1
+    said it with `role: primary` instead, so that still counts here - a
+    reader never misses the main file of an older record. An explicit
+    `is_primary: false` wins over an old `role: primary`."""
+    if not isinstance(entry, dict):
+        return False
+    if 'is_primary' in entry and entry.get('is_primary') is not None:
+        return flag_true(entry.get('is_primary'))
+    return str(entry.get('role') or '').strip().lower() == 'primary'
+
+
+def main_files_entry(files) -> dict | None:
+    """The `files:` entry a reader should open first, or None.
+
+    The entry marked `is_primary: true` wins; failing that (a record written
+    before SPEC 2.1), the first one with `role: primary`; failing that, a
+    source's only file - there is no other to open first."""
+    entries = [e for e in (files or []) if isinstance(e, dict)] \
+        if isinstance(files, list) else []
+    for e in entries:
+        if flag_true(e.get('is_primary')):
+            return e
+    for e in entries:
+        if files_entry_is_main(e):
+            return e
+    return entries[0] if len(entries) == 1 else None
+
+
+def ai_pass_lines(date: str, by: str, task: str, note: str | None = None) -> list[str]:
+    """A source's `ai_passes:` frontmatter block holding one pass (SPEC §14,
+    AI contract rule 3): who read the source to extract from it, when, and
+    what for. Written just before `created:`."""
+    lines = ['ai_passes:',
+             f'  - date: {yaml_inline(str(date))}',
+             f'    by: {yaml_inline(str(by))}',
+             f'    task: {yaml_inline(str(task))}']
+    if note:
+        lines.append(f'    note: {yaml_inline(str(note))}')
+    return lines
+
+
+def files_entry_role(entry) -> str:
+    """What one `files:` entry says its file IS (`front`, `page-2`,
+    `transcript`), or '' - never the old `role: primary` main-file mark,
+    which says which file to open first, not what it is."""
+    if not isinstance(entry, dict):
+        return ''
+    role = str(entry.get('role') or '').strip()
+    return '' if role.lower() == 'primary' else role
 
 
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────

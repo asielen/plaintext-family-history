@@ -490,7 +490,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b4205775f7f8f761b5c7f275ffbb5041e665e52032e55ecbbd854d054654ced1",
+      "sha256": "fcc3ce069587de7d92501e5c5ad14a95bcb4c96c913eb2005b977ba16def8f6b",
       "spec_version": "2.1",
       "src": "tools/_lib.py"
     },
@@ -504,7 +504,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "92af896d00c15fe60771e3780f2eb01587bd98bfcaa6c5a2289bb3e17ef66314",
+      "sha256": "acf489b5c883a3c20cf1847fe0ba55c7eef3374381ee122a6233d532f8e49176",
       "spec_version": "2.1",
       "src": "tools/capture.py"
     },
@@ -567,7 +567,7 @@
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "73dcc7c17c2c102bb2eb165aec22a29dfd63f25bc1fd58006a217f35e6e3054c",
+      "sha256": "a8d5277ca184b970564ff774297ebdea486f71267ffaed5f72a280e05531489d",
       "spec_version": "2.1",
       "src": "tools/convert_mining.py"
     },
@@ -581,7 +581,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "42eea3267cd2a8ad695e4b3a40609ffd59128ce4a414ad5c8c1fbfbe25f3c93e",
+      "sha256": "018c3e74ef5bca42d242d7251c10b35709032f2e9d82a6830c831425b5166641",
       "spec_version": "2.1",
       "src": "tools/doctor.py"
     },
@@ -595,7 +595,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "806a8b593ab05c24a433f75a7614c9b2d75da52164dbed6f7c47f4bc91179145",
+      "sha256": "cd60f45a0879892f46f1a5cef8035c3c72bbc9856d88eb06ca1d18cf12328b3c",
       "spec_version": "2.1",
       "src": "tools/find.py"
     },
@@ -609,7 +609,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "2d0d6f9552604468500bd95857e70f0be8ce30f26bd73912119e719e4554fcac",
+      "sha256": "77f964300dd859a445e338ca572eeb2fb063afea530b09a48563642b862b93c3",
       "spec_version": "2.1",
       "src": "tools/gedcom_import.py"
     },
@@ -623,14 +623,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "cb056e618c0f6f4b262206130c9a4821fd6cd3a0999af1985193d98cfd5a0bf9",
+      "sha256": "c38cfb189ce8f045dde067e5bad72aa49948e6db74d9b91d972d74ccbc6d51bf",
       "spec_version": "2.1",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "68c2543fe78ac66b5572d61541835a13308dc580ebe5c1f3a41b410b246c1cc6",
+      "sha256": "12d3f614545138f1a9a5057df9a895262cfdb59bcb64b770cbc99981a168ce8c",
       "spec_version": "2.1",
       "src": "tools/lint.py"
     },
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "5341bbfe7849f48471985c8c0fa1aa5760e2a0960718410eb76500a371112850",
+      "sha256": "2e046d3e687a36c448a8e0f62eda2b2e173a9346c28a63d36100d30a1abd1782",
       "spec_version": "2.1",
       "src": "tools/process.py"
     },
@@ -700,7 +700,7 @@
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
-      "sha256": "74436f1edc8ce3a86532e981397b28a23831016fd09fceb17e9cbeb6b9293fc0",
+      "sha256": "da070a7065f96275314f91ee1c8d93703ae2270a436fce7fded1c43c75f81fa1",
       "spec_version": "2.1",
       "src": "tools/reorganize.py"
     },
@@ -735,14 +735,14 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "5584b28871347fda1d4ac2f9c5bb235ace91d58f30192c1218b3f6bc8dd04e59",
+      "sha256": "f584e00085041939ec6b97b5546273cfad38ca8f89eff1feea650aab918e55fb",
       "spec_version": "2.1",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "df25aa9bccd408dcb3c9f42fba51cc8ef1c46d357fbf601761631e3204e1096d",
+      "sha256": "4d13302f443dc636dfbfbf1c55018a32bbe636332762eec61e89deb241c6ef6b",
       "spec_version": "2.1",
       "src": "tools/source.py"
     },
@@ -961,13 +961,13 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "6837c360ca45c8987b3d48856a30228ac30adb41627f529ca1cb91e467b27e4c",
+      "sha256": "acc2ac7518cd04abda1a7d3ffc561b90fcaf2e7cb4b07353a79f72f6a06f36be",
       "spec_version": "2.1"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "4cf16306027a78c3271509ff79890f3357edc8096112af0e5c998bcc0f2a6631",
+      "sha256": "7067e348a0e38310e7cf7b499fe3d20bee6470f4739560cf71cac15b37d01f64",
       "spec_version": "2.1"
     },
     {
@@ -1169,7 +1169,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "a6c588394ddc430d8c3586c0a172282e0db847ed2b388645ffecdff3f52e9dce",
+      "sha256": "49fa7e83c483265a18bc92d7407e653f70d982b38ed6b556a9e17eef2eac9bea",
       "spec_version": "2.1",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
