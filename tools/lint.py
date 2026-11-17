@@ -1302,10 +1302,9 @@ def _process_person_file(path: Path, registry: Registry,
             if field not in meta or meta[field] == '':
                 findings.append(Finding('E', 'E010', path,
                     f'Person profile missing required field: {field!r}'))
-        # W141: sex outside SPEC §9's vocabulary. An older `U` is tolerated:
-        # it reads as not recorded, the same as leaving the line out.
+        # W141: sex outside SPEC §9's vocabulary (an old `U` included).
         sex = meta.get('sex')
-        if sex not in (None, '') and str(sex).strip() not in PERSON_SEX_VALUES | {'U'}:
+        if sex not in (None, '') and str(sex).strip() not in PERSON_SEX_VALUES:
             finding = _vocab_finding(path, 'Person record', 'sex', sex,
                                      sorted(PERSON_SEX_VALUES))
             finding.message += (f' To fix it: fha person set-sex {meta.get("id") or "<p-id>"} '
@@ -1728,6 +1727,23 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                 f'Use one of: {", ".join(sorted(CLAIM_TYPES))} '
                 '(for anything else, use type: event or note with a free-text subtype:).'))
 
+        # W153: `subtype: child-of` / `spouse-of`, an old way of saying which
+        # part each person plays. No tool reads it: the roles: map says it,
+        # and subtype: names the bond's nature (SPEC §8.2).
+        old_subtype = str(claim.get('subtype') or '').strip().lower()
+        if old_subtype in ('child-of', 'spouse-of'):
+            if old_subtype == 'child-of':
+                fix = ('Delete that line: the `roles:` map (`child:` and `parent:`) says '
+                       'who is whose child. If you know the bond\'s nature, write it '
+                       'instead, e.g. `subtype: adoptive`.')
+            else:
+                fix = ('Delete that line and make sure `roles:` names both people as '
+                       '`spouse:` (e.g. `roles: {spouse: [p-…, p-…]}`) - without that, '
+                       'this marriage is missing from the family tree.')
+            findings.append(Finding('W', 'W153', path,
+                f'Claim {cid} says `subtype: {old_subtype}`, an old way of writing a '
+                f'relationship that the tools no longer read. {fix}'))
+
         # E006: accepted claim must have reviewed
         # A blank `reviewed:` line is YAML null and reads as absent here, as it
         # does for W139 - not as the text 'None'.
@@ -2018,8 +2034,7 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     several natures across sources (a biological AND an adoptive edge - the
     co-valid NPE/adoption case), so each child maps to the SET of its edge
     natures. Scalars and lists are both accepted in either role (SPEC §8.4); a
-    legacy `subtype: child-of` claim lands here too, recorded as the nature
-    string it carries, and a `birth` claim normally carries no subtype at all,
+    `birth` claim normally carries no subtype at all,
     which reads as genetic - exactly what the SQLite twin's
     `COALESCE(LOWER(c.subtype), '')` does with the same claim.
 
@@ -2059,9 +2074,8 @@ def _build_children_of(registry: Registry, genetic_only: bool = False) -> dict[s
     With `genetic_only`, an edge survives only if at least one of its natures is
     genetic (SPEC §12.2) - so the Ahnentafel NUMBERING walk skips adoptive, step,
     foster, guardian, and social parents, while the bracket and relationship views
-    (genetic_only=False) still show every child. An unset, legacy (`child-of`), or
-    unrecognised nature defaults to genetic, so a legacy archive numbers exactly as
-    before. Bloodline filtering changes numbering only; every parent edge stays
+    (genetic_only=False) still show every child. An unset or unrecognised nature
+    defaults to genetic. Bloodline filtering changes numbering only; every parent edge stays
     visible elsewhere.
     """
     children_of: dict[str, set[str]] = {}
@@ -2724,9 +2738,9 @@ def _entry_subtype(entry: dict) -> str:
 
 def _claim_subtype_norm(claim: dict) -> str:
     """The claim's nature, normalised for comparison. A parent/child claim with no
-    subtype - or the legacy role-marker `child-of` - reads as `biological`."""
+    subtype reads as `biological`."""
     st = str(claim.get('subtype', '')).strip().lower()
-    if st and st not in ('child-of', 'spouse-of'):
+    if st:
         return st
     roles = claim.get('roles')
     if not isinstance(roles, dict):
@@ -2788,8 +2802,8 @@ def _claim_spouse_pids(
 ) -> set[str]:
     """Who a couple claim says married each other, read the way the index reads it.
 
-    A couple claim is a `marriage`, a `divorce`, or the legacy `relationship` +
-    `subtype: spouse-of` - the three shapes that put spouse edges in the tree.
+    A couple claim is a `marriage` or a `divorce` - the shapes whose people
+    with no roles still put spouse edges in the tree.
 
     A marriage certificate names the couple AND both sets of parents, and
     listing all six in `persons:` is correct - `persons:` is who the claim is
@@ -3402,11 +3416,6 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # name-link for one man are two entries and one person, and there
             # is no couple to ask about (spouse_parties folds them together for
             # the same reason).
-            # The legacy `relationship` + `subtype: spouse-of` shape derives
-            # spouse edges through the same rule, so it earns the same warning.
-            # Scoped to spouse-of alone: an ordinary parent/child relationship
-            # claim names three people (a child and two parents) and has no
-            # business being asked for a spouse role.
             # Only claims that actually derive edges can lose one. Derivation
             # reads `accepted`, non-negated claims (index.py
             # _derive_relationships), so a `suggested` claim's missing roles:
@@ -3416,9 +3425,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # did not marry" (SPEC §8.6); telling the human a marriage is
             # missing from the tree because of it would be backwards.
             claim_type = str(claim.get('type', '')).strip().lower()
-            derives_spouses = claim_type in ('marriage', 'divorce') or (
-                claim_type == 'relationship'
-                and str(claim.get('subtype', '')).strip().lower() == 'spouse-of')
+            derives_spouses = claim_type in ('marriage', 'divorce')
             derives_edges = (
                 str(claim.get('status', '')).strip() == 'accepted'
                 and claim.get('negated') not in (True, 'true'))
@@ -5034,7 +5041,7 @@ def _check_summary_line(
                 supported = ref_pid in children_of.get(profile_pid, set())
             if not supported:
                 findings.append(Finding('E', 'E013', profile_path,
-                    f'Summary **{label}:** lists {ref_pid} but no accepted child-of '
+                    f'Summary **{label}:** lists {ref_pid} but no accepted parent/child '
                     f'relationship claim links them to {profile_pid}'))
 
 

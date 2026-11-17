@@ -541,11 +541,11 @@ class XrefTests(unittest.TestCase):
         self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
                            "('p-cccccccccc','Child','false','curated','z.md')")
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
-                       'child of parent', subtype='child-of',
+                       'child of parent', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
                        roles={'p-aaaaaaaaaa': 'child', 'p-bbbbbbbbbb': 'parent'})
         _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
-                       'parent of child', subtype='child-of',
+                       'parent of child', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-cccccccccc'],
                        roles={'p-aaaaaaaaaa': 'parent', 'p-cccccccccc': 'child'})
         self.conn.commit()
@@ -754,12 +754,12 @@ class XrefTests(unittest.TestCase):
         self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
                            "('p-cccccccccc','Child Three','false','curated','z.md')")
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
-                       'parent of two children', subtype='child-of',
+                       'parent of two children', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc'],
                        roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child',
                               'p-cccccccccc': 'child'})
         _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
-                       'parent of one child', subtype='child-of',
+                       'parent of one child', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
                        roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child'})
         self.conn.commit()
@@ -777,12 +777,12 @@ class XrefTests(unittest.TestCase):
         self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
                            "('p-bbbbbbbbbb','Child Two','false','curated','y.md')")
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
-                       'mother of the child, and the informant', subtype='child-of',
+                       'mother of the child, and the informant', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
                        roles={'p-aaaaaaaaaa': 'informant\x1fparent',
                               'p-bbbbbbbbbb': 'child'})
         _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
-                       'mother of the child', subtype='child-of',
+                       'mother of the child', subtype='biological',
                        persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
                        roles={'p-aaaaaaaaaa': 'parent', 'p-bbbbbbbbbb': 'child'})
         self.conn.commit()

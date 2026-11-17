@@ -170,8 +170,8 @@ CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
 - `person_files.kind` must be one of profile, research, timeline, draft-queue (`sources-index` writes no companion, §7); current code still lists `sources-index` in `_lib.COMPANION_KINDS`.
 
 **Relationship derivation** (accepted claims only; edges are pure cache, traversal crosses in-law branches):
-- `relationship` `child-of` → `child` edge (subject → parents) + reciprocal `parent` edges. `birth` → the same pair, by roles only.
-- `spouse-of` and `marriage` → reciprocal `spouse` edges dated from the claim; `date_end` from a `divorce` between the pair or a `death` of either.
+- `relationship` whose `roles:` name a `child` and a `parent` → `child` edge (subject → parents) + reciprocal `parent` edges, whatever its `subtype:` nature. `birth` → the same pair, by roles only.
+- `marriage`, and `relationship` whose `roles:` name `spouse`s → reciprocal `spouse` edges dated from the claim; `date_end` from a `divorce` between the pair or a `death` of either.
 - Social subtypes → `friend` / `associate` / `neighbor`.
 - Every role a person carries counts (`roles_by_person`, SPEC §8.3); `roles:` order never decides. A person named twice (`[p-a, "[[Alice Smith]]"]`) counts once.
 - Kin synonyms read as the role they name (`_lib.role_meaning`, SPEC §8.3): `mother`/`father` → `parent`, `son`/`daughter` → `child`, `husband`/`wife` → `spouse`. Every role comparison goes through it.
@@ -183,7 +183,7 @@ CREATE VIRTUAL TABLE transcripts_fts USING fts5(source_id, path, content);
 3. Else no edge (`{spouse: [p-a], parent: [p-b]}` never pairs them). A false spouse edge reads as fact downstream; a missing one is only missing. W125 reports couple claims with ≥2 distinct persons and no couple.
 
 *Parentage - `_lib.parentage_parties`* (index `birth` and `relationship`; lint W126). Directed, so no two-person fallback:
-- `birth` with `roles:` naming a `child` and a `parent` mints the same pair as `child-of`. Unroled → nothing.
+- `birth` with `roles:` naming a `child` and a `parent` mints the same pair as a `relationship` claim does. Unroled → nothing.
 - Child and parent on one claim → child only; both sides of a directional tie (`employer`/`employee`, `enslaver`/`enslaved`) → no self-edge.
 - A map naming the child and a role for everyone else, with no parent, is complete and silent.
 - W126: ≥2 distinct people, no parent edge, and no `child` or someone unroled; or a person who is both child and parent.
@@ -264,7 +264,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W138 | W | A person's filename sorts under a surname the record no longer reads. Fix: `--fix-surnames` when the filename's surname spells words of `name:`, else a hand-written `surname:`. | §13 |
 | W139 | W | A `disputed`, `rejected` or `superseded` claim with no `reviewed:` date. Never back-filled. | §8.4 |
 | W140 | W | Half a merge: `merged_into:` without `status: merged`, or the reverse. | §9 |
-| W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an older `U` reads as not recorded and is not reported). Absent fields are not reported. | §9, §14, A.3 |
+| W141 | W | A word outside its closed vocabulary that the record still reads: claim `information` (primary, secondary, undetermined) or `evidence` (direct, indirect, negative); source `source_class` (original, derivative, authored); person `sex` (M, F, intersex, unknown; an old `U` included - fix: `fha person set-sex <p-id> unknown`). Absent fields are not reported. | §9, §14, A.3 |
 | W143 | W | A source record still carrying a field SPEC 2.1 retired: a claim's `significance`, `significance_reason` or `asset`, a `files:` entry's `language` or `digitized`. One line per record naming them: nothing reads them, safe to delete. Never an error. | §8.4, §14 |
 | W144 | W | AI passes a reader cannot use: an `ai_passes:` value that is not a list, or an entry that is not a mapping with `date` (EDTF), `by` and `task`; or passes kept in a retired `## AI Passes` body section, which no tool reads. Fix: one `ai_passes:` entry per pass, then delete the section. | §14 |
 | W145 | W | A source whose main file is unclear: more than one file marked `is_primary: true` (fix: keep it on the one a reader opens first; for a photo, `fha source set-primary`), or an entry still saying the old `role: primary`, which no tool reads (fix: write `is_primary: true` on that file instead, or delete the line if another file carries it). | §14 |
@@ -282,6 +282,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W150 | W | A person file still listing working answers under a separate `## Hypotheses` heading, which no tool reads. Fix: move each into a question entry (`## Q:` in `notes/questions.md` or the research file's `## Open Questions`) with its `id:` and `guess:` lines, then delete the section. | §17b |
 | W151 | W | A source's `people:` entry written the old way, a bare ID with the person's name as a comment (`- p-…  # Margaret Cole`); the name sits where no tool reads or updates it. Fix: write `- "[[p-…|Margaret Cole]]"`. Any other comment is a note and is not reported. | §14 |
 | W152 | W | Capture history left at `.cache/capture_log.jsonl`, which no tool reads and backups skip. Fix: move it to `notes/capture-log.jsonl` (or paste its lines at the top of that file), delete it, run `fha index`. | §17c |
+| W153 | W | A claim with `subtype: child-of` or `spouse-of`, an old way of saying who plays which part, which no tool reads. Fix: delete the line - `roles:` (`child:`/`parent:`, or `spouse:` naming both) says it; for a known nature write it instead (`subtype: adoptive`). A `spouse-of` claim with no `roles: spouse:` puts no couple in the tree until fixed. | §8.2, §8.3 |
 | W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
@@ -931,7 +932,7 @@ Four checks, all previewed. `--fix` applies 1-3, `--fix-promote` applies 4, `--r
 **2. Ahnentafel numbers (W110; needs `root_person`).**
 - Walk accepted, non-negated genetic parent edges (`biological`, `surrogate-genetic`, `donor-sperm`, `donor-egg`), from `relationship` and `birth` claim `roles:`. Social/legal edges are listed in brackets, not numbered.
 - `root_generation: self` (default) makes `root_person` #1; `children` makes them #2 with #1 their children collectively. Other values are rejected (W129).
-- `sex: M` → 2n, `sex: F` → 2n+1; same-sex or `U` pairs: lower p-id takes the lower slot. Two contributors in one role: the genetic one anchors, the other is shown beside.
+- `sex: M` → 2n, `sex: F` → 2n+1; same-sex or unrecorded pairs: lower p-id takes the lower slot. Two contributors in one role: the genetic one anchors, the other is shown beside.
 - Report wrong prefixes; `--fix` renames.
 - **W120**: one resolved parent with no `sex:` - the slot is a default; names the person and the fix. **W127**: `root_person` has a genetic child while `root_generation: self`, so all numbers are a generation off; fix: set `root_generation: children` (or re-anchor), `fha index`, `fha views brackets --realign`. Both report-only, in lint and views.
 

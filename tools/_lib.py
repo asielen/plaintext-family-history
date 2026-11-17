@@ -597,9 +597,8 @@ def is_genetic_parent_subtype(subtype: Any) -> bool:
     """Does a parent edge of this nature count toward the genetic pedigree?
 
     Genetic UNLESS the nature is an explicit social/legal kind (adoptive, step,
-    foster, guardian, surrogate-gestational, social). An unset, legacy (`child-of`),
-    or unrecognised subtype defaults to genetic, so a legacy archive numbers
-    exactly as it did before bloodline awareness (SPEC §12.2 back-compat)."""
+    foster, guardian, surrogate-gestational, social). An unset or
+    unrecognised subtype defaults to genetic (SPEC §12.2)."""
     return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
 
 
@@ -1978,7 +1977,7 @@ def sex_slot_is_defaulted(sex: object) -> bool:
 
     The derivation puts a lone parent whose sex is not F in the father/even
     slot. That is a default, not a derivation, whenever the value is absent,
-    blank, the legacy `U`, or something the vocabulary does not recognise
+    blank, or something the vocabulary does not recognise
     (`f`, `male`) - the human can settle it by recording `sex: M`/`sex: F`.
     An explicitly recorded `intersex` or `unknown` (SPEC §9's vocabulary) is a
     fact the human already stated: the tie-break is the designed behaviour
@@ -1993,7 +1992,7 @@ def sex_slot_is_defaulted(sex: object) -> bool:
 def format_w120_message(name: str, pos: int, sex: object, cmd_hint: str) -> str:
     """The W120 finding text, one wording for lint and views."""
     text = ('' if sex is None else str(sex)).strip()
-    if text and text != 'U':
+    if text:
         cause = (f'their record carries `sex: {text}`, which the tools do not '
                  'recognise (the vocabulary is M | F | intersex | unknown)')
     else:

@@ -4,8 +4,7 @@ TOOLING §3).
 
 Covers:
   * the roles-based parent/child migration: a parent edge is found by its roles:
-    map, so both a new `subtype: biological` claim and a legacy `subtype: child-of`
-    claim are detected (back-compat);
+    map, whatever its `subtype:` nature;
   * W115 relationship-reconciliation drift (missing claim, subtype mismatch, an
     opted-in block that omits an accepted kin claim);
   * W116 missing reciprocal edge, and `--fix-reciprocal` adding the mirror;
@@ -118,19 +117,19 @@ def _parent_entry(to_pid: str, name: str, *, subtype: str = 'biological',
 
 
 class RolesBasedDetectionTests(unittest.TestCase):
-    """The migration: a parent edge is identified by roles:, regardless of the
-    subtype string - so `biological` (new) and `child-of` (legacy) both count."""
+    """A parent edge is identified by roles:, regardless of the subtype
+    string - so `biological` and `adoptive` both count."""
 
-    def test_biological_and_legacy_child_of_both_detected(self) -> None:
+    def test_biological_and_adoptive_both_detected(self) -> None:
         child_a, _ = _person(CHILD, 'kid', 'ann')
         parent_a, _ = _person(PARENT, 'kid', 'bob')
         other_a, _ = _person(OTHERKID, 'kid', 'cara')
-        # CLAIM uses the new vocab; CLAIM2 uses the legacy child-of role-marker.
+        # CLAIM is biological; CLAIM2 is adoptive.
         legacy = (
-            '- value: "legacy child of parent"\n'
+            '- value: "adopted child of parent"\n'
             f'  id: {CLAIM2}\n'
             '  type: relationship\n'
-            '  subtype: child-of\n'
+            '  subtype: adoptive\n'
             f'  persons: [{OTHERKID}, {PARENT}]\n'
             '  roles:\n'
             f'    child: {OTHERKID}\n'
@@ -151,7 +150,7 @@ class RolesBasedDetectionTests(unittest.TestCase):
         children_of = lint._build_children_of(registry)
         parent_norm = PARENT.lower()
         self.assertIn(parent_norm, children_of)
-        # Both the biological child and the legacy child-of child map to the parent.
+        # Both the biological child and the adopted child map to the parent.
         self.assertEqual(children_of[parent_norm], {CHILD.lower(), OTHERKID.lower()})
 
     def test_index_derives_parent_edge_from_biological_subtype(self) -> None:

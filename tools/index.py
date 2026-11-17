@@ -2007,8 +2007,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     Parent/child and spouse edges are keyed on the claim's `roles:` map (child +
     parent, or spouse), not on `subtype:` - `subtype` now names the *nature* of a
     bond (biological, adoptive, …; SPEC §8.2), and every parent edge is recorded
-    regardless of nature. Legacy `subtype: child-of`/`spouse-of` claims still
-    derive correctly since they carry the same roles.
+    regardless of nature.
 
     `birth` is in the claim types read here for the same reason `death` is: a
     vital record is evidence about the family graph, not only about one person.
@@ -2066,22 +2065,19 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # plays), not from subtype: - subtype now names the *nature* of a
             # parent/child bond (biological, adoptive, step, …; SPEC §8.2). A
             # claim naming a child and a parent is a parent/child edge whatever
-            # its nature; legacy `subtype: child-of` claims still match because
-            # they carry the same roles, and legacy `spouse-of` is caught by the
-            # subtype fallback below.
+            # its nature.
             child_ids, parent_ids = parentage_parties(all_persons)
             spouse_ids = [p for p, r in all_persons if role_meaning(r) == 'spouse']
 
             if child_ids and parent_ids:
                 _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
-            elif spouse_ids or subtype == 'spouse-of':
-                # A relationship claim naming spouses (or a legacy spouse-of
-                # subtype) yields reciprocal spouse edges, like a marriage claim
-                # - and obeys the same scoping rule (_lib.spouse_parties), for
-                # the same reason. The two-person fallback inside that rule is
-                # reached here by a claim whose roles: map resolves to fewer
-                # than two spouses - a legacy `spouse-of` with no usable map, or
-                # a map holding one typo'd id - and pairing off three or more
+            elif spouse_ids:
+                # A relationship claim naming spouses yields reciprocal spouse
+                # edges, like a marriage claim - and obeys the same scoping
+                # rule (_lib.spouse_parties), for the same reason. The
+                # two-person fallback inside that rule is reached here by a
+                # claim whose roles: map resolves to fewer than two spouses (a
+                # map holding one typo'd id), and pairing off three or more
                 # people in that state would invent marriages exactly as the
                 # marriage branch used to.
                 spouse_pids = spouse_parties(all_persons)
