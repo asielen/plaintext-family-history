@@ -947,7 +947,7 @@ class ResearchHypothesisE004Tests(unittest.TestCase):
         w150 = [f for f in findings if f.code == 'W150']
         self.assertEqual(len(w150), 1, [f.message for f in findings])
         self.assertEqual(w150[0].severity, 'W')
-        self.assertEqual(w150[0].path, stub)
+        self.assertEqual(Path(w150[0].path), stub)
         self.assertIn('## Q:', w150[0].message)
         self.assertIn('guess:', w150[0].message)
 
