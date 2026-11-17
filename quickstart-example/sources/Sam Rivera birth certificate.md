@@ -15,24 +15,30 @@ places:
 
 files:
   - file: documents/Sam Rivera birth certificate.txt
-    role: primary
+    is_primary: true
 ---
 
 ## Claims
 ```yaml
 - value: "Samuel Rivera born 12 April 1985 in Millbrook, New York"
   type: birth
-  persons: ["[[Sam Rivera]]"]
+  persons:
+    - "[[Sam Rivera]]"
+  date: 1985-04-12
   status: accepted
   confidence: high
-  date: 1985-04-12
+  reviewed: 2025-03-01
 
 - value: "Samuel Rivera is the son of Michael Rivera and Linda Rivera"
   type: relationship
-  persons: ["[[Sam Rivera]]", "[[Michael Rivera]]", "[[Linda Brooks]]"]
-  roles: {child: "[[Sam Rivera]]", parent: ["[[Michael Rivera]]", "[[Linda Brooks]]"]}
+  persons:
+    - "[[Sam Rivera]]"
+    - "[[Michael Rivera]]"
+    - "[[Linda Brooks]]"
   status: accepted
   confidence: high
+  reviewed: 2025-03-01
+  roles: {child: "[[Sam Rivera]]", parent: ["[[Michael Rivera]]", "[[Linda Brooks]]"]}
 ```
 
 ## Notes

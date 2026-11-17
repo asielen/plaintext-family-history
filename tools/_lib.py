@@ -13111,7 +13111,7 @@ def couple_folder_for_prefix(archive_root: str | Path, prefix: int) -> Path | No
 # (ScaffoldParityTests); the section set is SPEC §16's research-file body
 # verbatim, now including RESEARCH_PURPOSE_BLOCK (#75).
 RESEARCH_TEMPLATE_FALLBACK = f'''---
-id: P-__________
+id: p-__________
 created: 2026-01-01
 ---
 
@@ -13123,15 +13123,8 @@ created: 2026-01-01
 
 ## Open Questions
 
-*(what you do not know yet)*
-
-## Hypotheses
-
-*(testable beliefs, not yet facts - a guess is never a claim)*
-
-## Research Log
-
-*(searches you have run, including empty ones, so nothing is fruitlessly re-searched)*
+*(what you do not know yet - one `## Q:` entry per question, in the same form as
+`notes/questions.md`; a guess you are working from goes in the same entry)*
 '''
 
 

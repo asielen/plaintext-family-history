@@ -8,15 +8,9 @@ templates themselves are skipped by every record walk; and they teach the new
 forms (manual mint, `aliases:`, `[[ ]]`, provisional vitals) without drifting
 from the scaffold output of `fha process` / `fha stubs` / `fha person new`.
 
-`_TEMPLATE.stub.md` is RETIRED (#76): a stub and a curated person are one
-shape now (SPEC §16), so there is no separate, smaller "stub" template to
-fill in - it is a redirect note pointing at `_TEMPLATE.person.md` (which
-already defaults to `tier: stub`). `TemplatesAreSkippedTests` still installs
-it and checks it is invisible to lint/index (it is still a real shipped
-file, still skipped by `is_template_file`'s filename-only test), but there
-is no `FilledTemplatesLintTests` case for it any more, and
-`ScaffoldParityTests` compares the stub renderer against `_TEMPLATE.person.md`
-instead of the retired file.
+A stub and a curated person are one shape (SPEC §16), so
+`_TEMPLATE.person.md` (which defaults to `tier: stub`) is the one person
+template; `ScaffoldParityTests` compares the stub renderer against it.
 
 `ScaffoldParityTests` also checks the NEW #75/#76 person-body renderer
 (`_lib.render_person_body_scaffold` / `ensure_person_body_sections`) the
@@ -58,9 +52,9 @@ from _lib import (
 
 
 def _fill(text: str, **codes: str) -> str:
-    """Replace each `X-__________` placeholder with a real minted code."""
+    """Replace each `x-__________` placeholder with a real minted code."""
     for prefix, code in codes.items():
-        text = text.replace(f'{prefix}-__________', code)
+        text = re.sub(rf'(?i){prefix}-__________', code, text)
     return text
 
 
@@ -127,8 +121,8 @@ class TemplatesAreSkippedTests(_ArchiveBase):
             (TEMPLATES / 'sources' / '_TEMPLATE.source.md').read_text(encoding='utf-8'), encoding='utf-8')
         (self.root / 'people' / '_TEMPLATE.person.md').write_text(
             (TEMPLATES / 'people' / '_TEMPLATE.person.md').read_text(encoding='utf-8'), encoding='utf-8')
-        (self.root / 'people' / 'stubs' / '_TEMPLATE.stub.md').write_text(
-            (TEMPLATES / 'people' / 'stubs' / '_TEMPLATE.stub.md').read_text(encoding='utf-8'), encoding='utf-8')
+        (self.root / 'people' / '_TEMPLATE.research.md').write_text(
+            (TEMPLATES / 'people' / '_TEMPLATE.research.md').read_text(encoding='utf-8'), encoding='utf-8')
 
     def test_lint_ignores_templates(self):
         self._install_templates()
@@ -172,8 +166,7 @@ class ScaffoldParityTests(unittest.TestCase):
     def test_stub_frontmatter_matches_person_template(self):
         # #76: _TEMPLATE.person.md is the one template for a person at
         # either tier (it already defaults to tier: stub) - compare the
-        # stub scaffold's frontmatter against IT now, not the retired
-        # _TEMPLATE.stub.md. sex: M is demonstrated in the template as a
+        # stub scaffold's frontmatter against it. sex: M is demonstrated in the template as a
         # common-case example; pass it here too so the two field sets match
         # exactly rather than one being a subset of the other.
         tmpl = read_record(TEMPLATES / 'people' / '_TEMPLATE.person.md')['meta']
@@ -483,7 +476,7 @@ class StripUnfilledPersonSectionsTests(unittest.TestCase):
 class TemplateHygieneTests(unittest.TestCase):
     def test_no_generated_header(self):
         for rel in ('sources/_TEMPLATE.source.md', 'people/_TEMPLATE.person.md',
-                    'people/stubs/_TEMPLATE.stub.md', 'notes/questions.md'):
+                    'people/_TEMPLATE.research.md', 'notes/questions.md'):
             text = (TEMPLATES / rel).read_text(encoding='utf-8')
             self.assertNotIn('GENERATED', text, rel)
 

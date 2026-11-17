@@ -16,24 +16,28 @@ places:
 
 files:
   - file: documents/Robert Rivera obituary 2008.txt
-    role: primary
+    is_primary: true
 ---
 
 ## Claims
 ```yaml
 - value: "Robert Rivera died 14 March 2008 in Millbrook, New York"
   type: death
-  persons: ["[[Robert Rivera]]"]
+  persons:
+    - "[[Robert Rivera]]"
+  date: 2008-03-14
   status: accepted
   confidence: high
-  date: 2008-03-14
+  reviewed: 2025-03-01
 
 - value: "Robert Rivera served in the U.S. Army in Korea, 1951-1953"
   type: military
-  persons: ["[[Robert Rivera]]"]
+  persons:
+    - "[[Robert Rivera]]"
+  date: 1951/1953
   status: accepted
   confidence: medium
-  date: 1951/1953
+  reviewed: 2025-03-01
 ```
 
 ## Notes

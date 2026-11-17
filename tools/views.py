@@ -1241,14 +1241,17 @@ def _sources_index_region_body(by_type: dict[str, list[sqlite3.Row]]) -> str:
     sibling profile section - `section_bounds` reads `## ` as a boundary)."""
     if not by_type:
         return '*(No sources found.)*'
-    parts: list[str] = []
+    # A blank line before each group's label: directly under the previous
+    # group's last bullet, Markdown would read the label as more of that bullet.
+    groups: list[str] = []
     for source_type in sorted(by_type.keys()):
-        parts.append(f'**{source_type}**\n')
+        lines = [f'**{source_type}**', '']
         for row in by_type[source_type]:
             sid_token = _format_sid(row['id'])
             path_text = row['path'].replace('\\', '/')
-            parts.append(f'- {row["title"]} {sid_token} - {path_text}')
-    return '\n'.join(parts)
+            lines.append(f'- {row["title"]} {sid_token} - {path_text}')
+        groups.append('\n'.join(lines))
+    return '\n\n'.join(groups)
 
 
 def _generate_sources_index_person(

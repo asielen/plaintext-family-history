@@ -1291,6 +1291,24 @@ class NeedsSourcingBacklogTests(unittest.TestCase):
         backlog = self._backlog('living: true\nbirth: 1985~\n')
         self.assertTrue([l for l in backlog if "provisional birth: '1985~'" in l])
 
+    def _todo_lines(self, body: str) -> list:
+        (self.root / 'people' / 'rivera__sam_P-1111111111.md').write_text(
+            '---\nid: P-1111111111\nname: Sam Rivera\nliving: false\n---\n\n# Sam Rivera\n\n'
+            + body, encoding='utf-8')
+        return [l for l in lint.run_lint(self.root, {}).data['backlog'] if 'TODO' in l]
+
+    def test_a_fresh_record_has_no_todo_to_source(self) -> None:
+        # A brand-new person record's Biography explains the marker inside a
+        # code span; that is the instruction, not a passage waiting for a
+        # source, so a new record is not listed as having something to source.
+        from _lib import PERSON_BODY_SECTIONS_TEXT
+        self.assertEqual(self._todo_lines(PERSON_BODY_SECTIONS_TEXT), [])
+
+    def test_a_written_todo_marker_is_still_listed(self) -> None:
+        lines = self._todo_lines('## Biography\nHe farmed near Easton (TODO: import source).\n')
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn('1 prose passage', lines[0])
+
 
 class NegatedVitalPolarityTests(unittest.TestCase):
     """A negated claim is a confirmed ABSENCE, never a positive vital: it must

@@ -5968,7 +5968,10 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
     return result.exit_code
 
 
-_TODO_SOURCE_RE = re.compile(r'\(TODO:\s*import source\)', re.I)
+# A marker inside a code span (`(TODO: import source)`) is the scaffold's own
+# instruction telling the owner how to mark a passage, not a passage waiting
+# for a source - counting it listed every new person as needing sourcing.
+_TODO_SOURCE_RE = re.compile(r'(?<!`)\(TODO:\s*import source\)(?!`)', re.I)
 
 
 def _friendly_to(to_raw: object) -> str:

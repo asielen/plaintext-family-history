@@ -14,9 +14,8 @@ Each record folder ships a `_TEMPLATE.*` file you can copy by hand - no tools ne
 - `places/places.yaml` - a commented `_TEMPLATE` place entry at the top
 - `inbox/_TEMPLATE.notes.md` - a note to drop beside new material
 
-(`people/stubs/_TEMPLATE.stub.md` is retired: a stub and a curated person used to be
-different shapes, but are one now, so there is nothing smaller left to template. Copy
-`_TEMPLATE.person.md` for a stub too.)
+A stub and a curated person are the same file shape, so `_TEMPLATE.person.md` serves for
+both: a plain copy of it is a stub (`tier: stub`).
 
 Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`), fill it in, and you're done. **You link records by name:** in any profile or note, cite a source or cross-link a person by writing its name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works too. **Don't worry about making an ID:** the templates leave that to the tools. If you ever run `fha lint`, it assigns the IDs, keeps your filename as an alias so your `[[name]]` links keep working, and tidies everything. IDs are just sturdier for the long haul - filenames change and can repeat - but you never have to create one.
 

@@ -6,8 +6,8 @@
 # common setups are right below, under "Examples" - uncomment the one that matches
 # your setup and edit the path.
 #
-# root_person: P-xxxxxxxxxx
-#   The P-id of the person this archive is centred on. Enables Ahnentafel
+# root_person: p-xxxxxxxxxx
+#   The p- code of the person this archive is centred on. Enables Ahnentafel
 #   folder-number verification and person placement via `fha views brackets`.
 #   Omit to disable those checks.
 #

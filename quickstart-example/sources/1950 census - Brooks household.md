@@ -14,24 +14,29 @@ places:
 
 files:
   - file: documents/1950 census - Brooks household.txt
-    role: primary
+    is_primary: true
 ---
 
 ## Claims
 ```yaml
 - value: "James and Dorothy Brooks living in Poughkeepsie, New York (1950)"
   type: residence
-  persons: ["[[James Brooks]]", "[[Dorothy Hill]]"]
+  persons:
+    - "[[James Brooks]]"
+    - "[[Dorothy Hill]]"
+  date: 1950
   status: accepted
   confidence: high
-  date: 1950
+  reviewed: 2025-03-01
 
 - value: "James Brooks, occupation: railroad brakeman (1950)"
   type: occupation
-  persons: ["[[James Brooks]]"]
+  persons:
+    - "[[James Brooks]]"
+  date: 1950
   status: accepted
   confidence: high
-  date: 1950
+  reviewed: 2025-03-01
 ```
 
 ## Notes
