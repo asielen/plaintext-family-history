@@ -2786,26 +2786,6 @@ class MarriageRoleScopingTests(unittest.TestCase):
         expected = {(a, b) for a in trio for b in trio if a != b}
         self.assertEqual(self._spouse_edges(), expected)
 
-    def test_legacy_spouse_of_relationship_is_scoped_too(self) -> None:
-        # The third path into the spouse graph: `relationship` +
-        # `subtype: spouse-of`, whose roles: fallback had the same unguarded
-        # shape. A roles: map that resolves no spouse (a hand-written list
-        # shorthand, which lint's E015 reports) must not pair six people off.
-        claims = (
-            '- id: C-4444444444\n'
-            '  value: "spouses"\n'
-            '  type: relationship\n'
-            '  subtype: spouse-of\n'
-            f'  persons: [{", ".join(_MDR_ALL)}]\n'
-            '  roles: [spouse, spouse]\n'
-            '  status: accepted\n'
-            '  reviewed: 2026-01-01\n'
-            '  date: 1890\n'
-        )
-        self._write_source(claims)
-        index.build_index(self.root, {})
-        self.assertEqual(self._spouse_edges(), set())
-
     def test_duplicate_persons_entry_never_marries_someone_to_himself(self) -> None:
         # `persons:` accepts a bare P-id and a name-link, and nothing stops both
         # from landing on the same person - `claim_persons` has no UNIQUE

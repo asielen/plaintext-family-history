@@ -9,7 +9,7 @@ people: [P-0000000001, P-0000000002, P-0000000003, P-0000000004]
 ```yaml
 - id: C-0000000001
   type: relationship
-  subtype: child-of
+  subtype: biological
   value: Ethel is a child of Thomas and Margaret
   persons: [P-0000000003, P-0000000001, P-0000000002]
   roles:
@@ -20,7 +20,7 @@ people: [P-0000000001, P-0000000002, P-0000000003, P-0000000004]
 
 - id: C-0000000002
   type: relationship
-  subtype: child-of
+  subtype: biological
   value: Frances is a child of Thomas and Margaret
   persons: [P-0000000004, P-0000000001, P-0000000002]
   roles:

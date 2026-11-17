@@ -172,9 +172,9 @@ class RelatedPersonTests(unittest.TestCase):
     def test_date_filter_narrows_relationships_and_places(self) -> None:
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'relationship',
                     'Alice child of Bob', ['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
-                    subtype='child-of', date_edtf='1900', date_min='1900-01-01', date_max='1900-12-31')
+                    subtype='biological', date_edtf='1900', date_min='1900-01-01', date_max='1900-12-31')
         # date_start/date_end mirror what _derive_relationships actually
-        # writes for a child-of edge: the originating claim's own bounds.
+        # writes for a parent/child edge: the originating claim's own bounds.
         self.conn.execute(
             "INSERT INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) "
             "VALUES ('p-aaaaaaaaaa','parent','p-bbbbbbbbbb','c-1111111111','1900-01-01','1900-12-31')"

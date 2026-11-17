@@ -2761,7 +2761,7 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         everyone = [self.HUS, self.WIF] + self.PARENTS
         for n, pid in enumerate(everyone):
             (root / 'people' / f'x__p{n}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: Person {n}\nliving: false\n'
                 f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
         named = everyone if persons is None else persons
         claim = (f'- value: "a {ctype}"\n'
@@ -2812,16 +2812,17 @@ class UnscopedCoupleClaimW125Tests(unittest.TestCase):
         self.assertEqual(
             self._w125(self._build(persons=[self.HUS, self.WIF])), [])
 
-    def test_legacy_spouse_of_relationship_warns(self) -> None:
-        # `relationship` + `subtype: spouse-of` derives spouse edges through the
-        # same rule, so it earns the same warning. A `roles:` map that names no
-        # resolvable spouse (here the list shorthand) leaves the claim in the
-        # identical could-not-tell state.
+    def test_old_spouse_of_subtype_is_named_with_the_fix(self) -> None:
+        # `subtype: spouse-of` is read by no tool: only `roles: spouse:`
+        # puts the couple in the tree, so lint says so (W153), not W125.
         root = self._build(ctype='relationship',
                            roles_block='  subtype: spouse-of\n  roles: [spouse, spouse]\n')
-        w = self._w125(root)
-        self.assertEqual(len(w), 1)
-        self.assertIn('no marriage is recorded between any of them', w[0].message)
+        self.assertEqual(self._w125(root), [])
+        findings, _reg = lint._run_lint_core(root, {})
+        w153 = [f for f in findings if f.code == 'W153']
+        self.assertEqual(len(w153), 1, [f.code for f in findings])
+        self.assertIn('roles:', w153[0].message)
+        self.assertIn('spouse:', w153[0].message)
 
     def test_ordinary_parent_child_claim_never_warns(self) -> None:
         # The false positive this rule must not have: a normal relationship
@@ -3079,7 +3080,7 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
         everyone = [self.CHILD, self.FATHER, self.MOTHER]
         for n, pid in enumerate(everyone):
             (root / 'people' / f'x__p{n}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: Person {n}\nliving: false\n'
                 f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
         named = everyone if persons is None else persons
         claim = (f'- value: "a {ctype}"\n'
@@ -3540,7 +3541,7 @@ class UnscopedDeathBurialBaptismW132Tests(unittest.TestCase):
         everyone = [self.A, self.B, self.C]
         for n, pid in enumerate(everyone):
             (root / 'people' / f'x__p{n}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: Person {n}\nliving: false\n'
                 f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
         named = everyone if persons is None else persons
         claim = (f'- value: "a {ctype}"\n'
@@ -3803,7 +3804,7 @@ class OrphanedRoleTargetW133Tests(unittest.TestCase):
         everyone = [self.WIDOW, self.DEAD, self.OTHER]
         for n, pid in enumerate(everyone):
             (root / 'people' / f'x__p{n}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: Person {n}\nliving: false\n'
                 f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
         named = [self.WIDOW] if persons is None else persons
         claim = (f'- value: "a {ctype}"\n'
@@ -4800,7 +4801,7 @@ class LintStdoutIsValidUtf8Tests(unittest.TestCase):
         people = ['P-h1h1h1h1h1', 'P-w2w2w2w2w2', 'P-f3f3f3f3f3']
         for n, pid in enumerate(people):
             (root / 'people' / f'x__p{n}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: Person {n}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: Person {n}\nliving: false\n'
                 f'tier: stub\n---\n\n# Person {n}\n', encoding='utf-8')
         claim = (
             '- value: "a marriage"\n'
@@ -5294,7 +5295,7 @@ class DuplicatePersonW135Tests(unittest.TestCase):
         for pid, name in ((self.ALICE, 'Alice Smith'), (self.BOB, 'Bob Jones')):
             first, last = name.lower().split()
             (root / 'people' / f'{last}__{first}_{pid}.md').write_text(
-                f'---\nid: {pid}\nname: {name}\nsex: U\nliving: false\n'
+                f'---\nid: {pid}\nname: {name}\nliving: false\n'
                 f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
         claim = (f'- id: {claim_id if claim_id is not None else self.CID}\n'
                  '  type: residence\n'
@@ -5702,7 +5703,7 @@ class VocabularyWordW141Tests(unittest.TestCase):
     - claim `information` / `evidence` (SPEC A.3), source `source_class`
     (§14, A.3), person `sex` (§9). A warning, not an error: the record still
     reads, but the word is ignored by every tool that looks for the real one.
-    An older `sex: U` is tolerated (read as not recorded)."""
+    An old `sex: U` is reported like any other word outside it."""
 
     SID = 's-7cccccccc1'
     PID = 'p-7cccccccc1'
@@ -5734,7 +5735,7 @@ class VocabularyWordW141Tests(unittest.TestCase):
         self.assertEqual(self._w141(), [])
         self.assertEqual(self._w141(sex=None, source_class=None,
                                     information=None, evidence=None), [])
-        for sex in ('M', 'F', 'intersex', 'unknown', 'U'):
+        for sex in ('M', 'F', 'intersex', 'unknown'):
             with self.subTest(sex=sex):
                 self.assertEqual(self._w141(sex=sex), [])
 
@@ -5744,6 +5745,8 @@ class VocabularyWordW141Tests(unittest.TestCase):
             ({'evidence': 'direkt'}, 'evidence', 'direct, indirect, negative'),
             ({'source_class': 'orignal'}, 'source_class', 'original, derivative, authored'),
             ({'sex': 'male'}, 'sex', 'F, M, intersex, unknown'),
+            # The old one-letter `U` is no longer read as "not recorded".
+            ({'sex': 'U'}, 'sex', 'F, M, intersex, unknown'),
         )
         for kwargs, field, valid in cases:
             with self.subTest(field=field):

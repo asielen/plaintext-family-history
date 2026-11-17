@@ -9,7 +9,7 @@ people: [P-0000000001, P-0000000002, P-0000000003]
 ```yaml
 - id: C-0000000001
   type: relationship
-  subtype: child-of
+  subtype: biological
   value: Alex is a child of Father and Mother
   persons: [P-0000000001, P-0000000002, P-0000000003]
   roles:

@@ -85,9 +85,9 @@ def _open(root: Path) -> sqlite3.Connection:
 
 
 class NatureHelperTests(unittest.TestCase):
-    def test_unset_legacy_unknown_default_to_genetic(self) -> None:
+    def test_unset_and_unknown_default_to_genetic(self) -> None:
         for s in ('biological', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
-                  '', None, 'child-of', 'spouse-of', 'mystery-nature'):
+                  '', None, 'mystery-nature'):
             self.assertTrue(is_genetic_parent_subtype(s), s)
 
     def test_social_legal_are_not_genetic_and_have_labels(self) -> None:

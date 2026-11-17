@@ -301,10 +301,10 @@ order matters - delete `claim_persons` and `claim_links` before `claims`; delete
 and `notes_fts` rows for the source path before `sources`. Reversing order leaves orphans.
 
 **Relationship derivation** (after claims load, in both full-rebuild and incremental mode):
-for each `accepted` claim - `relationship subtype: child-of` → `(child, 'parent', father)` +
-reciprocal; `birth` with a `roles:` map naming a child and a parent → the same pair, through
-the same writer (roles only, never a positional fallback - TOOLING §2, SPEC §8.3); `marriage` or
-`relationship subtype: spouse-of` → reciprocal `spouse` edges with
+for each `accepted` claim - `relationship` whose `roles:` name a child and a parent →
+`(child, 'parent', father)` + reciprocal; `birth` with a `roles:` map naming a child and a parent
+→ the same pair, through the same writer (roles only, never a positional fallback - TOOLING §2,
+SPEC §8.3); `marriage`, or a `relationship` whose `roles:` name spouses → reciprocal `spouse` edges with
 `date_start`/`date_end`; social subtypes → `friend`/`associate`/`neighbor` edges. Edges are
 pure cache, re-derived from claims on every build - never hand-edited.
 
@@ -588,7 +588,7 @@ W115, W126), `_lib.spouse_parties` (W115, W125), `_lib.vital_subjects` (W132),
 | W138 | A person file's name sorts them under a surname their record no longer reads (`--fix-surnames`) |
 | W139 | `disputed`/`rejected`/`superseded` claim with no `reviewed:` date |
 | W140 | Half a merge: `merged_into:` without `status: merged`, or the reverse |
-| W141 | Claim `information`/`evidence`, source `source_class` or person `sex` outside its vocabulary (`_lib` constants; `sex: U` tolerated) |
+| W141 | Claim `information`/`evidence`, source `source_class` or person `sex` outside its vocabulary (`_lib` constants) |
 | W143 | A source still carrying a retired field (claim `significance`/`significance_reason`/`asset`, file `language`/`digitized`): one line per record, "safe to delete" |
 | W144 | `ai_passes:` not a list, an entry without `date` (EDTF), `by` and `task`, or a retired `## AI Passes` body section (SPEC §14) |
 | W145 | More than one `files:` entry marked `is_primary: true`, or an old `role: primary` mark (SPEC §14) |

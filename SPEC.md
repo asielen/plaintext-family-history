@@ -261,7 +261,6 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
                                  #   donor-sperm | donor-egg | social; non-kin: enslaver | enslaved-by |
                                  #   employer | employee | member-of | friend | associate | neighbor);
                                  #   also free-text refinement on event/note. Unlisted natures: free text.
-                                 #   Older records may say `child-of` / `spouse-of`: read by their roles: map.
   roles:                         # explicit semantics for multi-subject claims;
     child: p-de957bcda1          #   REQUIRED for type: relationship; repeated roles with distinct
     parent: [p-aaaaaaaaaa]       #   subtypes are valid (multiple parents of differing nature).
@@ -342,8 +341,7 @@ profile_photo: hartley-portrait-1895.jpg   # optional; the person's main portrai
                                  # gate as the photo strip: a portrait that co-depicts a living person,
                                  # or whose source is withheld, is dropped from public output (§19).
 sex: M                           # optional; birth-assigned where a record states it; M | F | intersex | unknown
-                                 #   (an older `U` is tolerated but read as not recorded;
-                                 #   write `unknown` to say it is not known)
+                                 #   (write `unknown` to say it is not known)
 living: false                    # required; true | false | unknown - drives export redaction (§19)
 birth: 1840~                     # optional PROVISIONAL estimate (unsourced); EDTF; superseded by a
 birth_place: Easton, New York    #   birth/death claim. Linter tracks these toward a source.
