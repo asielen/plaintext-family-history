@@ -141,11 +141,11 @@ Your existing photos and documents plus FIVE record types, all plain Markdown/YA
 
 | Type | What it is |
 |---|---|
-| **Person** `P-` | A human - identity, flags, prose, and the relationships that tie them to others. |
-| **Source** `S-` | A piece of evidence: a record, document, photo, interview. |
-| **Claim** `C-` | A single sourced assertion (a date, place, relationship) living inside its source record, moving through a `suggested → accepted` review lifecycle. |
-| **Place** `L-` | A physical location, identified by coordinates, with a dated name/jurisdiction history. |
-| **Hypothesis** `H-` | An unsourced working theory - a guess, never a fact, until evidence promotes it to a claim. |
+| **Person** `p-` | A human - identity, flags, prose, and the relationships that tie them to others. |
+| **Source** `s-` | A piece of evidence: a record, document, photo, interview. |
+| **Claim** `c-` | A single sourced assertion (a date, place, relationship) living inside its source record, moving through a `suggested → accepted` review lifecycle. |
+| **Place** `l-` | A physical location, identified by coordinates, with a dated name/jurisdiction history. |
+| **Working answer** `h-` | A guess written on an open question in `notes/questions.md` - with its basis and what would verify it - never a fact; a source that proves it mints a new claim. |
 
 Around those, a rebuildable **index** (SQLite, regenerated from the files) powers search, family-tree generation, contradiction detection, and a research report - none of it authoritative, all of it disposable.
 The operating loop is simple: **capture → file → process → review → report**, with human review the only gate to an accepted fact.
@@ -154,7 +154,7 @@ The operating loop is simple: **capture → file → process → review → repo
 
 **Kept for texture without becoming evidence.** A clipping or note that names no one in your family - period news, local color, general history kept on purpose for a future biography - files as `source_type: ephemera` (SPEC §14) rather than an ordinary source type. It's still kept and full-text searched, but it won't appear on any person's page, packet, or timeline as long as its `## Claims` block also stays person-free (the ordinary shape for a clipping like this - a claim naming someone reaches their page the same way a `people:` link would); find it through the generated site's homepage Sources list instead.
 
-**Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The five copy-paste templates in [`archive-template/`](archive-template/) give you a filled-in starting point for each record type.
+**Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The copy-paste templates in [`archive-template/`](archive-template/) (person, source, research file, inbox note) give you a filled-in starting point.
 
 **Opens in Obsidian.** The archive is a Markdown-plus-frontmatter-plus-`[[wikilink]]` vault: point Obsidian (or another Markdown app) at the folder and it opens as-is, no import. An optional [Templater pack](obsidian-templater/) and the generated site's interactive family tree make it native to plaintext-PKM workflows; see [docs/USING_WITH_OBSIDIAN.md](docs/USING_WITH_OBSIDIAN.md).
 
@@ -180,6 +180,8 @@ plaintext-family-history/
 │   │                      and TOOLING.md land too)
 │   ├── GETTING_STARTED.md ← the archive owner's first-day guide
 │   ├── CHEATSHEET.md    ← the one printable page
+│   ├── COMMANDS.md      ← every fha command and its options
+│   ├── TROUBLESHOOTING.md
 │   ├── SETUP_FROM_ZIP.md
 │   ├── GLOSSARY.md
 │   ├── FAQ.md
@@ -291,6 +293,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] usage-feedback wave: `fha reconcile` (heal moved-document inventory paths, documents + photos in one command), `fha reorganize` (bulk-tidy the documents root into `documents/{type}/`, checked in batches against `fha reconcile`, never touching a folder a human already organized by hand - issue #107), `fha source extract` (dump a PDF's embedded text layer into a `role: extracted-text` companion, searchable after `fha index`), `fha process refile` (the sanctioned cross-root correction move, documents ⇄ photos), stub promotion (`fha person promote` / `fha views brackets --fix-promote`), grouped claim review (`fha claim` batch), and biography styles (milestone 11 - TOOLING §9/§9a/§14, SPEC §12.1/§13)
 - [x] Ahnentafel realignment wave: couple-folder names gain their missing `+ second spouse` half (add-only, never rewrites a hand-crafted name), `fha views brackets --realign` (renames, moves, and stub promotions in ONE previewed pass - the recovery command after re-anchoring `root_person`, correcting a `sex:`, or accepting a new parent claim), W120 (a folder number that was silently guessed because a lone linked parent has no `sex:` recorded is now flagged with its one-line fix), and W127 (the anchor itself: a `root_person` who has a child on record numbers every couple folder one generation high, which no folder check can catch because the folders match that same count - reported by `fha lint` and `fha views brackets` alike, as a note rather than a defect); the capture browser extension now ships into every archive at `.fha/browser-companion/`, ready for chrome://extensions "Load unpacked" - no clone of this repo needed to use it (milestone 11.7 - TOOLING §7/§13c, SPEC §12.2)
 - [x] `root_generation` (`fha.yaml`): a researcher who anchors the archive at themselves no longer has to misname one of their own children as `root_person` to get the documented `#1 = the children, collectively` numbering (or has no way at all if childless) - `root_generation: self` (default, unchanged) keeps `root_person` at #1; `root_generation: children` anchors `root_person` at #2 instead, so their own generation numbers correctly without renaming who the archive is centred on. W127 (the anchor-too-high note) stands down the moment `root_generation: children` says the shape is deliberate; an unrecognized value is rejected with a plain fix rather than silently read as `self` (W129) (issue #72 - SPEC §12.2/§12.4)
+- [x] SPEC 2.0-2.2 alignment (plan 19): IDs written lowercase and matched without regard to case, links written `[[p-…|Name]]`, one research ladder (open questions and their working answers in `notes/questions.md`; `needs-review` retired - a looked-at, unsettled claim stays `suggested` with a `reviewed:` date), `START_HERE.md` as the archive's front page for a reader with no tools, generated summary lines (Born, Died, Married, Parents, Children) under every profile's title, and `relationships:` naming each person once per role with all its supporting claims
 
 ## A complementary project
 
