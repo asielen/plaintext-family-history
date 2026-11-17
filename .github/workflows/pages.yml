@@ -1,7 +1,8 @@
-name: Deploy example site to Pages
+name: Deploy the project site to Pages
 
-# Publishes the committed example archive's standalone site
-# (example-archive/generated/site) as the repo's GitHub Pages demo. Requires
+# plaintext.family opens on the README (rendered by GitHub's Markdown API, its
+# relative links pointed at the repo), with the committed example archive's
+# standalone site (example-archive/generated/site) under /example/. Requires
 # Settings -> Pages -> Source: "GitHub Actions" to be enabled once, by hand.
 
 on:
@@ -9,6 +10,8 @@ on:
     branches: [master, main]
     paths:
       - 'example-archive/generated/site/**'
+      - 'README.md'
+      - '.github/scripts/pages_front.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -31,8 +34,18 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - name: Assemble the site (README front page + example site)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _pages
+          cp -R example-archive/generated/site _pages/example
+          cp CNAME _pages/CNAME
+          gh api -X POST markdown -F text=@README.md -f mode=gfm             -f context="${{ github.repository }}" > _pages/readme.html
+          python3 .github/scripts/pages_front.py _pages/readme.html _pages/index.html
+          rm _pages/readme.html
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
-          path: example-archive/generated/site
+          path: _pages
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

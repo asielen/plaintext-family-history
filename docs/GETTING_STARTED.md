@@ -432,7 +432,7 @@ The project keeps a small, **entirely fictional** family (the Hartleys) as a wor
 you can see what finished, processed records look like before you have many of your own. Two
 ways to look at it, neither of them inside your own archive:
 
-- The **[live example site](https://asielen.github.io/plaintext-family-history/)** - that family
+- The **[live example site](https://plaintext.family/example/)** - that family
   compiled by `fha site`, which is the same self-contained, privacy-redacted output you would
   publish or hand a cousin on a USB stick.
 - The files behind it, in the project repo:

@@ -2,14 +2,14 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
+> **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) compiled by `fha site` - the same self-contained, redacted site you'd publish or hand off on a USB stick.
+
 ![status](https://img.shields.io/badge/status-milestones_1--11_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
 Plaintext is that filing cabinet, built to last. Plain files at the foundation, with search, structured claims, and an AI research layer stacked *on top of* the files, never *instead of* them.
 Delete every layer above and the archive still works, the way the drawer still works.
-
-> **See it in action:** the [**live example site**](https://asielen.github.io/plaintext-family-history/) is the fictional [`example-archive/`](example-archive/) compiled by `fha site` — the same self-contained, redacted output you'd publish or hand off on a USB stick. Its files are committed under [`example-archive/generated/site/`](example-archive/generated/site/).
 
 ## Which one are you?
 
