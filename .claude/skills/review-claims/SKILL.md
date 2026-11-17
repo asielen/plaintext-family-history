@@ -77,6 +77,14 @@ its claims to the people asked about and leave the rest for later sessions.
      separately from who else it names: "this records the DEATH of Beverly Knipscheer; it also names
      her son Alan Sielen (as a survivor)". A record put on the wrong person - a mother's obituary
      filed under her living son - is caught here, before it becomes fact,
+   - for **any other claim naming several people** (a residence, an occupation, an event, a note)
+     that does not already say whose fact it is, **ask him before he decides**: "This names Charles,
+     Mary and Paul. Is one of them - or a few - the person this is about? Or is it about all of them
+     equally, like a party they all went to?" Write his answer as `roles:` - `subject: [p-…]` for
+     the one(s) it is about and the others by their part (`spouse`, `child`, `witness`, a plain
+     word), or `subject:` listing everyone when he says it belongs to all of them. Never pick
+     "everyone" for him: an unroled son on his father's job reads as the son's job on his timeline
+     (SPEC §8.3, lint W149),
    - its **evidence context**: the `anchor:` (the exact spot in the source — a page, a line, a
      timestamp) and, where the source is a transcript or note, the quoted span it was drawn from,
    - its **source link**: the anchored source file path — the asset file the claim's anchor points into

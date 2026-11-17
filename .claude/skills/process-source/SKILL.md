@@ -271,6 +271,9 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
      the informant; a marriage names both sets of parents; an obituary names every survivor - left
      unroled, any of them can become the person who died or married. `fha claim` will not accept
      the claim until it says, and `fha lint` reports it (W147 suggested, E021 accepted).
+     **Any other claim naming several people** gets `roles:` too: `subject:` for whose fact it is
+     and the others by their part. When the record does not say who is primary, leave the claim
+     for review to ask (lint W149) - never mark everyone `subject:` on a guess.
    - **Title the source after the person the record is about.** Index collections (Ancestry's
      obituary, cemetery and death indexes) file one record under every name in it, so a capture
      can arrive titled after a survivor: "Alan Sielen - U.S., Obituary Collection" is his mother's
