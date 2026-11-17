@@ -73,6 +73,18 @@ its claims to the people asked about and leave the rest for later sessions.
    language:
    - the claim as a **sentence** ("Thomas Hartley, occupation bookkeeper, Plains Junction Railroad,
      about 1880"),
+   - for a birth, baptism, death, burial, marriage or divorce, **whose event it is**, by name and
+     separately from who else it names: "this records the DEATH of Beverly Knipscheer; it also names
+     her son Alan Sielen (as a survivor)". A record put on the wrong person - a mother's obituary
+     filed under her living son - is caught here, before it becomes fact,
+   - for **any other claim naming several people** (a residence, an occupation, an event, a note)
+     that does not already say whose fact it is, **ask him before he decides**: "This names Charles,
+     Mary and Paul. Is one of them - or a few - the person this is about? Or is it about all of them
+     equally, like a party they all went to?" Write his answer as `roles:` - `subject: [p-…]` for
+     the one(s) it is about and the others by their part (`spouse`, `child`, `witness`, a plain
+     word), or `subject:` listing everyone when he says it belongs to all of them. Never pick
+     "everyone" for him: an unroled son on his father's job reads as the son's job on his timeline
+     (SPEC §8.3, lint W149),
    - its **evidence context**: the `anchor:` (the exact spot in the source — a page, a line, a
      timestamp) and, where the source is a transcript or note, the quoted span it was drawn from,
    - its **source link**: the anchored source file path — the asset file the claim's anchor points into
@@ -174,13 +186,15 @@ its claims to the people asked about and leave the rest for later sessions.
    ("Ada Hartley is now marked as no longer living; shared exports and the site may now include her").
    **Report that line to him plainly**; do not ask again or run `set-living` yourself. The accept only
    changes the person the claim names `deceased:` (or the one person on a claim with no roles), and only
-   when their flag read `unknown`. When `fha claim` printed a **warning** instead, put it to him and wait:
-   - someone already marked `living: true` — "the record says Thomas died, but he's marked as living;
-     has he passed away?" → only on his yes, `fha person set-living <P-id> false`; on a no, the claim
-     may be about someone else, so look at it again together;
-   - a claim that names several people without saying which of them died, or that reads someone as the
-     deceased only because everyone else on it has another part — ask who died, then (on his answer)
-     `fha person set-living <P-id> false` for each.
+   when their flag read `unknown`. When `fha claim` **refused** the accept instead (SPEC §8.3), nothing
+   was written - put it to him and wait:
+   - someone marked `living: true` - "the record says Thomas died, but he's marked as living; has he
+     passed away?" → only on his yes, `fha person set-living <P-id> false`, then accept again; on a no,
+     the record is about someone else (an obituary indexed under a survivor's name is the usual case),
+     so look at its persons: and title together;
+   - a claim that names several people without giving each a part - ask who the event is about and
+     what the others were, write the `roles:` map (`deceased:` / `child:` / `spouse:` plus `parent:`,
+     `informant:`, `witness:` …) by hand, then accept again.
    If he wants a death accepted but the person kept out of exports anyway, accept with `--keep-living`
    (re-accepting that claim later never changes the flag).
    If he moves a death he accepted earlier to rejected/disputed, or parks it, `fha claim` warns that the
