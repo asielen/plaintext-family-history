@@ -324,6 +324,31 @@ class SummaryRegionTests(unittest.TestCase):
             f'[[{HUSBAND}|Dan Webb]] - 29 July 1878, Los Angeles [[s-5555555555]]',
             self._region())
 
+    def test_a_divorce_that_only_names_the_couple_as_parents_is_not_theirs(self) -> None:
+        # Their daughter's divorce record names Ann and Dan as her parents:
+        # that is not Ann and Dan divorcing, and Ann's line must not say so.
+        self._add_claims('s-7777777777', (
+            f'- value: Ethel divorced\n  id: c-7777777771\n  type: divorce\n'
+            f'  date: 1900\n  persons: [{CHILD}, {FATHER}, {ANN}, {HUSBAND}]\n'
+            f'  roles:\n    spouse: [{CHILD}, {FATHER}]\n    parent: [{ANN}, {HUSBAND}]\n'
+            '  status: accepted\n'))
+        self._run(person_id=ANN)
+        self.assertNotIn('divorced', self._region())
+
+    def test_a_couple_known_without_a_wedding_record_still_shows_the_divorce(self) -> None:
+        # Ann and her father-in-law stand in for a couple known only from a
+        # relationship record and a divorce record - no marriage claim at all.
+        self._add_claims('s-8888888888', (
+            f'- value: Ann and Caleb were a couple\n  id: c-8888888881\n'
+            f'  type: relationship\n  persons: [{ANN}, {FATHER}]\n'
+            f'  roles: {{spouse: [{ANN}, {FATHER}]}}\n  status: accepted\n'
+            f'- value: Ann and Caleb divorced\n  id: c-8888888882\n  type: divorce\n'
+            f'  date: 1880\n  persons: [{ANN}, {FATHER}]\n'
+            f'  roles: {{spouse: [{ANN}, {FATHER}]}}\n  status: accepted\n'))
+        self._run(person_id=ANN)
+        self.assertIn(f'[[{FATHER}|Caleb Hartley]] [[s-8888888888]]; divorced 1880 '
+                      f'[[s-8888888888]]', self._region())
+
     def test_a_loosely_dated_record_of_one_wedding_is_not_a_second_wedding(self) -> None:
         # "about 1875" beside the certificate's February 1871, with no divorce
         # between: the same wedding remembered loosely, listed once.

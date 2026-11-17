@@ -1382,16 +1382,23 @@ def _summary_kin(conn: sqlite3.Connection, pid: str, rel: str) -> list[tuple[str
 
 
 def _summary_couple_claims(
-    conn: sqlite3.Connection, pid: str, other: str, ctype: str,
+    conn: sqlite3.Connection, pid: str, other: str, ctype: str, cache: dict,
 ) -> list[sqlite3.Row]:
-    """Accepted, non-negated claims of `ctype` naming both people."""
-    return conn.execute(
+    """Accepted, non-negated `ctype` claims (a couple claim: `divorce`) that
+    are about THESE TWO as the couple - not merely naming both. A divorce
+    record that names the couple's parents in passing is not the parents'
+    divorce: who the couple is comes from the claim's roles, by the one rule
+    every tool uses (`claim_is_own_vital` / `vital_subjects`)."""
+    rows = conn.execute(
         'SELECT DISTINCT c.id, c.type, c.date_edtf, c.date_min, c.date_max, '
         'c.place_id, c.place_text, c.source_id, c.confidence FROM claims c '
         'JOIN claim_persons a ON a.claim_id = c.id AND a.person_id = ? '
         'JOIN claim_persons b ON b.claim_id = c.id AND b.person_id = ? '
         "WHERE c.type = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0",
         (pid, other, ctype)).fetchall()
+    return [r for r in rows
+            if claim_is_own_vital(conn, pid, r['id'], ctype, cache)
+            and claim_is_own_vital(conn, other, r['id'], ctype, cache)]
 
 
 def _summary_events(claims, ctype: str, breaks: list[str] = ()) -> list:
@@ -1437,18 +1444,27 @@ def _summary_region_body(conn: sqlite3.Connection, pid: str) -> str:
 
     # One entry per WEDDING, not per spouse, in date order: a couple who
     # married, divorced and married again shows both weddings and the divorce
-    # between them (SPEC §16). Several records of one wedding (overlapping
-    # dates) are one entry, headed by the most exact (`vital_pick_key`).
+    # between them (SPEC §16). Records of one couple's marriage are one entry
+    # unless a divorce falls between them (`_summary_events`), headed by the
+    # most exact (`vital_pick_key`).
     entries: list[tuple[str, str]] = []
     for other, claims in _summary_kin(conn, pid, 'spouse'):
         link = _summary_person_link(conn, other)
         divorces = sorted(
-            (d for d in _summary_couple_claims(conn, pid, other, 'divorce') if d['date_min']),
-            key=vital_pick_key)
+            (d for d in _summary_couple_claims(conn, pid, other, 'divorce', cache)
+             if d['date_min']),
+            key=lambda d: d['date_min'])
         weddings = _summary_events(claims, 'marriage', [d['date_min'] for d in divorces])
         if not weddings:
-            entries.append(('9999', ' '.join(p for p in (
-                link, _summary_cite([claims[0]['source_id']])) if p)))
+            # Known as a couple only from a relationship record: still say
+            # so, and say they divorced if a record says that.
+            text = ' '.join(p for p in (link, _summary_cite([claims[0]['source_id']])) if p)
+            if divorces:
+                d = divorces[0]
+                text += '; ' + ' '.join(p for p in (
+                    'divorced', _summary_when_where(d, conn, ', '),
+                    _summary_cite([d['source_id']])) if p)
+            entries.append(('9999', text))
             continue
         for n, w in enumerate(weddings):
             when = _summary_when_where(w, conn, ', ')
