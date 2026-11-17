@@ -1,6 +1,6 @@
 # BUILD_INTERFACE.md - the AI interface (workflow skills) and the workbench: build sequence
 
-**Who this is for:** developers implementing the workflow **skills** that drive the `fha` tool suite, and the `fha serve` workbench. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers implementing the workflow **skills** that drive the `fha` tool suite, and the `fha serve` workbench. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 This file is the order in which to build the **interface layer** from nothing, with the acceptance test for each step: the `.claude/skills/` workflow skills, the harness conventions around them, and the `fha serve` localhost workbench. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INGESTION.md`](BUILD_INGESTION.md) (capture and the inbox contract). Design rationale lives in [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md); this file tells you the sequence and how to verify it.
 

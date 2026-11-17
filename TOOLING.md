@@ -1,6 +1,6 @@
 # TOOLING.md - Plaintext Family History: Tooling Design
 
-**Who this is for:** developers building or extending the `fha` tools. To use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
 **Version 2.1 - 2026-11-16 · companion to SPEC.md v2.1 (versions track the SPEC)**
 
@@ -1284,11 +1284,11 @@ Two commands copy the operating layer from a public-repo clone into a private ar
 
 **The manifest.** The repo ships `manifest.json`, the single definition of the operating layer: every path that belongs in an archive, its checksum, its version, and a tag `operating` or `skeleton`. A new shipped file is added to the manifest, never hardcoded. Each entry maps a repo-relative `src` to an archive-relative `path`, so the engine needs no layout knowledge. `python tools/scaffold.py write-manifest [--repo PATH]` regenerates it (maintainers only).
 
-- **Operating layer:** tools, the `design/` package, the browser companion, the rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`), `GETTING_STARTED.md`, `CHEATSHEET.md`, `docs/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), `.claude/skills/`.
-- **Skeleton:** `fha.yaml`, empty record dirs with `.gitkeep`, seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, `design/custom.css`, `.gitignore`, `.gitattributes`.
-- **Never shipped:** the tool-building docs (`BUILD*.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`), `example-archive/`, `archive-template/` itself (its contents seed the skeleton), `tests/`, `.github/`, `.claude/settings.json` (permission grants are personal), `PRIVACY.md`, `RELEASE_CHECKLIST.md`, and the project `README.md`. An archive's entry point is `GETTING_STARTED.md`.
+- **Operating layer:** tools, the `design/` package, the browser companion, the rulebooks (`AGENTS.md`, `CLAUDE.md` at the root; `SPEC.md`, `TOOLING.md` installed as `docs/SPEC.md`, `docs/TOOLING.md`), `docs/` (including `GETTING_STARTED.md` and `CHEATSHEET.md`), the launchers (`fha`, `fha.cmd`, `serve.cmd`), `.claude/skills/`.
+- **Skeleton:** `fha.yaml`, `START_HERE.md`, empty record dirs with `.gitkeep`, seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, `design/custom.css`, `.gitignore`, `.gitattributes`.
+- **Never shipped:** the tool-building docs (`BUILD*.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`), `example-archive/`, `archive-template/` itself (its contents seed the skeleton), `tests/`, `.github/`, `.claude/settings.json` (permission grants are personal), `PRIVACY.md`, `RELEASE_CHECKLIST.md`, and the project `README.md`. An archive's entry point is `START_HERE.md` for a reader and `docs/GETTING_STARTED.md` for the owner.
 
-**Archive layout.** Machinery lives in hidden `.fha/`: `tools/`, `design/`, `browser-companion/` (for chrome://extensions "Load unpacked"), and `docs/` (`DESIGN.md`, `SITE_PLAN.md`). The root holds the record folders, `fha.yaml`, rulebooks, `GETTING_STARTED.md`, `CHEATSHEET.md`, `docs/`, `.claude/skills/`, launchers. The repo stays flat; the remap is install-time only. Install never rewrites links, so owner docs keep the same path in repo and archive; links that cannot be right in both are absolute URLs.
+**Archive layout.** Machinery lives in hidden `.fha/`: `tools/`, `design/`, `browser-companion/` (for chrome://extensions "Load unpacked"), and `docs/` (`DESIGN.md`, `SITE_PLAN.md`). The root holds the record folders, `START_HERE.md`, `fha.yaml`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `.claude/skills/`, launchers. Every other doc lives in `docs/`: the owner docs (`GETTING_STARTED.md`, `CHEATSHEET.md`) sit there in the repo too, while `SPEC.md` and `TOOLING.md` stay at the repo root and install as `docs/SPEC.md`, `docs/TOOLING.md`. The repo otherwise stays flat; the remap is install-time only. Install never rewrites links, so a shipped doc's relative links must resolve where it lands; a reference that cannot be right in both repo and archive (anything to or from `SPEC.md` and `TOOLING.md`) is a plain file name or an absolute URL, never a relative link. `START_HERE.md` is a skeleton seed: written once, delivered by `fha update-tools` to an archive that never had one, never overwritten.
 
 **`fha install <archive-path> [--repo PATH] [--dry-run]`** runs from a clone (the archive has no `fha` yet). It creates the folder if absent, or fills an existing folder that has no tools, writes skeleton plus operating layer, and stamps `.plaintext-version` (manifest version and per-file checksums). The archive is then self-contained.
 

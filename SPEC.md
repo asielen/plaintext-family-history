@@ -2,7 +2,7 @@
 
 *The durable, file-first family-history archive - the specification.*
 
-**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
 **Version 2.1 - 2026-11-16**
 
@@ -428,12 +428,15 @@ Julian/Gregorian judgment goes in `notes`.
 
 ```
 family_archive/              ← the root (default name; rename freely - nothing parses it)
-  SPEC.md  TOOLING.md        ← the archive carries its own spec
-  GETTING_STARTED.md         ← the owner's entry point, plain language (no README.md
-  CHEATSHEET.md                here: the project one is repo-facing and never installed)
-  docs/                      ← the rest of the owner's manual (FAQ, GLOSSARY, …)
-  AGENTS.md  CLAUDE.md       ← agent operating instructions
+  START_HERE.md              ← the first page for anyone who opens the folder, written for a
+                                 reader with no tools: who the family is, how to read a
+                                 record. The owner's file once written (no README.md here)
   fha.yaml                   ← config + root mapping (§12.4)
+  AGENTS.md  CLAUDE.md       ← agent operating instructions (harnesses look for them here)
+  fha  fha.cmd  serve.cmd    ← the launchers
+  docs/                      ← every other document: SPEC.md and TOOLING.md (the archive
+                                 carries its own spec), GETTING_STARTED.md (the owner's
+                                 first day), CHEATSHEET.md, and the rest of the manual
   ── plain-text core (git-versioned) ──────────────────────────
   sources/{type}/            ← RECORDS: one .md per source (census/, newspaper/, photos/, …)
   people/

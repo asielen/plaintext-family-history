@@ -1,4 +1,5 @@
-# fha.yaml - archive configuration (plain, hand-editable). See SPEC.md §12.4.
+# fha.yaml - archive configuration (plain, hand-editable). See docs/SPEC.md §12.4.
+# START_HERE.md, beside this file, explains the archive's folders to anyone who opens it.
 #
 # This one file tells the tools where your photos and documents live. Edit it with
 # any plain text editor (Notepad, TextEdit - not Word). Copy-paste examples for the

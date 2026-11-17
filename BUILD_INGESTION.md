@@ -1,6 +1,6 @@
 # BUILD_INGESTION.md - intake: the capture engine and the inbox contract, build sequence
 
-**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its site recipes, the `--ingest` sweep, `--path`, and the native-messaging host backend. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers implementing the **intake on-ramp** - `fha capture`, its site recipes, the `--ingest` sweep, `--path`, and the native-messaging host backend. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 This file is the order in which to build the ingestion layer from nothing, with the acceptance test for each step. It is the sibling of [`BUILD.md`](BUILD.md) (core `fha` tools) and [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) (workflow skills and the workbench). Design rationale lives in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md); the law for what lands in the inbox is SPEC §12.1.
 

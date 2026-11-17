@@ -21,7 +21,7 @@ different shapes, but are one now, so there is nothing smaller left to template.
 Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`), fill it in, and you're done. **You link records by name:** in any profile or note, cite a source or cross-link a person by writing its name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works too. **Don't worry about making an ID:** the templates leave that to the tools. If you ever run `fha lint`, it assigns the IDs, keeps your filename as an alias so your `[[name]]` links keep working, and tidies everything. IDs are just sturdier for the long haul - filenames change and can repeat - but you never have to create one.
 
 **Your archive is a separate, private repository** - never commit real family data to the public spec repo.
-See `GETTING_STARTED.md` ("Your archive and the project are two separate things") for how the public spec/tools and your private archive relate.
+See `docs/GETTING_STARTED.md` ("Your archive and the project are two separate things") for how the public spec/tools and your private archive relate.
 
 After copying:
 1. Bring in the **operating layer** first, BEFORE editing anything. `fha install` refuses an
@@ -34,11 +34,12 @@ After copying:
    name (not a copy of this template - the installer builds the skeleton itself). It lays an
    installed archive out cleanly, so the root reads as your genealogy: the machinery (`tools/`
    and `design/`) is tucked into a hidden `.fha/` folder, and what's left at the archive root is
-   the four rulebooks (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`), the two guides you
-   actually read - `GETTING_STARTED.md` and `CHEATSHEET.md` - the rest of the manual in
-   `docs/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), your `fha.yaml`, the
-   `.claude/skills/` folder, and the data folders. (There is deliberately no `README.md` at an
-   installed archive's root: the project one is repo-facing, and `GETTING_STARTED.md` is the
+   `START_HERE.md` (the page that explains the archive to anyone who opens it), your
+   `fha.yaml`, the agent rulebooks `AGENTS.md` and `CLAUDE.md`, the launchers (`fha`,
+   `fha.cmd`, `serve.cmd`), the `.claude/skills/` folder, the data folders, and `docs/` - which
+   holds everything else to read: `GETTING_STARTED.md`, `CHEATSHEET.md`, `SPEC.md`,
+   `TOOLING.md` and the rest of the manual. (There is deliberately no `README.md` at an
+   installed archive's root: the project one is repo-facing, and `START_HERE.md` is the
    entry point in its place - so delete this file once you have copied the folder.) See
    `docs/SETUP_FROM_ZIP.md`.
    *(Already copied this template by hand? You can still point `fha install` at that copy: it
@@ -46,10 +47,10 @@ After copying:
    pristine copy of this template installs cleanly and gets the version stamp with it. It stops
    only if you have started editing — `fha.yaml` filled in, records added — so that it can never
    overwrite work in progress. If it does stop, copy the operating layer in by hand instead: the
-   `tools/` and `design/` folders go into a `.fha/` folder here, and the four rulebooks above,
-   `GETTING_STARTED.md`, `CHEATSHEET.md`, the `docs/` folder, the `fha`, `fha.cmd` and
-   `serve.cmd` launchers, and the `.claude/skills/`
-   folder go into the archive root.)*
+   `tools/` and `design/` folders go into a `.fha/` folder here; the `docs/` folder, with
+   `SPEC.md` and `TOOLING.md` copied into it; and `AGENTS.md`, `CLAUDE.md`, the `fha`,
+   `fha.cmd` and `serve.cmd` launchers, and the `.claude/skills/` folder go into the archive
+   root.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).

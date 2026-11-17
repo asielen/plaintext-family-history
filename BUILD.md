@@ -1,6 +1,6 @@
 # BUILD.md - fha tool suite: build sequence
 
-**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`GETTING_STARTED.md`](GETTING_STARTED.md).
+**Who this is for:** developers implementing the `fha` tool suite. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 This file is the order in which to build the **core** `fha` tools from nothing, with the
 acceptance test for each step. Every tool appears in dependency order with the same level of
@@ -1920,11 +1920,12 @@ empty one) is M9.2.
 `spec_version`. Each entry's `path` is the file's destination INSIDE the archive, which is not
 the same as its path in this repo: the tool suite and the design assets are vendored, so
 `tools/index.py` ships as `.fha/tools/index.py` and `design/custom.css` as
-`.fha/design/custom.css`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
-the two owner entry docs installed at the archive root (`GETTING_STARTED.md`,
-`CHEATSHEET.md`), the agent workflow procedures under
+`.fha/design/custom.css`, and `SPEC.md` / `TOOLING.md` as `docs/SPEC.md` / `docs/TOOLING.md`.
+Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`, `docs/` (including the
+owner's `docs/GETTING_STARTED.md` and `docs/CHEATSHEET.md`), the agent workflow procedures under
 `.claude/skills/`, the launchers (`fha`, `fha.cmd`, `serve.cmd`), and the skeleton (`fha.yaml`
-template, `.gitignore`, `.gitattributes`, the empty record dirs, seeded `places.yaml`).
+template, `START_HERE.md`, `.gitignore`, `.gitattributes`, the empty record dirs, seeded
+`places.yaml`).
 
 The browser companion ships with every archive too: it has no build step (its source tree is
 the loadable MV3 extension), so its `manifest.json`, `src/`, `icons/` and README are vendored
@@ -1937,8 +1938,7 @@ where tools get built (TOOLING §13c): `AGENTS_TOOLING.md`, every `BUILD*.md`, a
 tooling designs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`). Shipping them would tell an
 agent inside an archive to follow a build sequence it cannot run. The guiding rule is *everything a genealogist needs to operate*,
 not a hand-picked minimum. Also covers the human-facing docs that must ship into every archive:
-`GETTING_STARTED.md` and `CHEATSHEET.md` (at the archive ROOT - docs are split by
-audience, and these two are the owner's entry points), plus `docs/SETUP_FROM_ZIP.md`,
+`docs/GETTING_STARTED.md` and `docs/CHEATSHEET.md` (the owner's entry points), plus `docs/SETUP_FROM_ZIP.md`,
 `docs/TROUBLESHOOTING.md`, `docs/FILING_CABINET.md` (create any that don't exist yet as
 stubs - the manifest entry is the commitment that they will be present in every installed
 archive); in practice the *whole* `docs/` folder ships, since those five are a floor and a
@@ -1970,8 +1970,9 @@ fha install ./test-archive --repo .   # skeleton; .plaintext-version written
 # Python < 3.10 → friendly message, no traceback
 # exiftool absent → friendly guidance message, install proceeds (not a hard stop)
 # --repo pointing to an unzipped download (no .git/) → same result as a git clone
-# GETTING_STARTED.md + CHEATSHEET.md at the archive ROOT, docs/SETUP_FROM_ZIP.md
-# etc. under docs/, and NO README.md (the project README is repo-facing)
+# START_HERE.md, fha.yaml, AGENTS.md, CLAUDE.md + launchers at the archive ROOT;
+# SPEC.md, TOOLING.md, GETTING_STARTED.md, CHEATSHEET.md, SETUP_FROM_ZIP.md etc.
+# under docs/, and NO README.md (the project README is repo-facing)
 # .fha/browser-companion/manifest.json present; no tests/ under it
 python -m unittest tests.test_scaffold tests.test_version_sync
 ```

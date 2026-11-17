@@ -1031,7 +1031,7 @@ def main(argv=None):
     for line in attach_command_lines(md_path.name):
         print(f"  {line}")
     print("(`fha` is the launcher file sitting in the archive folder, not a program your "
-          "computer knows by name; CHEATSHEET.md has the same table.)")
+          "computer knows by name; docs/CHEATSHEET.md has the same table.)")
     return EXIT_OK
 
 

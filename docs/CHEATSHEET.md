@@ -161,6 +161,6 @@ page. Find it via the site's homepage Sources list or `fha find --text`.
 
 ---
 
-*Stuck? See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). New here?
+*Stuck? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). New here?
 [GETTING_STARTED.md](GETTING_STARTED.md), right beside this page.
-Every term defined: [docs/GLOSSARY.md](docs/GLOSSARY.md).*
+Every term defined: [GLOSSARY.md](GLOSSARY.md).*
