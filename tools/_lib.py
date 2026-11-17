@@ -12334,7 +12334,7 @@ def render_stub_content(
     if death is not None:
         lines.append(f'death: {yaml_edtf(death)}   # unsourced estimate - a tool will remind you to add a source')
     else:
-        lines.append('# death:   # same here; leave commented until you know')
+        lines.append('# death:   # an honest guess is fine here too; leave commented until you know')
     if death_place:
         lines.append(f'death_place: {yaml_inline(str(death_place).strip())}   # unsourced, goes with the death estimate')
     lines.append(f'created: {datetime.date.today().isoformat()}')

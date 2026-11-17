@@ -327,7 +327,8 @@ Regenerate all content views for every curated person.
 
 ```text
 Regenerate timeline and draft-queue for every curated person, and
-refresh every curated person's own ## Sources section.
+refresh every person's own ## Sources section and summary lines
+(stubs included).
 --format html regenerates the standalone generated/views/ pages
 instead; --format both writes the two sets in one pass.
 Requires a fresh .cache/index.sqlite (run `fha index` first).

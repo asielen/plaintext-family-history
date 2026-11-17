@@ -938,7 +938,7 @@ Deletes GENERATED-headed files: companion `.md` files under `people/` and `.html
 
 ### `fha views refresh [--format md|html|both] [--root PATH]`
 
-Regenerates timeline and draft-queue for every curated person (`md`: plus each profile's `## Sources` and summary regions; `html`: the `generated/views/` set). Needs a fresh index. One person's failure warns and skips; the run then exits 1 with `data['skipped']`. A failed index-row update exits 1 with `data['index_stale']`.
+Regenerates timeline and draft-queue for every curated person (`md`: plus every person's `## Sources` and summary regions, stubs included - a stub reads like any profile; `html`: the `generated/views/` set). Needs a fresh index. One person's failure warns and skips; the run then exits 1 with `data['skipped']`. A failed index-row update exits 1 with `data['index_stale']`.
 
 ### D11 - single-file HTML views
 
