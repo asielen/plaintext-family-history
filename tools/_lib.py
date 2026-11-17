@@ -369,7 +369,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 (SPEC §16); hand-written summary lines are never touched
 #
 #  relationships: entries - one per person and role (SPEC §9)
-#    relationship_entry_claim_ids - an entry's claim ids, from `claims:` or a legacy `claim:`
+#    relationship_entry_claim_ids - an entry's claim ids, from its `claims:` list
 #    relationship_claims_value - the `claims: ["[[c-…]]", …]` value tools write
 #    collapse_relationship_entries - fold entries for the same tie into one `claims:` list
 #
@@ -8952,24 +8952,22 @@ def link_field_refs(value: Any) -> list[str]:
 #
 # A person's `relationships:` entry names one other person in one role and
 # lists every claim that backs that tie: `claims: ["[[c-…]]", "[[c-…]]"]`.
-# Older records carry one entry PER claim (`claim: "[[c-…]]"`), so a profile
-# backed by twenty census rows listed the same father twenty times. Readers
-# take both keys through `relationship_entry_claim_ids`; writers add a new
-# entry in the `claims:` shape and then run `collapse_relationship_entries`,
-# which folds entries for the same person and role into the first one, so no
-# writer leaves a duplicate behind.
+# Readers take it through `relationship_entry_claim_ids`; writers add a new
+# entry in that shape and then run `collapse_relationship_entries`, which
+# folds entries for the same person and role into the first one, so no writer
+# leaves a duplicate behind. (A single `claim:` key, the old one-entry-per-
+# claim shape, is read by nothing: `fha lint` W154 names it.)
 
 def relationship_entry_claim_ids(entry: Any) -> list[str]:
     """The claim ids one `relationships:` entry links, lowercased, in order,
-    each once - from its `claims:` list and from a single `claim:` key."""
+    each once - from its `claims:` list."""
     if not isinstance(entry, dict):
         return []
     out: list[str] = []
-    for key in ('claims', 'claim'):
-        for ref in link_field_refs(entry.get(key)):
-            cid = normalize_id(ref)
-            if cid and cid not in out:
-                out.append(cid)
+    for ref in link_field_refs(entry.get('claims')):
+        cid = normalize_id(ref)
+        if cid and cid not in out:
+            out.append(cid)
     return out
 
 
@@ -8979,7 +8977,7 @@ def relationship_claims_value(claim_ids: list[str]) -> str:
 
 
 _REL_KEY_LINE_RE = re.compile(r'^relationships\s*:\s*(#.*)?$')
-_REL_CLAIM_LINE_RE = re.compile(r'^(\s*)(-\s+)?(claims?)\s*:\s*(.*)$')
+_REL_CLAIM_LINE_RE = re.compile(r'^(\s*)(-\s+)?(claims)\s*:\s*(.*)$')
 
 
 def _relationship_block_items(
@@ -9056,9 +9054,9 @@ def _relationship_item_key(entry: Any, resolve) -> tuple | None:
 
 
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
-    """One entry's lines with its `claim:`/`claims:` key(s) replaced by a
-    single `claims:` line listing `claim_ids` - written where the first of
-    them stood, else at the end of the entry."""
+    """One entry's lines with its `claims:` key replaced by a `claims:`
+    line listing `claim_ids` - written where it stood, else at the end of
+    the entry."""
     if not claim_ids:
         return list(item)
     dash = re.match(r'^(\s*)-\s+', item[0])
@@ -9081,7 +9079,7 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
         if m.group(3) == 'claims' and (not rest or rest.startswith('#')):
             skip_deeper = len(m.group(1)) + len(m.group(2) or '')
         if m.group(2):
-            # `- claim: ...` opened the entry: the dash stays on that line.
+            # `- claims: ...` opened the entry: the dash stays on that line.
             out.append(f'{m.group(1)}{m.group(2)}claims: {value}{cr}')
             placed = True
         elif not placed:
@@ -9098,7 +9096,7 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     whose claim links become one `claims: [...]` list holding every claim the
     group linked, in order. The later entries are removed. Everything else in
     the first entry (its `to:` spelling, comments, other keys) is kept as
-    written, and an entry nothing duplicates is left alone, `claim:` and all.
+    written, and an entry nothing duplicates is left alone.
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
 

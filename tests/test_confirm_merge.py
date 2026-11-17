@@ -77,7 +77,7 @@ relationships:
   - to: "[[P-cccccccccc|Nancy Webb]]"
     type: spouse
     subtype: social
-    claim: "[[C-ff00000001]]"
+    claims: ["[[C-ff00000001]]"]
 created: 2026-01-01
 tier: curated
 ---
@@ -105,11 +105,11 @@ relationships:
   - to: "[[P-cccccccccc|Nancy Webb]]"
     type: spouse
     subtype: social
-    claim: "[[C-ff00000001]]"
+    claims: ["[[C-ff00000001]]"]
   - to: "[[P-dddddddddd|John Reed]]"
     type: friend
     subtype: friend
-    claim: "[[C-ff00000004]]"
+    claims: ["[[C-ff00000004]]"]
 created: 2026-01-02
 tier: stub
 ---
@@ -128,11 +128,11 @@ relationships:
   - to: "[[P-aaaaaaaaaa|Thomas Edward Hartley]]"
     type: spouse
     subtype: social
-    claim: "[[C-ff00000001]]"
+    claims: ["[[C-ff00000001]]"]
   - to: "[[P-bbbbbbbbbb|Thos. Hartley]]"
     type: friend
     subtype: friend
-    claim: "[[C-ff00000004]]"
+    claims: ["[[C-ff00000004]]"]
 created: 2026-01-01
 tier: stub
 ---
@@ -727,7 +727,7 @@ class MergeArchiveTests(unittest.TestCase):
         # claim: the survivor keeps ONE spouse entry for Nancy, listing both.
         text = self.merged_path.read_text(encoding='utf-8')
         self.merged_path.write_text(
-            text.replace('    claim: "[[C-ff00000001]]"', '    claim: "[[C-ff00000009]]"'),
+            text.replace('    claims: ["[[C-ff00000001]]"]', '    claims: ["[[C-ff00000009]]"]'),
             encoding='utf-8')
         run_merge(self.root)
         rels = read_record(self.survivor_path)['meta']['relationships']
@@ -746,7 +746,7 @@ class MergeArchiveTests(unittest.TestCase):
             '  - to: "[[P-aaaaaaaaaa|Thomas Edward Hartley]]"\n'
             '    type: friend\n'
             '    subtype: friend\n'
-            '    claim: "[[C-ff00000010]]"\n'
+            '    claims: ["[[C-ff00000010]]"]\n'
             '  - to: "[[P-bbbbbbbbbb|Thos. Hartley]]"'), encoding='utf-8')
         run_merge(self.root)
         rels = read_record(self.other_path)['meta']['relationships']

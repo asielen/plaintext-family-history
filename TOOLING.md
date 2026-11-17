@@ -283,6 +283,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W151 | W | A source's `people:` entry written the old way, a bare ID with the person's name as a comment (`- p-…  # Margaret Cole`); the name sits where no tool reads or updates it. Fix: write `- "[[p-…|Margaret Cole]]"`. Any other comment is a note and is not reported. | §14 |
 | W152 | W | Capture history left at `.cache/capture_log.jsonl`, which no tool reads and backups skip. Fix: move it to `notes/capture-log.jsonl` (or paste its lines at the top of that file), delete it, run `fha index`. | §17c |
 | W153 | W | A claim with `subtype: child-of` or `spouse-of`, an old way of saying who plays which part, which no tool reads. Fix: delete the line - `roles:` (`child:`/`parent:`, or `spouse:` naming both) says it; for a known nature write it instead (`subtype: adoptive`). A `spouse-of` claim with no `roles: spouse:` puts no couple in the tree until fixed. | §8.2, §8.3 |
+| W154 | W | A `relationships:` entry linking its claim with the old single `claim:` key, which no tool reads, so the tie reads as unsourced. Fix: `claims: ["[[c-…]]"]`; two entries for the same person and role become one listing both claims. | §9 |
 | W142 | W | A claim with the retired `status: needs-review` (SPEC 2.1 §8.1). Fix: `status: suggested` with its `reviewed:` date, or `fha claim <c-id> --status suggested`. | §8.1 |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |

@@ -136,7 +136,7 @@ from _lib import (
     strip_link_wrapper,
     strip_generated_region,   # cut the generated summary region out before E013 reads
     SUMMARY_REGION,
-    relationship_entry_claim_ids,   # an entry's claims: list or legacy claim: (SPEC §9)
+    relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
     carries_person_record_fields,
@@ -1310,6 +1310,19 @@ def _process_person_file(path: Path, registry: Registry,
             finding.message += (f' To fix it: fha person set-sex {meta.get("id") or "<p-id>"} '
                                 'M|F|intersex|unknown')
             findings.append(finding)
+        # W154: a `relationships:` entry backed by a single `claim:` key, the
+        # old one-entry-per-claim shape. No tool reads that key, so the tie
+        # reads as unsourced until it is written `claims: [...]`.
+        old_claim_keys = [e for e in (meta.get('relationships') or [])
+                          if isinstance(e, dict) and 'claim' in e]
+        if old_claim_keys:
+            findings.append(Finding('W', 'W154', path,
+                f'{len(old_claim_keys)} relationships: '
+                f'{"entry links its claim" if len(old_claim_keys) == 1 else "entries link their claim"} '
+                'with `claim:`, an old key the tools no longer read, so the tie reads as '
+                'unsourced. Rename it to `claims:` and put the link in a list: '
+                '`claim: "[[c-…]]"` becomes `claims: ["[[c-…]]"]`. Where two entries name '
+                'the same person in the same role, keep one and list both claims in it.'))
 
     # Collect token refs from body
     _collect_token_refs(rec['body'], path, registry)
@@ -5176,7 +5189,7 @@ _CLAIM_KEY_ORDER = ['value']
 # Frontmatter / claim fields that hold IDs (SPEC §10: written lowercase). Free
 # text - titles, citations, notes, values - is never touched.
 _FM_ID_FIELDS = {'id', 'aliases', 'people', 'places', 'merged_into'}
-_RELATIONSHIP_ID_SUBKEYS = ('to', 'claim', 'claims', 'source')
+_RELATIONSHIP_ID_SUBKEYS = ('to', 'claims', 'source')
 _CLAIM_ID_FIELDS = {'id', 'persons', 'roles', 'place', 'corroborates',
                     'contradicts', 'hypothesis'}
 # SPEC §14 / §16: the usual `##` section order.

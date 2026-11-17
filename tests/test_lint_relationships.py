@@ -110,7 +110,7 @@ def _parent_entry(to_pid: str, name: str, *, subtype: str = 'biological',
     if subtype:
         lines.append(f'    subtype: {subtype}')
     if claim:
-        lines.append(f'    claim: "[[{claim}]]"')
+        lines.append(f'    claims: ["[[{claim}]]"]')
     if status:
         lines.append(f'    status: {status}')
     return '\n'.join(lines)
@@ -446,7 +446,7 @@ class MarriageScopeW115Tests(unittest.TestCase):
             'relationships:',
             f'  - to: "[[{self.HMO}|P3 Kin]]"',
             '    type: spouse',
-            f'    claim: "[[{self.MARRIAGE}]]"',
+            f'    claims: ["[[{self.MARRIAGE}]]"]',
         ])
         root = _build(self._files(blocks={self.HFA: block}))
         findings, _registry = lint._run_lint_core(root, {})
@@ -464,7 +464,7 @@ class MarriageScopeW115Tests(unittest.TestCase):
                 'relationships:',
                 f'  - to: "[[{self.WIF if pid == self.HUS else self.HUS}|Spouse]]"',
                 '    type: spouse',
-                f'    claim: "[[{self.MARRIAGE}]]"',
+                f'    claims: ["[[{self.MARRIAGE}]]"]',
             ])
             fname, text = _person(pid, 'kin', f'p{n}', relationships=block)
             files[fname] = text
@@ -538,13 +538,13 @@ class BirthClaimBacksAParentEntryTests(unittest.TestCase):
             'relationships:',
             f'  - to: "[[{PARENT}|Bob Kid]]"',
             '    type: parent',
-            f'    claim: "[[{self.BIRTH}]]"',
+            f'    claims: ["[[{self.BIRTH}]]"]',
         ])
         parent_block = '\n'.join([
             'relationships:',
             f'  - to: "[[{CHILD}|Ann Kid]]"',
             '    type: child',
-            f'    claim: "[[{self.BIRTH}]]"',
+            f'    claims: ["[[{self.BIRTH}]]"]',
         ])
         findings, _reg = lint._run_lint_core(
             _build(self._files(child_block=child_block,
@@ -560,7 +560,7 @@ class BirthClaimBacksAParentEntryTests(unittest.TestCase):
             'relationships:',
             f'  - to: "[[{PARENT}|Bob Kid]]"',
             '    type: parent',
-            f'    claim: "[[{self.BIRTH}]]"',
+            f'    claims: ["[[{self.BIRTH}]]"]',
         ])
         findings, _reg = lint._run_lint_core(
             _build(self._files(child_block=child_block, parent_block='',
@@ -735,22 +735,6 @@ class ClaimsListEntryTests(unittest.TestCase):
         backlog = '\n'.join(lint._needs_sourcing_backlog(registry))
         self.assertNotIn('not yet sourced', backlog)
 
-    def test_fix_reciprocal_writes_one_entry_listing_every_claim(self) -> None:
-        # The child's record is in the old shape: one entry per claim.
-        old_shape = '\n'.join([
-            'relationships:',
-            f'  - to: "[[{PARENT}|Bob Kid]]"', '    type: parent', f'    claim: "[[{CLAIM}]]"',
-            f'  - to: "[[{PARENT}|Bob Kid]]"', '    type: parent', f'    claim: "[[{CLAIM2}]]"',
-        ])
-        root = self._root(old_shape)
-        lint.run_lint(root, {}, fix_reciprocal=True)
-        from _lib import read_record
-        parent_path = root / 'people' / 'stubs' / f'kid__bob_{PARENT}.md'
-        rels = read_record(parent_path)['meta']['relationships']
-        self.assertEqual(len(rels), 1)
-        self.assertEqual(rels[0]['claims'], [f'[[{CLAIM.lower()}]]', f'[[{CLAIM2.lower()}]]'])
-        self.assertNotIn('claim', rels[0])
-
     def test_fix_reciprocal_folds_into_an_existing_entry_for_the_same_tie(self) -> None:
         # The parent already lists the child (claims CLAIM); the child's entry
         # adds CLAIM2 - and W116 does not fire, since the tie is there. Run
@@ -760,10 +744,10 @@ class ClaimsListEntryTests(unittest.TestCase):
             '---\nid: p-bbbbbbbbbb\nname: Bob Kid\nrelationships:\n'
             f'  - to: "[[{CHILD}|Ann Kid]]"  # my daughter\n'
             '    type: child\n'
-            f'    claim: "[[{CLAIM}]]"\n'
+            f'    claims: ["[[{CLAIM}]]"]\n'
             f'  - to: "[[{OTHERKID}|Cara Kid]]"\n'
             '    type: child\n'
-            f'    claim: "[[{CLAIM}]]"\n'
+            f'    claims: ["[[{CLAIM}]]"]\n'
             f'  - to: "[[{CHILD}]]"\n'
             '    type: child\n'
             f'    claims: ["[[{CLAIM2}]]"]\n'
@@ -782,6 +766,33 @@ class ClaimsListEntryTests(unittest.TestCase):
         self.assertTrue(new.endswith('living: false\n---\n# Bob\n'))
         self.assertEqual(collapse_relationship_entries(new), (new, 0))
 
+
+
+class OldClaimKeyW154Tests(unittest.TestCase):
+    """A `relationships:` entry still linking its claim with the old single
+    `claim:` key is read by no tool - the tie reads as unsourced - so lint
+    names it and the `claims: [...]` form to write."""
+
+    def test_old_claim_key_is_named_with_the_fix(self) -> None:
+        old = '\n'.join(['relationships:', f'  - to: "[[{PARENT}|Bob Kid]]"',
+                         '    type: parent', f'    claim: "[[{CLAIM}]]"'])
+        child_f, child_t = _person(CHILD, 'kid', 'ann', relationships=old)
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        root = _build({child_f: child_t, parent_f: parent_t, src_rel: src_text})
+        findings, _ = lint._run_lint_core(root, {})
+        w154 = _codes(findings, 'W154')
+        self.assertEqual(len(w154), 1, [f.code for f in findings])
+        self.assertIn('claims: ["[[c-…]]"]', w154[0].message)
+
+    def test_claims_list_is_quiet(self) -> None:
+        child_f, child_t = _person(CHILD, 'kid', 'ann',
+                                   relationships=_claims_entry(PARENT, 'Bob Kid', 'parent', [CLAIM]))
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        root = _build({child_f: child_t, parent_f: parent_t, src_rel: src_text})
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertEqual(_codes(findings, 'W154'), [])
 
 
 if __name__ == '__main__':

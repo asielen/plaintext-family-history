@@ -198,7 +198,7 @@ from _lib import (
     result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
-    relationship_entry_claim_ids,   # an entry's claims: list or legacy claim: (SPEC §9)
+    relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
     unreadable_dir_recorder,
@@ -2335,9 +2335,9 @@ def _render_relationship_entry(entry: dict, item_indent: str) -> list[str]:
     claim_ids = relationship_entry_claim_ids(entry)
     for k, v in entry.items():
         prefix = f'{item_indent}- ' if first else f'{item_indent}  '
-        if k in ('claim', 'claims'):
+        if k == 'claims':
             # The one written shape (SPEC §9): every backing claim in one
-            # `claims:` list, whichever key the folded entry used.
+            # `claims:` list.
             if not claim_ids:
                 continue
             lines.append(f'{prefix}claims: {relationship_claims_value(claim_ids)}')

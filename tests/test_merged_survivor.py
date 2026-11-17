@@ -308,7 +308,7 @@ class RelationshipsBlockThroughSurvivorTests(_MergeFixture):
         _write(self.root / 'people' / 'stubs' / f'mary_cole_{MARY}.md',
                f'---\nid: {MARY}\nname: Mary Cole\nliving: false\nsex: F\ntier: stub\n'
                f'relationships:\n  - to: "[[{to_pid}|Thomas]]"\n    type: child\n'
-               f'    claim: "[[{CLAIM}]]"\n---\n\n# Mary Cole\n\n## Biography\n\nx\n')
+               f'    claims: ["[[{CLAIM}]]"]\n---\n\n# Mary Cole\n\n## Biography\n\nx\n')
         self.source(SRC, _claim(CLAIM, 'birth', [DUP, MARY], {'child': DUP, 'parent': MARY}))
         self.build()
 
