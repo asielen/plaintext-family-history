@@ -211,13 +211,14 @@ created: 2026-01-02
   persons: [P-bbbbbbbbbb, P-aaaaaaaaaa]
   status: superseded
 
-- value: "event needs-review - roles block"
+- value: "event parked - roles block"
   id: C-ff00000007
   type: event
   persons: [P-bbbbbbbbbb]
   roles:
     witness: [P-bbbbbbbbbb]
-  status: needs-review
+  status: suggested
+  reviewed: 2026-01-03
 
 - value: "disputed relationship naming both - evidence"
   id: C-ff00000008

@@ -356,10 +356,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     lines: list[str] = []
 
     prev_claim_status = prev.get('claim_status_by_id', {})
-    # A snapshot written before SPEC 2.1 recorded a parked claim as
-    # `needs-review` rather than listing it in `parked_claim_ids`.
-    prev_parked = set(prev.get('parked_claim_ids', [])) | {
-        cid for cid, status in prev_claim_status.items() if status == 'needs-review'}
+    prev_parked = set(prev.get('parked_claim_ids', []))
     newly_accepted = sorted(
         cid for cid, status in current['claim_status_by_id'].items()
         if status == 'accepted' and cid in prev_parked

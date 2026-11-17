@@ -38,7 +38,6 @@ clean index readable rather than corrupting it.
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import math
 import os
@@ -52,7 +51,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     claim_role_pairs,
     claim_status,
-    claim_is_parked,
     read_capture_log_lines,
     index_merge_survivors,
     join_claim_roles,
@@ -1692,14 +1690,6 @@ def _index_source(
         subtype = optional_scalar(claim.get('subtype'))
         place_text = optional_scalar(claim.get('place_text'))
         reviewed = optional_scalar(claim.get('reviewed'))
-        # A retired `needs-review` claim always meant "looked at, not settled"
-        # (SPEC §8.1), even when nobody wrote down when. Give it the record
-        # file's date so every reader keeps treating it as parked.
-        if reviewed is None and claim_is_parked(claim):
-            try:
-                reviewed = datetime.date.fromtimestamp(path.stat().st_mtime).isoformat()
-            except OSError:
-                reviewed = datetime.date.today().isoformat()
         confidence = optional_scalar(claim.get('confidence'))
         information = optional_scalar(claim.get('information'))
         evidence = optional_scalar(claim.get('evidence'))

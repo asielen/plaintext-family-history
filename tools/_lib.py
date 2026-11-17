@@ -1359,10 +1359,9 @@ def vital_subjects(
     return [pid for pid, roles in roles_of.items() if not roles]
 
 
-# SPEC 2.1 §8.1 retired the `needs-review` status: a claim a reviewer looked at
-# but could not settle stays `suggested` with a `reviewed:` date. Archives
-# written before then still carry the old word until they are migrated, so
-# every reader goes through `claim_status`, which reads it as `suggested`.
+# The status word SPEC §8.1 no longer has: a claim a reviewer looked at but
+# could not settle stays `suggested` with a `reviewed:` date. No tool reads
+# it; `fha lint` W142 names any left in an archive and the fix.
 RETIRED_NEEDS_REVIEW = 'needs-review'
 
 
@@ -1372,21 +1371,15 @@ PARKED_CLAIM_SQL = "(c.status = 'suggested' AND COALESCE(c.reviewed, '') != '')"
 
 
 def claim_status(claim: Any) -> str:
-    """A claim's `status:` as the tools read it: the stripped value, with the
-    retired `needs-review` read as `suggested` (its `reviewed:` date says it
-    was looked at, SPEC §8.1)."""
+    """A claim's `status:` as the tools read it: the stripped value."""
     raw = claim.get('status') if isinstance(claim, dict) else claim
-    status = '' if raw is None else str(raw).strip()
-    return 'suggested' if status.lower() == RETIRED_NEEDS_REVIEW else status
+    return '' if raw is None else str(raw).strip()
 
 
 def claim_is_parked(claim: dict) -> bool:
     """A claim a reviewer looked at and could not settle (SPEC §8.1):
-    `suggested` with a `reviewed:` date - or the retired `needs-review`,
-    which always meant "looked at", dated or not."""
+    `suggested` with a `reviewed:` date."""
     raw = str(claim.get('status') or '').strip().lower()
-    if raw == RETIRED_NEEDS_REVIEW:
-        return True
     return raw == 'suggested' and bool(str(claim.get('reviewed') or '').strip())
 
 
