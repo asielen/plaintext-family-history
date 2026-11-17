@@ -155,7 +155,7 @@ class ReconcileTests(unittest.TestCase):
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/letters/1920s/{DOC}')
         # role and the rest of the entry survive the surgical rewrite
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
         # a second run has nothing left to do
         self.assertEqual(self._run().exit_code, EXIT_CLEAN)
 
@@ -216,7 +216,7 @@ class ReconcileTests(unittest.TestCase):
         self.assertFalse([m.text for m in applied.messages if m.level == 'warning'])
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/moved/{DOC}')
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
 
     def test_backslash_front_and_back_heal_by_basename_not_ambiguous(self) -> None:
         # Two files of ONE source share its S-id (a front and a back). With
@@ -342,7 +342,7 @@ class ReconcileTests(unittest.TestCase):
         # The record must read back the WHOLE path, not a '#'-truncated stub.
         meta = read_record(self.record)['meta']
         self.assertEqual(meta['files'][0]['file'], f'documents/Box #3/{DOC}')
-        self.assertEqual(meta['files'][0]['role'], 'primary')
+        self.assertEqual(str(meta['files'][0]['is_primary']).lower(), 'true')
         # And a second run finds nothing to heal - the source stayed attached.
         self.assertEqual(self._run().exit_code, EXIT_CLEAN)
 

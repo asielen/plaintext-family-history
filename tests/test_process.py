@@ -1304,7 +1304,7 @@ class ProcessTestCase(unittest.TestCase):
         files = parsed['meta']['files']
         self.assertEqual(len(files), 2)
         self.assertEqual(files[0]['file'], 'documents/census/page1.pdf')
-        self.assertEqual(files[0]['role'], 'primary')
+        self.assertEqual(str(files[0]['is_primary']).lower(), 'true')
         self.assertEqual(files[1]['role'], 'page-2')
 
     def test_sidecar_multiline_citation_indented_correctly(self) -> None:
