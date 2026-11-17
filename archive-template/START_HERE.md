@@ -36,8 +36,9 @@ family this is, who the archive is centred on (the person named as `root_person`
 
 The top of the file, between two `---` lines, is a short list of facts about the record:
 `name:`, `sex:`, `living:` (`true`, `false` or `unknown`), and sometimes rough `birth:` and
-`death:` dates that nobody has proved yet. Below that, some profiles open with summary lines
-(Born, Died, Married, Parents, Children); then come `## Sources`, `## Biography`,
+`death:` dates that nobody has proved yet. Below that, most profiles open with summary lines
+(Born, Died, Married, Parents, Children), written by the tools from the archive's accepted
+facts and kept up to date; then come `## Sources`, `## Biography`,
 `## Stories`, `## Research Notes` and `## Friends & Family`. A short profile may have only
 some of these.
 

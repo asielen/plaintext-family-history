@@ -59,18 +59,18 @@ tier: stub                 # stub (a placeholder) -> curated (you've written the
 # Full Name Here
 
 > **This person's record - yours to write.** The main page for this person: summary,
-> biography, relationships. The `## Sources` list below is generated - regenerate it
-> with `fha views sources-index`, never edit it by hand. Everything else here is
-> yours; working notes go in `## Research Notes` below, or in a separate `_research`
-> file if this person's research grows large enough to want one of its own.
+> biography, relationships. The summary lines under this note and the `## Sources`
+> list are generated - `fha views refresh` rewrites them, so never edit them by hand.
+> Everything else here is yours; working notes go in `## Research Notes` below, or in
+> a separate `_research` file if this person's research grows large enough to want one
+> of its own.
 
-<!-- A quick summary. Point at the source for each fact with its code in double
-     brackets: [[S-...]]. Fill in what you know; delete the rest. -->
-**Born:** about 1840 - New York [[S-__________]]
-**Died:** 1909 [[S-__________]]
-**Married:** Spouse Name [[S-__________]]
-**Parents:** Father Name · Mother Name
-**Children:** Child One · Child Two
+<!-- The summary lines (Born, Died, Married, Parents, Children) go here.
+     `fha views summary` writes them from your accepted claims between two
+     marker lines and keeps them up to date. To write them yourself
+     instead, type them here with no markers - each label in bold, each fact
+     followed by its source code in double brackets - and the tools will
+     leave them alone. -->
 
 <!-- Recording a job, home, school, military service, immigration, or a church /
      lodge / tribe membership? Those are CLAIMS - add them in the source that
@@ -92,14 +92,11 @@ with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Research Notes
 Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default; to keep a single note out
-of a shared copy, wrap it in a private fence like the example below.
-
-<!-- private -->
-A hunch you're not ready to publish - say, a possible tie to a living relative.
-This block stays in your local `--linked` preview but is dropped from the shared
-(standalone) site.
-<!-- /private -->
+as you add your own.) This section is public by default.
+<!-- To keep one note out of anything you share, put it between two marker
+     lines: before it, the word private inside marks like the ones around this
+     note; after it, /private the same way. START_HERE.md shows both lines.
+     The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
 People connected to them who aren't blood relatives - neighbors, business

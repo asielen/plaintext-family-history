@@ -683,6 +683,107 @@ class NegatedClaimReconciliationTests(unittest.TestCase):
         self.assertIn('negated: true', w115[0].message)
         self.assertIn('ABSENCE', w115[0].message)
 
+# ── One entry per person and role (SPEC §9, plan 19 D5) ───────────────────────
+
+def _second_backing(cid: str = CLAIM2) -> str:
+    """A second accepted claim recording the same CHILD→PARENT edge."""
+    return (
+        '- value: "child of parent, again"\n'
+        f'  id: {cid}\n'
+        '  type: relationship\n'
+        '  subtype: biological\n'
+        f'  persons: [{CHILD}, {PARENT}]\n'
+        '  roles:\n'
+        f'    child: {CHILD}\n'
+        f'    parent: {PARENT}\n'
+        '  status: accepted\n'
+        '  reviewed: 2026-01-01\n'
+    )
+
+
+def _claims_entry(to_pid: str, name: str, role: str, claims: list[str]) -> str:
+    listed = ', '.join(f'"[[{c}]]"' for c in claims)
+    return '\n'.join(['relationships:', f'  - to: "[[{to_pid}|{name}]]"',
+                      f'    type: {role}', f'    claims: [{listed}]'])
+
+
+class ClaimsListEntryTests(unittest.TestCase):
+    """A profile lists each person once, with every claim that backs the tie,
+    instead of once per supporting record."""
+
+    def _root(self, child_block: str, parent_block: str = '') -> Path:
+        child_f, child_t = _person(CHILD, 'kid', 'ann', relationships=child_block)
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob', relationships=parent_block)
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT,
+                                        extra_claim=_second_backing())
+        return _build({child_f: child_t, parent_f: parent_t, src_rel: src_text})
+
+    def test_a_claims_list_reconciles_both_ways(self) -> None:
+        root = self._root(_claims_entry(PARENT, 'Bob Kid', 'parent', [CLAIM, CLAIM2]),
+                          _claims_entry(CHILD, 'Ann Kid', 'child', [CLAIM, CLAIM2]))
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertEqual(_codes(findings, 'W115'), [])
+        self.assertEqual(_codes(findings, 'W116'), [])
+
+    def test_each_claim_in_the_list_is_checked(self) -> None:
+        root = self._root(_claims_entry(PARENT, 'Bob Kid', 'parent', [CLAIM, 'C-9999999999']))
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertTrue(any('9999999999' in f.message for f in _codes(findings, 'W115')))
+
+    def test_the_needs_sourcing_backlog_counts_a_claims_list_as_sourced(self) -> None:
+        root = self._root(_claims_entry(PARENT, 'Bob Kid', 'parent', [CLAIM, CLAIM2]))
+        _findings, registry = lint._run_lint_core(root, {})
+        backlog = '\n'.join(lint._needs_sourcing_backlog(registry))
+        self.assertNotIn('not yet sourced', backlog)
+
+    def test_fix_reciprocal_writes_one_entry_listing_every_claim(self) -> None:
+        # The child's record is in the old shape: one entry per claim.
+        old_shape = '\n'.join([
+            'relationships:',
+            f'  - to: "[[{PARENT}|Bob Kid]]"', '    type: parent', f'    claim: "[[{CLAIM}]]"',
+            f'  - to: "[[{PARENT}|Bob Kid]]"', '    type: parent', f'    claim: "[[{CLAIM2}]]"',
+        ])
+        root = self._root(old_shape)
+        lint.run_lint(root, {}, fix_reciprocal=True)
+        from _lib import read_record
+        parent_path = root / 'people' / 'stubs' / f'kid__bob_{PARENT}.md'
+        rels = read_record(parent_path)['meta']['relationships']
+        self.assertEqual(len(rels), 1)
+        self.assertEqual(rels[0]['claims'], [f'[[{CLAIM.lower()}]]', f'[[{CLAIM2.lower()}]]'])
+        self.assertNotIn('claim', rels[0])
+
+    def test_fix_reciprocal_folds_into_an_existing_entry_for_the_same_tie(self) -> None:
+        # The parent already lists the child (claims CLAIM); the child's entry
+        # adds CLAIM2 - and W116 does not fire, since the tie is there. Run
+        # the collapse directly on a record that has picked up a duplicate.
+        from _lib import collapse_relationship_entries
+        text = (
+            '---\nid: p-bbbbbbbbbb\nname: Bob Kid\nrelationships:\n'
+            f'  - to: "[[{CHILD}|Ann Kid]]"  # my daughter\n'
+            '    type: child\n'
+            f'    claim: "[[{CLAIM}]]"\n'
+            f'  - to: "[[{OTHERKID}|Cara Kid]]"\n'
+            '    type: child\n'
+            f'    claim: "[[{CLAIM}]]"\n'
+            f'  - to: "[[{CHILD}]]"\n'
+            '    type: child\n'
+            f'    claims: ["[[{CLAIM2}]]"]\n'
+            f'  - to: "[[{CHILD}|Ann Kid]]"\n'
+            '    type: parent\n'
+            '    status: hypothesis\n'
+            'living: false\n---\n# Bob\n'
+        )
+        new, removed = collapse_relationship_entries(text)
+        self.assertEqual(removed, 1)
+        self.assertIn(f'  - to: "[[{CHILD}|Ann Kid]]"  # my daughter\n'
+                      '    type: child\n'
+                      f'    claims: ["[[{CLAIM.lower()}]]", "[[{CLAIM2.lower()}]]"]\n'
+                      f'  - to: "[[{OTHERKID}|Cara Kid]]"\n', new)
+        self.assertIn('status: hypothesis', new)   # a different role is its own entry
+        self.assertTrue(new.endswith('living: false\n---\n# Bob\n'))
+        self.assertEqual(collapse_relationship_entries(new), (new, 0))
+
+
 
 if __name__ == '__main__':
     unittest.main()

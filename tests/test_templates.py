@@ -203,6 +203,40 @@ class ScaffoldParityTests(unittest.TestCase):
         self.assertIn("record - yours to write", tmpl_text)
         self.assertIn("record - yours to write", rendered)
 
+    def test_new_profiles_carry_no_sample_private_note(self):
+        # Plan 19 4b / O12: every new profile used to contain a live
+        # `<!-- private -->` block holding example prose ("A hunch you're not
+        # ready to publish..."), which a reader takes for a real note. The
+        # instruction stays, inside a comment; no fence is written.
+        from _lib import private_fence_spans
+        rendered = render_person_body_scaffold('Jane Doe')
+        tmpl_text = (TEMPLATES / 'people' / '_TEMPLATE.person.md').read_text(encoding='utf-8')
+        for text in (rendered, tmpl_text):
+            self.assertEqual(private_fence_spans(text), [])
+            self.assertNotIn("A hunch you're not ready to publish", text)
+            self.assertIn('START_HERE.md shows both lines', text)
+
+    def test_the_person_template_writes_no_sample_summary_lines(self):
+        # A copy of the template must not carry made-up Born/Died lines: hand
+        # summary lines with no markers tell `fha views summary` a human owns
+        # them, so the sample text would never be replaced.
+        tmpl_text = (TEMPLATES / 'people' / '_TEMPLATE.person.md').read_text(encoding='utf-8')
+        self.assertNotRegex(tmpl_text, r'\*\*(Born|Died|Married|Parents|Children):\*\*')
+
+    def test_the_older_research_notes_placeholder_still_reads_as_unfilled(self):
+        # Profiles scaffolded before plan 19 4b keep the old placeholder (with
+        # its example fence) until the archive is migrated; it must still be
+        # treated as scaffolding, never published as a note he wrote.
+        old = ("Open questions, hunches, and brick walls - where to look next. (Delete this line\n"
+               "as you add your own.) This section is public by default; to keep a single note out\n"
+               "of a shared copy, wrap it in a private fence like the example below.\n\n"
+               "<!-- private -->\n"
+               "A hunch you're not ready to publish - say, a possible tie to a living relative.\n"
+               "This block stays in your local `--linked` preview but is dropped from the shared\n"
+               "(standalone) site.\n"
+               "<!-- /private -->\n")
+        self.assertTrue(person_section_is_unfilled('Research Notes', old))
+
     def test_person_body_sections_text_is_the_template_verbatim(self):
         # Owner simplification (2026-08): the four hand-written sections
         # never vary per person, so PERSON_BODY_SECTIONS_TEXT isn't rendered

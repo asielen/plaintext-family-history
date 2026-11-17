@@ -181,6 +181,8 @@ Build always-current summary pages from your records.
 
   fha views timeline <P-id>        A person's life chronology
   fha views sources-index <P-id>   Every source about a person
+  fha views summary <P-id>         Born / Died / Married / Parents / Children
+                                   lines under the person's name
   fha views draft-queue <P-id>     Accepted facts not yet written into the bio
   fha views refresh                Rebuild every view for all curated people
 
@@ -228,6 +230,24 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `[P-id]` | Person whose ## Sources section to refresh (stub or curated). |
 | `--all-curated` | Refresh every curated profile's ## Sources section. |
 | `--format` `{md,html}` | md (default). html is refused: the list lives inside the profile, with no separate page. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views summary`
+
+Write the Born / Died / Married / Parents / Children lines under a person's name.
+
+```text
+Write the summary lines under the person's name in their own
+profile, from accepted claims, between GENERATED summary markers.
+Lines a person wrote by hand (no markers) are left alone. Works
+on a stub too. Requires a fresh .cache/index.sqlite (run
+`fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `[P-id]` | Person whose summary lines to write (stub or curated). |
+| `--all-curated` | Write every curated profile's summary lines. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha views draft-queue`

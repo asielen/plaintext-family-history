@@ -4,6 +4,7 @@ views.py - fha views: generate view files from the index.
 
   fha views timeline [P-id | --all-curated] [--format md|html]
   fha views sources-index [P-id | --all-curated]
+  fha views summary [P-id | --all-curated]
   fha views draft-queue [P-id | --all-curated] [--format md|html]
   fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run] [--yes]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
@@ -52,6 +53,14 @@ other two views keep), because #76's whole point is that a stub's `##
 Sources` should already be populated by the time someone promotes it - not
 regenerated from scratch afterward. `--all-curated` stays curated-only by its
 own name; a single explicit `<P-id>` is not.
+
+**Summary (SPEC §16)** is the profile's second region: `fha views summary`
+writes the Born / Died / Married / Parents / Children lines between
+`GENERATED-BEGIN summary` / `GENERATED-END summary` markers right under the
+title and purpose block (`_lib.write_summary_region`), from accepted claims
+only, on the same terms as sources-index (stubs too, re-sync, no HTML). It is
+found by its markers, not a heading, and summary lines a human wrote with no
+markers are theirs: never touched.
 
 Each content view also renders as a standalone single-file HTML page
 (`--format html`), written under generated/views/ from the SAME queries and
@@ -174,6 +183,11 @@ from _lib import (
     write_generated_file,    # marker-guarded write shared with photoindex gallery,
     write_generated_region,  # rewrite a `## Heading` section as one GENERATED-BEGIN/END
                              # region, in place or newly created (SPEC §21b, #76),
+    write_summary_region,  # the profile's Born/Died/... summary region (SPEC §16),
+    strip_generated_region,  # cut one named region out of a profile body,
+    SUMMARY_REGION,       # that region's name,
+    humanize_edtf,        # an EDTF date as a reader says it ('3 March 1840'),
+    link_entry,           # `[[p-…|Name]]` - the one written form of a person link,
     write_text_exact_atomic,  # atomic record writer: temp file + fsync + os.replace,
 )
 
@@ -236,6 +250,12 @@ def _views_result(
 #    _generate_sources_index_person        - per-person: rewrites the profile's own
 #                                 `## Sources` GENERATED-BEGIN/END region in place (#76) -
 #                                 no separate file, works on a stub as well as a curated person
+#
+#  Summary region  (_generate_summary_person, run_summary)
+#    _summary_region_body         - Born/Died/Married/Parents/Children lines from accepted
+#                                 claims; _summary_own_vital / _summary_kin pick the facts
+#    _generate_summary_person     - writes the profile's summary region in place
+#                                 (`_lib.write_summary_region`); hand-written lines untouched
 #
 #  Draft-queue view  (_generate_draft_queue)
 #    _generate_draft_queue        - diff accepted sources against cited tokens
@@ -1278,6 +1298,170 @@ def _generate_sources_index_person(
     return profile_p
 
 
+# ── Summary region ────────────────────────────────────────────────────────────
+
+def _summary_person_link(conn: sqlite3.Connection, pid: str) -> str:
+    """`[[p-…|Name]]` for a person in the index, `[[p-…]]` when nameless."""
+    row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+    entry = link_entry(pid, row['name'] if row else None)
+    return entry if entry.startswith('[[') else f'[[{entry}]]'
+
+
+def _summary_when_where(row: sqlite3.Row, conn: sqlite3.Connection, sep: str = ' - ') -> str:
+    """'3 March 1840 - Easton, New York' from one claim row (either half may
+    be missing; `sep` joins them). The place is shown as written, never as a
+    link."""
+    date = humanize_edtf(row['date_edtf']) if row['date_edtf'] else ''
+    place = row['place_text'] or ''
+    if not place and row['place_id']:
+        p = conn.execute('SELECT name FROM places WHERE id = ?', (row['place_id'],)).fetchone()
+        place = (p['name'] if p else '') or ''
+    return sep.join(x for x in (date, place) if x)
+
+
+def _summary_own_vital(
+    conn: sqlite3.Connection, pid: str, types: tuple[str, ...], cache: dict,
+) -> sqlite3.Row | None:
+    """The person's own most exact accepted, non-negated vital of the first
+    type in `types` that has one (`vital_pick_key`, `claim_is_own_vital`) -
+    the same pick the site's summary and the tree labels make."""
+    for ctype in types:
+        rows = conn.execute(
+            'SELECT DISTINCT c.id, c.type, c.date_edtf, c.date_min, c.date_max, '
+            'c.place_id, c.place_text, c.source_id, c.confidence '
+            'FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id '
+            "WHERE cp.person_id = ? AND c.status = 'accepted' "
+            'AND COALESCE(c.negated, 0) = 0 AND c.type = ?',
+            (pid, ctype)).fetchall()
+        rows = [r for r in rows if claim_is_own_vital(conn, pid, r['id'], ctype, cache)]
+        if rows:
+            return sorted(rows, key=vital_pick_key)[0]
+    return None
+
+
+def _summary_kin(conn: sqlite3.Connection, pid: str, rel: str) -> list[tuple[str, list[sqlite3.Row]]]:
+    """[(other p-id, [backing claim rows])] for one kind of derived edge,
+    each person once, in the order a reader expects: parents father first,
+    children and spouses by date."""
+    rows = conn.execute(
+        'SELECT r.other_id, c.id, c.type, c.date_edtf, c.date_min, c.date_max, '
+        'c.place_id, c.place_text, c.source_id, c.confidence, '
+        'p.name AS other_name, p.sex AS other_sex '
+        'FROM relationships r JOIN claims c ON c.id = r.claim_id '
+        'LEFT JOIN persons p ON p.id = r.other_id '
+        'WHERE r.person_id = ? AND r.rel = ? ORDER BY c.id',
+        (pid, rel)).fetchall()
+    by_other: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        if r['other_id'] != pid:
+            by_other.setdefault(r['other_id'], []).append(r)
+
+    def born(other: str) -> str:
+        row = conn.execute(
+            'SELECT MIN(c.date_min) AS d FROM claims c '
+            'JOIN claim_persons cp ON cp.claim_id = c.id '
+            "WHERE cp.person_id = ? AND c.type = 'birth' AND c.status = 'accepted' "
+            'AND COALESCE(c.negated, 0) = 0', (other,)).fetchone()
+        return (row['d'] if row else None) or '9999'
+
+    def order(item: tuple[str, list[sqlite3.Row]]):
+        other, claims = item
+        name = (claims[0]['other_name'] or '').lower()
+        if rel == 'parent':
+            sex = (claims[0]['other_sex'] or '').upper()
+            return ({'M': 0, 'F': 1}.get(sex, 2), name, other)
+        if rel == 'spouse':
+            dates = [c['date_min'] for c in claims if c['type'] == 'marriage' and c['date_min']]
+            return (min(dates) if dates else '9999', name, other)
+        return (born(other), name, other)
+
+    return sorted(by_other.items(), key=order)
+
+
+def _summary_cite(source_ids: list[str]) -> str:
+    """One citation per fact (SPEC §16: one per line is enough in a summary)."""
+    return _format_sid(source_ids[0]) if source_ids else ''
+
+
+def _summary_region_body(conn: sqlite3.Connection, pid: str) -> str:
+    """The Born / Died / Married / Parents / Children lines for one person,
+    from accepted claims only (SPEC §16). A line with nothing to say is left
+    out; every fact carries the source it came from."""
+    cache: dict = {}
+    out: list[str] = []
+    for label, types, verb in (('Born', ('birth', 'baptism'), 'baptized'),
+                               ('Died', ('death', 'burial'), 'buried')):
+        row = _summary_own_vital(conn, pid, types, cache)
+        if row is None:
+            continue
+        text = _summary_when_where(row, conn)
+        if row['type'] != types[0]:
+            text = f'{verb} {text}'.strip()
+        out.append(' '.join(x for x in (f'**{label}:**', text,
+                                        _summary_cite([row['source_id']])) if x))
+
+    married: list[str] = []
+    for other, claims in _summary_kin(conn, pid, 'spouse'):
+        weddings = sorted((c for c in claims if c['type'] == 'marriage'), key=vital_pick_key)
+        when = _summary_when_where(weddings[0], conn, ', ') if weddings else ''
+        backing = weddings[0] if weddings else claims[0]
+        parts = [_summary_person_link(conn, other)]
+        if when:
+            parts.append(f'- {when}')
+        parts.append(_summary_cite([backing['source_id']]))
+        married.append(' '.join(p for p in parts if p))
+    if not married:
+        # A marriage record naming only this person still says they married.
+        row = _summary_own_vital(conn, pid, ('marriage',), cache)
+        if row is not None:
+            married.append(' '.join(x for x in (_summary_when_where(row, conn, ', '),
+                                                _summary_cite([row['source_id']])) if x))
+    if married:
+        out.append('**Married:** ' + ' · '.join(married))
+
+    for label, rel in (('Parents', 'parent'), ('Children', 'child')):
+        people = [f'{_summary_person_link(conn, other)} {_summary_cite([c["source_id"] for c in claims])}'
+                  for other, claims in _summary_kin(conn, pid, rel)]
+        if people:
+            out.append(f'**{label}:** ' + ' · '.join(people))
+    return '\n'.join(out)
+
+
+def _generate_summary_person(
+    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md',
+) -> Path | None:
+    """Write the person's summary region (`_lib.write_summary_region`);
+    return the profile path when it is current afterwards, else None.
+
+    Like `## Sources`, the region lives inside the profile, so there is no
+    companion file and no HTML twin. A profile whose summary lines a human
+    wrote by hand (no markers) is theirs: it is reported and left alone, and
+    counts as current - there is nothing for this command to do there."""
+    profile_p = _profile_path_for(conn, person_id, archive_root)
+    if not profile_p:
+        print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
+        return None
+    try:
+        text = read_text_exact(profile_p)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f'WARNING: could not read {profile_p.name} '
+              f'({"not saved as UTF-8" if isinstance(e, UnicodeDecodeError) else (e.strerror or e)})'
+              ' - skipped.', file=sys.stderr)
+        return None
+    new_text, status = write_summary_region(text, _summary_region_body(conn, person_id))
+    if status == 'damaged':
+        print(f'WARNING: {profile_p.name} has a "GENERATED-BEGIN summary" marker with no '
+              '"GENERATED-END summary" after it - put the end marker back (or delete '
+              'both) and run this again; skipped.', file=sys.stderr)
+        return None
+    if status == 'hand-written':
+        print(f'  {profile_p.name}: its summary lines were written by hand '
+              '(no GENERATED markers) - left as they are.')
+    if status == 'written':
+        write_text_exact_atomic(profile_p, reapply_newline(new_text, text))
+    return profile_p
+
+
 # ── Draft-queue ───────────────────────────────────────────────────────────────
 
 def _body_excluding_sources_region(body: str) -> str:
@@ -1291,9 +1475,13 @@ def _body_excluding_sources_region(body: str) -> str:
     one of those listings as a citation and permanently empty the queue the
     moment a profile's Sources section is first generated, even though not
     one of them was actually woven into the biography. Only tokens the human
-    wrote into their OWN prose - the summary block, Biography, Stories,
-    Friends & Family - should count; this is what makes that true again.
+    wrote into their OWN prose - a hand-written summary block, Biography,
+    Stories, Friends & Family - should count; this is what makes that true
+    again. The generated summary region goes for the same reason: it cites
+    the source of every birth, death and marriage the tools found, which is
+    not the human having written them up.
     """
+    body = strip_generated_region(body, SUMMARY_REGION)
     lines = body.split('\n')
     bounds = section_bounds(lines, 0, 'Sources')
     if bounds is None:
@@ -3809,6 +3997,75 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+def run_summary(
+    archive_root: Path,
+    person_id: str | None = None,
+    all_curated: bool = False,
+) -> Result:
+    """Write each named profile's summary region (Born / Died / Married /
+    Parents / Children, SPEC §16) in place; return a Result.
+
+    Same shape as `run_sources_index`: the region lives inside the profile,
+    so a single `<P-id>` works on a stub too, `--all-curated` is the curated
+    batch, and every profile written is re-synced into the index so the next
+    `fha views` call does not find it stale. A profile whose summary lines a
+    human wrote by hand is left alone.
+    """
+    conn = _open_index_or_explain(archive_root)
+    if conn is None:
+        return _views_result(EXIT_FAILURE)
+    changed: list[str] = []
+    try:
+        if all_curated:
+            count = skipped = 0
+            for pid in _view_eligible_curated_ids(conn, archive_root):
+                out = _generate_or_warn(f'summary for {pid}', _generate_summary_person,
+                                        conn, pid, archive_root)
+                if out:
+                    print(f'  summary       ->{out.relative_to(archive_root)}')
+                    changed.append(str(out))
+                    count += 1
+                else:
+                    skipped += 1
+            print(f'Checked {count} summary region(s).')
+            if count:
+                sync = resync_person_profile_rows(archive_root, [Path(c) for c in changed])
+                return _batch_view_result(count, skipped, changed, 'summary', sync)
+            if not skipped:
+                return _empty_curated_views_result(conn)
+            return _batch_view_result(count, skipped, changed, 'summary')
+
+        if not person_id:
+            print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
+            return _views_result(EXIT_FAILURE)
+        pid = normalize_id(person_id)
+        out = _generate_summary_person(conn, pid, archive_root)
+        if out:
+            print(f'  summary       ->{out.relative_to(archive_root)}')
+            changed.append(str(out))
+            sync = resync_person_profile_rows(archive_root, [out])
+            return _single_view_result(sync, changed)
+        return _views_result(EXIT_WARNINGS, data={'count': 0})
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
+    finally:
+        conn.close()
+
+
+def _cmd_summary(args: argparse.Namespace) -> int:
+    """argparse → run_summary bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_summary(
+        archive_root,
+        person_id=getattr(args, 'person_id', None),
+        all_curated=getattr(args, 'all_curated', False),
+    ).exit_code
+
+
 def run_draft_queue(
     archive_root: Path,
     person_id: str | None = None,
@@ -4176,6 +4433,20 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                     count += 1
                 else:
                     skipped += 1
+                # The summary region (SPEC §16) is the profile's other
+                # generated region: same once-per-person, md-only rule.
+                out = _generate_or_warn(
+                    f'summary for {pid}', _generate_summary_person,
+                    conn, pid, archive_root,
+                )
+                if out:
+                    print(f'  summary       ->{out.relative_to(archive_root)}')
+                    if out not in profiles_touched:
+                        changed.append(str(out))
+                        profiles_touched.append(out)
+                    count += 1
+                else:
+                    skipped += 1
 
         print(f'Generated {count} view file(s).')
         sync = 'indexed'
@@ -4230,7 +4501,7 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
         parser.print_help()
     else:
         print('Usage: fha views <subcommand> [options]')
-        print('Subcommands: timeline, sources-index, draft-queue, brackets, tree')
+        print('Subcommands: timeline, sources-index, summary, draft-queue, brackets, tree')
     # Bare `fha views` (no verb) is a usage error, not clean success: exit 2,
     # matching `fha person`/`fha confirm`/`fha places` (audit flag 15).
     return EXIT_ERRORS
@@ -4244,6 +4515,8 @@ Build always-current summary pages from your records.
 
   fha views timeline <P-id>        A person's life chronology
   fha views sources-index <P-id>   Every source about a person
+  fha views summary <P-id>         Born / Died / Married / Parents / Children
+                                   lines under the person's name
   fha views draft-queue <P-id>     Accepted facts not yet written into the bio
   fha views refresh                Rebuild every view for all curated people
 
@@ -4315,6 +4588,25 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                          'the profile, with no separate page.')
     si.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     si.set_defaults(func=_cmd_sources_index)
+
+    # ── summary ───────────────────────────────────────────────────────────────
+    sm = vsubs.add_parser(
+        'summary',
+        help="Write the Born / Died / Married / Parents / Children lines under a person's name.",
+        description=(
+            "Write the summary lines under the person's name in their own\n"
+            'profile, from accepted claims, between GENERATED summary markers.\n'
+            'Lines a person wrote by hand (no markers) are left alone. Works\n'
+            'on a stub too. Requires a fresh .cache/index.sqlite (run\n'
+            '`fha index` first).'
+        ),
+    )
+    sm.add_argument('person_id', nargs='?', metavar='P-id',
+                    help='Person whose summary lines to write (stub or curated).')
+    sm.add_argument('--all-curated', action='store_true',
+                    help="Write every curated profile's summary lines.")
+    sm.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    sm.set_defaults(func=_cmd_summary)
 
     # ── draft-queue ───────────────────────────────────────────────────────────
     dq = vsubs.add_parser(
@@ -4472,6 +4764,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     for name, help_text, func, extra in [
         ('timeline',      'Generate per-person timeline view.',      _cmd_timeline,      _add_person_curated_args),
         ('sources-index', "Refresh a person's ## Sources section.", _cmd_sources_index, _add_si_args),
+        ('summary',       "Write a person's summary lines.",        _cmd_summary,       _add_summary_args),
         ('draft-queue',   'Generate per-person draft-queue view.',   _cmd_draft_queue,   _add_person_curated_args),
     ]:
         p = subs.add_parser(name, help=help_text)
@@ -4517,6 +4810,11 @@ def _add_person_curated_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', nargs='?', metavar='P-id')
     p.add_argument('--all-curated', action='store_true')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format')
+
+
+def _add_summary_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument('person_id', nargs='?', metavar='P-id')
+    p.add_argument('--all-curated', action='store_true')
 
 
 def _add_si_args(p: argparse.ArgumentParser) -> None:

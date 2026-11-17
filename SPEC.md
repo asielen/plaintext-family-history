@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.1 - 2026-11-16**
+**Version 2.2 - 2026-11-17**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -356,8 +356,9 @@ relationships:                   # optional; the working surface where relations
   - to: "[[p-075114a0f8|Caleb Comstock Hartley]]"   # forgiving target: name, [[name]], or [[p-id]]
     type: parent                 #   the ROLE; subtype names the NATURE (§8.2)
     subtype: biological          #   omit for biological (the default)
-    claim: "[[c-90ad2e11b7]]"    #   link the backing claim (preferred) or source: [[s-…]]; optional to
-                                 #   write, required for the entry to count complete. No link = a belief.
+    claims: ["[[c-90ad2e11b7]]", "[[c-4b1e07d2a9]]"]   # every claim that backs this tie (preferred)
+                                 #   or source: [[s-…]]; optional to write, required for the entry to
+                                 #   count complete. No link = a belief. One entry per person and role.
   - to: "[[Walter Doe]]"         # an unsourced belief: jotted before evidence is filed
     type: parent                 #   linter lists it as needing a source, never rejects it
     status: hypothesis           #   a working answer built on: drawn as a guess, never exported (§17)
@@ -373,7 +374,7 @@ The person record is identity, flags, and prose; sourced facts live with evidenc
 
 A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[p-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private - a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19); it is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
 
-The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[c-…]]` or `source: [[s-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a guess you are building on before you can cite it (step 3 of the research ladder, §17a). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
+The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claims: ["[[c-…]]", …]` - every claim that backs the tie - or `source: [[s-…]]`; the link is optional to write, required for the entry to count complete, and the linter reconciles each linked claim against the tie it is the durable home of. **One entry per person and role:** a second record proving the same tie adds its claim to that entry's `claims:` list, never a second entry, so the block lists each person once however much evidence stands behind them. An **unsourced** entry carries `status: hypothesis`: a guess you are building on before you can cite it (step 3 of the research ladder, §17a). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. This mirrors the provisional `birth:`/`death:` pattern above: most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
 
 Two parents of differing nature sit side by side as equally valid edges - a biological and an adoptive father, a gestational and a genetic and an intended mother - never a contradiction. The claim stays canonical: delete the block and a reindex rebuilds every sourced edge from claims, while the unsourced guesses stay here. The linter records the reciprocal edge on the other person automatically (a `child` edge here implies a `parent` edge there, pointing at the same claim) and offers to add a missing mirror rather than asking you to write both ends by hand.
 
@@ -846,14 +847,20 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 # Thomas Edward Hartley (1840-1941)
 
 > **This person's record - yours to write.** The main page for this person:
-> summary, biography, relationships. The `## Sources` list below is
-> generated; everything else here is yours.
+> summary, biography, relationships. The summary lines under this note and
+> the `## Sources` list are generated; everything else here is yours.
 
-**Born:** 3 Mar 1840 - Easton, Carrow Co., New York [[s-xxxx]]
-**Died:** 19 Jan 1941 - Riverton, California [[s-xxxx]]
-**Married:** [[p-cd795c61e0|Margaret A. Cole]] - Feb/Mar 1871, Fairview, Kansas [[s-ea61339378]]
-**Parents:** [[p-075114a0f8|Caleb Comstock Hartley]] · [[p-d00c678c1a|Chastina Augusta Reed]]
-**Children:** [[p-c4b26bb4bc|Ethel]] · [[p-83e768cacb|Frances]] · [[p-fa7541e871|Calvin]] · [[p-4b9d197ee4|Edward]]
+<!-- GENERATED-BEGIN summary by fha views summary on 2026-11-17 -->
+
+*(Written by `fha views summary` from accepted claims. To write these lines yourself, delete the two marker comments around them.)*
+
+**Born:** 3 March 1840 - Easton, Carrow Co., New York [[s-xxxx]]
+**Died:** 19 January 1941 - Riverton, California [[s-xxxx]]
+**Married:** [[p-cd795c61e0|Margaret A. Cole]] - February 1871, Fairview, Kansas [[s-ea61339378]]
+**Parents:** [[p-075114a0f8|Caleb Comstock Hartley]] [[s-xxxx]] · [[p-d00c678c1a|Chastina Augusta Reed]] [[s-xxxx]]
+**Children:** [[p-c4b26bb4bc|Ethel]] [[s-xxxx]] · [[p-83e768cacb|Frances]] [[s-xxxx]] · [[p-fa7541e871|Calvin]] [[s-xxxx]]
+
+<!-- GENERATED-END summary -->
 
 ## Sources
 (generated region, §21b - every source touching this person, from cited claims)
@@ -875,7 +882,7 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 In the body sections, factual statements should carry **all relevant citations** - every source that supports the fact - since the body is where corroboration is shown.
 (Tooling may suggest missing citations by matching prose against claims; see `TOOLING.md`.)
 
-The summary block is hand-curated denormalization of claims: every line cites; cross-links use `[[p-xxxx]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). **Tooling cross-checks the block against accepted claims and flags drift.**
+**The summary lines** say who the person was in a few plain lines a reader with no tools sees first: `Born`, `Died`, `Married`, `Parents`, `Children`, each fact citing its source, people as `[[p-…|Name]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). Tools write them from **accepted** claims only, as a generated region (§21b) right after the H1 and its purpose block: `fha views summary` (and `fha views refresh`) rewrites the region in place, so it is plain text on disk, readable with no tools, and stale only until the next refresh. A line with nothing accepted behind it is left out; a birth or death known only from a baptism or burial says so (`baptized …`, `buried …`). **Hand curation stays possible:** delete the two marker comments and the lines become the human's - tools never rewrite summary lines that carry no markers, and the linter cross-checks such hand-written lines against accepted claims and flags drift.
 
 ### 16a. The purpose block
 
@@ -1040,7 +1047,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` - it is as live as the last `fha index` run.
 - Biography, Stories, and Research Notes prose are read from the curated person `.md` file directly. Friends & Family, by contrast, is *not* read as prose: that page section is independently derived from relationship claims (§9), the same as every other structured-data section - a human's own free text under the profile's `## Friends & Family` heading is for the working archive, not the site.
-- The generated `.md` views (timeline, draft-queue) are research artifacts for the agent; `fha site` does not read them - nor does it read a profile's own inline `## Sources` region (§21b): the per-person source list on a site page is built independently from the index, like every other structured section.
+- The generated `.md` views (timeline, draft-queue) are research artifacts for the agent; `fha site` does not read them - nor does it read a profile's own inline `## Sources` region or its summary region (§21b): the per-person source list and summary on a site page are built independently from the index, like every other structured section.
 - The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
 
 **View maintenance (`fha views clean` / `fha views refresh`):**
@@ -1054,7 +1061,7 @@ Generated output that leaves the archive falls into two categories with differen
 Two conventions sit *inside* an otherwise human-owned file rather than replacing it, and neither is publication content:
 
 - **The purpose block** (§16a) is the first thing in the body of every document `fha` writes or scaffolds: a visible blockquote, distinct from the whole-file `GENERATED` header above and not consumed by `fha views clean`. `fha site` never reaches it - every prose section it publishes is read by a specific `## Heading` match that starts capturing strictly after that heading line, and the purpose block always sits before the first `##` heading, right after the H1. `fha packet` reaches the block structurally (a profile or source record is read as one string before it is copied), so it strips the block explicitly before any copy ships.
-- **A GENERATED-BEGIN/END region** - a profile's own `## Sources` section is the first instance (§16) - is a third generated-content convention, distinct from both the whole-file header and the purpose block: paired `<!-- GENERATED-BEGIN name by cmd on date -->` / `<!-- GENERATED-END name -->` markers rewrite one named section of an otherwise human-owned file in place, never the whole file. `fha views clean` never touches it (there is no whole file to delete); the view command that owns it rewrites it in place instead (`fha views sources-index`). `fha site` never reads it, per the freshness contract above. `fha packet` drops it entirely from the profile copy it packs rather than including it verbatim - it names sources by archive-relative path and carries none of the packet's own privacy filtering, so the copy ships without a substitute rather than with a stale or unfiltered one.
+- **A GENERATED-BEGIN/END region** - a profile has two: its `## Sources` section and its summary lines under the H1 (§16) - is a third generated-content convention, distinct from both the whole-file header and the purpose block: paired `<!-- GENERATED-BEGIN name by cmd on date -->` / `<!-- GENERATED-END name -->` markers rewrite one named part of an otherwise human-owned file in place, never the whole file. `fha views clean` never touches it (there is no whole file to delete); the view command that owns it rewrites it in place instead (`fha views sources-index`, `fha views summary`). `fha site` never reads it, per the freshness contract above. `fha packet` drops both entirely from the profile copy it packs, and `fha wikitree` the summary, rather than including them verbatim - each is read from the index with none of the export's own privacy filtering (the summary names every child, living or not; the sources list names sources by archive-relative path), so the copy ships without a substitute rather than with a stale or unfiltered one.
 
 Neither convention changes what "generated" means for §5's disposability rule: both are fully rebuildable, and deleting either loses nothing durable.
 

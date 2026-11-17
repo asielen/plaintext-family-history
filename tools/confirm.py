@@ -198,6 +198,9 @@ from _lib import (
     result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
+    relationship_entry_claim_ids,   # an entry's claims: list or legacy claim: (SPEC §9)
+    relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
+    collapse_relationship_entries,  # one entry per person and role after a write
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -2157,6 +2160,11 @@ def _relink_relationship_targets(
     if count == 0:
         return text, 0
     new_text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+    # Repointing can leave the record listing the survivor twice for one
+    # role (once as themselves, once through the merged record): one entry
+    # per person and role (SPEC §9), so the two fold into one.
+    new_text, _merged = collapse_relationship_entries(
+        new_text, resolve=lambda ref: _resolve_person_item(ref, alias_map))
     problem = _fm_parse_problem(new_text)
     if problem is not None:
         raise _EditRefused(f'{problem} after the relationships relink, so the edit was abandoned')
@@ -2324,9 +2332,18 @@ def _render_relationship_entry(entry: dict, item_indent: str) -> list[str]:
     """
     lines: list[str] = []
     first = True
+    claim_ids = relationship_entry_claim_ids(entry)
     for k, v in entry.items():
         prefix = f'{item_indent}- ' if first else f'{item_indent}  '
-        lines.append(f'{prefix}{k}: {_render_scalar(v)}')
+        if k in ('claim', 'claims'):
+            # The one written shape (SPEC §9): every backing claim in one
+            # `claims:` list, whichever key the folded entry used.
+            if not claim_ids:
+                continue
+            lines.append(f'{prefix}claims: {relationship_claims_value(claim_ids)}')
+            claim_ids = []
+        else:
+            lines.append(f'{prefix}{k}: {_render_scalar(v)}')
         first = False
     return lines
 
@@ -2890,8 +2907,7 @@ def run_confirm_merge(
 
     survivor_edges = {_relationship_edge_key(e, alias_map) for e in _rel_entries(survivor_meta)}
     survivor_block_claims = {
-        normalize_id(strip_link_wrapper(str(e.get('claim'))))
-        for e in _rel_entries(survivor_meta) if e.get('claim')
+        cid for e in _rel_entries(survivor_meta) for cid in relationship_entry_claim_ids(e)
     }
     fold_rel_entries: list[dict] = []
     skipped_self_types: list[str] = []
@@ -2901,12 +2917,15 @@ def run_confirm_merge(
             skipped_self_types.append(str(entry.get('type') or 'relationship'))
             continue
         edge_key = _relationship_edge_key(entry, alias_map)
-        if edge_key in survivor_edges:
+        entry_cids = relationship_entry_claim_ids(entry)
+        if edge_key in survivor_edges and not set(entry_cids) - survivor_block_claims:
             continue
+        # A tie the survivor already lists still brings its claims along:
+        # the fold appends the entry and the collapse below merges its
+        # claims into the survivor's one entry for that person and role.
         survivor_edges.add(edge_key)
         fold_rel_entries.append(entry)
-        if entry.get('claim'):
-            survivor_block_claims.add(normalize_id(strip_link_wrapper(str(entry.get('claim')))))
+        survivor_block_claims.update(entry_cids)
         folded['relationships'] += 1
     if skipped_self_types:
         result.add('warning',
@@ -2921,6 +2940,9 @@ def run_confirm_merge(
                                       insert_after=('name_variants', 'name', 'id'))
         survivor_text = _fold_external_ids(survivor_text, fold_ext_pairs)
         survivor_text = _fold_relationship_entries(survivor_text, fold_rel_entries)
+        survivor_text, _merged = collapse_relationship_entries(
+            survivor_text,
+            resolve=lambda ref: resolve_typed_ref(ref, alias_map, want='P'))
         # The survivor's own relationships may name the merged person; those
         # entries repoint like any other profile's (the self-edge they become
         # is covered by the evidence warning above).
