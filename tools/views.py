@@ -1381,6 +1381,45 @@ def _summary_kin(conn: sqlite3.Connection, pid: str, rel: str) -> list[tuple[str
     return sorted(by_other.items(), key=order)
 
 
+def _summary_couple_claims(
+    conn: sqlite3.Connection, pid: str, other: str, ctype: str, cache: dict,
+) -> list[sqlite3.Row]:
+    """Accepted, non-negated `ctype` claims (a couple claim: `divorce`) that
+    are about THESE TWO as the couple - not merely naming both. A divorce
+    record that names the couple's parents in passing is not the parents'
+    divorce: who the couple is comes from the claim's roles, by the one rule
+    every tool uses (`claim_is_own_vital` / `vital_subjects`)."""
+    rows = conn.execute(
+        'SELECT DISTINCT c.id, c.type, c.date_edtf, c.date_min, c.date_max, '
+        'c.place_id, c.place_text, c.source_id, c.confidence FROM claims c '
+        'JOIN claim_persons a ON a.claim_id = c.id AND a.person_id = ? '
+        'JOIN claim_persons b ON b.claim_id = c.id AND b.person_id = ? '
+        "WHERE c.type = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0",
+        (pid, other, ctype)).fetchall()
+    return [r for r in rows
+            if claim_is_own_vital(conn, pid, r['id'], ctype, cache)
+            and claim_is_own_vital(conn, other, r['id'], ctype, cache)]
+
+
+def _summary_events(claims, ctype: str, breaks: list[str] = ()) -> list:
+    """One claim per distinct event of `ctype`, in date order, the most
+    exact claim (`vital_pick_key`) standing for each.
+
+    Records of one couple's marriage are ONE wedding unless a divorce falls
+    between them (`breaks`, the divorce dates): a record saying "about 1923"
+    beside a certificate's 5 July 1921 is the same wedding remembered
+    loosely, not a second one. An undated claim counts only when no claim is
+    dated - it cannot say which wedding it means."""
+    of_type = [c for c in claims if c['type'] == ctype]
+    dated = [c for c in of_type if c['date_min']]
+    if not dated:
+        return sorted(of_type, key=vital_pick_key)[:1]
+    groups: dict[int, list] = {}
+    for c in dated:
+        groups.setdefault(sum(1 for b in breaks if b and b <= c['date_min']), []).append(c)
+    return [sorted(groups[k], key=vital_pick_key)[0] for k in sorted(groups)]
+
+
 def _summary_cite(source_ids: list[str]) -> str:
     """One citation per fact (SPEC §16: one per line is enough in a summary)."""
     return _format_sid(source_ids[0]) if source_ids else ''
@@ -1403,16 +1442,45 @@ def _summary_region_body(conn: sqlite3.Connection, pid: str) -> str:
         out.append(' '.join(x for x in (f'**{label}:**', text,
                                         _summary_cite([row['source_id']])) if x))
 
-    married: list[str] = []
+    # One entry per WEDDING, not per spouse, in date order: a couple who
+    # married, divorced and married again shows both weddings and the divorce
+    # between them (SPEC §16). Records of one couple's marriage are one entry
+    # unless a divorce falls between them (`_summary_events`), headed by the
+    # most exact (`vital_pick_key`).
+    entries: list[tuple[str, str]] = []
     for other, claims in _summary_kin(conn, pid, 'spouse'):
-        weddings = sorted((c for c in claims if c['type'] == 'marriage'), key=vital_pick_key)
-        when = _summary_when_where(weddings[0], conn, ', ') if weddings else ''
-        backing = weddings[0] if weddings else claims[0]
-        parts = [_summary_person_link(conn, other)]
-        if when:
-            parts.append(f'- {when}')
-        parts.append(_summary_cite([backing['source_id']]))
-        married.append(' '.join(p for p in parts if p))
+        link = _summary_person_link(conn, other)
+        divorces = sorted(
+            (d for d in _summary_couple_claims(conn, pid, other, 'divorce', cache)
+             if d['date_min']),
+            key=lambda d: d['date_min'])
+        weddings = _summary_events(claims, 'marriage', [d['date_min'] for d in divorces])
+        if not weddings:
+            # Known as a couple only from a relationship record: still say
+            # so, and say they divorced if a record says that.
+            text = ' '.join(p for p in (link, _summary_cite([claims[0]['source_id']])) if p)
+            if divorces:
+                d = divorces[0]
+                text += '; ' + ' '.join(p for p in (
+                    'divorced', _summary_when_where(d, conn, ', '),
+                    _summary_cite([d['source_id']])) if p)
+            entries.append(('9999', text))
+            continue
+        for n, w in enumerate(weddings):
+            when = _summary_when_where(w, conn, ', ')
+            text = ' '.join(p for p in (link, f'- {when}' if when else '',
+                                        _summary_cite([w['source_id']])) if p)
+            nxt = weddings[n + 1]['date_min'] if n + 1 < len(weddings) else None
+            ended = [d for d in divorces
+                     if (d['date_min'] or '') >= (w['date_min'] or '')
+                     and (nxt is None or (d['date_min'] or '') < nxt)]
+            if ended:
+                d = ended[0]
+                when_d = _summary_when_where(d, conn, ', ')
+                text += '; ' + ' '.join(p for p in (
+                    'divorced', when_d, _summary_cite([d['source_id']])) if p)
+            entries.append((w['date_min'] or '9999', text))
+    married = [text for _key, text in sorted(entries, key=lambda e: e[0])]
     if not married:
         # A marriage record naming only this person still says they married.
         row = _summary_own_vital(conn, pid, ('marriage',), cache)
