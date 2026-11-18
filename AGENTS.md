@@ -346,7 +346,8 @@ fha find --json <ID|text>    machine-readable result list ([{id,type,label,detai
 fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha metrics [<P-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death - plus archive totals
-                            (computed fresh; never written down)
+                            (computed fresh; never written down; --include-suggested
+                            counts unreviewed claims too)
 fha packet <P-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
                             person stubs + suggested claims; plan first, --apply to write

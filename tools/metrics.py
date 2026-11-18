@@ -2,7 +2,7 @@
 """
 metrics.py - fha metrics: how well documented is each person?
 
-  fha metrics [P-ID] [--all] [--found] [--json] [--root PATH]
+  fha metrics [P-ID | --all] [--include-suggested] [--json] [--root PATH]
 
 Answers "who still lacks a birth record, a census or a marriage record?" without
 hand-written SQL. Five checks per person (TOOLING §7a):
@@ -11,19 +11,20 @@ hand-written SQL. Five checks per person (TOOLING §7a):
   Censuses        every census year they lived through in a country with a table
   Parents         both parents named by a sourced claim
   Marriage        each partner backed by a marriage record
-  Death or burial on file, asked only of someone born over 130 years ago
+  Death or burial on file, asked of anyone marked not living, or born over
+                  130 years ago
 
 plus archive-wide totals and the direct line's progress by generation.
 
 A pure read over `.cache/index.sqlite`; nothing is written, and nothing it
 computes is ever stored in a record (SPEC §17b - a gap a tool can compute is
 not written down). The checks themselves live in `_lib` (`person_completeness`,
-`archive_metrics`) so the workbench and the site draw their completeness rings
-from the same engine this command prints.
+`archive_metrics`): the shared engine any other front door that shows
+completeness (the workbench, the site) is to use, so the two cannot disagree.
 
 By default only accepted claims count: the standard view says what the
-archive has settled. `--found` counts suggested claims too, so it shows what
-records have been found whether or not they are reviewed yet.
+archive has settled. `--include-suggested` counts suggested claims too, so it
+shows what records have been found whether or not they are reviewed yet.
 
 CODE MAP
 --------
@@ -140,6 +141,12 @@ def run_metrics(archive_root: Path, fha_config: dict, *, person: str | None = No
     """Compute completeness for one person, the direct line, or everyone, plus
     the archive-wide totals. Read-only; returns a Result whose `data` is the
     whole answer (the text renderer and `--json` both read it)."""
+    if person is not None and everyone:
+        r = Result(ok=False, exit_code=EXIT_ERRORS, data={'error': 'person-and-all'})
+        r.add('error', 'A person ID shows one person and --all lists everyone, so '
+                       'they cannot go together. Run `fha metrics <p-id>` or '
+                       '`fha metrics --all`.')
+        return r
     if person is not None:
         pid = normalize_id(person)
         if not is_valid_id(pid) or id_type_of(pid) != 'P':
@@ -311,8 +318,8 @@ def _cmd_metrics(result: Result, use_json: bool = False) -> int:
     for p in data['people']:
         print(f"  {_label(p)}: {p['summary']}")
     print()
-    print('Run `fha metrics <p-id>` for one person in detail; `--found` counts '
-          'suggested claims too.')
+    print('Run `fha metrics <p-id>` for one person in detail; `--include-suggested` '
+          'counts suggested claims too.')
     return result.exit_code
 
 
@@ -324,20 +331,22 @@ How well documented is each person?
   fha metrics               The archive in numbers, then the direct line by generation
   fha metrics p-xxxxxxxxxx  One person's five checks, each with what is missing
   fha metrics --all         Every person, stubs included
-  fha metrics --found       Count suggested claims too (records found, not yet reviewed)
+  fha metrics --include-suggested
+                            Count suggested claims too (records found, not yet reviewed)
   fha metrics --json        The same answer as machine-readable JSON
 
 The five checks: a birth record; every census they lived through; both parents
 named by a sourced claim; a marriage record for each partner; and, for anyone
-born over 130 years ago, a death or burial. Read-only: nothing is written."""
+marked not living or born over 130 years ago, a death or burial. Read-only:
+nothing is written."""
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('person', nargs='?', metavar='P-ID',
                    help='One person to show in detail (default: the direct line)')
     p.add_argument('--all', action='store_true', dest='everyone',
-                   help='List every person, stubs included')
-    p.add_argument('--found', action='store_true',
+                   help='List every person, stubs included (not with a P-ID)')
+    p.add_argument('--include-suggested', action='store_true', dest='include_suggested',
                    help='Count suggested claims as well as accepted ones')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
@@ -366,7 +375,7 @@ def _run_metrics(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     result = run_metrics(
         archive_root, fha_config, person=args.person, everyone=args.everyone,
-        mode='found' if args.found else 'accepted')
+        mode='include-suggested' if args.include_suggested else 'accepted')
     return _cmd_metrics(result, use_json=args.use_json)
 
 

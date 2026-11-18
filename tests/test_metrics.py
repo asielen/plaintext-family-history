@@ -5,10 +5,11 @@ test_metrics.py - fha metrics: person completeness checks and archive totals
 Each test builds a tiny temp archive, indexes it, and asks the shared engine
 (`_lib.person_completeness`) or the command (`metrics.run_metrics`) one
 question. Expected answers come from the rules TOOLING §7a states - a birth
-record is a vital-record source; census years run from birth or arrival to
-death; a marriage record is a vital-record marriage claim; a death is asked
-for only past 130 years - never from the code's current output. Temp fixtures
-throughout; never the real archive or example-archive.
+record is a vital-record source; census years run from birth (or the first
+record in that country) to death; a marriage record is a vital-record
+marriage claim; a death is asked of anyone not living, and of anyone of
+unknown status only past 130 years - never from the code's current output.
+Temp fixtures throughout; never the real archive or example-archive.
 """
 
 import io
@@ -27,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import index as index_mod
+import lint
 import metrics
 from _lib import (
     EXIT_CLEAN,
@@ -73,7 +75,7 @@ class _Archive:
         self._n = 0
 
     def person(self, pid: str, name: str, **fields) -> None:
-        meta = {'id': pid, 'name': name, 'living': 'false', 'tier': 'stub', **fields}
+        meta = {'id': pid, 'name': name, 'living': 'unknown', 'tier': 'stub', **fields}
         body = '---\n' + yaml.safe_dump(meta, sort_keys=False) + f'---\n\n# {name}\n'
         (self.root / 'people' / 'stubs' / f'p__{pid[2:].lower()}_{pid}.md').write_text(
             body, encoding='utf-8')
@@ -203,16 +205,16 @@ class BirthCheckTests(_Base):
             _birth(KID, '1872', information='primary')])
         self.assertEqual(self.a.check(KID, 'birth')['state'], 'met')
 
-    def test_suggested_birth_counts_only_in_found_mode(self):
+    def test_suggested_birth_counts_only_when_suggested_are_included(self):
         self.a.source('vital-record', [_birth(KID, '1880', status='suggested')])
         self.assertEqual(self.a.check(KID, 'birth', 'accepted')['state'], 'missing')
-        self.assertEqual(self.a.check(KID, 'birth', 'found')['state'], 'met')
+        self.assertEqual(self.a.check(KID, 'birth', 'include-suggested')['state'], 'met')
 
     def test_rejected_and_negated_claims_never_count(self):
         self.a.source('vital-record', [
             _birth(KID, '1880', status='rejected', reviewed='2026-01-01'),
             _birth(KID, '1881', negated=True, evidence='negative')])
-        self.assertEqual(self.a.check(KID, 'birth', 'found')['state'], 'missing')
+        self.assertEqual(self.a.check(KID, 'birth', 'include-suggested')['state'], 'missing')
 
 
 class CensusCheckTests(_Base):
@@ -241,7 +243,7 @@ class CensusCheckTests(_Base):
         self.a.source('directory', [{'type': 'residence', 'persons': [KID], 'date': '1880'}])
         self.assertEqual(self.a.check(KID, 'census')['found'], [])
 
-    def test_no_census_year_asked_before_immigration(self):
+    def test_no_census_year_asked_before_their_first_record_there(self):
         self.a.source('vital-record', [_birth(KID, '1850', PL)])
         self.a.source('other', [{'type': 'immigration', 'persons': [KID], 'date': '1885',
                                  'place': US}])
@@ -277,13 +279,57 @@ class CensusCheckTests(_Base):
         self.assertEqual(c['state'], 'missing')
         self.assertIn("can't tell which country", c['detail'])
 
+    def test_cant_tell_which_country_names_the_next_step(self):
+        self.a.source('vital-record', [_birth(KID, '1872')])
+        ctx = self.a.build()
+        r = person_completeness(ctx, KID, this_year=YEAR)
+        census = next(c for c in r['checks'] if c['check'] == 'census')
+        self.assertIn('fha confirm place', census['detail'])
+        self.assertIn('register the place', completeness_summary_line(r))
+
+    def test_a_census_with_a_subject_still_places_and_dates_the_head(self):
+        # A census entry written with subject: beside head: - the head was
+        # enumerated too, so the entry places him and counts as his year.
+        self.a.source('vital-record', [_birth(DAD, '1850'),
+                                       {'type': 'death', 'persons': [DAD], 'date': '1885'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID, DAD], 'date': '1880',
+                                  'place': US, 'roles': {'subject': KID, 'head': DAD}}])
+        c = self.a.check(DAD, 'census')
+        self.assertEqual(c['countries'], ['United States'])
+        self.assertIn(1880, c['found'])
+
+    def test_no_death_year_is_never_met(self):
+        # Every census up to the last record is on file, but with no death
+        # year the later ones may still be out there.
+        self.a.source('vital-record', [_birth(KID, '1872', US)])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': US}
+                                 for y in (1880, 1900, 1910, 1920)])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['state'], 'partial')
+        self.assertEqual(c['missing'], [])
+        self.assertEqual(c['unchecked_after'], 1920)
+        self.assertIn('no death year', c['detail'])
+        self.assertIn('1920', c['detail'])
+
+    def test_a_birth_record_alone_is_not_nothing_to_find(self):
+        self.a.source('vital-record', [_birth(KID, '1872', US)])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['state'], c['expected']), ('partial', []))
+        self.assertIn('no death year', c['detail'])
+
+    def test_born_after_the_last_census_year_does_not_apply(self):
+        self.a.source('vital-record', [_birth(KID, '1960', US)])
+        self.assertEqual(self.a.check(KID, 'census')['state'], 'na')
+
     def test_country_with_no_table_does_not_apply(self):
         self.a.source('vital-record', [_birth(KID, '1872', PL),
                                        {'type': 'death', 'persons': [KID], 'date': '1940',
                                         'place': PL}])
         self.assertEqual(self.a.check(KID, 'census')['state'], 'na')
 
-    def test_no_years_asked_after_moving_to_another_country(self):
+    def test_a_move_abroad_shows_as_a_gap_not_a_complete(self):
+        # No migration is modelled: born in Canada, so Canada's years run to
+        # death; the years spent in the U.S. stay visible as Canadian gaps.
         self.a.source('vital-record', [_birth(KID, '1850', CA)])
         self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': CA}
                                  for y in (1851, 1861, 1871, 1881)])
@@ -294,7 +340,8 @@ class CensusCheckTests(_Base):
         self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1920-12-01',
                                         'place': US}])
         c = self.a.check(KID, 'census')
-        self.assertEqual((c['state'], c['missing']), ('met', []))
+        self.assertEqual(c['state'], 'partial')
+        self.assertEqual(c['missing'], [1891, 1901, 1911])
 
     def test_a_death_abroad_does_not_hide_missing_censuses_at_home(self):
         # No immigration claim: nothing says when they left, so the gaps stay.
@@ -306,21 +353,6 @@ class CensusCheckTests(_Base):
         self.assertEqual(c['state'], 'partial')
         self.assertIn(1880, c['missing'])
 
-    def test_a_return_home_reopens_the_home_censuses(self):
-        self.a.source('vital-record', [_birth(KID, '1850', CA)])
-        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': CA}
-                                 for y in (1851, 1861, 1871, 1881, 1901, 1911)])
-        self.a.source('other', [{'type': 'immigration', 'persons': [KID], 'date': '1885',
-                                 'place': US},
-                                {'type': 'immigration', 'persons': [KID], 'date': '1898',
-                                 'place': CA}])
-        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1925',
-                                        'place': CA}])
-        c = self.a.check(KID, 'census')
-        self.assertIn(1901, c['found'])
-        self.assertEqual(c['missing'], [1921])      # 1890s were in the U.S. (no 1891, 1900 table)
-        self.assertNotIn(1891, c['expected'])
-
     def test_a_sons_occupation_does_not_place_his_mother(self):
         self.a.source('vital-record', [_birth(MOM, '1850', CA),
                                        {'type': 'death', 'persons': [MOM], 'date': '1895',
@@ -329,6 +361,23 @@ class CensusCheckTests(_Base):
                                      'date': '1880', 'place': US,
                                      'roles': {'subject': KID, 'parent': MOM}}])
         self.assertEqual(self.a.check(MOM, 'census')['countries'], ['Canada'])
+
+    def test_a_census_inside_an_uncertain_death_window_still_counts(self):
+        self.a.source('vital-record', [_birth(KID, '1870', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '1920/1940'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1930', 'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertIn(1930, c['extras'])            # found, inside the death window
+        self.assertNotIn(1940, c['missing'])        # maybe dead by then: never asked
+        self.assertIn(1910, c['missing'])           # surely alive: still asked
+
+    def test_an_adult_baptism_is_not_the_birth_year(self):
+        self.a.person(KID, 'Kid', birth='1870')
+        self.a.source('vital-record', [
+            {'type': 'baptism', 'persons': [KID], 'date': '1900', 'place': US},
+            {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.assertEqual(self.a.check(KID, 'marriage')['state'], 'missing')
+        self.assertIn(1880, self.a.check(KID, 'census')['expected'])
 
     def test_a_mention_on_a_sons_death_record_does_not_stretch_a_life(self):
         self.a.source('census', [{'type': 'census', 'persons': [DAD], 'date': f'{y}', 'place': US}
@@ -402,6 +451,14 @@ class ParentsCheckTests(_Base):
         self.assertEqual(c['other_parents'], [STEP.lower()])
         self.assertIn('step', c['detail'])
 
+    def test_three_birth_parents_are_a_conflict_not_complete(self):
+        self.a.source('census', [self._rel(KID, [DAD, MOM])])
+        self.a.source('other', [self._rel(KID, [OTHER])])
+        c = self.a.check(KID, 'parents')
+        self.assertEqual(c['state'], 'partial')
+        self.assertIn('3 birth parents named', c['detail'])
+        self.assertIn('review them', c['detail'])
+
     def test_one_parent_is_partial(self):
         self.a.source('census', [self._rel(KID, [DAD])])
         c = self.a.check(KID, 'parents')
@@ -421,10 +478,10 @@ class ParentsCheckTests(_Base):
             {'to': f'[[{DAD}]]', 'type': 'parent', 'status': 'hypothesis'}])
         self.assertEqual(self.a.check(KID, 'parents')['state'], 'missing')
 
-    def test_suggested_parent_counts_only_in_found_mode(self):
+    def test_suggested_parent_counts_only_when_suggested_are_included(self):
         self.a.source('census', [self._rel(KID, [DAD, MOM], status='suggested')])
         self.assertEqual(self.a.check(KID, 'parents', 'accepted')['state'], 'missing')
-        self.assertEqual(self.a.check(KID, 'parents', 'found')['state'], 'met')
+        self.assertEqual(self.a.check(KID, 'parents', 'include-suggested')['state'], 'met')
 
 
 class MarriageCheckTests(_Base):
@@ -499,6 +556,14 @@ class MarriageCheckTests(_Base):
         self.a.source('vital-record', [_birth(KID, '1880')])
         self.assertEqual(self.a.check(KID, 'marriage')['state'], 'na')
 
+    def test_a_divorce_reveals_a_partner_whose_marriage_record_is_missing(self):
+        self.a.source('vital-record', [self._marriage(DAD, MOM)])
+        self.a.source('other', [{'type': 'divorce', 'persons': [DAD, OTHER], 'date': '1920',
+                                 'roles': {'spouse': [DAD, OTHER]}}])
+        c = self.a.check(DAD, 'marriage')
+        self.assertEqual(c['state'], 'partial')
+        self.assertEqual(c['partners'], sorted([MOM.lower(), OTHER.lower()]))
+
     def test_a_wide_death_range_is_not_died_young(self):
         self.a.source('vital-record', [_birth(KID, '1895'),
                                        {'type': 'death', 'persons': [KID], 'date': '1900/1960'}])
@@ -546,6 +611,34 @@ class EndOfLifeCheckTests(_Base):
     def test_provisional_birth_estimate_is_read(self):
         self.a.person(KID, 'Kid', birth='1870~')
         self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
+    def test_not_living_owes_a_death_whatever_their_age(self):
+        # SPEC 8.2 / A.2: living: false means a death record is owed.
+        self.a.person(KID, 'Kid', living='false')
+        self.a.source('vital-record', [_birth(KID, '1950')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
+    def test_marked_living_but_very_old_says_check_the_record(self):
+        self.a.person(KID, 'Kid', living='true')
+        self.a.source('vital-record', [_birth(KID, '1850')])
+        c = self.a.check(KID, 'end-of-life')
+        self.assertEqual(c['state'], 'missing')
+        self.assertIn('marked living but born over 130 years ago', c['detail'])
+
+    def test_marked_living_and_young_is_not_asked(self):
+        self.a.person(KID, 'Kid', living='true')
+        self.a.source('vital-record', [_birth(KID, '1950')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
+
+    def test_metrics_and_lint_w101_agree_on_a_not_living_person(self):
+        self.a.person(KID, 'Kid', living='false', tier='curated')
+        self.a.source('vital-record', [_birth(KID, '1950')])
+        eol = self.a.check(KID, 'end-of-life')
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            findings, _ = lint._run_lint_core(self.a.root, load_fha_yaml(self.a.root))
+        w101 = [f for f in findings if f.code == 'W101' and KID.lower() in f.message]
+        self.assertTrue(w101 and 'death' in w101[0].message, findings)
+        self.assertEqual(eol['state'], 'missing')
 
 
 class ScoreTests(_Base):
@@ -603,6 +696,19 @@ class CommandTests(unittest.TestCase):
         r = self._run(person=KID.lower())
         self.assertEqual(r.data['person']['person'], KID.lower())
         self.assertEqual(r.data['person']['position'], 1)
+
+    def test_a_person_with_all_is_refused_with_exit_2(self):
+        r = self._run(person=KID.lower(), everyone=True)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('--all', r.messages[0].text)
+
+    def test_include_suggested_flag_selects_the_mode(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = metrics._standalone_main(['--include-suggested', '--json',
+                                             '--root', str(self.a.root)])
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertEqual(json.loads(out.getvalue())['data']['mode'], 'include-suggested')
 
     def test_bad_id_is_refused_with_exit_2(self):
         self.assertEqual(self._run(person='p-zz').exit_code, EXIT_ERRORS)

@@ -433,19 +433,21 @@ How well documented is each person?
   fha metrics               The archive in numbers, then the direct line by generation
   fha metrics p-xxxxxxxxxx  One person's five checks, each with what is missing
   fha metrics --all         Every person, stubs included
-  fha metrics --found       Count suggested claims too (records found, not yet reviewed)
+  fha metrics --include-suggested
+                            Count suggested claims too (records found, not yet reviewed)
   fha metrics --json        The same answer as machine-readable JSON
 
 The five checks: a birth record; every census they lived through; both parents
 named by a sourced claim; a marriage record for each partner; and, for anyone
-born over 130 years ago, a death or burial. Read-only: nothing is written.
+marked not living or born over 130 years ago, a death or burial. Read-only:
+nothing is written.
 ```
 
 | Argument | What it does |
 |---|---|
 | `[P-ID]` | One person to show in detail (default: the direct line) |
-| `--all` | List every person, stubs included |
-| `--found` | Count suggested claims as well as accepted ones |
+| `--all` | List every person, stubs included (not with a P-ID) |
+| `--include-suggested` | Count suggested claims as well as accepted ones |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
