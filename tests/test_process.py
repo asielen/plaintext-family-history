@@ -1,4 +1,4 @@
-"""Tests for `fha process` Stage A (BUILD.md M7.1 documents, M7.2 photos + --more).
+"""Tests for `fha process` Stage A (TOOLING §6: documents, photos, --more).
 
 The photo paths never call exiftool: the read/embed/remove seams are replaced
 here by an in-memory `FakePhotoStore` so the keyword-embed / already-processed
@@ -371,7 +371,7 @@ class ProcessTestCase(unittest.TestCase):
         originals - never an empty inbox and never anything else left over."""
         self.assertEqual([p.name for p in (self.archive / 'inbox').iterdir()], ['processed'])
 
-    # ── M7.1 documents ────────────────────────────────────────────────────────
+    # ── documents ────────────────────────────────────────────────────────
 
     def test_document_mints_renames_scaffolds(self) -> None:
         original = self.archive / 'documents' / 'census' / '1880-fairview.txt'
@@ -855,7 +855,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertTrue(original.exists())
 
-    # ── M7.2 photos ───────────────────────────────────────────────────────────
+    # ── photos ───────────────────────────────────────────────────────────
 
     def test_photo_embeds_keyword_no_rename(self) -> None:
         store = self._install_photo_store()
@@ -1345,7 +1345,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(attached), 1)
 
     def test_more_root_top_attachment_files_beside_its_primary(self) -> None:
-        # M11.2 symmetry: an attachment sitting at the documents root TOP
+        # Filing symmetry (TOOLING §6): an attachment sitting at the documents root TOP
         # level files WITH its source - beside the primary, in whatever
         # subfolder the human chose for it - never left flat at the root.
         page1 = self.archive / 'documents' / 'census' / 'page1.txt'
@@ -3049,7 +3049,7 @@ class ProcessTestCase(unittest.TestCase):
         rc = self._run([str(self.archive / 'documents' / 'nope.txt')])
         self.assertEqual(rc, EXIT_ERRORS)
 
-    # ── M7.2b --people flag ────────────────────────────────────────────────────
+    # ── --people flag ────────────────────────────────────────────────────
 
     def test_photo_people_embeds_pid_keywords_and_populates_record(self) -> None:
         store = self._install_photo_store()
@@ -3169,7 +3169,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('photo', err.getvalue().lower())
 
-    # ── M7.3 variation detection (single photo) ────────────────────────────────
+    # ── variation detection (single photo) ────────────────────────────────
 
     def _make_pair(self) -> tuple[Path, Path]:
         d = self.archive / 'photos' / '1880'
@@ -3326,7 +3326,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(store.read(front), [])
         self.assertEqual(store.read(back), [])
 
-    # ── M7.3 folder triage ─────────────────────────────────────────────────────
+    # ── folder triage ─────────────────────────────────────────────────────
 
     def test_folder_triage_processes_selected_group_as_one(self) -> None:
         store = self._install_photo_store()
@@ -3361,10 +3361,10 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
-    # ── M7.4 bundle folder dissolution ─────────────────────────────────────────
+    # ── bundle folder dissolution ─────────────────────────────────────────
 
     def _make_bundle(self) -> Path:
-        # Copy the committed sample bundle (the one the M7.4 done-criteria names)
+        # Copy the committed sample bundle (the one TOOLING §6 names)
         # into the throwaway archive's inbox, so the fixture is exercised but the
         # dissolving run only ever deletes the temp copy.
         fixture = ROOT / 'tests' / 'fixtures' / 'bundle-folder'
@@ -4032,7 +4032,7 @@ class SourceIdOverrideTests(unittest.TestCase):
 
     def test_more_and_folder_modes_report_no_source_id(self) -> None:
         # Nothing is minted by --more (it attaches to an EXISTING source) or
-        # by a bare folder/bundle dispatch (BUILD.md M7.3/M7.4) - `data`
+        # by a bare folder/bundle dispatch (TOOLING §6 folder mode) - `data`
         # must say so plainly (None) rather than leaking a stale value.
         page1 = self.archive / 'documents' / 'census' / 'page1.txt'
         page1.write_text('p1', encoding='utf-8')

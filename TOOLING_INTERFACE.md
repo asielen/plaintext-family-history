@@ -10,11 +10,13 @@ The governing split, stated once and obeyed everywhere below: **deterministic wo
 
 The three sibling design docs:
 
-| Doc | Concern | Build doc |
-|---|---|---|
-| [`TOOLING.md`](TOOLING.md) | core `fha` tools (index, lint, views, find, process, site, …) | [`BUILD.md`](BUILD.md) |
-| [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) | the inbox contract and the capture front ends | [`BUILD_INGESTION.md`](BUILD_INGESTION.md) |
-| **`TOOLING_INTERFACE.md`** (this doc) | workbench harness + workflow skills | [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) |
+| Doc | Concern |
+|---|---|
+| [`TOOLING.md`](TOOLING.md) | core `fha` tools (index, lint, views, find, process, site, …) |
+| [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) | the inbox contract and the capture front ends |
+| **`TOOLING_INTERFACE.md`** (this doc) | workbench harness + workflow skills |
+
+The build order for all three is TOOLING.md §15; this doc's pieces are its last layer.
 
 ---
 
@@ -66,6 +68,8 @@ The agentic CLI harness (§1) is one front door onto the archive. `fha serve` is
 
 **Disposability - killing it loses nothing.** The only thing `fha serve` writes outside the record tree its engines mutate is that snapshot cache - a rebuildable artifact, like `.cache/index.sqlite` (SPEC §5). `fha site` never depends on `fha serve` having run; deleting `serve.py` and `.cache/serve/` changes nothing about the archive. Stopping the process is always safe.
 
+**Security is the whole trust boundary** (`run_serve_preflight` and the request handler). Serve binds 127.0.0.1 only and checks the Host header against an allowlist on every request. Every POST carries a per-process CSRF token, compared with `hmac.compare_digest`. Snapshot files, `/root/` aliases, `/api/open`, `/api/upload` and the `process.file` argument are confined by resolving the path and checking it is inside its root (`capture.path` is deliberately not confined: registering a file that stays where it is is its job). Responses carry `no-store` and `nosniff`. One global lock is held across mutate, reindex and snapshot invalidation, so two clicks never interleave. The default port is 8765; `--port 0` picks a free one.
+
 **Privacy is unchanged.** The read side is the **linked** view (real archive paths, unredacted - a local owner preview, TOOLING §12) and never leaves the machine. Sharing outward still goes through `fha site --standalone` (or the `share-and-export` skill); the workbench adds a front end onto that command, not a second export surface.
 
 Flags: `docs/COMMANDS.md` (`fha serve`). Tests: `tests/test_serve.py`.
@@ -100,7 +104,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 
 ### 2.4 Recordings
 
-The pair stands in front of `fha process` for audio and video the way `import-notes` does for paper - intake is not extraction; the interview earns its claims later through `mine-transcript` and `review-claims`. Build sequence: BUILD_INTERFACE.md Layer I6.
+The pair stands in front of `fha process` for audio and video the way `import-notes` does for paper - intake is not extraction; the interview earns its claims later through `mine-transcript` and `review-claims`.
 
 - `import-recordings` - the recordings on-ramp. Content-hashes every incoming file against what is already filed and skips duplicates (`fha media dedupe`: size first, SHA-256 only on a size collision, read-only on both sides; a same-size candidate that cannot be hashed is `indeterminate`, exit 3, never `new` - the gate fails closed); reads the real recording date from the container (`fha media probe`) rather than the filename, settling the recording's own UTC offset BEFORE converting (device-written local-with-offset tag, else the filename clock solved for the offset, else one plain question) and writing an EDTF interval rather than an exact day when it cannot be settled, with the trap written into the record (`creation_time` is UTC at the moment recording *stopped*, an app filename clock is local at the moment it *started*); groups one sitting into one session source under `documents/interviews/{interviewee}-{yyyy-mm-dd}/` named so each topic's audio / app transcript / whisper pass cluster in a listing; always adds a local whisper pass beside the app transcript and never replaces either (they disagree in exactly the spots a reviewer needs); transfers the app's speaker turns onto the whisper text only under measured gates the script enforces as its defaults - a hard abort below a 50% token match measured against **both** streams (the matched words over the LONGER of the two, resting on at least 20 matched words), and a label only at a confidence of 0.65 or better, where confidence is coverage × (2 × agreement - 1) and every word of a segment has ONE vote it gives once however many methods claim it, so a fully covered segment needs ≥ 82.5% agreement and a unanimous one ≥ 65% coverage; the timestamp path only switches on when ≥ 80% of app turns carry a stamp AND the last span that names a speaker reaches ≥ 90% of the audio, the final interval is capped at that turn's own span, and an untimed turn between two timed ones blanks that span rather than extending the earlier speaker over it - and never calls the result diarized; refuses to write over an existing `--out` or `--report` (it cannot tell its own earlier output from a corrected copy), with `--replace` the one flag that authorises the overwrite and `--force` meaning the mispair gate only; checks both destinations before the alignment, and when only the optional report cannot be saved the transcript is kept and the complete rerun command printed; proposes speaker → person as a table with evidence and word shares and writes no name until the human answers per file. Interactive by default; automatic mode needs an explicit up-front say-so and still leaves every claim `suggested`. The whisper run and the label transfer are the skill's own `scripts/` by design - model-dependent, non-portable, producing working drafts rather than archive records.
 - `transcribe-audio` - local faster-whisper re-transcription of an archived or new recording (`scripts/transcribe_audio.py`), attached as role `whisper-transcript` beside the original transcript with `fha process --more`. `--name` takes the source's **shared stem with no role suffix**, because `attach_more` appends the role itself (`{stem}-{role}_{S-id}.{ext}`), and the finished `.md` is copied under the documents root before attaching, since `--more` only attaches files already filed there. Where sibling names disagree the skill **says so and stops**: a documents-root file is renamed exactly once, by `fha process`, and neither the file nor its `files:` entry is ever hand-edited. The script publishes all-or-nothing (segments stream into `.part` siblings, the three outputs are renamed into place together only after the run completes, and an interrupted promotion is marked on disk and repaired on the next run) and writes a portable header (the recording by filename, never an absolute path). It ends by offering the claim-by-claim audit of facts mined from the garbled original, and that audit is **proposal-only**: every correction is put to the human as an exact before/after on one named claim and written only on his yes for that claim, through `fha claim <C-id> --status accepted --value "…"` (or `--notes`, `--anchor`) - `--status` in the *same* call, because a bare field edit would leave the old `reviewed:` date standing over wording no human has read. A claim he wants to park goes back to `suggested` with today's `reviewed:` date, offered, never assumed. A reading that changes *which* fact is asserted is new material: a `suggested` claim (`fha claim new … --anchor "…-whisper, 00:41:22"`) for `review-claims`, and the old claim's fate is his call. Every correction carries its whisper timestamp and what the app transcript had instead.
@@ -126,8 +130,8 @@ The pair stands in front of `fha process` for audio and video the way `import-no
 
 ## 3. Build status
 
-The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all seventeen SKILL.md files. Authoritative build status lives in [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md); this document is the design it implements against, as TOOLING.md is to BUILD.md and TOOLING_INGESTION.md is to BUILD_INGESTION.md.
+The workflow skills are authored - `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all seventeen SKILL.md files. Each skill's status is in [`.claude/skills/README.md`](.claude/skills/README.md); the tests that show this layer is done are in TOOLING.md §15.
 
 The workbench harness configuration (§1) is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script); keeping those accurate as the harness landscape changes is its build.
 
-`fha serve` (§1b) is a tool with tests (`tools/serve.py`, `tests/test_serve.py`), shipped with `serve.cmd` by `fha install`/`fha update-tools`. Flag, security and verb reference: `tools/README.md`'s "fha serve - implementation status".
+`fha serve` (§1b) is a tool with tests (`tools/serve.py`, `tests/test_serve.py`), shipped with `serve.cmd` by `fha install`/`fha update-tools`. Flags are in `docs/COMMANDS.md`; the verb table is the `VERBS` dict in `tools/serve.py`; the security rules are in §1b.

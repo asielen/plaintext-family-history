@@ -1,9 +1,9 @@
 # `photo-context` — design note (step 09)
 
 **Status: shipped.** The design below is settled, the deterministic write path it requires shipped
-(`fha photoindex set-summary`, BUILD.md M3.5), and the skill itself is now written against this design:
+(`fha photoindex set-summary`, TOOLING.md §9), and the skill itself is now written against this design:
 [`SKILL.md`](SKILL.md). Per the interface-skills index and [`../_STANDARD.md`](../_STANDARD.md) §6 (the
-stop-don't-improvise rule), this step originally halted and surfaced the gap as core (BUILD.md) work
+stop-don't-improvise rule), this step originally halted and surfaced the gap as core-tool work
 rather than hand-rolling the write in skill prose; that core work landed, and the skill-mode PR that
 follows it is this one. The design text below is kept as the historical record of that gap and its close.
 
@@ -19,8 +19,8 @@ and never improve. As the archive grows, it *knows* more about a photo than its 
 tagged people are to each other, what event or claim it depicts, the history of the place it was taken.
 `photo-context` would rewrite a photo's embedded AI summary with that accumulated knowledge, so captions
 get smarter over time. It began as **backlog** in TOOLING_INTERFACE.md §2.3, was **designed but blocked**
-on a core-tool gap (BUILD_INTERFACE.md Layer I4), and is now unblocked — the core verb shipped
-(BUILD.md M3.5) and only the SKILL.md remains; this note is that settled design.
+on a core-tool gap, and is now unblocked — the core verb shipped
+(TOOLING.md §9) and only the SKILL.md remains; this note is that settled design.
 
 ## The design (settled)
 
@@ -52,9 +52,9 @@ photoindex write surface was `fha photoindex tag-person`, bare `P-id` (and `SOUR
 require AI output to stay marked as AI, but the tool that performs that specific write had never been
 built, and per _STANDARD.md §6 the skill must not shell exiftool or hand-roll the metadata write.
 
-That gap is now closed: `fha photoindex set-summary` shipped (BUILD.md M3.5, TOOLING.md §9).
+That gap is now closed: `fha photoindex set-summary` shipped (TOOLING.md §9).
 
-## What unblocked it (shipped: BUILD.md M3.5)
+## What unblocked it (shipped: `fha photoindex set-summary`)
 
 The deterministic photoindex write verb, as proposed here:
 
@@ -80,10 +80,10 @@ SPEC §20 already permitted the write, so no SPEC amendment was required — onl
       (AI-marked, human caption preserved).
 - [x] Tool gap explicitly confirmed: **yes** — at design time no `UserComment`-write verb existed;
       `photoindex tag-person` writes keywords only.
-- [x] Core verb shipped: `fha photoindex set-summary` (BUILD.md M3.5) — the write path exists.
+- [x] Core verb shipped: `fha photoindex set-summary` (TOOLING.md §9) — the write path exists.
 - [x] **SKILL.md written:** [`photo-context/SKILL.md`](SKILL.md) is authored against this design,
-      conforming to [`../_STANDARD.md`](../_STANDARD.md). BUILD_INTERFACE.md Layer I4 flips to **shipped**
-      alongside this note.
+      conforming to [`../_STANDARD.md`](../_STANDARD.md). TOOLING_INTERFACE.md §2.3 lists it as
+      shipped alongside this note.
 
 The write verb landed, and `photo-context/SKILL.md` has been written against this design, conforming to
 [`../_STANDARD.md`](../_STANDARD.md).

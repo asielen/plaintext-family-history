@@ -1,9 +1,9 @@
 """
-test_report.py - fha report (BUILD.md M5.1-M5.3).
+test_report.py - fha report (TOOLING §15a).
 
 Unlike xref/cooccur's synthetic-sqlite-index fixtures, `fha report` rebuilds
 the index from on-disk record files (it calls `index.build_index` and
-`lint._run_lint_core` directly - BUILD.md M5.1's "call tool logic directly"
+`lint._run_lint_core` directly - the report's "call tool logic directly"
 design), so the fixture here is a tiny real archive tree rather than a
 hand-built .cache/index.sqlite.
 """
@@ -527,11 +527,11 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn('housekeeping', result['markdown'])
 
     def test_place_candidates_section_uses_live_places_tool(self) -> None:
-        # places.py now exists (BUILD.md M6.2), so the section calls
-        # places.run_candidates() instead of printing the deferral stub.
+        # The section calls places.run_candidates() (TOOLING §10) rather
+        # than printing a "not built yet" stub.
         result = report.run_report(self.archive_root, {}, full=True)
         md = result['markdown']
-        self.assertNotIn('BUILD.md M6.2', md)
+        self.assertNotIn('not built yet', md)
         self.assertIn('No recurring unlinked place-text or GPS clusters found.', md)
 
     def test_place_candidates_section_names_the_confirm_command(self) -> None:

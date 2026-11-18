@@ -1,4 +1,4 @@
-"""Tests for the `transcribe-source` skill's SKILL.md (BUILD_INTERFACE.md MI8.1).
+"""Tests for the `transcribe-source` skill's SKILL.md (TOOLING_INTERFACE §2.6).
 
 A SKILL.md is prose and has no unit test (`_STANDARD.md` §9). But this skill's
 prose carries three things that are mechanically checkable, and all three fail

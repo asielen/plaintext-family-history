@@ -52,7 +52,7 @@ After copying:
    root.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
    you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
-   (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).
+   (TOOLING.md §13c).
 2. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples
    below). Now that the tools are installed, this is safe - updates never touch `fha.yaml`.
 3. Open in your AI agent and start processing `inbox/` items.

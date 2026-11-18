@@ -6,8 +6,8 @@ APIs, no Python — so the harness choice stays reversible (the SKILL.md standar
 
 **Start here:** [`_STANDARD.md`](_STANDARD.md) is the authoring contract every skill conforms to.
 [`today/`](today/SKILL.md) is the reference skill — copy its shape. Design lives in
-[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build sequence in
-[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
+[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build order in
+[`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15.
 
 The governing split: **deterministic work is in `fha` tools; judgment is in skills; the human is the only
 gate to `accepted`.**
@@ -34,7 +34,7 @@ gate to `accepted`.**
 | [`transcribe-source`](transcribe-source/SKILL.md) | **authored** | The image-only on-ramp: a source whose files are all scans puts no text in the archive, so a text search answers for what one earlier pass wrote into a claim value while looking like a search of the evidence. Reads the images and writes a `[Page N]`-labeled `role: transcript` companion (`fha process --more`), marked `<!-- AI-DRAFT … -->` until a human checks it — the image stays the evidence of record. Runs from `process-source` (Stage A½, before claims are drafted) or standalone in bounded backfill batches. Drafts no claims; a contradiction with an accepted claim becomes a `## Q:` block. Its one blocked gap is in [`transcribe-source/GAP.md`](transcribe-source/GAP.md). | Opus |
 | [`setup-interview`](setup-interview/SKILL.md) | **authored** | The first-run on-ramp: right after `fha install`, ask the researcher who he is, how he wants the tree numbered (`root_generation: self` or `children`), and his immediate family — firsthand testimony from the one informant the archive is guaranteed to have. Mints his own person record directly (`sex:`, `living:`); writes one `source_class: authored` interview source and drafts `relationship`/`marriage` claims naming everyone with explicit `roles:` (never `birth` claims), all `status: suggested`; hands off to `review-claims`. Normally runs once per archive. | Opus |
 
-Statuses track [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md): **authored** = the SKILL.md exists and was
+Statuses: **authored** = the SKILL.md exists and was
 verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
 check** against `example-archive/` (capture the transcript).
 

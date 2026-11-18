@@ -14257,7 +14257,7 @@ def load_site_module():
     """Import tools/site.py under a private module name (shared by fha + serve).
 
     The tool's command is `fha site`, so its file must be `tools/site.py`
-    (BUILD.md M8.1) - but the stem `site` collides with Python's stdlib `site`
+    (TOOLING §12) - but the stem `site` collides with Python's stdlib `site`
     module, which is already in sys.modules from interpreter startup. A plain
     `import site` therefore returns the stdlib module, not ours. Loading the
     file by path under the alias `fha_site` sidesteps the collision without

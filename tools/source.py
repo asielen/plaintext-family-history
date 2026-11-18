@@ -157,7 +157,7 @@ CODE MAP
                                 pdftotext, once per block of pages, when on PATH
   _extract_page_text          - #281: one page: default, then pdftotext or layout
   run_source_extract         - PDF text layer -> derived extracted-text companion
-                                (pypdf optional; original never touched; M11.5)
+                                (pypdf optional; original never touched)
   _run_exiftool_read_keyword_fields - {'keywords': […], 'subject': […]} raw read
                                 (own thin wrapper - tools never import tools)
   _run_exiftool_edit_keyword_fields - remove/add exact (field, value) pairs in
@@ -1900,7 +1900,7 @@ def _make_group_help(parser: argparse.ArgumentParser):
 
 
 # User-facing --help text (the module docstring stays developer-facing).
-# ── fha source extract (M11.5) ───────────────────────────────────────────────
+# ── fha source extract ───────────────────────────────────────────────
 
 _EXTRACT_ROLE = 'extracted-text'
 _NO_TEXT_PLACEHOLDER = '(no text layer on this page - read it with vision)'

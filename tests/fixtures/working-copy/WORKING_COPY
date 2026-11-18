@@ -4,4 +4,4 @@ In working-copy mode the photo and document asset files are assumed to live
 on the main archive machine. The tools treat absent asset files as
 assumed-present-elsewhere (not missing or lost).
 
-See SPEC.md §12.4 and BUILD.md M10.1 for the design.
+See SPEC.md §12.4 and TOOLING.md §13d for the design.

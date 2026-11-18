@@ -4,7 +4,7 @@ A family-history archive made of plain files you can open in any text editor, wi
 
 > **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) built into a website by `fha site`, the same self-contained site you could publish or hand to a relative on a USB stick.
 
-![status](https://img.shields.io/badge/status-milestones_1--11_complete-green) ![spec](https://img.shields.io/badge/spec-v2.3-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![spec](https://img.shields.io/badge/spec-v2.3-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 For a hundred years genealogy lived in a filing cabinet, and anyone could open the drawer. No login, no subscription, no file format that stopped opening. A great-grandchild could pull the folder and read it. Most genealogy software has lost that.
 
@@ -127,8 +127,7 @@ Every record is Markdown, so any text editor will open it. These are the other w
 plaintext-family-history/
 ├── README.md            you are here
 ├── SPEC.md              the specification: the data model, the file format, the rules
-├── TOOLING.md           how the fha tools are built (+ TOOLING_INGESTION.md, TOOLING_INTERFACE.md)
-├── BUILD.md             the build order for the tools (+ BUILD_INGESTION.md, BUILD_INTERFACE.md)
+├── TOOLING.md           how the fha tools are built, and in what order (+ TOOLING_INGESTION.md, TOOLING_INTERFACE.md)
 ├── AGENTS.md            the rules the AI assistant follows (CLAUDE.md points Claude Code here)
 ├── docs/                the owner's manual, copied into every archive
 │   ├── GETTING_STARTED.md   the first-day guide
@@ -176,7 +175,7 @@ plaintext-family-history/
 
 ### Status
 
-The current format is `spec v2.3`, and milestones 1 to 11 are complete. Everything runs cleanly against the example archive. The tools cover the whole loop: capturing web records and filing scans (`fha capture`, `fha process`), importing a GEDCOM, reviewing claims (`fha claim`, `fha confirm`), the search index and linter (`fha index`, `fha lint`), finding contradictions and possible connections (`fha xref`, `fha cooccur`, `fha report`), timelines and family trees (`fha views`), a photo catalog (`fha photoindex`), the website (`fha site`), the local workbench (`fha serve`), exports (`fha packet`, `fha gedcom`, `fha wikitree`) and backups, plus installing and updating archives. [`docs/COMMANDS.md`](docs/COMMANDS.md) lists every command.
+The current format is `spec v2.3`, and the tools are built. Everything runs cleanly against the example archive. The tools cover the whole loop: capturing web records and filing scans (`fha capture`, `fha process`), importing a GEDCOM, reviewing claims (`fha claim`, `fha confirm`), the search index and linter (`fha index`, `fha lint`), finding contradictions and possible connections (`fha xref`, `fha cooccur`, `fha report`), timelines and family trees (`fha views`), a photo catalog (`fha photoindex`), the website (`fha site`), the local workbench (`fha serve`), exports (`fha packet`, `fha gedcom`, `fha wikitree`) and backups, plus installing and updating archives. [`docs/COMMANDS.md`](docs/COMMANDS.md) lists every command.
 
 This is a specification and a working scaffold rather than a finished app. The tools are meant to be regenerable from the documents, in any language, if they are ever lost.
 

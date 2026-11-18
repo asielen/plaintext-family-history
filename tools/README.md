@@ -34,8 +34,8 @@ read the same structured result (TOOLING §1).
   flag), and `fha <command> --help`.
 - **How each tool works:** `TOOLING.md` (core), `TOOLING_INGESTION.md`
   (inbox and capture), `TOOLING_INTERFACE.md` (`fha serve` and the skills).
-- **The order to build them in, with an acceptance test per step:**
-  `BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`.
+- **The order to build them in, with the tests that show each layer is done:**
+  `TOOLING.md` §15.
 - **The rules every tool enforces:** `SPEC.md`.
 
 ## Modules

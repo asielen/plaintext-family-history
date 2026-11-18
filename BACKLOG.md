@@ -9,7 +9,7 @@ This is a **repo-development tracking doc**, like `RELEASE_CHECKLIST.md`: it is
 deliberately *not* part of the operating layer (`_ROOT_OPERATING_DOCS` in
 `tools/scaffold.py`) and is never installed into a user's archive.
 
-For unbuilt *features* on the spec roadmap, see `BUILD.md` and the `README.md`
+For unbuilt *features* on the spec roadmap, see `TOOLING.md` §14 and the `README.md`
 roadmap instead - this file is only for
 deferred fixes/cleanups in already-shipped tools.
 
@@ -182,7 +182,7 @@ something out.
 
 ## 6. Feature ideas (not yet on the roadmap)
 
-Not fixes. Recorded here until one earns a place in `BUILD.md`.
+Not fixes. Recorded here until one earns a design section in `TOOLING.md`.
 
 - **"Possible duplicate people" in `fha report`.** People coming from Ancestry
   expect duplicate flags. `fha confirm merge` exists, but nothing surfaces

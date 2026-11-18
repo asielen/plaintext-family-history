@@ -6,10 +6,10 @@
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
-Sibling docs (each with a build doc; linked absolutely because they are not vendored into an installed archive, §13c):
-- this doc - core `fha` tools; build: [`BUILD.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD.md)
-- [`TOOLING_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md) - capture / inbox / web on-ramp; [`BUILD_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INGESTION.md)
-- [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md) - workbench + skills; [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md)
+Sibling docs (linked absolutely because they are not vendored into an installed archive, §13c); the build order for all three is §15:
+- this doc - core `fha` tools
+- [`TOOLING_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md) - capture / inbox / web on-ramp
+- [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md) - workbench + skills
 
 **Operating principles.**
 - No daemons, watchers or schedulers: freshness is refresh-on-use (cheap incremental refreshes at the start of tools that need them, e.g. `fha report`).
@@ -214,7 +214,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E007 | E | Claim `type` outside the §8.2 vocabulary. | §8.2 |
 | E009 | E | A `contradicts:` pair with no open question naming both claim IDs in `notes/questions.md` or a research file. Fix: `--spawn-questions`. | §8.4, §17b |
 | E010 | E | Frontmatter schema failure: a required field missing for the record kind (claims: `id`, `type`, `persons`, `value`, `status`, `confidence`); frontmatter that is not a block of fields; a person file with a missing or empty `---` block. A non-UTF-8 file is W128. | §8.4, §9, §14 |
-| E011 | E | Inventory and disk disagree: a `files:` entry missing on disk; an on-disk file carrying this source's ID (documents filename, or `SOURCE:` keyword on the photos root with `--with-exif`) missing from `files:`; or a `files:` path that resolves outside both roots (checked first). `status: missing-fixture` is silent under `example-archive/` or any `tests` folder and an error elsewhere. Fix: `fha reconcile`, or the named hand edit for a wrong path. | §14 |
+| E011 | E | Inventory and disk disagree: a `files:` entry missing on disk; an on-disk file carrying this source's ID (documents filename, or `SOURCE:` keyword on the photos root with `--with-exif`) missing from `files:`; or a `files:` path that resolves outside both roots (checked first). `status: missing-fixture` is silent under `example-archive/` or `tests/fixtures/` (`_lib.is_fixture_path`) and an error elsewhere; a real archive's folder that merely happens to be named `tests` is not fixture space. Fix: `fha reconcile`, or the named hand edit for a wrong path. | §14 |
 | E012 | E | Embedded `SOURCE:` keyword disagrees with the documents filename ID or the inventory; on the photos root, with the inventory. `--with-exif`. | §20 |
 | E013 | E | Profile summary block drift: a hand-written `**Born/Died/Married/Parents/Children:**` line (outside the generated summary region) cites IDs or dates no accepted claim backs (a line with no accepted claim at all is W104). See parsing below. | §16 |
 | E014 | E | A date is not valid EDTF. | §6 |
@@ -910,7 +910,7 @@ All views derive purely from the index. Timeline and draft-queue write GENERATED
 
 - **`fha views timeline [p-id|--all-curated] [--format md|html]`** → `…_timeline_{p-id}.md`. Accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) sorted by date - an open-ended date by its known bound (`[..1895]` by 1895, `[1883..]` by 1883), undated last - grouped by decade, each line `EDTF - type: value [[s-id]]`; an accepted low-confidence claim (SPEC §8.5) ends `[low confidence]`, a reviewed-but-open one `[unconfirmed - parked {date}]`. Never-reviewed suggested claims follow in a trailing "unreviewed" section. The private view keeps unsettled material visible; the site (§12) is accepted-only.
 - **`fha views draft-queue [p-id|--all-curated] [--format md|html]`** → `…_draft-queue_{p-id}.md`: accepted claims whose source the profile body does not cite - the writing backlog for `write-biography` (§14b).
-- **`fha views sources-index [p-id|--all-curated]`**: every source with ≥1 claim naming the person, grouped by `source_type`, written inside the profile's `## Sources` section between `<!-- GENERATED-BEGIN sources-index by sources-index on {date} -->` and `<!-- GENERATED-END sources-index -->`, with a visible notice; nothing outside the span changes. Works on any person, including `people/stubs/` and misplaced folders; `--all-curated` is the curated-only batch form. Refuses `--format html`. The write re-syncs that profile's index row (D9, §4a). There is no couple-folder `sources-index.md`; one left by an older version carries the GENERATED header, so `fha views clean` removes it.
+- **`fha views sources-index [p-id|--all-curated]`**: every source with ≥1 claim naming the person or listing them on its `people:`, grouped by `source_type`, written inside the profile's `## Sources` section between `<!-- GENERATED-BEGIN sources-index by sources-index on {date} -->` and `<!-- GENERATED-END sources-index -->`, with a visible notice; nothing outside the span changes. Works on any person, including `people/stubs/` and misplaced folders; `--all-curated` is the curated-only batch form. Refuses `--format html`. The write re-syncs that profile's index row (D9, §4a). There is no couple-folder `sources-index.md`; one left by an older version carries the GENERATED header, so `fha views clean` removes it.
 - **`fha views summary [p-id|--all-curated]`**: the profile's summary lines (SPEC §16) between `<!-- GENERATED-BEGIN summary by fha views summary on {date} -->` and `<!-- GENERATED-END summary -->`, with a visible notice naming how to take the lines over by hand. Placed after the H1 and its purpose blockquote; an existing region is rewritten where it stands and left byte-identical (date included) when nothing changed. From accepted, non-negated claims only: `Born`/`Died` the person's own vital picked as the site and tree pick it (`claim_is_own_vital`, `vital_pick_key`), falling back to a baptism (`baptized …`) or burial (`buried …`), shown `date - place` with its source; `Married` each spouse from the derived spouse edges (`[[p-…|Name]] - date, place [[s-…]]`, the marriage claim when there is one), by date; `Parents` (father first) and `Children` (by birth date) from the derived parent edges, each person once with one source. A line with nothing behind it is left out. Profiles whose opening already holds hand-written summary lines with no markers are left alone (reported); a BEGIN marker with no END is reported and skipped. Works on stubs; `--all-curated` is the curated batch. Like `sources-index`, the write re-syncs the profile's index row. The draft queue does not count a citation inside the region as written up.
 
 ### `fha views tree <p-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]`
@@ -1214,7 +1214,7 @@ Where accepted claims for one vital disagree, every single-date surface (summary
 Standalone shows accepted claims only (timeline, source claims, place claims). Linked/workbench also shows reviewed-but-open claims (`suggested` with `reviewed:`), marked "unconfirmed - parked {date}" and tinted in the workbench. Never-reviewed `suggested` never renders. Low-confidence accepted claims carry a "low confidence" flag everywhere.
 
 ### Privacy (standalone)
-The standalone site is the safe-to-share version (SPEC §21): `living`/`unknown` redacted; `restricted` excluded wherever it appears (a restricted name shows the unrestricted display name); DNA excluded; `publication_ok: false` sources withheld. `--linked` is a local preview: links to real files, no copying, no redaction guarantee.
+The standalone site is the safe-to-share version (SPEC §21): `living`/`unknown` redacted; `restricted` excluded wherever it appears (a restricted name shows the unrestricted display name); DNA excluded; `publication_ok: false` sources withheld. A redacted name reads "Living Person" and a withheld source "Restricted - not included in this publication", never an empty slot or a broken link. `--linked` is a local preview: links to real files, no copying, no redaction guarantee.
 
 - **Unreadable records fail closed.** An unreadable or unparseable person record (exception or `parse_errors`) is withheld everywhere; an unreadable source is withheld with every fact it evidences. Each warns with the file and fix. The build never links to an unbuilt page, but nothing audits whether a page should exist.
 - **Undecodable files** (not UTF-8) get W128's plain cause, never a crash. The privacy pre-pass withholds them; a person page loses prose, variants, tags and portrait; a source page uses its index title. `notes/discoveries.md` reads the same way (missing = skip). Never rewritten; ordinary warnings exit.
@@ -1227,7 +1227,7 @@ The standalone site is the safe-to-share version (SPEC §21): `living`/`unknown`
 - A catalog `MISSING:` row (§9) is dropped from strips and never preferred over a live file. A bare filename scan honors `photos_ignore:`; an explicit path is honored.
 
 ### Web pictures
-The site makes its own derivatives (resized, EXIF stripped) into `media/`; originals never leave. Regenerating is idempotent; an old site stays a valid frozen view.
+The site makes its own derivatives (at most 1200px, EXIF stripped) into `media/`; originals never leave. Pillow is optional: without it pictures are left out of the standalone site, never copied as originals. Regenerating is idempotent; an old site stays a valid frozen view.
 
 **Cache** `.cache/site-derivatives/` (§1 machine cache). A rebuild clears `media/` and reuses a saved derivative when place, size, nanosecond mtime, size limit, format, Pillow version and `_DERIVATIVE_RECIPE_VERSION` match (never a content hash).
 - Place = `roots:` alias + path inside it (most specific root wins; else archive-relative, else full path; on Windows as the disk spells it), so a changed drive letter still hits once `fha.yaml` is updated.
@@ -1304,15 +1304,15 @@ Capture runs on the page the human has open: never logs in, fetches behind auth,
 
 Two commands copy the operating layer from a public-repo clone into a private archive and keep it current. Both are generic glue: they touch no family data.
 
-**The manifest.** The repo ships `manifest.json`, the single definition of the operating layer: every path that belongs in an archive, its checksum, its version, and a tag `operating` or `skeleton`. A new shipped file is added to the manifest, never hardcoded. Each entry maps a repo-relative `src` to an archive-relative `path`, so the engine needs no layout knowledge. `python tools/scaffold.py write-manifest [--repo PATH]` regenerates it (maintainers only).
+**The manifest.** The repo ships `manifest.json`, the single definition of the operating layer: every path that belongs in an archive, its checksum, its version, and a tag `operating` or `skeleton`. A new shipped file is added to the manifest, never hardcoded. Each entry carries its archive-relative `path`, `sha256`, `spec_version` and `category`, plus a repo-relative `src` when the two differ (a skeleton seed, a vendored tool, a renamed rulebook), so the engine needs no layout knowledge. `python tools/scaffold.py write-manifest [--repo PATH]` regenerates it (maintainers only).
 
 - **Operating layer:** tools, the `design/` package, the browser companion, the rulebooks (`AGENTS.md`, `CLAUDE.md` at the root; `SPEC.md`, `TOOLING.md` installed as `docs/SPEC.md`, `docs/TOOLING.md`), `docs/` (including `GETTING_STARTED.md` and `CHEATSHEET.md`), the launchers (`fha`, `fha.cmd`, `serve.cmd`), `.claude/skills/`.
 - **Skeleton:** `fha.yaml`, `START_HERE.md`, empty record dirs with `.gitkeep`, seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, `design/custom.css`, `.gitignore`, `.gitattributes`.
-- **Never shipped:** the tool-building docs (`BUILD*.md`, `TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`), `example-archive/`, `archive-template/` itself (its contents seed the skeleton), `tests/`, `.github/`, `.claude/settings.json` (permission grants are personal), `PRIVACY.md`, `RELEASE_CHECKLIST.md`, and the project `README.md`. An archive's entry point is `START_HERE.md` for a reader and `docs/GETTING_STARTED.md` for the owner.
+- **Never shipped:** the tool-building docs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`), `example-archive/`, `archive-template/` itself (its contents seed the skeleton), `tests/`, `.github/`, `.claude/settings.json` (permission grants are personal), `PRIVACY.md`, `RELEASE_CHECKLIST.md`, and the project `README.md`. An archive's entry point is `START_HERE.md` for a reader and `docs/GETTING_STARTED.md` for the owner.
 
 **Archive layout.** Machinery lives in hidden `.fha/`: `tools/`, `design/`, `browser-companion/` (for chrome://extensions "Load unpacked"), and `docs/` (`DESIGN.md`, `SITE_PLAN.md`). The root holds the record folders, `START_HERE.md`, `fha.yaml`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `.claude/skills/`, launchers. Every other doc lives in `docs/`: the owner docs (`GETTING_STARTED.md`, `CHEATSHEET.md`) sit there in the repo too, while `SPEC.md` and `TOOLING.md` stay at the repo root and install as `docs/SPEC.md`, `docs/TOOLING.md`. The repo otherwise stays flat; the remap is install-time only. Install never rewrites links, so a shipped doc's relative links must resolve where it lands; a reference that cannot be right in both repo and archive (anything to or from `SPEC.md` and `TOOLING.md`) is a plain file name or an absolute URL, never a relative link. `START_HERE.md` is a skeleton seed: written once, delivered by `fha update-tools` to an archive that never had one, never overwritten.
 
-**`fha install <archive-path> [--repo PATH] [--dry-run]`** runs from a clone (the archive has no `fha` yet). It creates the folder if absent, or fills an existing folder that has no tools, writes skeleton plus operating layer, and stamps `.plaintext-version` (manifest version and per-file checksums). The archive is then self-contained.
+**`fha install <archive-path> [--repo PATH] [--dry-run]`** runs from a clone (the archive has no `fha` yet). Before writing anything it checks for Python 3.10 or later (a hard stop with a download pointer) and `exiftool` (an advisory: the install goes ahead and the photo features wait until it is installed). It creates the folder if absent, or fills an existing folder that has no tools, writes skeleton plus operating layer, and stamps `.plaintext-version` (manifest version and per-file checksums). The archive is then self-contained.
 
 **`fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]`** runs from the archive. It compares the manifest against the stamp and reconciles the operating layer:
 
@@ -1323,9 +1323,11 @@ Two commands copy the operating layer from a public-repo clone into a private ar
 | File customized (checksum differs) | Move it to `.plaintext-backup/{date}/`, install stock, report it. |
 | File removed from the manifest | Move it to `.plaintext-backup/{date}/` (never deleted), report it. |
 
-Then it refreshes the stamp and prints a summary (added / updated / backed-up / quarantined, with the backup path). `--verbose` also lists up-to-date files. **The updater never deletes and never silently overwrites the human's work.** `.plaintext-backup/` and `.plaintext-version` are its only footprints; both are safe to inspect or delete.
+Then it refreshes the stamp and prints a summary (added / updated / backed-up / quarantined, with the backup path). The summary is plain English ("Your edited .fha/tools/fha.py has been backed up to .plaintext-backup/2026-06-22/"); diffs and checksums appear only under `--verbose`, which also lists up-to-date files. **The updater never deletes and never silently overwrites the human's work.** `.plaintext-backup/` and `.plaintext-version` are its only footprints; both are safe to inspect or delete.
 
 **Skeleton seeds** are written once by `install` and never overwritten; `update-tools` carries their stamp entries over unchanged. One exception: a seed absent from both disk and stamp has never been delivered, so `update-tools` installs it (a deleted seed is in the stamp, so it is not resurrected). `.gitattributes` relies on this - without it Windows rewrites the launchers' line endings and every update reports stock files as customized.
+
+There is no migration from the old flat layout (tools at the archive root, before `.fha/`), and none is planned. `install` writes the `.fha/` layout directly. Moving someone's tools folder is all or nothing, and doing it safely needs rollback, half-moved detection and launcher repair: a standing risk for a case no real archive hits.
 
 Both commands run before PyYAML is installed (they are dispatched ahead of the bulk import). Without PyYAML, `install` reports the `roots:` check as an advisory and `update-tools` as a warning-level gap; the rest of each run still succeeds.
 
@@ -1372,7 +1374,7 @@ Shipped = files git tracks in the clone's add-on folder (without git, walked wit
 
 ## 13d. Working-copy mode (the `WORKING_COPY` marker) - asset-less plain-text copies
 
-A git-synced copy of the plain-text core without the photos and documents is flagged by a visible, git-ignored file `WORKING_COPY` at the root (SPEC §12.4); only its existence matters. It is not an `fha.yaml` key because it must never sync back. The skeleton `.gitignore` lists `WORKING_COPY` and `.cache/`. **Rule:** assets are assumed present elsewhere, never missing or deletable; only asset behaviour is withheld, and the plain-text surface works normally.
+A git-synced copy of the plain-text core without the photos and documents is flagged by a visible, git-ignored file `WORKING_COPY` at the root (SPEC §12.4); only its existence matters. It is not an `fha.yaml` key because it must never sync back. The skeleton `.gitignore` lists `WORKING_COPY` and `.cache/`. **Rule:** assets are assumed present elsewhere, never missing or deletable; only asset behaviour is withheld, and the plain-text surface works normally. Without the marker, the asset-aware tools misread a copy with no pictures: `fha photoindex` prunes the catalog rows for files it cannot find, `fha lint` floods E011, and `fha index` records every file as missing. Most tools already cope, since the index is built from the `.md` files, so the mode blocks only asset behaviour and never a rebuild.
 
 **`fha working-copy on | off | status [--yes] [--root PATH]`** (`tools/working_copy.py`):
 - `on` writes the marker (with explanatory text) and ensures `.gitignore` lists it, or warns if the copy is not a git repo. No confirmation.
@@ -1386,7 +1388,7 @@ A git-synced copy of the plain-text core without the photos and documents is fla
 | `fha lint` | Suppress E011/E012; one note: `working copy: N asset files assumed present in the main archive`. |
 | `fha index` | `source_files.exists_on_disk = NULL`, never `0`; skip the asset glob. |
 | `fha photoindex` | A scan refuses and prunes nothing (`this is a working copy - run photo indexing on your main archive`). Read-only queries use the existing cache. |
-| asset-mutating commands | `fha process <file>`, `photoindex tag-person`, `photoindex set-summary`, `fha packet`, `fha site`, `fha gedcom import --apply` refuse with a pointer to the main archive: warning-level, `ok=True`, exit 0, `data.status='working-copy'`. The gedcom dry-run plan still runs. `capture`, editing, `find`, `views`, `report` stay available. |
+| asset-mutating commands | `fha process <file>`, `photoindex tag-person`, `photoindex set-summary`, `fha source extract`, `fha packet`, `fha site`, `fha gedcom import --apply` refuse with a pointer to the main archive: warning-level, `ok=True`, exit 0, `data.status='working-copy'`. The gedcom dry-run plan still runs. `capture`, editing, `find`, `views`, `report` stay available. |
 | `fha doctor` | Headlines the mode; missing asset roots are not errors. |
 | `fha backup` | Records-only runs (§13e). |
 
@@ -1471,7 +1473,7 @@ Run by the `review-claims` skill at the end of each review and inside `fha repor
 fha cooccur [--threshold N] [--root PATH]
 ```
 
-Read-only, like `fha places candidates`; consumed through the report. Writes belong to `fha confirm cooccur` / `confirm dismiss` (§14a3). Pairs with an existing `relationship` edge (kin or social) or a dismissal in `notes/cooccur_dismissed.json` are excluded.
+Read-only, like `fha places candidates`; consumed through the report. Writes belong to `fha confirm cooccur` / `confirm dismiss` (§14a3). Pairs with an existing `relationship` edge (kin or social) or a dismissal in `notes/cooccur_dismissed.json` are excluded. That file is `{"pairs": [["p-…", "p-…"], …], "generated": "…"}`, read through `_lib.load_cooccur_dismissed`; it lives under `notes/` and not `.cache/` because each pair is a person's decision, which a cache rebuild must not lose.
 
 1. **People co-occurrence.** Person pairs named together in at least `--threshold` (default 2) distinct sources. Ranked by count and source variety (different `source_type`s weigh more). Output shows the shared sources.
 2. **Shared place.** Accepted and reviewed-but-open claims (`suggested` with `reviewed:`, SPEC §8.1) of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF bounds.
@@ -1530,9 +1532,9 @@ The session start screen, narrated by the `today` skill.
 | 5b | `answerable-questions` | Open questions whose referenced gap now has an accepted claim, or whose referenced claims changed status, proposed for `answered [[s-...]]`. The human closes. |
 | 6 | `photo-triage` | Top N (§15b). Prefixed by the scan's note: unreadable files, and when any are new or changed, that the catalog stays out of date until they read (§9). A `MISSING:` group points at `reconcile`. |
 | 6b | `place-candidates` | `fha places candidates` clusters, with elevate-or-dismiss prompts. |
-| 7 | `hypotheses` | Open working answers (question entries with an `h-` id, SPEC §17a) and per-person draft-queue counts (§14b). |
+| 7 | `hypotheses` | Open working answers (question entries with an `h-` id, SPEC §17a) and per-person draft-queue counts (§14b). A ruled-out guess is a dated context line, not an entry, so it is not counted. |
 | 7b | `promotion-candidates` | (a) Direct-line ancestors still stubs (W119, Ahnentafel walk from `root_person`), closest first, each offering `fha person promote`; (b) any stub whose accepted-claim count reaches `promotion: claims_threshold:` (default 5), offered `fha person promote <p-id> --into connections/`. Counts plus the top few. |
-| 8 | `possible-connections` | The three `fha cooccur` outputs, with confirm/dismiss prompts. |
+| 8 | `possible-connections` | The three `fha cooccur` outputs, with confirm/dismiss prompts (the top ten person pairs). |
 
 Every section's items are leads; the report proposes, the human acts. (The search log must read SPEC §17 forms: the code still reads a `search_log` table.)
 
@@ -1546,7 +1548,24 @@ Ranks unprocessed photo groups (no `source_id`) for the report's §6: +3 caption
 
 ## 15. Build order & testing
 
-The build sequence, dependency graph and done-tests are in **`BUILD.md`**; the sibling layers have **[`BUILD_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INGESTION.md)** and **[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md)**.
+Build the layers in order. Each one needs only the layers above it, and a layer is done when its test modules pass and `fha lint` on `example-archive/` matches the baseline below. The design sections are the spec for each tool; `docs/COMMANDS.md` holds every flag.
+
+| # | Layer | Tools | Design | Done when these pass |
+|---|---|---|---|---|
+| 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
+| 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
+| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `find`/`search`, `doctor` | §3a, §4a, §7, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_find`, `test_doctor` |
+| 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
+| 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
+| 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
+| 7 | Research report | `report` | §15a | `test_report` |
+| 8 | Data out | `packet`, `places`, `gedcom`, `gedcom import`, `wikitree`, `backup` | §8, §10, §13, §13a, §13a2, §13e | `test_packet`, `test_places`, `test_gedcom`, `test_gedcom_import`, `test_wikitree`, `test_backup` |
+| 9 | Intake | `process` (documents, photos, `--more`, folders, bundles, inbox filing, `refile`), `media`, `reorganize`, `convert-mining`, `capture` (`--path`, `--ingest`, the native host) | §6, §6a, §9a, §11, §13b, TOOLING_INGESTION §1-§6 | `test_process`, `test_process_*`, `test_media`, `test_reorganize`, `test_convert_mining`, `test_capture`, `test_capture_*`, `test_browser_companion`, `test_seen_it*` |
+| 10 | Publication | `site` (pages, family chart, interactive trees, standalone redaction) | §12 | `test_site`, `test_templates`, `test_privacy_restricted`, `test_private_fence_surfaces` |
+| 11 | Install and modes | `install`/`update-tools` + `manifest.json`, working-copy mode, `originals_backup:` | §13c, §13d, §13f | `test_scaffold`, `test_working_copy`, `test_originals_backup`, `test_doctor_originals_backup`, `test_browser_extensions`, `test_version_sync`, `test_commands_doc`, `test_gitignore` |
+| 12 | Workbench and skills | `serve`; the skills under `.claude/skills/` | TOOLING_INTERFACE §1b, §2; `.claude/skills/_STANDARD.md` | `test_serve`, `test_transcribe_audio`, `test_transcribe_source`, `test_import_recordings`, then each skill's behavioral done-test (`_STANDARD.md` §9) |
+
+A module not named above (`test_atomic_record_writes`, `test_consumer_sweep`, `test_unreadable_person_exports`, `test_roots_change`, `test_obsidian_pkm`, `test_samples_conformance`, `test_tools_utf8_stdout`) checks a rule across every tool, so it has to pass at every layer from the one where it first applies.
 
 **Dependency summary:**
 ```
@@ -1582,7 +1601,7 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 ## 16. The research workbench & skills (the AI interface)
 
-> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview` - all seventeen authored and shipped). Build sequence: [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md).
+> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview` - all seventeen authored and shipped). Build order: §15.
 
 **Deterministic work belongs in `fha` tools; AI judgment belongs in skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` calls, no harness APIs. `AGENTS.md` is the canonical operating instruction; `CLAUDE.md` defers to it.
 

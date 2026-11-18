@@ -66,12 +66,12 @@ preview would describe a different plan than the live run executes.
 
 Passing a *directory* selects one of two folder modes:
 
-  * Bundle folder (M7.4) - a folder containing a bare `notes.md`. It is a
+  * Bundle folder - a folder containing a bare `notes.md`. It is a
     source-stub *bundle* (SPEC §12.1): one S-id covers every asset inside, each
     filed to its proper root (documents renamed, photos moved but never
     renamed), one record scaffolded from the notes, and the now-empty folder
     deleted. The whole bundle becomes one source.
-  * Triage folder (M7.3) - any other folder (typically a `photos/` subfolder).
+  * Triage folder - any other folder (typically a `photos/` subfolder).
     Its unprocessed photos are grouped into variation sets, ranked by the same
     evidence signals `fha photoindex triage` uses, and offered for selection;
     the chosen sets are processed one by one.
@@ -135,7 +135,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _read_sidecar             - its hint frontmatter + prose body
 #    _bundle_file_hints        - bundle notes per-file role/copy/primary hints
 #
-#  Variation detection (M7.3, shared grammar via _lib)
+#  Variation detection (shared grammar via _lib)
 #    _photo_variation_siblings - photos in a dir sharing one base_id
 #    _variation_role_copy      - (role, copy) annotation for a grouped member
 #    _batch_type               - A–D label for a multi-image set (informational)
@@ -144,13 +144,13 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _score_photo_group        - TOOLING §15b evidence score (mirrors photoindex)
 #
 #  Top-level operations
-#    process_document          - M7.1: rename + keyword (where the format allows) + scaffold
-#    process_photo             - M7.2: keyword + scaffold (transactional)
+#    process_document          - rename + keyword (where the format allows) + scaffold
+#    process_photo             - keyword + scaffold (transactional)
 #    _photo_root_type_note     - the refile next step for a typed photos-root file
-#    process_photo_group       - M7.3: one S-id over a variation set (transactional)
-#    process_folder            - M7.3: triage a folder, process selected groups
-#    process_bundle            - M7.4: dissolve a notes.md bundle into one source
-#    attach_more               - M7.2: relocate --more's file out of inbox/ if needed (#111),
+#    process_photo_group       - one S-id over a variation set (transactional)
+#    process_folder            - triage a folder, process selected groups
+#    process_bundle            - dissolve a notes.md bundle into one source
+#    attach_more               - relocate --more's file out of inbox/ if needed (#111),
 #                                 then hand off to the engine below
 #    _more_file_kind           - which root a --more file joins (a record's page: documents, #274)
 #    _attachment_base          - the source slug a --more attachment is named with (#278)
@@ -1247,7 +1247,7 @@ def _find_sidecar(file_path: Path) -> Path | None:
 
     A lone sidecar (SPEC §12.1) is a hand- or capture-written stub paired with a
     single asset by basename: `photo.jpg` ↔ `photo.notes.md`. Bundle folders
-    (multiple files + one notes.md) are M7.4, not handled here.
+    (multiple files + one notes.md) are process_bundle's, not handled here.
     """
     sidecar = file_path.with_name(file_path.stem + '.notes.md')
     return sidecar if sidecar.is_file() else None
@@ -1352,7 +1352,7 @@ def _find_back_sibling(file_path: Path) -> Path | None:
 def _companion_for_sidecar(sidecar: Path) -> Path | None:
     """Return the single same-stem asset paired with a source-stub sidecar.
 
-    M7.1 documents the convenient entrypoint `fha process sample.notes.md`.
+    TOOLING §6 documents the convenient entrypoint `fha process sample.notes.md`.
     The sidecar is not the original; it is the notes wrapper around exactly one
     companion asset named `sample.*`. Refusing none-or-many matches prevents the
     tool from minting a source for the wrong file.
@@ -1989,7 +1989,7 @@ def _bundle_file_hints(sidecar_meta: dict) -> dict[str, dict]:
     return hints
 
 
-# ── Variation detection (M7.3) ────────────────────────────────────────────────
+# ── Variation detection ────────────────────────────────────────────────
 #
 # Variation siblings (front/back, copy letters, crops, negatives, booklet
 # pages) share a filename base_id. The grouping grammar (`grouping_stem`,
@@ -2102,7 +2102,7 @@ def _batch_type(members: list[Path]) -> tuple[str, str]:
     return 'A', 'variant scans of one image'
 
 
-# ── Triage scoring (M7.3 folder mode) ─────────────────────────────────────────
+# ── Triage scoring (folder mode) ─────────────────────────────────────────
 #
 # Folder mode ranks unprocessed photo groups by the same evidence signals
 # `fha photoindex triage` uses (TOOLING §15b) so the two tools order the same
@@ -2294,7 +2294,7 @@ def process_document(
     physical_location: str | None = None,
     ask_physical_location: bool = False,
 ) -> int:
-    """M7.1: rename a documents-root original and scaffold its source record.
+    """Rename a documents-root original and scaffold its source record.
 
     Transactional: the rename and the record write each register an undo, and
     any exception unwinds them in reverse, so an interrupted run leaves neither
@@ -2721,7 +2721,7 @@ def process_photo(
     report: dict | None = None,
     backup: OriginalBackup | None = None,
 ) -> int:
-    """M7.2: embed a SOURCE keyword in a photo and scaffold its source record.
+    """Embed a SOURCE keyword in a photo and scaffold its source record.
 
     Photos are never renamed. The keyword write is the risky step and happens
     first: if exiftool fails, nothing is scaffolded (TOOLING §6 "abort on
@@ -2940,7 +2940,7 @@ def process_photo_group(
     real_paths: dict[Path, Path] | None = None,
     backup: OriginalBackup | None = None,
 ) -> int:
-    """M7.3: process a variation set as ONE source sharing a single S-id.
+    """Process a variation set as ONE source sharing a single S-id.
 
     Every member is a photo under the photos root; none is renamed. The chosen
     primary (the plain scan - `select_variation_primary`) carries `is_primary:
@@ -3265,7 +3265,7 @@ def process_folder(
     backup: OriginalBackup | None = None,
     variants: str | None = None,
 ) -> int:
-    """M7.3: triage a folder's unprocessed photos, then process selected groups.
+    """Triage a folder's unprocessed photos, then process selected groups.
 
     The folder's top-level photo files (by extension, excluding sidecars and any
     file already carrying an `_{S-id}` name) are grouped into variation sets by
@@ -3421,7 +3421,7 @@ def process_bundle(
     photo_dest_dir: Path | None = None,
     offer_dest: bool = True,
 ) -> int:
-    """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
+    """Dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
 
     A bundle is a folder of related assets plus a bare `notes.md` stub - e.g. a
     recording and its transcript, or a photo and its document of provenance. One
@@ -4221,7 +4221,7 @@ def attach_more(
     backup: OriginalBackup | None = None,
     source_type: str | None = None,
 ) -> int:
-    """M7.2 `--more`: attach an additional file to an existing source record.
+    """`--more`: attach an additional file to an existing source record.
 
     The positional `primary_path` is an already-processed asset; its S-id comes
     from the embedded SOURCE keyword (photo) or the `_{S-id}` filename suffix
@@ -4779,7 +4779,7 @@ def _attach_more_engine(
         if copy:
             suffix = f'-{_slugify(copy)}{suffix}'
         new_name = f'{base}{suffix}_{sid}{more_file.suffix}'
-    # Same destination rule as process_document (M11.2): a pre-filed
+    # Same destination rule as process_document (TOOLING §6): a pre-filed
     # attachment renames in place; one sitting at the documents root TOP
     # level files WITH its source - beside a document primary (honoring
     # whatever subfolder the human chose for it, or staying flat beside a
@@ -5492,7 +5492,7 @@ def process_refile(
     photos -> documents (`--to documents`): the move breaks the external photo
     catalog's knowledge of the file, so it confirms first ([y/N], or --yes);
     the file is renamed INTO the §13 grammar `{slug}[-{copy}][-{role}]_{S-id}`
-    and lands in `--dest` or `documents/{type}/` (the M11.2 convention). The
+    and lands in `--dest` or `documents/{type}/` (the TOOLING §6 convention). The
     embedded SOURCE keyword is deliberately NOT stripped - it is harmless in
     the documents root and stripping would be a second risky write for zero
     correctness gain. `original_filename` is NOT added to the entry (that
@@ -6055,7 +6055,7 @@ def process_refile(
                         keyword_embedded = True
 
         # Atomic (temp + os.replace): refile is documented as one atomic
-        # transaction (BUILD M11.6), so a mid-write failure after the asset has
+        # transaction (TOOLING §6 refile), so a mid-write failure after the asset has
         # moved must leave the record fully written or untouched, never torn.
         write_text_exact_atomic(record_path, reapply_newline(final_text, old_text))
 
@@ -6916,7 +6916,7 @@ def _run_process(args: argparse.Namespace) -> int:
             print(f'ERROR: {e}', file=sys.stderr)
             return EXIT_ERRORS
 
-    # Folder modes (BUILD.md M7.3/M7.4): a folder holding a bare notes.md is a
+    # Folder modes (TOOLING §6): a folder holding a bare notes.md is a
     # source-stub bundle that dissolves into one source; any other folder is a
     # triage target whose unprocessed photos are ranked and offered for
     # selection. --more attaches a single file, so it does not pair with a folder.
@@ -7077,7 +7077,7 @@ def _run_process(args: argparse.Namespace) -> int:
                     f'{file_path.name} is being filed as a photo. Drop the flag, or '
                     'pass --type with the kind of record it is to file it as a document.')
             if kind == 'photo':
-                # Tier-1 variation detection (M7.3): a single photo may have
+                # Tier-1 variation detection: a single photo may have
                 # front/back/crop/copy siblings sitting beside it.
                 # _process_variation_set processes a lone photo straight
                 # through and only prompts when the directory actually holds

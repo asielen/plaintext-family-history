@@ -6,7 +6,7 @@
 
 This document defines one thing first and everything else after it: **what a source waiting in the inbox looks like**, and how `fha process` reads it (§1). That shape is the contract. A person dropping a scan and typing a note, the `fha capture` engine (§2), the browser companion (§5), a script someone writes for their own scanner - each is only a front end, and **any front end that produces the §1 shape is conforming**. SPEC.md §12.1 states what a source stub is; TOOLING.md §13b names the `fha capture` engine; this document specifies the contract and the engine in enough detail to build a new front end in any language.
 
-It is one of three sibling design docs, each with its own build doc: [`TOOLING.md`](TOOLING.md) (core tools) → [`BUILD.md`](BUILD.md); **this doc** (ingestion) → [`BUILD_INGESTION.md`](BUILD_INGESTION.md); [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) (workbench + skills) → [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md). How the browser companion reads particular sites is in [`browser-companion/README.md`](browser-companion/README.md); the companion does not need to be rebuildable from this document, only to produce the shape it defines.
+It is one of three sibling design docs: [`TOOLING.md`](TOOLING.md) (core tools), **this doc** (ingestion) and [`TOOLING_INTERFACE.md`](TOOLING_INTERFACE.md) (workbench + skills). The build order for all three is TOOLING.md §15. How the browser companion reads particular sites is in [`browser-companion/README.md`](browser-companion/README.md); the companion does not need to be rebuildable from this document, only to produce the shape it defines.
 
 The governing rule carried from TOOLING.md applies here without exception: **tools have no daemons, watchers, or schedulers.** Freshness is refresh-on-use. Capture stages material; nothing sweeps it automatically; a human (or a workbench skill) runs the next step.
 
@@ -214,7 +214,7 @@ A browser cannot write into `inbox/` (§5.1), so the companion writes a **staged
 
 | Field | Meaning |
 |---|---|
-| `schema` | the shape version (current **2**, `capture._CAPTURE_JSON_SCHEMA`). Absent is read as current; a newer one is read for the fields it shares, with a one-line "run `fha update-tools`" warning - never refused |
+| `schema` | the shape version (current **2**, `capture._CAPTURE_JSON_SCHEMA`). Absent is read as current; a newer one is read for the fields it shares, with a one-line "run `fha update-tools`" warning - never refused. Bumped only on an incompatible shape change |
 | `url` | the record page. The only field a bundle should always carry |
 | `title`, `source_type`, `source_date`, `repository` | the human's edits, or the browser's pre-fill; they override what the recipe reads from `page.html` |
 | `citation` | a citation the page itself supplied (a site's own "cite this"); replaces the one the recipe assembles |
@@ -297,7 +297,7 @@ The companion never produces a worse asset than it claims: a screenshot is label
 
 ### 5.7 Native-messaging host
 
-`fha capture --host` is a Python native-messaging host the extension launches on demand (no resident process): length-prefixed JSON over stdin/stdout. It files a bundle straight into the configured `inbox/` through the same code as `--ingest`, and answers two read-only questions (name suggestions from the archive, and whether a URL is already captured). `fha capture --install-host` writes the per-browser registration once. The extension uses it only when the human turns on "file straight into my archive"; if the host answers but fails to file a bundle, the capture falls back to Downloads and the panel says why, naming `fha capture --ingest` (recover this one) and `fha capture --install-host` (fix it).
+`fha capture --host` is a Python native-messaging host the extension launches on demand (no resident process): JSON frames over stdin/stdout, each behind a 4-byte length prefix in native byte order, as Chrome specifies. It files a bundle straight into the configured `inbox/` through the same code as `--ingest`, and answers two read-only questions: `suggestNames` (person names and aliases) and `checkUrl` (is this URL already captured?). Both read the record files, not the index, through caches keyed on each file's size and mtime (`.cache/capture_names.json`, `.cache/capture_links.json`). The host writes only into `inbox/`, so it honours working-copy mode. `fha capture --install-host` writes the per-browser registration once. The extension uses it only when the human turns on "file straight into my archive"; if the host answers but fails to file a bundle, the capture falls back to Downloads and the panel says why, naming `fha capture --ingest` (recover this one) and `fha capture --install-host` (fix it).
 
 ### 5.8 Seen It - the research-side sibling
 
@@ -354,7 +354,7 @@ These bind every front end and the engine alike:
 | Native-messaging host (§5.7) | **built** (`fha capture --host` / `--install-host`; off by default in the extension) |
 | Seen It (§5.8) | **built** ([`seen-it/`](seen-it/)) |
 
-Build order follows the spine: the engine, then `--ingest` (it makes any staged bundle useful), then the extension, then the native host. The milestones are in [`BUILD_INGESTION.md`](BUILD_INGESTION.md).
+Build order follows the spine: the engine, then `--ingest` (it makes any staged bundle useful), then the extension, then the native host. TOOLING.md §15 (layer 9) lists the tests that show it is done.
 
 ---
 

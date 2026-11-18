@@ -1,5 +1,5 @@
 """
-Tests for tools/scaffold.py - `fha install` and `fha update-tools` (BUILD.md M9).
+Tests for tools/scaffold.py - `fha install` and `fha update-tools` (TOOLING §13c).
 
 Two layers:
   1. A manifest-sync guard that recomputes the operating-layer manifest from the
@@ -109,7 +109,7 @@ def _make_fake_repo(repo: Path) -> Path:
 
     Deliberately tiny so the tests are fast and every file's role is obvious. No
     .git/ is created anywhere - install/update working against this directory is
-    itself the proof of the zip-based, git-free path (BUILD.md M9.1).
+    itself the proof of the zip-based, git-free path (TOOLING §13c).
     """
     _write(repo / 'SPEC.md', '# SPEC\n\n**Version 9.9 - 2026-01-01**\n\nbody\n')
     _write(repo / 'tools' / 'atool.py', 'print("a tool")\n')
@@ -199,8 +199,7 @@ class ManifestSyncTest(unittest.TestCase):
         # The tool-BUILDING docs are not vendored into an archive: no tool reads
         # them at run time and a genealogist never needs them (workshop-only).
         paths = {e['path'] for e in scaffold.generate_manifest(ROOT)['files']}
-        for builder in ('BUILD.md', 'BUILD_INGESTION.md', 'BUILD_INTERFACE.md',
-                        'TOOLING_INGESTION.md', 'TOOLING_INTERFACE.md',
+        for builder in ('TOOLING_INGESTION.md', 'TOOLING_INTERFACE.md',
                         'AGENTS_TOOLING.md'):
             self.assertNotIn(builder, paths, builder)
         # The operating spec/agent docs that DO ship stay.
@@ -414,8 +413,7 @@ class ManifestSyncTest(unittest.TestCase):
         # from a SHIPPED file to an UNSHIPPED doc must be an absolute URL.
         manifest = scaffold.generate_manifest(ROOT)['files']
         shipped = {e['path'] for e in manifest}
-        unshipped = ('AGENTS_TOOLING.md', 'BUILD.md', 'BUILD_INGESTION.md',
-                     'BUILD_INTERFACE.md', 'TOOLING_INGESTION.md',
+        unshipped = ('AGENTS_TOOLING.md', 'TOOLING_INGESTION.md',
                      'TOOLING_INTERFACE.md')
         for doc in unshipped:
             self.assertNotIn(doc, shipped, f'{doc} is workshop-only')
@@ -501,7 +499,7 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_no_readme_ships_into_an_archive(self):
-        # The repo README is repo-facing: badges, milestone tables, contributing,
+        # The repo README is repo-facing: badges, status, contributing,
         # and links to example-archive/, quickstart-template/, obsidian-templater/
         # - none of which an archive has. START_HERE.md is the archive's
         # entry point, and its name says what to do with it.
@@ -515,7 +513,7 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(by_path['fha.yaml']['category'], 'skeleton')
         self.assertEqual(by_path['fha.yaml']['src'], 'archive-template/fha.yaml')
         self.assertEqual(by_path['places/places.yaml']['category'], 'skeleton')
-        # The five BUILD-mandated docs ship: only the machinery (tools/,
+        # The five floor docs (TOOLING §13c) ship: only the machinery (tools/,
         # design/) is vendored under .fha/. The owner's manual, the two day-one
         # guides included, is in docs/, which stays put so its two-way link graph
         # with the root keeps resolving - see
