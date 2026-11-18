@@ -49,13 +49,12 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    blocks handoff. Do not declare a tool done while any flag or code is in an undocumented
    partial state.
 7. **Status sweep.** Implementation status lives in more docs than the one nearest the
-   change, and it goes stale in the summaries, not the source: the nearest BUILD doc gets
+   change, and it goes stale in the summaries, not the source: the nearest TOOLING section gets
    updated while the cross-reference spots keep saying "pending." Before handoff - whenever
    a build lands, a deferred step ships, or a decision reverses - update every statement of
    that status in the same change. The known status-summary locations: the owning
-   `BUILD*.md`'s status tables and headers, the sibling TOOLING doc's build-status section,
-   `SPEC.md` Part IV status notes, `README.md` (the badge, "Status & roadmap", and its other
-   status sentences - "What this is not", Quick start step 3),
+   TOOLING doc's build-status section, the sibling TOOLING docs' build-status sections,
+   `SPEC.md` Part IV status notes, `README.md` (the spec badge),
    `TOOLING.md` §16/§17 summaries, `AGENTS.md`, `tools/README.md`, and any companion README
    the change touches (e.g. `browser-companion/README.md`) - plus
    `docs/GETTING_STARTED.md` / `docs/CHEATSHEET.md` for anything user-facing. Then grep the repo for the phrase
@@ -191,7 +190,7 @@ yet explain is added there, in the present tense, in the same change.
 
 ### Docs are present tense
 
-SPEC.md, TOOLING*.md, BUILD*.md, AGENTS*.md and CHEATSHEET.md state the current design.
+SPEC.md, TOOLING*.md, AGENTS*.md and CHEATSHEET.md state the current design.
 A reader in fifty years needs the rule, not the story of how it came to be:
 
 - No issue numbers, no decision logs, no notes on what a past revision said, no "shipped in", no

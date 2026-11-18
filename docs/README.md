@@ -29,7 +29,7 @@
 
 ## For developers
 
-The full build sequence (`BUILD*.md`) and per-layer implementation design
+The build order (TOOLING.md §15) and per-layer implementation design
 (`TOOLING*.md`, `AGENTS_TOOLING.md`) live in the project repo on GitHub
 ([plaintext-family-history](https://github.com/asielen/plaintext-family-history))
 and are **not** shipped into an archive - extending the tools is a workshop-clone

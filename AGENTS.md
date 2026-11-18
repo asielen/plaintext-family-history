@@ -137,7 +137,7 @@ Read **[AGENTS_TOOLING.md §Code-review mode](https://github.com/asielen/plainte
 structured report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
 
 > **These last two modes are workshop activities, not archive ones.** They run in a clone of
-> the public project, where `AGENTS_TOOLING.md` and the `BUILD*.md` family live. An installed
+> the public project, where `AGENTS_TOOLING.md` and the TOOLING design docs live. An installed
 > archive does not carry those docs - nothing in it reads them at run time, and extending
 > vendored tools in place is out of scope (TOOLING §13c). If you are inside an archive and a
 > task needs tool-building or code-review mode, the answer is to do it in the project repo and
@@ -151,7 +151,7 @@ the owner-facing docs whenever a change affects how a human reads the archive (t
 `START_HERE.md` at the root, `docs/GETTING_STARTED.md`, `docs/CHEATSHEET.md`, the matching page in `docs/`, and the repo
 `README.md` (repo-facing - it does not ship into an archive).
 
-**The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning BUILD doc, the sibling TOOLING doc's build-status section, SPEC.md Part IV status notes, README.md's badge and status section, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: [AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md) (workshop-only, as above).
+**The status-sweep rule (tool-building and spec-refinement).** Implementation status lives in more docs than the one you're editing: when a build lands, a deferred step ships, or a decision reverses, update every statement of that status in the same change - the owning and sibling TOOLING docs' build-status sections, SPEC.md Part IV status notes, README.md's spec badge, TOOLING.md §16/§17, and this file - then grep the repo for the phrase being retired ("build pending", "not yet built", "when implemented", "deferred") before closing. Full sweep list and grep guidance: [AGENTS_TOOLING.md](https://github.com/asielen/plaintext-family-history/blob/master/AGENTS_TOOLING.md) (workshop-only, as above).
 
 ### Session end (all modes)
 
@@ -172,11 +172,10 @@ docs/                   the rest of the owner's manual (FAQ, GLOSSARY, TROUBLESH
 SPEC.md                 the law (read before structural work); docs/SPEC.md in an archive
 TOOLING*.md             tool design by concern: TOOLING.md (core - ships with every archive,
                         as docs/TOOLING.md), TOOLING_INGESTION.md (capture/inbox),
-                        TOOLING_INTERFACE.md (skills)
-BUILD*.md               build sequences, one per TOOLING doc (BUILD / _INGESTION / _INTERFACE)
+                        TOOLING_INTERFACE.md (skills); TOOLING.md §15 is the build order
                         NOTE: inside an installed archive only docs/SPEC.md and
-                        docs/TOOLING.md are present - TOOLING_INGESTION/_INTERFACE and every
-                        BUILD*.md live in the project repo (read them there, don't hunt the
+                        docs/TOOLING.md are present - TOOLING_INGESTION and
+                        TOOLING_INTERFACE live in the project repo (read them there, don't hunt the
                         archive for them): https://github.com/asielen/plaintext-family-history
 photos/{year}/          originals - read-only to you (except spec'd keyword writes via tools)
                         NOTE: asset roots may live OUTSIDE this folder - resolve any

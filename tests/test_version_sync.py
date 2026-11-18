@@ -4,7 +4,7 @@ test_version_sync.py - every document that states the SPEC version states the sa
 SPEC.md's `**Version X.Y - date**` header is the archive format's version
 (`scaffold._read_spec_version` stamps it into manifest.json). The TOOLING
 docs say "versions track the SPEC", and README states the current version in
-its status section. When SPEC moved to 2.0 those four kept saying 1.2, so a
+its spec badge. When SPEC moved to 2.0 those four kept saying 1.2, so a
 reader could not tell which rules the tools implement (#304 review).
 
 Run: py -3.14 -m pytest tests/test_version_sync.py -q   (from the repo root)
@@ -36,9 +36,9 @@ class VersionsTrackTheSpecTests(unittest.TestCase):
                 for stated in re.findall(r'v([0-9]+\.[0-9]+)', line):
                     self.assertEqual(stated, version, line)
 
-    def test_readme_status_states_the_spec_version(self) -> None:
+    def test_readme_badge_states_the_spec_version(self) -> None:
         text = (ROOT / 'README.md').read_text(encoding='utf-8')
-        stated = re.findall(r'`spec v([0-9]+\.[0-9]+)`', text)
+        stated = re.findall(r'badge/spec-v([0-9]+\.[0-9]+)-', text)
         self.assertTrue(stated)
         self.assertEqual(set(stated), {_spec_version()})
 
