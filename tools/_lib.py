@@ -13053,12 +13053,14 @@ _CENSUS_COUNTRY_NAMES: dict[str, str] = {
 
 
 def _claim_year(date_min: Any, date_max: Any, date_edtf: Any) -> tuple[int | None, int | None]:
-    """A claim's (earliest, latest) year, or (None, None) when it is undated.
+    """A claim's (earliest, latest) year, each None where it is unknown.
 
     An undated claim gets the index's open-ended sentinel bounds (`0001-01-01`
     to `9999-12-31`), and a sentinel that leaks into a minimum sorts before
     every real date - which is how a hand-built census check once hid real
-    birth years. The EDTF string is the test for "dated", not the bounds."""
+    birth years. The EDTF string is the test for "dated", not the bounds. A
+    date open at one end keeps its known end: "born before 1880" (`[..1880]`)
+    has no earliest year but a latest year of 1880."""
     if not date_edtf or not str(date_edtf).strip():
         return None, None
     try:
@@ -13066,9 +13068,7 @@ def _claim_year(date_min: Any, date_max: Any, date_edtf: Any) -> tuple[int | Non
         hi = int(str(date_max)[:4])
     except (TypeError, ValueError):
         return None, None
-    if lo <= 1 or hi >= 9999:
-        return None, None
-    return lo, hi
+    return (lo if lo > 1 else None), (hi if hi < 9999 else None)
 
 
 def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
@@ -13335,13 +13335,18 @@ def _birth_by_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[int]
     could be 1899): their birth and baptism claims, else the provisional
     estimate on their record, else, birth unknown, every record of them (a
     person in an 1850 census was born by 1850)."""
-    births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))
+    # Same order as `_person_years`: birth claims, then the provisional
+    # estimate, and only then a baptism (an adult baptism says little of age).
+    births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('birth',))
               if c['y_hi'] is not None]
     provisional = ctx['persons'].get(pid, {}).get('birth')
     if not births and provisional and is_valid_edtf(str(provisional)):
         lo, hi = edtf_bounds(str(provisional))
         hi_year = _claim_year(lo, hi, provisional)[1]
         births = [hi_year] if hi_year is not None else []
+    if not births:
+        births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('baptism',))
+                  if c['y_hi'] is not None]
     if not births:
         births = [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, statuses)
                   if c['y_hi'] is not None]
@@ -13374,7 +13379,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     from.
     """
     birth, death, _earliest = _person_years(ctx, pid, statuses)
-    own_births = {cid for cid, _c in _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))}
+    # Only a birth claim says where they were born; a baptism abroad is just
+    # the first record there.
+    own_births = {cid for cid, _c in _own_vital_claims(ctx, pid, statuses, ('birth',))}
 
     first_in: dict[str, int] = {}
     born_in: set[str] = set()
@@ -13384,7 +13391,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
-        if (_is_census_claim(ctx, c) and c['y_lo'] is not None
+        if (_is_census_claim(ctx, c) and c['y_lo'] is not None and c['y_hi'] is not None
                 and c['y_hi'] - c['y_lo'] <= 2):
             found_years.update(range(c['y_lo'], c['y_hi'] + 1))
         raw = _place_country(ctx['places'], c['place_id'])
@@ -13543,22 +13550,18 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     the two (`spouse_parties`) whose source is a vital record - a census
     'married' or a deed's 'his wife' names a spouse but is not one."""
     person = ctx['persons'].get(pid, {})
-    if person.get('no_known_marriages'):
-        return {'check': 'marriage', 'state': 'met', 'partners': [], 'with_record': [],
-                'detail': 'never married (confirmed)'}
+    # A confirmed absence - the `no_known_marriages` flag, or a negated
+    # marriage naming them alone (a negated marriage naming two people only
+    # says they did not marry each other; read with `vital_subjects`, which
+    # handles one person). It answers the check only while no partner is on
+    # file: SPEC A.2, a later contradicting claim supersedes it.
+    confirmed_none = bool(person.get('no_known_marriages'))
     for cid in ctx['person_claims'].get(pid, ()):
         c = ctx['claims'].get(cid)
-        if not (c and c['type'] == 'marriage' and c['negated'] and c['status'] in statuses):
-            continue
-        # A confirmed absence names one person ("no marriage found"), so it is
-        # read with `vital_subjects`, which handles one person, not with
-        # `spouse_parties`, which needs a couple.
-        # Only an absence naming them alone means "never married"; a negated
-        # marriage naming two people says they did not marry each other.
-        subjects = vital_subjects('marriage', ctx['claim_people'].get(cid, []))
-        if subjects is None or subjects == [pid]:
-            return {'check': 'marriage', 'state': 'met', 'partners': [], 'with_record': [],
-                    'detail': 'never married (confirmed)'}
+        if c and c['type'] == 'marriage' and c['negated'] and c['status'] in statuses:
+            subjects = vital_subjects('marriage', ctx['claim_people'].get(cid, []))
+            if subjects is None or subjects == [pid]:
+                confirmed_none = True
 
     partners: set[str] = set()
     with_record: set[str] = set()
@@ -13588,6 +13591,10 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     names = sorted(partners)
     recorded = sorted(p for p in names if p in with_record)
     base = {'check': 'marriage', 'partners': names, 'with_record': recorded}
+    if not names and confirmed_none:
+        return {**base, 'state': 'met', 'detail': 'never married (confirmed)'}
+    conflict = (' (marked "no known marriages", but a partner is on file: remove '
+                'the flag)') if names and person.get('no_known_marriages') else ''
     if not names:
         # Died young only when they surely did: the LATEST year the death
         # record allows, so "died between 1900 and 1960" does not qualify.
@@ -13606,12 +13613,14 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
         return {**base, 'state': 'missing', 'detail': 'no marriage on file'}
     if len(recorded) == len(names):
         word = 'marriage' if len(names) == 1 else f'all {len(names)} marriages'
-        return {**base, 'state': 'met', 'detail': f'{word} backed by a marriage record'}
+        return {**base, 'state': 'met',
+                'detail': f'{word} backed by a marriage record{conflict}'}
     state = 'partial' if recorded else 'missing'
     lacking = len(names) - len(recorded)
     return {**base, 'state': state,
             'detail': ('no marriage record' if lacking == 1 and len(names) == 1
-                       else f'{lacking} of {len(names)} partners without a marriage record')}
+                       else f'{lacking} of {len(names)} partners without a marriage record')
+            + conflict}
 
 
 def _children_of(ctx: dict, pid: str, statuses: tuple[str, ...], *,

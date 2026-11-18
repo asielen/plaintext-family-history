@@ -377,7 +377,23 @@ class CensusCheckTests(_Base):
             {'type': 'baptism', 'persons': [KID], 'date': '1900', 'place': US},
             {'type': 'death', 'persons': [KID], 'date': '1905'}])
         self.assertEqual(self.a.check(KID, 'marriage')['state'], 'missing')
-        self.assertIn(1880, self.a.check(KID, 'census')['expected'])
+        # The baptism is not a birthplace: with no birth place known, U.S.
+        # years start at their first U.S. record, not at the birth year.
+        self.assertEqual(self.a.check(KID, 'census')['expected'], [1900])
+
+    def test_a_baptism_abroad_is_not_a_birthplace(self):
+        self.a.source('vital-record', [_birth(KID, '1870', US)])
+        self.a.source('vital-record', [{'type': 'baptism', 'persons': [KID], 'date': '1900',
+                                        'place': CA},
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        c = self.a.check(KID, 'census')
+        self.assertFalse([y for y in c['expected'] if y in (1871, 1881, 1891)])
+
+    def test_an_open_ended_census_date_does_not_crash(self):
+        self.a.source('vital-record', [_birth(KID, '1870', US)])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '[1883..]',
+                                  'place': US}])
+        self.assertIn(self.a.check(KID, 'census')['state'], ('missing', 'partial'))
 
     def test_a_mention_on_a_sons_death_record_does_not_stretch_a_life(self):
         self.a.source('census', [{'type': 'census', 'persons': [DAD], 'date': f'{y}', 'place': US}
@@ -576,6 +592,15 @@ class MarriageCheckTests(_Base):
         self.assertEqual(c['state'], 'na')
         self.assertIn('died young', c['detail'])
 
+    def test_a_sourced_spouse_overrides_a_no_known_marriages_flag(self):
+        # SPEC A.2: a later contradicting claim supersedes the convenience flag.
+        self.a.person(DAD, 'Dad', no_known_marriages=True)
+        self.a.source('census', [{'type': 'relationship', 'persons': [DAD, MOM],
+                                  'roles': {'spouse': [DAD, MOM]}}])
+        c = self.a.check(DAD, 'marriage')
+        self.assertEqual((c['state'], c['partners']), ('missing', [MOM.lower()]))
+        self.assertIn('remove the flag', c['detail'])
+
     def test_no_known_marriages_flag_counts_as_complete(self):
         self.a.person(OTHER, 'Other', no_known_marriages=True)
         self.assertEqual(self.a.check(OTHER, 'marriage')['state'], 'met')
@@ -598,6 +623,19 @@ class EndOfLifeCheckTests(_Base):
     def test_an_uncertain_provisional_birth_uses_its_latest_year(self):
         self.a.person(KID, 'Kid', birth='1890/1910')
         self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
+
+    def test_a_provisional_birth_beats_an_adult_baptism_for_the_death_check(self):
+        self.a.person(KID, 'Kid', birth='1870')
+        self.a.source('vital-record', [{'type': 'baptism', 'persons': [KID], 'date': '1900'}])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
+    def test_born_before_1880_keeps_its_known_end(self):
+        self.a.source('vital-record', [_birth(KID, '[..1880]')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
+    def test_a_provisional_born_before_date_keeps_its_known_end(self):
+        self.a.person(KID, 'Kid', birth='[..1880]')
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
 
     def test_burial_counts(self):
         self.a.source('vital-record', [_birth(KID, '1880')])
