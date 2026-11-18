@@ -1,313 +1,193 @@
 # Plaintext Family History
 
-**An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
+A family-history archive made of plain files you can open in any text editor, with an AI research assistant working on top of them.
 
-> **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) compiled by `fha site` - the same self-contained, redacted site you'd publish or hand off on a USB stick.
+> **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) built into a website by `fha site`, the same self-contained site you could publish or hand to a relative on a USB stick.
 
-![status](https://img.shields.io/badge/status-milestones_1--11_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1--11_complete-green) ![spec](https://img.shields.io/badge/spec-v2.3-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
-This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
+For a hundred years genealogy lived in a filing cabinet, and anyone could open the drawer. No login, no subscription, no file format that stopped opening. A great-grandchild could pull the folder and read it. Most genealogy software has lost that.
 
-Plaintext is that filing cabinet, built to last. Plain files at the foundation, with search, structured claims, and an AI research layer stacked *on top of* the files, never *instead of* them.
-Delete every layer above and the archive still works, the way the drawer still works.
+Plaintext is that filing cabinet, built to last. Your records are ordinary files. Search, family trees, a website and an AI assistant all sit on top of those files and are rebuilt from them. Delete every one of those layers and the archive still reads, the way the drawer still opens.
 
-## Which one are you?
+## Start your archive
 
-| You are… | Start here |
+You need three things on your computer:
+
+- **Python 3.10 or newer** from [python.org](https://www.python.org/downloads/). On Windows, tick "Add Python to PATH" in the installer.
+- **This repo**, either cloned with git or downloaded as a zip (green "Code" button, then "Download ZIP"). If you take the zip, [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the few differences.
+- **[Claude Code](https://www.anthropic.com/claude-code)**, the AI assistant the archive is run through. Any assistant that reads `AGENTS.md` and can run commands will work; the docs assume Claude Code.
+
+Then, in a terminal opened in this repo's folder:
+
+1. **Install the helper packages** (one time):
+
+   ```
+   python -m pip install -r tools/requirements.txt
+   ```
+
+2. **Make your archive** from the template. Put it somewhere outside this repo; your family's records never go in here.
+
+   ```
+   ./fha install ../my-family-archive      # macOS / Linux
+   .\fha install ..\my-family-archive      # Windows PowerShell
+   fha install ..\my-family-archive        # Windows Command Prompt
+   ```
+
+   That creates the folder and copies in everything the archive needs to run on its own: the `fha` tools, the rules the assistant follows and the owner's manual in `docs/`.
+
+3. **Tell it where your photos and scans live.** Open `fha.yaml` in the new folder with a text editor. The examples are commented right in the file (a local folder, an external drive, an existing photo library). If you are starting from nothing, leave the defaults.
+
+4. **Open the new folder in Claude Code** and say:
+
+   > Let's do the setup interview.
+
+   It asks who you are and about your parents, spouse and children. Your answers become your first source. If you agree, it also fills in the "This family" part of `START_HERE.md`. Everything it drafts waits for your review; nothing is accepted on your behalf.
+
+5. **File your first document.** Drop a scan or photo into `inbox/` and ask the assistant to process it. It files the scan as a source record and drafts facts from it for you to accept or reject.
+
+Coming from Ancestry or another genealogy program? Export your tree as a GEDCOM file and ask the assistant to import it. Every person comes in as a record and every statement in your tree as a suggestion waiting for review, with your original file kept untouched.
+
+The full first-day walkthrough, with a "did it work?" check after every step, is [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md). The one-page reference is [`docs/CHEATSHEET.md`](docs/CHEATSHEET.md).
+
+No tools at all? [`quickstart-template/`](quickstart-template/) (or [the zip](downloads/quickstart-template.zip)) is a blank archive you fill in by hand with any text editor, and [`quickstart-example/`](quickstart-example/) is a filled-in fictional one. It uses the same format, so the tools can take it over later.
+
+## How the records work
+
+Everything else in this project depends on the record format.
+
+**A fact is something a source says, and it lives in that source.** A death certificate is one file. The facts it states (who died, when, where, who reported it) are written inside that file as claims. So every fact in the archive can be traced back to the page it came from, and two sources that disagree simply sit side by side until someone works out which is right. A profile does not hold facts of its own. It shows what the sources say about that person.
+
+**Nothing is a fact until a person says so.** Claims start as `suggested`, whether the AI drafted them or you typed them. They move to `accepted` only when you review them. The AI can do the filing and the drafting. It can't decide what is true about your family.
+
+**Every claim says whose event it is.** A death record names the person who died and also the widow, the children and the informant. A claim that names all of them without saying who is who is how a son's death ends up on his father, or a mother's obituary on her living son. So an event claim gives every person on it a role, such as `deceased` or `informant`, and the tools refuse to accept one that doesn't.
+
+There are five kinds of record, each a plain Markdown file with a short block of structured fields at the top:
+
+| Record | What it is |
 |---|---|
-| A genealogist who wants to use this system | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) |
-| A genealogist who wants to start by hand with plain files and no tools | [`quickstart-template/`](quickstart-template/) (blank starter kit); see [`quickstart-example/`](quickstart-example/) for a filled-in worked example |
-| A genealogist who got a zip and doesn't use git/GitHub | [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) |
-| Someone the owner sent documents to | [`docs/CONTRIBUTING_SOURCES.md`](docs/CONTRIBUTING_SOURCES.md) |
-| A developer building or extending the tools | [`BUILD.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD.md) then [`TOOLING.md`](TOOLING.md) (core); the capture on-ramp is [`BUILD_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INGESTION.md)/[`TOOLING_INGESTION.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md); the workbench skills are [`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md)/[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md) |
-| Here to understand or rebuild the spec | [`SPEC.md`](SPEC.md) |
+| **Person** `p-` | One human. Their names, story and research notes live here, along with who they are related to. |
+| **Source** `s-` | One piece of evidence (a certificate, a photo, a letter, an interview) with its files and the claims it makes. |
+| **Claim** `c-` | One statement a source makes, such as a date, a place or a relationship. It lives inside its source and is either suggested or accepted. |
+| **Place** `l-` | A location with coordinates and its names over time, since the town your ancestor lived in may have changed county or country. |
+| **Working answer** `h-` | A guess about an open question, written in `notes/questions.md` with its basis and what would prove it. It never counts as a fact. |
 
----
+Every record has a short ID in its file name (`hartley__thomas_edward_p-de957bcda1.md`), so a link like `[[p-de957bcda1|Thomas Hartley]]` keeps working when a file is renamed or moved. You can also link by name (`[[Grandpa Joe]]`) and the tools fill in the ID later.
 
-> NOTE: **This is a specification and scaffold, not finished software.** 
+Around the records sits a search index, rebuilt from the files whenever they change. It powers search, family trees, the website and a daily research report that flags contradictions and possible connections. The index is a cache. Delete it and `fha index` makes a new one.
 
-It is the blueprint for a simple, future-proof system for family research. The goal of this repo is to establish simple standards that can be maintained with or without tooling. It also provides the spec to recreate the tooling from scratch if you wish, plus sample tools to get you started. 
+Two more rules keep the archive honest over time. Prose without a citation is story or context, never fact. And anything the tools generate (summary lines, timelines, source lists, the website) is rebuilt from the records rather than edited by hand, so it can never drift from them.
 
-## Repo, tools, and your archive
+[`SPEC.md`](SPEC.md) is the full specification. [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) explains why each part is shaped the way it is and what was considered and rejected.
 
-Three things live at arm's length from each other, by design:
+## Quick start with Claude Code
 
-1. **This repo** (public): the spec (`SPEC.md`, `TOOLING.md`, `AGENTS.md`), the docs, the generic `fha` tools, an `archive-template/` with copy-paste record templates, and a fictional `example-archive/` fixture.
-2. **The tools** (public, in `tools/`): generic - they operate on *any* conforming archive and hold no family data. Publishing them is the manifestation of the spec. Tools are replaceable glue, regenerable from the spec.
-3. **Your archive** (private, separate repo): your real family's records, created from `archive-template/`, depending on this repo's spec and tools but never living inside it. Public examples stay fictional; your groceries don't go in the cookbook.
+If you would rather not follow the steps yourself, open this repo in Claude Code and ask:
 
-> **Public examples must remain fictional.** Do not open issues or PRs containing real records about living people, private family documents, raw DNA files, or identifying photos. See [PRIVACY.md](PRIVACY.md).
+> Get me started with my own family archive.
 
-### How the two repos relate
+It checks Python and the helper packages and creates your archive with `fha install` in a folder outside this repo. Then it tells you to open that new folder for the setup interview. From then on, do your family work in a Claude Code session opened in your archive, not in this repo. The archive carries its own copy of the rules, its own tools and its own skills (processing an inbox, reviewing claims, finding photos, writing a biography), so it keeps working even if this repo disappears.
 
-In practice you end up with **two separate repositories** - one public, one private:
+## More detail
 
-```
-plaintext-family-history/   ← PUBLIC:  the spec + the generic tools (this repo)
-my-family-archive/          ← PRIVATE: your real family's records
-```
+### Your archive and this repo
 
-They are not technically linked.
-The only relationship is that your private archive *uses the tools* that live in this public repo.
-The tools get to your archive by **installing** them into it:
+You end up with two separate folders, and usually two git repositories:
 
 ```
-./fha install PATH-TO-YOUR-ARCHIVE --repo .      # macOS / Linux
-.\fha install PATH-TO-YOUR-ARCHIVE --repo .      # Windows PowerShell
-fha install PATH-TO-YOUR-ARCHIVE --repo .        # Windows Command Prompt
+plaintext-family-history/   PUBLIC:  the spec, the tools, the templates (this repo)
+my-family-archive/          PRIVATE: your family's records
 ```
 
-(Run it from inside this clone. The `fha` launcher sits right here beside this
-README, but a fresh clone is not on your `PATH` - hence the `./`.)
+They are not linked. `fha install` copies the tools into your archive once, and `fha update-tools` (run from inside the archive, pointing at a newer copy of this repo) refreshes them later. An update replaces tool files, the rules and the manual. It never touches your records, `fha.yaml`, your place registry or your stylesheet. If you edited a tool file, your version is moved to `.plaintext-backup/` before the new one replaces it.
 
-> Already know your photos/documents live outside the archive (an external drive, an existing
-> library)? Edit `archive-template/fha.yaml`'s `roots:` in **this clone** before running
-> `install`, and the matching internal placeholder folder is never created in the first place.
-> Otherwise, install with the defaults and edit `fha.yaml` inside your new archive afterward -
-> `fha update-tools` removes the now-unneeded placeholder the next time you run it.
+The tools live in a hidden `.fha/` folder, so the top of your archive shows your genealogy: your records, `START_HERE.md` (the page that explains the archive to anyone who opens the folder), `fha.yaml`, the assistant's rules and `docs/`. An installed archive has no copy of this README. Its front page is `START_HERE.md`, and its owner's manual starts at `docs/GETTING_STARTED.md`.
 
-That copies the whole operating layer - the program, its design package, the rulebooks, and the
-owner-facing docs - into the archive and records what it wrote, so `fha update-tools` can refresh
-it later. What "refresh" means is worth being precise about: your records,
-`fha.yaml`, your place registry, and your stylesheet are never touched. Tool
-files and rulebooks ARE replaced - if you edited one, your version is moved to
-`.plaintext-backup/` first and the new stock file takes its place, so the edit
-survives but stops being in effect until you re-apply it. One folder can also disappear on
-purpose: if `fha.yaml` points `documents:`, `photos:`, or `inbox:` outside the archive, its
-now-purposeless empty placeholder is removed too (recreated if you ever point it back inside).
-The machinery lands in a hidden `.fha/` folder
-so the archive root shows your genealogy rather than the program: your records, `START_HERE.md`
-(the one page that explains the archive to anyone who opens the folder), `fha.yaml`, `AGENTS.md`,
-`CLAUDE.md`, the launchers, and `docs/` (which holds `SPEC.md`, `TOOLING.md`,
-`GETTING_STARTED.md`, `CHEATSHEET.md` and the rest of the manual) stay in plain sight. The archive is then
-**self-contained**: it works on any machine, offline, forever, even if this repo disappears.
+The `fha` program is never `pip install`ed. Each archive owns its own copy, so nothing can uninstall it from under you. `fha doctor` names any helper package that is missing.
 
-**This README is not part of that.** It is repo-facing - badges, a milestone roadmap, contributing,
-and links to `example-archive/`, `quickstart-template/`, `archive-template/` and
-`obsidian-templater/`, none of which an archive receives - so an installed archive has no
-`README.md` at its root. Its entry point is `START_HERE.md`, written for a reader with no tools;
-the owner's first-day guide is `docs/GETTING_STARTED.md`, backed by the one-page
-`docs/CHEATSHEET.md`. Anything here an archive owner genuinely needs lives in those.
+> **Examples stay fictional.** Do not open issues or pull requests containing real records about living people, private family documents, DNA files or identifying photos. See [PRIVACY.md](PRIVACY.md).
 
-The `fha` program itself is never `pip install`ed - the archive owns its own copy on purpose, so
-it cannot be uninstalled out from under you. Its Python **dependencies** are ordinary external
-packages, though: PyYAML is needed for everything, and Jinja2, Pillow, and pypdf for the site,
-photo, and PDF features. [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) walks through
-installing them, and `fha doctor` names any that are missing. If you have no git clone,
-[`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the download-a-zip route.
+### Ways to work with an archive
 
-**Your private family data never enters this public repo.** The public repo is the cookbook and the appliances; your private repo is your kitchen with your food in it.
+Every record is Markdown, so any text editor will open it. These are the other ways in.
 
+**Obsidian.** The archive is a Markdown vault with `[[wikilinks]]`. Point Obsidian at the folder and it opens as is. An optional [Templater pack](obsidian-templater/) adds record templates; see [`docs/USING_WITH_OBSIDIAN.md`](docs/USING_WITH_OBSIDIAN.md).
 
----
+**In a browser.** `fha serve` starts a private workbench on your own computer (no login, nothing online) with a review queue, the inbox and every record a click away. Each button runs the same `fha` command you could type, and shows you what it will change before it writes.
 
-## Contents
+**A family website.** `fha site` builds a self-contained website from the archive. Living people are kept out of the shared version, along with anything you mark private.
 
-  - [What this is](#what-this-is)
-  - [What this is not](#what-this-is-not)
-  - [How it works](#how-it-works)
-  - [Repository layout](#repository-layout)
-  - [Quick start](#quick-start)
-  - [The documents](#the-documents)
-  - [Design principles](#design-principles)
-  - [Status \& roadmap](#status--roadmap)
-  - [A complementary project](#a-complementary-project)
-  - [Contributing](#contributing)
-  - [License](#license)
+**The Seen It browser add-on.** [Seen It](seen-it/) remembers which Newspapers.com pages, Ancestry and FamilySearch records and Find a Grave memorials you have already opened, ruled out or attached. It marks them on the sites and works on its own; turn on Advanced mode and it also shows what your archive already holds, without ever changing the archive.
 
----
+**Backups.** `fha backup` writes a dated zip into a folder beside the archive and checks every file in it. Photos and documents are left out by default because they are often large and kept on another drive; add `--include-assets` to include them, and `fha doctor` lists every folder a full backup has to cover. To restore, unzip the file.
 
-## What this is
-
-Plaintext is an **archive-first** system.
-The durable archive - plain text and standard file formats on disk - is the source of truth.
-Every other moving part (the search index, the AI assistant, any genealogy app or website) is an optional, replaceable helper built *from* the archive and rebuildable *from scratch*.
-
-It is designed to be **operated with an AI coding agent** - a chat assistant that can read your files and run commands for you, the same way a human research assistant would, except it never gets tired of repetitive filing work.
-You open the archive in Claude Code (or any agent that reads `AGENTS.md`), and the agent helps you process records, draft sourced claims, build family trees, and surface research leads - while a set of small deterministic tools (the `fha` command suite, specified in `TOOLING.md`) does the mechanical work: the boring, exact, repeatable parts (checking IDs, building search indexes, scanning for contradictions) that don't need judgment, just consistency.
-The spec is written so that all of that tooling can be *regenerated* from the documents, in any language, if it is ever lost.
-
-## What this is not
-
-- **Not a finished app.** Milestones 1-11 are implemented, including the intake pipeline (`fha process`, `fha capture`, `fha convert-mining`), the static-site generator (`fha site`), the installer/update tooling (`fha install`, `fha update-tools`), working-copy mode (`fha working-copy`), and the milestone 11 usage-feedback wave (`fha reconcile`, `fha reorganize`, `fha source extract`, `fha process refile`, stub promotion).
-- **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
-- **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
-- **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
-
-
-## How it works
-
-Your existing photos and documents plus FIVE record types, all plain Markdown/YAML on disk:
-
-| Type | What it is |
-|---|---|
-| **Person** `p-` | A human - identity, flags, prose, and the relationships that tie them to others. |
-| **Source** `s-` | A piece of evidence: a record, document, photo, interview. |
-| **Claim** `c-` | A single sourced assertion (a date, place, relationship) living inside its source record, moving through a `suggested → accepted` review lifecycle. |
-| **Place** `l-` | A physical location, identified by coordinates, with a dated name/jurisdiction history. |
-| **Working answer** `h-` | A guess written on an open question in `notes/questions.md` - with its basis and what would verify it - never a fact; a source that proves it mints a new claim. |
-
-Around those, a rebuildable **index** (SQLite, regenerated from the files) powers search, family-tree generation, contradiction detection, and a research report - none of it authoritative, all of it disposable.
-The operating loop is simple: **capture → file → process → review → report**, with human review the only gate to an accepted fact.
-
-**One source, one piece of evidence.** A source's files are always copies or facets of *one* piece of evidence - fronts, backs, extra prints, pages, transcripts, even entries written across several sittings - never several separately published items bundled together just because they arrived at the same time (SPEC §7); two different letters, or two different newspaper clippings even about the same event, are two sources.
-
-**Kept for texture without becoming evidence.** A clipping or note that names no one in your family - period news, local color, general history kept on purpose for a future biography - files as `source_type: ephemera` (SPEC §14) rather than an ordinary source type. It's still kept and full-text searched, but it won't appear on any person's page, packet, or timeline as long as its `## Claims` block also stays person-free (the ordinary shape for a clipping like this - a claim naming someone reaches their page the same way a `people:` link would); find it through the generated site's homepage Sources list instead.
-
-**Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The copy-paste templates in [`archive-template/`](archive-template/) (person, source, research file, inbox note) give you a filled-in starting point.
-
-**Opens in Obsidian.** The archive is a Markdown-plus-frontmatter-plus-`[[wikilink]]` vault: point Obsidian (or another Markdown app) at the folder and it opens as-is, no import. An optional [Templater pack](obsidian-templater/) and the generated site's interactive family tree make it native to plaintext-PKM workflows; see [docs/USING_WITH_OBSIDIAN.md](docs/USING_WITH_OBSIDIAN.md).
-
-**Or open it in a browser.** `fha serve` starts a private local workbench (this machine only, no login) with a review queue, an inbox, and every record page one click away - every button is the same `fha` command you'd otherwise type, previewed before it writes. It's a second way in, not a second copy of anything: close the window and nothing is lost.
-
-**Stop re-reading the same newspaper page.** The optional [Seen It](seen-it/) browser add-on remembers which Newspapers.com pages, Ancestry and FamilySearch records and Find a Grave memorials you have already opened, ruled out or attached to your tree, and marks them right on the sites. It works on its own, with everything kept in your browser; turn on its Advanced mode and it also marks what your archive already holds, reading the archive without ever changing it.
-
-**Back it up with one command.** `fha backup` copies the archive into a dated zip in a folder *beside* it (`my-family-archive-backups/`) and verifies every file. Photos and documents are not included by default - they are often huge and often live on another drive - and the output says so every time; add `--include-assets` to pack them too, or back those folders up separately (`fha doctor` lists every path a full backup must cover, and reports when you last actually ran a backup). To restore: unzip the file. That's the whole procedure - a backup is just your files.
-
-## Repository layout
+### Repository layout
 
 ```
 plaintext-family-history/
-├── README.md            ← you are here
-├── SPEC.md              ← the law: philosophy, data model, physical format, governance
-├── TOOLING.md           ← implementation design for the core fha tools
-│                          (+ TOOLING_INGESTION.md capture on-ramp, TOOLING_INTERFACE.md skills)
-├── BUILD.md             ← build sequence for the core tools
-│                          (+ BUILD_INGESTION.md, BUILD_INTERFACE.md - one per TOOLING doc)
-├── AGENTS.md            ← canonical operating instructions for the AI agent
-├── CLAUDE.md            ← Claude Code entry point (defers to AGENTS.md)
-├── docs/                ← the owner's manual (ships to the archive's docs/, where SPEC.md
-│   │                      and TOOLING.md land too)
-│   ├── GETTING_STARTED.md ← the archive owner's first-day guide
-│   ├── CHEATSHEET.md    ← the one printable page
-│   ├── COMMANDS.md      ← every fha command and its options
+├── README.md            you are here
+├── SPEC.md              the specification: the data model, the file format, the rules
+├── TOOLING.md           how the fha tools are built (+ TOOLING_INGESTION.md, TOOLING_INTERFACE.md)
+├── BUILD.md             the build order for the tools (+ BUILD_INGESTION.md, BUILD_INTERFACE.md)
+├── AGENTS.md            the rules the AI assistant follows (CLAUDE.md points Claude Code here)
+├── docs/                the owner's manual, copied into every archive
+│   ├── GETTING_STARTED.md   the first-day guide
+│   ├── CHEATSHEET.md        one printable page
+│   ├── COMMANDS.md          every fha command and its options
 │   ├── TROUBLESHOOTING.md
 │   ├── SETUP_FROM_ZIP.md
 │   ├── GLOSSARY.md
 │   ├── FAQ.md
 │   └── DESIGN_RATIONALE.md
-├── archive-template/    ← skeleton + copy-paste record templates (+ fha.yaml) to start your own (private) archive
-├── example-archive/     ← a small, fully fictional worked example (+ its own fha.yaml)
-├── quickstart-template/ ← blank by-hand starter kit — plain files, no tools required, open in any text editor
-├── quickstart-example/  ← filled-in fictional worked example of quickstart-template/ (the Rivera/Lee family)
-├── tools/               ← the generic fha command suite (see tools/README.md)
-├── browser-companion/   ← the capture browser add-on (ships into every archive)
-├── seen-it/             ← "Seen It", an optional research add-on: marks pages and records
-│                          you've already looked at; can also show what your archive holds
-├── tests/               ← automated tests and fixtures for the tools
-├── PRIVACY.md           ← example-data policy
-└── .github/             ← issue templates, contributing guide
+├── archive-template/    the starting archive fha install copies
+├── example-archive/     a small fictional archive, also the test fixture and the example site
+├── quickstart-template/ a blank archive to fill in by hand, no tools needed
+├── quickstart-example/  a filled-in fictional quickstart archive (the Rivera/Lee family)
+├── downloads/           zips of the example and quickstart archives
+├── tools/               the fha command suite (see tools/README.md)
+├── browser-companion/   the capture add-on for saving web records (ships into every archive)
+├── seen-it/             the optional Seen It add-on
+├── obsidian-templater/  optional Obsidian templates
+├── tests/               tests and fixtures for the tools
+└── PRIVACY.md           the example-data policy
 ```
 
-## Quick start
-
-> You need an AI coding agent that can read project instructions and run shell commands - [Claude Code](https://www.anthropic.com/claude-code) is the reference harness. The spec is harness-agnostic; anything that reads `AGENTS.md` works. Codex, for example, reads `AGENTS.md` natively; see the FAQ.
-
-1. **Clone this repo** and read `SPEC.md` end to end. It is the contract; everything else serves it.
-2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
-3. **Use or extend the tools.** Milestones 1-11 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
-4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
-5. **Coming from Ancestry (or any app)?** You don't start over. Download your tree as a GEDCOM file and run `fha gedcom import family-tree.ged` - every person arrives as a record and every assertion as a reviewable suggestion, with your original file kept untouched.
-
-See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
-
-## The documents
+### The documents
 
 | Document | Read it for |
 |---|---|
-| **[SPEC.md](SPEC.md)** | The complete specification - what exists, how it lives on disk, and the rules that never bend. Start here. |
-| **[TOOLING.md](TOOLING.md)** | How the core tools are built, in enough detail to rewrite from scratch. The `fha` command suite, the index schema, the linter rules. Two siblings cover the rest by concern: **[TOOLING_INGESTION.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INGESTION.md)** (capture/inbox on-ramp) and **[TOOLING_INTERFACE.md](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** (workbench + skills). Each has a matching build doc (`BUILD.md`, `BUILD_INGESTION.md`, `BUILD_INTERFACE.md`). |
-| **[AGENTS.md](AGENTS.md)** | What an AI agent may and may not do inside the archive - the contract, the operating modes, the workflows. |
-| **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** | A practical first-session walkthrough. |
-| **[docs/GLOSSARY.md](docs/GLOSSARY.md)** | Every term and ID type defined. |
-| **[docs/FAQ.md](docs/FAQ.md)** | Why files, why not a database, why AI, how durable is this really. |
-| **[docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md)** | Why the archive is shaped this way: for each design topic, what we do, why, and what was rejected. Read it before changing a rule. |
+| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Your first day, step by step. |
+| [docs/FAQ.md](docs/FAQ.md) | Why files, why not a database, why AI, how long this will really last. |
+| [docs/GLOSSARY.md](docs/GLOSSARY.md) | Every term and ID type. |
+| [SPEC.md](SPEC.md) | The complete specification: what exists, how it is written on disk and the rules it follows. |
+| [AGENTS.md](AGENTS.md) | What the AI assistant may and may not do in an archive. |
+| [TOOLING.md](TOOLING.md) | How the tools work, in enough detail to rewrite them from scratch in another language. Its two siblings, [TOOLING_INGESTION.md](TOOLING_INGESTION.md) (capturing and filing) and [TOOLING_INTERFACE.md](TOOLING_INTERFACE.md) (the workbench and the assistant's skills), each have a matching build doc. |
+| [docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md) | Why the archive is shaped this way and what was rejected. Read it before proposing a rule change. |
 
-## Design principles
+### Design principles
 
-1. **The archive is the source of truth; tools are replaceable.**
-2. **Durable, plain formats.** `.md`, `.txt`, `.csv`, `.jsonl`, `.yaml`, `.jpg`, `.tiff`, embedded IPTC/XMP.
-3. **Every important fact traces to a source.** Uncited prose is story or context, never fact.
-4. **AI suggestions are not facts.** They enter a review queue and stay there until a human accepts them.
-5. **Nothing generated is load-bearing.** Index, search, trees, the website - all rebuildable from the files.
-6. **Folder location is for human browsing; metadata carries meaning.**
-7. **Stay light.** Long-term durability beats short-term convenience.
+1. The archive is the source of truth; tools can be replaced.
+2. Plain, durable formats: `.md`, `.txt`, `.csv`, `.jsonl`, `.yaml`, `.jpg`, `.tiff` and metadata embedded in the images themselves.
+3. Every important fact traces to a source. Uncited prose is story or context.
+4. AI suggestions are not facts. They wait for a person to accept them.
+5. Nothing generated is load-bearing. The index, the trees and the website can all be rebuilt from the files.
+6. Folders are for browsing; the records' own fields carry the meaning.
+7. Stay light. Long-term durability beats short-term convenience.
 
-## Status & roadmap
+### Status
 
-**Current: `spec v2.3` - milestones 1-11 complete.**
+The current format is `spec v2.3`, and milestones 1 to 11 are complete. Everything runs cleanly against the example archive. The tools cover the whole loop: capturing web records and filing scans (`fha capture`, `fha process`), importing a GEDCOM, reviewing claims (`fha claim`, `fha confirm`), the search index and linter (`fha index`, `fha lint`), finding contradictions and possible connections (`fha xref`, `fha cooccur`, `fha report`), timelines and family trees (`fha views`), a photo catalog (`fha photoindex`), the website (`fha site`), the local workbench (`fha serve`), exports (`fha packet`, `fha gedcom`, `fha wikitree`) and backups, plus installing and updating archives. [`docs/COMMANDS.md`](docs/COMMANDS.md) lists every command.
 
-Everything through the intake pipeline, the static-site generator, the
-installer/update tooling, and working-copy mode is
-implemented and runs cleanly on the example archive: the linting/indexing
-substrate, the view generators and universal locator, the photo catalog, the
-candidate-finding tools (contradiction/corroboration detection, person and
-place co-occurrence, and `fha find --related`'s neighborhood queries), the
-deterministic review write-backs (`fha claim` for claim status, `fha confirm`
-for the detectors' confirm/dismiss), the
-`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export
-and the GEDCOM import on-ramp (`fha gedcom import`),
-the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
-the milestone 8 static-site generator (`fha site`), the milestone 9
-scaffolding tools (`fha install`/`fha update-tools`), the milestone 10 working-copy mode (`fha working-copy`),
-and the milestone 11 usage-feedback wave - `fha reconcile` (heal moved-document
-inventory paths), `fha reorganize` (bulk-tidy the documents root, never touching
-a human-organized folder), `fha source extract` (dump a PDF's text layer into a
-searchable companion), `fha process refile` (the sanctioned cross-root correction
-move), and stub promotion (`fha person promote` / `fha views brackets --fix-promote`).
-Plan 17 (2026-07) added a second front door onto the same tools: `fha serve`, the localhost
-workbench, plus the write-back verbs it drives - `fha claim new`, `fha person new`/`relate`/
-`estimate`/`edit`/`note`, `fha source note`, and `fha find --json`. The 2026-07 live review
-round added per-entry note edits (`fha person edit-note`, `fha source edit-note`), the
-human-directed place registry edits (`fha places set`/`note`, with an embedded map and
-research notes on place pages), and workbench conveniences (native file picker,
-reciprocal-by-default family ties). See `BUILD.md` for the detailed
-milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
+This is a specification and a working scaffold rather than a finished app. The tools are meant to be regenerable from the documents, in any language, if they are ever lost.
 
-- [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
-- [x] `fha id`, `fha index`, `fha lint`, `fha stubs` - the substrate (milestone 1: lint clean on the example archive)
-- [x] `fha claim` - the claim-review write-back: move a claim's status and stamp `reviewed:` (the human gate, as a deterministic command) (milestone 1)
-- [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` - view generators (milestone 2); `--format md|html` standalone printable pages under `generated/views/` (2026-07 usability wave)
-- [x] `fha views brackets` - folder maintenance: W103 bracket refresh, W110 Ahnentafel placement (milestone 2)
-- [x] `fha views tree` - relationship tree traversal, neutral JSON + DOT output (milestone 2; HTML arrives with the site-wide family tree)
-- [x] `fha views clean`, `fha views refresh` - generated-file lifecycle management, both formats (milestone 2)
-- [x] `fha find` - universal ID locator and full-text search across records, notes, transcripts (milestone 2)
-- [x] `fha doctor` - archive health report: index freshness, file integrity, privacy flags (milestone 2)
-- [x] `fha photoindex` - photo catalog: scan/grouping, find, triage/report, reconcile/tag-person, set-summary (milestone 3)
-- [x] `fha xref`, `fha cooccur` - corroboration/contradiction and co-occurrence candidate detection (milestone 4)
-- [x] `fha confirm` - the write-back floor under the read-only detectors and report prompts: confirm/dismiss a candidate, register a place cluster, log a discovery, accept a draft, enact a human-confirmed identity merge (`confirm merge`, the SPEC §9 write) (milestone 4)
-- [x] `fha find --related` - the neighborhood query: people, places, sources, and time slices (milestone 4)
-- [x] `fha report` - the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
-- [x] `fha packet` - person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
-- [x] `fha places` - place registry lint, recurring unlinked place/GPS candidate detection, and offline GeoNames coordinate backfill (milestone 6.2-6.3)
-- [x] `fha gedcom` - GEDCOM 5.5.1 relationship export (living-redacted by default); `fha wikitree` - curated-profile export in the WikiTree dialect (milestone 6.4-6.5)
-- [x] `fha gedcom import` - the Ancestry on-ramp: file a GEDCOM download as one source, a person stub per individual, and every assertion as a suggested claim with a line anchor - plan first, `--apply` to write, full rollback, one-shot re-run guard (milestone 6.6)
-- [x] `fha process` - asset intake: single-file documents/photos, `--more`, folder triage, variation grouping, and bundle dissolution (milestone 7.1-7.4)
-- [x] `fha capture` - paste-fallback web capture, generic recipe, and Ancestry/FamilySearch/Newspapers.com/FindAGrave recipes (milestone 7.5-7.7)
-- [x] `fha convert-mining` - one-time legacy transcript-mining migration (milestone 7.8)
-- [x] `fha site` - static-site generator: source/person/place/discoveries/home pages, standalone (redacted, self-contained) vs linked preview, and vendored interactive descendant/ancestor trees (milestone 8.1-8.5)
-- [x] `fha install` / `fha update-tools` - archive scaffolding and updating: bootstrap a private archive's operating layer from a clone or unzipped download, then refresh it later, backing up your edits and never deleting or touching your `fha.yaml`/places data. The machinery installs into a hidden `.fha/` folder so the archive root shows your genealogy rather than the program - your records, the rulebooks, and the owner-facing `docs/` stay where you can see them (the project's own design reference and roadmap ride along inside `.fha/docs/`) (milestone 9.1-9.2)
-- [x] working-copy mode - asset-less plain-text working copies synced to a second machine (toggle with `fha working-copy on/off`, which sets a git-ignored `WORKING_COPY` marker so the mode never syncs back): tools treat absent photos/documents as present-elsewhere (never "missing", never pruned), so you can write narratives and research against existing records anywhere (milestone 10 - SPEC §12.4 / TOOLING §13d)
-- [x] `fha backup` - one-command dated zip snapshot written outside the archive (records-only by default; `--include-assets` packs the mapped photo/document roots), verified after writing, with `fha doctor` reporting the real last-backup date; restore = unzip (2026-07 usability review, plan 04 - TOOLING §13e)
-- [x] `fha serve` - the localhost workbench: a private, editable browser front door onto the same tools, plus `fha claim new` (mint a claim by hand), `fha person new`/`relate`/`estimate`/`edit`/`note`, `fha source note`, and `fha find --json` (machine-readable search) (plan 17 - TOOLING_INTERFACE.md §1b)
-- [x] usage-feedback wave: `fha reconcile` (heal moved-document inventory paths, documents + photos in one command), `fha reorganize` (bulk-tidy the documents root into `documents/{type}/`, checked in batches against `fha reconcile`, never touching a folder a human already organized by hand - issue #107), `fha source extract` (dump a PDF's embedded text layer into a `role: extracted-text` companion, searchable after `fha index`), `fha process refile` (the sanctioned cross-root correction move, documents ⇄ photos), stub promotion (`fha person promote` / `fha views brackets --fix-promote`), grouped claim review (`fha claim` batch), and biography styles (milestone 11 - TOOLING §9/§9a/§14, SPEC §12.1/§13)
-- [x] Ahnentafel realignment wave: couple-folder names gain their missing `+ second spouse` half (add-only, never rewrites a hand-crafted name), `fha views brackets --realign` (renames, moves, and stub promotions in ONE previewed pass - the recovery command after re-anchoring `root_person`, correcting a `sex:`, or accepting a new parent claim), W120 (a folder number that was silently guessed because a lone linked parent has no `sex:` recorded is now flagged with its one-line fix), and W127 (the anchor itself: a `root_person` who has a child on record numbers every couple folder one generation high, which no folder check can catch because the folders match that same count - reported by `fha lint` and `fha views brackets` alike, as a note rather than a defect); the capture browser extension now ships into every archive at `.fha/browser-companion/`, ready for chrome://extensions "Load unpacked" - no clone of this repo needed to use it (milestone 11.7 - TOOLING §7/§13c, SPEC §12.2)
-- [x] `root_generation` (`fha.yaml`): a researcher who anchors the archive at themselves no longer has to misname one of their own children as `root_person` to get the documented `#1 = the children, collectively` numbering (or has no way at all if childless) - `root_generation: self` (default, unchanged) keeps `root_person` at #1; `root_generation: children` anchors `root_person` at #2 instead, so their own generation numbers correctly without renaming who the archive is centred on. W127 (the anchor-too-high note) stands down the moment `root_generation: children` says the shape is deliberate; an unrecognized value is rejected with a plain fix rather than silently read as `self` (W129) (issue #72 - SPEC §12.2/§12.4)
-- [x] SPEC 2.0-2.2 alignment (plan 19): IDs written lowercase and matched without regard to case, links written `[[p-…|Name]]`, one research ladder (open questions and their working answers in `notes/questions.md`; `needs-review` retired - a looked-at, unsettled claim stays `suggested` with a `reviewed:` date), `START_HERE.md` as the archive's front page for a reader with no tools, generated summary lines (Born, Died, Married, Parents, Children) under every profile's title, and `relationships:` naming each person once per role with all its supporting claims
+### A related project
 
-## A complementary project
+If your interest is the research half (autonomous AI research loops, archive guides for specific countries, prompts for pushing a tree further back), see [autoresearch-genealogy](https://github.com/mattprusak/autoresearch-genealogy) by Matt Prusak. It arrived independently at the same files-first, Claude Code approach from a different angle: that project is a research playbook, and this one is the filing system the findings live in.
 
-A related project worth studying: if your interest is the *research* half - autonomous AI research loops, archive guides for specific countries, prompt templates for pushing a family tree backward - see [**autoresearch-genealogy**](https://github.com/mattprusak/autoresearch-genealogy) by Matt Prusak.
-It and Plaintext arrived independently at the same files-first, Claude-Code-driven philosophy from different angles: that project is a research *playbook*, this one is the *filing system* the findings live in.
-They complement each other well.
+### Contributing
 
-## Contributing
+Feedback is welcome, especially from genealogists and from anyone building tools against the spec. See [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md).
 
-This is an early-stage spec and feedback is genuinely useful - especially from genealogists and from anyone building the tools against it.
-See [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md).
-Issues and discussion welcome.
+### License
 
-## License
-
-[MIT](LICENSE).
-The spec, the documents, and any code built from them are free to use, adapt, and build on.
+[MIT](LICENSE). The spec, the documents and any code built from them are free to use and build on.
