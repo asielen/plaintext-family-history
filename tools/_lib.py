@@ -7811,15 +7811,20 @@ def claim_date_order_sql(alias: str = 'c') -> str:
     sorts by its known start. `alias` is the claims table's alias in the
     query ('' for none).
 
-    Claims on the same date keep the order `fha index` wrote them (`rowid`,
-    the archive's file order). Without a last key, SQLite returns equal rows
-    in whatever order its plan happens to produce - a `SELECT DISTINCT`
-    through a temporary table does not keep it - so two births both dated
-    `1840~` swapped places between builds of the same archive."""
+    Claims on the same date are ordered by their source's id, then by their
+    order in that source's file. Both come from the records, so the order is
+    the same whatever the filesystem's listing order, and survives a
+    one-source reindex: `rowid` alone would not, since `fha index` inserts
+    sources in directory-walk order and an incremental update re-inserts a
+    source's claims at the end. Within one source, `rowid` is the file's own
+    claim order, which every reindex of that source keeps. Without these keys
+    SQLite returned equal rows in whatever order its plan produced (a `SELECT
+    DISTINCT` through a temporary table does not keep it), so two births both
+    dated `1840~` swapped places between builds."""
     p = f'{alias}.' if alias else ''
     return (f"CASE WHEN {p}date_min IS NULL OR {p}date_min = '' THEN 1 ELSE 0 END, "
             f"CASE WHEN {p}date_edtf LIKE '[..%' THEN {p}date_max "
-            f"ELSE {p}date_min END ASC, {p}rowid ASC")
+            f"ELSE {p}date_min END ASC, {p}source_id ASC, {p}rowid ASC")
 
 
 def _pad_date(s: str, mode: str) -> str:
