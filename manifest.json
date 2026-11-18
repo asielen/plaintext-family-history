@@ -6,14 +6,14 @@
     {
       "path": ".agents/skills/README.md",
       "category": "operating",
-      "sha256": "37a7c0f0782dfbaaca22107a4c9a115366ffa3a9027d870f7b586eeae3bc4047",
+      "sha256": "c343a569b5162dc18d54f22ba817bd4b73bb6843a7eaf730afa55df2bf83bfca",
       "spec_version": "2.4",
       "src": ".claude/skills/README.md"
     },
     {
       "path": ".agents/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "527fed6146876d13f360f42ed3c7e53b9cc85e59db09a2503b17f5d89fec8009",
+      "sha256": "63fa019b1ac657c63dc07be3cb0169f343d6c22b06a87a7d0961f2a7f362f25a",
       "spec_version": "2.4",
       "src": ".claude/skills/_STANDARD.md"
     },
@@ -81,6 +81,13 @@
       "src": ".claude/skills/mine-transcript/SKILL.md"
     },
     {
+      "path": ".agents/skills/on-this-day/SKILL.md",
+      "category": "operating",
+      "sha256": "1ffad76fc05dd3745e4e62a7ad60a17600ed991da303f36f3241e20440d68e0e",
+      "spec_version": "2.4",
+      "src": ".claude/skills/on-this-day/SKILL.md"
+    },
+    {
       "path": ".agents/skills/photo-context/DESIGN.md",
       "category": "operating",
       "sha256": "c7eb10bbc6a03b7d5ff9121d2265194521f236175015747a2dd52544559d5557",
@@ -146,7 +153,7 @@
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "957ac7b067bfe77f2d7d14384eeb574942c33f38c85e7c20152237b35a181305",
+      "sha256": "7769e2b016a086e3871cf0847ceae40738aef270c16dd7e221fb41b06c504115",
       "spec_version": "2.4",
       "src": ".claude/skills/today/SKILL.md"
     },
@@ -195,13 +202,13 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "37a7c0f0782dfbaaca22107a4c9a115366ffa3a9027d870f7b586eeae3bc4047",
+      "sha256": "c343a569b5162dc18d54f22ba817bd4b73bb6843a7eaf730afa55df2bf83bfca",
       "spec_version": "2.4"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "527fed6146876d13f360f42ed3c7e53b9cc85e59db09a2503b17f5d89fec8009",
+      "sha256": "63fa019b1ac657c63dc07be3cb0169f343d6c22b06a87a7d0961f2a7f362f25a",
       "spec_version": "2.4"
     },
     {
@@ -256,6 +263,12 @@
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
       "sha256": "6830e1a89146246f2ba76b1bd4a72bc1beec7b0c76cf419c1ce40527b186c669",
+      "spec_version": "2.4"
+    },
+    {
+      "path": ".claude/skills/on-this-day/SKILL.md",
+      "category": "operating",
+      "sha256": "1ffad76fc05dd3745e4e62a7ad60a17600ed991da303f36f3241e20440d68e0e",
       "spec_version": "2.4"
     },
     {
@@ -315,7 +328,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "957ac7b067bfe77f2d7d14384eeb574942c33f38c85e7c20152237b35a181305",
+      "sha256": "7769e2b016a086e3871cf0847ceae40738aef270c16dd7e221fb41b06c504115",
       "spec_version": "2.4"
     },
     {
@@ -910,7 +923,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "7e2239ed9eb10439b92219987ffe3baa9ad64d0187760839f5046f8a96ca2730",
+      "sha256": "1c0d5482e2aac7803e43adcb5d596b4e178aec8fd921bc461b025f83f1dc147c",
       "spec_version": "2.4",
       "src": "tools/report.py"
     },
@@ -1134,13 +1147,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "39d711add0508f9fc8901a0ef21280bc12e7ab82e0279034f93c574047950ec6",
+      "sha256": "d02160dd9ff5cc4db356f925d9f7e7ddf7d2a293897e1065dc7ea97adbf935b7",
       "spec_version": "2.4"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "ae53b112855f1d47492634b4dcce527e10233782db0b6c8ac6c2e7ce7b12b0da",
+      "sha256": "0d4ee54c6499d0adaf31cf5950dcd0a4cec1c4e65d6bb3f147e23d5233258868",
       "spec_version": "2.4"
     },
     {
@@ -1226,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "88932eb9a4fcab2d54ebd3e011b97538298f5b72037362651761b144e3b2ebd5",
+      "sha256": "1ebf674fdb5f9cfcb34a486a744e99ac370cd80a2db1d25b8511c87403b78aad",
       "spec_version": "2.4",
       "src": "TOOLING.md"
     },

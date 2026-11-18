@@ -1016,7 +1016,7 @@ Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims)
 
 **Privacy.** The command is the owner's own view and shows everything. Each event says whether each person counts as living (living or unknown, merges followed, as every export reads it) and whether any source behind it is `restricted` (`source_restricted`). That is not the whole SPEC §19 rule: the index records `restricted:` only on sources, so a claim or a person marked `restricted` is listed here unflagged. A shared front door must apply its own SPEC §19 export rules to the people, claims and sources an event lists.
 
-Engine: `_lib.family_calendar_events`, the shared engine a report, workbench or site anniversary panel is to use, so that two views of the same day cannot disagree. Read-only.
+Engine: `_lib.family_calendar_events`, the shared engine `fha report`'s `on-this-day` section (§15a) reads and a workbench or site anniversary panel is to use, so that two views of the same day cannot disagree. Read-only.
 
 ---
 
@@ -1561,6 +1561,7 @@ The session start screen, narrated by the `today` skill.
 | # | Key | Content |
 |---|---|---|
 | 0 | `discoveries` | Questions answered, contradictions resolved, first corroborations, profiles newly vital-complete, confirmed connections. On confirmation each goes to `notes/discoveries.md` via `confirm discovery`. |
+| 0b | `on-this-day` | Family events falling today and the six days after it, from accepted claims only, by §7b's rules and engine: one line each (date, what happened, who, where, how many years ago), at most ten, then "and N more" pointing at `fha calendar --week`; one line when there are none. The owner's private view, so living people are named. |
 | 1 | `review-queue` | `suggested` claims with no `reviewed:` date, by source, oldest first (W102). |
 | 1b | `second-look` | Parked claims (`suggested` with a `reviewed:` date, SPEC §8.1; oldest first) and accepted low-confidence claims (§8.5): counts plus the oldest few. |
 | 2 | `new-since-last` | Sources, claims, people added or changed. |
@@ -1601,7 +1602,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 | 9 | Intake | `process` (documents, photos, `--more`, folders, bundles, inbox filing, `refile`), `media`, `reorganize`, `convert-mining`, `capture` (`--path`, `--ingest`, the native host) | §6, §6a, §9a, §11, §13b, TOOLING_INGESTION §1-§6 | `test_process`, `test_process_*`, `test_media`, `test_reorganize`, `test_convert_mining`, `test_capture`, `test_capture_*`, `test_browser_companion`, `test_seen_it*` |
 | 10 | Publication | `site` (pages, family chart, interactive trees, standalone redaction) | §12 | `test_site`, `test_templates`, `test_privacy_restricted`, `test_private_fence_surfaces` |
 | 11 | Install and modes | `install`/`update-tools` + `manifest.json`, working-copy mode, `originals_backup:` | §13c, §13d, §13f | `test_scaffold`, `test_working_copy`, `test_originals_backup`, `test_doctor_originals_backup`, `test_browser_extensions`, `test_version_sync`, `test_commands_doc`, `test_gitignore` |
-| 12 | Workbench and skills | `serve`; the skills under `.claude/skills/` | TOOLING_INTERFACE §1b, §2; `.claude/skills/_STANDARD.md` | `test_serve`, `test_transcribe_audio`, `test_transcribe_source`, `test_import_recordings`, then each skill's behavioral done-test (`_STANDARD.md` §9) |
+| 12 | Workbench and skills | `serve`; the skills under `.claude/skills/` | TOOLING_INTERFACE §1b, §2; `.claude/skills/_STANDARD.md` | `test_serve`, `test_skills_inventory`, `test_transcribe_audio`, `test_transcribe_source`, `test_import_recordings`, then each skill's behavioral done-test (`_STANDARD.md` §9) |
 
 A module not named above (`test_atomic_record_writes`, `test_consumer_sweep`, `test_unreadable_person_exports`, `test_roots_change`, `test_obsidian_pkm`, `test_samples_conformance`, `test_tools_utf8_stdout`) checks a rule across every tool, so it has to pass at every layer from the one where it first applies.
 
@@ -1641,7 +1642,7 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 ## 16. The research workbench & skills (the AI interface)
 
-> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview` - all seventeen authored and shipped). Build order: §15.
+> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** - harness configuration, the `fha serve` localhost front door (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview`, `on-this-day` - all eighteen authored and shipped). Build order: §15.
 
 **Deterministic work belongs in `fha` tools; AI judgment belongs in skills; human review is the only gate to `accepted`.** Skills are portable `.claude/skills/{name}/SKILL.md` files - instructions plus `fha` calls, no harness APIs. `AGENTS.md` is the canonical operating instruction; `CLAUDE.md` defers to it.
 
@@ -1671,6 +1672,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `find-photos` skill (A) | "Show me grandma's photos." The photo front door; answers from the index, offers the gallery page. Read-only. |
 | `photo-context` skill (A) | "What do we know about this photo?" Drafts a better caption from the archive's own knowledge; human approves exact text; writes via `set-summary`. |
 | `share-and-export` skill (A) | "Export this for my aunt." Routes to packet/gedcom/site/wikitree/backup; speaks privacy defaults before running. |
+| `on-this-day` skill (A) | "What happened on this day?" / "any family anniversaries this week?" Narrates `fha calendar` for today, the week or a month in plain words; at most two labelled sentences of general history; also a chat front end's opener. Read-only. |
 | `reconcile-site-edits` skill (A) | "I hand-edited the site, don't lose it." Folds a hand-edited HTML page's intent back into its real source, then rebuilds. |
 | `fha serve [--port N] [--no-browser]` (T) | Open the localhost workbench (TOOLING_INTERFACE.md §1b) - a private, editable browser view of this archive with the review queue and inbox one click away. Human-started only; an agent never starts it unasked. Every button is one documented `fha` command, dry-run previewed then confirmed, CLI-echoed. Not load-bearing: killing it or deleting `.cache/serve/` loses nothing. |
 

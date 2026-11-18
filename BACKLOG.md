@@ -189,9 +189,6 @@ Not fixes. Recorded here until one earns a design section in `TOOLING.md`.
   candidate pairs (similar name, compatible birth years, shared places), even
   though the merge-identities skill speaks of "the report flagged a possible
   duplicate".
-- **"On this day" in `fha report`.** Births, marriages and deaths from accepted
-  claims that fall this week, narrated by the today skill. Warmth for the
-  session-start briefing, no new command.
 - **Photo-tagging progress in the archive totals.** `fha metrics` reports
   people, sources, claims and searchable text, but not how many photos are
   still untagged ("18 photos untagged"), which would read the photo index.
