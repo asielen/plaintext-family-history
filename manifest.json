@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "445da8d0a5ea6ab78095f4c21ae11504d7477e6286ec63a1a92b414d1d374b0f",
+      "sha256": "ba64f7ee2bbe947288f22a4b2bcaddb21a086ffb1bdadb71fea0f3e9ccaae1fd",
       "spec_version": "2.3",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "636125cb4915a2b7f51b3df5111fcf70d17b734a153adec633d6397a00afd087",
+      "sha256": "6f49e5cb7613731d622ceb3f4eaa320afb9e76bca801fa82a3b44ae5547796fb",
       "spec_version": "2.3",
       "src": "tools/anniversaries.py"
     },
@@ -1152,7 +1152,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "16ce43bae51d972a6c2044f679d471e2176e39013973088e9ea929de25072e3d",
+      "sha256": "a5486510768378d13a9c27b07e58e77b04374c6ace7e868bb55cde971a192073",
       "spec_version": "2.3"
     },
     {
@@ -1219,7 +1219,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "aef94e7cceb330775f70c2baf3defbff48a13c1880cc9e312f0e4d5ba199afb9",
+      "sha256": "0ac675f4b2668e363cc2791484f852d89a3e7b847250fbe5d92d8859135891b4",
       "spec_version": "2.3",
       "src": "TOOLING.md"
     },

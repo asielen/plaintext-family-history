@@ -12971,9 +12971,9 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # "What happened in the family this month?" - births, baptisms, marriages,
 # deaths, burials and arrivals whose recorded date falls in a given month (or
-# on a given day), from the archive's own claims. `fha calendar` reads it, and
-# the report, workbench and site panels are to read the same function, so the
-# same day never shows different anniversaries in two places.
+# on a given day), from the archive's own claims. `fha calendar` reads it. It
+# is the shared engine a report, workbench or site anniversary panel is to
+# use, so that the same day cannot show different anniversaries in two places.
 #
 # Only a date the record gives to the month (or day) is placed: `1880-06` or
 # `1880-06-14`. An approximate, uncertain or ranged date (`1880-06~`,
@@ -12982,10 +12982,11 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # Privacy is the caller's to apply, not this function's. Each event says
 # whether each person counts as living (`person_is_living`, merges followed)
-# and whether a source behind it is restricted - a convenience, not the whole
-# rule: the index holds no `restricted:` for a single claim or a person, so a
-# shared front door (the site) runs its own export privacy rules (SPEC §19)
-# over the people and claims an event names, as it does for every page.
+# and whether a source behind it is restricted (`source_restricted`). That is
+# not the whole SPEC §19 rule: the index records `restricted:` only on
+# sources, so a claim or a person marked restricted is listed here unflagged.
+# A shared front door must apply its own SPEC §19 export rules to the people
+# and claims an event names before it shows the event.
 
 CALENDAR_EVENT_TYPES: tuple[str, ...] = (
     'birth', 'baptism', 'marriage', 'death', 'burial', 'immigration')
@@ -13018,16 +13019,22 @@ def calendar_date_parts(date_edtf: Any) -> tuple[int, int, int | None] | None:
 def _calendar_subjects(claim_type: str, pairs: list[tuple[str, Any]]) -> list[str]:
     """Whose event a claim records. Vital types follow `vital_subjects` (a
     son's birth certificate is not his mother's birthday). An arrival is the
-    people it calls `subject`, else the unroled ones, else everyone named - a
-    family that crossed together all arrived."""
+    people it calls `subject`; else, when anyone carries a role, the people
+    with none (a sponsor or a relative named alongside the emigrant did not
+    arrive that day); else, when nobody has a role, everyone named - a family
+    that crossed together all arrived. A claim whose people all carry a role
+    and none is `subject` has said nobody arrived, so it yields no event."""
     people = list(dict.fromkeys(p for p, _r in pairs))
     if claim_type != 'immigration':
         subjects = vital_subjects(claim_type, pairs)
         return people[:1] if subjects is None else list(subjects)
     roles = roles_by_person(pairs)
     named = [p for p in people if 'subject' in roles.get(p, ())]
-    unroled = [p for p in people if not roles.get(p)]
-    return named or unroled or people
+    if named:
+        return named
+    if any(roles.get(p) for p in people):
+        return [p for p in people if not roles.get(p)]
+    return people
 
 
 def family_calendar_events(
@@ -13046,11 +13053,12 @@ def family_calendar_events(
 
     One event per (type, people, date): the same birth recorded in three
     sources is one birthday with three claims behind it. A record that gives
-    only the month joins the one dated record of the same event that month
-    (`1880-06` and `1880-06-14` are one birth); with two different days on
-    file it stays apart, since nothing says which day it means. A day view
-    leaves out events known only to the month. Negated claims (a confirmed
-    absence) are never events."""
+    only the month is left off when a dated record of the same event (same
+    type and people) falls in that year and month - `1880-06` beside
+    `1880-06-14` says nothing the dated line does not - and is its own line
+    otherwise. Nothing from the left-off record joins the dated line. A day
+    view leaves out events known only to the month. Negated claims (a
+    confirmed absence) are never events."""
     year_now = this_year if this_year is not None else datetime.date.today().year
     status_ph = ','.join('?' * len(statuses))
     type_ph = ','.join('?' * len(CALENDAR_EVENT_TYPES))
@@ -13107,27 +13115,18 @@ def family_calendar_events(
         # restricted; a second, open copy does not make the first one public.
         ev['source_restricted'] = ev['source_restricted'] or bool(r['restricted'])
 
-    # A month-only record of an event joins its one dated twin.
+    # A month-only record is left off when a dated record of the same event
+    # falls in that month; its claims, places and review state go nowhere.
+    dated = {(k[0], k[1], e['year'], e['month'])
+             for k, e in events.items() if e['day'] is not None}
     for key, ev in list(events.items()):
-        if ev['day'] is not None:
-            continue
-        twins = [e for k, e in events.items()
-                 if k[:2] == key[:2] and e['day'] is not None
-                 and (e['year'], e['month']) == (ev['year'], ev['month'])]
-        if len(twins) != 1:
-            continue
-        twin = twins[0]
-        twin['claims'] += [c for c in ev['claims'] if c not in twin['claims']]
-        twin['sources'] += [s for s in ev['sources'] if s not in twin['sources']]
-        # `accepted` stays the dated record's own: an accepted "June 1880"
-        # does not make an unreviewed "14 June 1880" a reviewed day.
-        twin['source_restricted'] = twin['source_restricted'] or ev['source_restricted']
-        twin['_places'] += ev['_places']
-        del events[key]
+        if ev['day'] is None and (key[0], key[1], ev['year'], ev['month']) in dated:
+            del events[key]
 
     # The place an event shows has the event's own standing: a line resting on
     # an accepted claim shows only a place an accepted claim gives, so an
-    # unreviewed birthplace never reads as a settled fact beside it.
+    # unreviewed birthplace from another copy of the same dated event never
+    # reads as a settled fact beside it.
     for ev in events.values():
         places = ev.pop('_places')
         usable = [p for p, ok in places if ok] if ev['accepted'] else [p for p, _ok in places]

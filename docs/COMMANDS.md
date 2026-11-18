@@ -435,7 +435,8 @@ What happened in the family this month, or on this day?
   fha calendar june 14         One day (also 06-14, 6/14, 14 june)
   fha calendar today           Today's anniversaries
   fha calendar --week          Today and the six days after it
-  fha calendar --found         Count suggested claims too
+  fha calendar --include-suggested
+                               Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
 
 Only dates recorded to the month or day appear. Read-only: nothing is written.
@@ -445,7 +446,7 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 |---|---|
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
-| `--found` | Count suggested claims as well as accepted ones |
+| `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 

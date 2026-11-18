@@ -2,7 +2,7 @@
 """
 anniversaries.py - fha calendar: what happened in the family this month?
 
-  fha calendar [WHEN] [--week] [--found] [--json] [--root PATH]
+  fha calendar [WHEN] [--week] [--include-suggested] [--json] [--root PATH]
 
 Births, baptisms, marriages, deaths, burials and arrivals whose recorded date
 falls in a month, on a day, or in the week ahead - "On this day in 1880,
@@ -13,10 +13,11 @@ WHEN is forgiving: nothing (this month), `today`, a month (`6`, `june`,
 `Jun`), or a day (`06-14`, `6/14`, `june 14`, `14 june`).
 
 A pure read over `.cache/index.sqlite`; nothing is written. The events
-themselves come from `_lib.family_calendar_events`, the one engine the
-report, workbench and site panels are to share. This command is private (the owner's own
-terminal), so it shows everyone; shared output applies the living and
-restricted rules itself from the flags each event carries.
+themselves come from `_lib.family_calendar_events`, the shared engine a
+report, workbench or site anniversary panel is to use. This command is
+private (the owner's own terminal), so it shows everyone. Shared output must
+apply SPEC §19 itself: the living and source-restricted flags each event
+carries are a start, but a restricted claim or person is not flagged.
 
 The module is not called `calendar.py`: that name would shadow Python's own
 `calendar` module, which `_lib` imports.
@@ -128,24 +129,29 @@ def parse_when(when: str | None, *, today: datetime.date, week: bool = False
 
 
 def run_calendar(archive_root: Path, fha_config: dict, *, when: str | None = None,
-                 week: bool = False, found: bool = False,
+                 week: bool = False, include_suggested: bool = False,
                  today: datetime.date | None = None) -> Result:
     """Family events for the requested month, day or week. Read-only."""
     day0 = today or datetime.date.today()
     dates = parse_when(when, today=day0, week=week)
     if dates is None:
         r = Result(ok=False, exit_code=EXIT_ERRORS, data={'error': 'bad-date'})
-        hint = ('--week needs a day to start from, e.g. `fha calendar today --week` or '
-                '`fha calendar june 14 --week`.' if week and when else
-                'Give a month or a day, e.g. `fha calendar june`, `fha calendar 6`, '
-                '`fha calendar june 14`, `fha calendar 06-14`, or `fha calendar today`.')
-        r.add('error', f'I could not read {when!r} as a month or a day. {hint}')
+        if week and parse_when(when, today=day0) is not None:
+            # A readable month with --week: the words were fine, a week just
+            # needs a first day.
+            r.add('error', f'A week needs a day to start from, and {when!r} is a whole '
+                  'month. Try `fha calendar --week` (from today), '
+                  '`fha calendar today --week` or `fha calendar june 14 --week`.')
+        else:
+            r.add('error', f'I could not read {when!r} as a month or a day. Give a '
+                  'month or a day, e.g. `fha calendar june`, `fha calendar 6`, '
+                  '`fha calendar june 14`, `fha calendar 06-14`, or `fha calendar today`.')
         return r
 
     conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
         return Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-index'})
-    statuses = ('accepted', 'suggested') if found else ('accepted',)
+    statuses = ('accepted', 'suggested') if include_suggested else ('accepted',)
     try:
         groups = []
         for month, day in dates:
@@ -160,7 +166,8 @@ def run_calendar(archive_root: Path, fha_config: dict, *, when: str | None = Non
             })
     finally:
         conn.close()
-    return Result(data={'found': found, 'week': week, 'groups': groups})
+    return Result(data={'include_suggested': include_suggested, 'week': week,
+                        'groups': groups})
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────
@@ -180,8 +187,14 @@ def _event_line(ev: dict) -> str:
             else f"{_stdcal.month_name[ev['month']]} {ev['year']}")
     place = f", {ev['place']}" if ev['place'] else ''
     ago = ev['years_ago']
-    ago_text = f'{ago} years ago' if ago != 1 else '1 year ago'
-    # Under --found an unreviewed suggestion must not read as a family fact.
+    if ago < 0:
+        ago_text = 'dated in the future - check the record'
+    elif ago == 0:
+        ago_text = 'this year'
+    else:
+        ago_text = f'{ago} years ago' if ago != 1 else '1 year ago'
+    # Under --include-suggested an unreviewed suggestion must not read as a
+    # family fact.
     mark = '' if ev.get('accepted', True) else '  [suggested, not yet reviewed]'
     return (f"  {when:<20} {ev['word']:<9} {_people_phrase(ev['people'])}{place} "
             f"({ago_text}){mark}")
@@ -213,11 +226,11 @@ def _cmd_calendar(result: Result, use_json: bool = False) -> int:
         print('  Nothing on file for these dates. Only dates recorded to the month '
               'or day appear here (1880-06 or 1880-06-14); a year alone, or an '
               '"about", cannot be placed on a calendar.')
-    if not result.data['found']:
-        print('(Accepted claims only; `--found` adds suggested ones.)')
+    if not result.data['include_suggested']:
+        print('(Accepted claims only; `--include-suggested` adds suggested ones.)')
     else:
-        print('(Includes suggested claims; a line marked [suggested] rests on no '
-              'accepted claim yet.)')
+        print('(Includes suggested claims; a line marked [suggested, not yet reviewed] '
+              'rests only on suggested claims.)')
     return result.exit_code
 
 
@@ -231,7 +244,8 @@ What happened in the family this month, or on this day?
   fha calendar june 14         One day (also 06-14, 6/14, 14 june)
   fha calendar today           Today's anniversaries
   fha calendar --week          Today and the six days after it
-  fha calendar --found         Count suggested claims too
+  fha calendar --include-suggested
+                               Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
 
 Only dates recorded to the month or day appear. Read-only: nothing is written."""
@@ -242,8 +256,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='A month or a day (default: this month)')
     p.add_argument('--week', action='store_true',
                    help='The week starting on the day given (default: today)')
-    p.add_argument('--found', action='store_true',
-                   help='Count suggested claims as well as accepted ones')
+    p.add_argument('--include-suggested', action='store_true',
+                   help='Count suggested claims as well as accepted ones; each '
+                        'line resting only on suggested claims is marked')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
@@ -270,7 +285,7 @@ def _run_calendar(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
     result = run_calendar(archive_root, fha_config, when=' '.join(args.when) or None,
-                          week=args.week, found=args.found)
+                          week=args.week, include_suggested=args.include_suggested)
     return _cmd_calendar(result, use_json=args.use_json)
 
 

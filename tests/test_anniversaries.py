@@ -149,7 +149,7 @@ class EngineTests(unittest.TestCase):
         found = self.a.events(6, statuses=('accepted', 'suggested'))
         self.assertEqual([e['type'] for e in found], ['birth'])
 
-    def test_found_mode_marks_suggested_only_events(self):
+    def test_include_suggested_marks_suggested_only_events(self):
         self.a.source([
             {'type': 'birth', 'persons': [KID], 'date': '1880-06-14'},
             {'type': 'death', 'persons': [MOM], 'date': '1900-06-02', 'status': 'suggested'}])
@@ -180,11 +180,34 @@ class EngineTests(unittest.TestCase):
         (ev,) = self.a.events(6)
         self.assertIs(ev['people'][0]['living'], True)
 
-    def test_month_only_record_joins_its_dated_twin(self):
+    def test_month_only_record_is_left_off_beside_its_dated_record(self):
+        # Nothing from the month-only record joins the dated line.
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
-        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        dated = self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
         (ev,) = self.a.events(6)
-        self.assertEqual((ev['day'], len(ev['sources'])), (14, 2))
+        self.assertEqual((ev['day'], ev['sources']), (14, [dated]))
+
+    def test_month_only_record_of_someone_else_stays(self):
+        self.a.source([{'type': 'birth', 'persons': [MOM], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        self.assertEqual(len(self.a.events(6)), 2)
+
+    def test_a_suggested_line_carries_no_accepted_claim(self):
+        # The [suggested] marker says the line rests only on suggested claims;
+        # an accepted month-only record must not be folded in behind it.
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested'}])
+        events = self.a.events(6, statuses=('accepted', 'suggested'))
+        conn = sqlite3.connect(self.a.root / '.cache' / 'index.sqlite')
+        try:
+            status = dict(conn.execute('SELECT id, status FROM claims'))
+        finally:
+            conn.close()
+        self.assertTrue(events)
+        for ev in events:
+            self.assertEqual(ev['accepted'],
+                             any(status[c] == 'accepted' for c in ev['claims']), ev)
 
     def test_an_accepted_month_does_not_make_a_suggested_day_accepted(self):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
@@ -213,11 +236,20 @@ class EngineTests(unittest.TestCase):
         (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
         self.assertEqual((ev['accepted'], ev['place']), (False, 'Elm Creek'))
 
-    def test_month_only_record_stays_apart_from_two_different_days(self):
+    def test_month_only_record_is_left_off_beside_two_different_days(self):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-15'}])
-        self.assertEqual(len(self.a.events(6)), 3)
+        self.assertEqual([e['day'] for e in self.a.events(6)], [14, 15])
+
+    def test_a_restricted_claim_is_listed_but_not_flagged(self):
+        # The index records `restricted:` only on sources, so a restricted
+        # claim reaches the calendar unflagged; a shared front door must apply
+        # SPEC 19 itself (TOOLING 7b, Privacy).
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'restricted': True}])
+        (ev,) = self.a.events(6)
+        self.assertFalse(ev['source_restricted'])
 
     def test_arrival_of_a_household_names_the_subjects(self):
         self.a.source([{'type': 'immigration', 'persons': [MOM, KID], 'date': '1905-06-20',
@@ -225,6 +257,28 @@ class EngineTests(unittest.TestCase):
         (ev,) = self.a.events(6)
         self.assertEqual((ev['word'], sorted(p['id'] for p in ev['people'])),
                          ('Arrived', sorted([MOM, KID])))
+
+    def test_arrival_leaves_off_a_relative_with_a_role(self):
+        self.a.source([{'type': 'immigration', 'persons': [MOM, KID], 'date': '1905-06-20',
+                        'roles': {'relative': [KID]}}])
+        (ev,) = self.a.events(6)
+        self.assertEqual([p['id'] for p in ev['people']], [MOM])
+
+    def test_arrival_of_an_unroled_emigrant_with_a_sponsor(self):
+        self.a.source([{'type': 'immigration', 'persons': [MOM, DAD], 'date': '1905-06-20',
+                        'roles': {'sponsor': [DAD]}}])
+        (ev,) = self.a.events(6)
+        self.assertEqual([p['id'] for p in ev['people']], [MOM])
+
+    def test_arrival_where_everyone_has_a_role_but_none_is_subject_is_no_event(self):
+        self.a.source([{'type': 'immigration', 'persons': [MOM, DAD], 'date': '1905-06-20',
+                        'roles': {'sponsor': [DAD], 'relative': [MOM]}}])
+        self.assertEqual(self.a.events(6), [])
+
+    def test_arrival_with_no_roles_is_everyone(self):
+        self.a.source([{'type': 'immigration', 'persons': [MOM, KID], 'date': '1905-06-20'}])
+        (ev,) = self.a.events(6)
+        self.assertEqual(sorted(p['id'] for p in ev['people']), sorted([MOM, KID]))
 
     def test_ordered_by_day_then_year(self):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1900-06-20'},
@@ -298,6 +352,32 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(r.exit_code, EXIT_ERRORS)
         self.assertIn('fha calendar june', r.messages[0].text)
 
+    def test_a_month_with_week_asks_for_a_day_not_a_readable_month(self):
+        r = self.run_(when='june', week=True)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        text = r.messages[0].text
+        self.assertNotIn('could not read', text)
+        self.assertIn('needs a day to start from', text)
+        self.assertIn('fha calendar june 14 --week', text)
+
+    def test_unreadable_words_with_week_still_say_unreadable(self):
+        r = self.run_(when='smarch', week=True)
+        self.assertIn('could not read', r.messages[0].text)
+
+    def test_years_ago_reads_this_year_and_flags_a_future_date(self):
+        self.a.source([{'type': 'birth', 'persons': [MOM], 'date': '2026-06-01'},
+                       {'type': 'birth', 'persons': [DAD], 'date': '2030-06-02'}])
+        self.a.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_calendar(self.run_())
+        lines = out.getvalue().splitlines()
+        (now,) = [ln for ln in lines if '2026' in ln and 'Born' in ln]
+        (future,) = [ln for ln in lines if '2030' in ln]
+        self.assertIn('(this year)', now)
+        self.assertIn('(dated in the future - check the record)', future)
+        self.assertNotIn('years ago', future)
+
     def test_no_index_exit_3(self):
         (self.a.root / '.cache' / 'index.sqlite').unlink()
         with redirect_stderr(io.StringIO()):
@@ -313,16 +393,51 @@ class CommandTests(unittest.TestCase):
             anniversaries._cmd_calendar(self.run_(), use_json=True)
         self.assertEqual(json.loads(out.getvalue())['data']['groups'][0]['month'], 6)
 
-    def test_found_text_labels_a_suggested_line(self):
+    def test_include_suggested_text_labels_a_suggested_line(self):
         self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-06-02',
                         'status': 'suggested'}])
         self.a.build()
         out = io.StringIO()
         with redirect_stdout(out):
-            anniversaries._cmd_calendar(self.run_(found=True))
+            anniversaries._cmd_calendar(self.run_(include_suggested=True))
         lines = [ln for ln in out.getvalue().splitlines() if 'Died' in ln or 'Born' in ln]
         self.assertTrue(any('[suggested' in ln for ln in lines if 'Died' in ln))
         self.assertFalse(any('[suggested' in ln for ln in lines if 'Born' in ln))
+
+    def test_include_suggested_footer_agrees_with_the_marked_line(self):
+        # An accepted "June 1900" beside an unreviewed "2 June 1900": the
+        # day's line is marked, and the footer's promise that a marked line
+        # rests only on suggested claims holds for it.
+        self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-06'}])
+        self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-06-02',
+                        'status': 'suggested'}])
+        self.a.build()
+        r = self.run_(include_suggested=True)
+        (ev,) = [e for e in r.data['groups'][0]['events'] if e['type'] == 'death']
+        conn = sqlite3.connect(self.a.root / '.cache' / 'index.sqlite')
+        try:
+            statuses = {conn.execute('SELECT status FROM claims WHERE id=?', (c,)).fetchone()[0]
+                        for c in ev['claims']}
+        finally:
+            conn.close()
+        self.assertEqual(statuses, {'suggested'})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_calendar(r)
+        text = out.getvalue()
+        (died,) = [ln for ln in text.splitlines() if 'Died' in ln]
+        self.assertIn('[suggested, not yet reviewed]', died)
+        self.assertIn('rests only on suggested claims', text)
+
+    def test_cli_flag_is_include_suggested(self):
+        self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-06-02',
+                        'status': 'suggested'}])
+        self.a.build()
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            anniversaries._standalone_main(['june', '--include-suggested',
+                                            '--root', str(self.a.root)])
+        self.assertIn('Died', out.getvalue())
 
     def test_empty_month_explains_what_can_be_placed(self):
         out = io.StringIO()
