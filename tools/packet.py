@@ -2202,11 +2202,10 @@ def _build_timeline_text(
               AND (c.status = 'accepted' OR {PARKED_CLAIM_SQL})
               AND c.source_id IN ({src_placeholders})
             ORDER BY
-                {claim_date_order_sql('c')},
-                -- Claims on the same date stay in the order `fha index`
-                -- wrote them. Without this, a person with a merged-away id
-                -- would see same-day claims grouped by which id names them.
-                c.rowid
+                -- Same-date claims stay in the order `fha index` wrote them
+                -- (the helper's last key), so a person with a merged-away
+                -- id does not see same-day claims grouped by which id names them.
+                {claim_date_order_sql('c')}
             """,
             list(pids) + list(included_source_ids),
         ).fetchall()
