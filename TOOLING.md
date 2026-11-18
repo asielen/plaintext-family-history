@@ -239,7 +239,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
 | W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim with no entry, or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. | §9 |
-| W116 | W | A relationship edge recorded on one person without its mirror on the other. A `status: hypothesis` entry on the other side is not a mirror of a sourced edge: the message says the guess is waiting to be upgraded. Fix: `--fix-reciprocal`. | §9 |
+| W116 | W | A relationship edge recorded on one person without its mirror on the other. A `status: hypothesis` entry on the other side is not a mirror of a sourced edge: the message says the fix adds the sourced entry beside the guess and leaves the guess for the owner. Fix: `--fix-reciprocal`. | §9 |
 | W117 | W | A person filename with no `__` sort separator. A prompt to confirm or rename, never an error. | §13 |
 | W118 | W | A claim whose `persons:` resolves to nobody (every entry an unresolved plain name). Suppressed when an entry is already an E005. | §8.4 |
 | W119 | W | A direct-line ancestor (derived position 2 or more, needs `root_person`) still `tier: stub` or under `people/stubs/`. Worded as a research lead. Fix: `fha views brackets --fix-promote` or `fha person promote`. | §4, §12 |
@@ -278,7 +278,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W152 | W | Capture history left at `.cache/capture_log.jsonl`, which no tool reads and backups skip. Fix: move it to `notes/capture-log.jsonl` (or paste its lines at the top of that file), delete it, run `fha index`. | §17c |
 | W153 | W | A claim with `subtype: child-of` or `spouse-of`, an old way of saying who plays which part, which no tool reads. Fix: delete the line - `roles:` (`child:`/`parent:`, or `spouse:` naming both) says it; for a known nature write it instead (`subtype: adoptive`). A `spouse-of` claim with no `roles: spouse:` puts no couple in the tree until fixed. | §8.2, §8.3 |
 | W154 | W | A `relationships:` entry linking its claim with the old single `claim:` key, which no tool reads, so the tie reads as unsourced. Fix: `claims: ["[[c-…]]"]`; two entries for the same person and role become one listing both claims. | §9 |
-| W155 | W | A relationship guess that no longer stands on its own: a `status: hypothesis` entry beside a sourced entry for the same person, role and nature (the evidence settled it; delete the guess, moving its `hypothesis:` line onto the sourced entry), or a `hypothesis:` link to an `h-` id no question entry defines (ruled out or mistyped). | §9, §17a |
+| W155 | W | A relationship guess that no longer stands on its own: a `status: hypothesis` entry beside an entry citing an accepted claim (or a `source:`) for the same person, role and nature (the evidence settled it; delete the guess, moving its `hypothesis:` line onto the sourced entry), or a `hypothesis:` link to an `h-` id no question entry defines (ruled out or mistyped). | §9, §17a |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |
@@ -297,7 +297,7 @@ E016 is retired: a claim naming a merged person counts for the survivor and is W
 - `--spawn-questions` (E009): append a question entry to `notes/questions.md`.
 - `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a yaml fence.
 - `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases. A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
-- `--fix-reciprocal` (W116): append the missing mirror entry - one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie absorbs it too and graduates: `status: hypothesis` goes and its `hypothesis:` link stays. The same fold runs after every tool write to a `relationships:` block.
+- `--fix-reciprocal` (W116): append the missing mirror entry - one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable is refused with the entry to add by hand.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.

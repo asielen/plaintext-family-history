@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.4",
-  "generated": "2026-11-17",
+  "generated": "2026-11-18",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "6bbbb911771a68dd20421f8481bb9aa150a757864c550d1595168b411cfdc11e",
+      "sha256": "85912cfb16991f28014a7978c93b6eb21f8da9364fc8f71463056a6826ce9458",
       "spec_version": "2.4",
       "src": "tools/_lib.py"
     },
@@ -819,7 +819,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8da0808a5e6d54adcf93886d657093f3c3f0bf4a8242e6e9f48df6b05b651ae1",
+      "sha256": "1bf5c2037bf264780a9f7d6dd163f8698b02e5966fdbe111fcc9784af683c987",
       "spec_version": "2.4",
       "src": "tools/lint.py"
     },
@@ -1205,14 +1205,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "2a957a480615cd44f73255415080a6134e40c80ea665e8459c6bd5b3719d7c22",
+      "sha256": "87f1a6e44ab55f3fbfe3fead632c686b2874e3b1831a41e6d92b96ae9b8e3515",
       "spec_version": "2.4",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "661894f00b44a0d222fe500955c7ef73101778dd1fadc6ada6d6c9a2ef480f48",
+      "sha256": "d87648c3f4c2eb33d313fb63275ef6fce087cbcba765494d4091dcc91b98abb3",
       "spec_version": "2.4",
       "src": "TOOLING.md"
     },
