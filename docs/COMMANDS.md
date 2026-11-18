@@ -1379,14 +1379,17 @@ Jot an unsourced family-tie belief - always recorded as a hypothesis.
   fha person relate P-2b3c4d5e6f --parent P-de957bcda1
   fha person relate P-2b3c4d5e6f --spouse P-cd795c61e0 --reciprocal
   fha person relate P-2b3c4d5e6f --child P-c4b26bb4bc --subtype adoptive
+  fha person relate P-2b3c4d5e6f --parent P-de957bcda1 --working-answer h-4f20aa91c3
 
 Appends one entry to the first person's relationships: list, naming the
 second person and the role (parent/child/sibling/spouse). --subtype names
 the nature of the bond (biological is the default; SPEC §8.2 also lists
 adoptive, step, foster, guardian, and more). --reciprocal also writes the
 mirrored entry on the second person (parent<->child flips; sibling/spouse
-mirror as themselves). This is always an unsourced belief - a sourced tie
-comes from an accepted relationship claim, filed with `fha claim`.
+mirror as themselves). --working-answer names the question entry that says
+why the guess is believed and what would settle it. This is always an
+unsourced belief - a sourced tie comes from an accepted relationship claim,
+filed with `fha claim`.
 ```
 
 | Argument | What it does |
@@ -1398,6 +1401,7 @@ comes from an accepted relationship claim, filed with `fha claim`.
 | `--spouse` `P-id2` | P-id2 is this person's spouse. |
 | `--subtype` `WORD` | The nature of the bond (SPEC §8.2), e.g. biological (default), adoptive, step, foster, guardian. |
 | `--reciprocal` | Also write the mirrored entry on P-id2's record. |
+| `--working-answer` `H-id` | The working answer this guess rests on (the h- id of its question entry); written as the entry's hypothesis: line. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the change(s) without writing. |
 

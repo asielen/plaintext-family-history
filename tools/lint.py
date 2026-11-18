@@ -137,6 +137,10 @@ from _lib import (
     strip_generated_region,   # cut the generated summary region out before E013 reads
     SUMMARY_REGION,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
+    frontmatter_edit_problem,       # re-parse a rewritten header before saving it
+    relationship_entry_hypothesis,  # an entry's hypothesis: h-… link (SPEC §9)
+    relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
+    relationship_tie_key,           # (person, role, nature) an entry records
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
     carries_person_record_fields,
@@ -3009,6 +3013,7 @@ def _check_reciprocity(
     cids = [normalize_id(str(c.get('id', ''))) for c in claims]
     cids = [c for c in dict.fromkeys(cids) if c]
     other_meta = registry.person_meta.get(other_pid) or {}
+    guess_waiting = False
     for e in (other_meta.get('relationships') or []):
         if not isinstance(e, dict):
             continue
@@ -3017,13 +3022,34 @@ def _check_reciprocity(
         e_to = resolve_ref(str(e.get('to', '')), alias_map) if e.get('to') else None
         e_to = normalize_id(e_to) if e_to else None
         if e_to == owner_pid and str(e.get('type', '')).strip().lower() == mirror_role:
+            if relationship_entry_is_guess(e):
+                if _entry_subtype(e) != (_claim_subtype_norm(claims[0]) or _entry_subtype(e)):
+                    continue   # a guess of another nature: not this tie, no promise
+                # A guess is not a mirror of a sourced tie: left alone, the
+                # other side keeps drawing as a guess what the evidence has
+                # settled. The fix adds the sourced entry beside the guess and
+                # never rewrites it; W155 then names the leftover guess for the
+                # owner to fold in (SPEC §9).
+                guess_waiting = True
+                continue
             return     # mirror present, matched by person + role
     owner_name = str(registry.person_meta.get(owner_pid, {}).get('name') or fmt_id_display(owner_pid))
-    findings.append(Finding('W', 'W116', _profile_path_for(registry, other_pid),
-        f"{fmt_id_display(other_pid)} is missing the reciprocal '{mirror_role}' edge to "
-        f"{owner_name} - it is recorded on {fmt_id_display(owner_pid)}'s relationships: "
-        f"(claim {', '.join(fmt_id_display(c) for c in cids)}). Run `fha lint --fix-reciprocal` "
-        f"to add the mirror (preview with --dry-run)."))
+    other_name = str(other_meta.get('name') or fmt_id_display(other_pid))
+    claims_shown = ', '.join(fmt_id_display(c) for c in cids)
+    if guess_waiting:
+        message = (
+            f"{other_name}'s record still has the '{mirror_role}' tie to {owner_name} as a "
+            f"guess (`status: hypothesis`), but {owner_name}'s record cites the evidence "
+            f"(claim {claims_shown}). Run `fha lint --fix-reciprocal` to add the sourced "
+            f"entry beside it (preview with --dry-run); the guess is left as you wrote it, "
+            f"and lint then names it so you can delete it, keeping any note it carries.")
+    else:
+        message = (
+            f"{fmt_id_display(other_pid)} is missing the reciprocal '{mirror_role}' edge to "
+            f"{owner_name} - it is recorded on {fmt_id_display(owner_pid)}'s relationships: "
+            f"(claim {claims_shown}). Run `fha lint --fix-reciprocal` "
+            f"to add the mirror (preview with --dry-run).")
+    findings.append(Finding('W', 'W116', _profile_path_for(registry, other_pid), message))
     registry.missing_mirrors.append({
         'other_pid': other_pid,
         'owner_pid': owner_pid,
@@ -3031,6 +3057,102 @@ def _check_reciprocity(
         'subtype': _claim_subtype_norm(claims[0]),
         'claim_ids': cids,
     })
+
+
+def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bool:
+    """A `relationships:` entry the evidence has settled: not a guess, and
+    citing at least one claim that records THIS tie - accepted, not negated,
+    naming these two people in these roles (`_claim_backs_edge`, the W115
+    test), and of the entry's nature (an adoptive-parent claim does not
+    settle a biological guess). An entry citing a `source:` is settled when
+    that source holds such a claim. A claims list or source holding only
+    suggested, disputed or mismatched claims has settled nothing, so a guess
+    beside it is still the owner's live belief and stays on the
+    needs-sourcing list."""
+    if not isinstance(entry, dict) or relationship_entry_is_guess(entry):
+        return False
+    role = str(entry.get('type', '')).strip().lower()
+    other = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
+    # The tie must name a person, read through any merge (as W115 reads it):
+    # an unresolved or ambiguous name matches no claim, rather than every one.
+    other = through_survivors(normalize_id(other), alias_map) if other else None
+    if not other:
+        return False
+    nature = _entry_subtype(entry)
+    candidates = [_claim_by_id(registry, normalize_id(cid))
+                  for cid in relationship_entry_claim_ids(entry)]
+    if entry.get('source'):
+        # A `source:` entry: the source's own claims, the search W115 runs.
+        sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
+        candidates += [c for c in registry.source_claims.get(sid, []) if isinstance(c, dict)]
+    return any(claim and _claim_backs_edge(claim, pid, other, role, alias_map)
+               and _claim_subtype_norm(claim) in ('', nature)
+               for claim in candidates)
+
+
+def _check_relationship_guesses(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W155: a `relationships:` guess that no longer stands on its own (SPEC §9).
+
+    Two cases, both read from structured fields only:
+      - a `status: hypothesis` entry for a person and role that also has a
+        sourced entry (`claims:` or `source:`). The evidence settled the guess;
+        the two are one tie, and the leftover guess makes the tree draw a
+        dashed line beside the solid one and the backlog call a sourced
+        parent unsourced.
+      - a `hypothesis:` link to an h-id that no question entry defines. A
+        ruled-out guess leaves its question entry (SPEC §17a), so the tie it
+        supported is ruled out too - or the id is mistyped.
+    Merged tombstones are skipped: their blocks are their pre-merge view."""
+    survivors = getattr(alias_map, 'survivors', None) or {}
+    defined = set(registry.hypothesis_def_paths)
+    resolve = lambda ref: resolve_ref(ref, alias_map)  # noqa: E731
+    for pid in sorted(registry.person_meta):
+        block = registry.person_meta[pid].get('relationships')
+        if not isinstance(block, list) or not block or pid in survivors:
+            continue
+        path = _profile_path_for(registry, pid)
+        sourced_ties = {relationship_tie_key(e, resolve) for e in block
+                        if _entry_is_settled(registry, e, pid, alias_map)}
+        sourced_ties.discard(None)
+        for entry in block:
+            if not isinstance(entry, dict):
+                continue
+            role = str(entry.get('type') or '').strip() or 'relationship'
+            target = _friendly_to(entry.get('to')) or '(unnamed)'
+            if (relationship_entry_is_guess(entry)
+                    and relationship_tie_key(entry, resolve) in sourced_ties):
+                findings.append(Finding('W', 'W155', path,
+                    f'The {role} guess for {target} (`status: hypothesis`) sits beside a '
+                    f'{role} entry for the same person that cites an accepted claim, so '
+                    'the evidence has settled it: the two are one tie. Delete the guess '
+                    'entry (its `to:`, `type:` and `status: hypothesis` lines), moving '
+                    'anything worth keeping onto the sourced entry - a `hypothesis: h-...` '
+                    'line keeps the record of which working answer was settled.'))
+            link = relationship_entry_hypothesis(entry)
+            if link and link not in defined:
+                if not link.startswith('h-'):
+                    detail = (f'`hypothesis: {link}` is not a working-answer id; they look '
+                              'like h-4f20aa91c3.')
+                elif not relationship_entry_is_guess(entry):
+                    # A sourced entry stands on its evidence, whatever became
+                    # of the guess it once settled: only the link line is stale.
+                    detail = (f'no question entry defines {link}, so the link names a working '
+                              'answer that is no longer written down. The tie itself rests on '
+                              'its evidence and stays. Restore the question entry\'s '
+                              f'`- id: {link}` line if it was removed by mistake, or delete '
+                              f'only the `hypothesis: {link}` line from this entry.')
+                else:
+                    detail = (f'no question entry defines {link}. If that guess was ruled '
+                              'out, the tie it supported is ruled out too: remove this entry, '
+                              'or point it at the working answer that replaced it. If the id '
+                              'is mistyped, correct it: a working answer\'s id is the '
+                              '`- id: h-...` line of its question entry, in notes/questions.md '
+                              'or the person\'s research file.')
+                findings.append(Finding('W', 'W155', path,
+                    f'The {role} entry for {target} names the working answer it rests on, '
+                    f'but {detail}'))
 
 
 def _check_relationships_reconciliation(
@@ -3193,6 +3315,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W115/W116: reconcile each person-doc relationships: block against claims,
     # and check reciprocity. The alias map resolves a forgiving `to:` to a P-id.
     _check_relationships_reconciliation(registry, findings, alias_map)
+
+    # W155: relationship guesses left beside the evidence that settled them,
+    # or resting on a working answer no question entry defines.
+    _check_relationship_guesses(registry, findings, alias_map)
 
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
@@ -5189,7 +5315,7 @@ _CLAIM_KEY_ORDER = ['value']
 # Frontmatter / claim fields that hold IDs (SPEC §10: written lowercase). Free
 # text - titles, citations, notes, values - is never touched.
 _FM_ID_FIELDS = {'id', 'aliases', 'people', 'places', 'merged_into'}
-_RELATIONSHIP_ID_SUBKEYS = ('to', 'claims', 'source')
+_RELATIONSHIP_ID_SUBKEYS = ('to', 'claims', 'source', 'hypothesis')
 _CLAIM_ID_FIELDS = {'id', 'persons', 'roles', 'place', 'corroborates',
                     'contradicts', 'hypothesis'}
 # SPEC §14 / §16: the usual `##` section order.
@@ -6231,16 +6357,24 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
         # A relationships: entry with no claim:/source: link, or one carrying
         # status: hypothesis, is a known relationship not yet sourced - listed the
         # same way as a provisional date, never a gate. A sourced claim supersedes it.
-        for entry in (meta.get('relationships') or []):
-            if not isinstance(entry, dict):
-                continue
+        # A guess beside a sourced entry for the same tie IS sourced; W155 says so,
+        # and listing it here as unsourced would contradict that.
+        block = [e for e in (meta.get('relationships') or []) if isinstance(e, dict)]
+        resolve = lambda ref: resolve_ref(ref, registry.alias_map or {})  # noqa: E731
+        sourced_ties = {relationship_tie_key(e, resolve) for e in block
+                        if _entry_is_settled(registry, e, pid, registry.alias_map or {})}
+        for entry in block:
             status = str(entry.get('status', '')).strip().lower()
             sourced = bool(relationship_entry_claim_ids(entry) or entry.get('source'))
             if sourced and status != 'hypothesis':
                 continue
+            if status == 'hypothesis' and relationship_tie_key(entry, resolve) in sourced_ties:
+                continue
             role = str(entry.get('type', '')).strip() or 'relationship'
             target = _friendly_to(entry.get('to'))
-            tail = ' (hypothesis)' if status == 'hypothesis' else ''
+            link = relationship_entry_hypothesis(entry)
+            tail = ((f' (hypothesis, working answer {link})' if link else ' (hypothesis)')
+                    if status == 'hypothesis' else '')
             lines.append(
                 f'{name} ({fmt_id_display(pid)}): {role} relationship to '
                 f'{target or "(unnamed)"}{tail} - recorded but not yet sourced. '
@@ -7372,6 +7506,16 @@ def _append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
     return result
 
 
+def _header_reads(text: str) -> bool:
+    """The record's header still parses as a set of fields - so a refusal can
+    tell the owner whether a save would break the header or only change it."""
+    fm = FRONT_RE.match(text)
+    try:
+        return bool(fm) and isinstance(safe_load_yaml(fm.group(1)), dict)
+    except Exception:
+        return False
+
+
 def _fix_reciprocal(
     registry: Registry,
     archive_root: Path,
@@ -7381,8 +7525,10 @@ def _fix_reciprocal(
 ) -> None:
     """W116 fix: append each missing mirror entry to the other person's
     relationships: block. Additive only (never overwrites human text), previewed
-    under --dry-run, and conflict-safe - the W116 pass already confirmed the
-    mirror is absent, and a person with no record is reported, not invented.
+    under --dry-run (which runs the same fold and header check, so it prints
+    any refusal a live run would give), and conflict-safe - the W116 pass
+    already confirmed the mirror is absent, and a person with no record is
+    reported, not invented.
 
     One mirror entry per person and role (SPEC §9): misses for the same tie
     are written as one entry listing every claim, and the block is collapsed
@@ -7410,11 +7556,8 @@ def _fix_reciprocal(
             continue
         path = paths[0]
         rel = path.relative_to(archive_root)
-        if dry_run:
-            progress.append(
-                f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
-                f"{owner_name} (claim {claims_shown}) in {rel}")
-            continue
+        # A dry run reads, folds and checks the header exactly as a live run
+        # does, so the preview shows the refusal a live run would give.
         try:
             text = read_text_exact(path)
         except (OSError, UnicodeDecodeError):
@@ -7432,6 +7575,30 @@ def _fix_reciprocal(
             progress.append(
                 f"--fix-reciprocal: couldn't safely place the mirror in {rel} "
                 f"(its relationships: block isn't a simple list) - add it by hand.")
+            continue
+        # Text surgery on a hand-written block: never save a header that no
+        # longer reads, or one where anything but relationships: changed.
+        # The strict parse of the header as it was - what the comparison needs
+        # (read_record coerces scalars, so every value would look changed).
+        fm = FRONT_RE.match(text)
+        try:
+            before_meta = (safe_load_yaml(fm.group(1)) if fm else None) or {}
+        except Exception:
+            before_meta = {}
+        problem = frontmatter_edit_problem(
+            new_text, before_meta=before_meta, changed_keys={'relationships'})
+        if problem is not None:
+            harm = ('leave its header unreadable' if not _header_reads(new_text)
+                    else 'change other fields in its header')
+            progress.append(
+                f"--fix-reciprocal: adding the mirror to {rel} would {harm} "
+                f"({problem}), so nothing was written - add the "
+                f"'{m['mirror_role']}' entry to {owner_name} by hand, then run `fha lint`.")
+            continue
+        if dry_run:
+            progress.append(
+                f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
+                f"{owner_name} (claim {claims_shown}) in {rel}")
             continue
         # A person record, edited in a loop over every missing mirror edge:
         # atomic so one failure costs one skipped edge, not one lost ancestor.

@@ -201,6 +201,8 @@ from _lib import (
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
+    relationship_entry_hypothesis,  # a guess's hypothesis: h-… link (SPEC §9)
+    relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -2593,18 +2595,24 @@ def _final_survivor(profiles: dict[str, tuple[Path, dict]], person_id: str) -> s
 
 
 def _relationship_edge_key(entry: dict, alias_map: dict[str, str] | None) -> tuple:
-    """The dedupe identity of one relationships entry: (to, type, subtype).
+    """The dedupe identity of one relationships entry: (to, type, subtype,
+    working answer of a guess).
 
     `to:` compares by resolved P-id when it resolves, else by its normalized
     text; a missing `subtype` means `biological` (the SPEC §8.2 default), so
     an explicit `subtype: biological` and an omitted one are the same edge.
+    A guess also keys on the working answer it names (`hypothesis:`), the
+    rule the fold uses, so two records guessing one tie for different
+    reasons both survive a merge with their links.
     """
     to_raw = str(entry.get('to') or '')
     to_key = resolve_typed_ref(to_raw, alias_map, want='P') \
         or strip_link_wrapper(to_raw).strip().lower()
     type_key = str(entry.get('type') or '').strip().lower()
     subtype_key = str(entry.get('subtype') or 'biological').strip().lower()
-    return to_key, type_key, subtype_key
+    guess_link = (relationship_entry_hypothesis(entry) or ''
+                  if relationship_entry_is_guess(entry) else '')
+    return to_key, type_key, subtype_key, guess_link
 
 
 def _unreadable_merge_refusal(
@@ -2909,6 +2917,11 @@ def run_confirm_merge(
     survivor_block_claims = {
         cid for e in _rel_entries(survivor_meta) for cid in relationship_entry_claim_ids(e)
     }
+    survivor_links: dict[tuple, set[str]] = {}
+    for e in _rel_entries(survivor_meta):
+        if relationship_entry_hypothesis(e):
+            survivor_links.setdefault(_relationship_edge_key(e, alias_map)[:3], set()).add(
+                relationship_entry_hypothesis(e))
     fold_rel_entries: list[dict] = []
     skipped_self_types: list[str] = []
     for entry in _rel_entries(merged_meta):
@@ -2918,8 +2931,19 @@ def run_confirm_merge(
             continue
         edge_key = _relationship_edge_key(entry, alias_map)
         entry_cids = relationship_entry_claim_ids(entry)
-        if edge_key in survivor_edges and not set(entry_cids) - survivor_block_claims:
+        # A working-answer link the survivor's entries for this tie lack is
+        # carried over too, so the fold below can add it (never lost in a
+        # merge); an unlinked guess still matches the survivor's linked one.
+        link = relationship_entry_hypothesis(entry)
+        brings_link = bool(link) and link not in survivor_links.get(edge_key[:3], set())
+        if relationship_entry_is_guess(entry) and not link and any(
+                k[:3] == edge_key[:3] and k[3] for k in survivor_edges):
             continue
+        if edge_key in survivor_edges and not set(entry_cids) - survivor_block_claims \
+                and not brings_link:
+            continue
+        if link:
+            survivor_links.setdefault(edge_key[:3], set()).add(link)
         # A tie the survivor already lists still brings its claims along:
         # the fold appends the entry and the collapse below merges its
         # claims into the survivor's one entry for that person and role.

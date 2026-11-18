@@ -27,8 +27,10 @@ now?", "any leads on Margaret's parents?"
 - **Leads and working answers only — never claims.** A claim requires a source by definition; this skill
   has no source, so it produces research *directions*, not facts. A guess worth keeping is a **working
   answer** (SPEC §17a rung 2): the question entry it answers, with `id:`, `guess:`, `basis:` and `verify:`
-  added — never a separate object, and never a claim. (`status: hypothesis` is a different thing: a guessed
-  relationship entered on a person's `relationships:` so the tree can be followed past it, §17a rung 3.)
+  added — never a separate object, and never a claim. When the guess is a relationship and the human wants
+  to build on it, it can also go on the person's `relationships:` with `status: hypothesis` so the tree can
+  be followed past it (§17a rung 3), linked back to its working answer with `hypothesis: h-…`:
+  `fha person relate <p-id> --parent <p-id2> --working-answer h-…` writes both, on the human's yes.
 - **Gaps are read, never written.** A gap a tool can compute — no death date, no parents, a provisional
   birth with no source — is shown fresh by `fha report` every time; never write it into the questions file
   as a question (SPEC §17b). A question entry is written when the human asks one, or when you have a guess

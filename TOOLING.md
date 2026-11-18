@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.3 - 2026-11-17 · companion to SPEC.md v2.3 (versions track the SPEC)**
+**Version 2.4 - 2026-11-18 · companion to SPEC.md v2.4 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -239,7 +239,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
 | W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim with no entry, or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. | §9 |
-| W116 | W | A relationship edge recorded on one person without its mirror on the other. Fix: `--fix-reciprocal`. | §9 |
+| W116 | W | A relationship edge recorded on one person without its mirror on the other. A `status: hypothesis` entry on the other side is not a mirror of a sourced edge: the message says the fix adds the sourced entry beside the guess and leaves the guess for the owner. Fix: `--fix-reciprocal`. | §9 |
 | W117 | W | A person filename with no `__` sort separator. A prompt to confirm or rename, never an error. | §13 |
 | W118 | W | A claim whose `persons:` resolves to nobody (every entry an unresolved plain name). Suppressed when an entry is already an E005. | §8.4 |
 | W119 | W | A direct-line ancestor (derived position 2 or more, needs `root_person`) still `tier: stub` or under `people/stubs/`. Worded as a research lead. Fix: `fha views brackets --fix-promote` or `fha person promote`. | §4, §12 |
@@ -278,6 +278,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W152 | W | Capture history left at `.cache/capture_log.jsonl`, which no tool reads and backups skip. Fix: move it to `notes/capture-log.jsonl` (or paste its lines at the top of that file), delete it, run `fha index`. | §17c |
 | W153 | W | A claim with `subtype: child-of` or `spouse-of`, an old way of saying who plays which part, which no tool reads. Fix: delete the line - `roles:` (`child:`/`parent:`, or `spouse:` naming both) says it; for a known nature write it instead (`subtype: adoptive`). A `spouse-of` claim with no `roles: spouse:` puts no couple in the tree until fixed. | §8.2, §8.3 |
 | W154 | W | A `relationships:` entry linking its claim with the old single `claim:` key, which no tool reads, so the tie reads as unsourced. Fix: `claims: ["[[c-…]]"]`; two entries for the same person and role become one listing both claims. | §9 |
+| W155 | W | A relationship guess that no longer stands on its own: a `status: hypothesis` entry beside an entry citing an accepted claim that records that same tie (people, roles and nature, as W115 checks), directly or in the `source:` it cites (the evidence settled it; delete the guess, moving its `hypothesis:` line onto the sourced entry), or a `hypothesis:` link to an `h-` id no question entry defines (ruled out or mistyped). On a guess the message says the tie it supported goes with it; on a sourced entry it says the tie stands on its evidence and only the link is stale (restore the question entry's `- id:` line, or delete just the `hypothesis:` line). | §9, §17a |
 | PL001 | E | A claim's `place:` names an unknown place ID. | §15 |
 | PL002 | W | Two places share a name or alt name. | §15 |
 | PL003 | E | A `within:` link to an unknown place. | §15 |
@@ -287,16 +288,16 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 
 E016 is retired: a claim naming a merged person counts for the survivor and is W107. E008 is retired with the `significance` override it checked; a leftover is W143.
 
-**Needs-sourcing backlog** (informational, never moves the exit code): a provisional `birth:`/`death:` (§9) or a `(TODO: import source)` line with no backing accepted claim. An empty `birth:`/`death:` is not listed; `death` is skipped while `living:` is `true` or `unknown`. A `relationships:` entry with no `claims:`/`source:`, or with `status: hypothesis`, is listed the same way.
+**Needs-sourcing backlog** (informational, never moves the exit code): a provisional `birth:`/`death:` (§9) or a `(TODO: import source)` line with no backing accepted claim. An empty `birth:`/`death:` is not listed; `death` is skipped while `living:` is `true` or `unknown`. A `relationships:` entry with no `claims:`/`source:`, or with `status: hypothesis`, is listed the same way, naming its working answer when it links one; a guess beside a sourced entry for the same tie is W155's, not listed here.
 
-**Formatter** (`--format-check` / `--format-write`): `--format-check` reports (W109) and writes nothing; `--format-write` applies the same changes (`--dry-run` previews). Every `.md` file gets LF line endings and one final newline. Source records and person profiles also get: frontmatter keys in the SPEC §14 / §9 order (keys it does not know keep their own order after the known ones), each `files:` entry's keys in the §14 order, IDs lowercase in ID fields only (frontmatter `id`, `aliases`, `people`, `places`, `merged_into`, a `relationships:` entry's `to`/`claims`/`source`; a claim's `id`, `persons`, `roles`, `place`, `corroborates`, `contradicts`, `hypothesis`), `value` first in each claim, runs of blank lines outside fenced blocks collapsed to one, and `##` sections in the §14 / §16 order. It works on lines, not a YAML round-trip, so frontmatter comments survive; a leading BOM is kept; a file whose header is not opened and closed by bare `---` lines, or does not read as YAML, is left whole and reported; blank lines inside fenced blocks (a fence closes only on an equal-or-longer fence), HTML comments, GENERATED regions and indented code are content and are kept; a claims block that does not open with a claim is skipped and reported; each rewritten frontmatter or claims block must parse back to the same data or the file is left alone. Sections move whole, and only when nothing is in doubt: every heading is a usual one or an owner's own heading that already sits after them all, no heading repeats, no comment or `<!-- private -->` fence spans two sections, and no text says "above" or "below". Otherwise the order is reported for a human to fix. It never rewrites or reflows prose, and never touches a filename. Link normalization is `fha normalize-links` (§17), not the formatter.
+**Formatter** (`--format-check` / `--format-write`): `--format-check` reports (W109) and writes nothing; `--format-write` applies the same changes (`--dry-run` previews). Every `.md` file gets LF line endings and one final newline. Source records and person profiles also get: frontmatter keys in the SPEC §14 / §9 order (keys it does not know keep their own order after the known ones), each `files:` entry's keys in the §14 order, IDs lowercase in ID fields only (frontmatter `id`, `aliases`, `people`, `places`, `merged_into`, a `relationships:` entry's `to`/`claims`/`source`/`hypothesis`; a claim's `id`, `persons`, `roles`, `place`, `corroborates`, `contradicts`, `hypothesis`), `value` first in each claim, runs of blank lines outside fenced blocks collapsed to one, and `##` sections in the §14 / §16 order. It works on lines, not a YAML round-trip, so frontmatter comments survive; a leading BOM is kept; a file whose header is not opened and closed by bare `---` lines, or does not read as YAML, is left whole and reported; blank lines inside fenced blocks (a fence closes only on an equal-or-longer fence), HTML comments, GENERATED regions and indented code are content and are kept; a claims block that does not open with a claim is skipped and reported; each rewritten frontmatter or claims block must parse back to the same data or the file is left alone. Sections move whole, and only when nothing is in doubt: every heading is a usual one or an owner's own heading that already sits after them all, no heading repeats, no comment or `<!-- private -->` fence spans two sections, and no text says "above" or "below". Otherwise the order is reported for a human to fix. It never rewrites or reflows prose, and never touches a filename. Link normalization is `fha normalize-links` (§17), not the formatter.
 
 **Fix modes** (each behind its flag; `--dry-run` previews):
 - `--mint-stubs` (E005): create stubs in `people/stubs/`.
 - `--spawn-questions` (E009): append a question entry to `notes/questions.md`.
 - `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a yaml fence.
 - `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases. A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
-- `--fix-reciprocal` (W116): append the missing mirror entry - one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin.
+- `--fix-reciprocal` (W116): append the missing mirror entry - one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable, or change any field but `relationships:`, is refused with the entry to add by hand; the refusal says which. `--dry-run` runs the same fold and check, so it prints the refusal a live run would give.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.
@@ -462,7 +463,7 @@ fha person set-sex <p-id> M|F|intersex|unknown [--dry-run] [--root PATH]
 fha person new "Name" [--sex M|F|intersex|unknown] [--gender TEXT] [--birth DATE] [--death DATE] [--birth-place TEXT] [--death-place TEXT] [--surname TEXT] [--force] [--dry-run]
 fha person new --from-file PEOPLE.tsv [--force] [--dry-run]
 fha person rename <p-id> "New Name" [--keep-variant] [--surname TEXT] [--dry-run] [--root PATH]
-fha person relate <p-id> (--parent|--child|--sibling|--spouse) <p-id2> [--subtype WORD] [--reciprocal] [--dry-run]
+fha person relate <p-id> (--parent|--child|--sibling|--spouse) <p-id2> [--subtype WORD] [--reciprocal] [--working-answer H-ID] [--dry-run]
 fha person estimate <p-id> [--birth DATE|-] [--death DATE|-] [--birth-place PLACE|-] [--death-place PLACE|-] [--dry-run]
 fha person edit <p-id> --section biography|stories|research (--text TEXT|--file PATH) [--append] [--dry-run]
 fha person note <p-id> --section stories|research --text TEXT [--dry-run]
@@ -511,7 +512,7 @@ Steps 1-3 roll back on failure; step 4 is not rolled back. Step 5 alone may fail
 
 ### `relate`, `estimate`
 
-**`relate`** appends a `relationships:` entry (parent/child/sibling/spouse), always `status: hypothesis` (SPEC §9, §17); a sourced tie is a claim (§3b). `--subtype` per §8.2. `--reciprocal` writes the mirror too; each side's idempotency is checked separately, so a rerun fills only the missing half.
+**`relate`** appends a `relationships:` entry (parent/child/sibling/spouse), always `status: hypothesis` (SPEC §9, §17); a sourced tie is a claim (§3b). `--subtype` per §8.2. `--reciprocal` writes the mirror too; each side's idempotency is checked separately, so a rerun fills only the missing half. `--working-answer h-…` writes the entry's `hypothesis:` line (on both sides with `--reciprocal`), naming the question entry the guess rests on; an id no question entry defines is refused before anything is written. An entry already on either side is left as written, and the output names the `hypothesis:` line to add under it by hand.
 
 **`estimate`** writes provisional `birth:`/`death:` (see Dates), superseded by an accepted vital claim. Needs `--birth` or `--death`; `-` clears; both validate before either is written.
 
@@ -1701,7 +1702,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 
 | Surface | What it is / when |
 |---|---|
-| `fha person relate <p-id> (--parent\|--child\|--sibling\|--spouse) <p-id2>` (T C) | Jot an unsourced family-tie belief (§3c) - always `status: hypothesis`, no `--status` flag. `--subtype`, `--reciprocal` mirrors the entry onto `p-id2`. `--dry-run`. |
+| `fha person relate <p-id> (--parent\|--child\|--sibling\|--spouse) <p-id2>` (T C) | Jot an unsourced family-tie belief (§3c) - always `status: hypothesis`, no `--status` flag. `--subtype`, `--reciprocal` mirrors the entry onto `p-id2`, `--working-answer h-…` links the question entry it rests on. `--dry-run`. |
 | `fha person estimate <p-id> [--birth DATE\|-] [--death DATE\|-]` (T C) | Provisional, unsourced birth/death estimate (§3c) - superseded once a sourced vital claim exists. `--dry-run`. |
 | `fha person edit <p-id> --section …` / `fha person note <p-id> --section …` (T C) | Bounded prose write-backs to a curated profile's Biography/Stories/Research Notes (§3c) - `edit` replaces or (`--append`) appends via `--text`/`--file`; `note` is always append-only. `--dry-run`. |
 | `fha person edit-note <p-id> --section … --old-text … --text …` (T C) | Rewrite ONE existing Stories/Research Notes entry, named by its exact current text (§3c) - the workbench's per-entry edit button; every other entry untouched. `--dry-run`. |

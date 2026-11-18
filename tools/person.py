@@ -260,6 +260,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    parse_questions,      # question entries, to check a --working-answer h-id exists
+    strip_link_wrapper,
     LIVING_VALUES as _LIB_LIVING_VALUES,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -310,6 +312,7 @@ from _lib import (
     promote_person_record,
     read_text_exact,
     reapply_newline,
+    relationship_entry_hypothesis,  # an entry's hypothesis: h-... link (SPEC §9)
     relocate_person_in_index,
     render_person_body_scaffold,
     render_stub_content,
@@ -2544,8 +2547,22 @@ def _relationship_entry_exists(meta: dict, target_pid: str, relation_type: str) 
     return False
 
 
+def _relationship_entry_links(meta: dict, target_pid: str, relation_type: str,
+                              working_answer: str) -> bool:
+    """True when an entry for this person and role already names
+    `working_answer` in its `hypothesis:` line - nothing left to add by hand."""
+    for entry in (meta.get('relationships') or []):
+        if (isinstance(entry, dict)
+                and target_pid in extract_bare_ids(str(entry.get('to') or ''))
+                and str(entry.get('type') or '').strip().lower() == relation_type
+                and relationship_entry_hypothesis(entry) == normalize_id(working_answer)):
+            return True
+    return False
+
+
 def _relationship_item_lines(
     target_pid: str, target_name: str, relation_type: str, subtype: str | None,
+    working_answer: str | None = None,
 ) -> list[str]:
     """The new relationships: list item's lines, UNINDENTED.
 
@@ -2575,6 +2592,9 @@ def _relationship_item_lines(
     if subtype:
         lines.append(f'  subtype: {yaml_inline(subtype)}')
     lines.append('  status: hypothesis')
+    if working_answer:
+        # The question entry saying why the guess is believed (SPEC §9, §17a).
+        lines.append(f'  hypothesis: {fmt_id_display(working_answer)}')
     return lines
 
 
@@ -2652,9 +2672,18 @@ def _insert_relationship_entry(text: str, item_lines: list[str]) -> str | None:
 def run_relate(
     archive_root: Path, person_id: str, relation_type: str, target_id: str,
     subtype: str | None = None, reciprocal: bool = False, dry_run: bool = False,
+    working_answer: str | None = None,
 ) -> Result:
     """Record an unsourced family-tie belief on `person_id` (and, with
     `reciprocal`, its mirror on `target_id`); return a Result.
+
+    `working_answer` (an h-id) names the question entry the guess rests on and
+    is written as the entry's `hypothesis:` line on both sides (SPEC §9). It
+    must be an id some question entry defines - checked before anything is
+    written, since a link to nothing is the dangling reference lint W155
+    would report the moment it landed. A side whose entry was already there
+    is left as written, and the result names the `hypothesis:` line to add
+    there by hand.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'target_id', 'relation', 'subtype'}; `changed`
@@ -2675,6 +2704,27 @@ def run_relate(
             f'{relation_type!r} is not a relation this tool records. Use one '
             'of: ' + ', '.join(RELATION_TYPES) +
             ' - e.g. `fha person relate P-... --parent P-...`.')
+
+    if working_answer is not None:
+        wa = strip_link_wrapper(str(working_answer).strip())
+        if not (is_valid_id(wa) and id_type_of(wa) == 'H'):
+            return _refuse_result(
+                result, 'refused',
+                f'{working_answer!r} is not a working-answer id. They look like '
+                'h-4f20aa91c3: the `- id:` line of a question entry in '
+                'notes/questions.md or a research file. Nothing was written.')
+        wa = normalize_id(wa)
+        defined = {normalize_id(str(info['id'])) for info in parse_questions(archive_root).values()
+                   if info.get('id')}
+        if wa not in defined:
+            return _refuse_result(
+                result, 'refused',
+                f'No question entry defines {fmt_id_display(wa)}, so the guess would point '
+                'at nothing. Write the working answer first (a `## Q:` entry with '
+                '`- id:`, `- guess:`, `- basis:` and `- verify:` lines, SPEC §17b), or '
+                'leave --working-answer off. Nothing was written.')
+        working_answer = wa
+        result.data['working_answer'] = fmt_id_display(wa)
 
     owner = _locate_person(archive_root, person_id, result)
     if owner is None:
@@ -2710,18 +2760,34 @@ def run_relate(
     owner_has = _relationship_entry_exists(owner_meta, tid, relation_type)
     target_has = reciprocal and _relationship_entry_exists(target_meta, pid, mirror_type)
 
+    def link_hint(meta: dict, name: str, role: str, other: str, other_name: str) -> str:
+        # An entry already there is never rewritten, so a --working-answer
+        # this run could not write is said out loud, never silently dropped.
+        if not working_answer or _relationship_entry_links(meta, other, role, working_answer):
+            return ''
+        shown = fmt_id_display(working_answer)
+        return (f" {name}'s {role} entry for {other_name} was already there, so it was "
+                f'left as written: to tie it to {shown}, add the line '
+                f'`hypothesis: {shown}` under that entry.')
+
+    owner_hint = link_hint(owner_meta, owner_name, relation_type, tid, target_name) \
+        if owner_has else ''
+    target_hint = link_hint(target_meta, target_name, mirror_type, pid, owner_name) \
+        if target_has else ''
+
     if owner_has and (not reciprocal or target_has):
         result.data['status'] = 'already'
         result.add('info',
                    f'{owner_name} already has a {relation_type} entry for '
-                   f'{target_name} - nothing to change.')
+                   f'{target_name} - nothing to change.{owner_hint}{target_hint}')
         return result
 
     # (path, old_text, new_text, human-readable description of the write)
     writes: list[tuple[Path, str, str, str]] = []
 
     if not owner_has:
-        item_lines = _relationship_item_lines(tid, target_name, relation_type, subtype_clean)
+        item_lines = _relationship_item_lines(tid, target_name, relation_type, subtype_clean,
+                                              working_answer)
         new_owner_text = _insert_relationship_entry(owner_text, item_lines)
         if new_owner_text is None:
             return _refuse_result(
@@ -2743,7 +2809,8 @@ def run_relate(
                        f'{owner_name} -> {relation_type} -> {target_name}'))
 
     if reciprocal and not target_has:
-        item_lines = _relationship_item_lines(pid, owner_name, mirror_type, subtype_clean)
+        item_lines = _relationship_item_lines(pid, owner_name, mirror_type, subtype_clean,
+                                              working_answer)
         new_target_text = _insert_relationship_entry(target_text, item_lines)
         if new_target_text is None:
             return _refuse_result(
@@ -2771,6 +2838,10 @@ def run_relate(
                    'nothing to change.')
         return result
 
+    # One side written, the other already there: the side left as written
+    # gets its add-by-hand line, so a partial link is never a silent success.
+    link_hints = (owner_hint + target_hint).strip()
+
     if warn_subtype:
         result.add('warning',
                    f'{subtype_clean!r} is not one of the archive\'s kin '
@@ -2788,6 +2859,8 @@ def run_relate(
                 fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
             ):
                 result.add('info', dline)
+        if link_hints:
+            result.add('warning', link_hints)
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -2825,6 +2898,8 @@ def run_relate(
         result.add('info',
                    f'Recorded: {label} (an unsourced belief - `fha claim` '
                    'records a sourced tie).', path=path)
+    if link_hints:
+        result.add('warning', link_hints)
 
     result.data['status'] = 'ok'
     return result
@@ -3672,7 +3747,8 @@ def _cmd_relate(args: argparse.Namespace) -> int:
     return _emit(run_relate(
         archive_root, person_id=args.person_id, relation_type=relation_type,
         target_id=target_id, subtype=args.subtype, reciprocal=bool(args.reciprocal),
-        dry_run=bool(getattr(args, 'dry_run', False))))
+        dry_run=bool(getattr(args, 'dry_run', False)),
+        working_answer=getattr(args, 'working_answer', None)))
 
 
 def _cmd_estimate(args: argparse.Namespace) -> int:
@@ -4001,14 +4077,17 @@ Jot an unsourced family-tie belief - always recorded as a hypothesis.
   fha person relate P-2b3c4d5e6f --parent P-de957bcda1
   fha person relate P-2b3c4d5e6f --spouse P-cd795c61e0 --reciprocal
   fha person relate P-2b3c4d5e6f --child P-c4b26bb4bc --subtype adoptive
+  fha person relate P-2b3c4d5e6f --parent P-de957bcda1 --working-answer h-4f20aa91c3
 
 Appends one entry to the first person's relationships: list, naming the
 second person and the role (parent/child/sibling/spouse). --subtype names
 the nature of the bond (biological is the default; SPEC §8.2 also lists
 adoptive, step, foster, guardian, and more). --reciprocal also writes the
 mirrored entry on the second person (parent<->child flips; sibling/spouse
-mirror as themselves). This is always an unsourced belief - a sourced tie
-comes from an accepted relationship claim, filed with `fha claim`."""
+mirror as themselves). --working-answer names the question entry that says
+why the guess is believed and what would settle it. This is always an
+unsourced belief - a sourced tie comes from an accepted relationship claim,
+filed with `fha claim`."""
 
 
 def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
@@ -4035,6 +4114,9 @@ def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
                          '(default), adoptive, step, foster, guardian.')
     rl.add_argument('--reciprocal', action='store_true',
                     help="Also write the mirrored entry on P-id2's record.")
+    rl.add_argument('--working-answer', metavar='H-id', dest='working_answer',
+                    help='The working answer this guess rests on (the h- id of its '
+                         'question entry); written as the entry\'s hypothesis: line.')
     rl.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     rl.add_argument('--dry-run', action='store_true', dest='dry_run',

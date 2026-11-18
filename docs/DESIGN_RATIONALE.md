@@ -175,6 +175,12 @@ numbered into the pedigree.
   The person's `relationships:` list lets you write that down honestly, marked
   as a guess, and it graduates when the source turns up. This is the same
   pattern as the provisional `birth:` and `death:` dates on a person record.
+- **Tools never rewrite a guess.** A guess is your own lines, often with a
+  comment or a note on why you believed it. When a source proves the tie, the
+  tools add the sourced entry beside the guess and leave the guess alone. Lint
+  then names the leftover guess, and you fold it in yourself: delete the guess,
+  keep anything worth keeping on the sourced entry, and keep its
+  `hypothesis: h-…` line as the record of which working answer was settled.
 - **The claim is the unit of traceability.** Supersession, corroboration,
   contradiction and the index all hang off claims. Keeping relationships as
   claims keeps them traceable to evidence.
@@ -199,6 +205,10 @@ numbered into the pedigree.
 - **A per-archive list of roles** (see above).
 - **A separate "legal" flag on adoptions.** The subtype and the claim's notes
   carry it for now.
+- **Graduating a guess automatically**, turning it into the sourced entry when
+  the evidence arrives. That means deleting the owner's lines, and their notes
+  and comments go with them. A guess left beside its evidence costs one lint
+  warning; a lost note is gone for good.
 
 ---
 
