@@ -441,6 +441,11 @@ Its rules:
 - **Local only, started by hand.** It listens only on the computer it runs on,
   and runs only while the owner has it open. It never starts itself, never
   watches files, never sweeps.
+- **It is the owner's private view.** It shows what his own terminal shows:
+  the completeness ring on every person page with what would fill each gap,
+  and this week's family events with living relatives named, as `fha report`
+  does. The `site:` switches are for pages other people read, so they do not
+  apply here. A living person still gets no ring, as on every page.
 
 **Why.** The owner this is built for is comfortable clicking around a website
 and does not want a terminal. Adding a note or dropping a scan into the inbox

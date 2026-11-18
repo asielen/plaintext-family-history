@@ -50,22 +50,30 @@
   </dl>
   {% endif %}
   {% if person.completeness %}
-  {#- fha.yaml `site: completeness_rings: true` (TOOLING §12). One ring
-      segment per check; the list beside it says the same thing in words, so
-      the ring is never the only way to read it. -#}
+  {#- fha.yaml `site: completeness_rings: true` (TOOLING §12), always on in
+      the workbench. One ring segment per check; the list beside it says the
+      same thing in words, so the ring is never the only way to read it. The
+      workbench adds, under each gap, what would fill it. -#}
   {% set cp = person.completeness %}
   <details class="chart completeness" open>
     <summary class="chart-title">How well documented: {{ cp.met }} of {{ cp.applicable }} found</summary>
     <div class="chart-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start">
       {{ cp.ring }}
       <ul class="completeness-checks" style="margin:0">
-        {% for c in cp.checks %}<li class="completeness-{{ c.state }}"><strong>{{ c.label }}</strong>: {{ c.word }}{% if c.detail %} - {{ c.detail }}{% endif %}</li>
+        {% for c in cp.checks %}<li class="completeness-{{ c.state }}"><strong>{{ c.label }}</strong>: {{ c.word }}{% if c.detail %} - {{ c.detail }}{% endif %}
+          {%- if workbench and c.look_for %}<br><span class="wb-later wb-fill">
+          {%- if c.waiting_review %}A suggested claim waiting for review would count here:
+          <a href="{{ root_prefix }}/review">review it</a>. Otherwise look for {{ c.look_for }}.
+          {%- else %}To fill it, look for {{ c.look_for }}.{% endif %}</span>{% endif %}</li>
         {% endfor %}
       </ul>
     </div>
     <p class="note">Each part of the ring is one kind of record. Filled means found, half filled
     means partly found, an empty outline means not found yet, and a faint dotted outline means the
     check does not apply to this person.</p>
+    {% if workbench %}<p class="note wb-fill-note">Found a record? Put it in the
+    <a href="{{ root_prefix }}/inbox">inbox</a> and process it. The ring counts accepted claims only,
+    so it fills in once you have reviewed and accepted what the record says.</p>{% endif %}
   </details>
   {% endif -%}
 

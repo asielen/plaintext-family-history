@@ -49,7 +49,11 @@ completeness ring on each curated person page (`completeness_rings`, drawn by
 `_lib.completeness_ring_svg` from `_lib.person_completeness`) and "This month
 in the family" on the home page (`calendar`, from
 `_lib.family_calendar_events`). Both pass through this file's own privacy
-rules, not the engines' flags alone.
+rules, not the engines' flags alone. The workbench (`fha serve`, the owner's
+private view) always shows the ring, with a pointer under each gap to what
+would fill it, and puts "This week in the family" on its home page in place
+of the month panel (`_lib.family_calendar_week`, the week `fha report`
+shows, living relatives included).
 
 Note what the page-set design is and is not. It guarantees that this site
 never LINKS to a page it did not build; it does not check whether a page
@@ -213,7 +217,8 @@ CODE MAP
       ._claim_is_private       - restricted claim or hard-restricted source,
                                  status aside (the completeness context)
       ._person_completeness    - one person page's ring + legend, or None for
-                                 anyone the site withholds (every build)
+                                 anyone the site withholds (every build); in
+                                 the workbench, what would fill each gap
       ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       ._derive                 - a media/ web picture: the saved copy when the
@@ -234,6 +239,8 @@ CODE MAP
                                  home page's "This month in the family"
       ._calendar_event_is_shown - the site's own privacy rules, per event
       ._calendar_event_entry   - one calendar line, people linked
+      ._workbench_week         - workbench only: "This week in the family",
+                                 the next seven days, everyone named
       .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
@@ -277,7 +284,9 @@ from _lib import (
     completeness_context,
     completeness_public_phrase,
     completeness_ring_svg,
+    calendar_years_ago_phrase,
     family_calendar_events,
+    family_calendar_week,
     person_completeness,
     PARKED_CLAIM_SQL,
     apply_private_fence,
@@ -557,6 +566,22 @@ _SITE_MARKER_NAME = '.fha-site'
 # the locale so a site built on any machine reads the same.
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
                 'August', 'September', 'October', 'November', 'December')
+
+# The workbench ring's "what would fill this" line: the kinds of record that
+# answer each completeness check (TOOLING §7a), in the words a researcher
+# searches for. A gloss on the check, not a reading of this person's gap,
+# so it is true whatever the check's own detail says.
+_COMPLETENESS_FILL_RECORDS = {
+    'birth': 'a birth certificate, a baptism or christening entry, or a birth register entry',
+    'census': 'the census pages for the years still missing',
+    'parents': ('a record that names the parents: a birth or baptism record, a marriage '
+                'record, or a death certificate'),
+    'marriage': 'a marriage licence, certificate or church register entry',
+    'end-of-life': 'a death certificate, a burial or cemetery record, a gravestone or an obituary',
+}
+# Found beats partly found beats not found yet; "does not apply" never
+# raises a check.
+_COMPLETENESS_STATE_RANK = {'missing': 0, 'partial': 1, 'met': 2}
 
 # Summary-block label per vital claim type (TOOLING §12 "summary block (accepted vitals)").
 _VITAL_LABELS = {
@@ -6079,7 +6104,10 @@ class _SiteBuilder:
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'has_qa_badges': has_qa_badges,
-            'completeness': self._person_completeness(pid) if self.show_rings else None,
+            # The workbench is the owner's private view, so its ring needs
+            # no fha.yaml switch; the switch is for the shared site.
+            'completeness': (self._person_completeness(pid)
+                             if self.show_rings or self.workbench else None),
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
             # "open file" button and living value for the "change..." affordance.
@@ -6168,7 +6196,19 @@ class _SiteBuilder:
         build shows visitors a few plain words per check (`_lib.completeness_
         public_phrase`: "no marriage record"), never the owner's detail, which
         can name a command to run; the linked preview keeps the full detail,
-        as `fha metrics` does."""
+        as `fha metrics` does.
+
+        The workbench adds, under each check that is not found or only partly
+        found, what would fill it: the kinds of record that answer that check
+        (`_COMPLETENESS_FILL_RECORDS`), and, when the suggestions still on
+        the Review page would raise the check, a pointer to that page, since
+        the record is already in the archive and only the owner's review
+        stands between it and the ring. That is the engine's `review-queue`
+        mode: a parked claim has left the queue, so it does not count there,
+        and a link to a queue without it would be a dead end. Both readings
+        come from the one context, so a parked entry still tells the engine
+        what kind of record its source is, as it does for the ring itself.
+        The score stays accepted-only."""
         row = self.person_meta.get(pid)
         if row is None or (row['tier'] or '') != 'curated' or self._person_is_redacted(row):
             return None
@@ -6176,12 +6216,23 @@ class _SiteBuilder:
         if pid not in ctx['persons']:
             return None   # a merged record: its claims count on the survivor's page
         result = person_completeness(ctx, pid)
-        checks = [{'label': COMPLETENESS_CHECK_LABELS[c['check']],
-                   'state': c['state'],
-                   'word': COMPLETENESS_STATE_WORDS.get(c['state'], c['state']),
-                   'detail': (completeness_public_phrase(c) if not self.linked
-                              else c.get('detail') or '')}
-                  for c in result['checks']]
+        waiting: dict[str, bool] = {}
+        if self.workbench:
+            queue = person_completeness(ctx, pid, mode='review-queue')['checks']
+            waiting = {a['check']: (_COMPLETENESS_STATE_RANK.get(q['state'], 0)
+                                    > _COMPLETENESS_STATE_RANK.get(a['state'], 0))
+                       for a, q in zip(result['checks'], queue)}
+        checks = []
+        for c in result['checks']:
+            entry = {'label': COMPLETENESS_CHECK_LABELS[c['check']],
+                     'state': c['state'],
+                     'word': COMPLETENESS_STATE_WORDS.get(c['state'], c['state']),
+                     'detail': (completeness_public_phrase(c) if not self.linked
+                                else c.get('detail') or '')}
+            if self.workbench and c['state'] in ('missing', 'partial'):
+                entry['look_for'] = _COMPLETENESS_FILL_RECORDS.get(c['check'], '')
+                entry['waiting_review'] = waiting.get(c['check'], False)
+            checks.append(entry)
         return {'ring': self._markup(completeness_ring_svg(
                     result, size=64, public=not self.linked)),
                 'checks': checks,
@@ -9354,7 +9405,11 @@ class _SiteBuilder:
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
             'hero': hero, 'root_prefix': '.',
-            'calendar': self._family_calendar(page_dir) if self.show_calendar else None,
+            # The workbench shows this week instead of the shared site's month
+            # panel: it is the owner's daily view, as `fha report`'s is.
+            'calendar': (self._family_calendar(page_dir)
+                         if self.show_calendar and not self.workbench else None),
+            'week_calendar': self._workbench_week(page_dir) if self.workbench else None,
         })
 
     # - family calendar (site.calendar) -
@@ -9434,6 +9489,34 @@ class _SiteBuilder:
         if ev.get('place'):
             text += f" - {_escape(ev['place'])}"
         return {'date': date, 'html': self._markup(text), 'type': ev['type']}
+
+    def _workbench_week(self, page_dir: Path) -> dict:
+        """The workbench home page's "This week in the family": today and the
+        six days after it, from `_lib.family_calendar_week` - the same week
+        `fha report`'s on-this-day section reads, accepted claims only, dates
+        recorded to the day only - so the briefing and the page agree.
+
+        The workbench is the owner's private view on his own machine, so,
+        like the report, it names everyone, living relatives included, and
+        applies none of the shared site's withholding
+        (`_calendar_event_is_shown` is for pages visitors read). Each person
+        is linked to their workbench page through `_person_link`, stubs
+        included, since the workbench builds a page for every stub too.
+        "Today" is the build's own date (`_today`); serve rebuilds its
+        snapshot when the day changes, so the week never goes stale."""
+        try:
+            today = datetime.date.fromisoformat(_today())
+        except ValueError:
+            today = datetime.date.today()
+        last = today + datetime.timedelta(days=6)
+        entries = []
+        for ev in family_calendar_week(self.conn, today, statuses=('accepted',)):
+            entry = self._calendar_event_entry(ev, page_dir)
+            entry['ago'] = calendar_years_ago_phrase(ev['years_ago'])
+            entries.append(entry)
+        return {'first': f'{today.day} {_MONTH_NAMES[today.month - 1]}',
+                'last': f'{last.day} {_MONTH_NAMES[last.month - 1]}',
+                'events': entries}
 
     # - rendering plumbing -
 

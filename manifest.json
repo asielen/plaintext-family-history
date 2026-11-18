@@ -692,14 +692,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "01280df175f61850606a72259e7ebe28b78071d26d2d35f2a06d1bde60b85075",
+      "sha256": "8067fb5ae6ee5417cc3fd6e13179b22d4a2d738fb91f899a2c412affd0b42f7d",
       "spec_version": "2.5",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "6f49e5cb7613731d622ceb3f4eaa320afb9e76bca801fa82a3b44ae5547796fb",
+      "sha256": "7493b4b0db36dc2df1a43bc6f3444267933c49c678d4e34417623aa16bbded9b",
       "spec_version": "2.5",
       "src": "tools/anniversaries.py"
     },
@@ -853,7 +853,7 @@
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
-      "sha256": "d3d129d9dff9b23d9f304ecc3f107d52677544198f5287070bb11801a68a57dc",
+      "sha256": "3197acb6f2fb6e31d67eaa6d93f5441bada99795f0f25f905f4ab36db134f30f",
       "spec_version": "2.5",
       "src": "tools/metrics.py"
     },
@@ -923,7 +923,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "1c0d5482e2aac7803e43adcb5d596b4e178aec8fd921bc461b025f83f1dc147c",
+      "sha256": "9a1f8d570d548a218a34afd263e02030908f7538bc5429b8bfcbe22527f0a1c8",
       "spec_version": "2.5",
       "src": "tools/report.py"
     },
@@ -944,14 +944,14 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "f26dc2dbdd3d196aa6fae43d304a8dfda07bd230dc0fbaac9145d48a183484e6",
+      "sha256": "c44a88dc1c3d96a132fda6a4363c76f6777a7aad65994d805f0da6f05c0638b2",
       "spec_version": "2.5",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "c2970bada7926a229ff4bf80d112b33f5637dafc489d54efa9195eb76b810daf",
+      "sha256": "42e5135469da985efda0106a6fbcd89af87b8c763cc689324d3a5d9770c3383e",
       "spec_version": "2.5",
       "src": "tools/site.py"
     },
@@ -1014,14 +1014,14 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "6fcdcfaa909b9b4ac58d12081a0e725a91f8a05fb409e2eff1b9a179847bd9c7",
+      "sha256": "d1af8497d8a35b4a139023f0f292b22f8bb5a341746693264dbbb51cc91912a4",
       "spec_version": "2.5",
       "src": "tools/templates/index.html"
     },
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "b62862b38315f6c6797f178b985e5cc1629ff0775ebb9c9346afa05f20d81220",
+      "sha256": "62f8dcd1894b56821b22c5c5edaa41fc2b12a761a82ca8a760a025c41c69f4e6",
       "spec_version": "2.5",
       "src": "tools/templates/person.html"
     },
@@ -1184,13 +1184,13 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "a6d48cac800c55b2bd616e9519f8663e4ad3a35bbbb4b36592523a523f0d4dee",
+      "sha256": "25ed30ffd9b957034f35b683f53f439789f2f8cfec346d60a06c5a3e0443752e",
       "spec_version": "2.5"
     },
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "f3eb07ba6e461fe2ca00f67b1a2f9daf35cc599933385060a8a082abe6b5c72b",
+      "sha256": "164ff99138665c7b060e320c3c4e6640f5e0b68bfc6f0250d8eeb6e337bade2e",
       "spec_version": "2.5"
     },
     {
@@ -1208,7 +1208,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "406f701e2eb2a55a6869c0058c3ae9a4f33571439754d59bb0356405651e21db",
+      "sha256": "9ecbf802a4a0a5f4fa0ad19b2fcffe8dc9e0b4812a5104017ae1bd80999d4be9",
       "spec_version": "2.5"
     },
     {
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "a6f7b23ebd6d4b42ecd25b66d1b576448ca9a803377bc11760480a90980adb5c",
+      "sha256": "7ba71bad557b72e9cc63fb5bdc3c503d5a599196f5211c810ee44cfc9aeeb11e",
       "spec_version": "2.5",
       "src": "TOOLING.md"
     },

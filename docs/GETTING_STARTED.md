@@ -263,7 +263,9 @@ That's a filed record. You just did the core loop of the whole system.
 folder) to open the same review queue and inbox in a private browser tab on your own machine -
 every button there is the same command you'd otherwise ask the assistant for, shown to you
 before it writes anything. Nothing about the archive changes because you used it; close the
-window and pick up in the assistant exactly where you left off.
+window and pick up in the assistant exactly where you left off. Its home page also lists the
+family birthdays and anniversaries falling this week, and each person's page shows how well
+documented they are and what kind of record would fill each gap.
 
 ---
 

@@ -508,6 +508,10 @@ def snapshot_is_stale(state: ServeState) -> bool:
     snapshot built from a source that no longer exists. `state.
     _snapshot_manifest` is None only before the very first rebuild, when
     `state.marker.exists()` is already False and this never gets that far.
+
+    A snapshot built on an earlier day is stale too: the home page's "This
+    week in the family" counts from the day it was built, so a workbench
+    left open overnight would otherwise show yesterday's week.
     """
     if not state.marker.exists():
         return True
@@ -517,6 +521,8 @@ def snapshot_is_stale(state: ServeState) -> bool:
     except (OSError, IndexError):
         return True
     if marker_session != state.csrf_token:
+        return True
+    if datetime.date.fromtimestamp(built) != datetime.date.today():
         return True
     if _newest_input_mtime_cached(state) > built:
         return True
