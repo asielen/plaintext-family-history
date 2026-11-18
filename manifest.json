@@ -1120,7 +1120,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "412ad21369869203dcc7e87e363844fb10c72b2eff6f464ec37b5831b641adf5",
+      "sha256": "f1ee1827fce85a982f38115631f87f14b45f507bee3d2624052ad97af7c115d9",
       "spec_version": "2.3"
     },
     {
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "99cc2aa1d397c634742a304df1d2c4d738f62914f92f39e684a59b0e5ae092b4",
+      "sha256": "c4537163fdfa9d44ee702d4b775370ccc3e9f4e4453acfe47324e1ec01e34124",
       "spec_version": "2.3"
     },
     {
