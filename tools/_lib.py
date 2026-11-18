@@ -9108,7 +9108,9 @@ def _item_with_hypothesis(item: list[str], link: str | None, cr: str) -> list[st
     line; an entry's own link is never replaced."""
     if not link or any(_REL_HYPOTHESIS_KEY_RE.match(ln) for ln in item):
         return list(item)
-    dash = re.match(r'^(\s*)-(\s+)', item[0])
+    # Spaces only after the dash: in a CRLF file a dash alone on its line
+    # would otherwise capture the carriage return into the new line's indent.
+    dash = re.match(r'^([ \t]*)-([ \t]+)', item[0].rstrip('\r'))
     key_indent = (dash.group(1) + ' ' + dash.group(2)) if dash else '    '
     return list(item) + [f'{key_indent}hypothesis: {link}{cr}']
 

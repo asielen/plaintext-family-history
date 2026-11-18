@@ -3063,22 +3063,26 @@ def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bo
     citing at least one claim that records THIS tie - accepted, not negated,
     naming these two people in these roles (`_claim_backs_edge`, the W115
     test), and of the entry's nature (an adoptive-parent claim does not
-    settle a biological guess). A claims list holding only suggested,
-    disputed or mismatched claims has settled nothing, and an entry citing
-    only a `source:` is not checked here, so a guess beside either is still
-    the owner's live belief and stays on the needs-sourcing list."""
+    settle a biological guess). An entry citing a `source:` is settled when
+    that source holds such a claim. A claims list or source holding only
+    suggested, disputed or mismatched claims has settled nothing, so a guess
+    beside it is still the owner's live belief and stays on the
+    needs-sourcing list."""
     if not isinstance(entry, dict) or relationship_entry_is_guess(entry):
         return False
     role = str(entry.get('type', '')).strip().lower()
     other = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
     other = normalize_id(other) if other else None
     nature = _entry_subtype(entry)
-    for cid in relationship_entry_claim_ids(entry):
-        claim = _claim_by_id(registry, normalize_id(cid))
-        if (claim and _claim_backs_edge(claim, pid, other, role, alias_map)
-                and _claim_subtype_norm(claim) in ('', nature)):
-            return True
-    return False
+    candidates = [_claim_by_id(registry, normalize_id(cid))
+                  for cid in relationship_entry_claim_ids(entry)]
+    if entry.get('source'):
+        # A `source:` entry: the source's own claims, the search W115 runs.
+        sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
+        candidates += [c for c in registry.source_claims.get(sid, []) if isinstance(c, dict)]
+    return any(claim and _claim_backs_edge(claim, pid, other, role, alias_map)
+               and _claim_subtype_norm(claim) in ('', nature)
+               for claim in candidates)
 
 
 def _check_relationship_guesses(

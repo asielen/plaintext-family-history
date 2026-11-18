@@ -93,6 +93,19 @@ class FoldLeavesGuessesAloneTests(unittest.TestCase):
             self.assertEqual(entry['hypothesis'], H)
             self.assertEqual(len(entry['claims']), 2)
 
+    def test_a_bare_dash_entry_in_a_crlf_file_folds_to_readable_yaml(self):
+        bare = ('  -\r\n'
+                f'    to: "[[{PARENT}|Bob Kid]]"\r\n'
+                '    type: parent\r\n'
+                f'    claims: ["[[{CLAIM}]]"]\r\n')
+        linked = SOURCED.replace('\n', '\r\n').replace(CLAIM, 'C-eeeeeeeeee') \
+            + f'    hypothesis: {H}\r\n'
+        text = _front(bare + linked).replace('\n', '\r\n').replace('\r\r\n', '\r\n')
+        out, removed = collapse_relationship_entries(text)
+        self.assertEqual(removed, 1)
+        (entry,) = _entries(out.replace('\r\n', '\n'))
+        self.assertEqual(entry['hypothesis'], H)
+
     def test_two_identical_guesses_still_fold(self):
         out, removed = collapse_relationship_entries(_front(GUESS + GUESS))
         self.assertEqual(removed, 1)
@@ -169,13 +182,21 @@ class W155Tests(unittest.TestCase):
         backlog = '\n'.join(lint._needs_sourcing_backlog(registry))
         self.assertNotIn('not yet sourced', backlog)
 
-    def test_a_source_only_entry_settles_nothing(self):
-        cited = (f'  - to: "[[{PARENT}|Bob Kid]]"\n    type: parent\n'
-                 f'    source: "[[{SOURCE}]]"\n')
-        root = self._root('relationships:\n' + cited + GUESS, status='suggested')
+    CITED = (f'  - to: "[[{PARENT}|Bob Kid]]"\n    type: parent\n'
+             f'    source: "[[{SOURCE}]]"\n')
+
+    def test_a_source_entry_without_an_accepted_claim_settles_nothing(self):
+        root = self._root('relationships:\n' + self.CITED + GUESS, status='suggested')
         findings, registry = lint._run_lint_core(root, {})
         self.assertEqual(_codes(findings, 'W155'), [])
         self.assertIn('(hypothesis, working answer', '\n'.join(lint._needs_sourcing_backlog(registry)))
+
+    def test_a_source_entry_whose_source_proves_the_tie_settles_the_guess(self):
+        # Otherwise the owner is told to source a parent who is sourced.
+        root = self._root('relationships:\n' + self.CITED + GUESS)
+        findings, registry = lint._run_lint_core(root, {})
+        self.assertEqual(len(_codes(findings, 'W155')), 1)
+        self.assertNotIn('not yet sourced', '\n'.join(lint._needs_sourcing_backlog(registry)))
 
     def test_a_claim_of_another_nature_settles_nothing(self):
         # The sourced entry says biological, but cites an adoptive claim (W115).
