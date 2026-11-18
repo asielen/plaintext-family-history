@@ -13407,9 +13407,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
                     'detail': 'no census table for ' + ', '.join(sorted(other_countries))}
         return {'check': 'census', 'state': 'missing', 'countries': [], **empty,
                 'detail': "can't tell which country they lived in: none of their "
-                          'records sits at a registered place. Register the place '
-                          '(`fha confirm place`, or ask for the place-research skill), '
-                          'then run `fha index`'}
+                          'records sits at a registered place. `fha report --section '
+                          'place-candidates` lists the places to register, each with '
+                          'its ready-to-run command; then run `fha index`'}
 
     # An uncertain death ("1920/1940") is a window, not a cutoff: census years
     # inside it count when found and are never reported missing, since the

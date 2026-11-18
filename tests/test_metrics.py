@@ -284,7 +284,7 @@ class CensusCheckTests(_Base):
         ctx = self.a.build()
         r = person_completeness(ctx, KID, this_year=YEAR)
         census = next(c for c in r['checks'] if c['check'] == 'census')
-        self.assertIn('fha confirm place', census['detail'])
+        self.assertIn('fha report --section place-candidates', census['detail'])
         self.assertIn('register the place', completeness_summary_line(r))
 
     def test_a_census_with_a_subject_still_places_and_dates_the_head(self):
