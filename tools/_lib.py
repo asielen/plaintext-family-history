@@ -12971,9 +12971,9 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # "What happened in the family this month?" - births, baptisms, marriages,
 # deaths, burials and arrivals whose recorded date falls in a given month (or
-# on a given day), from the archive's own claims. The terminal command, the
-# report, the workbench and the site all read this one function, so the same
-# day never shows different anniversaries in two places.
+# on a given day), from the archive's own claims. `fha calendar` reads it, and
+# the report, workbench and site panels are to read the same function, so the
+# same day never shows different anniversaries in two places.
 #
 # Only a date the record gives to the month (or day) is placed: `1880-06` or
 # `1880-06-14`. An approximate, uncertain or ranged date (`1880-06~`,
@@ -13117,7 +13117,8 @@ def family_calendar_events(
         twin = twins[0]
         twin['claims'] += [c for c in ev['claims'] if c not in twin['claims']]
         twin['sources'] += [s for s in ev['sources'] if s not in twin['sources']]
-        twin['accepted'] = twin['accepted'] or ev['accepted']
+        # `accepted` stays the dated record's own: an accepted "June 1880"
+        # does not make an unreviewed "14 June 1880" a reviewed day.
         twin['source_restricted'] = twin['source_restricted'] or ev['source_restricted']
         twin['place'] = twin['place'] or ev['place']
         del events[key]

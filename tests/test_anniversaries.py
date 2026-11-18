@@ -186,6 +186,13 @@ class EngineTests(unittest.TestCase):
         (ev,) = self.a.events(6)
         self.assertEqual((ev['day'], len(ev['sources'])), (14, 2))
 
+    def test_an_accepted_month_does_not_make_a_suggested_day_accepted(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested'}])
+        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual((ev['day'], ev['accepted']), (14, False))
+
     def test_month_only_record_stays_apart_from_two_different_days(self):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
@@ -254,6 +261,14 @@ class CommandTests(unittest.TestCase):
         r = self.run_(when='today')
         self.assertEqual(r.exit_code, EXIT_CLEAN)
         self.assertEqual(len(r.data['groups'][0]['events']), 1)
+
+    def test_week_across_new_year_counts_january_against_next_year(self):
+        self.a.source([{'type': 'birth', 'persons': [MOM], 'date': '1880-01-02'}])
+        self.a.build()
+        r = anniversaries.run_calendar(self.a.root, {}, week=True,
+                                       today=datetime.date(2026, 12, 28))
+        (ev,) = [e for g in r.data['groups'] for e in g['events'] if e['month'] == 1]
+        self.assertEqual(ev['years_ago'], 147)
 
     def test_week_has_seven_days(self):
         self.assertEqual(len(self.run_(week=True).data['groups']), 7)

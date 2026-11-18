@@ -13,8 +13,8 @@ WHEN is forgiving: nothing (this month), `today`, a month (`6`, `june`,
 `Jun`), or a day (`06-14`, `6/14`, `june 14`, `14 june`).
 
 A pure read over `.cache/index.sqlite`; nothing is written. The events
-themselves come from `_lib.family_calendar_events`, which the report, the
-workbench and the site read too. This command is private (the owner's own
+themselves come from `_lib.family_calendar_events`, the one engine the
+report, workbench and site panels are to share. This command is private (the owner's own
 terminal), so it shows everyone; shared output applies the living and
 restricted rules itself from the flags each event carries.
 
@@ -149,10 +149,14 @@ def run_calendar(archive_root: Path, fha_config: dict, *, when: str | None = Non
     try:
         groups = []
         for month, day in dates:
+            # A week that crosses New Year counts its January days against
+            # next year: 2 January 1880 is 147 years ago in the week of
+            # 28 December 2026, not 146.
+            year = day0.year + (1 if week and (month, day) < dates[0] else 0)
             groups.append({
                 'month': month, 'day': day,
                 'events': family_calendar_events(conn, month=month, day=day,
-                                                 statuses=statuses, this_year=day0.year),
+                                                 statuses=statuses, this_year=year),
             })
     finally:
         conn.close()

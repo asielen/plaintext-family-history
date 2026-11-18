@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "7a4d68cadc229e06b0b1b00638291cd0b95ddbdc02ae6924023330351aad2647",
+      "sha256": "1925f9b5438db7d2e19d1f3db2efe08d12d73f4c08984cb5f8a0b24ce6c32e1d",
       "spec_version": "2.3",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "cb7ce98149e0bff54b03f9e8784a0b09b70ece693ed43cfddad542d78da67237",
+      "sha256": "636125cb4915a2b7f51b3df5111fcf70d17b734a153adec633d6397a00afd087",
       "spec_version": "2.3",
       "src": "tools/anniversaries.py"
     },
