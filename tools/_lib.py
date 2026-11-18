@@ -9083,16 +9083,34 @@ def _relationship_item_key(entry: Any, resolve) -> tuple | None:
     guess into the sourced entry means deleting the owner's own lines - often
     with a comment or a note saying why they believed it - so tools leave it
     as written and lint W155 names it for the owner to remove. Two guesses
-    naming different working answers stay two, so neither link is lost."""
+    naming different working answers stay two, so neither link is lost.
+    Sourced entries fold as always (one entry per person and role), the kept
+    entry taking a `hypothesis:` line from the others when it has none."""
     tie = relationship_tie_key(entry, resolve)
     if tie is None:
         return None
+    guess_link = (relationship_entry_hypothesis(entry) or ''
+                  if relationship_entry_is_guess(entry) else '')
     return (
         *tie,
         str(entry.get('status') or '').strip().lower(),
         tuple(normalize_id(r) for r in link_field_refs(entry.get('source'))),
-        relationship_entry_hypothesis(entry) or '',
+        guess_link,
     )
+
+
+_REL_HYPOTHESIS_KEY_RE = re.compile(r'^\s*(-\s+)?hypothesis:')
+
+
+def _item_with_hypothesis(item: list[str], link: str | None, cr: str) -> list[str]:
+    """One entry's lines, with a `hypothesis:` line added at the end when the
+    entry has none and the entries folded into it named one. Only ever adds a
+    line; an entry's own link is never replaced."""
+    if not link or any(_REL_HYPOTHESIS_KEY_RE.match(ln) for ln in item):
+        return list(item)
+    dash = re.match(r'^(\s*)-(\s+)', item[0])
+    key_indent = (dash.group(1) + ' ' + dash.group(2)) if dash else '    '
+    return list(item) + [f'{key_indent}hypothesis: {link}{cr}']
 
 
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
@@ -9167,10 +9185,11 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
             data = None
         entry = data[0] if isinstance(data, list) and data else None
         parsed.append((_relationship_item_key(entry, resolve),
-                       relationship_entry_claim_ids(entry)))
+                       relationship_entry_claim_ids(entry),
+                       relationship_entry_hypothesis(entry)))
 
     groups: dict[tuple, list[int]] = {}
-    for n, (k, _c) in enumerate(parsed):
+    for n, (k, _c, _h) in enumerate(parsed):
         if k is not None:
             groups.setdefault(k, []).append(n)
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
@@ -9193,7 +9212,9 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
             for cid in parsed[m][1]:
                 if cid not in claim_ids:
                     claim_ids.append(cid)
-        new_lines.extend(_item_with_claims(lines[s:e], claim_ids, cr))
+        link = next((parsed[m][2] for m in group if parsed[m][2]), None)
+        new_lines.extend(_item_with_hypothesis(
+            _item_with_claims(lines[s:e], claim_ids, cr), link, cr))
         new_lines.extend(lines[e:tail_end])
     new_lines.extend(lines[block_end:])
     return '\n'.join(new_lines), removed

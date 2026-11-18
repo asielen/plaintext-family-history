@@ -81,6 +81,18 @@ class FoldLeavesGuessesAloneTests(unittest.TestCase):
         other = GUESS.replace(H, H_OTHER)
         self.assertEqual(collapse_relationship_entries(_front(GUESS + other))[1], 0)
 
+    def test_sourced_entries_still_fold_and_keep_a_working_answer_link(self):
+        # One entry per person and role: a link on one sourced entry must not
+        # stop a second record's evidence joining it.
+        linked = SOURCED + f'    hypothesis: {H}\n'
+        other = SOURCED.replace(CLAIM, 'C-eeeeeeeeee')
+        for entries in (linked + other, other + linked):
+            out, removed = collapse_relationship_entries(_front(entries))
+            self.assertEqual(removed, 1)
+            (entry,) = _entries(out)
+            self.assertEqual(entry['hypothesis'], H)
+            self.assertEqual(len(entry['claims']), 2)
+
     def test_two_identical_guesses_still_fold(self):
         out, removed = collapse_relationship_entries(_front(GUESS + GUESS))
         self.assertEqual(removed, 1)
@@ -109,6 +121,13 @@ class FixReciprocalBesideAGuessTests(unittest.TestCase):
         (w,) = _codes(findings, 'W116')
         self.assertIn('as a guess', w.message)
         self.assertIn('left as you wrote it', w.message)
+
+    def test_a_guess_of_another_nature_gets_the_plain_w116(self):
+        adoptive = self.BOB_GUESS.replace('    type: child\n', '    type: child\n    subtype: adoptive\n')
+        root, _ = self._root(adoptive)
+        findings, _ = lint._run_lint_core(root, {})
+        (w,) = _codes(findings, 'W116')
+        self.assertNotIn('left as you wrote it', w.message)
 
     def test_fix_adds_the_sourced_entry_and_keeps_the_guess_and_its_comment(self):
         root, parent_f = self._root(self.BOB_GUESS)
@@ -149,6 +168,25 @@ class W155Tests(unittest.TestCase):
         self.assertIn('settled it', w.message)
         backlog = '\n'.join(lint._needs_sourcing_backlog(registry))
         self.assertNotIn('not yet sourced', backlog)
+
+    def test_a_source_only_entry_settles_nothing(self):
+        cited = (f'  - to: "[[{PARENT}|Bob Kid]]"\n    type: parent\n'
+                 f'    source: "[[{SOURCE}]]"\n')
+        root = self._root('relationships:\n' + cited + GUESS, status='suggested')
+        findings, registry = lint._run_lint_core(root, {})
+        self.assertEqual(_codes(findings, 'W155'), [])
+        self.assertIn('(hypothesis, working answer', '\n'.join(lint._needs_sourcing_backlog(registry)))
+
+    def test_a_claim_of_another_nature_settles_nothing(self):
+        # The sourced entry says biological, but cites an adoptive claim (W115).
+        child_f, child_t = _person(CHILD, 'kid', 'ann', relationships='relationships:\n' + SOURCED + GUESS)
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT, subtype='adoptive')
+        root = _build({child_f: child_t, parent_f: parent_t, src_rel: src_text,
+                       'notes/questions.md': QUESTIONS})
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertTrue(_codes(findings, 'W115'))
+        self.assertEqual(_codes(findings, 'W155'), [])
 
     def test_a_suggested_claim_settles_nothing(self):
         for status in ('suggested', 'disputed'):

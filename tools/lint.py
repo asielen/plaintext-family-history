@@ -3023,6 +3023,8 @@ def _check_reciprocity(
         e_to = normalize_id(e_to) if e_to else None
         if e_to == owner_pid and str(e.get('type', '')).strip().lower() == mirror_role:
             if relationship_entry_is_guess(e):
+                if _entry_subtype(e) != (_claim_subtype_norm(claims[0]) or _entry_subtype(e)):
+                    continue   # a guess of another nature: not this tie, no promise
                 # A guess is not a mirror of a sourced tie: left alone, the
                 # other side keeps drawing as a guess what the evidence has
                 # settled. The fix adds the sourced entry and the fold turns
@@ -3056,19 +3058,25 @@ def _check_reciprocity(
     })
 
 
-def _entry_is_settled(registry: Registry, entry: Any) -> bool:
+def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bool:
     """A `relationships:` entry the evidence has settled: not a guess, and
-    citing a `source:` or at least one accepted, non-negated claim. A claims
-    list that holds only suggested or disputed claims has settled nothing,
-    and a guess beside it is still the owner's live belief."""
+    citing at least one claim that records THIS tie - accepted, not negated,
+    naming these two people in these roles (`_claim_backs_edge`, the W115
+    test), and of the entry's nature (an adoptive-parent claim does not
+    settle a biological guess). A claims list holding only suggested,
+    disputed or mismatched claims has settled nothing, and an entry citing
+    only a `source:` is not checked here, so a guess beside either is still
+    the owner's live belief and stays on the needs-sourcing list."""
     if not isinstance(entry, dict) or relationship_entry_is_guess(entry):
         return False
-    if entry.get('source'):
-        return True
+    role = str(entry.get('type', '')).strip().lower()
+    other = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
+    other = normalize_id(other) if other else None
+    nature = _entry_subtype(entry)
     for cid in relationship_entry_claim_ids(entry):
         claim = _claim_by_id(registry, normalize_id(cid))
-        if (claim and str(claim.get('status', '')).strip().lower() == 'accepted'
-                and claim.get('negated') not in (True, 'true')):
+        if (claim and _claim_backs_edge(claim, pid, other, role, alias_map)
+                and _claim_subtype_norm(claim) in ('', nature)):
             return True
     return False
 
@@ -3097,7 +3105,7 @@ def _check_relationship_guesses(
             continue
         path = _profile_path_for(registry, pid)
         sourced_ties = {relationship_tie_key(e, resolve) for e in block
-                        if _entry_is_settled(registry, e)}
+                        if _entry_is_settled(registry, e, pid, alias_map)}
         sourced_ties.discard(None)
         for entry in block:
             if not isinstance(entry, dict):
@@ -6337,7 +6345,7 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
         block = [e for e in (meta.get('relationships') or []) if isinstance(e, dict)]
         resolve = lambda ref: resolve_ref(ref, registry.alias_map or {})  # noqa: E731
         sourced_ties = {relationship_tie_key(e, resolve) for e in block
-                        if _entry_is_settled(registry, e)}
+                        if _entry_is_settled(registry, e, pid, registry.alias_map or {})}
         for entry in block:
             status = str(entry.get('status', '')).strip().lower()
             sourced = bool(relationship_entry_claim_ids(entry) or entry.get('source'))
