@@ -173,6 +173,13 @@ class BirthCheckTests(_Base):
             _birth(KID, '1872')])
         self.assertEqual(self.a.check(KID, 'birth')['state'], 'partial')
 
+    def test_another_persons_death_on_the_same_register_leaves_a_birth_record(self):
+        # A family register: the child's birth, and the father's death, unroled.
+        self.a.source('vital-record', [
+            _birth(KID, '1872'),
+            {'type': 'death', 'persons': [DAD], 'date': '1890-02-01'}])
+        self.assertEqual(self.a.check(KID, 'birth')['state'], 'met')
+
     def test_information_primary_overrides_the_death_record_rule(self):
         self.a.source('vital-record', [
             {'type': 'death', 'persons': [KID], 'date': '1940-02-01'},
@@ -291,6 +298,16 @@ class CensusCheckTests(_Base):
         c = self.a.check(MOM, 'census')
         self.assertNotIn(1880, c['found'])
         self.assertIn(1880, c['missing'])
+
+    def test_an_informant_mention_does_not_add_a_country(self):
+        self.a.source('vital-record', [_birth(MOM, '1850', CA),
+                                       {'type': 'death', 'persons': [MOM], 'date': '1895',
+                                        'place': CA}])
+        self.a.source('census', [{'type': 'residence', 'persons': [KID, MOM], 'date': '1880-06',
+                                  'place': US, 'roles': {'subject': KID, 'informant': MOM}}])
+        c = self.a.check(MOM, 'census')
+        self.assertEqual(c['countries'], ['Canada'])
+        self.assertNotIn(1880, c['expected'])
 
     def test_an_informant_who_is_also_household_member_is_enumerated(self):
         self.a.source('vital-record', [_birth(MOM, '1850', US),
@@ -511,6 +528,16 @@ class CommandTests(unittest.TestCase):
 
     def test_unknown_person_is_not_found_exit_1(self):
         self.assertEqual(self._run(person='p-0000000000').exit_code, EXIT_WARNINGS)
+
+    def test_a_merged_root_person_is_read_through_the_merge(self):
+        # root_person (KID) is merged into OTHER; OTHER inherits KID's parents.
+        self.a.person(OTHER, 'Kid Survivor', tier='curated')
+        self.a.person(KID, 'Kid', status='merged', merged_into=OTHER)
+        self.a.build()
+        r = self._run()
+        self.assertEqual(r.data['scope'], 'direct-line')
+        self.assertEqual([p['person'] for p in r.data['people']][:1], [OTHER.lower()])
+        self.assertEqual(len(r.data['people']), 3)
 
     def test_a_merged_person_names_the_survivor(self):
         self.a.person(OTHER, 'Kid Dup', status='merged', merged_into=KID)

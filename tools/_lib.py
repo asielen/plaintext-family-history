@@ -13194,8 +13194,13 @@ def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
     for cid in ctx['source_claims'].get(source_id, ()):
         c = ctx['claims'][cid]
         if c['type'] in ('death', 'burial') and not c['negated']:
-            subjects = vital_subjects(c['type'], ctx['claim_people'].get(cid, []))
-            if subjects is None or pid in subjects:
+            pairs = ctx['claim_people'].get(cid, [])
+            subjects = vital_subjects(c['type'], pairs)
+            # None means "the one person named" - who may be somebody else on
+            # the same register (a family register lists several lives).
+            if subjects is None:
+                subjects = [p for p, _r in pairs]
+            if pid in subjects:
                 return True
     return False
 
@@ -13219,12 +13224,19 @@ def _is_record_of_event(ctx: dict, c: dict, pid: str) -> bool:
 def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[str, dict]]:
     """Counted claims that place the person in their own life: everything
     except a mention on someone else's birth, baptism, marriage, divorce,
-    death or burial. A father named on his son's 1950 death certificate was
-    not alive in 1950, and did not live where the son died."""
+    death or burial, and a claim naming them only as an informant, witness,
+    midwife or physician (NON_PARTY_ROLES). A father named on his son's 1950
+    death certificate was not alive in 1950, and did not live where the son
+    died; the mother who answered the enumerator's questions at her son's
+    door did not live in his country for it."""
     out = []
     for cid, c in _counted_claims(ctx, pid, statuses):
+        pairs = ctx['claim_people'].get(cid, [])
+        roles = roles_by_person(pairs).get(pid, ())
+        if roles and all(r in NON_PARTY_ROLES for r in roles):
+            continue
         if c['type'] in _VITAL_EVENT_TYPES:
-            subjects = vital_subjects(c['type'], ctx['claim_people'].get(cid, []))
+            subjects = vital_subjects(c['type'], pairs)
             if subjects is not None and pid not in subjects:
                 continue
         out.append((cid, c))
