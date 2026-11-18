@@ -62,6 +62,7 @@ lives only in `_lib.py`.
 | `index.py` | fha index: build the SQLite query surface |
 | `lint.py` | fha lint: verify the archive against the spec |
 | `media.py` | fha media: content-hash dedupe and recording-metadata probe for incoming audio and video |
+| `metrics.py` | fha metrics: person completeness checks and archive totals (TOOLING §7a) |
 | `normalize_links.py` | fha normalize-links: settle citations to their canonical form |
 | `packet.py` | fha packet: build a person data-export packet |
 | `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c) |
