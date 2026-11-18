@@ -4,7 +4,7 @@ A family-history archive made of plain files you can open in any text editor, wi
 
 > **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) built into a website by `fha site`, the same self-contained site you could publish or hand to a relative on a USB stick.
 
-![spec](https://img.shields.io/badge/spec-v2.3-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![spec](https://img.shields.io/badge/spec-v2.3-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 For a hundred years genealogy lived in a filing cabinet, and anyone could open the drawer. No login, no subscription, no file format that stopped opening. A great-grandchild could pull the folder and read it. Most genealogy software has lost that.
 
@@ -161,7 +161,7 @@ plaintext-family-history/
 | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Every term and ID type. |
 | [SPEC.md](SPEC.md) | The complete specification: what exists, how it is written on disk and the rules it follows. |
 | [AGENTS.md](AGENTS.md) | What the AI assistant may and may not do in an archive. |
-| [TOOLING.md](TOOLING.md) | How the tools work, in enough detail to rewrite them from scratch in another language. Its two siblings, [TOOLING_INGESTION.md](TOOLING_INGESTION.md) (capturing and filing) and [TOOLING_INTERFACE.md](TOOLING_INTERFACE.md) (the workbench and the assistant's skills), each have a matching build doc. |
+| [TOOLING.md](TOOLING.md) | How the tools work, in enough detail to rewrite them from scratch in another language. Its two siblings, [TOOLING_INGESTION.md](TOOLING_INGESTION.md) (capturing and filing) and [TOOLING_INTERFACE.md](TOOLING_INTERFACE.md) (the workbench and the assistant's skills), cover the rest. §15 is the build order. |
 | [docs/DESIGN_RATIONALE.md](docs/DESIGN_RATIONALE.md) | Why the archive is shaped this way and what was rejected. Read it before proposing a rule change. |
 
 ### Design principles
