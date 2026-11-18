@@ -999,6 +999,7 @@ How well documented each person is, and what is still missing. With no argument:
 **Archive totals.** People (curated, stubs, direct line), sources by type, claims by status, the median sources and accepted claims per curated person, the share of sources with files that hold searchable text (the W124 predicate), and the five thinnest direct-line people by accepted claims.
 
 Computed fresh on every run and never written into a record (SPEC §17b). The engine lives in `_lib` (`completeness_context`, `person_completeness`, `archive_metrics`): the shared engine any other front door that shows completeness (the workbench, the site) is to use, so they cannot disagree. Read-only. Exit codes: `0`; `1` a person ID not in the index; `2` an argument that is not a person ID, or a person ID with `--all`; `3` no index (run `fha index`).
+
 ## 7b. `fha calendar` - the family calendar
 
 ```
