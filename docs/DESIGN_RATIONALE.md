@@ -315,6 +315,28 @@ promise is to be the trustworthy record.
 everyone a marriage record names (that would make a man his father-in-law's
 husband). Silent fallbacks that produce an answer when the record gave none.
 
+### Completeness metrics
+
+**What we do.** `fha metrics` scores each person on five checks (birth record,
+censuses, parents, marriage records, death) and computes them fresh every run.
+It counts accepted claims by default and counts suggested claims too on
+request. A death is asked for only of someone born more than 130 years ago.
+
+**Why.** Accepted-only is the standard view because it matches what the
+archive has settled, and SPEC's own vital completeness reads it that way. The
+found view exists because a score that only rises when claims are accepted
+rewards accepting, which is the habit the review contract exists to slow down.
+Both views come from one engine, so neither can drift from the other. Past 130
+years there is no doubt a person has died, so a missing death is a real gap;
+short of that, a missing death may be a living person, and asking for it would
+fill the list with people nobody can do anything about.
+
+**What we rejected.** A `living_confirmed:` date on the person record, so an
+owner could record when someone was last known alive. It would be a new field
+to maintain for a check that the 130-year rule answers without one. Inferring a
+person's country from free-text places: the census check reads only the place
+registry, and says "can't tell" rather than guess.
+
 ---
 
 ## 6. Deferred until needed: events and organizations

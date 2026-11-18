@@ -973,6 +973,32 @@ Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `r
 
 Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked.
 
+## 7a. `fha metrics` - person completeness
+
+```
+fha metrics [<p-id>] [--all] [--found] [--json] [--root PATH]
+```
+
+How well documented each person is, and what is still missing. With no argument: archive totals, the direct line by generation, then one line per direct-line person, closest first ("3 of 5: no marriage record; censuses 2 of 6 years"). Curated people stand in when `root_person` is unset, and the output says why. `<p-id>` shows one person's five checks in detail; `--all` lists everyone, stubs included.
+
+**Five checks.** Each comes out `met`, `partial`, `missing`, or `na` (does not apply, and left out of the score).
+
+| Check | Met when |
+|---|---|
+| Birth | A `birth` or `baptism` claim of the person's own (SPEC §8.3, whoever else it names) on a `vital-record` source whose `information` is not `secondary`. Partial when the birth is known only from later evidence. |
+| Censuses | Every census year the person lived through in a country with a census table is on file: a `census` claim, or a `residence` claim on a `census` source, dated in that year. Birth claims never count as census years. |
+| Parents | Two parents named by sourced claims (`relationship`, or `birth` with `child:`/`parent:` roles), read with the index's own parentage rule. Partial with one. The detail says whether a birth record names them. An unsourced `relationships:` belief does not count. |
+| Marriage | Each partner backed by a `marriage` claim on a `vital-record` source. Partners are spouses named by marriage or relationship claims, and the other genetic parent of each of the person's children. `no_known_marriages`, or a negated marriage claim, counts as met. |
+| Death or burial | An own `death` or `burial` claim. Asked only of someone born more than 130 years ago (or, birth unknown, first on record more than 130 years ago); for anyone younger it is `na`. |
+
+**Census years.** Tables: United States 1850-1950 by name, with 1790-1840 (heads of household only) and 1890 (lost) as extras; Canada 1851-1931, with the 1906/1916/1926 prairie censuses as extras. An extra year counts when found and is never reported missing. A country comes from the place registry: the last part of a registered place's `hierarchy:`, following `within:` when the place has none. A country's years run from birth if the person was born there, otherwise from the earliest dated record placing them there (an immigration claim included), widened to any census year on file that fits that country's table. They end at death, or at the latest dated record of the person when no death is known. A person with no record at a registered place is reported ("can't tell which country"), never guessed. A country with no table is `na`.
+
+**Which claims count.** By default, `accepted` claims only: the standard view of what the archive has settled. `--found` counts `suggested` claims too, which shows what records have been found whether or not they are reviewed. Disputed, rejected, superseded and negated claims never count (a confirmed absence answers the marriage check). Undated claims carry no year; the index's open-ended date bounds are never read as one.
+
+**Archive totals.** People (curated, stubs, direct line), sources by type, claims by status, the median sources and accepted claims per curated person, the share of sources with files that hold searchable text (the W124 predicate), and the five thinnest direct-line people by accepted claims.
+
+Computed fresh on every run and never written into a record (SPEC §17b). The engine lives in `_lib` (`completeness_context`, `person_completeness`, `archive_metrics`), so every front door that shows completeness reads the same answer. Read-only. Exit codes: `0`; `1` a person ID not in the index; `2` an argument that is not a person ID; `3` no index (run `fha index`).
+
 ---
 
 ## 8. `fha packet` - person data dump
@@ -1687,6 +1713,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha find --json <ID\|text>` (T C) | Machine-readable result list (§4a) - a ranked search returning `[{id,type,label,detail}]` on stdout, the reference-resolver backend `fha serve`'s search box also calls. `--kind`/`--limit` narrow it. A text hit read out of a transcript no human has checked against the image adds `"unchecked": true` (§4a D15, present only when true); the coverage caveat (§4a D14) goes to stderr so stdout stays the bare array. |
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <P-A> <P-B>` (T C) | "How are these two related?" The blood relationship (cousin/removal) and the shortest social path between any two people, derived from accepted relationship claims. |
+| `fha metrics [<P-id>]` (T C) | "Who still lacks a birth record, a census, a marriage record?" Five completeness checks per person, the direct line by generation, and archive totals (§7a). `--found` counts suggested claims too. |
 
 ### Occasional (setup, migration, publication moments)
 
