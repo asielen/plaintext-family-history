@@ -389,6 +389,29 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertFalse([y for y in c['expected'] if y in (1871, 1881, 1891)])
 
+    def test_died_before_1880_does_not_demand_the_1880_census(self):
+        self.a.source('vital-record', [_birth(KID, '1870', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '[..1880]'}])
+        c = self.a.check(KID, 'census')
+        self.assertNotIn(1880, c['missing'])
+        self.assertIsNone(c['unchecked_after'])        # a death year is known
+        self.assertNotIn('no death year', c['detail'])
+
+    def test_a_provisional_died_before_date_does_not_demand_the_census_either(self):
+        self.a.person(KID, 'Kid', death='[..1880]')
+        self.a.source('vital-record', [_birth(KID, '1870', US)])
+        c = self.a.check(KID, 'census')
+        self.assertNotIn(1880, c['missing'])
+        self.assertNotIn('no death year', c['detail'])
+
+    def test_an_undated_record_at_a_registered_place_asks_for_a_date(self):
+        self.a.person(KID, 'Kid', birth='1870', death='1905')
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['countries'], ['United States'])
+        self.assertIn('add a date', c['detail'])
+        self.assertNotIn('register', c['detail'])
+
     def test_an_open_ended_census_date_does_not_crash(self):
         self.a.source('vital-record', [_birth(KID, '1870', US)])
         self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '[1883..]',

@@ -13385,6 +13385,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
 
     first_in: dict[str, int] = {}
     born_in: set[str] = set()
+    placed_undated: set[str] = set()   # countries with a table their records name
     other_countries: set[str] = set()
     latest_any: int | None = None
     found_years: set[int] = set()
@@ -13400,6 +13401,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             other_countries.add(raw)
         if not key:
             continue
+        placed_undated.add(key)
         if cid in own_births:
             born_in.add(key)
         if c['y_lo'] is not None:
@@ -13408,6 +13410,14 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     empty = {'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
     countries = sorted(set(first_in) | born_in)
     if not countries:
+        if placed_undated:
+            # Placed, but no record there is dated: the place is not the gap.
+            return {'check': 'census', 'state': 'missing',
+                    'countries': sorted(placed_undated), **empty,
+                    'detail': 'their records place them in ' + ', '.join(sorted(placed_undated))
+                              + ", but none of those records has a date, so the census "
+                              "years can't be worked out: add a date (even an "
+                              'approximate one) to one of them'}
         if other_countries:
             return {'check': 'census', 'state': 'na', 'countries': sorted(other_countries),
                     **empty,
@@ -13421,17 +13431,27 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # An uncertain death ("1920/1940") is a window, not a cutoff: census years
     # inside it count when found and are never reported missing, since the
     # person may or may not have been alive for them.
-    death_hi = max((c['y_hi'] for _cid, c in
-                    _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
-                    if c['y_hi'] is not None), default=None)
-    if death_hi is None and death is not None:
-        prov = ctx['persons'].get(pid, {}).get('death')
-        lo_s, hi_s = edtf_bounds(str(prov)) if prov else ('', '')
-        death_hi = _claim_year(lo_s, hi_s, prov)[1] if prov else death
+    death_claims = _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
+    death_hi = max((c['y_hi'] for _cid, c in death_claims if c['y_hi'] is not None),
+                   default=None)
+    prov = ctx['persons'].get(pid, {}).get('death')
+    if death_hi is None and prov and is_valid_edtf(str(prov)):
+        lo_s, hi_s = edtf_bounds(str(prov))
+        death_hi = _claim_year(lo_s, hi_s, prov)[1]
     end = death_hi if death_hi is not None else latest_any
     if end is None:
         end = this_year
-    surely_alive_to = death if death is not None else end
+    if death is not None:
+        surely_alive_to = death
+    elif death_hi is not None:
+        # "Died before 1880": alive for sure only up to their latest record of
+        # life (or birth); the years after it, to 1880, are the death window.
+        death_ids = {cid for cid, _c in death_claims}
+        alive_at = [c['y_lo'] for cid, c in _life_claims(ctx, pid, statuses)
+                    if cid not in death_ids and c['y_lo'] is not None]
+        surely_alive_to = max(alive_at) if alive_at else (birth if birth is not None else end)
+    else:
+        surely_alive_to = end
     # With no death year: the table years after their latest record that they
     # may have lived through. They are surely dead only END_OF_LIFE_YEARS
     # after the LATEST birth year any record allows, so a conflicting later
@@ -13457,7 +13477,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         extras_all += [y for y in list(table['extra']) + list(table['required'])
                        if start <= y <= end
                        and (y in table['extra'] or y > surely_alive_to)]
-        if death is None:
+        if death_hi is None:   # no death year at all, not even "before 1880"
             later += [y for y in table['required'] if max(start, end) < y <= alive_cap]
     expected = sorted(set(expected))
     found = sorted(y for y in expected if y in found_years)
