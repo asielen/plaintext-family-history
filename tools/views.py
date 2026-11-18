@@ -60,7 +60,10 @@ writes the Born / Died / Married / Parents / Children lines between
 title and purpose block (`_lib.write_summary_region`), from accepted claims
 only, on the same terms as sources-index (stubs too, re-sync, no HTML). It is
 found by its markers, not a heading, and summary lines a human wrote with no
-markers are theirs: never touched.
+markers are theirs: never touched. With `views: completeness_line: true` in
+fha.yaml (off by default) the region ends with one `**Records:**` line, the
+person's completeness as `fha metrics` words it (`_lib.person_completeness`,
+accepted claims). No export carries the region, so the line stays home.
 
 Each content view also renders as a standalone single-file HTML page
 (`--format html`), written under generated/views/ from the SAME queries and
@@ -184,6 +187,9 @@ from _lib import (
     write_generated_region,  # rewrite a `## Heading` section as one GENERATED-BEGIN/END
                              # region, in place or newly created (SPEC §21b, #76),
     write_summary_region,  # the profile's Born/Died/... summary region (SPEC §16),
+    completeness_context,  # the completeness engine's index read (TOOLING §7a),
+    person_completeness,   # one person's five checks - the opt-in Records line,
+    completeness_summary_line,  # those checks as one plain line,
     strip_generated_region,  # cut one named region out of a profile body,
     SUMMARY_REGION,       # that region's name,
     humanize_edtf,        # an EDTF date as a reader says it ('3 March 1840'),
@@ -254,6 +260,9 @@ def _views_result(
 #  Summary region  (_generate_summary_person, run_summary)
 #    _summary_region_body         - Born/Died/Married/Parents/Children lines from accepted
 #                                 claims; _summary_own_vital / _summary_kin pick the facts
+#    _summary_completeness_context / _summary_records_line - the opt-in Records line
+#                                 (fha.yaml `views: completeness_line: true`), from the
+#                                 shared completeness engine `fha metrics` uses
 #    _generate_summary_person     - writes the profile's summary region in place
 #                                 (`_lib.write_summary_region`); hand-written lines untouched
 #
@@ -1498,8 +1507,40 @@ def _summary_region_body(conn: sqlite3.Connection, pid: str) -> str:
     return '\n'.join(out)
 
 
+def _summary_completeness_context(conn: sqlite3.Connection, archive_root: Path) -> dict | None:
+    """The completeness engine's context when fha.yaml asks for the
+    `**Records:**` line (`views: completeness_line: true`), else None.
+
+    Off unless the owner turns it on, so no archive's profiles change until
+    they ask. Read once per run: a whole-archive refresh asks it of every
+    person, and the context is the whole index in memory."""
+    cfg = load_fha_yaml(archive_root)
+    block = cfg.get('views') if isinstance(cfg, dict) else None
+    value = block.get('completeness_line') if isinstance(block, dict) else None
+    if value is None or value is False:
+        return None
+    if value is not True:
+        print(f'WARNING: fha.yaml views: completeness_line: is {value!r}; write true or '
+              'false. Leaving the Records line out for now.', file=sys.stderr)
+        return None
+    return completeness_context(conn)
+
+
+def _summary_records_line(ctx: dict | None, pid: str) -> str:
+    """'**Records:** 3 of 5 - no marriage record; censuses 2 of 6 years', or
+    '' when the line is off or the person is not in the engine's context
+    (a merged record). Read from accepted claims, like every other summary
+    line, through the shared engine `fha metrics` uses (TOOLING §7a), so
+    the two can never disagree."""
+    if ctx is None or normalize_id(pid) not in ctx['persons']:
+        return ''
+    result = person_completeness(ctx, pid, mode='accepted')
+    return f"**Records:** {completeness_summary_line(result, sep=' - ')}"
+
+
 def _generate_summary_person(
     conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md',
+    completeness: dict | None = None,
 ) -> Path | None:
     """Write the person's summary region (`_lib.write_summary_region`);
     return the profile path when it is current afterwards, else None.
@@ -1507,7 +1548,9 @@ def _generate_summary_person(
     Like `## Sources`, the region lives inside the profile, so there is no
     companion file and no HTML twin. A profile whose summary lines a human
     wrote by hand (no markers) is theirs: it is reported and left alone, and
-    counts as current - there is nothing for this command to do there."""
+    counts as current - there is nothing for this command to do there.
+    `completeness` is the engine context from `_summary_completeness_context`
+    (None: no Records line)."""
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
         print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
@@ -1519,7 +1562,9 @@ def _generate_summary_person(
               f'({"not saved as UTF-8" if isinstance(e, UnicodeDecodeError) else (e.strerror or e)})'
               ' - skipped.', file=sys.stderr)
         return None
-    new_text, status = write_summary_region(text, _summary_region_body(conn, person_id))
+    new_text, status = write_summary_region(
+        text, _summary_region_body(conn, person_id),
+        extra=_summary_records_line(completeness, person_id))
     if status == 'damaged':
         print(f'WARNING: {profile_p.name} has a "GENERATED-BEGIN summary" marker with no '
               '"GENERATED-END summary" after it - put the end marker back (or delete '
@@ -4087,11 +4132,12 @@ def run_summary(
         return _views_result(EXIT_FAILURE)
     changed: list[str] = []
     try:
+        records = _summary_completeness_context(conn, archive_root)
         if all_curated:
             count = skipped = 0
             for pid in _view_eligible_curated_ids(conn, archive_root):
                 out = _generate_or_warn(f'summary for {pid}', _generate_summary_person,
-                                        conn, pid, archive_root)
+                                        conn, pid, archive_root, completeness=records)
                 if out:
                     print(f'  summary       ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -4110,7 +4156,7 @@ def run_summary(
             print('ERROR: provide a P-id or --all-curated.', file=sys.stderr)
             return _views_result(EXIT_FAILURE)
         pid = normalize_id(person_id)
-        out = _generate_summary_person(conn, pid, archive_root)
+        out = _generate_summary_person(conn, pid, archive_root, completeness=records)
         if out:
             print(f'  summary       ->{out.relative_to(archive_root)}')
             changed.append(str(out))
@@ -4479,6 +4525,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         if not person_ids and not region_only_ids:
             return _empty_curated_views_result(conn)
 
+        records = _summary_completeness_context(conn, archive_root) if 'md' in fmt_passes else None
         _per_person = [
             (_generate_timeline,             'timeline      '),
             (_generate_draft_queue,          'draft-queue   '),
@@ -4521,7 +4568,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                 # generated region: same once-per-person, md-only rule.
                 out = _generate_or_warn(
                     f'summary for {pid}', _generate_summary_person,
-                    conn, pid, archive_root,
+                    conn, pid, archive_root, completeness=records,
                 )
                 if out:
                     print(f'  summary       ->{out.relative_to(archive_root)}')
@@ -4689,8 +4736,10 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "Write the summary lines under the person's name in their own\n"
             'profile, from accepted claims, between GENERATED summary markers.\n'
             'Lines a person wrote by hand (no markers) are left alone. Works\n'
-            'on a stub too. Requires a fresh .cache/index.sqlite (run\n'
-            '`fha index` first).'
+            'on a stub too. With `views: completeness_line: true` in\n'
+            'fha.yaml, the lines end with a Records line saying how well\n'
+            'documented the person is, as `fha metrics` says it. Requires a\n'
+            'fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
     sm.add_argument('person_id', nargs='?', metavar='P-id',

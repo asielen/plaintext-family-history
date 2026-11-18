@@ -10416,7 +10416,7 @@ def strip_generated_region(text: str, region_name: str) -> str:
     return '\n'.join(lines[:b] + lines[after:])
 
 
-def write_summary_region(text: str, body: str) -> tuple[str, str]:
+def write_summary_region(text: str, body: str, extra: str = '') -> tuple[str, str]:
     """Write the profile's summary region; return (new_text, status).
 
     status: 'written' (inserted or rewritten), 'unchanged' (the region
@@ -10425,6 +10425,11 @@ def write_summary_region(text: str, body: str) -> tuple[str, str]:
     is written), 'damaged' (a BEGIN marker with no END: nothing is written),
     or 'empty' (no region yet and nothing to say: nothing is written).
 
+    `extra` is lines shown after the facts: the opt-in `**Records:**`
+    completeness line (TOOLING §7). It never starts a region by itself, so a
+    person with no accepted facts yet gets no region just to say what is
+    missing.
+
     A new region goes right after the title and the purpose blockquote under
     it, before anything else in the profile's opening. An existing region is
     rewritten where it stands."""
@@ -10432,10 +10437,12 @@ def write_summary_region(text: str, body: str) -> tuple[str, str]:
     bounds = frontmatter_fence_span(lines)
     body_start = (bounds[1] + 1) if bounds else 0
     cr = '\r' if lines and lines[0].endswith('\r') else ''
+    shown = body or '*(No accepted birth, death, marriage or family facts yet.)*'
+    extra = extra.strip('\n')
+    if extra:
+        shown = f'{shown}\n{extra}'
     region = render_generated_region(
-        SUMMARY_REGION, SUMMARY_SUBCOMMAND,
-        body or '*(No accepted birth, death, marriage or family facts yet.)*',
-        notice=SUMMARY_NOTICE)
+        SUMMARY_REGION, SUMMARY_SUBCOMMAND, shown, notice=SUMMARY_NOTICE)
     region_lines = [f'{ln}{cr}' for ln in region.split('\n')]
 
     found = find_generated_region(lines, SUMMARY_REGION, body_start)
@@ -13846,15 +13853,17 @@ def person_completeness(ctx: dict, pid: str, *, mode: str = 'accepted',
     }
 
 
-def completeness_summary_line(result: dict) -> str:
+def completeness_summary_line(result: dict, sep: str = ': ') -> str:
     """One plain line for a person: '3 of 5: no marriage record; censuses
-    2 of 6 years' - the score, then what is short, in check order."""
+    2 of 6 years' - the score, then what is short, in check order. `sep`
+    joins the score to the rest (the profile's `**Records:**` summary line
+    uses ' - ', since its label already ends in a colon)."""
     short = []
     for c in result['checks']:
         if c['state'] in ('missing', 'partial'):
             short.append(_completeness_short_phrase(c))
     head = f"{result['met']} of {result['applicable']}"
-    return f'{head}: ' + '; '.join(short) if short else f'{head}: complete'
+    return f'{head}{sep}' + '; '.join(short) if short else f'{head}{sep}complete'
 
 
 def _completeness_short_phrase(c: dict) -> str:
