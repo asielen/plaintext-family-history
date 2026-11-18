@@ -9029,10 +9029,15 @@ def _relationship_block_items(
     return key, block_end, items
 
 
-def _relationship_item_key(entry: Any, resolve) -> tuple | None:
-    """Which tie an entry records: (person, role, nature, status, source).
-    Entries with the same key are one tie and collapse into one entry; an
-    entry that is not a mapping, or names nobody, never collapses."""
+def relationship_tie_key(entry: Any, resolve=None) -> tuple[str, str, str] | None:
+    """The tie a `relationships:` entry records: (person, role, nature).
+    Two entries with the same tie key are about the same bond to the same
+    person, whatever their status or backing. None for an entry that is not
+    a mapping or names nobody.
+
+    `resolve(target) -> p-id | None` matches `to: "[[Margaret Cole]]"` with
+    `to: "[[p-…|Margaret Cole]]"`; without it only links that carry a p-id
+    compare by id, and a bare name compares as lower-cased text."""
     if not isinstance(entry, dict):
         return None
     to_refs = link_field_refs(entry.get('to'))
@@ -9048,9 +9053,67 @@ def _relationship_item_key(entry: Any, resolve) -> tuple | None:
         to_key,
         str(entry.get('type') or '').strip().lower(),
         str(entry.get('subtype') or 'biological').strip().lower(),
-        str(entry.get('status') or '').strip().lower(),
+    )
+
+
+def relationship_entry_is_guess(entry: Any) -> bool:
+    """An entry carrying `status: hypothesis` (SPEC §9): a belief drawn as a
+    guess, whatever else it carries."""
+    return (isinstance(entry, dict)
+            and str(entry.get('status') or '').strip().lower() == 'hypothesis')
+
+
+def relationship_entry_hypothesis(entry: Any) -> str | None:
+    """The working answer an entry names with `hypothesis:` (SPEC §9), as a
+    normalized h-id; the text as written when it is not one; None when the
+    entry names none. Forgiving about the written form: a bare `h-…`, a
+    `[[h-…]]` link, or a quoted either."""
+    if not isinstance(entry, dict) or entry.get('hypothesis') in (None, ''):
+        return None
+    raw = str(entry.get('hypothesis')).strip()
+    ids = extract_bare_ids(strip_link_wrapper(raw))
+    return normalize_id(ids[0]) if ids and ids[0].lower().startswith('h-') else raw
+
+
+def _relationship_item_key(entry: Any, resolve) -> tuple | None:
+    """Which entries fold into one: the tie, plus the `source:` it cites.
+
+    A guess (`status: hypothesis`) keys the same as an entry backed by
+    `claims:` for the same tie, so the two fold and the guess graduates into
+    the sourced entry (SPEC §9: graduating is the same entry, not a second
+    one). An entry citing a `source:` keeps that source in its key, so two
+    entries citing different sources stay two; a guess beside one is left for
+    lint W155 to report rather than guessed at here."""
+    tie = relationship_tie_key(entry, resolve)
+    if tie is None:
+        return None
+    status = str(entry.get('status') or '').strip().lower()
+    if status == 'hypothesis':
+        status = ''
+    return (
+        *tie,
+        status,
         tuple(normalize_id(r) for r in link_field_refs(entry.get('source'))),
     )
+
+
+_REL_STATUS_GUESS_LINE_RE = re.compile(r'^(\s+)status:\s*["\']?hypothesis["\']?\s*(#.*)?$',
+                                       re.IGNORECASE)
+_REL_HYPOTHESIS_KEY_RE = re.compile(r'^\s*(-\s+)?hypothesis:')
+
+
+def _item_graduated(item: list[str], link: str | None, cr: str) -> list[str]:
+    """One entry's lines with its `status: hypothesis` line removed and, when
+    it names no working answer of its own, a `hypothesis:` line carrying
+    `link` added at the end. A status written on the entry's dash line
+    (`- status: hypothesis`) is left alone: removing it would take the dash
+    with it, and lint reports the leftover instead."""
+    out = [ln for ln in item if not _REL_STATUS_GUESS_LINE_RE.match(ln.rstrip('\r'))]
+    if link and not any(_REL_HYPOTHESIS_KEY_RE.match(ln) for ln in out):
+        dash = re.match(r'^(\s*)-\s+', item[0])
+        key_indent = (dash.group(1) + '  ') if dash else '    '
+        out.append(f'{key_indent}hypothesis: {link}{cr}')
+    return out
 
 
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
@@ -9092,11 +9155,17 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
 
 def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     """Fold `relationships:` entries that record the same tie - same person,
-    role, nature (subtype), status and `source:` - into the FIRST of them,
-    whose claim links become one `claims: [...]` list holding every claim the
-    group linked, in order. The later entries are removed. Everything else in
-    the first entry (its `to:` spelling, comments, other keys) is kept as
-    written, and an entry nothing duplicates is left alone.
+    role, nature (subtype) and `source:` - into the FIRST of them, whose claim
+    links become one `claims: [...]` list holding every claim the group
+    linked, in order. The later entries are removed. Everything else in the
+    first entry (its `to:` spelling, comments, other keys) is kept as written,
+    and an entry nothing duplicates is left alone.
+
+    A guess (`status: hypothesis`) folds with a claim-backed entry for the same
+    tie: the evidence has settled it, so the kept entry loses `status:
+    hypothesis` and keeps the guess's `hypothesis: h-…` link as the record of
+    which working answer the evidence settled (SPEC §9). Guesses with no
+    claims among them fold into one guess and stay guesses.
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
 
@@ -9124,10 +9193,10 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
             data = None
         entry = data[0] if isinstance(data, list) and data else None
         parsed.append((_relationship_item_key(entry, resolve),
-                       relationship_entry_claim_ids(entry)))
+                       relationship_entry_claim_ids(entry), entry))
 
     groups: dict[tuple, list[int]] = {}
-    for n, (k, _c) in enumerate(parsed):
+    for n, (k, _c, _e) in enumerate(parsed):
         if k is not None:
             groups.setdefault(k, []).append(n)
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
@@ -9150,7 +9219,13 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
             for cid in parsed[m][1]:
                 if cid not in claim_ids:
                     claim_ids.append(cid)
-        new_lines.extend(_item_with_claims(lines[s:e], claim_ids, cr))
+        kept = _item_with_claims(lines[s:e], claim_ids, cr)
+        sourced = bool(claim_ids) or any(parsed[m][2].get('source') for m in group)
+        if sourced and any(relationship_entry_is_guess(parsed[m][2]) for m in group):
+            link = next((relationship_entry_hypothesis(parsed[m][2]) for m in group
+                         if relationship_entry_hypothesis(parsed[m][2])), None)
+            kept = _item_graduated(kept, link, cr)
+        new_lines.extend(kept)
         new_lines.extend(lines[e:tail_end])
     new_lines.extend(lines[block_end:])
     return '\n'.join(new_lines), removed
