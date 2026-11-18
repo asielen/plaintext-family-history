@@ -412,6 +412,26 @@ class CensusCheckTests(_Base):
         self.assertIn('add a date', c['detail'])
         self.assertNotIn('register', c['detail'])
 
+    def test_a_foreign_census_does_not_fill_a_home_census_year(self):
+        uk = 'L-eeeeeeeeee'
+        reg = self.a.root / 'places' / 'places.yaml'
+        reg.write_text(reg.read_text(encoding='utf-8')
+                       + f'- id: {uk}\n  name: London\n  hierarchy: London, United Kingdom\n',
+                       encoding='utf-8')
+        self.a.source('vital-record', [_birth(KID, '1870', CA),
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1881', 'place': uk}])
+        c = self.a.check(KID, 'census')
+        self.assertIn(1881, c['missing'])
+
+    def test_the_summary_line_names_an_undated_country(self):
+        self.a.person(KID, 'Kid', birth='1870', death='1905')
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'place': US}])
+        ctx = self.a.build()
+        line = completeness_summary_line(person_completeness(ctx, KID, this_year=YEAR))
+        self.assertIn('census years unknown (date a record)', line)
+        self.assertNotIn('; ;', line)
+
     def test_an_open_ended_census_date_does_not_crash(self):
         self.a.source('vital-record', [_birth(KID, '1870', US)])
         self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '[1883..]',

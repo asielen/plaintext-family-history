@@ -13388,15 +13388,18 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     placed_undated: set[str] = set()   # countries with a table their records name
     other_countries: set[str] = set()
     latest_any: int | None = None
-    found_years: set[int] = set()
+    # Census years on file, by the country their record names (None when the
+    # census claim names no registered place, which may count for any
+    # country): an 1881 census in England does not fill a Canadian 1881.
+    found_by: dict[str | None, set[int]] = {}
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
-        if (_is_census_claim(ctx, c) and c['y_lo'] is not None and c['y_hi'] is not None
-                and c['y_hi'] - c['y_lo'] <= 2):
-            found_years.update(range(c['y_lo'], c['y_hi'] + 1))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
+        if (_is_census_claim(ctx, c) and c['y_lo'] is not None and c['y_hi'] is not None
+                and c['y_hi'] - c['y_lo'] <= 2):
+            found_by.setdefault(key or raw, set()).update(range(c['y_lo'], c['y_hi'] + 1))
         if raw and not key:
             other_countries.add(raw)
         if not key:
@@ -13461,28 +13464,33 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     expected: list[int] = []
     extras_all: list[int] = []
     later: list[int] = []
+    found_all: set[int] = set()
     for key in countries:
         start = birth if (key in born_in and birth is not None) else first_in.get(key, birth)
-        # A census year on file that is in this country's table puts them
-        # there that year even when the claim names no registered place.
+        # Census years on file for this country: its own, plus unplaced ones
+        # (a census claim naming no registered place) that fit its table,
+        # which also put them there that year.
         table_years = set(CENSUS_YEARS[key]['required']) | set(CENSUS_YEARS[key]['extra'])
-        on_file = [y for y in found_years if y in table_years]
-        if on_file:
-            start = min(on_file) if start is None else min(start, min(on_file))
+        here = {y for y in found_by.get(key, set()) | found_by.get(None, set())
+                if y in table_years}
+        if here:
+            start = min(here) if start is None else min(start, min(here))
         if start is None:
             continue
         table = CENSUS_YEARS[key]
-        expected += [y for y in table['required'] if start <= y <= surely_alive_to]
+        asked = [y for y in table['required'] if start <= y <= surely_alive_to]
+        expected += asked
         # Extras: the table's own, plus required years inside the death window.
-        extras_all += [y for y in list(table['extra']) + list(table['required'])
-                       if start <= y <= end
-                       and (y in table['extra'] or y > surely_alive_to)]
+        extra_here = [y for y in list(table['extra']) + list(table['required'])
+                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
+        extras_all += [y for y in extra_here if y in here]
+        found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
             later += [y for y in table['required'] if max(start, end) < y <= alive_cap]
     expected = sorted(set(expected))
-    found = sorted(y for y in expected if y in found_years)
-    missing = [y for y in expected if y not in found_years]
-    extras = sorted(y for y in set(extras_all) if y in found_years)
+    found = sorted(y for y in expected if y in found_all)
+    missing = [y for y in expected if y not in found_all]
+    extras = sorted(set(extras_all))
     unchecked_after = end if later else None
     base = {'check': 'census', 'countries': countries, 'expected': expected,
             'found': found, 'missing': missing, 'extras': extras,
@@ -13758,7 +13766,7 @@ def _completeness_short_phrase(c: dict) -> str:
         later = (f"no death year, censuses after {c['unchecked_after']} unchecked"
                  if c.get('unchecked_after') is not None else '')
         if not c.get('expected'):
-            return later
+            return later or 'census years unknown (date a record)'
         years = f"censuses {len(c['found'])} of {len(c['expected'])} years"
         return f'{years} ({later})' if later else years
     if key == 'parents':
