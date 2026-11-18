@@ -1874,5 +1874,134 @@ class ClaimFingerprintVersionTests(unittest.TestCase):
         self.assertTrue(any('hanged claims' in line for line in lines), lines)
 
 
+class OnThisDayTests(unittest.TestCase):
+    """Section 0b (on-this-day): the family events falling today and the six
+    days after it, read through `_lib.family_calendar_events` (TOOLING §7b,
+    §15a). Expected lines come from the rules those sections state: accepted
+    claims only, one plain line per event, at most ten lines and a pointer to
+    `fha calendar --week` for the rest, one line when the week is empty, and a
+    week crossing New Year counts its January days against next year."""
+
+    OLD = 'P-5aaaaaaaaa'
+    NEW = 'P-5bbbbbbbbb'
+    SID = 'S-5aaaaaaaaa'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'vital-record').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        # The owner's private view names living people too.
+        for pid, name, living in ((self.OLD, 'Elder Person', 'false'),
+                                  (self.NEW, 'Young Person', 'true')):
+            (self.root / 'people' / 'stubs' / f'p__x_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nliving: {living}\ntier: stub\n---\n\n'
+                f'# {name}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _claims(self, claims: list[tuple]) -> None:
+        """Write one source holding (type, person, date, status[, place]) claims."""
+        body = ''
+        for i, (ctype, pid, date, status, *place) in enumerate(claims):
+            body += (f'- id: C-5{i:09d}\n  type: {ctype}\n  persons: [{pid}]\n'
+                     f"  value: {ctype}\n  date: '{date}'\n  status: {status}\n")
+            if status != 'suggested':
+                body += '  reviewed: 2026-01-01\n'
+            if place:
+                body += f'  place_text: {place[0]}\n'
+        (self.root / 'sources' / 'vital-record' / f'r_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Record\nsource_type: vital-record\n---\n\n'
+            f'## Claims\n```yaml\n{body}```\n', encoding='utf-8')
+
+    def _section(self, today: datetime.date) -> list[str]:
+        import index
+        index.build_index(self.root, _lib.load_fha_yaml(self.root))
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        conn.row_factory = sqlite3.Row
+        try:
+            return report._section_on_this_day(conn, today)
+        finally:
+            conn.close()
+
+    def test_registry_places_it_right_after_discoveries(self) -> None:
+        keys = [key for key, _num, _title in report.SECTIONS]
+        self.assertEqual(keys[:2], ['discoveries', 'on-this-day'])
+        numbers = [num for _key, num, _title in report.SECTIONS]
+        self.assertEqual(numbers.count('0b'), 1)
+
+    def test_events_in_the_week_one_plain_line_each(self) -> None:
+        self._claims([
+            ('birth', self.OLD, '1880-06-14', 'accepted', 'Fairview'),
+            ('birth', self.NEW, '1990-06-20', 'accepted'),
+            ('death', self.OLD, '1950-06-21', 'accepted'),   # the eighth day: outside
+            ('death', self.OLD, '1950-06-13', 'accepted'),   # the day before: outside
+        ])
+        lines = self._section(datetime.date(2026, 6, 14))
+        self.assertEqual(lines, [
+            f'- 14 June 1880 - Born: Elder Person [[{self.OLD.lower()}]], Fairview'
+            ' - 146 years ago',
+            f'- 20 June 1990 - Born: Young Person [[{self.NEW.lower()}]] - 36 years ago',
+        ])
+
+    def test_no_events_is_one_line(self) -> None:
+        self._claims([('birth', self.OLD, '1880-03-02', 'accepted')])
+        lines = self._section(datetime.date(2026, 6, 14))
+        self.assertEqual(len(lines), 1)
+        self.assertIn('No family events on file for 14 June to 20 June', lines[0])
+
+    def test_only_accepted_claims(self) -> None:
+        self._claims([
+            ('birth', self.OLD, '1880-06-14', 'suggested'),
+            ('death', self.OLD, '1950-06-15', 'disputed'),
+            ('death', self.NEW, '2020-06-16', 'accepted'),
+        ])
+        lines = self._section(datetime.date(2026, 6, 14))
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn('Died: Young Person', lines[0])
+
+    def test_more_than_ten_points_at_the_calendar(self) -> None:
+        self._claims([('birth', self.OLD if i % 2 else self.NEW,
+                       f'{1900 + i}-06-{14 + i % 7:02d}', 'accepted') for i in range(13)])
+        lines = self._section(datetime.date(2026, 6, 14))
+        self.assertEqual(len(lines), 11, lines)
+        self.assertEqual(lines[-1], '- and 3 more - `fha calendar --week`')
+        self.assertTrue(all(line.startswith('- ') and ' - Born: ' in line
+                            for line in lines[:10]), lines)
+
+    def test_week_crossing_new_year(self) -> None:
+        self._claims([
+            ('birth', self.OLD, '1880-12-30', 'accepted'),
+            ('death', self.OLD, '1880-01-02', 'accepted'),
+        ])
+        lines = self._section(datetime.date(2026, 12, 28))
+        # 30 December comes first; 2 January falls in 2027, so 147 years on.
+        self.assertEqual(lines, [
+            f'- 30 December 1880 - Born: Elder Person [[{self.OLD.lower()}]] - 146 years ago',
+            f'- 2 January 1880 - Died: Elder Person [[{self.OLD.lower()}]] - 147 years ago',
+        ])
+
+    def test_section_flag_prints_only_this_section(self) -> None:
+        today = datetime.date.today()
+        self._claims([('birth', self.OLD, f'1880-{today.month:02d}-{today.day:02d}',
+                       'accepted')])
+        result = report.run_report(self.root, _lib.load_fha_yaml(self.root), full=True,
+                                   section='on-this-day')
+        md = result['markdown']
+        self.assertIn('## 0b. This week in the family', md)
+        self.assertIn('Born: Elder Person', md)
+        self.assertNotIn('## 0. Discoveries', md)
+        self.assertNotIn('## 1. Review queue', md)
+        # The full report carries it right after discoveries.
+        full = result['full_markdown']
+        self.assertLess(full.index('## 0. Discoveries'),
+                        full.index('## 0b. This week in the family'))
+        self.assertLess(full.index('## 0b. This week in the family'),
+                        full.index('## 1. Review queue'))
+
+
 if __name__ == '__main__':
     unittest.main()

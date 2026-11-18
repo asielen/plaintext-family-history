@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.4 - 2026-11-18**
+**Version 2.5 - 2026-11-18**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -600,6 +600,8 @@ biography:
   style: chronicle            # chronicle (fact-forward, the default) | narrative (story-driven)
 promotion:
   claims_threshold: 5         # accepted facts on a stub before tools suggest curating it (default 5)
+views:
+  completeness_line: false    # true adds the Records line to each profile's summary lines (§16)
 site:                         # `fha site` presentation
   archive_name: The Hartley Family Archive   # site title (default "Family History Archive")
   hero: hartley-portrait-1895.jpg   # homepage banner: a photo reference, or a mapping
@@ -884,7 +886,7 @@ Per the filename grammars of §13, a person - stub or curated alike (§9) - has,
 In the body sections, factual statements should carry **all relevant citations** - every source that supports the fact - since the body is where corroboration is shown.
 (Tooling may suggest missing citations by matching prose against claims; see `TOOLING.md`.)
 
-**The summary lines** say who the person was in a few plain lines a reader with no tools sees first: `Born`, `Died`, `Married`, `Parents`, `Children`, each fact citing its source, people as `[[p-…|Name]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). Tools write them from **accepted** claims only, as a generated region (§21b) right after the H1 and its purpose block: `fha views summary` (and `fha views refresh`) rewrites the region in place, so it is plain text on disk, readable with no tools, and stale only until the next refresh. A line with nothing accepted behind it is left out; a birth or death known only from a baptism or burial says so (`baptized …`, `buried …`). `Married` lists each wedding in date order, a divorce right after the marriage it ended: a couple who married, divorced and married again shows both weddings. Records of one couple's marriage are one wedding unless a divorce falls between them. **Hand curation stays possible:** delete the two marker comments and the lines become the human's - tools never rewrite summary lines that carry no markers, and the linter cross-checks such hand-written lines against accepted claims and flags drift.
+**The summary lines** say who the person was in a few plain lines a reader with no tools sees first: `Born`, `Died`, `Married`, `Parents`, `Children`, each fact citing its source, people as `[[p-…|Name]]` links (zero-hop - person filenames carry IDs, so searching the link's ID finds the person). Tools write them from **accepted** claims only, as a generated region (§21b) right after the H1 and its purpose block: `fha views summary` (and `fha views refresh`) rewrites the region in place, so it is plain text on disk, readable with no tools, and stale only until the next refresh. A line with nothing accepted behind it is left out; a birth or death known only from a baptism or burial says so (`baptized …`, `buried …`). `Married` lists each wedding in date order, a divorce right after the marriage it ended: a couple who married, divorced and married again shows both weddings. Records of one couple's marriage are one wedding unless a divorce falls between them. With `views: completeness_line: true` in `fha.yaml` (§12.4), tools add one last line, `Records`, the person's completeness (TOOLING §7a): it is generated like the rest of the region and, like the region, never exported. **Hand curation stays possible:** delete the two marker comments and the lines become the human's - tools never rewrite summary lines that carry no markers, and the linter cross-checks such hand-written lines against accepted claims and flags drift.
 
 ### 16a. The purpose block
 

@@ -242,8 +242,10 @@ Write the Born / Died / Married / Parents / Children lines under a person's name
 Write the summary lines under the person's name in their own
 profile, from accepted claims, between GENERATED summary markers.
 Lines a person wrote by hand (no markers) are left alone. Works
-on a stub too. Requires a fresh .cache/index.sqlite (run
-`fha index` first).
+on a stub too. With `views: completeness_line: true` in
+fha.yaml, the lines end with a Records line saying how well
+documented the person is, as `fha metrics` says it. Requires a
+fresh .cache/index.sqlite (run `fha index` first).
 ```
 
 | Argument | What it does |

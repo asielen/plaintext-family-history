@@ -64,8 +64,16 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
    this one session, and it's the only thing `fha site`'s discoveries page and home-page teaser have to
    show — so before this change the write path existed but nothing ever actively pointed at it, and on a
    real archive with 100+ commits of research that produced zero logged discoveries. Ask the offer once,
-   right after narrating §0, then move on to step 3 regardless of the answer — a "no" or no answer at all
+   right after narrating §0, then move on to step 2b regardless of the answer — a "no" or no answer at all
    means don't log anything and don't ask again this run (see Guardrails).
+
+2b. **Then the week in the family (§0b), in a sentence or two.** §0b lists the family's births,
+   marriages, deaths and arrivals that fall today and in the six days after, from accepted claims.
+   Say the one or two that stand out, warmly and plainly: *"And this week: James Robert Bradford and
+   Carol Anne Simmons were married on 14 June 1979 in Fairview, 47 years ago."* Say only what the line says — the date, what happened,
+   who, the place if one is given, how long ago. Add no detail, mood or meaning the line does not
+   carry ("a summer baby", "a happy day"), and don't inflate a quiet week: when §0b says nothing is on
+   file, skip it or say so in one clause. If he wants more, that is the `on-this-day` skill.
 
 3. **Summarize the working state, briefly and in plain language.** Pull the few things that matter and
    skip the rest:
@@ -175,6 +183,8 @@ shortcut for this skill, where one exists. It is safe to run anytime — it only
 
 - In a session on `example-archive`, invoking this skill (e.g. "what should I work on?") runs `fha report`, narrates
   sections 0–8 **discoveries-first**, and offers one concrete next action in plain language.
+- §0b is narrated right after discoveries in one or two sentences that say nothing its lines do not
+  say; an empty week is skipped or named in one clause, never padded.
 - When §0 lists at least one real item, the discoveries narration ends with one offer to log it (*"Want
   me to log any of these as a discovery?"*) — asked once per run, never per item, never repeated once
   he's answered. When §0 is empty (*"No discoveries since last session."*), no offer is made this run.

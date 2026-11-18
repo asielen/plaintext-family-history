@@ -410,6 +410,145 @@ class SummaryRegionTests(unittest.TestCase):
         self.assertIn('## Sources', stripped)
 
 
+class SummaryRecordsLineTests(SummaryRegionTests):
+    """With `views: completeness_line: true` in fha.yaml, the summary lines end
+    with one plain line saying how well documented the person is - the same
+    words `fha metrics` prints - so a grandchild opening the profile sees what
+    is still missing without running a command. Off unless asked for."""
+
+    # Ann's birth, marriage and child records sit on `source_type: vital`
+    # sources, not vital-record ones, and none of her places is registered,
+    # so three checks are short; both parents and her death are on file.
+    LINE = ('**Records:** 2 of 5 - birth from later records only; census country '
+            'unknown (register the place); no marriage record')
+
+    def _setting(self, value: str | None) -> None:
+        text = 'roots:\n  documents: documents\n'
+        if value is not None:
+            text += f'views:\n  completeness_line: {value}\n'
+        (self.root / 'fha.yaml').write_text(text, encoding='utf-8')
+        # The index records the fha.yaml it was built from: rebuild, or the
+        # views refuse it as stale.
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def _records_lines(self) -> list[str]:
+        return [ln for ln in self._region().split('\n') if ln.startswith('**Records:**')]
+
+    def test_off_by_default(self) -> None:
+        self._run(person_id=ANN)
+        self.assertEqual(self._records_lines(), [])
+
+    def test_on_writes_one_records_line_last(self) -> None:
+        self._setting('true')
+        self._run(person_id=ANN)
+        self.assertEqual(self._records_lines(), [self.LINE])
+        lines = [ln for ln in self._region().split('\n') if ln.startswith('**')]
+        self.assertEqual(lines[-1], self.LINE)
+
+    def test_the_line_says_what_fha_metrics_says(self) -> None:
+        import metrics
+        self._setting('true')
+        self._run(person_id=ANN)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            res = metrics.run_metrics(self.root, load_fha_yaml(self.root), person=ANN)
+        score, rest = res.data['person']['summary'].split(': ', 1)
+        self.assertEqual(self.LINE, f'**Records:** {score} - {rest}')
+
+    def test_rerun_with_the_line_on_is_a_no_op(self) -> None:
+        self._setting('true')
+        self._run(person_id=ANN)
+        first = self.profile.read_bytes()
+        self._run(person_id=ANN)
+        self.assertEqual(self.profile.read_bytes(), first)
+
+    def test_turning_it_off_removes_the_line(self) -> None:
+        self._setting('true')
+        self._run(person_id=ANN)
+        self.assertEqual(len(self._records_lines()), 1)
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        self._setting('false')
+        self._run(person_id=ANN)
+        self.assertEqual(self._records_lines(), [])
+        self.assertIn('**Born:** 3 March 1840', self._region())
+
+    def test_a_value_that_is_not_true_or_false_leaves_the_line_out(self) -> None:
+        self._setting('sometimes')
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            views.run_summary(self.root, person_id=ANN)
+        self.assertEqual(self._records_lines(), [])
+        self.assertIn('completeness_line', err.getvalue())
+
+    def test_refresh_writes_the_line_but_starts_no_region_for_it(self) -> None:
+        # A stub with no accepted facts gets no region just to list what is
+        # missing; a person with facts gets the line.
+        bare = self.root / 'people' / 'stubs' / 'x__p-ffffffffff.md'
+        bare.write_text('---\nid: p-ffffffffff\nname: Nobody Yet\nliving: false\n'
+                        'tier: stub\n---\n\n# Nobody Yet\n', encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        self._setting('true')
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            views.run_refresh(self.root)
+        self.assertEqual(self._records_lines(), [self.LINE])
+        self.assertNotIn('GENERATED-BEGIN summary', bare.read_text(encoding='utf-8'))
+
+    def test_living_and_unknown_people_get_the_line_too(self) -> None:
+        # The region never leaves the archive (the export test below), so
+        # the line is written for a living or unknown person like anyone's,
+        # in the engine's own words for them.
+        (self.root / 'sources' / 'vital' / f'r_{S_DEATH}.md').unlink()
+        original = self.profile.read_text(encoding='utf-8')
+        for living, tail in (
+                ('true', 'marked living but born over 130 years ago'),
+                ('unknown', 'no death or burial')):
+            with self.subTest(living=living):
+                self.profile.write_text(
+                    original.replace('living: false', f'living: {living}'), encoding='utf-8')
+                self._setting('true')
+                self._run(person_id=ANN)
+                [line] = self._records_lines()
+                self.assertTrue(line.startswith('**Records:** 1 of 5 - '), line)
+                self.assertTrue(line.endswith(tail), line)
+
+    def test_no_export_carries_the_line(self) -> None:
+        # Site pages, packets and WikiTree text never carry the summary
+        # region (SPEC §21b), so the line cannot reach a shared copy.
+        import importlib.util
+        import packet
+        import wikitree
+        spec = importlib.util.spec_from_file_location('fha_site', ROOT / 'tools' / 'site.py')
+        site_mod = sys.modules.get('fha_site') or importlib.util.module_from_spec(spec)
+        if 'fha_site' not in sys.modules:
+            sys.modules['fha_site'] = site_mod
+            spec.loader.exec_module(site_mod)
+        self._setting('true')
+        self._run(person_id=ANN)
+        self.assertEqual(self._records_lines(), [self.LINE])
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        out = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, out, True)
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            packed = packet.run_packet(self.root, ANN, out / 'packet', no_photos=True)
+            wiki = wikitree._wikitree_payload(self.root, ANN)
+            built = site_mod.run_site(self.root, out / 'site')
+        self.assertEqual(packed['status'], 'ok', packed.get('messages'))
+        copied = '\n'.join(f.read_text(encoding='utf-8')
+                           for f in (out / 'packet').rglob('*.md'))
+        self.assertIn('She lived.', copied)
+        self.assertNotIn('Records:', copied)
+        self.assertEqual(wiki['status'], 'ok', wiki.get('messages'))
+        self.assertIn('She lived.', wiki['text'])
+        self.assertNotIn('Records:', wiki['text'])
+        self.assertEqual(built['status'], 'ok', built.get('messages'))
+        pages = '\n'.join(f.read_text(encoding='utf-8')
+                          for f in (out / 'site').rglob('*.html'))
+        self.assertIn('She lived.', pages)
+        self.assertNotIn('Records:', pages)
+        self.assertNotIn('census country unknown', pages)
+
 
 if __name__ == '__main__':
     unittest.main()

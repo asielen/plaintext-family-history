@@ -167,6 +167,18 @@
 #   completeness_rings: true
 #   calendar: true
 
+# ── A "Records" line in each person's summary (optional) ──
+#   The Born / Died / Married lines at the top of each person's page can end
+#   with one more line saying how well documented that person is and what is
+#   still missing, in the same words `fha metrics` uses, for example:
+#     **Records:** 3 of 5 - no marriage record; censuses 2 of 6 years
+#   It is rewritten every time `fha views refresh` runs, and it stays in your
+#   archive: the family website, packets and WikiTree text never include it.
+#   Set it back to false (or delete the lines) and the next refresh removes it.
+#
+# views:
+#   completeness_line: true    # default false when the key is absent
+
 # ── Active configuration (the defaults; edit these to match your setup) ──
 roots:
   photos: photos
