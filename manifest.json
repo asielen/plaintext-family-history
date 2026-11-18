@@ -679,7 +679,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "176fe9dfcf6b3121ca02a6ff7ff2ee30926e56fd4305bf90b7ed208fb0a42071",
+      "sha256": "6610c477eb6011b12bc204595887263617a246e2bcd4d41ff0b7c5e8a5fd15c5",
       "spec_version": "2.4",
       "src": "tools/_lib.py"
     },
@@ -938,7 +938,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "05f380f3e41d5f2ce45097da7185c7b318ff62b20fd300d9b7ac6dc3e2b1542c",
+      "sha256": "756f8b1391ef471892c00d89b3b9f85295399ddb7e5b4b49b54675c3f7e9d5bf",
       "spec_version": "2.4",
       "src": "tools/site.py"
     },
@@ -1001,14 +1001,14 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "7e217cedd2d8b51cc80fef845723f2d33bea66e192ed6808148bf53f4988d7a1",
+      "sha256": "6fcdcfaa909b9b4ac58d12081a0e725a91f8a05fb409e2eff1b9a179847bd9c7",
       "spec_version": "2.4",
       "src": "tools/templates/index.html"
     },
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "c2532592fdc4474bad78d884588846b90f38019515292432d536260d673b7d2e",
+      "sha256": "b62862b38315f6c6797f178b985e5cc1629ff0775ebb9c9346afa05f20d81220",
       "spec_version": "2.4",
       "src": "tools/templates/person.html"
     },
@@ -1171,7 +1171,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "84eee7a35fb163094aa021eb2ea128a8516ff71799802a8e01ad3f2f2bdac585",
+      "sha256": "a6d48cac800c55b2bd616e9519f8663e4ad3a35bbbb4b36592523a523f0d4dee",
       "spec_version": "2.4"
     },
     {
@@ -1226,7 +1226,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "0de01b0fe85183a4f9ae9b3b170ef3cff6c50e0017ad974b6f04df4aa7450092",
+      "sha256": "860149bfeed4e6e5e907aff9042ab948705403a206eda1104098340860c172e2",
       "spec_version": "2.4",
       "src": "TOOLING.md"
     },
@@ -1270,7 +1270,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "e2b01cd02e34702888b07dc31be8bcc911e200011b765244add2e4ffb8f82aec",
+      "sha256": "a2cbb3f779c6e080e83c0582799ceb7735e0e9e8c2e26489c27de299cf554ca4",
       "spec_version": "2.4",
       "src": "archive-template/fha.yaml"
     },

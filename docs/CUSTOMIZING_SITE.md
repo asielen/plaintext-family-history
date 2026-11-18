@@ -57,6 +57,8 @@ site:
   home_person: P-de957bcda1            # who the homepage family chart is centered on
   home_pedigree_generations: 5         # how many generations of ancestors it shows
   picture_workers: auto                # how many web pictures to make at once
+  completeness_rings: true             # a "how well documented" ring on each person's page
+  calendar: true                       # "This month in the family" on the homepage
 ```
 
 - **`archive_name`** is the title on the masthead of every page.
@@ -80,6 +82,20 @@ site:
   free memory comfortably allow. You can leave this out. Set it to `1` to make them one
   at a time (slower, but gentler on an older computer); the site comes out exactly the
   same either way.
+- **`completeness_rings`** (off unless set to `true`) puts a small ring on each person's
+  page showing how well documented they are: five parts for a birth record, the censuses
+  they lived through, their parents, their marriage records, and a death or burial. A
+  filled part means found, half filled means partly found, an empty outline means not
+  found yet, and a faint dotted outline means it does not apply. A list beside the ring
+  says the same in words. It counts only facts you have accepted, the same way
+  `fha metrics` does. Nobody living, or whose living status is unknown, ever gets a ring,
+  and a record you marked private does not count toward one on the shareable site.
+- **`calendar`** (off unless set to `true`) adds "This month in the family" to the
+  homepage: the births, baptisms, marriages, deaths, burials and arrivals recorded to the
+  month or the day, each name linked to that person's page. Every month is built into the
+  page and the visitor sees their own current month, with all twelve listed below. It
+  uses accepted facts only, and leaves off anything naming a living or private person or
+  resting on a private record.
 
 The photo you name in `image` is handled like every other photo on the site: a
 web-friendly copy is made, its hidden location/camera data is stripped, and if it happens

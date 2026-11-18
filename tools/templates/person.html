@@ -49,6 +49,26 @@
     {% endfor %}
   </dl>
   {% endif %}
+  {% if person.completeness %}
+  {#- fha.yaml `site: completeness_rings: true` (TOOLING §12). One ring
+      segment per check; the list beside it says the same thing in words, so
+      the ring is never the only way to read it. -#}
+  {% set cp = person.completeness %}
+  <details class="chart completeness" open>
+    <summary class="chart-title">How well documented: {{ cp.met }} of {{ cp.applicable }} found</summary>
+    <div class="chart-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start">
+      {{ cp.ring }}
+      <ul class="completeness-checks" style="margin:0">
+        {% for c in cp.checks %}<li class="completeness-{{ c.state }}"><strong>{{ c.label }}</strong>: {{ c.word }}{% if c.detail %} - {{ c.detail }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    <p class="note">Each part of the ring is one kind of record. Filled means found, half filled
+    means partly found, an empty outline means not found yet, and a faint dotted outline means the
+    check does not apply to this person.</p>
+  </details>
+  {% endif -%}
+
   {% if workbench %}
   <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{{ {"person_id": person.display_id, "subject_name": person.name} | tojson }}'>Add a milestone&hellip;</button>
     <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
