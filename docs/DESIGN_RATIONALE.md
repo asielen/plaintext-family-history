@@ -325,6 +325,41 @@ promise is to be the trustworthy record.
 everyone a marriage record names (that would make a man his father-in-law's
 husband). Silent fallbacks that produce an answer when the record gave none.
 
+### Completeness metrics
+
+**What we do.** `fha metrics` scores each person on five checks (birth record,
+censuses, parents, marriage records, death) and computes them fresh every run.
+It counts accepted claims by default and counts suggested claims too on
+request (`--include-suggested`). A death is asked of everyone marked
+`living: false`, and of anyone whose status is unknown only once they were
+born more than 130 years ago. Census years are asked in each country the
+person's own records place them, from birth (or their first record there) to
+death; with no death year the check is never met.
+
+**Why.** Accepted-only is the standard view because it matches what the
+archive has settled, and SPEC's own vital completeness reads it that way. The
+include-suggested view exists because a score that only rises when claims are accepted
+rewards accepting, which is the habit the review contract exists to slow down.
+Both views come from one engine, so neither can drift from the other. Past 130
+years there is no doubt a person has died, so a missing death is a real gap;
+short of that, a missing death may be a living person, and asking for it would
+fill the list with people nobody can do anything about. `living: false` is
+the owner saying the person has died, so their death is owed at any age, the
+same rule lint W101 applies; one archive must not get two answers to that
+question. The census rule is deliberately simple: a stay abroad shows as a
+gap the owner can see and judge, because a confident wrong "complete" is the
+worst thing this check can say, and an unknown death year means later
+censuses may still be out there.
+
+**What we rejected.** A `living_confirmed:` date on the person record, so an
+owner could record when someone was last known alive. It would be a new field
+to maintain for a check that the 130-year rule answers without one. Inferring a
+person's country from free-text places: the census check reads only the place
+registry, and says "can't tell" rather than guess. Modelling migration
+(reading immigration claims as moves, so years abroad are not asked): every
+rule for arrivals, returns and deaths abroad opens a new way to hide a real
+gap behind a "complete", and none of them can be stated in a sentence.
+
 ---
 
 ## 6. Deferred until needed: events and organizations

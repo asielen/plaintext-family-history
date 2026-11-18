@@ -672,16 +672,23 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "f09d9a093640f9c0eaa67efe1172a62bca700eac4c032478c58989dcb7e5a443",
+      "sha256": "9b11592644719476f933c60222397d5e2209b31760d35eb65c109a1278da3863",
       "spec_version": "2.4",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "3fecebd75fa8f4e58d4c75a1125e8bd4770a8922c02cec76df21dcdca9a86f93",
+      "sha256": "176fe9dfcf6b3121ca02a6ff7ff2ee30926e56fd4305bf90b7ed208fb0a42071",
       "spec_version": "2.4",
       "src": "tools/_lib.py"
+    },
+    {
+      "path": ".fha/tools/anniversaries.py",
+      "category": "operating",
+      "sha256": "6f49e5cb7613731d622ceb3f4eaa320afb9e76bca801fa82a3b44ae5547796fb",
+      "spec_version": "2.4",
+      "src": "tools/anniversaries.py"
     },
     {
       "path": ".fha/tools/backup.py",
@@ -777,7 +784,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "d6e185f3985dbcdb93286e9d787a241878912bf0ab73c74cf3956b06bddcbd3c",
+      "sha256": "32c2bfaedac3b1d7d8d5eb83d97df608e86a604aa6e0ec82ee347e51855b8834",
       "spec_version": "2.4",
       "src": "tools/fha.py"
     },
@@ -829,6 +836,13 @@
       "sha256": "a92aa1f6ae6aa8f3ef7feb94c4e1df640da1acae0f977778a3562de4f10fedcb",
       "spec_version": "2.4",
       "src": "tools/media.py"
+    },
+    {
+      "path": ".fha/tools/metrics.py",
+      "category": "operating",
+      "sha256": "d3d129d9dff9b23d9f304ecc3f107d52677544198f5287070bb11801a68a57dc",
+      "spec_version": "2.4",
+      "src": "tools/metrics.py"
     },
     {
       "path": ".fha/tools/normalize_links.py",
@@ -1120,7 +1134,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8463490f9e49576042c8c4585737752c9657be776b76090705226e1d1b1c6494",
+      "sha256": "39d711add0508f9fc8901a0ef21280bc12e7ab82e0279034f93c574047950ec6",
       "spec_version": "2.4"
     },
     {
@@ -1139,13 +1153,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "5be43ac2a5c256257f3d378752c853e93d81022deff61d94b2af8eeb2f945d4f",
+      "sha256": "241a078e0d55578a5fc2c5b7c5f7d7172c73a154f186cc717b999669d5615153",
       "spec_version": "2.4"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "0eb4a488dd4285a024886bd06c9475833fa87dd47db8f5e1cb0b162e1ccc31b0",
+      "sha256": "ca085426120da776ae8f0ddd7b7af5261198af89d8289e06fb91959d8cbc66f0",
       "spec_version": "2.4"
     },
     {
@@ -1163,7 +1177,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "7f4b8348b82468a113a260e9a69b168064081358d504d9c79244a2897086cf6e",
+      "sha256": "f3eb07ba6e461fe2ca00f67b1a2f9daf35cc599933385060a8a082abe6b5c72b",
       "spec_version": "2.4"
     },
     {
@@ -1212,7 +1226,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "9f08e20fb93568620a6fca6c8b57e2a877c2054383a4a3775409f335da7d2189",
+      "sha256": "0de01b0fe85183a4f9ae9b3b170ef3cff6c50e0017ad974b6f04df4aa7450092",
       "spec_version": "2.4",
       "src": "TOOLING.md"
     },

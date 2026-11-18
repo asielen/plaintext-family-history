@@ -47,6 +47,7 @@ lives only in `_lib.py`.
 | Module | What it is |
 |---|---|
 | `_lib.py` | shared library for all fha tools |
+| `anniversaries.py` | fha calendar: family births, marriages, deaths and arrivals by month and day (TOOLING §7b) |
 | `backup.py` | fha backup: a dated zip snapshot of the archive |
 | `capture.py` | fha capture: the web-record intake on-ramp (TOOLING §13b) |
 | `claim.py` | fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8) |
@@ -62,6 +63,7 @@ lives only in `_lib.py`.
 | `index.py` | fha index: build the SQLite query surface |
 | `lint.py` | fha lint: verify the archive against the spec |
 | `media.py` | fha media: content-hash dedupe and recording-metadata probe for incoming audio and video |
+| `metrics.py` | fha metrics: person completeness checks and archive totals (TOOLING §7a) |
 | `normalize_links.py` | fha normalize-links: settle citations to their canonical form |
 | `packet.py` | fha packet: build a person data-export packet |
 | `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c) |
