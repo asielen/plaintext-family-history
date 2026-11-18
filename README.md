@@ -16,7 +16,7 @@ You need three things on your computer:
 
 - **Python 3.10 or newer** from [python.org](https://www.python.org/downloads/). On Windows, tick "Add Python to PATH" in the installer.
 - **This repo**, either cloned with git or downloaded as a zip (green "Code" button, then "Download ZIP"). If you take the zip, [`docs/SETUP_FROM_ZIP.md`](docs/SETUP_FROM_ZIP.md) covers the few differences.
-- **[Claude Code](https://www.anthropic.com/claude-code)**, the AI assistant the archive is run through. Any assistant that reads `AGENTS.md` and can run commands will work; the docs assume Claude Code.
+- **An AI coding assistant**, which runs the archive with you: [Claude Code](https://www.anthropic.com/claude-code) or OpenAI's [Codex](https://developers.openai.com/codex). Both read the project's rules and skills on their own. Any assistant that reads `AGENTS.md` and can run commands will work; the docs assume Claude Code.
 
 Then, in a terminal opened in this repo's folder:
 
@@ -38,7 +38,7 @@ Then, in a terminal opened in this repo's folder:
 
 3. **Tell it where your photos and scans live.** Open `fha.yaml` in the new folder with a text editor. The examples are commented right in the file (a local folder, an external drive, an existing photo library). If you are starting from nothing, leave the defaults.
 
-4. **Open the new folder in Claude Code** and say:
+4. **Open the new folder in Claude Code or Codex** and say:
 
    > Let's do the setup interview.
 
@@ -80,13 +80,13 @@ Two more rules keep the archive honest over time. Prose without a citation is st
 
 [`SPEC.md`](SPEC.md) is the full specification. [`docs/DESIGN_RATIONALE.md`](docs/DESIGN_RATIONALE.md) explains why each part is shaped the way it is and what was considered and rejected.
 
-## Quick start with Claude Code
+## Quick start with Claude Code or Codex
 
-If you would rather not follow the steps yourself, open this repo in Claude Code and ask:
+If you would rather not follow the steps yourself, open this repo in Claude Code or Codex and ask:
 
 > Get me started with my own family archive.
 
-It checks Python and the helper packages and creates your archive with `fha install` in a folder outside this repo. Then it tells you to open that new folder for the setup interview. From then on, do your family work in a Claude Code session opened in your archive, not in this repo. The archive carries its own copy of the rules, its own tools and its own skills (processing an inbox, reviewing claims, finding photos, writing a biography), so it keeps working even if this repo disappears.
+It checks Python and the helper packages and creates your archive with `fha install` in a folder outside this repo. Then it tells you to open that new folder for the setup interview. From then on, do your family work in a session opened in your archive, not in this repo. The archive carries its own copy of the rules, its own tools and its own skills (processing an inbox, reviewing claims, finding photos, writing a biography), so it keeps working even if this repo disappears.
 
 ## More detail
 
@@ -128,7 +128,8 @@ plaintext-family-history/
 ├── README.md            you are here
 ├── SPEC.md              the specification: the data model, the file format, the rules
 ├── TOOLING.md           how the fha tools are built, and in what order (+ TOOLING_INGESTION.md, TOOLING_INTERFACE.md)
-├── AGENTS.md            the rules the AI assistant follows (CLAUDE.md points Claude Code here)
+├── AGENTS.md            the rules the AI assistant follows (Codex reads it; CLAUDE.md points Claude Code here)
+├── .claude/skills/      the assistant's workflow skills (archives also get them in .agents/skills/ for Codex)
 ├── docs/                the owner's manual, copied into every archive
 │   ├── GETTING_STARTED.md   the first-day guide
 │   ├── CHEATSHEET.md        one printable page

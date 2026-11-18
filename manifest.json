@@ -4,6 +4,195 @@
   "generated": "2026-11-17",
   "files": [
     {
+      "path": ".agents/skills/README.md",
+      "category": "operating",
+      "sha256": "37a7c0f0782dfbaaca22107a4c9a115366ffa3a9027d870f7b586eeae3bc4047",
+      "spec_version": "2.3",
+      "src": ".claude/skills/README.md"
+    },
+    {
+      "path": ".agents/skills/_STANDARD.md",
+      "category": "operating",
+      "sha256": "527fed6146876d13f360f42ed3c7e53b9cc85e59db09a2503b17f5d89fec8009",
+      "spec_version": "2.3",
+      "src": ".claude/skills/_STANDARD.md"
+    },
+    {
+      "path": ".agents/skills/find-photos/SKILL.md",
+      "category": "operating",
+      "sha256": "289a427620f64ccd35c7220553a57e48bc5d7bd441c5bd6d64ff268bca663089",
+      "spec_version": "2.3",
+      "src": ".claude/skills/find-photos/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/import-notes/SKILL.md",
+      "category": "operating",
+      "sha256": "388f9b2d5bed574266461b874f0f73322a72b9dfb7f5a6b6a8342e8e2b39f439",
+      "spec_version": "2.3",
+      "src": ".claude/skills/import-notes/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/import-recordings/GAP.md",
+      "category": "operating",
+      "sha256": "290149bcb4717b6d361100c88855f88beeac6a41e33dd3214f45878e8499fdea",
+      "spec_version": "2.3",
+      "src": ".claude/skills/import-recordings/GAP.md"
+    },
+    {
+      "path": ".agents/skills/import-recordings/SKILL.md",
+      "category": "operating",
+      "sha256": "47e7bebe82579d2f2e76b1d550fcd13bc7ee1f66fa44843f96b31d6f2ba5343b",
+      "spec_version": "2.3",
+      "src": ".claude/skills/import-recordings/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/import-recordings/scripts/attribute_speakers.py",
+      "category": "operating",
+      "sha256": "25682defff941916a1b1e6245056d77ce263fad9137e44fd9e44ecb5873e25f1",
+      "spec_version": "2.3",
+      "src": ".claude/skills/import-recordings/scripts/attribute_speakers.py"
+    },
+    {
+      "path": ".agents/skills/import-recordings/scripts/find_duplicate_media.py",
+      "category": "operating",
+      "sha256": "c9d7856a37d947fa944e88462f9bb040333dbe2d4cc3b19a867fcef228f124c5",
+      "spec_version": "2.3",
+      "src": ".claude/skills/import-recordings/scripts/find_duplicate_media.py"
+    },
+    {
+      "path": ".agents/skills/merge-identities/GAP.md",
+      "category": "operating",
+      "sha256": "95781410c0d03d6e26ac17b63eaa05b727fb4c4f98b7a614b96f639fb2c3139e",
+      "spec_version": "2.3",
+      "src": ".claude/skills/merge-identities/GAP.md"
+    },
+    {
+      "path": ".agents/skills/merge-identities/SKILL.md",
+      "category": "operating",
+      "sha256": "17ef8320a74ce52ce6ee80ed262acfe8bce78732f1047056a731538643b2bc9c",
+      "spec_version": "2.3",
+      "src": ".claude/skills/merge-identities/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/mine-transcript/SKILL.md",
+      "category": "operating",
+      "sha256": "6830e1a89146246f2ba76b1bd4a72bc1beec7b0c76cf419c1ce40527b186c669",
+      "spec_version": "2.3",
+      "src": ".claude/skills/mine-transcript/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/photo-context/DESIGN.md",
+      "category": "operating",
+      "sha256": "c7eb10bbc6a03b7d5ff9121d2265194521f236175015747a2dd52544559d5557",
+      "spec_version": "2.3",
+      "src": ".claude/skills/photo-context/DESIGN.md"
+    },
+    {
+      "path": ".agents/skills/photo-context/SKILL.md",
+      "category": "operating",
+      "sha256": "29d7289d6a6bfb35b840981b20b7c00edd66c4ef7d1bb077ac6d610d028f1547",
+      "spec_version": "2.3",
+      "src": ".claude/skills/photo-context/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/place-research/SKILL.md",
+      "category": "operating",
+      "sha256": "88677ba9192e284f4c9d76ecef4c008fc1c9e29e23d883a7dfca8a9c9101dd10",
+      "spec_version": "2.3",
+      "src": ".claude/skills/place-research/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/process-source/SKILL.md",
+      "category": "operating",
+      "sha256": "6503d8c3a65793c2c06bab8e67c8f816e4417aaa419d75bce8280771d15a9645",
+      "spec_version": "2.3",
+      "src": ".claude/skills/process-source/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/reconcile-site-edits/SKILL.md",
+      "category": "operating",
+      "sha256": "017222403c6d9f7f1556a33278deeb4c717df632b4fbf268fe8ddf8fd9c2c1cb",
+      "spec_version": "2.3",
+      "src": ".claude/skills/reconcile-site-edits/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/research-next/SKILL.md",
+      "category": "operating",
+      "sha256": "31ea0be3c1266b76aacfecabd4a0ff6f930f0fe2065cfedf3942bfdc85b765c8",
+      "spec_version": "2.3",
+      "src": ".claude/skills/research-next/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/review-claims/SKILL.md",
+      "category": "operating",
+      "sha256": "dcf07d56292870be1f02f5919818c61a8689e456824d780ec8c45262d8e8b9c0",
+      "spec_version": "2.3",
+      "src": ".claude/skills/review-claims/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/setup-interview/SKILL.md",
+      "category": "operating",
+      "sha256": "678e745eba10bf40e13425e6d046a6bf5d24582d962fe903e569b7163471d4d4",
+      "spec_version": "2.3",
+      "src": ".claude/skills/setup-interview/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/share-and-export/SKILL.md",
+      "category": "operating",
+      "sha256": "7e75f2eb6978c8ce04f86748d982688c020944391a2783828b2a31265d3fc116",
+      "spec_version": "2.3",
+      "src": ".claude/skills/share-and-export/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/today/SKILL.md",
+      "category": "operating",
+      "sha256": "957ac7b067bfe77f2d7d14384eeb574942c33f38c85e7c20152237b35a181305",
+      "spec_version": "2.3",
+      "src": ".claude/skills/today/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/transcribe-audio/GAP.md",
+      "category": "operating",
+      "sha256": "5264b56d196b52b72d1bffa89f2d2c9444e9292a220a6e51b52967e9afdc614f",
+      "spec_version": "2.3",
+      "src": ".claude/skills/transcribe-audio/GAP.md"
+    },
+    {
+      "path": ".agents/skills/transcribe-audio/SKILL.md",
+      "category": "operating",
+      "sha256": "0749c0c0b2be6299ea55da27cc1e39fb2722d2761c594596a0994be4b6ab1ae0",
+      "spec_version": "2.3",
+      "src": ".claude/skills/transcribe-audio/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/transcribe-audio/scripts/transcribe_audio.py",
+      "category": "operating",
+      "sha256": "a170e0a51c18072062c4a3d0b7bc51704c19b8365f157d08e1e6e28d32ebf1bd",
+      "spec_version": "2.3",
+      "src": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py"
+    },
+    {
+      "path": ".agents/skills/transcribe-source/GAP.md",
+      "category": "operating",
+      "sha256": "907240bbb53b753e655537d8e212255f1f313b617bb56b4389a2ea8e23b19fc0",
+      "spec_version": "2.3",
+      "src": ".claude/skills/transcribe-source/GAP.md"
+    },
+    {
+      "path": ".agents/skills/transcribe-source/SKILL.md",
+      "category": "operating",
+      "sha256": "20b97a62a6e0b176af34b7462cdee1f36529604b31ba2d6f3c8a7671ef14d395",
+      "spec_version": "2.3",
+      "src": ".claude/skills/transcribe-source/SKILL.md"
+    },
+    {
+      "path": ".agents/skills/write-biography/SKILL.md",
+      "category": "operating",
+      "sha256": "29d07489cb8753559fc5f80072a2cd03b9d7151b02a2fb416de0151a9ea5eb03",
+      "spec_version": "2.3",
+      "src": ".claude/skills/write-biography/SKILL.md"
+    },
+    {
       "path": ".claude/skills/README.md",
       "category": "operating",
       "sha256": "37a7c0f0782dfbaaca22107a4c9a115366ffa3a9027d870f7b586eeae3bc4047",
@@ -721,7 +910,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "506bf131c0eab3ebf681e1138cd76d7600286d2063f46653722e327e281f1ff4",
+      "sha256": "b016a784599b7d44313a644b0044bd77bedadc5f6cde8ba722552d5b6039114a",
       "spec_version": "2.3",
       "src": "tools/scaffold.py"
     },
@@ -931,13 +1120,13 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "db1d0779ffd817c17cc3c652146591530393e301e140b8ff0d355584f930e020",
+      "sha256": "412ad21369869203dcc7e87e363844fb10c72b2eff6f464ec37b5831b641adf5",
       "spec_version": "2.3"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
-      "sha256": "c6a01dfb81aa5d19af1d068e1698e838efda8e2bead948a316c36bac8f8bd5d4",
+      "sha256": "ae53b112855f1d47492634b4dcce527e10233782db0b6c8ac6c2e7ce7b12b0da",
       "spec_version": "2.3"
     },
     {
@@ -980,7 +1169,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "8e2447476980797c4ae4e9a4f8b1b42371cbe91a077a78e80e07aac6f38a28b6",
+      "sha256": "71976295b727d0210e7c7e583680478e6d263d2af8a838124aaf44980b346104",
       "spec_version": "2.3"
     },
     {
@@ -992,7 +1181,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "9067640dd1adea0b46dc50488935b5460714b25bf0f6599e9356d53ac469bf1d",
+      "sha256": "406f701e2eb2a55a6869c0058c3ae9a4f33571439754d59bb0356405651e21db",
       "spec_version": "2.3"
     },
     {
@@ -1023,7 +1212,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "10dac9fe357b0b047c78089d65630b4beb3fd804baa87609aec7a6bc4d11ba66",
+      "sha256": "bdd7812ef0f43556c5a2fc75e41f701ff8d918cb2270be3c4703285cad45e0a9",
       "spec_version": "2.3",
       "src": "TOOLING.md"
     },

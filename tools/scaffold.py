@@ -306,6 +306,9 @@ _ROOT_LAUNCHERS = (
 # with no workshop clone. Its dev furniture stays home (_VENDOR_EXCLUDE_*).
 _OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
                        '.claude/skills')
+# Where each coding agent looks for skills in an archive (see _operating_files).
+_CLAUDE_SKILLS_PREFIX = '.claude/skills/'
+_AGENTS_SKILLS_PREFIX = '.agents/skills/'
 
 # The archive subfolder that holds the vendored machinery, so a real archive's
 # root reads as the genealogy - not the tooling. The install remaps the movable
@@ -553,6 +556,13 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
                 f'{_VENDOR_DIR}/{rel}'
                 if moved or rel in _VENDORED_DOCS else rel)
             out.append((archive_path, p))
+            # The skills are plain SKILL.md folders (the open Agent Skills
+            # format), so the archive works with whichever coding agent the
+            # owner uses: Claude Code reads `.claude/skills/`, Codex reads
+            # `.agents/skills/`. One source in this repo, two install paths,
+            # so the copies can never drift apart.
+            if rel.startswith(_CLAUDE_SKILLS_PREFIX):
+                out.append((_AGENTS_SKILLS_PREFIX + rel[len(_CLAUDE_SKILLS_PREFIX):], p))
 
     return out
 

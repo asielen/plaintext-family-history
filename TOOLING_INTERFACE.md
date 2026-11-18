@@ -28,7 +28,7 @@ The configuration below is what makes any conforming harness genealogy-aware, an
 
 **Vendor-lock prevention rules.**
 1. **`AGENTS.md` is canonical.** All agent operating instructions live there, in plain markdown, harness-agnostic. `CLAUDE.md` is a one-line deferral (`Read and follow AGENTS.md.`) plus, at most, Claude-Code-specific notes. Any other harness's convention file (e.g. for Codex or Gemini CLI) gets the same one-line deferral.
-2. **Skills are portable.** Workflow skills live in `.claude/skills/{name}/SKILL.md` using the open SKILL.md standard (adopted beyond Claude Code); they contain instructions and `fha` invocations only - no harness APIs.
+2. **Skills are portable.** Workflow skills live in `.claude/skills/{name}/SKILL.md` using the open SKILL.md standard, and an installed archive carries an identical copy in `.agents/skills/` so Codex finds them too; they contain instructions and `fha` invocations only - no harness APIs.
 3. **No harness-only state is load-bearing.** Session memory, harness caches, and MCP configurations are disposable; anything worth keeping is written into archive records. Switching harnesses must cost one afternoon, not a migration.
 4. The harness's "knowledge" of the archive is the **index and the `fha` tools**, never bulk file ingestion - ten thousand photos cost zero context because photo questions are `fha photoindex` calls.
 

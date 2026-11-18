@@ -410,7 +410,8 @@ command in it re-run, so document what you actually ran.
 
 ### Playbooks (workflow skills)
 
-Seventeen workflow playbooks live at `.claude/skills/{name}/SKILL.md` - portable markdown
+Seventeen workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds
+them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them) - portable markdown
 procedures, `fha` invocations and judgment only, no harness APIs (the standard they follow is
 `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the
 human's own words ("process the inbox", "review the census claims", "are these the same
