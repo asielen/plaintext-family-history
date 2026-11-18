@@ -33,16 +33,16 @@ re-scraped via exiftool (the slow step). Face-region metadata is cached in
 SQLite alongside keywords, so grouping, person resolution, and the FTS table
 can be recomputed in full after every scan from already-scraped rows.
 
-BUILD.md M3.4 added `fha photoindex reconcile` and `fha photoindex
-tag-person`, the two sub-commands that touch on-disk state or embedded
-metadata, completing layer 3. `reconcile` heals drift between the catalog's
+`fha photoindex reconcile` and `fha photoindex
+tag-person` are the two sub-commands that touch on-disk state or embedded
+metadata. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
 re-matched by its embedded `SOURCE:` keyword, or - for a photo that is not
 a source - by the content fingerprint each scan stores for it (#49), never
 by trusting the old path); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
 tag` name - making a human identification durable in the file itself.
-BUILD.md M3.5 adds `fha photoindex set-summary`, the second embedded-
+`fha photoindex set-summary` is, the second embedded-
 metadata write path: it rewrites a photo's AI summary (`UserComment`,
 SPEC §20 rule 5) while preserving any human-written comment text verbatim,
 addressed by one catalog path or a whole variation group so fronts/backs/
@@ -100,7 +100,7 @@ CODE MAP
                                  tie-break (shared: full rebuild + reconcile)
     _group_photos             - assign group_id/is_primary/variant_role; build photo_groups
 
-  Query (fha photoindex find - M3.2)
+  Query (fha photoindex find)
     _paths_by_person/_keyword/_edtf/_text - one matching-path set per filter
     _group_keys_for           - map each path to its group key (group_id or singleton)
     _primary_path_for         - the primary_path of a group_id
@@ -131,15 +131,15 @@ CODE MAP
      shared with views via _lib: load_view_css / render_template /
      write_generated_file / archive_title)
 
-  Triage (fha photoindex triage - M3.3)
+  Triage (fha photoindex triage)
     _candidate_groups         - groups with no source_id on any member (unprocessed)
     _score_group              - TOOLING §15b evidence-signal score for one group
     run_triage                - rank candidates, return top N
 
-  Report (fha photoindex report - M3.3)
+  Report (fha photoindex report)
     run_report                - list photo_groups with date_conflict=1, all variants' dates/captions
 
-  Reconcile (fha photoindex reconcile - M3.4)
+  Reconcile (fha photoindex reconcile)
     _hold_cache_stale         - backdate photos.sqlite so it keeps reading 'stale'
                                  (shared with run_scan; False when the hold failed)
     _move_cached_path         - rename one cached path across every path-keyed table
@@ -153,7 +153,7 @@ CODE MAP
     run_reconcile             - re-match moved files by source_id, then by content
                                  fingerprint; flag the rest as MISSING
 
-  Tag-person (fha photoindex tag-person - M3.4)
+  Tag-person (fha photoindex tag-person)
     run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
     BACKUP_MESSAGE_CODE       - the Message code carrying safety-copy notices (§13f)
     _add_backup_messages      - fold the run's safety-copy notices into a Result
@@ -164,7 +164,7 @@ CODE MAP
     _refresh_photo_fts_keywords - resync photo_fts.keywords for just-tagged paths
     apply_tag_person          - write the P-id keyword + update photo_keywords/photo_people/photo_fts
 
-  Set-summary (fha photoindex set-summary - M3.5)
+  Set-summary (fha photoindex set-summary)
     _trailing_ai_block_start  - locate a mixed comment's clearly-delimited trailing AI block
     _compose_user_comment     - pure compose rule: AI text replaces AI text; human text
                                  is preserved verbatim (a mixed comment's trailing AI
@@ -718,7 +718,7 @@ def _run_exiftool(paths: list[Path], fields: list[str] | None = None) -> list[di
     full `_EXIFTOOL_FIELDS`); reconcile's record pass asks for keywords only.
 
     This is the seam a test harness replaces to inject pre-cooked JSON
-    without requiring exiftool on PATH (BUILD.md layer-3 fixture note) -
+    without requiring exiftool on PATH (tests/fixtures/photo-fixture/) -
     keep its signature (list of paths in, list of JSON-row dicts out)
     stable. `-n` forces numeric GPS output (default exiftool formats GPS as
     a DMS string); `-struct` is required for RegionInfo to come back as a
@@ -1429,7 +1429,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
             )
 
 
-# ── Query (fha photoindex find - BUILD.md M3.2) ──────────────────────────
+# ── Query (fha photoindex find) ────────────────────────────────────
 
 def _paths_by_person(conn: sqlite3.Connection, person_id: str) -> set[str]:
     return {
@@ -2720,7 +2720,7 @@ def _today_iso() -> str:
     return time.strftime('%Y-%m-%d', time.localtime())
 
 
-# ── Triage (fha photoindex triage - BUILD.md M3.3) ───────────────────────
+# ── Triage (fha photoindex triage) ─────────────────────────────────
 
 _AI_COMMENT_RE = re.compile(r'^\s*(AI|Model):', re.I)
 
@@ -2844,8 +2844,8 @@ def run_triage(
     (TOOLING §15b) and return a Result whose data is {'status': ..., 'candidates': [...]}.
 
     Each candidate is {'path': primary_path, 'score': int, 'signals': [...]}.
-    Consumed almost entirely through the report's triage section (BUILD.md
-    M5.3); this command is the standalone, directly-callable form.
+    Consumed almost entirely through the report's triage section (TOOLING
+    §15b); this command is the standalone, directly-callable form.
 
     `under`/`not_under` (#35) scope the ranking to (or away from) a subtree,
     with the same any-variant group semantics and the same matcher
@@ -2885,7 +2885,7 @@ def run_triage(
     return _query_photoindex(archive_root, fha_config, {'candidates': []}, query)
 
 
-# ── Report (fha photoindex report - BUILD.md M3.3) ────────────────────────
+# ── Report (fha photoindex report) ──────────────────────────────────
 
 def run_report(archive_root: Path, fha_config: dict) -> Result:
     """
@@ -2921,7 +2921,7 @@ def run_report(archive_root: Path, fha_config: dict) -> Result:
     return _query_photoindex(archive_root, fha_config, {'conflicts': []}, query)
 
 
-# ── Reconcile (fha photoindex reconcile - BUILD.md M3.4) ─────────────────
+# ── Reconcile (fha photoindex reconcile) ───────────────────────────
 
 def _hold_cache_stale(db_path: Path, behind_mtimes: list[float]) -> bool:
     """Pull photos.sqlite's mtime back behind those file times; True if it took.
@@ -3574,7 +3574,7 @@ def run_reconcile(
     )
 
 
-# ── Tag-person (fha photoindex tag-person - BUILD.md M3.4) ───────────────
+# ── Tag-person (fha photoindex tag-person) ─────────────────────────
 
 def run_tag_person_plan(
     archive_root: Path,
@@ -3905,7 +3905,7 @@ def apply_tag_person(
     return _add_backup_messages(result, backup)
 
 
-# ── Set-summary (fha photoindex set-summary - BUILD.md M3.5) ─────────────
+# ── Set-summary (fha photoindex set-summary) ───────────────────────
 
 # A blank line (tolerating \r\n and stray spaces) followed by the AI marker -
 # the paragraph boundary _compose_user_comment itself writes between a human

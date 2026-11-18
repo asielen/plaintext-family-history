@@ -28,7 +28,7 @@ fha id check <ID> is wired as an alias in fha.py.  The canonical
 implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
 Design decisions in TOOLING §4a:
-  D4: --related implemented (BUILD.md M4.3), after fha xref / fha cooccur.
+  D4: --related is built after fha xref / fha cooccur.
       It is a pure read-only query over the index - no schema change, no
       writes. Unlike find_by_id, --related requires a real index (the
       relational joins it runs have no meaningful tree-scan fallback): an
@@ -135,7 +135,7 @@ configure_utf8_stdout()
 #    _indexed_transcript_paths - which paths transcripts_fts holds (for the regex pass)
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
-#  --related (M4.3): neighborhood queries over the relational index
+#  --related: neighborhood queries over the relational index
 #    (opened via _lib.open_index_db with the full relational table set - see
 #    _RELATED_REQUIRED_TABLES below)
 #    _related_person           - P-id world: edges, co-occurrence, places, hubs, sources, photos
@@ -1176,7 +1176,7 @@ def _find_text(
     return EXIT_WARNINGS if text_unreadable else EXIT_CLEAN
 
 
-# ── --related (M4.3): neighborhood queries over the relational index ────────
+# ── --related: neighborhood queries over the relational index ────────
 
 # Unlike _open_index (used by find_by_id, which can fall back to a tree
 # scan), --related's joins across relationships/claim_links/claim_persons
@@ -2918,7 +2918,7 @@ def run_find(
 ) -> Result:
     """
     Top-level dispatcher; prints the report and returns a Result:
-      - --related <ID> [--date E]  → run_related (M4.3, Design decision D4)
+      - --related <ID> [--date E]  → run_related (Design decision D4)
       - --related --date <EDTF>    → run_related, standalone time-slice (related_id None)
       - --text "phrase"            → full-text search
       - bare valid ID               → find_by_id

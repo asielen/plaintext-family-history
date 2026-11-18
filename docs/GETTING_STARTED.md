@@ -125,16 +125,17 @@ Plaintext is *operated* through an AI coding assistant - it reads the project's 
 `fha` commands, and drafts sourced facts for you to approve. You never have to memorize a
 command; you ask in plain English. The reference assistant is
 **[Claude Code](https://www.anthropic.com/claude-code)** - follow the install instructions on
-that page. (Any assistant that can read `AGENTS.md` and run shell commands works; Claude Code is
-the one this guide assumes.)
+that page. OpenAI's **Codex** works the same way: it reads `AGENTS.md` directly and finds the
+workflow skills in `.agents/skills/`. (Any assistant that can read `AGENTS.md` and run shell
+commands works; Claude Code is the one this guide assumes.)
 
 **Did it work?** Open the project folder in your assistant and ask it something simple, like:
 
 > "What is this project, and what mode should we work in?"
 
 If it answers by describing a family-history archive and proposes **research mode**, the rules
-loaded correctly and you're ready. (It reads them from `CLAUDE.md` → `AGENTS.md` automatically -
-you don't have to point it at anything.)
+loaded correctly and you're ready. (Claude Code reads them through `CLAUDE.md`, Codex reads `AGENTS.md`
+directly - you don't have to point either at anything.)
 
 ---
 

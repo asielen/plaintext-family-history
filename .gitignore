@@ -26,7 +26,7 @@ example-archive/generated/views/
 # …) is real archive content and must stay trackable.
 /out/
 # ...same disposable-output reasoning applies to the example-archive fixture's
-# own packet exports (BUILD.md's acceptance-test step writes to
+# own packet exports (running `fha packet` against it writes to
 # example-archive/out/ by the packet command's own default).
 example-archive/out/
 

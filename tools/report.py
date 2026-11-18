@@ -13,8 +13,8 @@ start the top item.
 ARCHITECTURE OVERVIEW
 ----------------------
 `fha report` is the one tool in the suite explicitly designed to call other
-tools' logic directly rather than treat them as black boxes (BUILD.md M5.1:
-"call tool logic directly, not subprocess").  It imports `index`, `lint`,
+tools' logic directly rather than treat them as black boxes ("call tool logic directly,
+not subprocess").  It imports `index`, `lint`,
 `photoindex`, and `cooccur` as modules and calls their `run_*`/`build_index`/
 `_run_lint_core` entry points in-process.  Every other tool in this suite
 follows the "tools never import other tools" rule; report is the orchestrator
@@ -36,7 +36,7 @@ of `--full`/`--section` (the report's own freshness, not its diffing baseline):
 SNAPSHOT
 --------
 `.cache/last_report.json` is intentionally a superset of the minimal example
-in BUILD.md/TOOLING §15a: alongside `source_ids`/`person_ids`/`claim_statuses`
+in TOOLING §15a: alongside `source_ids`/`person_ids`/`claim_statuses`
 it also stores per-claim status, claim_links, relationship edges, the W101
 vitals-gap person set, and per-question status - the extra bookkeeping a
 "what changed since last time" diff needs that aggregate counts alone cannot
@@ -1151,8 +1151,8 @@ def _place_text_group_line(
 
 def _fetch_place_candidates(archive_root: Path, fha_config: dict) -> tuple[dict | None, str | None]:
     """
-    The one `places.run_candidates()` call a report run makes (BUILD.md
-    M6.2), shared by both `_section_place_candidates` (§6b's own listing)
+    The one `places.run_candidates()` call a report run makes (TOOLING
+    §10), shared by both `_section_place_candidates` (§6b's own listing)
     and `_place_text_escalations` (the oversight-threshold banner, issue #79
     point 2).
 

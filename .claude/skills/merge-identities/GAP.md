@@ -6,7 +6,7 @@ the spec-discovery; there is no live gap and no interim path.
 
 ## What the gap was
 
-The design (TOOLING_INTERFACE.md §2.2, BUILD_INTERFACE.md MI3.1) says the mechanical merge write is "the
+The design (TOOLING_INTERFACE.md §2.2) says the mechanical merge write is "the
 deterministic tool's job — never the skill's silent action," but no `fha` verb enacted SPEC §9's merge
 write (tombstone fields, `MERGED-INTO-P-survivor__` rename, folds, reference relinks). By the owner's
 decision the skill enacted a human-confirmed merge by a careful SPEC §9 hand-edit in the interim, with

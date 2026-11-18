@@ -33,11 +33,11 @@ Two build modes, one generator:
   - `--linked`: a fast *local* developer preview. Real archive paths (no
     copies), no redaction guarantees. Never hand this folder to anyone.
 
-This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
-layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
-discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
-standalone link/page symmetry enforced by the page-set design below), M8.5
-(interactive trees - a vendored, dependency-free renderer fed the neutral tree
+This file ships the whole publication suite (TOOLING §12): foundations (query
+layer, Jinja2, source page), the curated person page, place and
+discoveries pages, the home page (surname A-Z + discoveries teaser, and the
+standalone link/page symmetry enforced by the page-set design below),
+interactive trees ( - a vendored, dependency-free renderer fed the neutral tree
 JSON through a single adapter seam), and #115 (home page redesign: the home
 page's centrepiece is now a marriage-aware ancestor pedigree - the same static
 SVG engine the person page already used, scaled to a configurable depth and
@@ -62,7 +62,7 @@ REDACTION IS COMPUTED ONCE, UP FRONT. `_SiteBuilder` decides the set of
 person/source pages that will exist *before* rendering any page, so every
 token-swap and every cross-link consults the same authoritative set: a page
 is linked iff it is in that set. A page that isn't generated is never linked
-to (the M8.4 symmetry rule, enforced here from the start).
+to (the link/page symmetry rule, enforced here from the start).
 
 DEPENDENCIES. Jinja2 (templates) is required. Pillow (PIL) is *optional*:
 standalone image derivatives use it when present; when absent, standalone
@@ -170,7 +170,7 @@ CODE MAP
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
 
-  Interactive tree (M8.5, now per-person - #115) + shared chart redaction
+  Interactive tree (per-person since #115) + shared chart redaction
     _apex_ancestor             - #115: repurposed from "deepest ancestor of
                                  root_person" (the old home-tree seed) to the
                                  home pedigree's redaction-safe hub walk -
@@ -205,8 +205,8 @@ CODE MAP
                                  - by a worker when there are workers (#239)
       ._land_picture           - write a worker's picture into media/ and the cache,
                                  in hand-over order; a failure asks for a serial rebuild
-      .build_source_page       - M8.1 source page
-      .build_person_page       - M8.2 person page; also builds `descendants_tree`
+      .build_source_page       - source page
+      .build_person_page       - person page; also builds `descendants_tree`
                                  (#115: the interactive explorer, demoted here
                                  as a per-person opt-in link)
       ._home_pedigree_depth    - #115: site.home_pedigree_generations, clamped
@@ -526,7 +526,7 @@ _NO_REDACTED_PERSON_SQL = (
 # rebuild must first prove the target dir is ours - see _unowned_output_reason.
 _SITE_MARKER_NAME = '.fha-site'
 
-# Summary-block label per vital claim type (M8.2 "summary block (accepted vitals)").
+# Summary-block label per vital claim type (TOOLING §12 "summary block (accepted vitals)").
 _VITAL_LABELS = {
     'birth': 'Born', 'death': 'Died', 'marriage': 'Married',
     'baptism': 'Baptized', 'burial': 'Buried',
@@ -534,7 +534,7 @@ _VITAL_LABELS = {
 _VITAL_ORDER = ['birth', 'baptism', 'marriage', 'death', 'burial']
 
 # Friends & Family grouping, in display order (TOOLING §12). These mirror the
-# relationship edge types the index actually derives (M1.3): parent/child/spouse
+# relationship edge types the index actually derives (TOOLING §2): parent/child/spouse
 # from vital+relationship claims, and friend/associate/neighbor from social
 # subtypes. No 'sibling' edge is derived, so it is intentionally absent.
 _FAMILY_GROUPS = [
@@ -3929,8 +3929,8 @@ class _SiteBuilder:
         self.sources_dir = out_dir / 'sources'
         self.places_dir = out_dir / 'places'
         self.media_dir = out_dir / 'media'
-        self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts (M8.5)
-        self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter (M8.5)
+        self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts
+        self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter
         self.assets_dir = out_dir / 'assets'    # design system: stylesheet, override, fonts
 
         self.person_meta: dict[str, sqlite3.Row] = {}
@@ -5128,7 +5128,7 @@ class _SiteBuilder:
         S-id → link to the source page, or "Restricted - not included…" when
         withheld. L-id → link to the place page (places are never redacted).
         A dangling *ID* token renders highlighted - `<mark>[X-xxxx]</mark>` (TOOLING
-        §12 / BUILD M8.1; already a lint error). An unresolved *name/stem* link is
+        §12; already a lint error). An unresolved *name/stem* link is
         an ordinary Obsidian note-link, not a citation, and renders as plain text.
         """
         pid = normalize_id(token)
@@ -5201,7 +5201,7 @@ class _SiteBuilder:
         if kind == 'S':
             return ''
         # Unresolved ID token - surfaced as the literal [X-xxxx] form, not hidden
-        # (TOOLING §12 / BUILD M8.1; these are already lint errors). Workbench:
+        # (TOOLING §12; these are already lint errors). Workbench:
         # a claim-named person with no record yet gets the wireframe's mint '+'
         # right where their reference appears - person.new reuses the P-id
         # passed via data-wb-args, so every claim naming them keeps pointing
@@ -5701,7 +5701,7 @@ class _SiteBuilder:
         return {'label': Path(asset_rel).name, 'note': _with_role_note('image could not be processed', role_note),
                 'link_href': None, 'thumb_href': None}
 
-    # - source page (M8.1) -
+    # - source page -
 
     def build_source_page(self, sid: str) -> None:
         """Render one source page: citation, metadata, claims table, files.
@@ -5905,10 +5905,10 @@ class _SiteBuilder:
         portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
         return entries, portrait
 
-    # - person page (M8.2) -
+    # - person page -
 
     def build_person_page(self, pid: str) -> None:
-        """Render one person page (TOOLING §12 / M8.2) - curated persons, plus
+        """Render one person page (TOOLING §12) - curated persons, plus
         stub-tier persons in workbench mode (see the person_pages build)."""
         row = self.person_meta[pid]
         page_dir = self.persons_dir
@@ -7839,10 +7839,10 @@ class _SiteBuilder:
         return (f'<figure class="embed"><img class="embed-img" src="{html.escape(href, quote=True)}" '
                 f'alt="{cap_attr}" loading="lazy">{figcap}</figure>')
 
-    # - place page (M8.3) -
+    # - place page -
 
     def build_place_page(self, lid: str) -> None:
-        """Render one place page (TOOLING §12 / M8.3): name, coords (an embedded
+        """Render one place page (TOOLING §12): name, coords (an embedded
         OpenStreetMap view plus the plain map link - owner decision, review
         2026-07-16; the iframe degrades to nothing offline and the link always
         works), dated `history:`, the registry's `notes:` prose, claims naming
@@ -7986,11 +7986,11 @@ class _SiteBuilder:
         self._write_page(self.places_dir / _page_filename(lid), 'place.html',
                          {'place': ctx, 'root_prefix': '..'})
 
-    # - discoveries page (M8.3) -
+    # - discoveries page -
 
     def build_discoveries_page(self) -> None:
-        """Render `notes/discoveries.md` as the discoveries page (TOOLING §12 /
-        M8.3). P-id/S-id mentions are linked (and redacted) by the shared token
+        """Render `notes/discoveries.md` as the discoveries page (TOOLING §12).
+        P-id/S-id mentions are linked (and redacted) by the shared token
         renderer, so a living person named in a discovery never leaks here under
         standalone. A missing or empty file yields a plain "nothing logged yet"
         page rather than a broken link from the home teaser."""
@@ -8084,7 +8084,7 @@ class _SiteBuilder:
         self._discoveries = (body, chunks[-5:])
         return self._discoveries
 
-    # - interactive tree (M8.5) -
+    # - interactive tree -
 
     def _person_vitals(self, pid: str) -> dict:
         """First accepted birth/death `date_edtf` for a person, for tree labels.
@@ -9014,10 +9014,10 @@ class _SiteBuilder:
             ancestor_generations=depth, branch_color=bool(depth), axis_label=axis_label, home=True)
         return {'svg': self._markup(svg), 'caption': caption, 'note': note}
 
-    # - index / home page (M8.4) -
+    # - index / home page -
 
     def build_index_page(self) -> None:
-        """The home page (TOOLING §12 / M8.4): a surname A-Z index of people and
+        """The home page (TOOLING §12): a surname A-Z index of people and
         a recent-discoveries teaser (last five entries), plus source and place
         navigation so every generated page is reachable. The surname index is
         built from `person_pages`, which already excludes redacted persons under

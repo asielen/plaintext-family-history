@@ -1,5 +1,5 @@
 """
-test_source_extract.py - fha source extract (BUILD M11.5, TOOLING §3d).
+test_source_extract.py - fha source extract (TOOLING §3d).
 
 The fixture PDFs are hand-rolled minimal documents (catalog/pages/font +
 one content stream per page) rather than binary blobs, so the text layer

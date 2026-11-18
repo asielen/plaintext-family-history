@@ -49,7 +49,7 @@ and that is exactly the rule that keeps a machine from signing off its own readi
    the machine-readable state, and the skill says so rather than implying the flag moved.
 
 An interim enactment — the skill editing the marker itself on the human's say-so — would need to be
-an **owner decision** with the matching `BUILD_INTERFACE.md` entry §6 asks for. It is not an
+an **owner decision** with the matching `TOOLING_INTERFACE.md` entry §6 asks for. It is not an
 authoring choice, and this file records the gap as blocked until then.
 
 ## Not gaps (recorded so they are not re-reported)

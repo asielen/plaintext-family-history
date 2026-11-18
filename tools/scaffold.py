@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 scaffold.py - fha install / fha update-tools: vendor the operating layer into a
-private archive and keep it current (TOOLING §13c, BUILD.md M9.1-M9.2).
+private archive and keep it current (TOOLING §13c).
 
 A real family archive is a *separate, private* repository: the user's records
 plus a vendored copy of the generic operating layer (the `tools/`, the spec docs,
@@ -122,12 +122,12 @@ CODE MAP
     _restore_pruned_placeholders - best-effort undo of either prune's removal
                                  when the stamp write that follows then fails
 
-  Install (M9.1)
+  Install
     _preflight                 - Python/exiftool checks → (ok, messages)
     run_install                - create skeleton + copy operating layer + stamp
     _cmd_install               - argparse → run_install
 
-  Update (M9.2)
+  Update
     _plan_update               - classify every file (add/current/stock/customized/retired)
     run_update_tools           - execute (or preview) the plan, rewrite the stamp
     _cmd_update_tools          - argparse → run_update_tools
@@ -182,7 +182,7 @@ MANIFEST_VERSION = '1'
 # Enumerated rather than walked because the repo root also holds furniture that
 # never enters an archive (PRIVACY.md - the *public-repo* "no real data" policy,
 # which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
-# release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
+# release process; CNAME, manifest.json, .git*, …). TOOLING §13c.
 #
 # A grandchild who opens the archive folder in fifty years, with no tools, sees
 # one page meant for them: START_HERE.md (a skeleton seed from archive-template/,
@@ -197,8 +197,8 @@ MANIFEST_VERSION = '1'
 # are linked to and from in plain text (a file name, or an absolute URL), never
 # a relative link that could resolve in only one of repo and archive.
 #
-# README.md is deliberately NOT shipped. It is repo-facing - badges, a milestone
-# roadmap, contributing, and links to example-archive/, quickstart-template/,
+# README.md is deliberately NOT shipped. It is repo-facing - badges, a status
+# section, contributing, and links to example-archive/, quickstart-template/,
 # archive-template/ and obsidian-templater/, none of which an archive receives -
 # so an owner opening it got a page of dead links about someone else's project.
 # What an owner genuinely needed from it (what the archive is, the record types,
@@ -206,7 +206,7 @@ MANIFEST_VERSION = '1'
 # and CHEATSHEET.md instead. An installed archive has no root README.md; the
 # entry point is START_HERE.md for a reader, docs/GETTING_STARTED.md for the owner.
 #
-# The tool-BUILDING docs (the BUILD*.md family, TOOLING_INGESTION/INTERFACE,
+# The tool-BUILDING docs (TOOLING_INGESTION/INTERFACE,
 # AGENTS_TOOLING) are likewise NOT shipped: no tool reads them at run time
 # and a genealogist operating an archive never needs them - they describe how to
 # BUILD the tools, which is a workshop-clone activity. Extending vendored tools
@@ -306,6 +306,9 @@ _ROOT_LAUNCHERS = (
 # with no workshop clone. Its dev furniture stays home (_VENDOR_EXCLUDE_*).
 _OPERATING_SUBTREES = ('tools', 'docs', 'design', 'browser-companion',
                        '.claude/skills')
+# Where each coding agent looks for skills in an archive (see _operating_files).
+_CLAUDE_SKILLS_PREFIX = '.claude/skills/'
+_AGENTS_SKILLS_PREFIX = '.agents/skills/'
 
 # The archive subfolder that holds the vendored machinery, so a real archive's
 # root reads as the genealogy - not the tooling. The install remaps the movable
@@ -493,7 +496,7 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
     extension under browser-companion/ (minus its dev furniture - it is a
     front-end tool like the serve workbench, shipped ready to load unpacked),
     and the agent's workflow skills under .claude/skills/. docs/ is included
-    whole rather than cherry-picked: BUILD.md M9.1 names five docs as the floor
+    whole rather than cherry-picked: TOOLING §13c names five docs as the floor
     ("must ship into every archive"), but the whole folder is generic
     human-facing documentation with no family data, and a directory rule
     auto-covers future docs and keeps their cross-links intact in an installed
@@ -553,6 +556,13 @@ def _operating_files(repo_root: Path, unreadable: list[Path]) -> list[tuple[str,
                 f'{_VENDOR_DIR}/{rel}'
                 if moved or rel in _VENDORED_DOCS else rel)
             out.append((archive_path, p))
+            # The skills are plain SKILL.md folders (the open Agent Skills
+            # format), so the archive works with whichever coding agent the
+            # owner uses: Claude Code reads `.claude/skills/`, Codex reads
+            # `.agents/skills/`. One source in this repo, two install paths,
+            # so the copies can never drift apart.
+            if rel.startswith(_CLAUDE_SKILLS_PREFIX):
+                out.append((_AGENTS_SKILLS_PREFIX + rel[len(_CLAUDE_SKILLS_PREFIX):], p))
 
     return out
 
@@ -1949,7 +1959,7 @@ def _unique_backup_path(archive_root: Path, rel_path: str, date_str: str) -> Pat
         n += 1
 
 
-# ── Install (M9.1) ──────────────────────────────────────────────────────────────
+# ── Install ──────────────────────────────────────────────────────────────
 
 def _preflight() -> tuple[bool, list[str]]:
     """Check first-day prerequisites; return (python_ok, advisory_messages).
@@ -1957,7 +1967,7 @@ def _preflight() -> tuple[bool, list[str]]:
     Plain, friendly guidance - never a traceback or a bare "not found":
       - Python < 3.10 → a hard stop (python_ok=False) with a download pointer.
       - exiftool missing → an advisory message; install proceeds (photo features
-        simply wait until it is installed). BUILD.md M9.1.
+        simply wait until it is installed). TOOLING §13c.
       - PyYAML missing → an advisory message; install proceeds (`install`/
         `update-tools` are deliberately usable before it is present - fha.py
         intercepts them ahead of the bulk import that needs it - but that also
@@ -2376,7 +2386,7 @@ def _cmd_install(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
 
-# ── Update (M9.2) ───────────────────────────────────────────────────────────────
+# ── Update ───────────────────────────────────────────────────────────────
 
 def _restore_exec_bits(archive_root: Path, repo_root: Path,
                        manifest: dict, *,

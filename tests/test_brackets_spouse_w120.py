@@ -455,7 +455,7 @@ class W120SexGapTests(unittest.TestCase):
 
 class BrokenFixtureTests(unittest.TestCase):
     """The standing broken fixture must keep firing its targeted code
-    (BUILD.md testing invariants)."""
+    (TOOLING §15 testing invariants)."""
 
     def test_broken_w120_fixture_fires(self) -> None:
         root = ROOT / 'tests' / 'fixtures' / 'broken-W120'

@@ -1,4 +1,4 @@
-"""Tests for `fha capture` (BUILD_INGESTION.md MG1.1 generic + MG1.2/MG1.3 site recipes).
+"""Tests for `fha capture` (TOOLING_INGESTION §2: the generic recipe and the site recipes).
 
 No network and no third-party HTML library: capture reads HTML handed to it
 (here, the anonymized fixtures under tests/fixtures/capture-samples/) and parses
@@ -64,7 +64,7 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(len(stubs), 1, f'expected exactly one stub, got {stubs}')
         return stubs[0]
 
-    # ── MG1.1 generic ─────────────────────────────────────────────────────────
+    # ── generic recipe ─────────────────────────────────────────────────────────
 
     def test_generic_stub_frontmatter_and_log_fallback(self) -> None:
         html = ('<html><head><title>Test Page</title>'
@@ -433,7 +433,7 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['title'], 'Panoramic map of Fairview, 1910')
         self.assertEqual(meta['source_date'], '1910')
 
-    # ── MG1.2 / MG1.3 recipes ───────────────────────────────────────────────────
+    # ── site recipes ───────────────────────────────────────────────────
 
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
         recipes = capture._load_site_recipes()

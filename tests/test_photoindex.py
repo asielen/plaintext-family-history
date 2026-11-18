@@ -1868,7 +1868,7 @@ class PhotoindexTests(unittest.TestCase):
             self.assertIn('family_reunion.jpg', stderr.getvalue())
 
     def test_photoindex_subcommands_are_registered_in_the_cli(self) -> None:
-        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.6 subcommand.
+        """`fha photoindex <subcommand> --help` should resolve for every subcommand.
 
         set-summary is additionally exercised through the standalone entry point
         (`python tools/photoindex.py`) - both parsers share _add_photoindex_args,
@@ -2638,7 +2638,7 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(code, photoindex.EXIT_FAILURE)
 
-    # ── reconcile (BUILD.md M3.4) ─────────────────────────────────────────
+    # ── reconcile (TOOLING §9) ─────────────────────────────────────────
 
     def test_reconcile_rematches_moved_file_by_source_id(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -3406,7 +3406,7 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(code, photoindex.EXIT_WARNINGS)
 
-    # ── tag-person (BUILD.md M3.4) ────────────────────────────────────────
+    # ── tag-person (TOOLING §9) ────────────────────────────────────────
 
     def _scan_with_face_tag_fixture(self, archive: Path) -> None:
         def fake_exiftool(paths: list[Path]) -> list[dict]:
@@ -6215,7 +6215,7 @@ class GalleryTests(unittest.TestCase):
 
 
 class SetSummaryTests(unittest.TestCase):
-    """`fha photoindex set-summary` (BUILD.md M3.5, plan 07).
+    """`fha photoindex set-summary` (TOOLING §9, plan 07).
 
     The exiftool seams (`_run_exiftool`, `_run_exiftool_read_comments`,
     `_run_exiftool_write_comment`) are monkeypatched by assignment like the

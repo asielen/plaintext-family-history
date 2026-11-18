@@ -44,18 +44,17 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    operation; help text exists; TOOLING still describes the tool accurately.
    **Completion gate:** every flag the CLI accepts and every E/W code the tool advertises
    must appear in `tools/README.md` as either ✓ implemented or ⚑ deferred before the tool
-   is declared milestone-complete. A flag that exists in the CLI but is absent from that
+   is declared complete. A flag that exists in the CLI but is absent from that
    table - or present but neither working nor marked deferred - is documentation debt that
    blocks handoff. Do not declare a tool done while any flag or code is in an undocumented
    partial state.
 7. **Status sweep.** Implementation status lives in more docs than the one nearest the
-   change, and it goes stale in the summaries, not the source: the nearest BUILD doc gets
+   change, and it goes stale in the summaries, not the source: the nearest TOOLING section gets
    updated while the cross-reference spots keep saying "pending." Before handoff - whenever
    a build lands, a deferred step ships, or a decision reverses - update every statement of
    that status in the same change. The known status-summary locations: the owning
-   `BUILD*.md`'s status tables and headers, the sibling TOOLING doc's build-status section,
-   `SPEC.md` Part IV status notes, `README.md` (the badge, "Status & roadmap", and its other
-   status sentences - "What this is not", Quick start step 3),
+   TOOLING doc's build-status section, the sibling TOOLING docs' build-status sections,
+   `SPEC.md` Part IV status notes, `README.md` (the spec badge),
    `TOOLING.md` §16/§17 summaries, `AGENTS.md`, `tools/README.md`, and any companion README
    the change touches (e.g. `browser-companion/README.md`) - plus
    `docs/GETTING_STARTED.md` / `docs/CHEATSHEET.md` for anything user-facing. Then grep the repo for the phrase
@@ -106,7 +105,7 @@ Core contract, modes overview, research workflows, format reference, and tools: 
      assertion that pins the implementation's current output is not a test - derive expected
      values from SPEC/TOOLING.
    - **Inventory changes are grep-driven, not list-driven.** A count word or an enumeration
-     (skills, verbs, milestones, codes) changes → repo-wide grep of the old value across all
+     (skills, verbs, layers, codes) changes → repo-wide grep of the old value across all
      `*.md` including `.claude/skills/` and `TOOLING.md` §16/§17, not a hand-picked file
      list; where the inventory is derivable (skills directory → docs) add the assertion test
      so it cannot drift again.
@@ -191,7 +190,7 @@ yet explain is added there, in the present tense, in the same change.
 
 ### Docs are present tense
 
-SPEC.md, TOOLING*.md, BUILD*.md, AGENTS*.md and CHEATSHEET.md state the current design.
+SPEC.md, TOOLING*.md, AGENTS*.md and CHEATSHEET.md state the current design.
 A reader in fifty years needs the rule, not the story of how it came to be:
 
 - No issue numbers, no decision logs, no notes on what a past revision said, no "shipped in", no
@@ -500,7 +499,7 @@ Check absent, malformed, and misconfigured inputs:
 Find places where the command exits 0 but did not do what the user requested:
 - Invalid ID or missing record produces plausible-looking but empty output.
 - Exception is caught and logged but exit code is still 0.
-- A deferred feature (`--related` in milestone 2) emits a generic parser error instead of
+- A deferred feature (say, `--related` before its layer is built) emits a generic parser error instead of
   the documented clear deferral message.
 - A warning-level issue should actually block the operation (e.g. stale index when `--fix`
   is about to rename folders based on it).

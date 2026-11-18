@@ -976,7 +976,7 @@ _PANEL_ASSETS_MAP_RE = re.compile(
 # `const out = {...}` seed, the `out.<key> = ...` field assignments, and the
 # asset-entry construction (`const entry = {...}` seed + `entry.<key> = ...`
 # guards up to `return entry`).
-_LIB_BUILD_RE = re.compile(r'function\s+build\s*\(.*?return\s+out\s*;', re.S)
+_LIB_BUILDER_RE = re.compile(r'function\s+build\s*\(.*?return\s+out\s*;', re.S)
 _LIB_OUT_SEED_RE = re.compile(r'const\s+out\s*=\s*\{(.*?)\}', re.S)
 _LIB_OUT_ASSIGN_RE = re.compile(r"out\.([A-Za-z_]\w*)\s*=|out\[\s*['\"]([A-Za-z_]\w*)['\"]\s*\]\s*=")
 _LIB_ENTRY_RE = re.compile(r'const\s+entry\s*=\s*\{(.*?)\}(.*?)return\s+entry', re.S)
@@ -1091,11 +1091,11 @@ class CaptureJsonProducibilityTestCase(unittest.TestCase):
 
     def test_top_level_keys_are_build_output_fields(self) -> None:
         for name, src in self._lib_sources().items():
-            build_m = _LIB_BUILD_RE.search(src)
+            build_m = _LIB_BUILDER_RE.search(src)
             self.assertIsNotNone(
                 build_m,
                 f'{name}: no `function build(...) ... return out;` found - '
-                'the builder moved; point _LIB_BUILD_RE at the new shape')
+                'the builder moved; point _LIB_BUILDER_RE at the new shape')
             body = build_m.group(0)
             keys = _assign_keys(_LIB_OUT_ASSIGN_RE.findall(body))
             seed_m = _LIB_OUT_SEED_RE.search(body)

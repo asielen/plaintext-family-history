@@ -3113,7 +3113,7 @@ class SkillInventoryDocsTests(unittest.TestCase):
     """The docs' skill inventory must match what `.claude/skills/` actually holds.
 
     AGENTS_TOOLING.md §7's status sweep keeps failing in the same direction: a
-    skill ships, the BUILD doc that owns it is updated, and the summaries that
+    skill ships, TOOLING_INTERFACE.md is updated, and the summaries that
     cross-reference it keep quoting the old count and the old list (PR #42 round
     2 - `TOOLING.md` §16 still said thirteen after fifteen had shipped). Prose
     cannot be linted, but a count and a list of folder names can, so this pins
@@ -3139,7 +3139,6 @@ class SkillInventoryDocsTests(unittest.TestCase):
         'AGENTS.md': r'(\w+) workflow playbooks live at',
         'TOOLING.md': r'all (\w+) authored and shipped',
         'TOOLING_INTERFACE.md': r'all (\w+) SKILL\.md files',
-        'BUILD_INTERFACE.md': r'and (\w+) SKILL\.md files',
         # The authoring contract states the count in its own opening sentence
         # ("so N skills written by different sessions ... don't drift"), and it
         # is the first file a new skill's author reads - a stale number there
@@ -3151,13 +3150,13 @@ class SkillInventoryDocsTests(unittest.TestCase):
     # CLAUDE.md is here because it is the harness's own pointer at the skills
     # ("Workflow skills live in .claude/skills/ - process-source, ..."): a skill
     # missing from that line is a skill Claude Code is never told it has.
-    NAME_LISTS = ('TOOLING.md', 'BUILD_INTERFACE.md', '.claude/skills/README.md',
+    NAME_LISTS = ('TOOLING.md', '.claude/skills/README.md',
                   'CLAUDE.md')
 
     def setUp(self) -> None:
         self.skills_dir = ROOT / '.claude' / 'skills'
         if not self.skills_dir.is_dir():
-            self.skipTest('no .claude/skills/ here (installed archives carry no BUILD docs either)')
+            self.skipTest('no .claude/skills/ here (installed archives carry no TOOLING_INTERFACE.md either)')
         self.skills = sorted(
             d.name for d in self.skills_dir.iterdir()
             if d.is_dir() and (d / 'SKILL.md').is_file()

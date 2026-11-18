@@ -1,5 +1,5 @@
 """
-test_site.py - fha site (M8.1 source page + M8.2 person page).
+test_site.py - fha site (TOOLING §12: source, person, place, home pages and trees).
 
 Builds a synthetic .cache/index.sqlite (and, where needed, .cache/photos.sqlite)
 directly from index.py's / photoindex.py's DDL - the same pattern as
@@ -4831,7 +4831,7 @@ class HomePageTests(_Base):
 
 
 class StandaloneRedactionAuditTests(_Base):
-    """M8.4: no standalone page may link to a person/source page that was not
+    """No standalone page may link to a person/source page that was not
     generated. Build a mixed archive, then crawl every emitted page for hrefs
     into persons/ and sources/ and assert each target exists on disk."""
 
@@ -4875,7 +4875,7 @@ class StandaloneRedactionAuditTests(_Base):
 
 
 class TreeTests(_Base):
-    """M8.5, re-seeded by #115: interactive trees - vendored renderer +
+    """Interactive trees (re-seeded by #115) - vendored renderer +
     adapter, build-time neutral tree JSON. The home page no longer carries
     this renderer at all (see HomePedigreeTests for its #115 replacement,
     the static ancestor pedigree); the descendant explorer moved to a

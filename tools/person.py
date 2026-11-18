@@ -144,8 +144,8 @@ DESIGN RULES (why the code looks the way it does)
   claim, applied to the person record by hand or by `fha lint --fix-reciprocal`
   for the mirror side. Giving this verb a way to write `status: accepted` (or
   omit `status:`) would let an unsourced guess masquerade as a sourced fact -
-  the one thing this whole archive exists to prevent. (BUILD_INTERFACE sketched
-  an open `--status hypothesis|...` flag; this is a deliberate deviation.)
+  the one thing this whole archive exists to prevent. (An earlier
+  sketch had an open `--status hypothesis|...` flag; this is a deliberate deviation.)
 - **`estimate` never contests a sourced claim.** SPEC §9's provisional
   `birth:`/`death:` fields are superseded automatically by a matching claim;
   this verb still writes what is asked (the human is the gate) but warns when

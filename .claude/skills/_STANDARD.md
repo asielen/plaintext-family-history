@@ -4,8 +4,8 @@
 written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they
 record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) — the
 reference skill — and obey the rules below. Design lives in
-[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build sequence in
-[`BUILD_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/BUILD_INTERFACE.md); the operating law in [`AGENTS.md`](../../AGENTS.md).
+[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build order in
+[`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15; the operating law in [`AGENTS.md`](../../AGENTS.md).
 
 ---
 
@@ -13,7 +13,9 @@ reference skill — and obey the rules below. Design lives in
 
 A skill is `.claude/skills/{name}/SKILL.md`: **portable instructions plus `fha` invocations — nothing
 else.** No harness APIs (`chrome.*`, MCP, slash-command internals), no Python, no shelling any tool but
-`fha`. A skill orchestrates the deterministic tools and adds the *judgment* a tool cannot have — which
+`fha`. (A skill that needs code ships it as a script in its own `scripts/` folder, tested like any
+other code; §9.) Hand-offs to another skill are not dependencies: a skill depends only on `fha`
+commands. A skill orchestrates the deterministic tools and adds the *judgment* a tool cannot have — which
 claim to draft, which name resolves to which person, where to look next. It never reimplements what a
 tool already owns (minting IDs, indexing, xref, bracket math, packet building, coordinate writes — all
 tool calls).
@@ -100,7 +102,7 @@ not protected the archive.
 ## 6. The stop-don't-improvise rule
 
 If a skill needs a capability **no `fha` tool provides**, it must **halt and surface that as core tool
-work (BUILD.md)** — never hand-roll it in prose. A skill does not shell `exiftool`, does not edit
+work (a TOOLING.md change)** — never hand-roll it in prose. A skill does not shell `exiftool`, does not edit
 `places.yaml` coordinates directly, does not compute Ahnentafel numbers, does not write the SQLite
 index. Those are tool jobs. When you hit a missing capability while authoring a skill, stop and report it
 as a spec-discovery; do not paper over it with logic a skill should not hold. (Worked example: the
@@ -109,7 +111,7 @@ as `fha photoindex set-summary` — see [`photo-context/DESIGN.md`](photo-contex
 
 One narrow exception exists: the **owner** may explicitly decide that a skill enacts a missing verb by a
 documented interim hand-edit — recorded in the skill's folder (a `GAP.md` naming the wanted verb) and in
-BUILD_INTERFACE.md, never silently. `merge-identities` was the one such case (the SPEC §9 merge write)
+TOOLING_INTERFACE.md, never silently. `merge-identities` was the one such case (the SPEC §9 merge write)
 until `fha confirm merge` shipped and retired it; no current skill uses an interim enactment. Blocking,
 as `photo-context` did, remains the default; an interim enactment is an owner decision, not an authoring
 choice.
@@ -167,7 +169,9 @@ the human's memory of how the tools behave; a documented command that does not r
 teaches the wrong thing every time it is read (AGENTS_TOOLING §"Porting from an archive").
 Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented
 gates, outputs are atomic, gates fail closed, and nothing they emit into an attachable artifact
-carries an absolute path.
+carries an absolute path. Their tests may also pin the parts of the SKILL.md that a machine can
+check: every flag the prose names exists in the script's parser, and a worked example really
+produces the filename it shows (`tests/test_transcribe_audio.py` is the pattern).
 
 ## 10. The copyable skeleton
 

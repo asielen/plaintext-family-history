@@ -1392,7 +1392,7 @@ def _check_unresolved_companion_owners(archive_root: Path, lines: list[str],
     return EXIT_WARNINGS
 
 
-# ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
+# ── Tools-version check (fha install / fha update-tools, TOOLING §13c) ───────────
 
 def _check_tools_version(archive_root: Path, lines: list[str], checks: list[dict]) -> int:
     """Report the vendored-tools version stamp and any pending update backups.
@@ -2159,7 +2159,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         checks.append({'id': 'pillow', 'status': 'info', 'detail': 'not installed (optional)',
                        'next_step': pip_command('pillow')})
     # pypdf mirrors Pillow's posture: purely optional (`fha source extract`
-    # PDF text layers, M11.5) - absence is informational, never a warning.
+    # PDF text layers, TOOLING §3d) - absence is informational, never a warning.
     if _ilu.find_spec('pypdf') is not None:
         lines.append(f'pypdf (fha source extract): {_OK}  next: no action needed')
         checks.append({'id': 'pypdf', 'status': 'ok', 'detail': 'installed', 'next_step': None})

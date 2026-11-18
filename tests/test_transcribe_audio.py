@@ -1,4 +1,4 @@
-"""Tests for the transcribe-audio skill's script (BUILD_INTERFACE.md MI6.2).
+"""Tests for the transcribe-audio skill's script (TOOLING_INTERFACE §2.4).
 
 The transcription itself needs `faster-whisper`, a heavy optional dependency
 that is not installed in CI - and it is not what can go wrong here anyway.
