@@ -307,6 +307,30 @@ class W155Tests(unittest.TestCase):
                        read_record(root / child_f)['meta']['relationships'])
         self.assertEqual(links, [H, H_OTHER])
 
+    def _merge(self, survivor_block: str, dup_block: str) -> list[dict]:
+        import confirm
+        dup = 'P-dddddddddd'
+        child_f, child_t = _person(CHILD, 'kid', 'ann', relationships='relationships:\n' + survivor_block)
+        dup_f, dup_t = _person(dup, 'kid', 'annie', relationships='relationships:\n' + dup_block)
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        root = _build({child_f: child_t, dup_f: dup_t, parent_f: parent_t, src_rel: src_text,
+                       'notes/questions.md': QUESTIONS})
+        r = confirm.run_confirm_merge(root, person_merged=dup, into=CHILD,
+                                      reason='same person: one baptism')
+        self.assertNotIn(r.data.get('status'), ('refused', 'error'), r.messages)
+        return read_record(root / child_f)['meta']['relationships']
+
+    def test_merge_carries_a_sourced_link_only_the_duplicate_had(self):
+        (entry,) = self._merge(SOURCED, SOURCED + f'    hypothesis: {H}\n')
+        self.assertEqual((entry['hypothesis'], len(entry['claims'])), (H, 1))
+
+    def test_merge_of_a_linked_and_an_unlinked_guess_keeps_one_linked_guess(self):
+        unlinked = GUESS.replace(f'    hypothesis: {H}\n', '')
+        for survivor, dup in ((unlinked, GUESS), (GUESS, unlinked)):
+            (entry,) = self._merge(survivor, dup)
+            self.assertEqual((entry['status'], entry['hypothesis']), ('hypothesis', H))
+
     def test_a_suggested_claim_settles_nothing(self):
         for status in ('suggested', 'disputed'):
             root = self._root('relationships:\n' + SOURCED + GUESS, status=status)

@@ -9205,6 +9205,13 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     for n, (k, _c, _h) in enumerate(parsed):
         if k is not None:
             groups.setdefault(k, []).append(n)
+    # An unlinked guess joins the one linked guess for the same tie: a link is
+    # carried, never a reason for a second entry. (Two different links stay
+    # two; with several, nothing says which one the unlinked guess shares.)
+    for k in [k for k in groups if k[3] == 'hypothesis' and k[-1] == '']:
+        linked = [o for o in groups if o[:-1] == k[:-1] and o[-1]]
+        if len(linked) == 1:
+            groups[linked[0]] = sorted(groups[linked[0]] + groups.pop(k))
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
     if not dupes:
         return text, 0

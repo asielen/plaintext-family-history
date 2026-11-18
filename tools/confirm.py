@@ -2917,6 +2917,11 @@ def run_confirm_merge(
     survivor_block_claims = {
         cid for e in _rel_entries(survivor_meta) for cid in relationship_entry_claim_ids(e)
     }
+    survivor_links: dict[tuple, set[str]] = {}
+    for e in _rel_entries(survivor_meta):
+        if relationship_entry_hypothesis(e):
+            survivor_links.setdefault(_relationship_edge_key(e, alias_map)[:3], set()).add(
+                relationship_entry_hypothesis(e))
     fold_rel_entries: list[dict] = []
     skipped_self_types: list[str] = []
     for entry in _rel_entries(merged_meta):
@@ -2926,8 +2931,19 @@ def run_confirm_merge(
             continue
         edge_key = _relationship_edge_key(entry, alias_map)
         entry_cids = relationship_entry_claim_ids(entry)
-        if edge_key in survivor_edges and not set(entry_cids) - survivor_block_claims:
+        # A working-answer link the survivor's entries for this tie lack is
+        # carried over too, so the fold below can add it (never lost in a
+        # merge); an unlinked guess still matches the survivor's linked one.
+        link = relationship_entry_hypothesis(entry)
+        brings_link = bool(link) and link not in survivor_links.get(edge_key[:3], set())
+        if relationship_entry_is_guess(entry) and not link and any(
+                k[:3] == edge_key[:3] and k[3] for k in survivor_edges):
             continue
+        if edge_key in survivor_edges and not set(entry_cids) - survivor_block_claims \
+                and not brings_link:
+            continue
+        if link:
+            survivor_links.setdefault(edge_key[:3], set()).add(link)
         # A tie the survivor already lists still brings its claims along:
         # the fold appends the entry and the collapse below merges its
         # claims into the survivor's one entry for that person and role.
