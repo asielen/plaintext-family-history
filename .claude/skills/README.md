@@ -16,7 +16,8 @@ gate to `accepted`.**
 
 | Skill | Status | What it does | Model tier |
 |---|---|---|---|
-| [`today`](today/SKILL.md) | **authored** | Session start: read `fha report`, narrate discoveries-first, offer the top item. Read-only + say-so writes: the human acting on the briefing lands via `fha confirm discovery`/`cooccur`/`dismiss`, dry-run echoed first. Reference skill for `_STANDARD.md`. | Opus |
+| [`today`](today/SKILL.md) | **authored** | Session start: read `fha report`, narrate discoveries-first (then the week in the family, briefly), offer the top item. Read-only + say-so writes: the human acting on the briefing lands via `fha confirm discovery`/`cooccur`/`dismiss`, dry-run echoed first. Reference skill for `_STANDARD.md`. | Opus |
+| [`on-this-day`](on-this-day/SKILL.md) | **authored** | The family's "on this day": run `fha calendar` (today, the week, or a month) and narrate the births, marriages, deaths and arrivals it returns, plainly, accepted claims only; at most two sentences of general world history, labelled as not from the owner's records; also a chat front end's opener. Read-only; invents no family detail; shared words keep living people private. | Sonnet |
 | [`review-claims`](review-claims/SKILL.md) | **authored** | Stage C, the human gate: walk a source's `suggested` claims, capture accept/dispute/edit, write with `fha claim`; close with reindex + xref + touched-person view refresh + lint. | Opus |
 | [`process-source`](process-source/SKILL.md) | **authored** | The pipeline driver: `fha process` (Stage A) + AI draft (Stage B) + hand-off to `review-claims`. Handles loose notes. | Opus |
 | [`mine-transcript`](mine-transcript/SKILL.md) | **authored** | Invoked-only extraction over a transcript: selective `suggested` claims + anchors, stories to `## Stories`, transcript left intact. | Sonnet |
@@ -51,7 +52,8 @@ check** against `example-archive/` (capture the transcript).
   called from `process-source`'s Stage A½ when an item is image-only, and handing the text it wrote to
   `mine-transcript` for the facts no claim covers — and `today`'s one next-action hand-off, into
   `review-claims`, `process-source`, or (when §6b's largest unlinked place-text cluster outsizes the
-  review backlog) `place-research` — hand-offs, not code dependencies.
+  review backlog) `place-research`, plus its pointer to `on-this-day` when the human wants more than the
+  report's week — hand-offs, not code dependencies.
 - Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes,
   graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings
   (`_STANDARD.md` §9).

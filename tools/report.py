@@ -65,6 +65,8 @@ CODE MAP
     _section_discoveries         - §0: claim status flips, new corroborations,
                                     newly-answered questions, vitals gaps closed,
                                     newly confirmed relationship edges
+    _section_on_this_day         - §0b: family events falling today and the six
+                                    days after (the shared calendar engine)
     _section_review_queue        - §1: W102 backlog, grouped by source
     _section_second_look         - §1b: parked (reviewed suggested) + accepted-low-confidence
                                     claims, counts + oldest few
@@ -119,6 +121,7 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import calendar as _stdcal
 import datetime
 import json
 import re
@@ -140,6 +143,7 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     extract_token_ids,
+    family_calendar_events,
     FhaConfigError,
     Result,
     fmt_id_display,
@@ -169,6 +173,7 @@ configure_utf8_stdout()
 
 SECTIONS: list[tuple[str, str, str]] = [
     ('discoveries', '0', 'Discoveries since last session'),
+    ('on-this-day', '0b', 'This week in the family'),
     ('review-queue', '1', 'Review queue'),
     ('second-look', '1b', 'Worth a second look'),
     ('new-since-last', '2', 'New since last session'),
@@ -447,6 +452,66 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
             lines.append(f'- {msg}')
 
     return lines or ['No discoveries since last session.']
+
+
+# ── Section 0b: This week in the family ──────────────────────────────────────
+
+_ON_THIS_DAY_SHOWN = 10   # a briefing line, not the whole calendar
+
+
+def _on_this_day_line(ev: dict) -> str:
+    """One plain line for one calendar event: "14 June 1880 - Born: Thomas
+    Hartley [[p-...]], Fairview - 146 years ago".
+
+    The report is the owner's private view, so living people are named like
+    anyone else; a shared front door applies SPEC §19 itself (TOOLING §7b).
+    The years-ago wording matches `fha calendar`, so the two views of the
+    same day read the same."""
+    when = f"{ev['day']} {_stdcal.month_name[ev['month']]} {ev['year']}"
+    names = [f"{p['name'] or fmt_id_display(p['id'])} [[{fmt_id_display(p['id'])}]]"
+             for p in ev['people']]
+    people = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
+    place = f", {ev['place']}" if ev['place'] else ''
+    ago = ev['years_ago']
+    if ago < 0:
+        ago_text = 'dated in the future - check the record'
+    elif ago == 0:
+        ago_text = 'this year'
+    elif ago == 1:
+        ago_text = '1 year ago'
+    else:
+        ago_text = f'{ago} years ago'
+    return f"- {when} - {ev['word']}: {people}{place} - {ago_text}"
+
+
+def _section_on_this_day(conn, today: datetime.date) -> list[str]:
+    """Family events falling on `today` and the six days after it.
+
+    Reads `_lib.family_calendar_events`, the engine behind `fha calendar
+    --week`, so this section and that command can never disagree about a
+    day. Accepted claims only: the briefing narrates these as family facts,
+    and an unreviewed suggestion must not be spoken as one. Each day is asked
+    for on its real calendar date, so a week that crosses New Year counts its
+    January days against next year (2 January 1880 is 147 years ago in the
+    week of 28 December 2026). Only dates recorded to the day are placed, as
+    in `fha calendar`'s own day views."""
+    events: list[dict] = []
+    for offset in range(7):
+        day = today + datetime.timedelta(days=offset)
+        events.extend(family_calendar_events(
+            conn, month=day.month, day=day.day, statuses=('accepted',),
+            this_year=day.year))
+    last = today + datetime.timedelta(days=6)
+    if not events:
+        return [f'No family events on file for {today.day} '
+                f'{_stdcal.month_name[today.month]} to {last.day} '
+                f'{_stdcal.month_name[last.month]} (only dates recorded to the day '
+                'can be placed on a calendar).']
+    lines = [_on_this_day_line(ev) for ev in events[:_ON_THIS_DAY_SHOWN]]
+    more = len(events) - _ON_THIS_DAY_SHOWN
+    if more > 0:
+        lines.append(f'- and {more} more - `fha calendar --week`')
+    return lines
 
 
 # ── Section 1: Review queue (W102) ────────────────────────────────────────────
@@ -1786,6 +1851,7 @@ def run_report(
         (
             'persons', 'sources', 'claims', 'claim_persons', 'claim_links',
             'relationships', 'hypotheses', 'person_files', 'search_log',
+            'places',
         ),
     )
     if conn is None:
@@ -1814,6 +1880,7 @@ def run_report(
 
         bodies = {
             'discoveries': _section_discoveries(conn, prev, current),
+            'on-this-day': _section_on_this_day(conn, datetime.date.today()),
             'review-queue': _section_review_queue(conn),
             'second-look': _section_second_look(conn),
             'new-since-last': _section_new_since_last(prev, current),
