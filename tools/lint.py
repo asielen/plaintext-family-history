@@ -3027,8 +3027,9 @@ def _check_reciprocity(
                     continue   # a guess of another nature: not this tie, no promise
                 # A guess is not a mirror of a sourced tie: left alone, the
                 # other side keeps drawing as a guess what the evidence has
-                # settled. The fix adds the sourced entry and the fold turns
-                # the guess into it (SPEC §9: graduating is the same entry).
+                # settled. The fix adds the sourced entry beside the guess and
+                # never rewrites it; W155 then names the leftover guess for the
+                # owner to fold in (SPEC §9).
                 guess_waiting = True
                 continue
             return     # mirror present, matched by person + role
@@ -3072,7 +3073,11 @@ def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bo
         return False
     role = str(entry.get('type', '')).strip().lower()
     other = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
-    other = normalize_id(other) if other else None
+    # The tie must name a person, read through any merge (as W115 reads it):
+    # an unresolved or ambiguous name matches no claim, rather than every one.
+    other = through_survivors(normalize_id(other), alias_map) if other else None
+    if not other:
+        return False
     nature = _entry_subtype(entry)
     candidates = [_claim_by_id(registry, normalize_id(cid))
                   for cid in relationship_entry_claim_ids(entry)]
@@ -3130,6 +3135,14 @@ def _check_relationship_guesses(
                 if not link.startswith('h-'):
                     detail = (f'`hypothesis: {link}` is not a working-answer id; they look '
                               'like h-4f20aa91c3.')
+                elif not relationship_entry_is_guess(entry):
+                    # A sourced entry stands on its evidence, whatever became
+                    # of the guess it once settled: only the link line is stale.
+                    detail = (f'no question entry defines {link}, so the link names a working '
+                              'answer that is no longer written down. The tie itself rests on '
+                              'its evidence and stays. Restore the question entry\'s '
+                              f'`- id: {link}` line if it was removed by mistake, or delete '
+                              f'only the `hypothesis: {link}` line from this entry.')
                 else:
                     detail = (f'no question entry defines {link}. If that guess was ruled '
                               'out, the tie it supported is ruled out too: remove this entry, '
@@ -5302,7 +5315,7 @@ _CLAIM_KEY_ORDER = ['value']
 # Frontmatter / claim fields that hold IDs (SPEC §10: written lowercase). Free
 # text - titles, citations, notes, values - is never touched.
 _FM_ID_FIELDS = {'id', 'aliases', 'people', 'places', 'merged_into'}
-_RELATIONSHIP_ID_SUBKEYS = ('to', 'claims', 'source')
+_RELATIONSHIP_ID_SUBKEYS = ('to', 'claims', 'source', 'hypothesis')
 _CLAIM_ID_FIELDS = {'id', 'persons', 'roles', 'place', 'corroborates',
                     'contradicts', 'hypothesis'}
 # SPEC §14 / §16: the usual `##` section order.
@@ -7493,6 +7506,16 @@ def _append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
     return result
 
 
+def _header_reads(text: str) -> bool:
+    """The record's header still parses as a set of fields - so a refusal can
+    tell the owner whether a save would break the header or only change it."""
+    fm = FRONT_RE.match(text)
+    try:
+        return bool(fm) and isinstance(safe_load_yaml(fm.group(1)), dict)
+    except Exception:
+        return False
+
+
 def _fix_reciprocal(
     registry: Registry,
     archive_root: Path,
@@ -7502,8 +7525,10 @@ def _fix_reciprocal(
 ) -> None:
     """W116 fix: append each missing mirror entry to the other person's
     relationships: block. Additive only (never overwrites human text), previewed
-    under --dry-run, and conflict-safe - the W116 pass already confirmed the
-    mirror is absent, and a person with no record is reported, not invented.
+    under --dry-run (which runs the same fold and header check, so it prints
+    any refusal a live run would give), and conflict-safe - the W116 pass
+    already confirmed the mirror is absent, and a person with no record is
+    reported, not invented.
 
     One mirror entry per person and role (SPEC §9): misses for the same tie
     are written as one entry listing every claim, and the block is collapsed
@@ -7531,11 +7556,8 @@ def _fix_reciprocal(
             continue
         path = paths[0]
         rel = path.relative_to(archive_root)
-        if dry_run:
-            progress.append(
-                f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
-                f"{owner_name} (claim {claims_shown}) in {rel}")
-            continue
+        # A dry run reads, folds and checks the header exactly as a live run
+        # does, so the preview shows the refusal a live run would give.
         try:
             text = read_text_exact(path)
         except (OSError, UnicodeDecodeError):
@@ -7566,10 +7588,17 @@ def _fix_reciprocal(
         problem = frontmatter_edit_problem(
             new_text, before_meta=before_meta, changed_keys={'relationships'})
         if problem is not None:
+            harm = ('leave its header unreadable' if not _header_reads(new_text)
+                    else 'change other fields in its header')
             progress.append(
-                f"--fix-reciprocal: adding the mirror to {rel} would leave its header "
-                f"unreadable ({problem}), so nothing was written - add the "
+                f"--fix-reciprocal: adding the mirror to {rel} would {harm} "
+                f"({problem}), so nothing was written - add the "
                 f"'{m['mirror_role']}' entry to {owner_name} by hand, then run `fha lint`.")
+            continue
+        if dry_run:
+            progress.append(
+                f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
+                f"{owner_name} (claim {claims_shown}) in {rel}")
             continue
         # A person record, edited in a loop over every missing mirror edge:
         # atomic so one failure costs one skipped edge, not one lost ancestor.

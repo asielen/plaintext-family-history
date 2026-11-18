@@ -312,6 +312,7 @@ from _lib import (
     promote_person_record,
     read_text_exact,
     reapply_newline,
+    relationship_entry_hypothesis,  # an entry's hypothesis: h-... link (SPEC §9)
     relocate_person_in_index,
     render_person_body_scaffold,
     render_stub_content,
@@ -2546,6 +2547,19 @@ def _relationship_entry_exists(meta: dict, target_pid: str, relation_type: str) 
     return False
 
 
+def _relationship_entry_links(meta: dict, target_pid: str, relation_type: str,
+                              working_answer: str) -> bool:
+    """True when an entry for this person and role already names
+    `working_answer` in its `hypothesis:` line - nothing left to add by hand."""
+    for entry in (meta.get('relationships') or []):
+        if (isinstance(entry, dict)
+                and target_pid in extract_bare_ids(str(entry.get('to') or ''))
+                and str(entry.get('type') or '').strip().lower() == relation_type
+                and relationship_entry_hypothesis(entry) == normalize_id(working_answer)):
+            return True
+    return False
+
+
 def _relationship_item_lines(
     target_pid: str, target_name: str, relation_type: str, subtype: str | None,
     working_answer: str | None = None,
@@ -2667,7 +2681,9 @@ def run_relate(
     is written as the entry's `hypothesis:` line on both sides (SPEC §9). It
     must be an id some question entry defines - checked before anything is
     written, since a link to nothing is the dangling reference lint W155
-    would report the moment it landed.
+    would report the moment it landed. A side whose entry was already there
+    is left as written, and the result names the `hypothesis:` line to add
+    there by hand.
 
     `data` is {'status': 'ok'|'already'|'dry-run'|'not-found'|'merged'|
     'refused', 'person_id', 'target_id', 'relation', 'subtype'}; `changed`
@@ -2744,14 +2760,26 @@ def run_relate(
     owner_has = _relationship_entry_exists(owner_meta, tid, relation_type)
     target_has = reciprocal and _relationship_entry_exists(target_meta, pid, mirror_type)
 
+    def link_hint(meta: dict, name: str, role: str, other: str, other_name: str) -> str:
+        # An entry already there is never rewritten, so a --working-answer
+        # this run could not write is said out loud, never silently dropped.
+        if not working_answer or _relationship_entry_links(meta, other, role, working_answer):
+            return ''
+        shown = fmt_id_display(working_answer)
+        return (f" {name}'s {role} entry for {other_name} was already there, so it was "
+                f'left as written: to tie it to {shown}, add the line '
+                f'`hypothesis: {shown}` under that entry.')
+
+    owner_hint = link_hint(owner_meta, owner_name, relation_type, tid, target_name) \
+        if owner_has else ''
+    target_hint = link_hint(target_meta, target_name, mirror_type, pid, owner_name) \
+        if target_has else ''
+
     if owner_has and (not reciprocal or target_has):
         result.data['status'] = 'already'
-        hint = (f' To tie it to {fmt_id_display(working_answer)}, add the line '
-                f'`hypothesis: {fmt_id_display(working_answer)}` under that entry.'
-                if working_answer else '')
         result.add('info',
                    f'{owner_name} already has a {relation_type} entry for '
-                   f'{target_name} - nothing to change.{hint}')
+                   f'{target_name} - nothing to change.{owner_hint}{target_hint}')
         return result
 
     # (path, old_text, new_text, human-readable description of the write)
@@ -2810,6 +2838,10 @@ def run_relate(
                    'nothing to change.')
         return result
 
+    # One side written, the other already there: the side left as written
+    # gets its add-by-hand line, so a partial link is never a silent success.
+    link_hints = (owner_hint + target_hint).strip()
+
     if warn_subtype:
         result.add('warning',
                    f'{subtype_clean!r} is not one of the archive\'s kin '
@@ -2827,6 +2859,8 @@ def run_relate(
                 fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
             ):
                 result.add('info', dline)
+        if link_hints:
+            result.add('warning', link_hints)
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -2864,6 +2898,8 @@ def run_relate(
         result.add('info',
                    f'Recorded: {label} (an unsourced belief - `fha claim` '
                    'records a sourced tie).', path=path)
+    if link_hints:
+        result.add('warning', link_hints)
 
     result.data['status'] = 'ok'
     return result

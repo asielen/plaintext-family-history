@@ -13,12 +13,15 @@ Covers:
     working answers stay two;
   * `fha lint --fix-reciprocal` adds the sourced mirror beside a guess on the
     other record, never deleting it, and refuses to save a header that would
-    no longer read;
+    no longer read or would change another field, saying which, with
+    `--dry-run` printing the same refusal;
+  * the formatter lowercases a `hypothesis:` link like the other id subkeys;
   * W155: a guess beside an entry citing an ACCEPTED claim, and a
     `hypothesis:` link to an h-id no question entry defines; a suggested claim
     settles nothing; the needs-sourcing backlog agrees with W155;
   * `fha person relate --working-answer`: writes the link, refuses an id that
-    no question entry defines, writes nothing when it refuses.
+    no question entry defines, writes nothing when it refuses, and names the
+    line to add by hand on any side whose entry was already there.
 """
 
 import sys
@@ -106,11 +109,28 @@ class FoldLeavesGuessesAloneTests(unittest.TestCase):
         (entry,) = _entries(out.replace('\r\n', '\n'))
         self.assertEqual(entry['hypothesis'], H)
 
+    def test_a_free_text_link_survives_the_fold(self):
+        # The owner typed a note where the id goes; the fold must copy it as
+        # the same text, not write a line that breaks the whole header.
+        noted = SOURCED.replace(CLAIM, 'C-eeeeeeeeee') + '    hypothesis: "see note: 1931 #2"\n'
+        out, removed = collapse_relationship_entries(_front(SOURCED + noted))
+        self.assertEqual(removed, 1)
+        (entry,) = _entries(out)
+        self.assertEqual(entry['hypothesis'], 'see note: 1931 #2')
+
     def test_two_identical_guesses_still_fold(self):
         out, removed = collapse_relationship_entries(_front(GUESS + GUESS))
         self.assertEqual(removed, 1)
         (entry,) = _entries(out)
         self.assertEqual((entry['status'], entry['hypothesis']), ('hypothesis', H))
+
+
+class FormatterTests(unittest.TestCase):
+    def test_a_working_answer_link_is_written_lowercase_like_other_ids(self):
+        text = _front(GUESS.replace(H, H.upper())) + '\n# Ann Kid\n'
+        out, _fixes, _manual = lint.format_record_text(text, 'person')
+        self.assertEqual(_entries(out)[0]['hypothesis'], H)
+        self.assertIn('# Aunt May remembers him at the farm', out)
 
 
 class FixReciprocalBesideAGuessTests(unittest.TestCase):
@@ -153,6 +173,32 @@ class FixReciprocalBesideAGuessTests(unittest.TestCase):
         self.assertEqual(_codes(findings, 'W116'), [])
         (w155,) = _codes(findings, 'W155')
         self.assertIn('Delete the guess', w155.message)
+
+    def _fix(self, bob_block: str, dry_run: bool):
+        root, parent_f = self._root(bob_block)
+        before = (root / parent_f).read_text(encoding='utf-8')
+        r = lint.run_lint(root, {}, fix_reciprocal=True, dry_run=dry_run)
+        self.assertEqual((root / parent_f).read_text(encoding='utf-8'), before)
+        return '\n'.join(r.data.get('progress', []))
+
+    # Items at four spaces: the mirror lands at two, and the header no longer parses.
+    DEEP = ('relationships:\n'
+            '    - to: "[[P-dddddddddd|Cal Kid]]"\n'
+            '      type: child\n')
+    # No relationships: block, but a quoted note with a line that looks like one.
+    LOOKALIKE = "note: 'he wrote\nrelationships:\nnothing more'\n"
+
+    def test_refusal_names_an_unreadable_header(self):
+        for dry_run in (False, True):
+            progress = self._fix(self.DEEP, dry_run)
+            self.assertIn('would leave its header unreadable', progress, dry_run)
+
+    def test_refusal_names_a_change_to_other_fields(self):
+        for dry_run in (False, True):
+            progress = self._fix(self.LOOKALIKE, dry_run)
+            self.assertIn('would change other fields', progress, dry_run)
+            self.assertNotIn('unreadable', progress, dry_run)
+            self.assertNotIn('would add', progress, dry_run)
 
     def test_a_wide_dash_gap_still_saves_a_readable_record(self):
         # Valid YAML with keys at six spaces; the new entry must not break it.
@@ -209,6 +255,40 @@ class W155Tests(unittest.TestCase):
         self.assertTrue(_codes(findings, 'W115'))
         self.assertEqual(_codes(findings, 'W155'), [])
 
+    def test_an_unresolved_name_settles_nothing(self):
+        # Both entries name someone the archive does not know; the accepted
+        # claim is about Bob, so it settles no tie to "Robert Other".
+        unknown = lambda s: s.replace(f'"[[{PARENT}|Bob Kid]]"', '"[[Robert Other]]"')
+        root = self._root('relationships:\n' + unknown(SOURCED) + unknown(GUESS))
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertEqual(_codes(findings, 'W155'), [])
+
+    def test_a_merged_target_is_read_through_the_merge(self):
+        # Bob's duplicate is merged into Bob; both of Ann's entries still name the duplicate.
+        dup = 'P-dddddddddd'
+        dup_f, dup_t = _person(dup, 'kid', 'bobdup')
+        dup_t = dup_t.replace('tier: stub\n', f'tier: stub\nstatus: merged\nmerged_into: {PARENT}\n')
+        point = lambda s: s.replace(f'[[{PARENT}|Bob Kid]]', f'[[{dup}|Bob Dup]]')
+        child_f, child_t = _person(CHILD, 'kid', 'ann',
+                                   relationships='relationships:\n' + point(SOURCED) + point(GUESS))
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        src_rel, src_text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        root = _build({child_f: child_t, parent_f: parent_t, dup_f: dup_t, src_rel: src_text,
+                       'notes/questions.md': QUESTIONS})
+        findings, registry = lint._run_lint_core(root, {})
+        self.assertEqual(len(_codes(findings, 'W155')), 1)
+        self.assertNotIn('not yet sourced', '\n'.join(lint._needs_sourcing_backlog(registry)))
+
+    def test_merge_keeps_two_guesses_naming_different_working_answers(self):
+        import confirm
+        g1 = {'to': f'[[{PARENT}]]', 'type': 'parent', 'status': 'hypothesis', 'hypothesis': H}
+        g2 = dict(g1, hypothesis=H_OTHER)
+        sourced = {'to': f'[[{PARENT}]]', 'type': 'parent', 'claims': [f'[[{CLAIM}]]'],
+                   'hypothesis': H}
+        key = lambda e: confirm._relationship_edge_key(e, None)
+        self.assertNotEqual(key(g1), key(g2))
+        self.assertEqual(key(sourced), key(dict(sourced, hypothesis=H_OTHER)))
+
     def test_a_suggested_claim_settles_nothing(self):
         for status in ('suggested', 'disputed'):
             root = self._root('relationships:\n' + SOURCED + GUESS, status=status)
@@ -239,6 +319,16 @@ class W155Tests(unittest.TestCase):
         root = self._root('relationships:\n' + GUESS, ruled_out)
         findings, _ = lint._run_lint_core(root, {})
         self.assertEqual(len(_codes(findings, 'W155')), 1)
+
+    def test_dangling_link_on_a_sourced_entry_never_says_remove_the_entry(self):
+        # The tie is proved; only the link is stale. Telling the owner to
+        # remove the entry would have them delete a sourced parent.
+        root = self._root('relationships:\n' + SOURCED + f'    hypothesis: {H_OTHER}\n')
+        findings, _ = lint._run_lint_core(root, {})
+        (w,) = _codes(findings, 'W155')
+        self.assertNotIn('remove this entry', w.message)
+        self.assertIn('no longer written down', w.message)
+        self.assertIn(f'delete only the `hypothesis: {H_OTHER}` line', w.message)
 
     def test_a_value_that_is_not_an_h_id_is_reported(self):
         root = self._root('relationships:\n' + GUESS.replace(H, 'the Kid family'))
@@ -274,6 +364,33 @@ class RelateWorkingAnswerTests(unittest.TestCase):
         r = person.run_relate(self.root, CHILD, 'parent', PARENT, working_answer='p-aaaaaaaaaa')
         self.assertEqual(r.data['status'], 'refused')
         self.assertIn('not a working-answer id', r.messages[0].text)
+
+    def _hints(self, r) -> str:
+        return '\n'.join(m.text for m in r.messages)
+
+    def test_a_side_already_there_gets_the_add_by_hand_line(self):
+        # Ann already records Bob; only Bob's mirror is written. Ann's entry
+        # is left as written, and the output must say so.
+        person.run_relate(self.root, CHILD, 'parent', PARENT)
+        for dry_run in (True, False):
+            r = person.run_relate(self.root, CHILD, 'parent', PARENT, reciprocal=True,
+                                  working_answer=H, dry_run=dry_run)
+            self.assertIn(r.data['status'], ('ok', 'dry-run'), r.messages)
+            text = self._hints(r)
+            self.assertIn("ann kid's parent entry for bob kid", text)
+            self.assertIn(f'`hypothesis: {H}`', text)
+            self.assertNotIn("bob kid's child entry", text)
+        (bob,) = read_record(self.root / self.parent_f)['meta']['relationships']
+        self.assertEqual(bob['hypothesis'], H)
+
+    def test_both_sides_already_there_get_a_line_each(self):
+        person.run_relate(self.root, CHILD, 'parent', PARENT, reciprocal=True)
+        r = person.run_relate(self.root, CHILD, 'parent', PARENT, reciprocal=True,
+                              working_answer=H)
+        self.assertEqual(r.data['status'], 'already')
+        text = self._hints(r)
+        self.assertIn("ann kid's parent entry for bob kid", text)
+        self.assertIn("bob kid's child entry for ann kid", text)
 
     def test_cli_flag(self):
         import io

@@ -201,6 +201,8 @@ from _lib import (
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
+    relationship_entry_hypothesis,  # a guess's hypothesis: h-… link (SPEC §9)
+    relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
@@ -2593,18 +2595,24 @@ def _final_survivor(profiles: dict[str, tuple[Path, dict]], person_id: str) -> s
 
 
 def _relationship_edge_key(entry: dict, alias_map: dict[str, str] | None) -> tuple:
-    """The dedupe identity of one relationships entry: (to, type, subtype).
+    """The dedupe identity of one relationships entry: (to, type, subtype,
+    working answer of a guess).
 
     `to:` compares by resolved P-id when it resolves, else by its normalized
     text; a missing `subtype` means `biological` (the SPEC §8.2 default), so
     an explicit `subtype: biological` and an omitted one are the same edge.
+    A guess also keys on the working answer it names (`hypothesis:`), the
+    rule the fold uses, so two records guessing one tie for different
+    reasons both survive a merge with their links.
     """
     to_raw = str(entry.get('to') or '')
     to_key = resolve_typed_ref(to_raw, alias_map, want='P') \
         or strip_link_wrapper(to_raw).strip().lower()
     type_key = str(entry.get('type') or '').strip().lower()
     subtype_key = str(entry.get('subtype') or 'biological').strip().lower()
-    return to_key, type_key, subtype_key
+    guess_link = (relationship_entry_hypothesis(entry) or ''
+                  if relationship_entry_is_guess(entry) else '')
+    return to_key, type_key, subtype_key, guess_link
 
 
 def _unreadable_merge_refusal(

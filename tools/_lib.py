@@ -9112,7 +9112,9 @@ def _item_with_hypothesis(item: list[str], link: str | None, cr: str) -> list[st
     # would otherwise capture the carriage return into the new line's indent.
     dash = re.match(r'^([ \t]*)-([ \t]+)', item[0].rstrip('\r'))
     key_indent = (dash.group(1) + ' ' + dash.group(2)) if dash else '    '
-    return list(item) + [f'{key_indent}hypothesis: {link}{cr}']
+    # The shared quoting rule: a link written as free text ("see note: 1931")
+    # must read back as the same text, not break the header.
+    return list(item) + [f'{key_indent}hypothesis: {yaml_inline(link)}{cr}']
 
 
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
@@ -9154,12 +9156,21 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
 
 def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     """Fold `relationships:` entries that record the same tie - same person,
-    role, nature (subtype), status, `source:` and working answer - into the
-    FIRST of them, whose claim links become one `claims: [...]` list holding
-    every claim the group linked, in order. The later entries are removed.
-    Everything else in the first entry (its `to:` spelling, comments, other
-    keys) is kept as written, and an entry nothing duplicates is left alone.
-    A guess is never folded into a sourced entry (`_relationship_item_key`).
+    role, nature (subtype), status and `source:`, and for a guess the working
+    answer it names - into the FIRST of them, whose claim links become one
+    `claims: [...]` list holding every claim the group linked, in order. The
+    later entries are removed. Everything else in the first entry (its `to:`
+    spelling, comments, other keys) is kept as written, and an entry nothing
+    duplicates is left alone. A guess is never folded into a sourced entry
+    (`_relationship_item_key`).
+
+    The working answer is not part of a sourced entry's key, so sourced
+    entries still fold to one per person and role. When the folded entries
+    name different working answers (`hypothesis:`), the first entry's link is
+    kept and the others are dropped; the first entry gains a link from a later
+    one only when it has none. That loses a link only when one tie was proved
+    from two different guesses, which is rare and leaves the evidence intact.
+
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
 
