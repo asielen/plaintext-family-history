@@ -19,8 +19,8 @@ plus archive-wide totals and the direct line's progress by generation.
 A pure read over `.cache/index.sqlite`; nothing is written, and nothing it
 computes is ever stored in a record (SPEC §17b - a gap a tool can compute is
 not written down). The checks themselves live in `_lib` (`person_completeness`,
-`archive_metrics`): the shared engine any other front door that shows
-completeness (the workbench, the site) is to use, so the two cannot disagree.
+`archive_metrics`): the shared engine every other front door that shows
+completeness (the workbench, the site) uses, so they cannot disagree.
 
 By default only accepted claims count: the standard view says what the
 archive has settled. `--include-suggested` counts suggested claims too, so it

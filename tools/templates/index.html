@@ -34,6 +34,25 @@
   {% include "_pedigree_home.html" %}
   {% endif %}
 
+  {% if workbench and week_calendar %}
+  {#- Workbench only (TOOLING_INTERFACE §1b): the week `fha report` shows,
+      everyone named, each person linked to their workbench page. -#}
+  {% set wk = week_calendar %}
+  <section class="family-calendar wb-week" aria-labelledby="this-week">
+  <h2 id="this-week">This week in the family</h2>
+  <p class="note">{{ wk.first }} to {{ wk.last }}, from accepted records dated to the day.</p>
+  {% if wk.events %}
+  <ul class="index-list family-calendar-events">
+    {% for e in wk.events %}<li class="cal-{{ e.type }}"><span class="cal-date">{{ e.date }}</span> - {{ e.html }} - {{ e.ago }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">Nothing on file for {{ wk.first }} to {{ wk.last }}. Only dates recorded
+  to the day (1880-06-14) can be placed on the calendar; a year alone, or an "about", cannot.</p>
+  {% endif %}
+  </section>
+  {% endif -%}
+
   {% if calendar %}
   {#- fha.yaml `site: calendar: true` (TOOLING §12). The site is a snapshot,
       so every month is rendered; the script shows the visitor's own month.

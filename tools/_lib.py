@@ -13084,8 +13084,8 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # Computed fresh from the index on every call and never written into a record
 # (SPEC §17b: a gap a tool can compute is not written down). `fha metrics` is
-# the terminal front door. This is the shared engine any other front door that
-# shows completeness (the workbench, the site) is to use, so a ring on a page
+# the terminal front door. This is the shared engine every other front door that
+# shows completeness (the workbench, the site) uses, so a ring on a page
 # and a line in the terminal cannot disagree.
 #
 # When the record is unsure, the answer leans to a visible gap: a confident
@@ -14111,7 +14111,7 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
 # "What happened in the family this month?" - births, baptisms, marriages,
 # deaths, burials and arrivals whose recorded date falls in a given month (or
 # on a given day), from the archive's own claims. `fha calendar` reads it. It
-# is the shared engine a report, workbench or site anniversary panel is to
+# is the shared engine the report, the workbench and the site's calendar panel
 # use, so that the same day cannot show different anniversaries in two places.
 #
 # Only a date the record gives to the month (or day) is placed: `1880-06` or
@@ -14280,6 +14280,45 @@ def family_calendar_events(
     return sorted(events.values(),
                   key=lambda e: (e['day'] or 0, e['year'], e['type'],
                                  e['people'][0]['name'] or ''))
+
+
+def family_calendar_week(
+    conn: sqlite3.Connection, start: datetime.date, *, days: int = 7,
+    statuses: tuple[str, ...] = ('accepted',),
+) -> list[dict]:
+    """Family events falling on `start` and the days after it (`days` in
+    all, a week by default), in calendar order: `family_calendar_events`
+    asked one day at a time.
+
+    Each day is asked for on its real calendar date, so a week that crosses
+    New Year counts its January days against next year (2 January 1880 is
+    147 years ago in the week of 28 December 2026, not 146). Only dates
+    recorded to the day are placed, since a day view leaves out a record
+    known only to the month. `fha report`'s on-this-day section and the
+    workbench home page read this, so the two cannot disagree about a week.
+    Privacy is the caller's, as for `family_calendar_events`."""
+    events: list[dict] = []
+    for offset in range(max(0, int(days))):
+        day = start + datetime.timedelta(days=offset)
+        events.extend(family_calendar_events(
+            conn, month=day.month, day=day.day, statuses=statuses,
+            this_year=day.year))
+    return events
+
+
+def calendar_years_ago_phrase(years_ago: int) -> str:
+    """How long ago a calendar event was, in words: "146 years ago", "1 year
+    ago", "this year". A date after this year is a mistake in the record,
+    and the phrase says so instead of printing a negative number. Every view
+    of the family calendar uses these words, so the same day reads the same
+    in each."""
+    if years_ago < 0:
+        return 'dated in the future - check the record'
+    if years_ago == 0:
+        return 'this year'
+    if years_ago == 1:
+        return '1 year ago'
+    return f'{years_ago} years ago'
 
 
 def couple_folder_dirs(archive_root: str | Path) -> list[Path]:

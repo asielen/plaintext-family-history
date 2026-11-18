@@ -13,8 +13,8 @@ WHEN is forgiving: nothing (this month), `today`, a month (`6`, `june`,
 `Jun`), or a day (`06-14`, `6/14`, `june 14`, `14 june`).
 
 A pure read over `.cache/index.sqlite`; nothing is written. The events
-themselves come from `_lib.family_calendar_events`, the shared engine a
-report, workbench or site anniversary panel is to use. This command is
+themselves come from `_lib.family_calendar_events`, the shared engine the
+report, the workbench and the site's calendar panel use too. This command is
 private (the owner's own terminal), so it shows everyone. Shared output must
 apply SPEC §19 itself: the living and source-restricted flags each event
 carries are a start, but a restricted claim or person is not flagged.
@@ -48,6 +48,7 @@ from _lib import (
     EXIT_FAILURE,
     FhaConfigError,
     Result,
+    calendar_years_ago_phrase,
     configure_utf8_stdout,
     family_calendar_events,
     fmt_id_display,
@@ -186,13 +187,7 @@ def _event_line(ev: dict) -> str:
     when = (f"{ev['day']} {_stdcal.month_name[ev['month']]} {ev['year']}" if ev['day']
             else f"{_stdcal.month_name[ev['month']]} {ev['year']}")
     place = f", {ev['place']}" if ev['place'] else ''
-    ago = ev['years_ago']
-    if ago < 0:
-        ago_text = 'dated in the future - check the record'
-    elif ago == 0:
-        ago_text = 'this year'
-    else:
-        ago_text = f'{ago} years ago' if ago != 1 else '1 year ago'
+    ago_text = calendar_years_ago_phrase(ev['years_ago'])
     # Under --include-suggested an unreviewed suggestion must not read as a
     # family fact.
     mark = '' if ev.get('accepted', True) else '  [suggested, not yet reviewed]'

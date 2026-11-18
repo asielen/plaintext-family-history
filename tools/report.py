@@ -143,7 +143,8 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     extract_token_ids,
-    family_calendar_events,
+    calendar_years_ago_phrase,
+    family_calendar_week,
     FhaConfigError,
     Result,
     fmt_id_display,
@@ -472,35 +473,19 @@ def _on_this_day_line(ev: dict) -> str:
              for p in ev['people']]
     people = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
     place = f", {ev['place']}" if ev['place'] else ''
-    ago = ev['years_ago']
-    if ago < 0:
-        ago_text = 'dated in the future - check the record'
-    elif ago == 0:
-        ago_text = 'this year'
-    elif ago == 1:
-        ago_text = '1 year ago'
-    else:
-        ago_text = f'{ago} years ago'
-    return f"- {when} - {ev['word']}: {people}{place} - {ago_text}"
+    return f"- {when} - {ev['word']}: {people}{place} - {calendar_years_ago_phrase(ev['years_ago'])}"
 
 
 def _section_on_this_day(conn, today: datetime.date) -> list[str]:
     """Family events falling on `today` and the six days after it.
 
-    Reads `_lib.family_calendar_events`, the engine behind `fha calendar
-    --week`, so this section and that command can never disagree about a
-    day. Accepted claims only: the briefing narrates these as family facts,
-    and an unreviewed suggestion must not be spoken as one. Each day is asked
-    for on its real calendar date, so a week that crosses New Year counts its
-    January days against next year (2 January 1880 is 147 years ago in the
-    week of 28 December 2026). Only dates recorded to the day are placed, as
-    in `fha calendar`'s own day views."""
-    events: list[dict] = []
-    for offset in range(7):
-        day = today + datetime.timedelta(days=offset)
-        events.extend(family_calendar_events(
-            conn, month=day.month, day=day.day, statuses=('accepted',),
-            this_year=day.year))
+    Reads `_lib.family_calendar_week` (over `family_calendar_events`, the
+    engine behind `fha calendar --week`), the same week the workbench home
+    page shows, so none of them can disagree about a day. Accepted claims
+    only: the briefing narrates these as family facts, and an unreviewed
+    suggestion must not be spoken as one. The week's New Year rollover and
+    its day-precision rule are the helper's."""
+    events = family_calendar_week(conn, today, statuses=('accepted',))
     last = today + datetime.timedelta(days=6)
     if not events:
         return [f'No family events on file for {today.day} '
