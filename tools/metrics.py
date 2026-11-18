@@ -75,7 +75,7 @@ from _lib import (
 configure_utf8_stdout()
 
 _REQUIRED_TABLES = ('persons', 'claims', 'claim_persons', 'sources', 'source_files',
-                    'places', 'relationships')
+                    'source_people', 'places', 'relationships')
 
 _STATE_MARK = {'met': 'yes', 'partial': 'part', 'missing': 'no', 'na': '-'}
 

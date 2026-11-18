@@ -13158,10 +13158,15 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
         }
         for r in conn.execute('SELECT id, hierarchy, within FROM places')
     }
+    # Sources a record links to a person directly (`people:`), claims or not:
+    # a filed photograph is a source about them before anything is extracted.
+    source_people: dict[str, set[str]] = {}
+    for r in conn.execute('SELECT source_id, person_id FROM source_people'):
+        source_people.setdefault(normalize_id(str(r['person_id'])), set()).add(r['source_id'])
     return {
         'persons': persons, 'claims': claims, 'claim_people': claim_people,
         'person_claims': person_claims, 'source_claims': source_claims,
-        'source_types': source_types, 'places': places,
+        'source_types': source_types, 'places': places, 'source_people': source_people,
     }
 
 
@@ -13318,11 +13323,15 @@ def _person_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> tuple[int |
     born in 1900. Death comes from their own death or burial claims, then the
     provisional estimate. Each is the earliest year the record allows."""
     person = ctx['persons'].get(pid, {})
-    birth = _first_year(_own_vital_claims(ctx, pid, statuses, ('birth',)))
-    if birth is None:
+    birth_claims = _own_vital_claims(ctx, pid, statuses, ('birth',))
+    birth = _first_year(birth_claims)
+    # A birth claim with no earliest year ("born before 1880") is still birth
+    # evidence: the earliest year is unknown, and a later baptism or estimate
+    # must not stand in for it.
+    if birth is None and not birth_claims:
         birth = _provisional_year(person.get('birth'))
-    if birth is None:
-        birth = _first_year(_own_vital_claims(ctx, pid, statuses, ('baptism',)))
+        if birth is None:
+            birth = _first_year(_own_vital_claims(ctx, pid, statuses, ('baptism',)))
     death = _first_year(_own_vital_claims(ctx, pid, statuses, ('death', 'burial')))
     if death is None:
         death = _provisional_year(person.get('death'))
@@ -13497,13 +13506,22 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             'unchecked_after': unchecked_after}
     note = (f"on file through {end}; no death year, so later censuses aren't checked"
             if later else '')
+    # A country their records name but no dated record there: its years can't
+    # be worked out, so the check can't be met while it stands.
+    undated = sorted(placed_undated - set(countries))
+    if undated:
+        base['countries'] = countries + undated
+        undated_note = ('their records in ' + ', '.join(undated) + ' have no date, so '
+                        "those census years can't be worked out: add a date to one")
+        note = f'{note}; {undated_note}' if note else undated_note
+    blocked = bool(later or undated)
     if not expected:
-        if later:
+        if blocked:
             return {**base, 'state': 'partial', 'detail': note}
         return {**base, 'state': 'na', 'detail': 'lived through no census year on file'}
     tail = f'; {note}' if note else ''
     if not missing:
-        return {**base, 'state': 'partial' if later else 'met',
+        return {**base, 'state': 'partial' if blocked else 'met',
                 'detail': f'{len(found)} of {len(expected)} census years on file: '
                           + ', '.join(str(y) for y in found) + tail}
     state = 'partial' if found else 'missing'
@@ -13808,8 +13826,10 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
         claims_by_status[c['status'] or 'unknown'] = claims_by_status.get(c['status'] or 'unknown', 0) + 1
 
     def _sources_of(pid: str) -> set[str]:
-        return {ctx['claims'][cid]['source_id'] for cid in ctx['person_claims'].get(pid, ())
-                if cid in ctx['claims']}
+        # Claim-linked sources, plus sources naming them in `people:` (the
+        # union `fha views sources-index` lists).
+        return ({ctx['claims'][cid]['source_id'] for cid in ctx['person_claims'].get(pid, ())
+                 if cid in ctx['claims']} | ctx['source_people'].get(pid, set()))
 
     def _accepted_of(pid: str) -> int:
         return sum(1 for cid in ctx['person_claims'].get(pid, ())

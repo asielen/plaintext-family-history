@@ -424,6 +424,17 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertIn(1881, c['missing'])
 
+    def test_an_undated_second_country_keeps_the_check_open(self):
+        self.a.source('vital-record', [_birth(KID, '1870', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': US}
+                                 for y in (1880, 1900)])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'place': CA}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['state'], 'partial')
+        self.assertIn('Canada', c['countries'])
+        self.assertIn('Canada have no date', c['detail'])
+
     def test_the_summary_line_names_an_undated_country(self):
         self.a.person(KID, 'Kid', birth='1870', death='1905')
         self.a.source('other', [{'type': 'residence', 'persons': [KID], 'place': US}])
@@ -623,6 +634,12 @@ class MarriageCheckTests(_Base):
         self.assertEqual(c['state'], 'partial')
         self.assertEqual(c['partners'], sorted([MOM.lower(), OTHER.lower()]))
 
+    def test_born_before_1880_and_an_adult_baptism_is_not_died_young(self):
+        self.a.source('vital-record', [_birth(KID, '[..1880]'),
+                                       {'type': 'baptism', 'persons': [KID], 'date': '1900'},
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.assertEqual(self.a.check(KID, 'marriage')['state'], 'missing')
+
     def test_a_wide_death_range_is_not_died_young(self):
         self.a.source('vital-record', [_birth(KID, '1895'),
                                        {'type': 'death', 'persons': [KID], 'date': '1900/1960'}])
@@ -772,6 +789,18 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(a['people']['direct_line'], 3)
         self.assertEqual(a['sources_by_type'], {'census': 1, 'vital-record': 1})
         self.assertEqual(a['searchable_text'], {'sources_with_files': 2, 'sources_with_text': 1})
+
+    def test_a_source_naming_someone_in_people_counts_without_claims(self):
+        # A photo filed about Kid, nothing extracted yet: still one of his sources.
+        folder = self.a.root / 'sources' / 'photos'
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / 'photo_S-0000000099.md').write_text(
+            f'---\nid: S-0000000099\ntitle: Kid at school\nsource_type: photo\n'
+            f'people: ["[[{KID}]]"]\n---\n', encoding='utf-8')
+        self.a.build()
+        thin = {t['person']: t['sources'] for t in
+                self._run().data['archive']['thinnest_direct_line']}
+        self.assertEqual(thin[KID.lower()], 2)   # the birth record and the photo
 
     def test_one_person(self):
         r = self._run(person=KID.lower())
