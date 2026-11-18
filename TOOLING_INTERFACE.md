@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *AI-interface* side of the archive - the workbench harness configuration and the workflow skills that turn `fha` tools into a genealogy-aware research assistant. If you just want to use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-**Version 2.2 - companion to SPEC.md v2.2 and TOOLING.md v2.2 (versions track the SPEC).**
+**Version 2.3 - companion to SPEC.md v2.3 and TOOLING.md v2.3 (versions track the SPEC).**
 
 This document is a focused expansion of one layer that the main [`TOOLING.md`](TOOLING.md) only sketches: the **harness + skills** layer that sits *on top of* the deterministic `fha` tool suite. TOOLING.md specifies the tools (schemas, algorithms, command shapes); this document specifies the AI interface that drives them - the workbench configuration that makes any conforming harness genealogy-aware, the browser workbench, and the workflow skills that orchestrate `fha` calls plus model judgment into the everyday research loop.
 

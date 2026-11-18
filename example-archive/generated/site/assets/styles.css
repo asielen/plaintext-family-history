@@ -367,7 +367,6 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .status { font-family: var(--font-sans); font-size: var(--text-xs); font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
 .status::before { content: "\2022\00a0"; font-size: 0.8em; }
 .status-accepted     { color: var(--status-accepted-fg); }
-.status-needs-review { color: var(--status-review-fg); }
 .status-suggested    { color: var(--status-suggested-fg); }
 .status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }
 .status-rejected::before, .status-superseded::before { content: ""; }
