@@ -273,6 +273,7 @@ from _lib import (
     COMPLETENESS_CHECK_LABELS,
     COMPLETENESS_STATE_WORDS,
     completeness_context,
+    completeness_public_phrase,
     completeness_ring_svg,
     family_calendar_events,
     person_completeness,
@@ -6142,7 +6143,11 @@ class _SiteBuilder:
         exists to prevent. A stub (workbench pages)
         gets none either: rings are for the curated people the site is
         about. The ring reads the checks' own detail words, which name no
-        one, so a ring never carries a name the page would redact."""
+        one, so a ring never carries a name the page would redact. A shared
+        build shows visitors a few plain words per check (`_lib.completeness_
+        public_phrase`: "no marriage record"), never the owner's detail, which
+        can name a command to run; the linked preview keeps the full detail,
+        as `fha metrics` does."""
         row = self.person_meta.get(pid)
         if row is None or (row['tier'] or '') != 'curated' or self._person_is_redacted(row):
             return None
@@ -6153,9 +6158,11 @@ class _SiteBuilder:
         checks = [{'label': COMPLETENESS_CHECK_LABELS[c['check']],
                    'state': c['state'],
                    'word': COMPLETENESS_STATE_WORDS.get(c['state'], c['state']),
-                   'detail': c.get('detail') or ''}
+                   'detail': (completeness_public_phrase(c) if not self.linked
+                              else c.get('detail') or '')}
                   for c in result['checks']]
-        return {'ring': self._markup(completeness_ring_svg(result, size=64)),
+        return {'ring': self._markup(completeness_ring_svg(
+                    result, size=64, public=not self.linked)),
                 'checks': checks,
                 'met': result['met'], 'applicable': result['applicable']}
 

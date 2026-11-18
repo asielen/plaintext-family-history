@@ -207,6 +207,41 @@ class RingTests(_Base):
         self.assertIn('<g class="ring-met" data-check="birth"',
                       self.page(f'persons/{ME}.html'))
 
+    def ring_section(self):
+        html = self.page(f'persons/{ME}.html')
+        return html.split('<details class="chart completeness"', 1)[1].split('</details>', 1)[0]
+
+    def test_a_shared_build_says_what_is_missing_in_plain_words(self):
+        # TOOLING §12: visitors get a few plain words per check, never the
+        # owner's detail, which names a command to run (here: no record at a
+        # registered place, so the census country cannot be told).
+        self.person(ME, 'Ada Example')
+        self.person(OTHER, 'Fern Example')
+        self.source('s-1111111111', 'Marriage register')
+        self.claim('c-1111111111', 's-1111111111', 'death', '1900-06-02', [ME])
+        self.source('s-2222222222', 'Church letter', source_type='letter')
+        self.claim('c-2222222222', 's-2222222222', 'marriage', '1875-06-01', [ME, OTHER])
+        self.config(BOTH_ON)
+        self.build()
+        ring = self.ring_section()
+        self.assertNotIn('fha ', ring)
+        self.assertNotIn('`', ring)
+        self.assertNotIn('remove', ring)
+        self.assertIn('Censuses</strong>: not found yet - census country not known', ring)
+        self.assertIn('<title>Censuses: not found yet - census country not known</title>', ring)
+        self.assertIn('Marriage records</strong>: not found yet - no marriage record', ring)
+        self.assertIn('Parents</strong>: not found yet - no parents named', ring)
+        self.assertIn('Birth record</strong>: not found yet - no birth record', ring)
+        self.assertIn('Death or burial</strong>: found</li>', ring)
+
+    def test_the_linked_preview_keeps_the_owners_full_detail(self):
+        self.person(ME, 'Ada Example')
+        self.source('s-1111111111', 'Death register')
+        self.claim('c-1111111111', 's-1111111111', 'death', '1900-06-02', [ME])
+        self.config(BOTH_ON)
+        self.build(linked=True)
+        self.assertIn('fha report --section place-candidates', self.ring_section())
+
     def test_an_unreadable_setting_leaves_the_ring_off_with_a_warning(self):
         self.seed_me()
         self.config('site:\n  completeness_rings: maybe\n')
@@ -225,6 +260,14 @@ class RingSvgTests(unittest.TestCase):
         applicable = [c for c in checks if c['state'] != 'na']
         return {'checks': checks, 'applicable': len(applicable),
                 'met': sum(1 for c in applicable if c['state'] == 'met')}
+
+    def test_public_titles_use_the_plain_phrase_not_the_detail(self):
+        r = self.result('met', 'missing', 'na', 'na', 'na')
+        r['checks'][1]['countries'] = []
+        svg = completeness_ring_svg(r, public=True)
+        self.assertIn('<title>Censuses: not found yet - census country not known</title>', svg)
+        self.assertIn('<title>Birth record: found</title>', svg)
+        self.assertNotIn('detail', svg)
 
     def test_one_segment_per_check_with_escaped_titles_and_no_ids(self):
         svg = completeness_ring_svg(self.result('met', 'partial', 'missing', 'na', 'met'))

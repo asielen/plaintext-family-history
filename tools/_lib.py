@@ -13098,6 +13098,7 @@ def couple_folder_prefix(pos: int) -> int:
 #   completeness_context        - read the index once into plain dicts
 #   person_completeness         - the five checks for one person
 #   completeness_summary_line   - "3 of 5: no marriage record; ..." for a person
+#   completeness_public_phrase  - a few plain words for one check, for visitors
 #   completeness_ring_svg       - the five checks as a small inline-SVG ring
 #   archive_metrics             - totals, medians, text coverage, direct line
 
@@ -13901,7 +13902,33 @@ def _ring_sector(c: float, r_out: float, r_in: float, start: float, end: float) 
             f'A{r_in:.2f},{r_in:.2f} 0 {large} 0 {_ring_point(c, r_in, start)} Z')
 
 
-def completeness_ring_svg(result: dict, size: int = 44) -> str:
+def completeness_public_phrase(c: dict) -> str:
+    """A few plain words naming what one check still lacks, for a page that
+    visitors read (the shared family site): "no marriage record", "censuses
+    2 of 6 years". Empty for a check that is found or does not apply.
+
+    The full `detail` is written for the owner and can tell him what to do
+    next, naming a command or a flag to remove; a visitor can act on none of
+    that, so the shared site shows these words instead and `fha metrics`
+    keeps the full detail. The marriage words are built from the check's
+    counts rather than its detail, because that detail can carry an
+    instruction to the owner."""
+    if c.get('state') not in ('missing', 'partial'):
+        return ''
+    if c.get('check') == 'marriage':
+        partners = list(c.get('partners') or [])
+        lacking = len(partners) - len(c.get('with_record') or [])
+        if not partners:
+            return 'no marriage on file'
+        if len(partners) == 1:
+            return 'no marriage record'
+        return f'{lacking} of {len(partners)} marriages without a marriage record'
+    if c.get('check') == 'census' and not c.get('countries'):
+        return 'census country not known'
+    return _completeness_short_phrase(c)
+
+
+def completeness_ring_svg(result: dict, size: int = 44, *, public: bool = False) -> str:
     """A `person_completeness` result drawn as a small five-segment ring:
     inline SVG markup, no script, no ids, safe to repeat on one page.
 
@@ -13919,7 +13946,9 @@ def completeness_ring_svg(result: dict, size: int = 44) -> str:
     A pure function, so every front door that shows completeness (the site's
     person pages, the workbench) draws the same ring from the same result.
     Privacy is the caller's: a person the caller would not publish gets no
-    ring, and no result should be computed for them in the first place."""
+    ring, and no result should be computed for them in the first place.
+    `public=True` (a page visitors read) puts `completeness_public_phrase`
+    in the tooltips instead of the owner-facing detail."""
     size = max(16, int(size))
     c = size / 2
     r_out = c - 1.5
@@ -13935,7 +13964,8 @@ def completeness_ring_svg(result: dict, size: int = 44) -> str:
         end = start + span - gap
         outline = _ring_sector(c, r_out, r_in, start, end)
         label = COMPLETENESS_CHECK_LABELS[key]
-        detail = str(chk.get('detail') or '').strip()
+        detail = (completeness_public_phrase(chk) if public
+                  else str(chk.get('detail') or '').strip())
         title = f'{label}: {COMPLETENESS_STATE_WORDS[state]}' + (f' - {detail}' if detail else '')
         if state == 'met':
             shape = f'<path d="{outline}" fill="currentColor" stroke="currentColor" stroke-width="1"/>'
