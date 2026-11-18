@@ -7809,11 +7809,22 @@ def claim_date_order_sql(alias: str = 'c') -> str:
     under a stray decade heading that then repeated further down. It sorts by
     its known end (`date_max`) instead. "From 1883 on" (`[1883..]`) already
     sorts by its known start. `alias` is the claims table's alias in the
-    query ('' for none)."""
+    query ('' for none).
+
+    Claims on the same date are ordered by their source's id, then by their
+    order in that source's file. Both come from the records, so the order is
+    the same whatever the filesystem's listing order, and survives a
+    one-source reindex: `rowid` alone would not, since `fha index` inserts
+    sources in directory-walk order and an incremental update re-inserts a
+    source's claims at the end. Within one source, `rowid` is the file's own
+    claim order, which every reindex of that source keeps. Without these keys
+    SQLite returned equal rows in whatever order its plan produced (a `SELECT
+    DISTINCT` through a temporary table does not keep it), so two births both
+    dated `1840~` swapped places between builds."""
     p = f'{alias}.' if alias else ''
     return (f"CASE WHEN {p}date_min IS NULL OR {p}date_min = '' THEN 1 ELSE 0 END, "
             f"CASE WHEN {p}date_edtf LIKE '[..%' THEN {p}date_max "
-            f"ELSE {p}date_min END ASC")
+            f"ELSE {p}date_min END ASC, {p}source_id ASC, {p}rowid ASC")
 
 
 def _pad_date(s: str, mode: str) -> str:
@@ -13958,6 +13969,8 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
                             'sources_with_text': len(with_text)},
         'thinnest_direct_line': thinnest,
     }
+
+
 # ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────
 #
 # "What happened in the family this month?" - births, baptisms, marriages,
