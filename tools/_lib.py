@@ -13193,7 +13193,9 @@ def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
     their death record, whatever else it gives."""
     for cid in ctx['source_claims'].get(source_id, ()):
         c = ctx['claims'][cid]
-        if c['type'] in ('death', 'burial') and not c['negated']:
+        # A rejected or disputed reading of the source says nothing about it.
+        if (c['type'] in ('death', 'burial') and not c['negated']
+                and c['status'] in ('accepted', 'suggested')):
             pairs = ctx['claim_people'].get(cid, [])
             subjects = vital_subjects(c['type'], pairs)
             # None means "the one person named" - who may be somebody else on
@@ -13264,9 +13266,14 @@ def _check_birth(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
                 'detail': 'birth or baptism record on file'}
     births = [cid for cid, c in own if c['type'] == 'birth']
     if births or own:
+        on_death_record = any(
+            ctx['source_types'].get(c['source_id']) == 'vital-record' for _cid, c in own)
+        hint = (' (if one of these is the birth or baptism entry itself, on a register '
+                'that also records the death, mark that claim information: primary)'
+                if on_death_record else '')
         return {'check': 'birth', 'state': 'partial', 'claims': [cid for cid, _c in own],
                 'detail': 'birth known only from later records (a census age, '
-                          'a death record, a headstone), not a birth record'}
+                          f'a death record, a headstone), not a birth record{hint}'}
     return {'check': 'birth', 'state': 'missing', 'claims': [],
             'detail': 'no birth record'}
 
@@ -13293,9 +13300,8 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     there, otherwise from the earliest dated record placing them there (an
     immigration claim included) - so no year before they arrived is asked
     for. They end at death, or at the latest record of them anywhere when no
-    death is known - and at their last record in that country when a later
-    record places them in another one, so no year after they left is asked
-    for either. A country comes from the place registry (the last part of a
+    death is known - and at an immigration claim placing them in another
+    country, so no year after they left is asked for either. A country comes from the place registry (the last part of a
     registered place's hierarchy), never from free text. Only records of the
     person's own life place them or date them (`_life_claims`): a mention on
     a son's death certificate says nothing about where or when the father
@@ -13313,7 +13319,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     own_births = {cid for cid, _c in _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))}
 
     first_in: dict[str, int] = {}
-    last_in: dict[str, int] = {}      # every country, table or not, by its label
+    arrivals: list[tuple[int, str]] = []   # (year, country) of each immigration claim
     born_in: set[str] = set()
     other_countries: set[str] = set()
     latest_any: int | None = None
@@ -13325,8 +13331,8 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if raw and not key:
             other_countries.add(raw)
         label = key or raw
-        if label and c['y_lo'] is not None:
-            last_in[label] = max(last_in.get(label, c['y_hi']), c['y_hi'])
+        if label and c['type'] == 'immigration' and c['y_lo'] is not None:
+            arrivals.append((c['y_lo'], label))
         if not key:
             continue
         if cid in own_births:
@@ -13372,11 +13378,12 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             start = min(on_file) if start is None else min(start, min(on_file))
         if start is None:
             continue
-        # Left for another country: this country's years stop at their last
-        # record here (or the last census on file for it, if later).
-        last_here = max([last_in.get(key, start)] + on_file)
-        moved_on = any(y > last_here for label, y in last_in.items() if label != key)
-        stop = min(end, last_here) if moved_on else end
+        # Left for another country: an arrival recorded elsewhere (an
+        # immigration claim) ends this country's years. Nothing weaker does -
+        # a visit or a death abroad says nothing about when they left, and
+        # guessing would hide real gaps behind a "complete".
+        left = [y for y, label in arrivals if label != key and y >= start]
+        stop = min(end, min(left)) if left else end
         table = CENSUS_YEARS[key]
         expected += [y for y in table['required'] if start <= y <= stop]
         extras_all += [y for y in table['extra'] if start <= y <= stop]
@@ -13468,8 +13475,10 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
         # A confirmed absence names one person ("no marriage found"), so it is
         # read with `vital_subjects`, which handles one person, not with
         # `spouse_parties`, which needs a couple.
+        # Only an absence naming them alone means "never married"; a negated
+        # marriage naming two people says they did not marry each other.
         subjects = vital_subjects('marriage', ctx['claim_people'].get(cid, []))
-        if subjects is None or pid in subjects:
+        if subjects is None or subjects == [pid]:
             return {'check': 'marriage', 'state': 'met', 'partners': [], 'with_record': [],
                     'detail': 'never married (confirmed)'}
 
@@ -13500,10 +13509,15 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     recorded = sorted(p for p in names if p in with_record)
     base = {'check': 'marriage', 'partners': names, 'with_record': recorded}
     if not names:
-        birth, death, _earliest = _person_years(ctx, pid, statuses)
-        if birth is not None and death is not None and death - birth < MARRIAGE_MIN_AGE:
+        # Died young only when they surely did: the LATEST year the death
+        # record allows, so "died between 1900 and 1960" does not qualify.
+        birth, _death, _earliest = _person_years(ctx, pid, statuses)
+        death_by = [c['y_hi'] for _cid, c in
+                    _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
+                    if c['y_hi'] is not None]
+        if birth is not None and death_by and max(death_by) - birth < MARRIAGE_MIN_AGE:
             return {**base, 'state': 'na',
-                    'detail': f'not asked: died young (about age {death - birth})'}
+                    'detail': f'not asked: died young (about age {max(death_by) - birth})'}
         return {**base, 'state': 'missing', 'detail': 'no marriage on file'}
     if len(recorded) == len(names):
         word = 'marriage' if len(names) == 1 else f'all {len(names)} marriages'

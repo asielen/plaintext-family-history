@@ -180,6 +180,23 @@ class BirthCheckTests(_Base):
             {'type': 'death', 'persons': [DAD], 'date': '1890-02-01'}])
         self.assertEqual(self.a.check(KID, 'birth')['state'], 'met')
 
+    def test_a_rejected_burial_on_the_register_leaves_a_birth_record(self):
+        self.a.source('vital-record', [
+            {'type': 'baptism', 'persons': [KID], 'date': '1880-04-01'},
+            {'type': 'burial', 'persons': [KID], 'date': '1881-01-01',
+             'status': 'rejected', 'reviewed': '2026-01-01'}])
+        self.assertEqual(self.a.check(KID, 'birth')['state'], 'met')
+
+    def test_an_infants_register_entry_names_the_fix(self):
+        # Baptism and burial on one register: under-counted, but the detail
+        # says how to mark the baptism as the record itself.
+        self.a.source('vital-record', [
+            {'type': 'baptism', 'persons': [KID], 'date': '1880-04-01'},
+            {'type': 'burial', 'persons': [KID], 'date': '1881-01-01'}])
+        c = self.a.check(KID, 'birth')
+        self.assertEqual(c['state'], 'partial')
+        self.assertIn('information: primary', c['detail'])
+
     def test_information_primary_overrides_the_death_record_rule(self):
         self.a.source('vital-record', [
             {'type': 'death', 'persons': [KID], 'date': '1940-02-01'},
@@ -278,6 +295,16 @@ class CensusCheckTests(_Base):
                                         'place': US}])
         c = self.a.check(KID, 'census')
         self.assertEqual((c['state'], c['missing']), ('met', []))
+
+    def test_a_death_abroad_does_not_hide_missing_censuses_at_home(self):
+        # No immigration claim: nothing says when they left, so the gaps stay.
+        self.a.source('vital-record', [_birth(KID, '1850', US)])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1850', 'place': US}])
+        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1900',
+                                        'place': CA}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['state'], 'partial')
+        self.assertIn(1880, c['missing'])
 
     def test_a_mention_on_a_sons_death_record_does_not_stretch_a_life(self):
         self.a.source('census', [{'type': 'census', 'persons': [DAD], 'date': f'{y}', 'place': US}
@@ -431,6 +458,20 @@ class MarriageCheckTests(_Base):
             {'type': 'death', 'persons': [DAD], 'date': '1920-01-01'},
             self._marriage(DAD, MOM)])
         self.assertEqual(self.a.check(DAD, 'marriage')['state'], 'missing')
+
+    def test_did_not_marry_someone_is_not_never_married(self):
+        self.a.source('vital-record', [self._marriage(KID, MOM)])
+        self.a.source('proof-argument', [{
+            'type': 'marriage', 'persons': [KID, OTHER], 'negated': True,
+            'evidence': 'negative', 'roles': {'spouse': [KID, OTHER]}}])
+        c = self.a.check(KID, 'marriage')
+        self.assertEqual((c['state'], c['partners']), ('met', [MOM.lower()]))
+        self.assertNotIn('never married', c['detail'])
+
+    def test_a_wide_death_range_is_not_died_young(self):
+        self.a.source('vital-record', [_birth(KID, '1895'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1900/1960'}])
+        self.assertEqual(self.a.check(KID, 'marriage')['state'], 'missing')
 
     def test_a_child_who_died_young_is_not_asked_for_a_marriage(self):
         self.a.source('vital-record', [_birth(KID, '1880-03-01'),
