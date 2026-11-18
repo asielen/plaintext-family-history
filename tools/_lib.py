@@ -13054,9 +13054,9 @@ def family_calendar_events(
     One event per (type, people, date): the same birth recorded in three
     sources is one birthday with three claims behind it. A record that gives
     only the month is left off when a dated record of the same event (same
-    type and people) falls in that year and month - `1880-06` beside
-    `1880-06-14` says nothing the dated line does not - and is its own line
-    otherwise. Nothing from the left-off record joins the dated line. A day
+    type and people) falls in that year and month and is at least as settled
+    (an accepted month-only record stays beside a suggested-only dated one),
+    and is its own line otherwise. Nothing from the left-off record joins the dated line. A day
     view leaves out events known only to the month. Negated claims (a
     confirmed absence) are never events."""
     year_now = this_year if this_year is not None else datetime.date.today().year
@@ -13116,11 +13116,17 @@ def family_calendar_events(
         ev['source_restricted'] = ev['source_restricted'] or bool(r['restricted'])
 
     # A month-only record is left off when a dated record of the same event
-    # falls in that month; its claims, places and review state go nowhere.
-    dated = {(k[0], k[1], e['year'], e['month'])
-             for k, e in events.items() if e['day'] is not None}
+    # falls in that month and is at least as settled: an accepted "June 1880"
+    # stays beside an unreviewed "14 June 1880". Its claims, places and review
+    # state go nowhere.
+    dated: dict[tuple, bool] = {}
+    for k, e in events.items():
+        if e['day'] is not None:
+            dk = (k[0], k[1], e['year'], e['month'])
+            dated[dk] = dated.get(dk, False) or e['accepted']
     for key, ev in list(events.items()):
-        if ev['day'] is None and (key[0], key[1], ev['year'], ev['month']) in dated:
+        dk = (key[0], key[1], ev['year'], ev['month'])
+        if ev['day'] is None and dk in dated and (dated[dk] or not ev['accepted']):
             del events[key]
 
     # The place an event shows has the event's own standing: a line resting on

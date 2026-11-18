@@ -192,6 +192,23 @@ class EngineTests(unittest.TestCase):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
         self.assertEqual(len(self.a.events(6)), 2)
 
+    def test_an_accepted_month_stays_beside_a_suggested_day(self):
+        # An unreviewed dated record must not hide the accepted fact.
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested'}])
+        events = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual(sorted((e['day'] or 0, e['accepted']) for e in events),
+                         [(0, True), (14, False)])
+
+    def test_a_suggested_month_is_left_off_beside_any_dated_line(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06',
+                        'status': 'suggested'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested'}])
+        events = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual([e['day'] for e in events], [14])
+
     def test_a_suggested_line_carries_no_accepted_claim(self):
         # The [suggested] marker says the line rests only on suggested claims;
         # an accepted month-only record must not be folded in behind it.
@@ -213,7 +230,7 @@ class EngineTests(unittest.TestCase):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
                         'status': 'suggested'}])
-        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        (ev,) = [e for e in self.a.events(6, statuses=('accepted', 'suggested')) if e['day']]
         self.assertEqual((ev['day'], ev['accepted']), (14, False))
 
     def test_an_accepted_event_shows_no_unreviewed_place(self):
@@ -413,7 +430,8 @@ class CommandTests(unittest.TestCase):
                         'status': 'suggested'}])
         self.a.build()
         r = self.run_(include_suggested=True)
-        (ev,) = [e for e in r.data['groups'][0]['events'] if e['type'] == 'death']
+        (ev,) = [e for e in r.data['groups'][0]['events']
+                 if e['type'] == 'death' and e['day']]
         conn = sqlite3.connect(self.a.root / '.cache' / 'index.sqlite')
         try:
             statuses = {conn.execute('SELECT status FROM claims WHERE id=?', (c,)).fetchone()[0]
@@ -425,8 +443,12 @@ class CommandTests(unittest.TestCase):
         with redirect_stdout(out):
             anniversaries._cmd_calendar(r)
         text = out.getvalue()
-        (died,) = [ln for ln in text.splitlines() if 'Died' in ln]
-        self.assertIn('[suggested, not yet reviewed]', died)
+        died = [ln for ln in text.splitlines() if 'Died' in ln]
+        self.assertEqual(len(died), 2, died)
+        (month_line,) = [ln for ln in died if 'June 1900' in ln and ' 2 June' not in ln]
+        (day_line,) = [ln for ln in died if '2 June 1900' in ln]
+        self.assertNotIn('[suggested', month_line)
+        self.assertIn('[suggested, not yet reviewed]', day_line)
         self.assertIn('rests only on suggested claims', text)
 
     def test_cli_flag_is_include_suggested(self):
