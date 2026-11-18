@@ -28,6 +28,7 @@ current folder.
 - [`fha find`](#fha-find)
 - [`fha search`](#fha-search)
 - [`fha relate`](#fha-relate)
+- [`fha calendar`](#fha-calendar)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
 - [`fha cooccur`](#fha-cooccur)
@@ -421,6 +422,32 @@ A read-only view over accepted relationship claims: nothing is written.
 | `P-B` | Second person ID |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
+
+## `fha calendar`
+
+What happened in the family this month, or on this day?
+
+```text
+What happened in the family this month, or on this day?
+
+  fha calendar                 This month: births, marriages, deaths, arrivals
+  fha calendar june            Any month, by name or number
+  fha calendar june 14         One day (also 06-14, 6/14, 14 june)
+  fha calendar today           Today's anniversaries
+  fha calendar --week          Today and the six days after it
+  fha calendar --found         Count suggested claims too
+  fha calendar --json          The same answer as machine-readable JSON
+
+Only dates recorded to the month or day appear. Read-only: nothing is written.
+```
+
+| Argument | What it does |
+|---|---|
+| `[WHEN ...]` | A month or a day (default: this month) |
+| `--week` | The week starting on the day given (default: today) |
+| `--found` | Count suggested claims as well as accepted ones |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha photoindex`
 

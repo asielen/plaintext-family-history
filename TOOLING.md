@@ -973,6 +973,24 @@ Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `r
 
 Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked.
 
+## 7b. `fha calendar` - the family calendar
+
+```
+fha calendar [WHEN] [--week] [--found] [--json] [--root PATH]
+```
+
+Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims) that fall in a month or on a day: the archive's "on this day". `WHEN` is forgiving: nothing (this month), `today`, a month (`6`, `june`, `Jun`), or a day (`june 14`, `14 june`, `06-14`, `6/14`, `june 14th`). `--week` covers a day (today by default) and the six after it. An unreadable `WHEN` exits `2` with examples; no index exits `3`.
+
+**What is placed.** A date recorded to the month (`1880-06`) or the day (`1880-06-14`), with no qualifier or range. An approximate, uncertain or ranged date is left off: the record does not know the day, and the calendar does not guess one. A day view leaves out events known only to the month.
+
+**Whose event.** A vital event belongs to its subject by the SPEC §8.3 rules (`vital_subjects`): a mother named on her son's birth record is not born that day, and a marriage names the couple, not its witnesses. An arrival belongs to the people its claim calls `subject`, else to its unroled people, else to everyone it names. The same event recorded in several sources is one event, listing every claim and source behind it.
+
+**Which claims.** Accepted by default; `--found` adds `suggested`. Negated claims are never events.
+
+**Privacy.** Every event carries each person's `living` value and whether any source behind it is `restricted`. The command is the owner's own view and shows everything; a shared front door drops an event naming a living or unknown person, or resting on a restricted source.
+
+Engine: `_lib.family_calendar_events`, so every front door that shows anniversaries agrees. Read-only.
+
 ---
 
 ## 8. `fha packet` - person data dump
@@ -1687,6 +1705,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha find --json <ID\|text>` (T C) | Machine-readable result list (§4a) - a ranked search returning `[{id,type,label,detail}]` on stdout, the reference-resolver backend `fha serve`'s search box also calls. `--kind`/`--limit` narrow it. A text hit read out of a transcript no human has checked against the image adds `"unchecked": true` (§4a D15, present only when true); the coverage caveat (§4a D14) goes to stderr so stdout stays the bare array. |
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <P-A> <P-B>` (T C) | "How are these two related?" The blood relationship (cousin/removal) and the shortest social path between any two people, derived from accepted relationship claims. |
+| `fha calendar [WHEN]` (T C) | "What happened in the family this month?" Births, marriages, deaths and arrivals on a day, in a month, or in the week ahead (§7b). |
 
 ### Occasional (setup, migration, publication moments)
 

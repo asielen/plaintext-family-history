@@ -12967,6 +12967,138 @@ def couple_folder_prefix(pos: int) -> int:
     return pos if pos % 2 == 0 else pos - 1
 
 
+# ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────
+#
+# "What happened in the family this month?" - births, baptisms, marriages,
+# deaths, burials and arrivals whose recorded date falls in a given month (or
+# on a given day), from the archive's own claims. The terminal command, the
+# report, the workbench and the site all read this one function, so the same
+# day never shows different anniversaries in two places.
+#
+# Only a date the record gives to the month (or day) is placed: `1880-06` or
+# `1880-06-14`. An approximate, uncertain or ranged date (`1880-06~`,
+# `1880?`, `1880/1881`) says the record does not know the day, and placing it
+# on one would put a guess on the calendar as if it were a fact.
+#
+# Privacy is the caller's to apply, not this function's: every event carries
+# each person's `living` value and whether a source behind it is restricted,
+# so a private front door (the terminal) shows everything and a shared one
+# (the site) drops what it must.
+
+CALENDAR_EVENT_TYPES: tuple[str, ...] = (
+    'birth', 'baptism', 'marriage', 'death', 'burial', 'immigration')
+CALENDAR_EVENT_WORDS: dict[str, str] = {
+    'birth': 'Born', 'baptism': 'Baptised', 'marriage': 'Married',
+    'death': 'Died', 'burial': 'Buried', 'immigration': 'Arrived',
+}
+_CALENDAR_DATE_RE = re.compile(r'^(\d{4})-(\d{2})(?:-(\d{2}))?$')
+
+
+def calendar_date_parts(date_edtf: Any) -> tuple[int, int, int | None] | None:
+    """(year, month, day-or-None) for a date given to the month or the day,
+    else None. Only the plain forms count; a qualifier or a range means the
+    record is not sure, and the calendar does not guess."""
+    m = _CALENDAR_DATE_RE.match(str(date_edtf or '').strip())
+    if not m:
+        return None
+    year, month = int(m.group(1)), int(m.group(2))
+    day = int(m.group(3)) if m.group(3) else None
+    if not 1 <= month <= 12:
+        return None
+    if day is not None:
+        try:
+            datetime.date(year, month, day)
+        except ValueError:
+            return None
+    return year, month, day
+
+
+def _calendar_subjects(claim_type: str, pairs: list[tuple[str, Any]]) -> list[str]:
+    """Whose event a claim records. Vital types follow `vital_subjects` (a
+    son's birth certificate is not his mother's birthday). An arrival is the
+    people it calls `subject`, else the unroled ones, else everyone named - a
+    family that crossed together all arrived."""
+    people = list(dict.fromkeys(p for p, _r in pairs))
+    if claim_type != 'immigration':
+        subjects = vital_subjects(claim_type, pairs)
+        return people[:1] if subjects is None else list(subjects)
+    roles = roles_by_person(pairs)
+    named = [p for p in people if 'subject' in roles.get(p, ())]
+    unroled = [p for p in people if not roles.get(p)]
+    return named or unroled or people
+
+
+def family_calendar_events(
+    conn: sqlite3.Connection, *, month: int, day: int | None = None,
+    statuses: tuple[str, ...] = ('accepted',), this_year: int | None = None,
+) -> list[dict]:
+    """Family events falling in `month` (and on `day`, when given), by day
+    and then oldest first.
+
+    Each event: {type, word, year, month, day, date, years_ago, people:
+    [{id, name, living}], place, claims: [c-ids], sources: [s-ids],
+    source_restricted}. One event per (type, people, date): the same birth
+    recorded in three sources is one birthday with three claims behind it.
+    A day view leaves out events known only to the month. Negated claims (a
+    confirmed absence) are never events."""
+    year_now = this_year if this_year is not None else datetime.date.today().year
+    status_ph = ','.join('?' * len(statuses))
+    type_ph = ','.join('?' * len(CALENDAR_EVENT_TYPES))
+    rows = conn.execute(
+        f"""SELECT c.id, c.type, c.date_edtf, c.source_id, c.place_text,
+                   p.name AS place_name, COALESCE(s.restricted, 0) AS restricted
+            FROM claims c
+            LEFT JOIN places p ON p.id = c.place_id
+            LEFT JOIN sources s ON s.id = c.source_id
+            WHERE LOWER(c.type) IN ({type_ph}) AND c.status IN ({status_ph})
+              AND COALESCE(c.negated, 0) = 0""",
+        (*CALENDAR_EVENT_TYPES, *statuses)).fetchall()
+
+    persons = {r['id']: r for r in conn.execute('SELECT id, name, living FROM persons')}
+    events: dict[tuple, dict] = {}
+    for r in rows:
+        parts = calendar_date_parts(r['date_edtf'])
+        if parts is None:
+            continue
+        year, m, d = parts
+        if m != month or (day is not None and d != day):
+            continue
+        ctype = (r['type'] or '').strip().lower()
+        pairs = claim_role_pairs(
+            (normalize_id(str(p['person_id'])), p['role']) for p in conn.execute(
+                'SELECT person_id, role FROM claim_persons WHERE claim_id=? ORDER BY position',
+                (r['id'],)))
+        subjects = [p for p in _calendar_subjects(ctype, pairs) if p in persons]
+        if not subjects:
+            continue
+        date = str(r['date_edtf']).strip()
+        key = (ctype, tuple(sorted(subjects)), date)
+        ev = events.get(key)
+        if ev is None:
+            ev = events[key] = {
+                'type': ctype, 'word': CALENDAR_EVENT_WORDS[ctype],
+                'year': year, 'month': m, 'day': d, 'date': date,
+                'years_ago': year_now - year,
+                'people': [{'id': p, 'name': persons[p]['name'],
+                            'living': (persons[p]['living'] or 'unknown')}
+                           for p in subjects],
+                'place': None, 'claims': [], 'sources': [],
+                'source_restricted': False,
+            }
+        ev['claims'].append(r['id'])
+        if r['source_id'] and r['source_id'] not in ev['sources']:
+            ev['sources'].append(r['source_id'])
+        if not ev['place']:
+            ev['place'] = r['place_name'] or r['place_text'] or None
+        # Shared output withholds an event if ANY source behind it is
+        # restricted; a second, open copy does not make the first one public.
+        ev['source_restricted'] = ev['source_restricted'] or bool(r['restricted'])
+
+    return sorted(events.values(),
+                  key=lambda e: (e['day'] or 0, e['year'], e['type'],
+                                 e['people'][0]['name'] or ''))
+
+
 def couple_folder_dirs(archive_root: str | Path) -> list[Path]:
     """Digit-prefixed directories directly under people/, excluding stubs/
     and connections/ - the couple-folder candidates every Ahnentafel check

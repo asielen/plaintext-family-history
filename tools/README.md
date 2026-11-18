@@ -47,6 +47,7 @@ lives only in `_lib.py`.
 | Module | What it is |
 |---|---|
 | `_lib.py` | shared library for all fha tools |
+| `anniversaries.py` | fha calendar: family births, marriages, deaths and arrivals by month and day (TOOLING §7b) |
 | `backup.py` | fha backup: a dated zip snapshot of the archive |
 | `capture.py` | fha capture: the web-record intake on-ramp (TOOLING §13b) |
 | `claim.py` | fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8) |
