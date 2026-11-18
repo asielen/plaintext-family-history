@@ -237,6 +237,56 @@ class WorkbenchRingTests(_Base):
         self.assertNotIn('../review', line)
         self.assertIn('To fill it, look for a marriage licence', line)
 
+    def park(self, cid):
+        self.conn.execute("UPDATE claims SET reviewed = '2026-05-01' WHERE id = ?", (cid,))
+
+    def ring_state(self, check):
+        m = re.search(r'<g class="ring-(\w+)" data-check="' + check + '"',
+                      self.page(f'persons/{ME}.html'))
+        return m.group(1) if m else None
+
+    def test_a_parked_death_entry_still_marks_its_source_a_death_record(self):
+        # TOOLING §7a: a source that records her own death is her death
+        # record, read from accepted and suggested claims alike, parked or
+        # not, so the accepted birth read off it is later evidence (partial).
+        # The never-reviewed birth register entry on the Review page would
+        # make it a birth record, so the legend must point there.
+        self.person(ME, 'Ada Example')
+        self.source('s-1111111111', 'Death certificate')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1850-03-14', [ME])
+        self.claim('c-2222222222', 's-1111111111', 'death', '1900-06-02', [ME],
+                   status='suggested')
+        self.park('c-2222222222')
+        self.source('s-3333333333', 'Birth register')
+        self.claim('c-3333333333', 's-3333333333', 'birth', '1850-03-14', [ME],
+                   status='suggested')
+        self.build()
+        self.assertEqual(self.ring_state('birth'), 'partial')
+        self.assertIn('A suggested claim waiting for review would count here',
+                      self.legend_line('Birth record'))
+
+    def test_no_review_pointer_when_accepting_would_not_raise_the_check(self):
+        # The only queued birth sits on a death certificate (its parked death
+        # entry still says what the source is), so accepting it adds one more
+        # later reading: the check stays partial, and "review it" would be a
+        # promise the ring does not keep.
+        self.person(ME, 'Ada Example')
+        self.source('s-5555555555', '1860 census', source_type='census')
+        self.claim('c-5555555555', 's-5555555555', 'birth', '1850', [ME])
+        self.source('s-1111111111', 'Death certificate')
+        self.claim('c-2222222222', 's-1111111111', 'death', '1900-06-02', [ME],
+                   status='suggested')
+        self.park('c-2222222222')
+        self.claim('c-3333333333', 's-1111111111', 'birth', '1850-03-14', [ME],
+                   status='suggested')
+        self.build()
+        self.assertEqual(self.ring_state('birth'), 'partial')
+        self.assertNotIn('waiting for review', self.legend_line('Birth record'))
+        # And accepting it does leave the check partial.
+        self.conn.execute("UPDATE claims SET status = 'accepted' WHERE id = 'c-3333333333'")
+        self.build()
+        self.assertEqual(self.ring_state('birth'), 'partial')
+
     def test_no_fill_lines_in_a_shared_or_plain_linked_build(self):
         self.seed_me()
         self.config('site:\n  completeness_rings: true\n')

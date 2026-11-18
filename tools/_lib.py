@@ -13091,7 +13091,7 @@ def couple_folder_prefix(pos: int) -> int:
 # When the record is unsure, the answer leans to a visible gap: a confident
 # wrong "met" is the worst outcome for the person reading it.
 #
-# Two counting modes, one engine:
+# Three counting modes, one engine:
 #   'accepted'          - only accepted claims count. The standard view: it
 #                         says what the archive has settled, the way SPEC
 #                         §8.2's vital completeness does.
@@ -13099,6 +13099,13 @@ def couple_folder_prefix(pos: int) -> int:
 #                         what records have been found, reviewed or not, so a
 #                         caller can show research progress that accepting a
 #                         claim never moves.
+#   'review-queue'      - accepted claims, plus the suggested ones still waiting
+#                         on the review queue: a parked claim (looked at, left
+#                         suggested with a `reviewed:` date, SPEC §8.1) does
+#                         not count. It says what reviewing the queue would
+#                         settle, which is what a "review it" pointer promises.
+# The mode decides only what COUNTS. Every mode reads accepted and suggested
+# claims alike, parked or not, to tell what kind of record a source is.
 # Disputed, rejected and superseded claims never count, and neither does a
 # negated claim (SPEC §8.6) except where a confirmed absence answers the check.
 #
@@ -13120,7 +13127,19 @@ COMPLETENESS_CHECK_LABELS: dict[str, str] = {
 COMPLETENESS_MODES: dict[str, tuple[str, ...]] = {
     'accepted': ('accepted',),
     'include-suggested': ('accepted', 'suggested'),
+    'review-queue': ('accepted', 'suggested-unparked'),
 }
+
+
+def _status_counts(c: dict, statuses: tuple[str, ...]) -> bool:
+    """Does this claim's status count in a mode's `statuses`?
+    'suggested-unparked' is the review-queue mode's word for a suggested
+    claim that is not parked (the `parked` flag `completeness_context`
+    reads with PARKED_CLAIM_SQL, the predicate the Review page lists by)."""
+    if c['status'] in statuses:
+        return True
+    return ('suggested-unparked' in statuses and c['status'] == 'suggested'
+            and not c.get('parked'))
 
 # Past this many years since birth (or since the earliest record of a person
 # whose birth is unknown), nobody is still alive, so a missing death or burial
@@ -13212,8 +13231,10 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
 
       persons:         pid -> persons row as a dict (merged records left out:
                        the index already credits their claims to the survivor)
-      claims:          cid -> {type, subtype, status, negated, information,
-                       source_id, place_id, y_lo, y_hi}
+      claims:          cid -> {type, subtype, status, parked, negated,
+                       information, source_id, place_id, y_lo, y_hi}
+                       (`parked`: PARKED_CLAIM_SQL, read for the
+                       review-queue mode)
       claim_people:    cid -> [(pid, role), ...] via claim_role_pairs
       person_claims:   pid -> [cid, ...] every claim that names them, any role
       source_types:    sid -> source_type
@@ -13227,13 +13248,15 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     }
     claims: dict[str, dict] = {}
     for r in conn.execute(
-            'SELECT id, type, subtype, status, negated, information, source_id, '
-            'place_id, date_edtf, date_min, date_max FROM claims'):
+            'SELECT c.id, c.type, c.subtype, c.status, c.negated, c.information, '
+            'c.source_id, c.place_id, c.date_edtf, c.date_min, c.date_max, '
+            f'{PARKED_CLAIM_SQL} AS parked FROM claims c'):
         lo, hi = _claim_year(r['date_min'], r['date_max'], r['date_edtf'])
         claims[r['id']] = {
             'type': (r['type'] or '').strip().lower(),
             'subtype': (r['subtype'] or '').strip().lower(),
             'status': (r['status'] or '').strip().lower(),
+            'parked': bool(r['parked']),
             'negated': bool(r['negated']),
             'information': (r['information'] or '').strip().lower(),
             'source_id': r['source_id'],
@@ -13283,7 +13306,7 @@ def _counted_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tupl
     out = []
     for cid in ctx['person_claims'].get(pid, ()):
         c = ctx['claims'].get(cid)
-        if c and c['status'] in statuses and not c['negated']:
+        if c and _status_counts(c, statuses) and not c['negated']:
             out.append((cid, c))
     return out
 
@@ -13710,7 +13733,7 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     confirmed_none = bool(person.get('no_known_marriages'))
     for cid in ctx['person_claims'].get(pid, ()):
         c = ctx['claims'].get(cid)
-        if c and c['type'] == 'marriage' and c['negated'] and c['status'] in statuses:
+        if c and c['type'] == 'marriage' and c['negated'] and _status_counts(c, statuses):
             subjects = vital_subjects('marriage', ctx['claim_people'].get(cid, []))
             if subjects is None or subjects == [pid]:
                 confirmed_none = True
@@ -13844,8 +13867,9 @@ def person_completeness(ctx: dict, pid: str, *, mode: str = 'accepted',
       missing  - none of it is
       na       - the check does not apply (a younger person's death, a
                  country with no census table) and is left out of the score
-    `mode` is a COMPLETENESS_MODES key: 'accepted' (the standard view) or
-    'include-suggested' (suggested claims count too)."""
+    `mode` is a COMPLETENESS_MODES key: 'accepted' (the standard view),
+    'include-suggested' (suggested claims count too) or 'review-queue'
+    (suggested claims count unless parked)."""
     if mode not in COMPLETENESS_MODES:
         raise ValueError(f'unknown completeness mode {mode!r}')
     pid = normalize_id(str(pid))

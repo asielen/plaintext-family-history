@@ -219,8 +219,6 @@ CODE MAP
       ._person_completeness    - one person page's ring + legend, or None for
                                  anyone the site withholds (every build); in
                                  the workbench, what would fill each gap
-      ._review_queue_context   - workbench: the completeness context with
-                                 parked claims set aside (the Review page's set)
       ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       ._derive                 - a media/ web picture: the saved copy when the
@@ -3996,9 +3994,6 @@ class _SiteBuilder:
         # The completeness engine's read of the index, made once on the first
         # person page that shows a ring (`_completeness_context`).
         self._completeness_ctx: dict | None = None
-        # The same context with parked claims set aside (workbench review
-        # pointers, `_review_queue_context`).
-        self._review_queue_ctx: dict | None = None
         if self.derivative_cache is not None:
             workers, self._picture_setting_warning = _picture_workers_setting(site_cfg)
             if picture_pool and workers > 1:
@@ -6205,14 +6200,15 @@ class _SiteBuilder:
 
         The workbench adds, under each check that is not found or only partly
         found, what would fill it: the kinds of record that answer that check
-        (`_COMPLETENESS_FILL_RECORDS`), and, when counting suggested claims
-        too would raise the check (the same engine in its `include-suggested`
-        mode, as `fha metrics --include-suggested`), a pointer to the review
-        queue, since the record is already in the archive and only the
-        owner's review stands between it and the ring. Only a suggestion the
-        Review page lists counts for that pointer (`_review_queue_context`):
-        a parked claim has left the queue, and a link to an empty queue
-        would be a dead end. The score itself stays accepted-only."""
+        (`_COMPLETENESS_FILL_RECORDS`), and, when the suggestions still on
+        the Review page would raise the check, a pointer to that page, since
+        the record is already in the archive and only the owner's review
+        stands between it and the ring. That is the engine's `review-queue`
+        mode: a parked claim has left the queue, so it does not count there,
+        and a link to a queue without it would be a dead end. Both readings
+        come from the one context, so a parked entry still tells the engine
+        what kind of record its source is, as it does for the ring itself.
+        The score stays accepted-only."""
         row = self.person_meta.get(pid)
         if row is None or (row['tier'] or '') != 'curated' or self._person_is_redacted(row):
             return None
@@ -6222,15 +6218,10 @@ class _SiteBuilder:
         result = person_completeness(ctx, pid)
         waiting: dict[str, bool] = {}
         if self.workbench:
-            # Both modes on the same queue-only context, so setting a parked
-            # claim aside can only lower what suggestions add, never make an
-            # accepted check look newly raised.
-            qctx = self._review_queue_context()
-            before = person_completeness(qctx, pid)['checks']
-            after = person_completeness(qctx, pid, mode='include-suggested')['checks']
-            waiting = {b['check']: (_COMPLETENESS_STATE_RANK.get(a['state'], 0)
-                                    > _COMPLETENESS_STATE_RANK.get(b['state'], 0))
-                       for b, a in zip(before, after)}
+            queue = person_completeness(ctx, pid, mode='review-queue')['checks']
+            waiting = {a['check']: (_COMPLETENESS_STATE_RANK.get(q['state'], 0)
+                                    > _COMPLETENESS_STATE_RANK.get(a['state'], 0))
+                       for a, q in zip(result['checks'], queue)}
         checks = []
         for c in result['checks']:
             entry = {'label': COMPLETENESS_CHECK_LABELS[c['check']],
@@ -6246,25 +6237,6 @@ class _SiteBuilder:
                     result, size=64, public=not self.linked)),
                 'checks': checks,
                 'met': result['met'], 'applicable': result['applicable']}
-
-    def _review_queue_context(self) -> dict:
-        """The completeness context with every parked claim set aside: a
-        claim a reviewer looked at and left `suggested` with a `reviewed:`
-        date (SPEC §8.1, `_lib.PARKED_CLAIM_SQL`, the same predicate the
-        workbench Review page lists by). What is left among the suggestions
-        is exactly what that page shows, so a "review it" pointer read from
-        this context always lands on a claim the page lists. Relabelled
-        rather than dropped, as `_completeness_context` does for private
-        claims, so every structure naming the claim still resolves. Made
-        once per build."""
-        if self._review_queue_ctx is None:
-            ctx = self._completeness_context()
-            parked = {normalize_id(str(r[0])) for r in self.conn.execute(
-                f'SELECT c.id FROM claims c WHERE {PARKED_CLAIM_SQL}')}
-            claims = {cid: ({**c, 'status': 'parked'} if normalize_id(str(cid)) in parked else c)
-                      for cid, c in ctx['claims'].items()}
-            self._review_queue_ctx = {**ctx, 'claims': claims}
-        return self._review_queue_ctx
 
     def _person_header_meta(self, pid: str, display_name: str) -> tuple[list[str], list[str]]:
         """Alternate-name lines and editorial tag pills for the page header, read
