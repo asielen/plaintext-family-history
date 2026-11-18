@@ -104,15 +104,16 @@ class _Base(unittest.TestCase):
             'VALUES (?,?,?,?,?,?)', (sid, title, source_type, restricted, 'active', rel))
 
     def claim(self, cid, sid, ctype, date, persons, *, status='accepted', roles=None,
-              place_id=None, place_text=None):
+              place_id=None, place_text=None, negated=0):
         lo = hi = None
         if date:
             lo = (date + '-01-01')[:10] if len(date) == 4 else (date + '-01')[:10]
             hi = lo
         self.conn.execute(
             'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, '
-            'date_max, place_id, place_text) VALUES (?,?,?,?,?,?,?,?,?,?)',
-            (cid, sid, ctype, f'{ctype} record', status, date, lo, hi, place_id, place_text))
+            'date_max, place_id, place_text, negated) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, ctype, f'{ctype} record', status, date, lo, hi, place_id, place_text,
+             negated))
         for pos, pid in enumerate(persons):
             self.conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) '
@@ -241,6 +242,58 @@ class RingTests(_Base):
         self.config(BOTH_ON)
         self.build(linked=True)
         self.assertIn('fha report --section place-candidates', self.ring_section())
+
+    def ring_state(self, check):
+        m = re.search(r'<g class="ring-(\w+)" data-check="' + check + '"',
+                      self.page(f'persons/{ME}.html'))
+        return m.group(1) if m else None
+
+    def test_a_record_naming_a_living_person_does_not_fill_the_public_ring(self):
+        # Her death record names a living informant. Her timeline leaves that
+        # record off the shared site, so the ring must not count it either:
+        # a visitor would read "found" with nothing on the page behind it.
+        self.person(ME, 'Ada Example')
+        self.person(LIVE, 'Cleo Example', living='true')
+        self.source('s-1111111111', 'Death register')
+        self.claim('c-1111111111', 's-1111111111', 'death', '1900-06-02', [ME, LIVE],
+                   roles={ME: 'deceased', LIVE: 'informant'})
+        self.config(BOTH_ON)
+        self.build()
+        self.assertEqual(self.ring_state('end-of-life'), 'missing')
+        self.build(linked=True)
+        self.assertEqual(self.ring_state('end-of-life'), 'met')
+
+    def test_an_unreviewed_death_still_marks_a_death_certificate(self):
+        # TOOLING §7a: a source that records her own death is her death record,
+        # read from accepted and suggested claims alike, so the birth date it
+        # gives is later evidence (partial), on the site as in fha metrics.
+        self.person(ME, 'Ada Example')
+        self.source('s-1111111111', 'Death certificate')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1850-03-14', [ME])
+        self.claim('c-2222222222', 's-1111111111', 'death', '1900-06-02', [ME],
+                   status='suggested')
+        self.config(BOTH_ON)
+        self.build()
+        self.assertEqual(self.ring_state('birth'), 'partial')
+
+    def test_never_married_by_the_flag_reads_as_confirmed(self):
+        self.person(ME, 'Ada Example')
+        self.conn.execute('UPDATE persons SET no_known_marriages = 1 WHERE id = ?', (ME,))
+        self.config(BOTH_ON)
+        self.build()
+        self.assertEqual(self.ring_state('marriage'), 'met')
+        self.assertIn('Marriage records</strong>: found - never married (confirmed)',
+                      self.ring_section())
+
+    def test_never_married_by_a_negated_claim_reads_as_confirmed(self):
+        self.person(ME, 'Ada Example')
+        self.source('s-1111111111', 'Parish letter', source_type='letter')
+        self.claim('c-1111111111', 's-1111111111', 'marriage', None, [ME], negated=1)
+        self.config(BOTH_ON)
+        self.build()
+        self.assertEqual(self.ring_state('marriage'), 'met')
+        self.assertIn('<title>Marriage records: found - never married (confirmed)</title>',
+                      self.ring_section())
 
     def test_an_unreadable_setting_leaves_the_ring_off_with_a_warning(self):
         self.seed_me()

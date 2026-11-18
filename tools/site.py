@@ -210,6 +210,8 @@ CODE MAP
       ._completeness_context   - site.completeness_rings: the completeness
                                  engine's index read, once per build, with the
                                  claims a shared build withholds set aside
+      ._claim_is_private       - restricted claim or hard-restricted source,
+                                 status aside (the completeness context)
       ._person_completeness    - one person page's ring + legend, or None for
                                  anyone the site withholds (every build)
       ._person_open_questions  - this person's open questions, rendered
@@ -6106,27 +6108,46 @@ class _SiteBuilder:
         """The completeness engine's read of the index (`_lib.completeness_
         context`), made once per build and shared by every ring.
 
-        A shared build counts only claims this site would publish
-        (`_claim_row_is_publishable`): a restricted claim, or one on a
-        restricted, DNA, by-request or not-for-publication source, is set
-        aside before any check reads it. Otherwise a ring could say "birth
-        record found" for a person whose only birth record the owner marked
-        private, telling every visitor that such a record exists. The claim
-        is relabelled rather than dropped, so every structure that names it
-        still resolves and no counting mode ever sees it. The linked preview
-        counts everything, as `fha metrics` does."""
+        A shared build sets aside every claim a public page would not show
+        (`_claim_is_private`) before any check reads it. Otherwise a ring
+        could say "birth record found" for a person whose only birth record
+        the owner marked private, or "death found" from a death record that
+        names a living informant and so never reaches her timeline, telling
+        every visitor that evidence exists which no page shows. The claim is
+        relabelled rather than dropped, so every structure that names it
+        still resolves and no counting mode ever sees it.
+
+        Only private claims are relabelled, never merely unreviewed ones: the
+        engine reads suggested claims too when it decides what kind of
+        record a source is (a death certificate is known by its death entry,
+        reviewed or not), and its accepted-only counting already keeps them
+        out of the score. The linked preview counts everything, as `fha
+        metrics` does."""
         if self._completeness_ctx is None:
             ctx = completeness_context(self.conn)
             if not self.linked:
+                redacted = {pid for pid, row in self.person_meta.items()
+                            if self._person_is_redacted(row)}
                 claims = {}
                 for cid, claim in ctx['claims'].items():
-                    if not self._claim_row_is_publishable(cid, claim['source_id'],
-                                                          claim['status']):
+                    named = {p for p, _role in ctx['claim_people'].get(cid, ())}
+                    if self._claim_is_private(cid, claim['source_id']) or named & redacted:
                         claim = {**claim, 'status': 'withheld'}
                     claims[cid] = claim
                 ctx = {**ctx, 'claims': claims}
             self._completeness_ctx = ctx
         return self._completeness_ctx
+
+    def _claim_is_private(self, claim_id, source_id) -> bool:
+        """Is this claim kept off every shared page whatever its status: a
+        claim marked `restricted`, or one on a restricted, DNA, by-request or
+        not-for-publication source? The status-free half of
+        `_claim_row_is_publishable`, for a caller that judges review status
+        itself (the completeness context). A claim naming a withheld person
+        is the caller's other check, as the timeline's SQL filter is."""
+        if normalize_id(str(claim_id)) in self.restricted_claims:
+            return True
+        return self._source_hard_restricted(source_id)
 
     def _person_completeness(self, pid: str) -> dict | None:
         """The completeness ring and its legend for one person page, or None.

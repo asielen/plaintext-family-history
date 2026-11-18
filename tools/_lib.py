@@ -13914,7 +13914,10 @@ def _ring_sector(c: float, r_out: float, r_in: float, start: float, end: float) 
 def completeness_public_phrase(c: dict) -> str:
     """A few plain words naming what one check still lacks, for a page that
     visitors read (the shared family site): "no marriage record", "censuses
-    2 of 6 years". Empty for a check that is found or does not apply.
+    2 of 6 years". Empty for a check that is found or does not apply, except
+    a confirmed absence: a marriage check met because nobody married
+    ("never married (confirmed)") says so, since "found" alone would read as
+    a marriage record on file.
 
     The full `detail` is written for the owner and can tell him what to do
     next, naming a command or a flag to remove; a visitor can act on none of
@@ -13922,6 +13925,9 @@ def completeness_public_phrase(c: dict) -> str:
     keeps the full detail. The marriage words are built from the check's
     counts rather than its detail, because that detail can carry an
     instruction to the owner."""
+    if (c.get('check') == 'marriage' and c.get('state') == 'met'
+            and not c.get('partners')):
+        return 'never married (confirmed)'
     if c.get('state') not in ('missing', 'partial'):
         return ''
     if c.get('check') == 'marriage':
