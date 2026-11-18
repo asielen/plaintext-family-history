@@ -13094,13 +13094,15 @@ def family_calendar_events(
                            for p in subjects],
                 'place': None, 'claims': [], 'sources': [],
                 'source_restricted': False, 'accepted': False,
+                '_places': [],          # (place, from an accepted claim), in order
             }
         ev['claims'].append(r['id'])
-        ev['accepted'] = ev['accepted'] or (r['status'] or '').strip().lower() == 'accepted'
+        claim_accepted = (r['status'] or '').strip().lower() == 'accepted'
+        ev['accepted'] = ev['accepted'] or claim_accepted
         if r['source_id'] and r['source_id'] not in ev['sources']:
             ev['sources'].append(r['source_id'])
-        if not ev['place']:
-            ev['place'] = r['place_name'] or r['place_text'] or None
+        if r['place_name'] or r['place_text']:
+            ev['_places'].append((r['place_name'] or r['place_text'], claim_accepted))
         # Shared output withholds an event if ANY source behind it is
         # restricted; a second, open copy does not make the first one public.
         ev['source_restricted'] = ev['source_restricted'] or bool(r['restricted'])
@@ -13120,8 +13122,16 @@ def family_calendar_events(
         # `accepted` stays the dated record's own: an accepted "June 1880"
         # does not make an unreviewed "14 June 1880" a reviewed day.
         twin['source_restricted'] = twin['source_restricted'] or ev['source_restricted']
-        twin['place'] = twin['place'] or ev['place']
+        twin['_places'] += ev['_places']
         del events[key]
+
+    # The place an event shows has the event's own standing: a line resting on
+    # an accepted claim shows only a place an accepted claim gives, so an
+    # unreviewed birthplace never reads as a settled fact beside it.
+    for ev in events.values():
+        places = ev.pop('_places')
+        usable = [p for p, ok in places if ok] if ev['accepted'] else [p for p, _ok in places]
+        ev['place'] = usable[0] if usable else None
 
     return sorted(events.values(),
                   key=lambda e: (e['day'] or 0, e['year'], e['type'],

@@ -193,6 +193,26 @@ class EngineTests(unittest.TestCase):
         (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
         self.assertEqual((ev['day'], ev['accepted']), (14, False))
 
+    def test_an_accepted_event_shows_no_unreviewed_place(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested', 'place_text': 'Unreviewed Town'}])
+        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual((ev['accepted'], ev['place']), (True, None))
+
+    def test_a_month_only_suggestion_lends_no_place_to_an_accepted_day(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06',
+                        'status': 'suggested', 'place_text': 'Unreviewed Town'}])
+        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual(ev['place'], None)
+
+    def test_a_suggested_only_event_keeps_its_place(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested', 'place_text': 'Elm Creek'}])
+        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual((ev['accepted'], ev['place']), (False, 'Elm Creek'))
+
     def test_month_only_record_stays_apart_from_two_different_days(self):
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
         self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
