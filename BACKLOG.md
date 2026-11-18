@@ -192,9 +192,9 @@ Not fixes. Recorded here until one earns a design section in `TOOLING.md`.
 - **"On this day" in `fha report`.** Births, marriages and deaths from accepted
   claims that fall this week, narrated by the today skill. Warmth for the
   session-start briefing, no new command.
-- **An archive progress line.** "234 people, 61% of vitals sourced, 18 photos
-  untagged", built from the index: the progress bar that keeps a hobbyist
-  going.
+- **Photo-tagging progress in the archive totals.** `fha metrics` reports
+  people, sources, claims and searchable text, but not how many photos are
+  still untagged ("18 photos untagged"), which would read the photo index.
 - **`fha views canvas`.** A regenerable Obsidian `.canvas` (or Mermaid) family
   tree drawn from relationship claims, so an Obsidian user can see the tree
   without leaving the vault. Today `fha views tree` emits JSON or DOT only.
