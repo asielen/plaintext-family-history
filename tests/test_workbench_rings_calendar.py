@@ -219,6 +219,24 @@ class WorkbenchRingTests(_Base):
                          r'<g class="ring-missing" data-check="marriage"')
         self.assertNotIn('waiting for review', self.legend_line('Parents'))
 
+    def test_a_parked_record_does_not_point_to_the_review_queue(self):
+        # SPEC §8.1: a claim the owner looked at and left suggested, with a
+        # reviewed: date, is parked and the Review page no longer lists it.
+        # "Review it" would send him to a queue without that claim, so the
+        # line just says what to look for.
+        self.seed_me()
+        self.person(OTHER, 'Fern Example')
+        self.source('s-4444444444', 'Marriage register')
+        self.claim('c-4444444444', 's-4444444444', 'marriage', '1875-06-01', [ME, OTHER],
+                   status='suggested')
+        self.conn.execute("UPDATE claims SET reviewed = '2026-05-01' WHERE id = ?",
+                          ('c-4444444444',))
+        self.build()
+        line = self.legend_line('Marriage records')
+        self.assertNotIn('waiting for review', line)
+        self.assertNotIn('../review', line)
+        self.assertIn('To fill it, look for a marriage licence', line)
+
     def test_no_fill_lines_in_a_shared_or_plain_linked_build(self):
         self.seed_me()
         self.config('site:\n  completeness_rings: true\n')
