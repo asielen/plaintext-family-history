@@ -289,6 +289,24 @@ class W155Tests(unittest.TestCase):
         self.assertNotEqual(key(g1), key(g2))
         self.assertEqual(key(sourced), key(dict(sourced, hypothesis=H_OTHER)))
 
+    def test_merging_two_records_keeps_both_working_answer_links(self):
+        # Each record guessed Bob as the parent for a different reason; the
+        # merge must keep both reasons, not drop the duplicate's.
+        import confirm
+        dup = 'P-dddddddddd'
+        child_f, child_t = _person(CHILD, 'kid', 'ann', relationships='relationships:\n' + GUESS)
+        dup_f, dup_t = _person(dup, 'kid', 'annie',
+                               relationships='relationships:\n' + GUESS.replace(H, H_OTHER))
+        parent_f, parent_t = _person(PARENT, 'kid', 'bob')
+        root = _build({child_f: child_t, dup_f: dup_t, parent_f: parent_t,
+                       'notes/questions.md': QUESTIONS})
+        r = confirm.run_confirm_merge(root, person_merged=dup, into=CHILD,
+                                      reason='same person: one baptism')
+        self.assertNotIn(r.data.get('status'), ('refused', 'error'), r.messages)
+        links = sorted(e.get('hypothesis') for e in
+                       read_record(root / child_f)['meta']['relationships'])
+        self.assertEqual(links, [H, H_OTHER])
+
     def test_a_suggested_claim_settles_nothing(self):
         for status in ('suggested', 'disputed'):
             root = self._root('relationships:\n' + SOURCED + GUESS, status=status)
