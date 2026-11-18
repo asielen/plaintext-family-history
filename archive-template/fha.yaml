@@ -149,6 +149,24 @@
 # promotion:
 #   claims_threshold: 5    # default 5 when the key is absent
 
+# ── Family website extras (optional, both off unless you turn them on) ──
+#   `fha site` builds the family website. Two extra panels can be switched on:
+#     completeness_rings - each person's page shows a small ring of five
+#       parts (birth record, censuses, parents, marriage records, death or
+#       burial) with a list saying what is found and what is still missing.
+#       Never shown for anyone living or of unknown status, and private
+#       records do not count toward it on the shareable site.
+#     calendar - the homepage shows "This month in the family": births,
+#       baptisms, marriages, deaths, burials and arrivals that fell in the
+#       visitor's current month, with every month listed below. Anything
+#       about a living or private person, or resting on a private record,
+#       is left off.
+#   docs/CUSTOMIZING_SITE.md lists the other site settings (title, banner).
+#
+# site:
+#   completeness_rings: true
+#   calendar: true
+
 # ── A "Records" line in each person's summary (optional) ──
 #   The Born / Died / Married lines at the top of each person's page can end
 #   with one more line saying how well documented that person is and what is

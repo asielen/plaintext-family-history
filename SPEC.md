@@ -610,6 +610,8 @@ site:                         # `fha site` presentation
   home_person: p-xxxxxxxxxx   # whose pedigree the homepage shows (default: root_person)
   home_pedigree_generations: 5   # generations of that pedigree (default 5, at most 8)
   picture_workers: auto       # web pictures made at once while building (auto, or a whole number)
+  completeness_rings: false   # a completeness ring on each person page (TOOLING §12; default off)
+  calendar: false             # "This month in the family" on the homepage (TOOLING §12; default off)
 ```
 
 **How a path resolves.** Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name).

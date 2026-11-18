@@ -51,7 +51,9 @@ import dataclasses
 import datetime
 import fnmatch
 import hashlib
+import html
 import json
+import math
 import os
 import re
 import secrets
@@ -13103,6 +13105,8 @@ def couple_folder_prefix(pos: int) -> int:
 #   completeness_context        - read the index once into plain dicts
 #   person_completeness         - the five checks for one person
 #   completeness_summary_line   - "3 of 5: no marriage record; ..." for a person
+#   completeness_public_phrase  - a few plain words for one check, for visitors
+#   completeness_ring_svg       - the five checks as a small inline-SVG ring
 #   archive_metrics             - totals, medians, text coverage, direct line
 
 COMPLETENESS_CHECKS: tuple[str, ...] = ('birth', 'census', 'parents', 'marriage', 'end-of-life')
@@ -13875,6 +13879,137 @@ def completeness_summary_line(result: dict, sep: str = ': ') -> str:
             short.append(_completeness_short_phrase(c))
     head = f"{result['met']} of {result['applicable']}"
     return f'{head}{sep}' + '; '.join(short) if short else f'{head}{sep}complete'
+
+
+# What each check state looks like and says on a completeness ring. The
+# shape carries the meaning, not the colour: a filled segment, a half-filled
+# one, an empty outline, and a faint dotted outline read the same in any
+# theme, printed in black and white, or by someone who cannot tell colours
+# apart. The words go in each segment's tooltip and any legend beside it.
+COMPLETENESS_STATE_WORDS: dict[str, str] = {
+    'met': 'found',
+    'partial': 'partly found',
+    'missing': 'not found yet',
+    'na': 'does not apply',
+}
+
+
+def _ring_point(c: float, r: float, degrees: float) -> str:
+    """One point on a circle around (c, c), as 'x,y' rounded so the same
+    ring is the same markup on every build."""
+    rad = math.radians(degrees)
+    return f'{c + r * math.cos(rad):.2f},{c + r * math.sin(rad):.2f}'
+
+
+def _ring_sector(c: float, r_out: float, r_in: float, start: float, end: float) -> str:
+    """The SVG path of one ring segment: the band between two circles, from
+    `start` to `end` degrees clockwise (0 is three o'clock)."""
+    large = 1 if end - start > 180 else 0
+    return (f'M{_ring_point(c, r_out, start)} '
+            f'A{r_out:.2f},{r_out:.2f} 0 {large} 1 {_ring_point(c, r_out, end)} '
+            f'L{_ring_point(c, r_in, end)} '
+            f'A{r_in:.2f},{r_in:.2f} 0 {large} 0 {_ring_point(c, r_in, start)} Z')
+
+
+def completeness_public_phrase(c: dict) -> str:
+    """A few plain words naming what one check still lacks, for a page that
+    visitors read (the shared family site): "no marriage record", "censuses
+    2 of 6 years". Empty for a check that is found or does not apply, except
+    a confirmed absence: a marriage check met because nobody married
+    ("never married (confirmed)") says so, since "found" alone would read as
+    a marriage record on file.
+
+    The full `detail` is written for the owner and can tell him what to do
+    next, naming a command or a flag to remove; a visitor can act on none of
+    that, so the shared site shows these words instead and `fha metrics`
+    keeps the full detail. The marriage words are built from the check's
+    counts rather than its detail, because that detail can carry an
+    instruction to the owner."""
+    if (c.get('check') == 'marriage' and c.get('state') == 'met'
+            and not c.get('partners')):
+        return 'never married (confirmed)'
+    if c.get('state') not in ('missing', 'partial'):
+        return ''
+    if c.get('check') == 'marriage':
+        partners = list(c.get('partners') or [])
+        lacking = len(partners) - len(c.get('with_record') or [])
+        if not partners:
+            return 'no marriage on file'
+        if len(partners) == 1:
+            return 'no marriage record'
+        return f'{lacking} of {len(partners)} marriages without a marriage record'
+    if c.get('check') == 'census' and not c.get('countries'):
+        return 'census country not known'
+    return _completeness_short_phrase(c)
+
+
+def completeness_ring_svg(result: dict, size: int = 44, *, public: bool = False) -> str:
+    """A `person_completeness` result drawn as a small five-segment ring:
+    inline SVG markup, no script, no ids, safe to repeat on one page.
+
+    One segment per check, clockwise from the top in COMPLETENESS_CHECKS
+    order. `met` is a filled segment, `partial` an outline whose first half is
+    filled, `missing` an empty outline, and `na` a faint dotted outline (the
+    check does not apply, and is left out of the score in the middle). Every
+    segment carries a `<title>` naming the check, its state and the result's
+    own detail ("Censuses: partly found - 2 of 6 census years on file ..."),
+    so the ring is never colour-only, and the whole ring has an aria-label
+    with the score. It draws in `currentColor`, which follows the page's
+    `--accent` design token when there is one, so a site theme that redefines
+    its colours (a dark theme in custom.css) recolours the ring with it.
+
+    A pure function, so every front door that shows completeness (the site's
+    person pages, the workbench) draws the same ring from the same result.
+    Privacy is the caller's: a person the caller would not publish gets no
+    ring, and no result should be computed for them in the first place.
+    `public=True` (a page visitors read) puts `completeness_public_phrase`
+    in the tooltips instead of the owner-facing detail."""
+    size = max(16, int(size))
+    c = size / 2
+    r_out = c - 1.5
+    r_in = r_out * 0.6
+    by_check = {chk['check']: chk for chk in result.get('checks', [])}
+    span = 360 / len(COMPLETENESS_CHECKS)
+    gap = 6.0
+    segments = []
+    for i, key in enumerate(COMPLETENESS_CHECKS):
+        chk = by_check.get(key) or {'state': 'na', 'detail': ''}
+        state = chk.get('state') if chk.get('state') in COMPLETENESS_STATE_WORDS else 'na'
+        start = -90 + i * span + gap / 2
+        end = start + span - gap
+        outline = _ring_sector(c, r_out, r_in, start, end)
+        label = COMPLETENESS_CHECK_LABELS[key]
+        detail = (completeness_public_phrase(chk) if public
+                  else str(chk.get('detail') or '').strip())
+        title = f'{label}: {COMPLETENESS_STATE_WORDS[state]}' + (f' - {detail}' if detail else '')
+        if state == 'met':
+            shape = f'<path d="{outline}" fill="currentColor" stroke="currentColor" stroke-width="1"/>'
+        elif state == 'partial':
+            half = _ring_sector(c, r_out, r_in, start, (start + end) / 2)
+            shape = (f'<path d="{half}" fill="currentColor"/>'
+                     f'<path d="{outline}" fill="none" stroke="currentColor" stroke-width="1"/>')
+        elif state == 'missing':
+            shape = f'<path d="{outline}" fill="none" stroke="currentColor" stroke-width="1"/>'
+        else:
+            shape = (f'<path d="{outline}" fill="none" stroke="currentColor" stroke-width="1" '
+                     f'stroke-dasharray="1.5 2" opacity="0.4"/>')
+        segments.append(f'<g class="ring-{state}" data-check="{key}">'
+                        f'<title>{html.escape(title)}</title>{shape}</g>')
+    met, applicable = int(result.get('met', 0)), int(result.get('applicable', 0))
+    score = (f'{met} of {applicable} checks found' if applicable
+             else 'no checks apply')
+    centre = ''
+    if size >= 32 and applicable:
+        centre = (f'<text x="{c:.2f}" y="{c:.2f}" text-anchor="middle" '
+                  f'dominant-baseline="central" font-size="{size * 0.26:.1f}" '
+                  f'font-family="system-ui, sans-serif" fill="currentColor" '
+                  f'aria-hidden="true">{met}/{applicable}</text>')
+    return (f'<svg class="completeness-ring" xmlns="http://www.w3.org/2000/svg" '
+            f'width="{size}" height="{size}" viewBox="0 0 {size} {size}" role="img" '
+            f'aria-label="How well documented: {html.escape(score)}" '
+            f'style="color: var(--accent, #6E3A26); vertical-align: middle">'
+            f'<title>How well documented: {html.escape(score)}</title>'
+            + ''.join(segments) + centre + '</svg>')
 
 
 def _completeness_short_phrase(c: dict) -> str:

@@ -44,6 +44,13 @@ SVG engine the person page already used, scaled to a configurable depth and
 re-seeded per build mode - not the interactive descendant explorer, which
 moved to a per-person opt-in link; see `_SiteBuilder._build_home_pedigree`).
 
+Two optional panels, both off unless fha.yaml `site:` turns them on: a
+completeness ring on each curated person page (`completeness_rings`, drawn by
+`_lib.completeness_ring_svg` from `_lib.person_completeness`) and "This month
+in the family" on the home page (`calendar`, from
+`_lib.family_calendar_events`). Both pass through this file's own privacy
+rules, not the engines' flags alone.
+
 Note what the page-set design is and is not. It guarantees that this site
 never LINKS to a page it did not build; it does not check whether a page
 SHOULD have been built, and there is no separate audit pass that does. So
@@ -136,6 +143,8 @@ CODE MAP
                                  process (#239), reached via _lib.site_picture_job
     _auto_picture_workers,     - how many workers: processors, free memory, and
     _picture_workers_setting     fha.yaml `site.picture_workers` (1 = one at a time)
+    _site_switch               - an on/off fha.yaml `site:` setting (the two
+                                 optional panels), off unless it says yes
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -198,6 +207,13 @@ CODE MAP
       ._claim_is_own_vital     - is this vital claim a record OF this person,
                                  or of a relative it also names? (roles:, #126)
       ._person_summary         - the Born/Died/Married infobox, own vitals only
+      ._completeness_context   - site.completeness_rings: the completeness
+                                 engine's index read, once per build, with the
+                                 claims a shared build withholds set aside
+      ._claim_is_private       - restricted claim or hard-restricted source,
+                                 status aside (the completeness context)
+      ._person_completeness    - one person page's ring + legend, or None for
+                                 anyone the site withholds (every build)
       ._person_open_questions  - this person's open questions, rendered
       .render_token            - one [ID] token → HTML (link / redaction / mark)
       ._derive                 - a media/ web picture: the saved copy when the
@@ -214,6 +230,10 @@ CODE MAP
                                  and render the home page's ancestor pedigree
       .build_index_page        - home page: surname index, discoveries teaser,
                                  sources/places nav, and the home pedigree (#115)
+      ._family_calendar        - site.calendar: every month's events for the
+                                 home page's "This month in the family"
+      ._calendar_event_is_shown - the site's own privacy rules, per event
+      ._calendar_event_entry   - one calendar line, people linked
       .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
@@ -252,6 +272,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    COMPLETENESS_CHECK_LABELS,
+    COMPLETENESS_STATE_WORDS,
+    completeness_context,
+    completeness_public_phrase,
+    completeness_ring_svg,
+    family_calendar_events,
+    person_completeness,
     PARKED_CLAIM_SQL,
     apply_private_fence,
     withhold_private_and_drafts,
@@ -525,6 +552,11 @@ _NO_REDACTED_PERSON_SQL = (
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
 # rebuild must first prove the target dir is ours - see _unowned_output_reason.
 _SITE_MARKER_NAME = '.fha-site'
+
+# Month names for the family calendar, written out here rather than read from
+# the locale so a site built on any machine reads the same.
+_MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
+                'August', 'September', 'October', 'November', 'December')
 
 # Summary-block label per vital claim type (TOOLING §12 "summary block (accepted vitals)").
 _VITAL_LABELS = {
@@ -2320,6 +2352,29 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
+def _site_switch(site_cfg: dict, key: str) -> tuple[bool, str | None]:
+    """An on/off setting under fha.yaml `site:` (`completeness_rings`,
+    `calendar`): off unless it says yes. YAML's own `true`/`false` and the
+    words people type for them (`yes`, `on`, `no`, `off`) are read as meant;
+    anything else leaves the feature off, with a warning naming the setting,
+    because an optional panel is not worth failing a build over and a typo
+    should not quietly switch one on.
+
+    Returns (on, warning or None)."""
+    raw = site_cfg.get(key)
+    if raw is None or raw is False:
+        return False, None
+    if raw is True:
+        return True, None
+    word = str(raw).strip().lower()
+    if word in ('true', 'yes', 'on'):
+        return True, None
+    if word in ('', 'false', 'no', 'off'):
+        return False, None
+    return False, (f'WARNING: fha.yaml site.{key} {raw!r} is not true or false; '
+                   f'leaving it off. Write `{key}: true` to turn it on.')
+
+
 def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
     """Was `src` last modified long enough ago to trust its size and time
     (`_DERIVATIVE_SETTLE_SECONDS`), and is it still the file `st` described?
@@ -3905,8 +3960,16 @@ class _SiteBuilder:
         # makes pictures has workers, and only when more than one is wanted.
         self._picture_pool: _PicturePool | None = None
         self._picture_setting_warning: str | None = None
+        site_cfg = fha_config.get('site') if isinstance(fha_config.get('site'), dict) else {}
+        # The two optional panels (TOOLING §12, "Optional panels"): both off
+        # unless fha.yaml `site:` turns them on.
+        self.show_rings, ring_warning = _site_switch(site_cfg, 'completeness_rings')
+        self.show_calendar, calendar_warning = _site_switch(site_cfg, 'calendar')
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning) if w]
+        # The completeness engine's read of the index, made once on the first
+        # person page that shows a ring (`_completeness_context`).
+        self._completeness_ctx: dict | None = None
         if self.derivative_cache is not None:
-            site_cfg = fha_config.get('site') if isinstance(fha_config.get('site'), dict) else {}
             workers, self._picture_setting_warning = _picture_workers_setting(site_cfg)
             if picture_pool and workers > 1:
                 self._picture_pool = _PicturePool(workers)
@@ -6016,6 +6079,7 @@ class _SiteBuilder:
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'has_qa_badges': has_qa_badges,
+            'completeness': self._person_completeness(pid) if self.show_rings else None,
             # Workbench-only fields (harmless in standalone - the template gates
             # every use on `workbench`): the record's on-disk relpath for the
             # "open file" button and living value for the "change..." affordance.
@@ -6039,6 +6103,89 @@ class _SiteBuilder:
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
         self._footnotes = None        # footnotes are strictly person-page-scoped
+
+    def _completeness_context(self) -> dict:
+        """The completeness engine's read of the index (`_lib.completeness_
+        context`), made once per build and shared by every ring.
+
+        A shared build sets aside every claim a public page would not show
+        (`_claim_is_private`) before any check reads it. Otherwise a ring
+        could say "birth record found" for a person whose only birth record
+        the owner marked private, or "death found" from a death record that
+        names a living informant and so never reaches her timeline, telling
+        every visitor that evidence exists which no page shows. The claim is
+        relabelled rather than dropped, so every structure that names it
+        still resolves and no counting mode ever sees it.
+
+        Only private claims are relabelled, never merely unreviewed ones: the
+        engine reads suggested claims too when it decides what kind of
+        record a source is (a death certificate is known by its death entry,
+        reviewed or not), and its accepted-only counting already keeps them
+        out of the score. The linked preview counts everything, as `fha
+        metrics` does."""
+        if self._completeness_ctx is None:
+            ctx = completeness_context(self.conn)
+            if not self.linked:
+                redacted = {pid for pid, row in self.person_meta.items()
+                            if self._person_is_redacted(row)}
+                claims = {}
+                for cid, claim in ctx['claims'].items():
+                    named = {p for p, _role in ctx['claim_people'].get(cid, ())}
+                    if self._claim_is_private(cid, claim['source_id']) or named & redacted:
+                        claim = {**claim, 'status': 'withheld'}
+                    claims[cid] = claim
+                ctx = {**ctx, 'claims': claims}
+            self._completeness_ctx = ctx
+        return self._completeness_ctx
+
+    def _claim_is_private(self, claim_id, source_id) -> bool:
+        """Is this claim kept off every shared page whatever its status: a
+        claim marked `restricted`, or one on a restricted, DNA, by-request or
+        not-for-publication source? The status-free half of
+        `_claim_row_is_publishable`, for a caller that judges review status
+        itself (the completeness context). A claim naming a withheld person
+        is the caller's other check, as the timeline's SQL filter is."""
+        if normalize_id(str(claim_id)) in self.restricted_claims:
+            return True
+        return self._source_hard_restricted(source_id)
+
+    def _person_completeness(self, pid: str) -> dict | None:
+        """The completeness ring and its legend for one person page, or None.
+
+        The five checks come from the shared engine (`_lib.person_
+        completeness`, accepted claims only - the settled view, TOOLING §7a),
+        so the ring and `fha metrics` agree. `_person_is_redacted` is asked
+        first and nothing is computed for anyone it withholds: a living or
+        unknown person (merges followed) in every build, and in a shared
+        build a restricted one too (the linked preview reads no restriction
+        markers, so there it is the living rule alone). In the linked
+        preview a living person still has a page, and a ring there would
+        invite exactly the "is she still alive?" reading the living rule
+        exists to prevent. A stub (workbench pages)
+        gets none either: rings are for the curated people the site is
+        about. The ring reads the checks' own detail words, which name no
+        one, so a ring never carries a name the page would redact. A shared
+        build shows visitors a few plain words per check (`_lib.completeness_
+        public_phrase`: "no marriage record"), never the owner's detail, which
+        can name a command to run; the linked preview keeps the full detail,
+        as `fha metrics` does."""
+        row = self.person_meta.get(pid)
+        if row is None or (row['tier'] or '') != 'curated' or self._person_is_redacted(row):
+            return None
+        ctx = self._completeness_context()
+        if pid not in ctx['persons']:
+            return None   # a merged record: its claims count on the survivor's page
+        result = person_completeness(ctx, pid)
+        checks = [{'label': COMPLETENESS_CHECK_LABELS[c['check']],
+                   'state': c['state'],
+                   'word': COMPLETENESS_STATE_WORDS.get(c['state'], c['state']),
+                   'detail': (completeness_public_phrase(c) if not self.linked
+                              else c.get('detail') or '')}
+                  for c in result['checks']]
+        return {'ring': self._markup(completeness_ring_svg(
+                    result, size=64, public=not self.linked)),
+                'checks': checks,
+                'met': result['met'], 'applicable': result['applicable']}
 
     def _person_header_meta(self, pid: str, display_name: str) -> tuple[list[str], list[str]]:
         """Alternate-name lines and editorial tag pills for the page header, read
@@ -9207,7 +9354,86 @@ class _SiteBuilder:
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
             'hero': hero, 'root_prefix': '.',
+            'calendar': self._family_calendar(page_dir) if self.show_calendar else None,
         })
+
+    # - family calendar (site.calendar) -
+
+    def _family_calendar(self, page_dir: Path) -> dict:
+        """The home page's "This month in the family": every month's events,
+        from the shared engine (`_lib.family_calendar_events`, accepted claims
+        only), so the panel and `fha calendar` cannot disagree about whose
+        event a record is or which day it fell on.
+
+        The site is a snapshot, so all twelve months are rendered here and a
+        small script in the page shows the visitor's current month; without
+        the script the page shows the month it was built in, with every month
+        below it. Each event is checked against this site's own privacy rules
+        (`_calendar_event_is_shown`), not the engine's flags alone."""
+        try:
+            build_month = int(_today()[5:7])
+        except ValueError:
+            build_month = 1
+        months = []
+        for month in range(1, 13):
+            events = []
+            for ev in family_calendar_events(self.conn, month=month):
+                if self._calendar_event_is_shown(ev):
+                    events.append(self._calendar_event_entry(ev, page_dir))
+            months.append({'num': month, 'name': _MONTH_NAMES[month - 1], 'events': events})
+        return {'months': months, 'current': months[build_month - 1]}
+
+    def _calendar_event_is_shown(self, ev: dict) -> bool:
+        """May this calendar event appear on this build's home page?
+
+        The engine says who counts as living and whether a source behind the
+        event is restricted, but not whether a claim or a person is marked
+        restricted (the index does not carry those). So the event is held to
+        the same rules as a timeline line, claim by claim (`_person_timeline`),
+        and every claim behind it must pass, not just one: a second, open
+        copy of a record does not make a private one public. Dropped when:
+          - anyone the event belongs to is withheld by `_person_is_redacted`
+            (merges followed): living or unknown in every build, so a living
+            relative's birthday never reaches a home page, even the linked
+            preview's; restricted, including by-request, in a shared build
+            (the linked preview reads no restriction markers);
+          - any claim behind it names a withheld person in any role (a living
+            mother on her son's birth record), as the timeline's filter does;
+          - any claim behind it is not publishable (`_claim_row_is_publishable`:
+            a restricted claim, or one on a restricted, DNA, by-request or
+            not-for-publication source; in a shared build, an unaccepted one).
+        """
+        if ev.get('source_restricted'):
+            return False
+        for person in ev['people']:
+            meta = self.person_meta.get(person['id'])
+            if meta is None or self._person_is_redacted(meta):
+                return False
+        for cid in ev['claims']:
+            row = self.conn.execute(
+                'SELECT id, source_id, status FROM claims WHERE id = ?', (cid,)).fetchone()
+            if row is None or not self._claim_row_is_publishable(
+                    row['id'], row['source_id'], row['status']):
+                return False
+            for named in self.conn.execute(
+                    'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,)):
+                meta = self.person_meta.get(normalize_id(str(named['person_id'])))
+                if meta is not None and self._person_is_redacted(meta):
+                    return False
+        return True
+
+    def _calendar_event_entry(self, ev: dict, page_dir: Path) -> dict:
+        """One calendar line: the date in words, what happened, and who -
+        each person linked to their page when this site has one (a stub's
+        name is plain text), through the same `_person_link` every page uses."""
+        month_name = _MONTH_NAMES[ev['month'] - 1]
+        date = (f"{ev['day']} {month_name} {ev['year']}" if ev['day']
+                else f"{month_name} {ev['year']}")
+        people = ' and '.join(self._person_link(p['id'], page_dir) for p in ev['people'])
+        text = f"{_escape(ev['word'])}: {people}"
+        if ev.get('place'):
+            text += f" - {_escape(ev['place'])}"
+        return {'date': date, 'html': self._markup(text), 'type': ev['type']}
 
     # - rendering plumbing -
 
@@ -9268,6 +9494,7 @@ class _SiteBuilder:
         self._write_marker()
         if self._picture_setting_warning:
             self.messages.append(self._picture_setting_warning)
+        self.messages.extend(self._switch_warnings)
         self._copy_vendor()
         self._copy_assets()
         for sid in sorted(self.source_pages):

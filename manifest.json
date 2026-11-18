@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "2b62f52cfc0ae19f2efe32508db00df34bb89d1211c2aaa557d19db0da3ca4c5",
+      "sha256": "01280df175f61850606a72259e7ebe28b78071d26d2d35f2a06d1bde60b85075",
       "spec_version": "2.5",
       "src": "tools/_lib.py"
     },
@@ -951,7 +951,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "05f380f3e41d5f2ce45097da7185c7b318ff62b20fd300d9b7ac6dc3e2b1542c",
+      "sha256": "c2970bada7926a229ff4bf80d112b33f5637dafc489d54efa9195eb76b810daf",
       "spec_version": "2.5",
       "src": "tools/site.py"
     },
@@ -1014,14 +1014,14 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "7e217cedd2d8b51cc80fef845723f2d33bea66e192ed6808148bf53f4988d7a1",
+      "sha256": "6fcdcfaa909b9b4ac58d12081a0e725a91f8a05fb409e2eff1b9a179847bd9c7",
       "spec_version": "2.5",
       "src": "tools/templates/index.html"
     },
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "c2532592fdc4474bad78d884588846b90f38019515292432d536260d673b7d2e",
+      "sha256": "b62862b38315f6c6797f178b985e5cc1629ff0775ebb9c9346afa05f20d81220",
       "spec_version": "2.5",
       "src": "tools/templates/person.html"
     },
@@ -1184,7 +1184,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "84eee7a35fb163094aa021eb2ea128a8516ff71799802a8e01ad3f2f2bdac585",
+      "sha256": "a6d48cac800c55b2bd616e9519f8663e4ad3a35bbbb4b36592523a523f0d4dee",
       "spec_version": "2.5"
     },
     {
@@ -1232,14 +1232,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "edd0529c115961536df8daf9408b0ab023636274f0e33d88ede3658d04919778",
+      "sha256": "78ce7f50616a265d214a91060c96fdb41f0927d551298bec2a67c98285bf0213",
       "spec_version": "2.5",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "1ffc8916074a4caf35f02cc08a7ddba93ced9ae17a9f27d993221b03aa8a73f9",
+      "sha256": "a6f7b23ebd6d4b42ecd25b66d1b576448ca9a803377bc11760480a90980adb5c",
       "spec_version": "2.5",
       "src": "TOOLING.md"
     },
@@ -1283,7 +1283,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "a9a84c957a5aebdaea0ec3ce45af47b19bfe5b2ba32a248da34f9f60fae2ab3e",
+      "sha256": "42c361d828baa928f5d705599a0b8cdc3c6f751c1775533037202d25119a0fbc",
       "spec_version": "2.5",
       "src": "archive-template/fha.yaml"
     },
