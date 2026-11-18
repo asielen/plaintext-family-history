@@ -998,6 +998,23 @@ How well documented each person is, and what is still missing. With no argument:
 **Archive totals.** People (curated, stubs, direct line), sources by type, claims by status, the median sources and accepted claims per curated person, the share of sources with files that hold searchable text (the W124 predicate), and the five thinnest direct-line people by accepted claims.
 
 Computed fresh on every run and never written into a record (SPEC §17b). The engine lives in `_lib` (`completeness_context`, `person_completeness`, `archive_metrics`): the shared engine any other front door that shows completeness (the workbench, the site) is to use, so they cannot disagree. Read-only. Exit codes: `0`; `1` a person ID not in the index; `2` an argument that is not a person ID, or a person ID with `--all`; `3` no index (run `fha index`).
+## 7b. `fha calendar` - the family calendar
+
+```
+fha calendar [WHEN] [--week] [--include-suggested] [--json] [--root PATH]
+```
+
+Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims) that fall in a month or on a day: the archive's "on this day". `WHEN` is forgiving: nothing (this month), `today`, a month (`6`, `june`, `Jun`), or a day (`june 14`, `14 june`, `06-14`, `6/14`, `june 14th`). `--week` covers a day (today by default) and the six after it; a month with `--week` exits `2`, saying a week needs a day to start from. An unreadable `WHEN` exits `2` with examples; no index exits `3`. Each line says how many years ago the event was; one from this year reads "this year", and a date later than today reads as a record to check.
+
+**What is placed.** A date recorded to the month (`1880-06`) or the day (`1880-06-14`), with no qualifier or range. An approximate, uncertain or ranged date is left off: the record does not know the day, and the calendar does not guess one. A day view leaves out events known only to the month.
+
+**Whose event.** A vital event belongs to its subject by the SPEC §8.3 rules (`vital_subjects`): a mother named on her son's birth record is not born that day, and a marriage names the couple, not its witnesses. An arrival belongs to the people its claim calls `subject`. With no `subject`, when anyone named carries a role, it belongs to the people with no role (a sponsor or relative named beside the emigrant did not arrive that day); when nobody carries a role, it belongs to everyone named. A claim whose people all carry roles, none of them `subject`, is no event. The same event recorded in several sources is one event, listing every claim and source behind it. A record giving only the month is left off when a dated record of the same event (same type and people) falls in that year and month and is at least as settled (an accepted month-only record stays beside a suggested-only dated one), and is its own line otherwise; nothing from it is added to the dated line.
+
+**Which claims.** Accepted by default; `--include-suggested` adds `suggested`, and each event carries `accepted` (true when an accepted claim stands behind it) so the text marks a suggested-only line `[suggested, not yet reviewed]` rather than showing it as a family fact; a line resting on an accepted claim shows only a place an accepted claim gives. Negated claims are never events. `--week` follows this year's calendar.
+
+**Privacy.** The command is the owner's own view and shows everything. Each event says whether each person counts as living (living or unknown, merges followed, as every export reads it) and whether any source behind it is `restricted` (`source_restricted`). That is not the whole SPEC §19 rule: the index records `restricted:` only on sources, so a claim or a person marked `restricted` is listed here unflagged. A shared front door must apply its own SPEC §19 export rules to the people, claims and sources an event lists.
+
+Engine: `_lib.family_calendar_events`, the shared engine a report, workbench or site anniversary panel is to use, so that two views of the same day cannot disagree. Read-only.
 
 ---
 
@@ -1573,7 +1590,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 |---|---|---|---|---|
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
-| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_find`, `test_doctor` |
+| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_anniversaries`, `test_find`, `test_doctor` |
 | 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
@@ -1600,6 +1617,7 @@ person          ← _lib, yaml; reads .cache/index.sqlite
 source          ← _lib, yaml, exiftool; pypdf optional
 relate          ← _lib; reads .cache/index.sqlite (accepted relationship edges)
 metrics         ← _lib; reads .cache/index.sqlite (claims, persons, places, sources)
+calendar        ← _lib; reads .cache/index.sqlite (anniversaries.py)
 normalize-links ← _lib, yaml
 gedcom import   ← _lib, yaml, csv
 media           ← _lib; ffprobe or PyAV (`av`), either optional
@@ -1715,6 +1733,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <P-A> <P-B>` (T C) | "How are these two related?" The blood relationship (cousin/removal) and the shortest social path between any two people, derived from accepted relationship claims. |
 | `fha metrics [<P-id>]` (T C) | "Who still lacks a birth record, a census, a marriage record?" Five completeness checks per person, the direct line by generation, and archive totals (§7a). `--include-suggested` counts suggested claims too. |
+| `fha calendar [WHEN]` (T C) | "What happened in the family this month?" Births, marriages, deaths and arrivals on a day, in a month, or in the week ahead (§7b). |
 
 ### Occasional (setup, migration, publication moments)
 

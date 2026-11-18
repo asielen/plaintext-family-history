@@ -348,6 +348,8 @@ fha metrics [<P-id>]         how well documented each person is: birth record, c
                             parents, marriage records, death - plus archive totals
                             (computed fresh; never written down; --include-suggested
                             counts unreviewed claims too)
+fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
+                            day, or in the week ahead (--week)
 fha packet <P-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
                             person stubs + suggested claims; plan first, --apply to write
