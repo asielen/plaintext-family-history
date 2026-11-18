@@ -116,7 +116,13 @@ def parse_when(when: str | None, *, today: datetime.date, week: bool = False
         return [start]
     if start[1] is None:
         return None
-    first = datetime.date(2000, start[0], start[1])
+    # The week runs on this year's calendar, so a February week in a non-leap
+    # year has no 29th. Only a week asked to START on February 29 in a
+    # non-leap year falls back to a leap year to have a first day at all.
+    try:
+        first = datetime.date(today.year, start[0], start[1])
+    except ValueError:
+        first = datetime.date(2000, start[0], start[1])
     return [((first + datetime.timedelta(days=i)).month,
              (first + datetime.timedelta(days=i)).day) for i in range(7)]
 
@@ -171,7 +177,10 @@ def _event_line(ev: dict) -> str:
     place = f", {ev['place']}" if ev['place'] else ''
     ago = ev['years_ago']
     ago_text = f'{ago} years ago' if ago != 1 else '1 year ago'
-    return f"  {when:<20} {ev['word']:<9} {_people_phrase(ev['people'])}{place} ({ago_text})"
+    # Under --found an unreviewed suggestion must not read as a family fact.
+    mark = '' if ev.get('accepted', True) else '  [suggested, not yet reviewed]'
+    return (f"  {when:<20} {ev['word']:<9} {_people_phrase(ev['people'])}{place} "
+            f"({ago_text}){mark}")
 
 
 def _cmd_calendar(result: Result, use_json: bool = False) -> int:
@@ -202,6 +211,9 @@ def _cmd_calendar(result: Result, use_json: bool = False) -> int:
               '"about", cannot be placed on a calendar.')
     if not result.data['found']:
         print('(Accepted claims only; `--found` adds suggested ones.)')
+    else:
+        print('(Includes suggested claims; a line marked [suggested] rests on no '
+              'accepted claim yet.)')
     return result.exit_code
 
 

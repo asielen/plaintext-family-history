@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.3",
-  "generated": "2026-11-17",
+  "generated": "2026-11-18",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -679,14 +679,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "73a49290c8e3b9ff0bd0c284109de521de5c74cf90335bd8f3329379d3862ea1",
+      "sha256": "7a4d68cadc229e06b0b1b00638291cd0b95ddbdc02ae6924023330351aad2647",
       "spec_version": "2.3",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "b4ff7a386f10c83c0ad727f2c0c5da4980a750186c7aca606609292763d07308",
+      "sha256": "cb7ce98149e0bff54b03f9e8784a0b09b70ece693ed43cfddad542d78da67237",
       "spec_version": "2.3",
       "src": "tools/anniversaries.py"
     },
@@ -1219,7 +1219,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "64e7e77f146f34896c33f6c1b9ee7b3aa504adb87858b598050d5bb0c4348df5",
+      "sha256": "a609cd6dc8a6ec9ce669363a8d0534f6b56afc797cac6f1599f29ff0098a829a",
       "spec_version": "2.3",
       "src": "TOOLING.md"
     },

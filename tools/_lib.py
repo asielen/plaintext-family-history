@@ -12980,10 +12980,12 @@ def couple_folder_prefix(pos: int) -> int:
 # `1880?`, `1880/1881`) says the record does not know the day, and placing it
 # on one would put a guess on the calendar as if it were a fact.
 #
-# Privacy is the caller's to apply, not this function's: every event carries
-# each person's `living` value and whether a source behind it is restricted,
-# so a private front door (the terminal) shows everything and a shared one
-# (the site) drops what it must.
+# Privacy is the caller's to apply, not this function's. Each event says
+# whether each person counts as living (`person_is_living`, merges followed)
+# and whether a source behind it is restricted - a convenience, not the whole
+# rule: the index holds no `restricted:` for a single claim or a person, so a
+# shared front door (the site) runs its own export privacy rules (SPEC §19)
+# over the people and claims an event names, as it does for every page.
 
 CALENDAR_EVENT_TYPES: tuple[str, ...] = (
     'birth', 'baptism', 'marriage', 'death', 'burial', 'immigration')
@@ -13037,15 +13039,23 @@ def family_calendar_events(
 
     Each event: {type, word, year, month, day, date, years_ago, people:
     [{id, name, living}], place, claims: [c-ids], sources: [s-ids],
-    source_restricted}. One event per (type, people, date): the same birth
-    recorded in three sources is one birthday with three claims behind it.
-    A day view leaves out events known only to the month. Negated claims (a
-    confirmed absence) are never events."""
+    source_restricted, accepted}. `living` is a bool: True for living or
+    unknown, merges followed (`person_is_living`). `accepted` is True when at
+    least one accepted claim stands behind the event, so a caller counting
+    suggested claims can mark the rest as unreviewed.
+
+    One event per (type, people, date): the same birth recorded in three
+    sources is one birthday with three claims behind it. A record that gives
+    only the month joins the one dated record of the same event that month
+    (`1880-06` and `1880-06-14` are one birth); with two different days on
+    file it stays apart, since nothing says which day it means. A day view
+    leaves out events known only to the month. Negated claims (a confirmed
+    absence) are never events."""
     year_now = this_year if this_year is not None else datetime.date.today().year
     status_ph = ','.join('?' * len(statuses))
     type_ph = ','.join('?' * len(CALENDAR_EVENT_TYPES))
     rows = conn.execute(
-        f"""SELECT c.id, c.type, c.date_edtf, c.source_id, c.place_text,
+        f"""SELECT c.id, c.type, c.status, c.date_edtf, c.source_id, c.place_text,
                    p.name AS place_name, COALESCE(s.restricted, 0) AS restricted
             FROM claims c
             LEFT JOIN places p ON p.id = c.place_id
@@ -13080,12 +13090,13 @@ def family_calendar_events(
                 'year': year, 'month': m, 'day': d, 'date': date,
                 'years_ago': year_now - year,
                 'people': [{'id': p, 'name': persons[p]['name'],
-                            'living': (persons[p]['living'] or 'unknown')}
+                            'living': person_is_living(conn, p)}
                            for p in subjects],
                 'place': None, 'claims': [], 'sources': [],
-                'source_restricted': False,
+                'source_restricted': False, 'accepted': False,
             }
         ev['claims'].append(r['id'])
+        ev['accepted'] = ev['accepted'] or (r['status'] or '').strip().lower() == 'accepted'
         if r['source_id'] and r['source_id'] not in ev['sources']:
             ev['sources'].append(r['source_id'])
         if not ev['place']:
@@ -13093,6 +13104,23 @@ def family_calendar_events(
         # Shared output withholds an event if ANY source behind it is
         # restricted; a second, open copy does not make the first one public.
         ev['source_restricted'] = ev['source_restricted'] or bool(r['restricted'])
+
+    # A month-only record of an event joins its one dated twin.
+    for key, ev in list(events.items()):
+        if ev['day'] is not None:
+            continue
+        twins = [e for k, e in events.items()
+                 if k[:2] == key[:2] and e['day'] is not None
+                 and (e['year'], e['month']) == (ev['year'], ev['month'])]
+        if len(twins) != 1:
+            continue
+        twin = twins[0]
+        twin['claims'] += [c for c in ev['claims'] if c not in twin['claims']]
+        twin['sources'] += [s for s in ev['sources'] if s not in twin['sources']]
+        twin['accepted'] = twin['accepted'] or ev['accepted']
+        twin['source_restricted'] = twin['source_restricted'] or ev['source_restricted']
+        twin['place'] = twin['place'] or ev['place']
+        del events[key]
 
     return sorted(events.values(),
                   key=lambda e: (e['day'] or 0, e['year'], e['type'],

@@ -983,11 +983,11 @@ Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims)
 
 **What is placed.** A date recorded to the month (`1880-06`) or the day (`1880-06-14`), with no qualifier or range. An approximate, uncertain or ranged date is left off: the record does not know the day, and the calendar does not guess one. A day view leaves out events known only to the month.
 
-**Whose event.** A vital event belongs to its subject by the SPEC §8.3 rules (`vital_subjects`): a mother named on her son's birth record is not born that day, and a marriage names the couple, not its witnesses. An arrival belongs to the people its claim calls `subject`, else to its unroled people, else to everyone it names. The same event recorded in several sources is one event, listing every claim and source behind it.
+**Whose event.** A vital event belongs to its subject by the SPEC §8.3 rules (`vital_subjects`): a mother named on her son's birth record is not born that day, and a marriage names the couple, not its witnesses. An arrival belongs to the people its claim calls `subject`, else to its unroled people, else to everyone it names. The same event recorded in several sources is one event, listing every claim and source behind it; a record giving only the month joins the one dated record of that event in that month, and stays apart when two different days are on file.
 
-**Which claims.** Accepted by default; `--found` adds `suggested`. Negated claims are never events.
+**Which claims.** Accepted by default; `--found` adds `suggested`, and each event carries `accepted` (true when an accepted claim stands behind it) so the text marks a suggested-only line `[suggested, not yet reviewed]` rather than showing it as a family fact. Negated claims are never events. `--week` follows this year's calendar.
 
-**Privacy.** Every event carries each person's `living` value and whether any source behind it is `restricted`. The command is the owner's own view and shows everything; a shared front door drops an event naming a living or unknown person, or resting on a restricted source.
+**Privacy.** The command is the owner's own view and shows everything. Each event says whether each person counts as living (living or unknown, merges followed, as every export reads it) and whether any source behind it is `restricted`, but that is not the whole SPEC §19 rule: a restricted claim or person is not in the index, so a shared front door applies its own export privacy to the people, claims and sources an event lists.
 
 Engine: `_lib.family_calendar_events`, so every front door that shows anniversaries agrees. Read-only.
 

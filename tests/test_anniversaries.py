@@ -149,10 +149,48 @@ class EngineTests(unittest.TestCase):
         found = self.a.events(6, statuses=('accepted', 'suggested'))
         self.assertEqual([e['type'] for e in found], ['birth'])
 
+    def test_found_mode_marks_suggested_only_events(self):
+        self.a.source([
+            {'type': 'birth', 'persons': [KID], 'date': '1880-06-14'},
+            {'type': 'death', 'persons': [MOM], 'date': '1900-06-02', 'status': 'suggested'}])
+        events = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertEqual({e['type']: e['accepted'] for e in events},
+                         {'birth': True, 'death': False})
+
+    def test_an_accepted_copy_makes_the_event_accepted(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14',
+                        'status': 'suggested'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        (ev,) = self.a.events(6, statuses=('accepted', 'suggested'))
+        self.assertTrue(ev['accepted'])
+
     def test_living_flag_travels_with_each_person(self):
-        self.a.source([{'type': 'birth', 'persons': [DAD], 'date': '1960-06-03'}])
+        self.a.source([{'type': 'birth', 'persons': [DAD], 'date': '1960-06-03'},
+                       {'type': 'birth', 'persons': [KID], 'date': '1880-06-04'}])
+        living = {e['people'][0]['id']: e['people'][0]['living'] for e in self.a.events(6)}
+        self.assertEqual(living, {DAD: True, KID: False})
+
+    def test_living_follows_a_merge_as_exports_read_it(self):
+        # A record merged into Kid says living: true; the survivor counts as living.
+        meta = {'id': 'p-dddddddddd', 'name': 'Kid Dup', 'living': 'true', 'tier': 'stub',
+                'status': 'merged', 'merged_into': KID}
+        (self.a.root / 'people' / 'stubs' / 'p__dup_p-dddddddddd.md').write_text(
+            '---\n' + yaml.safe_dump(meta) + '---\n\n# Kid Dup\n', encoding='utf-8')
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1990-06-14'}])
         (ev,) = self.a.events(6)
-        self.assertEqual(ev['people'][0]['living'], 'true')
+        self.assertIs(ev['people'][0]['living'], True)
+
+    def test_month_only_record_joins_its_dated_twin(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        (ev,) = self.a.events(6)
+        self.assertEqual((ev['day'], len(ev['sources'])), (14, 2))
+
+    def test_month_only_record_stays_apart_from_two_different_days(self):
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'}])
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-15'}])
+        self.assertEqual(len(self.a.events(6)), 3)
 
     def test_arrival_of_a_household_names_the_subjects(self):
         self.a.source([{'type': 'immigration', 'persons': [MOM, KID], 'date': '1905-06-20',
@@ -185,6 +223,14 @@ class ParseWhenTests(unittest.TestCase):
     def test_unreadable(self):
         for s in ('13', 'smarch', '13th', '02-30', 'june 14 1880'):
             self.assertIsNone(self.p(s), s)
+
+    def test_week_follows_this_years_february(self):
+        # 2026 is not a leap year: no 29 February, and the week ends 3 March.
+        week = anniversaries.parse_when(None, today=datetime.date(2026, 2, 25), week=True)
+        self.assertNotIn((2, 29), week)
+        self.assertEqual(week[-1], (3, 3))
+        leap = anniversaries.parse_when(None, today=datetime.date(2028, 2, 25), week=True)
+        self.assertIn((2, 29), leap)
 
     def test_week_crosses_the_month(self):
         self.assertEqual(self.p('june 28', week=True)[-1], (7, 4))
@@ -231,6 +277,17 @@ class CommandTests(unittest.TestCase):
         with redirect_stdout(out):
             anniversaries._cmd_calendar(self.run_(), use_json=True)
         self.assertEqual(json.loads(out.getvalue())['data']['groups'][0]['month'], 6)
+
+    def test_found_text_labels_a_suggested_line(self):
+        self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-06-02',
+                        'status': 'suggested'}])
+        self.a.build()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_calendar(self.run_(found=True))
+        lines = [ln for ln in out.getvalue().splitlines() if 'Died' in ln or 'Born' in ln]
+        self.assertTrue(any('[suggested' in ln for ln in lines if 'Died' in ln))
+        self.assertFalse(any('[suggested' in ln for ln in lines if 'Born' in ln))
 
     def test_empty_month_explains_what_can_be_placed(self):
         out = io.StringIO()
