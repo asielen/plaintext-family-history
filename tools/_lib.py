@@ -1711,14 +1711,16 @@ SOCIAL_TIE_SUBTYPES: frozenset[str] = frozenset({'friend', 'associate', 'neighbo
 # Nothing validates role words against this list, so no archive gets a
 # warning from its existence. tests/test_lint.py checks it against the SPEC
 # paragraph, so the two cannot drift apart.
+# The people a record names who are not parties to the event (SPEC §8.3): the
+# informant on a census or a death certificate was not enumerated or buried.
+NON_PARTY_ROLES: frozenset[str] = frozenset({'informant', 'witness', 'midwife', 'physician'})
+
 CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
     # The family, household, power-tie and affiliation roles §8.3 defines.
     'child', 'parent', 'spouse', 'head', 'household_member',
     'enslaved', 'enslaver', 'employer', 'employee', 'member',
     'deceased',
-    # The people a record names who are not parties to the event.
-    'informant', 'witness', 'midwife', 'physician',
-}) | SOCIAL_TIE_SUBTYPES
+}) | NON_PARTY_ROLES | SOCIAL_TIE_SUBTYPES
 
 
 def social_parties(
@@ -13013,6 +13015,10 @@ COMPLETENESS_MODES: dict[str, tuple[str, ...]] = {
 # is a gap rather than a possibly-living person.
 END_OF_LIFE_YEARS = 130
 
+# Someone who died before this age is not asked for a marriage: a child who
+# died at two is not a gap in the record.
+MARRIAGE_MIN_AGE = 14
+
 # Census years by country. `required` years are the ones a person alive and
 # resident that year should appear in by name; `extra` years count when found
 # but are never reported missing - the U.S. 1790-1840 schedules name only the
@@ -13131,6 +13137,9 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     for cid, pairs in claim_people.items():
         for pid in dict.fromkeys(p for p, _r in pairs):
             person_claims.setdefault(pid, []).append(cid)
+    source_claims: dict[str, list[str]] = {}
+    for cid, c in claims.items():
+        source_claims.setdefault(c['source_id'], []).append(cid)
     source_types = {
         r['id']: (r['source_type'] or '').strip().lower()
         for r in conn.execute('SELECT id, source_type FROM sources')
@@ -13144,8 +13153,8 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     }
     return {
         'persons': persons, 'claims': claims, 'claim_people': claim_people,
-        'person_claims': person_claims, 'source_types': source_types,
-        'places': places,
+        'person_claims': person_claims, 'source_claims': source_claims,
+        'source_types': source_types, 'places': places,
     }
 
 
@@ -13176,13 +13185,50 @@ def _own_vital_claims(ctx: dict, pid: str, statuses: tuple[str, ...],
     return out
 
 
-def _is_record_of_event(ctx: dict, c: dict) -> bool:
-    """A claim that rests on a record made for the event itself: its source is
-    a `vital-record` (civil or church register), and its information is not
-    marked secondary (a death certificate's birth date is the classic
-    secondary reading of a vital record)."""
-    return (ctx['source_types'].get(c['source_id']) == 'vital-record'
-            and c['information'] != 'secondary')
+_VITAL_EVENT_TYPES = ('birth', 'baptism', 'marriage', 'divorce', 'death', 'burial')
+
+
+def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
+    """Does this source record the person's own death or burial? Then it is
+    their death record, whatever else it gives."""
+    for cid in ctx['source_claims'].get(source_id, ()):
+        c = ctx['claims'][cid]
+        if c['type'] in ('death', 'burial') and not c['negated']:
+            subjects = vital_subjects(c['type'], ctx['claim_people'].get(cid, []))
+            if subjects is None or pid in subjects:
+                return True
+    return False
+
+
+def _is_record_of_event(ctx: dict, c: dict, pid: str) -> bool:
+    """A claim that rests on a record made for the event itself: a
+    `vital-record` source (civil or church register) whose information is not
+    marked secondary, and which is not the person's own death record. A death
+    certificate's birth date and marriage are the classic later readings of a
+    vital record, and `information:` is usually left unset on hand-typed
+    claims, so a source that records the person's death counts as their
+    death record only - unless the claim says `information: primary`."""
+    if (ctx['source_types'].get(c['source_id']) != 'vital-record'
+            or c['information'] == 'secondary'):
+        return False
+    if c['information'] == 'primary':
+        return True
+    return not _records_own_death(ctx, c['source_id'], pid)
+
+
+def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[str, dict]]:
+    """Counted claims that place the person in their own life: everything
+    except a mention on someone else's birth, baptism, marriage, divorce,
+    death or burial. A father named on his son's 1950 death certificate was
+    not alive in 1950, and did not live where the son died."""
+    out = []
+    for cid, c in _counted_claims(ctx, pid, statuses):
+        if c['type'] in _VITAL_EVENT_TYPES:
+            subjects = vital_subjects(c['type'], ctx['claim_people'].get(cid, []))
+            if subjects is not None and pid not in subjects:
+                continue
+        out.append((cid, c))
+    return out
 
 
 def _first_year(claims: list[tuple[str, dict]]) -> int | None:
@@ -13200,7 +13246,7 @@ def _provisional_year(edtf: Any) -> int | None:
 
 def _check_birth(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     own = _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))
-    records = [cid for cid, c in own if _is_record_of_event(ctx, c)]
+    records = [cid for cid, c in own if _is_record_of_event(ctx, c, pid)]
     if records:
         return {'check': 'birth', 'state': 'met', 'claims': records,
                 'detail': 'birth or baptism record on file'}
@@ -13235,28 +13281,40 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     there, otherwise from the earliest dated record placing them there (an
     immigration claim included) - so no year before they arrived is asked
     for. They end at death, or at the latest record of them anywhere when no
-    death is known. A country comes from the place registry (the last part of
-    a registered place's hierarchy), never from free text.
+    death is known - and at their last record in that country when a later
+    record places them in another one, so no year after they left is asked
+    for either. A country comes from the place registry (the last part of a
+    registered place's hierarchy), never from free text. Only records of the
+    person's own life place them or date them (`_life_claims`): a mention on
+    a son's death certificate says nothing about where or when the father
+    lived.
 
     A year is on file when a `census` claim, or a `residence` claim on a
-    census source, is dated in it. Birth claims are never census years, even
-    when a census gave the age they were computed from.
+    census source, is dated in it and names the person as one of its parties
+    - not only as an informant or witness (SPEC §8.3: the neighbour who gave
+    the enumerator the household's details was not enumerated with it).
+    Birth claims are never census years, even when a census gave the age
+    they were computed from.
     """
     counted = _counted_claims(ctx, pid, statuses)
     birth, death, _earliest = _person_years(ctx, pid, statuses)
     own_births = {cid for cid, _c in _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))}
 
     first_in: dict[str, int] = {}
+    last_in: dict[str, int] = {}      # every country, table or not, by its label
     born_in: set[str] = set()
     other_countries: set[str] = set()
     latest_any: int | None = None
-    for cid, c in counted:
+    for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
         if raw and not key:
             other_countries.add(raw)
+        label = key or raw
+        if label and c['y_lo'] is not None:
+            last_in[label] = max(last_in.get(label, c['y_hi']), c['y_hi'])
         if not key:
             continue
         if cid in own_births:
@@ -13271,7 +13329,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         is_census = c['type'] == 'census' or (
             c['type'] == 'residence'
             and ctx['source_types'].get(c['source_id']) == 'census')
-        if is_census:
+        roles = roles_by_person(ctx['claim_people'].get(cid, [])).get(pid, ())
+        only_mentioned = bool(roles) and all(r in NON_PARTY_ROLES for r in roles)
+        if is_census and not only_mentioned:
             found_years.update(range(c['y_lo'], c['y_hi'] + 1))
 
     countries = sorted(set(first_in) | born_in)
@@ -13300,9 +13360,14 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             start = min(on_file) if start is None else min(start, min(on_file))
         if start is None:
             continue
+        # Left for another country: this country's years stop at their last
+        # record here (or the last census on file for it, if later).
+        last_here = max([last_in.get(key, start)] + on_file)
+        moved_on = any(y > last_here for label, y in last_in.items() if label != key)
+        stop = min(end, last_here) if moved_on else end
         table = CENSUS_YEARS[key]
-        expected += [y for y in table['required'] if start <= y <= end]
-        extras_all += [y for y in table['extra'] if start <= y <= end]
+        expected += [y for y in table['required'] if start <= y <= stop]
+        extras_all += [y for y in table['extra'] if start <= y <= stop]
     expected = sorted(set(expected))
     found = sorted(y for y in expected if y in found_years)
     missing = [y for y in expected if y not in found_years]
@@ -13344,20 +13409,32 @@ def _parent_claims(ctx: dict, pid: str, statuses: tuple[str, ...], *,
 
 
 def _check_parents(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
-    parents = _parent_claims(ctx, pid, statuses)
+    """Both birth parents named by sourced claims. Only genetic parents fill
+    the two places (SPEC §12.2): with a mother and a stepfather on file, the
+    father is still unknown. Adoptive, step and other parents are listed in
+    `other_parents` and named in the detail."""
+    parents = _parent_claims(ctx, pid, statuses, genetic_only=True)
+    others = sorted(set(_parent_claims(ctx, pid, statuses)) - set(parents))
+    # "Named in a birth record" needs a birth claim: a relationship claim on a
+    # vital record may come from a marriage or death certificate instead.
     from_record = sorted(
         p for p, cids in parents.items()
-        if any(_is_record_of_event(ctx, ctx['claims'][cid]) for cid in cids))
+        if any(ctx['claims'][cid]['type'] == 'birth'
+               and _is_record_of_event(ctx, ctx['claims'][cid], pid) for cid in cids))
     names = sorted(parents)
-    base = {'check': 'parents', 'parents': names, 'from_birth_record': from_record}
+    base = {'check': 'parents', 'parents': names, 'from_birth_record': from_record,
+            'other_parents': others}
+    also = (f' ({len(others)} adoptive, step or other parent'
+            f'{"s" if len(others) != 1 else ""} on file)') if others else ''
     if not names:
-        return {**base, 'state': 'missing', 'detail': 'no parents named by a sourced claim'}
+        return {**base, 'state': 'missing',
+                'detail': f'no birth parents named by a sourced claim{also}'}
     support = ('named in a birth record' if len(from_record) == len(names)
                else 'named in other records, not a birth record' if not from_record
                else 'one named in a birth record, the other in other records')
     if len(names) >= 2:
-        return {**base, 'state': 'met', 'detail': f'both parents named; {support}'}
-    return {**base, 'state': 'partial', 'detail': f'one parent named; {support}'}
+        return {**base, 'state': 'met', 'detail': f'both parents named; {support}{also}'}
+    return {**base, 'state': 'partial', 'detail': f'one parent named; {support}{also}'}
 
 
 def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
@@ -13374,8 +13451,13 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
                 'detail': 'never married (confirmed)'}
     for cid in ctx['person_claims'].get(pid, ()):
         c = ctx['claims'].get(cid)
-        if (c and c['type'] == 'marriage' and c['negated'] and c['status'] in statuses
-                and pid in spouse_parties(ctx['claim_people'].get(cid, []))):
+        if not (c and c['type'] == 'marriage' and c['negated'] and c['status'] in statuses):
+            continue
+        # A confirmed absence names one person ("no marriage found"), so it is
+        # read with `vital_subjects`, which handles one person, not with
+        # `spouse_parties`, which needs a couple.
+        subjects = vital_subjects('marriage', ctx['claim_people'].get(cid, []))
+        if subjects is None or pid in subjects:
             return {'check': 'marriage', 'state': 'met', 'partners': [], 'with_record': [],
                     'detail': 'never married (confirmed)'}
 
@@ -13390,12 +13472,13 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
             if pid in spouses:
                 others = [s for s in spouses if s != pid]
                 partners.update(others)
-                if c['type'] == 'marriage' and _is_record_of_event(ctx, c):
+                if c['type'] == 'marriage' and _is_record_of_event(ctx, c, pid):
                     with_record.update(others)
-    # Co-parents: the other genetic parent of each of the person's children,
-    # whichever claim names them. Only genetic edges (SPEC §12.2): a child's
-    # stepfather or adoptive mother is not the other parent's partner.
-    for child in _children_of(ctx, pid, statuses):
+    # Co-parents: the other genetic parent of each of the person's own genetic
+    # children, whichever claim names them. Genetic on both sides (SPEC
+    # §12.2): a child's stepfather is not the mother's partner, and an
+    # adoptive mother is not the birth parents' partner either.
+    for child in _children_of(ctx, pid, statuses, genetic_only=True):
         for parent in _parent_claims(ctx, child, statuses, genetic_only=True):
             if parent != pid:
                 partners.add(parent)
@@ -13405,6 +13488,10 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     recorded = sorted(p for p in names if p in with_record)
     base = {'check': 'marriage', 'partners': names, 'with_record': recorded}
     if not names:
+        birth, death, _earliest = _person_years(ctx, pid, statuses)
+        if birth is not None and death is not None and death - birth < MARRIAGE_MIN_AGE:
+            return {**base, 'state': 'na',
+                    'detail': f'not asked: died young (about age {death - birth})'}
         return {**base, 'state': 'missing', 'detail': 'no marriage on file'}
     if len(recorded) == len(names):
         word = 'marriage' if len(names) == 1 else f'all {len(names)} marriages'
@@ -13416,11 +13503,15 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
                        else f'{lacking} of {len(names)} partners without a marriage record')}
 
 
-def _children_of(ctx: dict, pid: str, statuses: tuple[str, ...]) -> set[str]:
-    """Everyone a counted claim names as this person's child."""
+def _children_of(ctx: dict, pid: str, statuses: tuple[str, ...], *,
+                 genetic_only: bool = False) -> set[str]:
+    """Everyone a counted claim names as this person's child; `genetic_only`
+    drops adoptive, step and other social ties, as `_parent_claims` does."""
     kids: set[str] = set()
     for cid, c in _counted_claims(ctx, pid, statuses):
         if c['type'] not in ('relationship', 'birth'):
+            continue
+        if genetic_only and not is_genetic_parent_subtype(c['subtype']):
             continue
         children, parents = parentage_parties(ctx['claim_people'].get(cid, []))
         if pid in parents:

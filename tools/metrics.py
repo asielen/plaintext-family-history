@@ -143,10 +143,18 @@ def run_metrics(archive_root: Path, fha_config: dict, *, person: str | None = No
 
         if person is not None:
             if pid not in ctx['persons']:
+                merged = conn.execute(
+                    "SELECT merged_into FROM persons WHERE id=? AND status='merged'",
+                    (pid,)).fetchone()
                 r = Result(ok=False, exit_code=EXIT_WARNINGS, data={'error': 'no-person'})
-                r.add('warning', f'No person {fmt_id_display(pid)} in the index. Check the ID '
-                                 f'with `fha find {fmt_id_display(pid)}`, or run `fha index` '
-                                 'if the record is new.')
+                if merged and merged['merged_into']:
+                    into = fmt_id_display(str(merged['merged_into']))
+                    r.add('warning', f'{fmt_id_display(pid)} was merged into {into}, whose '
+                                     f'record now carries their claims. Run `fha metrics {into}`.')
+                else:
+                    r.add('warning', f'No person {fmt_id_display(pid)} in the index. Check the '
+                                     f'ID with `fha find {fmt_id_display(pid)}`, or run '
+                                     '`fha index` if the record is new.')
                 return r
             one = person_completeness(ctx, pid, mode=mode, this_year=year)
             one['name'] = ctx['persons'][pid]['name']
