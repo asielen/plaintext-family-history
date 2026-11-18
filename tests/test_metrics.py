@@ -306,6 +306,30 @@ class CensusCheckTests(_Base):
         self.assertEqual(c['state'], 'partial')
         self.assertIn(1880, c['missing'])
 
+    def test_a_return_home_reopens_the_home_censuses(self):
+        self.a.source('vital-record', [_birth(KID, '1850', CA)])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': CA}
+                                 for y in (1851, 1861, 1871, 1881, 1901, 1911)])
+        self.a.source('other', [{'type': 'immigration', 'persons': [KID], 'date': '1885',
+                                 'place': US},
+                                {'type': 'immigration', 'persons': [KID], 'date': '1898',
+                                 'place': CA}])
+        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1925',
+                                        'place': CA}])
+        c = self.a.check(KID, 'census')
+        self.assertIn(1901, c['found'])
+        self.assertEqual(c['missing'], [1921])      # 1890s were in the U.S. (no 1891, 1900 table)
+        self.assertNotIn(1891, c['expected'])
+
+    def test_a_sons_occupation_does_not_place_his_mother(self):
+        self.a.source('vital-record', [_birth(MOM, '1850', CA),
+                                       {'type': 'death', 'persons': [MOM], 'date': '1895',
+                                        'place': CA}])
+        self.a.source('directory', [{'type': 'occupation', 'persons': [KID, MOM],
+                                     'date': '1880', 'place': US,
+                                     'roles': {'subject': KID, 'parent': MOM}}])
+        self.assertEqual(self.a.check(MOM, 'census')['countries'], ['Canada'])
+
     def test_a_mention_on_a_sons_death_record_does_not_stretch_a_life(self):
         self.a.source('census', [{'type': 'census', 'persons': [DAD], 'date': f'{y}', 'place': US}
                                  for y in (1850, 1860)])
@@ -454,10 +478,12 @@ class MarriageCheckTests(_Base):
         self.assertEqual((c['state'], c['detail']), ('met', 'never married (confirmed)'))
 
     def test_a_marriage_read_off_a_death_certificate_is_not_a_marriage_record(self):
+        # Both spouses get the same answer about the same marriage.
         self.a.source('vital-record', [
             {'type': 'death', 'persons': [DAD], 'date': '1920-01-01'},
             self._marriage(DAD, MOM)])
         self.assertEqual(self.a.check(DAD, 'marriage')['state'], 'missing')
+        self.assertEqual(self.a.check(MOM, 'marriage')['state'], 'missing')
 
     def test_did_not_marry_someone_is_not_never_married(self):
         self.a.source('vital-record', [self._marriage(KID, MOM)])
@@ -467,6 +493,11 @@ class MarriageCheckTests(_Base):
         c = self.a.check(KID, 'marriage')
         self.assertEqual((c['state'], c['partners']), ('met', [MOM.lower()]))
         self.assertNotIn('never married', c['detail'])
+
+    def test_a_provisional_death_on_the_record_still_counts_as_died_young(self):
+        self.a.person(KID, 'Kid', death='1882')
+        self.a.source('vital-record', [_birth(KID, '1880')])
+        self.assertEqual(self.a.check(KID, 'marriage')['state'], 'na')
 
     def test_a_wide_death_range_is_not_died_young(self):
         self.a.source('vital-record', [_birth(KID, '1895'),
@@ -492,6 +523,15 @@ class EndOfLifeCheckTests(_Base):
 
     def test_born_under_130_years_ago_is_not_asked(self):
         self.a.source('vital-record', [_birth(KID, '1920')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
+
+    def test_an_uncertain_birth_uses_its_latest_year(self):
+        # 189X could be 1899: under 130 in 2026, so not asked.
+        self.a.source('vital-record', [_birth(KID, '189X')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
+
+    def test_an_uncertain_provisional_birth_uses_its_latest_year(self):
+        self.a.person(KID, 'Kid', birth='1890/1910')
         self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
 
     def test_burial_counts(self):
@@ -579,6 +619,19 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(r.data['scope'], 'direct-line')
         self.assertEqual([p['person'] for p in r.data['people']][:1], [OTHER.lower()])
         self.assertEqual(len(r.data['people']), 3)
+
+    def test_a_root_merged_into_a_missing_record_names_both_ids(self):
+        self.a.person(KID, 'Kid', status='merged', merged_into='P-9999999999')
+        self.a.build()
+        note = self._run().data['direct_line_note']
+        self.assertIn(KID.lower(), note)
+        self.assertIn('p-9999999999', note)
+
+    def test_a_merge_loop_at_the_root_is_explained(self):
+        self.a.person(KID, 'Kid', status='merged', merged_into=OTHER)
+        self.a.person(OTHER, 'Other', status='merged', merged_into=KID)
+        self.a.build()
+        self.assertIn('merge loop', self._run().data['direct_line_note'])
 
     def test_a_merged_person_names_the_survivor(self):
         self.a.person(OTHER, 'Kid Dup', status='merged', merged_into=KID)

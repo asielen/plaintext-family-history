@@ -89,19 +89,25 @@ def _direct_line(conn, fha_config: dict) -> tuple[dict[str, int], str | None]:
         return {}, ('No direct line: fha.yaml has no root_person. Add '
                     '`root_person: p-...` (your own person ID) to see your '
                     'ancestors by generation.')
-    root = normalize_id(str(raw))
+    configured = root = normalize_id(str(raw))
     # A root_person later merged into another record is read through the
     # merge (SPEC §9): the survivor holds their claims and their parents.
     seen: set[str] = set()
-    while root not in seen:
-        seen.add(root)
+    while True:
         row = conn.execute("SELECT merged_into FROM persons WHERE id=? AND status='merged'",
                            (root,)).fetchone()
         if not row or not row['merged_into']:
             break
+        seen.add(root)
         root = normalize_id(str(row['merged_into']))
+        if root in seen:
+            return {}, (f"No direct line: fha.yaml's root_person {fmt_id_display(configured)} "
+                        'is part of a merge loop (records merged into each other). Open those '
+                        'records and fix their merged_into: lines, then run `fha index`.')
     if not conn.execute('SELECT 1 FROM persons WHERE id=?', (root,)).fetchone():
-        return {}, (f"No direct line: fha.yaml's root_person {fmt_id_display(root)} "
+        via = (f', which was merged into {fmt_id_display(root)},'
+               if root != configured else '')
+        return {}, (f"No direct line: fha.yaml's root_person {fmt_id_display(configured)}{via} "
                     f'is not in the index. Check it with `fha find {fmt_id_display(root)}`, '
                     'or run `fha index` if you added that person recently.')
     try:

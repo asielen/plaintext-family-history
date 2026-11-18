@@ -13207,20 +13207,27 @@ def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
     return False
 
 
-def _is_record_of_event(ctx: dict, c: dict, pid: str) -> bool:
+def _is_record_of_event(ctx: dict, cid: str) -> bool:
     """A claim that rests on a record made for the event itself: a
     `vital-record` source (civil or church register) whose information is not
-    marked secondary, and which is not the person's own death record. A death
+    marked secondary, and which does not record the death of anyone the event
+    belongs to (the child of a birth, either spouse of a marriage). A death
     certificate's birth date and marriage are the classic later readings of a
     vital record, and `information:` is usually left unset on hand-typed
-    claims, so a source that records the person's death counts as their
-    death record only - unless the claim says `information: primary`."""
+    claims, so such a source counts as a death record only - unless the
+    claim says `information: primary`. Judged per claim, so the husband and
+    the widow get the same answer about the same marriage."""
+    c = ctx['claims'][cid]
     if (ctx['source_types'].get(c['source_id']) != 'vital-record'
             or c['information'] == 'secondary'):
         return False
     if c['information'] == 'primary':
         return True
-    return not _records_own_death(ctx, c['source_id'], pid)
+    pairs = ctx['claim_people'].get(cid, [])
+    subjects = vital_subjects(c['type'], pairs)
+    if subjects is None:
+        subjects = [p for p, _r in pairs]
+    return not any(_records_own_death(ctx, c['source_id'], s) for s in subjects)
 
 
 def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[str, dict]]:
@@ -13234,8 +13241,15 @@ def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[s
     out = []
     for cid, c in _counted_claims(ctx, pid, statuses):
         pairs = ctx['claim_people'].get(cid, [])
-        roles = roles_by_person(pairs).get(pid, ())
+        by_person = roles_by_person(pairs)
+        roles = by_person.get(pid, ())
         if roles and all(r in NON_PARTY_ROLES for r in roles):
+            continue
+        # A claim that says whose fact it is (`subject:`, SPEC §8.3) places
+        # only its subjects: a son's occupation names his mother as parent,
+        # but says nothing of where she lived.
+        if (any('subject' in r for r in by_person.values())
+                and 'subject' not in roles):
             continue
         if c['type'] in _VITAL_EVENT_TYPES:
             subjects = vital_subjects(c['type'], pairs)
@@ -13260,7 +13274,7 @@ def _provisional_year(edtf: Any) -> int | None:
 
 def _check_birth(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     own = _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))
-    records = [cid for cid, c in own if _is_record_of_event(ctx, c, pid)]
+    records = [cid for cid, _c in own if _is_record_of_event(ctx, cid)]
     if records:
         return {'check': 'birth', 'state': 'met', 'claims': records,
                 'detail': 'birth or baptism record on file'}
@@ -13293,6 +13307,17 @@ def _person_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> tuple[int |
     return birth, death, earliest
 
 
+def _lived_in(arrivals: list[tuple[int, str]], country: str, year: int) -> bool:
+    """Was the person in `country` in `year`, as far as arrivals say? They
+    live where their latest recorded arrival (an immigration claim) before
+    that year took them; with no arrival before it, nothing says they had
+    left. Only arrivals move anyone: a visit or a death abroad says nothing
+    about when they left, and guessing would hide real gaps behind a
+    "complete". A later arrival back home reopens the home country's years."""
+    before = [(y, label) for y, label in arrivals if y <= year]
+    return not before or max(before)[1] == country
+
+
 def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int) -> dict:
     """Which census years the person should appear in, and which are on file.
 
@@ -13300,8 +13325,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     there, otherwise from the earliest dated record placing them there (an
     immigration claim included) - so no year before they arrived is asked
     for. They end at death, or at the latest record of them anywhere when no
-    death is known - and at an immigration claim placing them in another
-    country, so no year after they left is asked for either. A country comes from the place registry (the last part of a
+    death is known. In each census year the person counts as living in the
+    country of their latest recorded arrival (`_lived_in`), so no year spent
+    abroad is asked for, and a return reopens the home years. A country comes from the place registry (the last part of a
     registered place's hierarchy), never from free text. Only records of the
     person's own life place them or date them (`_life_claims`): a mention on
     a son's death certificate says nothing about where or when the father
@@ -13378,15 +13404,11 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             start = min(on_file) if start is None else min(start, min(on_file))
         if start is None:
             continue
-        # Left for another country: an arrival recorded elsewhere (an
-        # immigration claim) ends this country's years. Nothing weaker does -
-        # a visit or a death abroad says nothing about when they left, and
-        # guessing would hide real gaps behind a "complete".
-        left = [y for y, label in arrivals if label != key and y >= start]
-        stop = min(end, min(left)) if left else end
         table = CENSUS_YEARS[key]
-        expected += [y for y in table['required'] if start <= y <= stop]
-        extras_all += [y for y in table['extra'] if start <= y <= stop]
+        expected += [y for y in table['required']
+                     if start <= y <= end and _lived_in(arrivals, key, y)]
+        extras_all += [y for y in table['extra']
+                       if start <= y <= end and _lived_in(arrivals, key, y)]
     expected = sorted(set(expected))
     found = sorted(y for y in expected if y in found_years)
     missing = [y for y in expected if y not in found_years]
@@ -13439,7 +13461,7 @@ def _check_parents(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
     from_record = sorted(
         p for p, cids in parents.items()
         if any(ctx['claims'][cid]['type'] == 'birth'
-               and _is_record_of_event(ctx, ctx['claims'][cid], pid) for cid in cids))
+               and _is_record_of_event(ctx, cid) for cid in cids))
     names = sorted(parents)
     base = {'check': 'parents', 'parents': names, 'from_birth_record': from_record,
             'other_parents': others}
@@ -13493,7 +13515,7 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
             if pid in spouses:
                 others = [s for s in spouses if s != pid]
                 partners.update(others)
-                if c['type'] == 'marriage' and _is_record_of_event(ctx, c, pid):
+                if c['type'] == 'marriage' and _is_record_of_event(ctx, cid):
                     with_record.update(others)
     # Co-parents: the other genetic parent of each of the person's own genetic
     # children, whichever claim names them. Genetic on both sides (SPEC
@@ -13515,6 +13537,11 @@ def _check_marriage(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
         death_by = [c['y_hi'] for _cid, c in
                     _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
                     if c['y_hi'] is not None]
+        provisional = ctx['persons'].get(pid, {}).get('death')
+        if not death_by and provisional and is_valid_edtf(str(provisional)):
+            lo, hi = edtf_bounds(str(provisional))
+            hi_year = _claim_year(lo, hi, provisional)[1]
+            death_by = [hi_year] if hi_year is not None else []
         if birth is not None and death_by and max(death_by) - birth < MARRIAGE_MIN_AGE:
             return {**base, 'state': 'na',
                     'detail': f'not asked: died young (about age {max(death_by) - birth})'}
@@ -13549,14 +13576,25 @@ def _check_end_of_life(ctx: dict, pid: str, statuses: tuple[str, ...], this_year
     """A death or burial on file - asked only of someone born more than
     END_OF_LIFE_YEARS ago, about whom there is no doubt they have died. A
     younger person may still be living, so their check is not applied rather
-    than counted missing. With no birth year, the earliest record of them
-    stands in: someone in an 1850 census was born before 1850."""
+    than counted missing. "Born over 130 years ago" must be certain, so the
+    LATEST year each record allows is used: a birth of `189X` could be 1899.
+    With no birth year, the earliest record of them stands in: someone in an
+    1850 census was born by 1850."""
     own = _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
     if own:
         return {'check': 'end-of-life', 'state': 'met', 'claims': [cid for cid, _c in own],
                 'detail': 'death or burial on file'}
-    birth, _death, earliest = _person_years(ctx, pid, statuses)
-    born_by = birth if birth is not None else earliest
+    births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('birth', 'baptism'))
+              if c['y_hi'] is not None]
+    provisional = ctx['persons'].get(pid, {}).get('birth')
+    if not births and provisional and is_valid_edtf(str(provisional)):
+        lo, hi = edtf_bounds(str(provisional))
+        hi_year = _claim_year(lo, hi, provisional)[1]
+        births = [hi_year] if hi_year is not None else []
+    if not births:
+        births = [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, statuses)
+                  if c['y_hi'] is not None]
+    born_by = min(births) if births else None
     if born_by is not None and this_year - born_by > END_OF_LIFE_YEARS:
         return {'check': 'end-of-life', 'state': 'missing', 'claims': [],
                 'detail': f'born over {END_OF_LIFE_YEARS} years ago; no death or burial on file'}
