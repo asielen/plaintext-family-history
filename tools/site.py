@@ -6132,12 +6132,14 @@ class _SiteBuilder:
 
         The five checks come from the shared engine (`_lib.person_
         completeness`, accepted claims only - the settled view, TOOLING §7a),
-        so the ring and `fha metrics` agree. Nobody the shared snapshot
-        withholds gets one, in any build: `_person_is_redacted` (living or
-        unknown, restricted, merges followed) is asked first and nothing is
-        computed for them. In the linked preview a living person still has a
-        page, and a ring there would invite exactly the "is she still alive?"
-        reading the living rule exists to prevent. A stub (workbench pages)
+        so the ring and `fha metrics` agree. `_person_is_redacted` is asked
+        first and nothing is computed for anyone it withholds: a living or
+        unknown person (merges followed) in every build, and in a shared
+        build a restricted one too (the linked preview reads no restriction
+        markers, so there it is the living rule alone). In the linked
+        preview a living person still has a page, and a ring there would
+        invite exactly the "is she still alive?" reading the living rule
+        exists to prevent. A stub (workbench pages)
         gets none either: rings are for the curated people the site is
         about. The ring reads the checks' own detail words, which name no
         one, so a ring never carries a name the page would redact."""
@@ -9363,9 +9365,10 @@ class _SiteBuilder:
         and every claim behind it must pass, not just one: a second, open
         copy of a record does not make a private one public. Dropped when:
           - anyone the event belongs to is withheld by `_person_is_redacted`
-            (living or unknown, restricted including by-request, merges
-            followed) - in every build, so a living relative's birthday never
-            reaches a home page, even the linked preview's;
+            (merges followed): living or unknown in every build, so a living
+            relative's birthday never reaches a home page, even the linked
+            preview's; restricted, including by-request, in a shared build
+            (the linked preview reads no restriction markers);
           - any claim behind it names a withheld person in any role (a living
             mother on her son's birth record), as the timeline's filter does;
           - any claim behind it is not publishable (`_claim_row_is_publishable`:
