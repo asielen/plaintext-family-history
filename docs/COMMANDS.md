@@ -414,6 +414,8 @@ How are two people related? Blood degree + shortest social path.
 Show how two people are related.
 
   fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
+                              two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
 
 A read-only view over accepted relationship claims: nothing is written.
@@ -421,8 +423,8 @@ A read-only view over accepted relationship claims: nothing is written.
 
 | Argument | What it does |
 |---|---|
-| `P-A` | First person ID |
-| `P-B` | Second person ID |
+| `P-A` | First person: ID or full name |
+| `P-B` | Second person: ID or full name |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 
@@ -435,6 +437,8 @@ How well documented is each person?
 
   fha metrics               The archive in numbers, then the direct line by generation
   fha metrics p-xxxxxxxxxx  One person's five checks, each with what is missing
+  fha metrics "Mary Smith"  The same, by full name (two people with that name:
+                            it lists them so you can pick one by ID)
   fha metrics --all         Every person, stubs included
   fha metrics --include-suggested
                             Count suggested claims too (records found, not yet reviewed)
@@ -448,7 +452,7 @@ nothing is written.
 
 | Argument | What it does |
 |---|---|
-| `[P-ID]` | One person to show in detail (default: the direct line) |
+| `[P-ID]` | One person to show in detail, by ID or by full name (default: the direct line) |
 | `--all` | List every person, stubs included (not with a P-ID) |
 | `--include-suggested` | Count suggested claims as well as accepted ones |
 | `--json` | Machine-readable JSON output |

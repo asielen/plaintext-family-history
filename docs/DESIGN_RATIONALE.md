@@ -349,7 +349,15 @@ same rule lint W101 applies; one archive must not get two answers to that
 question. The census rule is deliberately simple: a stay abroad shows as a
 gap the owner can see and judge, because a confident wrong "complete" is the
 worst thing this check can say, and an unknown death year means later
-censuses may still be out there.
+censuses may still be out there. A place whose hierarchy stops at a U.S. state
+or Canadian province still names its country, read from a fixed list of full
+names; a name that is also a foreign country or province (Georgia, Florida,
+Maine, Maryland, Montana) or was its own country during the table's years
+(Hawaii, Newfoundland) is left off it, because each could put a census in the
+wrong country's table. Where records disagree, the safer reading
+wins: the latest of birth readings that roughly agree decides whether a
+death is owed (someone who may be 126 may be living), and the best-dated death decides
+which censuses they lived through (an exact date over a recollected one).
 
 **What we rejected.** A `living_confirmed:` date on the person record, so an
 owner could record when someone was last known alive. It would be a new field
