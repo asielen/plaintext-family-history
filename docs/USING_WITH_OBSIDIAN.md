@@ -6,7 +6,7 @@ A Plaintext archive is a folder of Markdown files with YAML frontmatter and `[[w
 
 Day-to-day genealogy needs no `fha` typing:
 
-- **Create** a person or source note. Copy one of the `_TEMPLATE.*` files your archive already has (`people/_TEMPLATE.person.md`, `sources/_TEMPLATE.source.md` and the others), or install the optional [Templater pack](https://github.com/asielen/plaintext-family-history/tree/master/obsidian-templater) from the project repo into your Obsidian setup for a one-click new note with the right frontmatter. Leave the ID blank; it's filled in later, and a record with no ID is a valid starting point.
+- **Create** a person or source note. Copy one of the `_TEMPLATE.*` files your archive already has (`people/_TEMPLATE.person.md`, `sources/_TEMPLATE.source.md` and the others), or install the optional [Templater pack](https://github.com/asielen/plaintext-family-history/tree/master/obsidian-templater) from the project repo into your Obsidian setup for a one-click new note with the right frontmatter. Leave the ID blank; the assistant (or `fha lint --fix-ids`) fills it in later, and a record with no ID is a valid starting point.
 - **Link** people, sources and places by name: type `[[` and pick. The link finds the right record even before any ID exists, and Obsidian draws the connection in its graph.
 - **Cite** a fact by putting its source's name in double brackets in your writing.
 

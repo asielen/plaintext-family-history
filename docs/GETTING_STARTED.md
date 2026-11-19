@@ -54,7 +54,9 @@ You should see something like `Python 3.12.1` (any 3.10 or newer is fine). If yo
 
 ### 2. The Python helpers (required)
 
-The tools use a few small, free helper packages. Python's built-in installer (`pip`) fetches them with one command. In a terminal opened in the project folder (the one with `tools/` inside), run:
+The tools use a few small, free helper packages. Python's built-in installer (`pip`) fetches them with one command. In a terminal opened in the project folder (the one with `tools/` inside), run the command below. To open a terminal in a folder on Windows, open the folder in File Explorer, click the address bar, type `cmd` and press Enter. On a Mac, open Terminal, type `cd ` (with a space), drag the folder onto the window and press Enter.
+
+The project folder is your copy of Plaintext Family History: either a clone made with git, or the zip from the project's GitHub page (the green "Code" button, then "Download ZIP"), unzipped somewhere permanent such as your Documents folder. [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) walks through the zip.
 
 ```
 python -m pip install -r tools/requirements.txt
@@ -72,7 +74,7 @@ If it prints nothing at all, the helpers are installed. If you see `No module na
 
 ### 3. exiftool (optional, only for photo features)
 
-`exiftool` lets the archive read and write the hidden information inside photo files, so a scan can carry its own ID and keywords in the places your photo program (Lightroom included) looks for them. **If you're starting with documents and notes, skip this for now** and add it when you bring in a photo library. Nothing in the walkthrough below needs it.
+`exiftool` lets the archive read and write the hidden information inside photo files, so a photo can carry its own ID and keywords in the places your photo program (Lightroom included) looks for them. Scanned records get their ID written inside them too, as a spare copy of the one in the filename. **If you're starting with documents and notes, skip this for now** and add it when you bring in a photo library. Nothing in the walkthrough below needs it.
 
 When you're ready, download it from **<https://exiftool.org/>** (Windows users take the "Windows Executable"; Mac users can use the installer there or `brew install exiftool`).
 
@@ -106,7 +108,7 @@ Your family records live in **their own folder**, separate from the project. One
 fha install ..\my-family-archive        # Windows Command Prompt
 ```
 
-That makes a folder called `my-family-archive` next to the project folder. Call it what you like, and put it somewhere you back up. If you already have an archive (someone ran `fha install` for you), skip to the next section.
+That makes a folder called `my-family-archive` next to the project folder. Call it what you like, and put it somewhere you back up. If you already have an archive (someone ran `fha install` for you), skip ahead to [Coming from Ancestry](#coming-from-ancestry-or-another-genealogy-program).
 
 **Point it at your photos and documents.** Open `fha.yaml` inside the new folder with a plain text editor. Examples for a local folder, an external drive and an existing photo library are written as comments in the file, beside the settings they explain. If you're starting with nothing, leave it as it is.
 
@@ -134,7 +136,7 @@ You don't have to retype anything. Every genealogy program can export your tree 
 
 or run `fha gedcom import family-tree.ged` yourself.
 
-First it shows you a **plan** (how many people, families and statements it found) and writes nothing. When you say go, every person in your tree becomes a record and every statement becomes a *suggested* fact citing the GEDCOM file, which is filed as a source with your original untouched. Your tree's statements wait in the same review queue as everything else. You review them a family at a time, whenever you like.
+First it shows you a **plan** (how many people, families and statements it found) and writes nothing. Running it again with `--apply` (`fha gedcom import family-tree.ged --apply`, or telling the assistant to go ahead) does the import: every person in your tree becomes a record and every statement becomes a *suggested* fact citing the GEDCOM file, which is filed as a source with your original untouched. Your tree's statements wait in the same review queue as everything else. You review them a family at a time, whenever you like.
 
 ### Tell it about your own family first (two minutes)
 
@@ -188,7 +190,7 @@ You don't need the assistant or the tools to add to your archive. Each record fo
 - **Link by name.** To cite a source or point at a person, write its name in double brackets: `[[Grandpa Joe]]`, `[[Hartley family bible]]`, `born in [[Fairview]]`. A nickname works too.
 - **Write down what you only half know.** Fairly sure great-grandma was born around 1849? Write `birth: 1849~` on her record. That's a *provisional* date, and the assistant keeps it on a "still to source" list until the proof turns up.
 
-When you run `fha lint`, it gives each record a permanent ID, keeps your filename as an alias so your `[[name]]` links keep working, and tidies the formatting. IDs last longer than filenames, which change and can repeat, but you never have to create one.
+When you want permanent IDs, ask the assistant, or run `fha lint --fix-ids`. It gives each record an ID and keeps your filename as an alias so your `[[name]]` links keep working. (Plain `fha lint` only checks, and lists the records still waiting for an ID.) IDs last longer than filenames, which change and can repeat, but you never have to create one.
 
 ---
 

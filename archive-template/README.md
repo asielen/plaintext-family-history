@@ -15,7 +15,7 @@ Each record folder has a template to copy:
 - `places/places.yaml`: a commented `_TEMPLATE` place entry at the top.
 - `inbox/_TEMPLATE.notes.md`: a note to put beside new material.
 
-Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`) and fill it in. **Link records by name:** in any profile or note, cite a source or point at a person by writing its name in double brackets, like `[[Grandpa Joe]]` or `[[Hartley family bible]]`; a nickname works too. **You don't need to make IDs.** When you run `fha lint`, it adds them, keeps your filename as an alias so your `[[name]]` links keep working, and tidies the formatting.
+Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`) and fill it in. **Link records by name:** in any profile or note, cite a source or point at a person by writing its name in double brackets, like `[[Grandpa Joe]]` or `[[Hartley family bible]]`; a nickname works too. **You don't need to make IDs.** `fha lint --fix-ids` adds them and keeps your filename as an alias so your `[[name]]` links keep working; plain `fha lint` only checks.
 
 **Your archive is private.** Never put real family data in the public project's repository. `docs/GETTING_STARTED.md` ("Your archive and the project are separate") explains how the two relate.
 

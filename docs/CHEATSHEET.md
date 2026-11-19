@@ -89,7 +89,7 @@ Write the name in **double brackets**:
 | `born in [[Fairview]]` | the place |
 | `[[Caleb Hartley]]` in a person's relationships | his parent, spouse or child, with the kind of tie noted |
 
-Don't worry about IDs. Name your file something sensible and link to it by name; `fha lint` adds the permanent IDs and keeps your name links working.
+Don't worry about IDs. Name your file something sensible and link to it by name; `fha lint --fix-ids` (or the assistant) adds the permanent IDs and keeps your name links working.
 
 Relationships work the same way: under a person, list who they connect to and how (a parent, a spouse, an adoptive parent) by name. Give a tie you're sure of the source that proves it, or write it down as a guess; the assistant keeps the unproved ones on the "still to source" list.
 

@@ -190,7 +190,7 @@ test('the copied command carries the launcher prefix the shell needs', () => {
   // only in a Windows Command Prompt - the one shell that searches the current
   // directory. Every other supported shell answered command-not-found on a
   // capture that had just succeeded. The two spellings here are the project's
-  // own, from CHEATSHEET.md "Running fha" and GETTING_STARTED.md - not a third.
+  // own, from CHEATSHEET.md "Typing fha" and GETTING_STARTED.md - not a third.
   assert.ok(ingestCommand('', MAC).startsWith('./fha '), ingestCommand('', MAC));
   assert.ok(ingestCommand('', WIN).startsWith('.\\fha '), ingestCommand('', WIN));
   for (const nav of [MAC, LINUX, WIN, {}]) {

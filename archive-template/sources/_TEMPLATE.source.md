@@ -4,8 +4,9 @@
 #     a-short-name_s-yourcode.md      (for example 1880-census_s-7n4hp0wztb.md)
 # Delete any line you don't need. You can't break anything.
 
-id: s-__________   # OPTIONAL. Leave it blank and `fha lint` fills it in. To make one yourself:
+id: s-__________   # OPTIONAL. Leave it blank; `fha lint --fix-ids` fills it in. To make one yourself:
                    # s- and 10 characters, digits and a-z except i, l, o and u (e.g. s-7n4hp0wztb).
+                   # Pick at random, and never reuse a code another record already has.
 aliases:           # OPTIONAL: the same code again, plus any nickname you like to type
   - s-__________   # paste the same code here too; it's what makes [[s-...]] links work
   # - grandmas-album   # ...and any short nickname you like; both keep working

@@ -63,7 +63,7 @@ Your records and settings are unchanged and the new tools are in place.
 
 ## Common questions
 
-**How do I know an update is available?** Git users: `git pull` says so. Zip users: a new zip appears on the project page. Nothing updates itself and nothing contacts the internet; nothing changes until you run the command.
+**How do I know an update is available?** Git users: `git pull` says so. Zip users: a new zip appears on the project page. Nothing updates itself and the tools never report back to anyone; nothing changes until you run the command.
 
 **What if I skipped several versions?** Nothing special: the update compares files, not version numbers, so one run brings you up to date.
 

@@ -1,6 +1,6 @@
 # Start Your Family Archive by Hand
 
-This is a blank starter kit for a family-history archive made of **plain files**. There's nothing to install. You fill it in with any text editor, and the files open in any text editor for as long as text files exist.
+This is a blank starter kit for a family-history archive made of **plain files**. There's nothing to install. You fill it in with any text editor.
 
 > **Tip:** an editor that understands `[[links]]` makes this easier. The free app **Obsidian** is a good choice: when you type `[[` it lets you link one person or source to another, and it can draw your family as a graph. Plain Notepad or TextEdit works too; you type the links by hand.
 
@@ -16,6 +16,8 @@ documents/ your scans and certificates       (delete if you keep them elsewhere)
 photos/    your photographs                   (delete if you keep them elsewhere)
 fha.yaml   settings for the optional tools; you can ignore it when working by hand
 ```
+
+The full rules for the format are in **`SPEC.md`** if you ever want them, but you don't need to read it to start. (In the zip download, `SPEC.md` sits beside this README; in the project repo it's at the top level.)
 
 ## Quick start
 
@@ -46,4 +48,4 @@ Repeat that for each new document: add people, add sources, link them.
 - **You can't break anything.** It's just text. Experiment freely.
 - **Messy is fine.** Approximate dates ("about 1890"), uncertain spellings and half-finished people are the normal state of this work, not mistakes.
 - **Write the story, too.** Anything in a `## Notes` section is welcome: memories, context, guesses. Facts you want treated as *proven* should point at a source.
-- **Want help later?** This archive uses the same format as the Plaintext Family History tools and AI assistant, so they can take it over whenever you like. The rules and the tools are at <https://github.com/asielen/plaintext-family-history>. None of it is needed to keep going by hand.
+- **Want help later?** This archive uses the same format as the Plaintext Family History tools and AI assistant, so they can take it over whenever you like. `SPEC.md` describes the format and `AGENTS.md` the assistant's rules (both beside this README in the zip download); the tools are at <https://github.com/asielen/plaintext-family-history>. None of it is needed to keep going by hand.

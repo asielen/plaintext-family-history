@@ -153,6 +153,14 @@ Look at the photos it lists, then edit that `file:` line to point at the right o
 
 ---
 
+## A big import left loose files in my documents folder
+
+**What happened.** A large import (a GEDCOM, a batch of captures, a pile of scans processed at once) can leave many filed documents sitting loose at the top of your documents folder instead of in folders by type.
+
+**Fix.** Ask the assistant to tidy them up, or run `fha reorganize`. It proposes the whole tidy-up at once and shows you the plan first, changing nothing; add `--apply` to do it (it asks you to confirm). It only moves files that are still exactly where a tool filed them, so anything you've already arranged by hand is left alone. Each record's list of files is updated in the same step as the move, so nothing points at the wrong place. Photos are never moved.
+
+---
+
 ## A change I made (or the assistant made) has vanished
 
 **What happened.** The tools don't lock files, so they assume one editor at a time: you, or an assistant working for you, never both at once. If your archive folder syncs continuously (Dropbox, iCloud Drive, OneDrive) and a sync happened in the middle of a save, or an assistant was working while you hand-edited the same files, whichever save came last replaced the other without warning. Nothing is damaged (it's still plain text you can open), but the earlier edit is gone. With one person at one keyboard this is unlikely; with a syncing folder or a second editor working at the same time it's much more likely.
@@ -163,7 +171,7 @@ Look at the photos it lists, then edit that `file:` line to point at the right o
 
 ## Undoing a change
 
-**Without git.** Restore the file (or the whole folder) from your latest backup zip, the one `fha backup` writes into the folder beside your archive (and that [SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-without-git) suggests you also copy to a separate drive or cloud folder). Unzip it somewhere handy and copy the good version over the broken one. Run `fha backup` before any big editing session and you'll always have a version to go back to; `fha doctor` tells you how long it's been.
+**Without git.** Restore the file (or the whole folder) from your latest backup zip, the one `fha backup` writes into the folder beside your archive (and that [SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#backups) suggests you also copy to a separate drive or cloud folder). Unzip it somewhere handy and copy the good version over the broken one. Run `fha backup` before any big editing session and you'll always have a version to go back to; `fha doctor` tells you how long it's been.
 
 **With git.** Ask the assistant to "show me what changed and undo my last edit," or run `git restore <file>` to drop changes you haven't committed (or `git revert` a bad commit). Git keeps the full history, so any earlier version can be recovered.
 

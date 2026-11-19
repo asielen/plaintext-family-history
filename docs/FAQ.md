@@ -66,7 +66,7 @@ No. The numbered tree follows only the genetic line. An adoptive parent, a step-
 
 **If you'd rather centre it on a particular child,** name that child (or any of their full siblings, since they share the same ancestors) as `root_person` and leave `root_generation` at its default, `self`. That person becomes number 1, their father number 2, his father number 4.
 
-The one combination to avoid is naming yourself as `root_person` and leaving `root_generation` at `self`. That starts the count one generation too high, and every ancestor folder number comes out one generation off. The folders don't look wrong, because they were all numbered the same way, so the tools check the setting: if `root_person` has a child on record and `root_generation` isn't `children`, `fha lint` says so and names the fix. It's a note, not an error, since you might mean it.
+The one combination to avoid is naming yourself as `root_person` and leaving `root_generation` at `self`. That starts the count one generation too high, and every ancestor folder number comes out one generation off. The folders don't look wrong, because they were all numbered the same way, so the tools check the setting: if `root_person` has a child on record and `root_generation` isn't `children`, `fha lint` and `fha views brackets` say so and name the fix. It's a note, not an error, since you might mean it.
 
 If you change either setting later, run `fha index` and then ask the assistant to realign the folders (`fha views brackets --realign`). It renumbers the folders you've already filed in one step, and shows you the changes first.
 
@@ -80,7 +80,7 @@ Ask the assistant. It works it out from your records: the blood relationship (li
 
 ### Do I have to make IDs, or know everything before I write it down?
 
-No to both. Name a file something sensible and link to records by name (`[[Grandpa Joe]]`, `[[Hartley family bible]]`, or a nickname). The IDs are the tools' job: `fha lint` adds them, keeps your filename as an alias so your name links keep working, and tidies the formatting. You can also write down what you only half know. A birth year you're fairly sure of but can't prove yet goes in as a *provisional* date, and the assistant keeps it on a "still to source" list until the record turns up.
+No to both. Name a file something sensible and link to records by name (`[[Grandpa Joe]]`, `[[Hartley family bible]]`, or a nickname). The IDs are the tools' job: ask the assistant, or run `fha lint --fix-ids`, and each record gets one, with your filename kept as an alias so your name links keep working. You can also write down what you only half know. A birth year you're fairly sure of but can't prove yet goes in as a *provisional* date, and the assistant keeps it on a "still to source" list until the record turns up.
 
 ### Do I have to use Claude Code?
 

@@ -7,8 +7,9 @@
 # double underscore: __caesar_p-yourcode.md. Two surnames or surname-first? Put the name you
 # want to sort by before the __, and write the full name in the "name" field below.
 
-id: p-__________   # OPTIONAL. Leave it blank and `fha lint` fills it in. To make one yourself:
+id: p-__________   # OPTIONAL. Leave it blank; `fha lint --fix-ids` fills it in. To make one yourself:
                    # p- and 10 characters, digits and a-z except i, l, o and u (e.g. p-de957bcda1).
+                   # Pick at random, and never reuse a code another record already has.
 aliases:           # OPTIONAL: the same code again, so [[p-...]] and [[name]] links both work
   - p-__________   # paste the same code here too
 

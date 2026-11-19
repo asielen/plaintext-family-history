@@ -475,7 +475,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "96864f8288b8dba84cdddd20041a460bab8d3b57edcefdee50ae8c1e5af91e4e",
+      "sha256": "976ece592f730e3ae80739ab6d5d6671af441fc30e8eb36aace6e512ff501b3a",
       "spec_version": "2.7",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -1140,7 +1140,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "28da713f636cd0023ff6cc57e0e47faf8ee049d6eebfd87e57e52beaa29231e9",
+      "sha256": "064228f8e0c5e5fa743a20fb6f46f2a7188116b3f97d21e335d7eb4014459fab",
       "spec_version": "2.7"
     },
     {
@@ -1159,7 +1159,7 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "8b376439b1b3087e3d9d51547f0bc7110754706b02bcd2b6083332a8e957cef2",
+      "sha256": "1c5c1b224fd971684cef8800ee3fa22288710f6d0769aba3a4029d6b9b412c95",
       "spec_version": "2.7"
     },
     {
@@ -1189,7 +1189,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "8d90deed80d06d6d32f71f98e6586fb7e9c5c966624d8b956b8b31a12510bcf6",
+      "sha256": "b59439c6b72cb4e6dc0239915c8a7bc7301bb1b4fed387ca5faec8287d66583e",
       "spec_version": "2.7"
     },
     {
@@ -1201,13 +1201,13 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e2e12ccc12bc6acc6d2d522c90e6e79a0a59e7fbe8513d9c80555c0ada2cc84a",
+      "sha256": "9b5b5b5bbe778741de7ed6f8c25fd27ac4c77d0d9453125ac09935367779cf7c",
       "spec_version": "2.7"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "648ab50f5e14255aa68eed5799b442df7c91539e8eed15de5df6bd2578ca05c0",
+      "sha256": "7362e921df20f9cd7070ea24a38b688906a0e2087e1545826895da3d46330554",
       "spec_version": "2.7"
     },
     {
@@ -1239,19 +1239,19 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "ec30d17d3aea2090af4d3d41f719b0be3d562d008b0ba763bf095921dfeebe5e",
+      "sha256": "7746edb011e04d7fe763feeaa65718e0f97948645e89aa5913fb945f60828eea",
       "spec_version": "2.7"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "14cb10baa33084199df5986c232eec981881e46a3535f1d29ea6003eca8962c9",
+      "sha256": "918b8e01d82fbf464b4efd686fdc620757b037c2e63a93d8c54912ad6e2a1e47",
       "spec_version": "2.7"
     },
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "5064e83a28f9e20b42bdf3ffb7cfdfa054b4dda82a49e64f093a663a85e58711",
+      "sha256": "752568030f5e659c1ad1fcbe99a5104a38aef83e3e0e048bb401b5c2aad17cb5",
       "spec_version": "2.7"
     },
     {
@@ -1325,7 +1325,7 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "e617899a500d38641a345c465cf5c953441da44f765636d03ca026fc4d119fa7",
+      "sha256": "857adc48d1cf0d8212163e64b2af8563473c3b363a3eeda6434ee143793131a9",
       "spec_version": "2.7",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
@@ -1380,7 +1380,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "8c0f576f1f359615bb44d2acb52c99cb891901f2c8a9f41665b1406249fe5b1f",
+      "sha256": "ee22d287cdcba846b1311c9c362cb63894d145f188bf6c0a09af2ff1807a9aa0",
       "spec_version": "2.7",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }

@@ -41,7 +41,7 @@
 **Link** (`[[ ]]`): how writing connects to records: a name or ID in double brackets, like `[[Grandpa Joe]]` or `[[s-1a2b3c4d5e]]`. It's plain text you can read in any editor and a clickable link in a wiki-style editor like Obsidian, and it always leads to a stable ID underneath. A citation on a fact is a link to its source.
 *Example: "born in [[l-7c1a9f4e22|Fairview]]" links the place; "[[s-1a2b3c4d5e]]" after a sentence cites the evidence.*
 
-**Lint:** `fha lint` (also called `fha check`), which checks that every record is shaped correctly, adds IDs to hand-made records, and lists anything that needs attention, such as a provisional date still waiting for a source.
+**Lint:** `fha lint` (also called `fha check`), which checks that every record is shaped correctly and lists anything that needs attention, such as a provisional date still waiting for a source or a hand-made record still waiting for an ID. `fha lint --fix-ids` gives those records their IDs.
 
 **Person** (`p-`): one human. The record holds their names, privacy flags and story; their sourced facts live in claims. It may also list their **relationships** in plain words (parents, spouse, children and the *nature* of each tie), each linked to the source that backs it or marked as a guess until one is found. It may hold a **provisional** birth or death date (see *Provisional date*) until a sourced claim replaces it.
 *Example: Thomas Edward Hartley's record is the file `hartley__thomas_edward_p-9c2f4a8b1e.md`.*
@@ -86,7 +86,7 @@
 
 **Workshop:** your copy of the public project (a git clone or an unzipped download), where the tools and rules come from. Your archive gets its own copy of the tools from the workshop with `fha install`, and newer versions with `fha update-tools`. Your family records never go in the workshop.
 
-**Working answer** (`h-`): your best guess at an open question, written on that question's entry in `notes/questions.md` with why you think so and what would settle it. It is never a fact. When a source proves it, the source's claim becomes the fact. (Older documents call this a *hypothesis*.)
+**Working answer** (`h-`): your best guess at an open question, written on that question's entry (in `notes/questions.md`, or in the person's research file if they have one) with why you think so and what would settle it. It is never a fact. When a source proves it, the source's claim becomes the fact. (Older documents call this a *hypothesis*.)
 *Example: "maybe the John Hartley in the 1881 census is our John," stored as an `h-` entry and never cited as if proven.*
 
 ---
