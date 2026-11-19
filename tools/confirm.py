@@ -67,7 +67,7 @@ THE SEVEN WRITE-BACKS
                tombstone the merged person (`status: merged`, `merged_into:`,
                `merge_reason:`, `merged_date:`; its `tier:` is stripped - a
                tombstone is a redirect, not a profile), rename its file with the
-               `MERGED-INTO-P-survivor__` prefix (kept forever, never deleted),
+               `MERGED-INTO-p-survivor__` prefix (kept forever, never deleted),
                fold its name variants / external ids / relationships into the
                survivor, delete its GENERATED companion views (timeline /
                sources-index / draft-queue - the survivor's views carry that

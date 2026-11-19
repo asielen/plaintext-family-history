@@ -5,8 +5,8 @@ find_duplicate_media.py - is this recording already filed, by content not by nam
 RETIRED (kept as a historical/reference artifact, not invoked by the skill)
 =============================================================================
 `fha media dedupe` shipped (project issue #43, `tools/media.py`) and
-`import-recordings/SKILL.md` now calls that verb instead of this script - see
-this folder's `GAP.md` for the closed-gap record. This file is no longer part
+`import-recordings/SKILL.md` calls that verb instead of this script (TOOLING
+§6a holds the verb's contract). This file is no longer part
 of the skill's live flow, and is kept only because it is still cited as the
 canonical source of two things `tools/media.py` (which CAN import `_lib`) and
 `attribute_speakers.py` (which, like this file, must run standalone with no
@@ -27,7 +27,7 @@ arrived three times under three different names. Imported blind, one recording
 gets two source records and its claims split between them.
 
 `fha` had no content-dedupe verb (wanted: `fha media dedupe`, project issue
-#43, recorded in this folder's GAP.md). Until it shipped, the import-recordings
+#43). Until it shipped, the import-recordings
 skill ran this script instead of guessing from filenames or from a full-text
 search - a text search finds a transcript that reads alike, which is a different
 question and a much weaker answer.
