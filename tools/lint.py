@@ -62,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     RETIRED_NEEDS_REVIEW,
     claim_status,
+    claim_fields_cut_by_hash,
     claim_is_parked,
     file_name_surname_mismatch,
     merge_pointer,
@@ -1529,6 +1530,40 @@ def _check_people_name_comments(path: Path, registry: Registry,
             f'Write each as a link with the name in it instead: {shown}.'))
 
 
+# The `fha claim` flag that rewrites each free-text claim field (W156).
+_CLAIM_FIELD_FLAGS = {'value': '--value', 'notes': '--notes',
+                      'place_text': '--place-text', 'anchor': '--anchor'}
+
+
+def _check_claim_text_cut_by_hash(path: Path, body: str,
+                                  findings: list[Finding]) -> None:
+    """W156: a claim's free text cut short at a ` #` (#355).
+
+    `value: Lot #4 of block 2` reads as "Lot": YAML takes the rest as a
+    comment, and the index, timelines and site show the stub with no
+    warning. Found in the raw claims block (`_lib.claim_fields_cut_by_hash`),
+    since the parsed value has already lost the tail. The fix is the
+    human's: `fha claim --value` (or quotes typed by hand) keeps the whole
+    line; a real aside moves into `notes:`. Nothing here edits a claim."""
+    for hit in claim_fields_cut_by_hash(body):
+        cid, key = hit['claim_id'], hit['key']
+        who = f'Claim {fmt_id_display(cid)}' if cid else 'A claim'
+        hand = f'`{key}: {yaml_inline(hit["whole"])}`'
+        flag = _CLAIM_FIELD_FLAGS.get(key)
+        if cid and flag:
+            fix = (f'run `fha claim {fmt_id_display(cid)} {flag} '
+                   f'{shell_quote(hit["whole"])}`, or put quotes around it by hand: {hand}')
+        else:
+            fix = f'put quotes around it by hand: {hand}'
+        aside = ('delete it' if key == 'notes'
+                 else 'move it into notes: so it is kept')
+        findings.append(Finding('W', 'W156', path,
+            f'{who}\'s {key}: stops at the "#". Only {hit["kept"]!r} reaches the index, '
+            f'timelines and the site; "{hit["dropped"]}" is read as a hidden comment and '
+            f'dropped. If it is all part of the {key}, {fix}. If the part after # is '
+            f'only an aside, {aside}.'))
+
+
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
     """Process one source file into the registry, with file-level checks."""
     if is_template_file(path):
@@ -1674,6 +1709,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
     _check_ai_passes(meta, rec.get('body') or '', path, findings)
     _check_people_name_comments(path, registry, findings)
+    _check_claim_text_cut_by_hash(path, rec.get('body') or '', findings)
     _check_main_file_mark(meta, path, findings)
 
     # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)
