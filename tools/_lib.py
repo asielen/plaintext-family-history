@@ -11470,6 +11470,81 @@ def claims_in_text(text: str) -> list | None:
     return parsed if isinstance(parsed, list) else None
 
 
+# Claim fields a person types free text into. Unquoted, a ` #` inside one
+# starts a YAML comment, so everything after it vanishes from the index.
+CLAIM_FREE_TEXT_FIELDS = ('value', 'notes', 'place_text', 'anchor', 'value_org')
+
+# A space or Tab, then `#`: where YAML starts a comment inside a plain scalar.
+_SPACE_HASH_RE = re.compile(r'[ \t]#')
+
+
+def claim_fields_cut_by_hash(text: str) -> list[dict]:
+    """Claim fields whose unquoted text a ` #` cuts short (#355).
+
+    A genealogist types `value: Lot #4 of block 2`. YAML reads `Lot` as the
+    value and `#4 of block 2` as a comment, so the index, the timeline and
+    the site show "Lot" and nothing says a word. The record file still holds
+    the whole line; only the reader drops it.
+
+    Read from the raw `## Claims` block of a record TEXT (a whole file or its
+    body), not from parsed values: the parsed value has already lost the
+    tail. Each hit is `{'claim_id', 'key', 'kept', 'dropped', 'whole'}`:
+    what the reader keeps, the lost text from the `#` on, and the line as
+    the person most likely meant it. Only plain
+    (unquoted, non-block) scalars of `CLAIM_FREE_TEXT_FIELDS` count: a quoted
+    value or a `notes: >` block keeps its `#`. A block that does not parse
+    gives no hits (E010 already reports it). Cheap on a whole archive: the
+    YAML is composed only when a line that is not wholly a comment holds a
+    space-then-`#` (every real hit is on such a line), so a template's
+    commented examples never force the slow parse."""
+    if yaml is None:
+        return []
+    cm = CLAIMS_RE.search(text)
+    if cm is None:
+        return []
+    block = cm.group(1)
+    if not any(_SPACE_HASH_RE.search(line) for line in block.split('\n')
+               if not line.lstrip().startswith('#')):
+        return []
+    try:
+        # The pure-Python composer, so marks are character offsets into
+        # `block` (libyaml's are not guaranteed to be).
+        root = yaml.compose(block, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(root, yaml.SequenceNode):
+        return []
+    hits: list[dict] = []
+    for item in root.value:
+        if not isinstance(item, yaml.MappingNode):
+            continue
+        claim_id = ''
+        fields = []
+        for key_node, val_node in item.value:
+            key = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+            if key == 'id' and isinstance(val_node, yaml.ScalarNode):
+                claim_id = str(val_node.value).strip()
+            if key in CLAIM_FREE_TEXT_FIELDS and isinstance(val_node, yaml.ScalarNode):
+                fields.append((key, val_node))
+        for key, node in fields:
+            if node.style is not None or not node.value:
+                continue          # quoted or block scalar, or an empty value
+            end = node.end_mark.index
+            eol = block.find('\n', end)
+            rest = block[end:eol if eol != -1 else len(block)].rstrip('\r')
+            if not re.match(r'[ \t]+#', rest):
+                continue
+            dropped = rest.strip()
+            if not dropped[1:].strip():
+                continue          # a bare `#` at the end: nothing was lost
+            kept = node.value
+            hits.append({
+                'claim_id': claim_id, 'key': key, 'kept': kept,
+                'dropped': dropped, 'whole': kept + rest.rstrip(),
+            })
+    return hits
+
+
 def claim_in_text(text: str, claim_id: str) -> dict | None:
     """The one claim `claim_id` names in a record's TEXT, parsed the way
     `read_record` parses it (scalars coerced), or None when the fenced
