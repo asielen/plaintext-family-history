@@ -67,8 +67,9 @@ under an event, and every REFN archive id. The exporter writes no NOTE, OBJE or
 _UID outside the header in either mode, so nothing else needs dropping. The
 records are never written in the first place (not filtered out of the text
 afterwards), so no pointer can be left aimed at a record that is not there.
-An event with neither a date nor a place says nothing a match can use, so a
-basic export leaves it out rather than writing a bare `1 BIRT`.
+A birth or death with neither a date nor a place says nothing a match can
+use, so a basic export leaves it out rather than writing a bare `1 BIRT`. A
+marriage is kept even then: `1 MARR` alone still tells a match the two married.
 
 CODE MAP
 --------

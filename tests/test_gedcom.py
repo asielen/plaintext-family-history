@@ -1191,6 +1191,22 @@ class BasicExportEventTests(unittest.TestCase):
         self.assertNotIn('BIRT', basic['text'])
         self.assertNotIn('Letter from a cousin', basic['text'])
 
+    def test_an_undated_unplaced_marriage_is_kept_bare_in_basic(self):
+        # A bare `1 MARR` still tells a DNA site the two married; only its
+        # source goes.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _add_person(conn, 'p-0000000002', 'Mary Jones', 'F', surname='Jones')
+        _spouse(conn, 'p-0000000001', 'p-0000000002')
+        _add_source(conn, 's-0000000002', 'Interview with a cousin')
+        _add_claim(conn, 'c-0000000002', 'marriage', ['p-0000000001', 'p-0000000002'],
+                   source_id='s-0000000002')
+        conn.commit()
+        conn.close()
+        basic = gedcom.run_gedcom(self.root, None, all_persons=True, basic=True)
+        self.assertIn('1 MARR', basic['text'])
+        self.assertNotIn('Interview with a cousin', basic['text'])
+        self.assertNotRegex(basic['text'], r'(?m)^2 SOUR')
+
 
 if __name__ == '__main__':
     unittest.main()
