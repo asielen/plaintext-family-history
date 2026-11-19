@@ -179,6 +179,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #    photo_reconcile_route     - can `fha reconcile` find a moved photo here, and how
+#    photo_retie_same_named    - which same-named files count as candidates (#297)
+#    photo_retie_target        - the one file a missing photo may be re-tied to (#297)
+#    photo_retie_candidates    - "possible matches" wording for one that was not
 #
 #  Co-occurrence dismissal tombstone (#48 - durable, lives outside .cache/)
 #    cooccur_dismissed_paths   - current (notes/) path + legacy (.cache/) path
@@ -3482,6 +3485,99 @@ def photo_reconcile_route(archive_root: str | Path, fha_config: dict) -> str:
     if shutil.which('exiftool'):
         return 'exif'
     return 'none'
+
+
+def photo_retie_target(
+    same_named: list[str], own_sid: str, sids_of: dict,
+) -> str | None:
+    """The one file a missing photo may be re-tied to, or None (#289, #297).
+
+    A keyword is not unique to one picture: a back scan carries its front's,
+    and photo managers copy it onto edits and exports. So a missing photo is
+    re-tied only when exactly one candidate has its exact filename and that
+    file carries this source's `SOURCE:` keyword and no other source's.
+    `same_named` is every file under the photos root with the missing
+    photo's filename, less those `photo_retie_same_named` sets aside;
+    `sids_of` maps a candidate to the S-ids it carries (a candidate missing
+    from it was not read). Shared by both `fha reconcile` passes, the record
+    pass and the photo-catalog pass, and both pass the same candidates, so
+    one command does not re-tie a photo on one side and report it as a
+    proposal on the other. Each caller then checks the
+    file is free to take (not listed on a record; not already a catalog
+    row) and adds its own sibling check (another entry or row of the same
+    source with that filename) before acting on the answer.
+    """
+    if (len(same_named) == 1 and own_sid
+            and sids_of.get(same_named[0]) == frozenset({own_sid})):
+        return same_named[0]
+    return None
+
+
+def photo_retie_same_named(
+    same_named: list[str], own_sid: str, sids_of: dict,
+) -> list[str]:
+    """The same-named files that count as candidates for one missing photo.
+
+    Every file under the photos root with the photo's filename counts,
+    except one that carries another source's `SOURCE:` keyword and not this
+    one: it cannot be this photo moved. Camera names like IMG_0001.JPG
+    repeat across folders, whether or not the other photo is filed or
+    catalogued yet. A file carrying this source's keyword, no keyword, or
+    keywords not read still counts, so it keeps the match uncertain. Both
+    `fha reconcile` passes filter through here before `photo_retie_target`,
+    so they decide from the same set; their reports still name every
+    same-named file, so the human sees the other source's photo too.
+    """
+    out = []
+    for alias in same_named:
+        sids = sids_of.get(alias)
+        if sids and own_sid not in sids:
+            continue
+        out.append(alias)
+    return out
+
+
+def photo_retie_candidates(
+    own_sid: str, same_named: list[str], sids_of: dict, carriers: list[str],
+    unread_hint: str = '',
+) -> str:
+    """The "possible matches" sentence for a missing photo that was not re-tied.
+
+    Lists the candidates, most likely first: same name and this source's
+    keyword only, then same name and this keyword among others, then same
+    name with keywords not read, then same name with another or no keyword,
+    then this keyword under another name (`carriers`). At most eight are
+    named. `unread_hint` is appended to an unread candidate, e.g. the flag
+    that reads keywords. Shared by both `fha reconcile` passes so the record
+    and the catalog report a candidate in the same words.
+    """
+    own_label = fmt_id_display(own_sid) if own_sid else 'its source ID'
+
+    def describe(cand: str) -> tuple[int, str]:
+        sids = sids_of.get(cand)
+        if sids is None:
+            hint = f' - {unread_hint}' if unread_hint else ''
+            return 2, f'{cand} (same name, keywords not read{hint})'
+        if own_sid and own_sid in sids and len(sids) == 1:
+            return 0, f'{cand} (same name, carries {own_label})'
+        if own_sid and own_sid in sids:
+            others = ', '.join(fmt_id_display(s) for s in sorted(sids - {own_sid}))
+            return 1, f'{cand} (same name, carries {own_label} and also {others})'
+        if sids:
+            others = ', '.join(fmt_id_display(s) for s in sorted(sids))
+            return 3, f'{cand} (same name, but carries {others})'
+        return 3, f'{cand} (same name, no source keyword)'
+
+    ranked = [describe(c) for c in same_named]
+    same_set = set(same_named)
+    ranked += [(4, f'{c} (carries {own_label} under another name)')
+               for c in sorted(carriers) if c not in same_set]
+    ranked.sort()
+    if not ranked:
+        return 'No photo with its name or its source ID was found under the photos folder. '
+    return ('Possible matches, most likely first: '
+            + '; '.join(text for _rank, text in ranked[:8])
+            + (f'; and {len(ranked) - 8} more' if len(ranked) > 8 else '') + '. ')
 
 
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
