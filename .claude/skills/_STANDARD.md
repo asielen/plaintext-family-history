@@ -1,16 +1,16 @@
 # Skill-authoring standard
 
-**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so eighteen skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) — the reference skill — and obey the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15; the operating law in [`AGENTS.md`](../../AGENTS.md).
+**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so eighteen skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) (the reference skill) and follow the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15, and the operating rules in [`AGENTS.md`](../../AGENTS.md).
 
 ---
 
 ## 1. What a skill is
 
-A skill is `.claude/skills/{name}/SKILL.md`: **portable instructions plus `fha` invocations — nothing else.** No harness APIs (`chrome.*`, MCP, slash-command internals), no Python, no shelling any tool but `fha`. (A skill that needs code ships it as a script in its own `scripts/` folder, tested like any other code; §9.) Hand-offs to another skill are not dependencies: a skill depends only on `fha` commands. A skill orchestrates the deterministic tools and adds the *judgment* a tool cannot have — which claim to draft, which name resolves to which person, where to look next. It never reimplements what a tool already owns (minting IDs, indexing, xref, bracket math, packet building, coordinate writes — all tool calls).
+A skill is `.claude/skills/{name}/SKILL.md`: **portable instructions plus `fha` invocations.** No harness APIs (`chrome.*`, MCP, slash-command internals), no inline Python, no shelling any tool but `fha`. A skill that needs code ships it as a script in its own `scripts/` folder, tested like any other code (§9). Hand-offs to another skill are not dependencies: a skill depends only on `fha` commands. A skill runs the deterministic tools and adds the *judgment* a tool cannot have: which claim to draft, which name resolves to which person, where to look next. It never reimplements what a tool already owns (minting IDs, indexing, xref, bracket math, packet building, coordinate writes are all tool calls).
 
-The split is the whole architecture, stated once and obeyed everywhere: **deterministic work is in `fha` tools; judgment is in skills; the human is the only gate to `accepted`.**
+The architecture in one line: **deterministic work is in `fha` tools, judgment is in skills, and only the human moves a claim to `accepted`.**
 
-Portability is load-bearing (TOOLING_INTERFACE.md §1): the SKILL.md standard is adopted beyond Claude Code, so switching harnesses must cost nothing. Anything that would make the harness load-bearing — session memory relied on as a store of record, a harness-only cache, an MCP config — is forbidden.
+Skills must run unchanged under any harness (TOOLING_INTERFACE.md §1), because the SKILL.md format is used beyond Claude Code. So nothing a skill relies on may live only in the harness: no session memory used as a store of record, no harness-only cache, no MCP config.
 
 ## 2. Frontmatter shape
 
@@ -22,67 +22,82 @@ name: today
 description: >
   Run at session start or when the human asks "what should I work on?" (also the `/today` wrapper).
   Reads `fha report` and narrates it discoveries-first, then offers one concrete next action.
-  Read-only: writes nothing on its own.
+  Writes only what the human confirms.
 ---
 ```
 
-- **`name`** — the folder name, kebab-case.
-- **`description`** — one paragraph that (a) states the **trigger** in the human's words ("review the census claims", "draft Margaret's bio", "are these the same person?") so the harness can route to it, and (b) says in one clause what the skill does and whether it writes. The trigger phrasing *is* the routing surface — write it the way the genealogist would actually ask.
+- **`name`**: the folder name, kebab-case.
+- **`description`**: one paragraph that (a) states the **trigger** in the human's words ("review the census claims", "draft Margaret's bio", "are these the same person?") so the harness can route to it, and (b) says in one clause what the skill does and whether it writes. The harness routes on the trigger phrasing, so write it the way the genealogist would actually ask.
 
-Do **not** add `allowed-tools`, model pins, or any harness-specific key: those bind the file to one harness and break portability. The body is GitHub-flavored markdown: prose instructions with fenced `fha …` command examples.
+Do **not** add `allowed-tools`, model pins, or any harness-specific key: those bind the file to one harness. The body is GitHub-flavored markdown: prose instructions with fenced `fha …` command examples.
 
-## 3. The contract, restated for skills (non-negotiable — AGENTS.md §"The contract")
+## 3. The contract, restated for skills (AGENTS.md §"The contract", non-negotiable)
 
 1. **Suggested-only.** Every claim a skill drafts is `status: suggested`. A skill **never** writes `status: accepted`.
-2. **The human is the only gate to `accepted`,** and it happens **only** through `fha claim <C-id> --status accepted`, which stamps `reviewed:` (lint E006 fails on an accepted claim with no `reviewed:`). Directing that tool *is* the human's accept — the skill presents evidence and captures a decision the human actually stated in the session; it never accepts on his behalf, never infers consent from silence.
-3. **Record every AI pass** as one entry in the source's `ai_passes:` frontmatter list — `- {date, by, task}` plus an optional `note` (SPEC §14). This is how the archive remembers what a machine touched; write it before you hand back. Who accepted a claim is recorded on the claim (`reviewed:`), never on the pass.
-4. **Draft prose lives behind markers.** New profile/story prose a skill writes is wrapped in `<!-- AI-DRAFT {date} {model} - {note} -->` until the human accepts it, at which point `fha confirm draft <P-id>` flips it to `<!-- AI-ACCEPTED … -->` (provenance kept). A skill never hand-edits a marker.
-5. **Never edit below a `<!-- GENERATED … -->` header** and **never overwrite human-written text** — draft *around* existing prose; regenerate generated files with their tool, don't patch them.
-6. **Respect privacy flags** (AGENTS.md §"The contract" 6): `living`, `restricted` and its no-override types stay out of external-facing output; a skill drafting for export honors them.
+2. **The human is the only gate to `accepted`,** and it happens **only** through `fha claim <c-id> --status accepted`, which stamps `reviewed:` (lint E006 fails on an accepted claim with no `reviewed:`). Directing that tool *is* the human's accept. The skill presents evidence and captures a decision the human actually stated in the session; it never accepts on his behalf and never reads consent into silence.
+3. **Record every AI pass** as one entry in the source's `ai_passes:` frontmatter list: `- {date, by, task}` plus an optional `note` (SPEC §14). This is how the archive remembers what a machine touched; write it before you hand back. Who accepted a claim is recorded on the claim (`reviewed:`), never on the pass.
+4. **Draft prose lives behind markers.** New profile or story prose a skill writes is wrapped in `<!-- AI-DRAFT {date} {model} - {note} -->` until the human accepts it. Then `fha confirm draft <p-id>` flips it to `<!-- AI-ACCEPTED … -->` (provenance kept). A skill never hand-edits a marker.
+5. **Never edit below a `<!-- GENERATED … -->` header** and **never overwrite human-written text.** Draft *around* existing prose; regenerate generated files with their tool instead of patching them.
+6. **Respect privacy flags** (AGENTS.md §"The contract" 6): `living`, `restricted` and its no-override types stay out of external-facing output, and a skill drafting for export honors them.
 
-Every skill states which of these apply to it, near the top, so a reader sees the gate before the flow.
+Every skill states which of these apply to it near the top, so a reader sees the gate before the flow.
 
-## 4. Voice (AGENTS.md §"Who you serve" — this binds like the contract)
+## 4. Voice (AGENTS.md §"Who you serve"; this binds like the contract)
 
-The human is a **non-technical genealogist with a paper-filing mental model** — a careful cousin, not a sysadmin. Write every skill's *output* accordingly:
+The human is a **non-technical genealogist who thinks in paper files**. He is often older, careful with his family's records, and not a programmer. Write every skill's *output* for him:
 
-- **Speak plainly.** He never has to understand the machinery to make the thing work. The index, the IDs, the tool flags — yours to operate, not his to learn.
-- **The next-step rule.** Anything he sees that went wrong must name the fix in plain words. No raw tracebacks, no bare error codes, no jargon (EDTF, `source_type`, anchor, FTS, C-id) without a plain gloss **and** an example. "That date needs the archive's form — `1923` for the year, or `1923-06` for June 1923" beats "invalid EDTF."
-- **Translate for him, never quiz him.** Map his natural words to stored forms yourself: "around 1870" → `1870~`, "the 1880s" → `188X`, "June 1923" → `1923-06` (AGENTS.md §"Dates"). Show him a claim as a sentence, not a YAML blob. When a hedge is genuinely un-mappable, ask **one** short plain question — never a lecture, never a refusal.
+- **Speak plainly.** He never has to understand the machinery to make the thing work. The index, the IDs and the tool flags are yours to operate, not his to learn.
+- **The next-step rule.** Anything he sees that went wrong names the fix in plain words. No raw tracebacks, no bare error codes, and no jargon (EDTF, `source_type`, anchor, FTS, c-id) without a plain gloss **and** an example. Say "That date needs the archive's form: `1923` for the year, or `1923-06` for June 1923", not "invalid EDTF."
+- **Translate for him instead of quizzing him.** Map his natural words to stored forms yourself: "around 1870" → `1870~`, "the 1880s" → `188X`, "June 1923" → `1923-06` (AGENTS.md §"Dates"). Show him a claim as a sentence, not a YAML blob. When a hedge can't be mapped, ask **one** short plain question; don't lecture or refuse.
 - **Always leave a next step.** A skill ends by naming the one concrete thing to do next.
+
+The same plain-writing rules govern both the lines a skill tells the agent to say and the skill's own prose:
+
+- **No dashes.** No em dash, and no spaced hyphen ` - ` doing a dash's job. Use a comma, a period, a colon or parentheses. Command arguments, ranges (1880-1890) and code keep their hyphens.
+- **No slogans.** No mirrored "X, not Y" refrains, no closing punchline that restates the paragraph, no coined labels standing in for a plain name ("on-ramp", "front door"), and no stock words such as "genuinely", "literally", "crucial" or "seamless". State the fact and stop.
+- **Present tense.** A skill describes what the tools do. The history of how they got that way belongs in git, not in the skill.
+- **Soft wrap.** One paragraph or one list item per line in the file. Code, tables and lists keep their line breaks.
+- **Example names come from `example-archive/`** (the Hartley family), never from a real family.
 
 ## 5. Forgiving, not fussy
 
-Messy input is the normal condition of this work (AGENTS.md §"Who you serve"). Loose dates, informal names, half-written notes, imperfect hand-edits — infer what he meant or ask one plain question. Never hard-refuse because input isn't schema-clean. A skill that stalls on a fuzzy date has failed the human, not protected the archive.
+Messy input is the normal condition of this work (AGENTS.md §"Who you serve"). Loose dates, informal names, half-written notes and imperfect hand-edits are expected: infer what he meant or ask one plain question. Never hard-refuse because input isn't schema-clean. Stalling on a fuzzy date protects nothing and leaves him stuck.
 
 ## 6. The stop-don't-improvise rule
 
-If a skill needs a capability **no `fha` tool provides**, it must **halt and surface that as core tool work (a TOOLING.md change)** — never hand-roll it in prose. A skill does not shell `exiftool`, does not edit `places.yaml` coordinates directly, does not compute Ahnentafel numbers, does not write the SQLite index. Those are tool jobs. When you hit a missing capability while authoring a skill, stop and report it as a spec-discovery; do not paper over it with logic a skill should not hold. (Worked example: the `photo-context` skill blocked on a then-missing UserComment-write verb until the core work shipped as `fha photoindex set-summary` — see [`photo-context/DESIGN.md`](photo-context/DESIGN.md).)
+If a skill needs a capability **no `fha` tool provides**, it must **halt and surface that as core tool work (a TOOLING.md change)** instead of hand-rolling it in prose. A skill does not shell `exiftool`, does not edit `places.yaml` coordinates directly, does not compute Ahnentafel numbers, and does not write the SQLite index. Those are tool jobs. When you hit a missing capability while authoring a skill, stop and report it as a spec-discovery; do not paper over it with logic a skill should not hold. A skill that is blocked this way records the wanted verb in a `GAP.md` in its own folder (`transcribe-source/GAP.md` is the current example).
 
-One narrow exception exists: the **owner** may explicitly decide that a skill enacts a missing verb by a documented interim hand-edit — recorded in the skill's folder (a `GAP.md` naming the wanted verb) and in TOOLING_INTERFACE.md, never silently. `merge-identities` was the one such case (the SPEC §9 merge write) until `fha confirm merge` shipped and retired it; no current skill uses an interim enactment. Blocking, as `photo-context` did, remains the default; an interim enactment is an owner decision, not an authoring choice.
+One narrow exception exists: the **owner** may explicitly decide that a skill enacts a missing verb by a documented interim hand-edit, recorded in the skill's `GAP.md` and in TOOLING_INTERFACE.md, never silently. No current skill uses one. Blocking is the default; an interim enactment is an owner decision, not an authoring choice. When the verb exists, the skill calls it and the closed `GAP.md` is deleted.
 
-## 7. Sessions are an interface, not memory
+## 7. Write it down before handing back
 
-Anything worth keeping is written into archive records in SPEC formats **before the skill hands back** — claims into source files; questions and their working answers (SPEC §17a, §17b: a guess is the question entry with `id:`, `guess:`, `basis:` and `verify:` added, never a separate object) into `notes/questions.md` or the person's research file, which is created the first time something is written to it (SPEC §16b); discoveries via `fha confirm discovery`; searches into `notes/research-log.md`. A question is written only when the human asks it or two claims conflict - a gap a tool can compute (no birth date, no parents) is never written down, because `fha report` shows it fresh (SPEC §17b). Never rely on conversation history as a store of record; the human should never have to re-explain himself next session.
+Anything worth keeping is written into archive records in SPEC formats **before the skill hands back**:
+
+- claims into source files;
+- questions and their working answers into `notes/questions.md` or the person's research file, which is created the first time something is written to it (SPEC §16b). A working answer is the question entry with `id:`, `guess:`, `basis:` and `verify:` added, never a separate object (SPEC §17a, §17b);
+- discoveries via `fha confirm discovery`;
+- searches into `notes/research-log.md`.
+
+A question is written only when the human asks it or two claims conflict. A gap a tool can compute (no birth date, no parents) is never written down, because `fha report` shows it fresh (SPEC §17b). Never rely on conversation history as a store of record; the human should never have to re-explain himself next session.
 
 ## 8. Execution hygiene (AGENTS.md §"Tools")
 
-- Run `fha` from the archive root. **Preview before any write:** every mutating verb takes `--dry-run` — use it, show the human what will change, then apply.
-- **Check exit codes:** 0 clean · 1 warnings · 2 errors · 3 tool failure. Never proceed past a 2/3 silently; read the tool's TOOLING.md section before retrying on unexpected behavior.
-- **Query the index, not the tree** — person/claim/photo questions are `fha` calls, never bulk-reading `photos/` or `documents/` into context.
+- Run `fha` from the archive root. **Preview before any write:** every mutating verb takes `--dry-run`. Use it, show the human what will change, then apply.
+- **Check exit codes:** 0 clean · 1 warnings · 2 errors · 3 tool failure. Never proceed past a 2 or 3 silently; read the tool's TOOLING.md section before retrying on unexpected behavior.
+- **Query the index, not the tree.** Person, claim and photo questions are `fha` calls; never bulk-read `photos/` or `documents/` into context.
 - Run `fha lint` after any batch of edits; it is the done-gate.
 
 ## 9. Verification is behavioral (there is no unit test)
 
-A SKILL.md is prose, not code — there is no `python -m unittest` for it. A skill is verified by **running it in a real session against `example-archive/`** and confirming three things:
+A SKILL.md is prose, so there is no `python -m unittest` for it. A skill is verified by **running it in a real session against `example-archive/`** and confirming three things:
 
-1. It produces **exactly** the documented archive writes (suggested claims + anchors, recorded AI passes, view refreshes, confirm-driven entries) and **no** write the contract forbids — nothing reaches `accepted` without a human `fha claim`, nothing edits below a GENERATED header, no human text is overwritten.
-2. It **degrades gracefully** on messy input (infer, or ask one plain question — never hard-fail).
-3. **`fha lint --root example-archive` still exits 1 with only the documented baseline warnings** afterward — currently three **W101** (Thomas Hartley's death record is deliberately absent, and the two curated `people/connections/` records have no vitals), **W102** (one suggested claim staged on the Thomas Hartley portrait source as review-demo material), and **ten W119** direct-line-stub leads (the example's direct line is deliberately mostly uncurated, exercising the promotion surface) — nothing the skill wrote introduced a new error or warning, and nothing "resolved" a staged item by accepting a claim without a human. This list is the canonical baseline for the skills layer (it mirrors TOOLING.md §15); each skill's "Done when" references it instead of restating the codes.
+1. It produces **exactly** the documented archive writes (suggested claims and anchors, recorded AI passes, view refreshes, confirm-driven entries) and **no** write the contract forbids: nothing reaches `accepted` without a human `fha claim`, nothing edits below a GENERATED header, no human text is overwritten.
+2. It **degrades gracefully** on messy input (infer, or ask one plain question; never hard-fail).
+3. **`fha lint --root example-archive` still exits 1 with only the documented baseline warnings** afterward. The baseline is three **W101** (Thomas Hartley's death record is deliberately absent, and the two curated `people/connections/` records have no vitals), one **W102** (a suggested claim staged on the Thomas Hartley portrait source as review-demo material), and **ten W119** direct-line-stub leads (the example's direct line is deliberately mostly uncurated, to exercise the promotion surface). Nothing the skill wrote may add an error or warning, and nothing may "resolve" a staged item by accepting a claim without a human. This list is the canonical baseline for the skills layer (it mirrors TOOLING.md §15); each skill's "Done when" references it instead of restating the codes.
 
 Capture the session transcript proving each "Done when" in the skill's PR description; that transcript *is* the test evidence.
 
-One mechanical check precedes the behavioral one: **every `fha` command the SKILL.md documents was run against `example-archive/` before the skill shipped, and any filename or path the prose predicts is the actual result of running it** - a `--more` rename names the file for its source and appends the role, `--more` refuses a file outside every root and the inbox. A skill is the human's memory of how the tools behave; a documented command that does not run as written teaches the wrong thing every time it is read (AGENTS_TOOLING §"Porting from an archive"). Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented gates, outputs are atomic, gates fail closed, and nothing they emit into an attachable artifact carries an absolute path. Their tests may also pin the parts of the SKILL.md that a machine can check: every flag the prose names exists in the script's parser, and a worked example really produces the filename it shows (`tests/test_transcribe_audio.py` is the pattern).
+One mechanical check comes before the behavioral one: **every `fha` command the SKILL.md documents was run against `example-archive/` before the skill was merged, and any filename or path the prose predicts is the actual result of running it.** For example, a `--more` rename names the file for its source and appends the role, and `--more` refuses a file outside every root and the inbox. Agents read a skill as the record of how the tools behave, so a documented command that does not run as written misleads every later reader (AGENTS_TOOLING §"Porting from an archive"). Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented gates, outputs are atomic, gates fail closed, and nothing they emit into an attachable artifact carries an absolute path. Their tests may also pin the parts of the SKILL.md that a machine can check: every flag the prose names exists in the script's parser, and a worked example really produces the filename it shows (`tests/test_transcribe_audio.py` is the pattern).
 
 ## 10. The copyable skeleton
 
@@ -101,27 +116,27 @@ description: >
 {The trigger, restated. Invoked-only skills say so explicitly.}
 
 ## The contract for this skill
-{Which of §3's rules bite here — the gate stated before the flow.}
+{Which of §3's rules apply here, so the gate is stated before the flow.}
 
 ## Flow
-1. {Step — the `fha` call, then the judgment around it.}
+1. {Step: the `fha` call, then the judgment around it.}
 2. …
 
 ## Guardrails
-- Any record ID written into prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in
-  structured fields and tool arguments (_STANDARD.md §11).
+- Any record ID written into prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).
+- Prose and spoken lines follow _STANDARD.md §4: plain words, no dashes, no slogans, present tense, one paragraph per line.
 - {The specific "never" lines for this skill.}
 
 ## Done when
-- {The behavioral checks — the same shape as the plan's acceptance block.}
+- {The behavioral checks, in the same shape as the plan's acceptance block.}
 ```
 
-Every skill in this folder is an instance of this skeleton. If a new skill can't be written as one, that is a signal it wants a capability a tool should own — see §6.
+Every skill in this folder is an instance of this skeleton. If a new skill can't be written as one, it probably wants a capability a tool should own (§6).
 
 ## 11. IDs on the page
 
-Any record ID a skill writes into **prose** — biography or story text, `## Notes` paragraphs, working answers, question entries, place history, discovery text, a claim's free-text `notes:` — is always wikilink-wrapped: `[[S-xxxx]]`, or better `[[S-xxxx|the 1880 census]]` so the genealogist reads names, not codes (SPEC §18; AGENTS.md §"Format quick reference"). A bare `S-xxxx` dropped in a sentence is dead text — not clickable in Obsidian, invisible to the citation index. The tools are forgiving on *read* (a bare ID still resolves), but a skill always *writes* the `[[ ]]` form.
+Any record ID a skill writes into **prose** (biography or story text, `## Notes` paragraphs, working answers, question entries, place history, discovery text, a claim's free-text `notes:`) is always wikilink-wrapped: `[[s-xxxx]]`, or better `[[s-xxxx|the 1880 census]]` so the genealogist reads names instead of codes (SPEC §18; AGENTS.md §"Format quick reference"). A bare `s-xxxx` in a sentence is not clickable in Obsidian and is invisible to the citation index. The tools accept a bare ID on *read*, but a skill always *writes* the `[[ ]]` form. IDs are written lowercase (`p-`, `s-`, `c-`, `l-`, `h-`; SPEC §10).
 
-Bare IDs are correct **only** in structured slots: claims-block YAML fields (`persons:`, `place:`, `corroborates:`…), bare-ID frontmatter lists, and tool arguments (`--refs S-…,P-…`, `fha claim C-…`). The inverse rule binds embedded caption text: prose written into a photo's caption or AI summary carries **no** record IDs — plain names only, because family members read that text raw wherever the photo travels. (Record IDs do live in photo metadata, but only as the structured `SOURCE: S-…` and bare-`P-id` *keywords* of SPEC §20, which the tools write and parse — never in caption prose.)
+Bare IDs are correct **only** in structured slots: claims-block YAML fields (`persons:`, `place:`, `corroborates:`…), bare-ID frontmatter lists, and tool arguments (`--refs s-…,p-…`, `fha claim c-…`). The opposite rule applies to embedded caption text: prose written into a photo's caption or AI summary carries **no** record IDs, only plain names, because family members read that text raw wherever the photo travels. (Record IDs do live in photo metadata, but only as the structured `SOURCE: s-…` and bare `p-id` *keywords* of SPEC §20, which the tools write and parse, never in caption prose.)
 
-A write-heavy skill ends its close-out with a tidy pass — `fha normalize-links --dry-run` — which catches bracketed slips (a legacy `[S-…]` cite, an unpinned `[[Name]]` link). A completely bare ID in prose has **no** automated net yet, so write the `[[ ]]` form at draft time — the guardrail above is the only defense.
+A write-heavy skill ends its close-out with a tidy pass, `fha normalize-links --dry-run`, which catches bracketed slips (a legacy `[s-…]` cite, an unpinned `[[Name]]` link). Nothing automated catches a completely bare ID in prose, so write the `[[ ]]` form at draft time.

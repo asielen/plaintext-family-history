@@ -11,19 +11,19 @@ description: >
 
 # on-this-day
 
-The archive's "on this day" column: a warm, honest way into the family's history. `fha calendar` finds the events (TOOLING.md §7b); this skill only chooses which to say and says them in a cousin's words. It is also the opener for a chat front end that starts a conversation with something from the family. See [`../_STANDARD.md`](../_STANDARD.md).
+The archive's "on this day" column: a warm, plain way into the family's history. `fha calendar` finds the events (TOOLING.md §7b); this skill only chooses which to say and says them in everyday words. It is also the opener for a chat front end that starts a conversation with something from the family. See [`../_STANDARD.md`](../_STANDARD.md).
 
 ## When this runs
 
-"What happened on this day?", "any family anniversaries this week?", "anything this month?", "who in the family was born in June?", "start our chat with something from the family's history" — or a front end that asks for an opener. Safe anytime: it only reads.
+"What happened on this day?", "any family anniversaries this week?", "anything this month?", "who in the family was born in June?", "start our chat with something from the family's history", or a front end that asks for an opener. Safe anytime: it only reads.
 
 ## The contract for this skill
 
 - **Read-only.** No claims, no records, no `ai_passes:` entry: nothing is written, so there is nothing to record.
 - **Accepted claims only, by default.** The calendar reads accepted claims unless told otherwise, and that is what this skill narrates as family fact. If the human asks to include drafts (`--include-suggested`), every line the tool marks `[suggested, not yet reviewed]` is said as a draft waiting for his review, never as a fact (AGENTS.md "Speculation and storytelling").
-- **Never invent lore.** Every family specific — a name, a date, a place, a relationship — comes from the tool's output. No weather, no mood, no motive, no "she must have…". A detail made up here becomes family truth in a generation.
-- **Never cite what the tool did not give you.** The JSON lists each event's claims and sources; any `[[S-…]]` you name comes from there. No invented record, repository or collection.
-- **Privacy.** Talking to the owner, everyone is named — this is his private view. If the words are going to anyone else (a family group chat, a newsletter, a shared front end), leave out every event that names a person the tool marks `"living": true` (living or unknown both count as living) and every event marked `"source_restricted": true`, and say that living people stay private (AGENTS.md contract 6). The calendar does not flag a person or a claim marked `restricted:`, so before naming anyone in shared words, open their record (`fha find <P-id>` prints its file) and the source behind the event, and leave the event out when either says `restricted`.
+- **Never invent lore.** Every family specific (a name, a date, a place, a relationship) comes from the tool's output. No weather, no mood, no motive, no "she must have…". A detail made up here becomes family truth in a generation.
+- **Never cite what the tool did not give you.** The JSON lists each event's claims and sources; any `[[s-…]]` you name comes from there. No invented record, repository or collection.
+- **Privacy.** Talking to the owner, everyone is named: this is his private view. If the words are going to anyone else (a family group chat, a newsletter, a shared front end), leave out every event that names a person the tool marks `"living": true` (living or unknown both count as living) and every event marked `"source_restricted": true`, and say that living people stay private (AGENTS.md contract 6). The calendar does not flag a person or a claim marked `restricted:`, so before naming anyone in shared words, open their record (`fha find <p-id>` prints its file) and the source behind the event, and leave the event out when either says `restricted`.
 
 ## Flow
 
@@ -33,15 +33,15 @@ The archive's "on this day" column: a warm, honest way into the family's history
    - "this month", "in June", "anything in March?" → `fha calendar --json` (this month) or `fha calendar june --json`
    - a named day, "the 14th of June" → `fha calendar june 14 --json`
 
-   Exit `2` means the words did not read as a day or month: the tool's message names the forms it takes — translate it, or ask one plain question ("the 14th of which month?"). Exit `3` means there is no index yet: run `fha index`, then the calendar again.
+   Exit `2` means the words did not read as a day or month: the tool's message names the forms it takes. Translate it, or ask one plain question ("the 14th of which month?"). Exit `3` means there is no index yet: run `fha index`, then the calendar again.
 
-2. **Say the events plainly.** One sentence each, oldest first or the most striking first, in his words: *"On this day in 1979, James Robert Bradford and Carol Anne Simmons were married in Fairview — 47 years ago."* A marriage names the couple; an arrival is "arrived" or "came to", with the place only if the tool gives one. Say "on this day" only for today's date; a week or month reads "this week, in 1979…" or "on 14 June 1979…". For more than five or so events, say the few that stand out and the count of the rest ("and four more this month — want the whole list?"). Use the tool's own years-ago number; a line the tool says is dated in the future is a record to check, said as such.
+2. **Say the events plainly.** One sentence each, oldest first or the most striking first, in his words: *"On this day in 1979, James Robert Bradford and Carol Anne Simmons were married in Fairview, 47 years ago."* A marriage names the couple; an arrival is "arrived" or "came to", with the place only if the tool gives one. Say "on this day" only for today's date; a week or month reads "this week, in 1979…" or "on 14 June 1979…". For more than five or so events, say the few that stand out and the count of the rest ("and four more this month. Want the whole list?"). Use the tool's own years-ago number; a line the tool says is dated in the future is a record to check, said as such.
 
-3. **Optionally, one or two sentences of general history.** You may add what was happening in the wider world on that date or in that month and year — but label it as general history, not from his records, in the same breath: *"For context, from general history, not your records: the summer of 1979 was the second oil crisis, with long lines at American gas stations."* Never connect it to the family as something they did, saw, felt or took part in ("they would have heard…", "the family lived through…"). If you are not sure of a historical fact, leave it out. Never more than two sentences, and never instead of the family events.
+3. **Optionally, one or two sentences of general history.** You may add what was happening in the wider world on that date or in that month and year, but label it as general history, not from his records, in the same breath: *"For context, from general history, not your records: the summer of 1979 was the second oil crisis, with long lines at American gas stations."* Never connect it to the family as something they did, saw, felt or took part in ("they would have heard…", "the family lived through…"). If you are not sure of a historical fact, leave it out. Never more than two sentences, and never instead of the family events.
 
 4. **When nothing falls then, say so in one line** and offer the wider span: *"Nothing in your records falls on today's date. Want to see the rest of the week, or the month?"* Only dates recorded to the day or month can be placed; an "about 1880" or a year alone never appears. If he asks why someone is missing, that is the reason, and research-next or review-claims is where to fix it.
 
-5. **Leave one next step:** the wider span, a person's page (`fha find <P-id>`), or the source behind a line ("want to open the 1880 census entry?").
+5. **Leave one next step:** the wider span, a person's page (`fha find <p-id>`), or the source behind a line ("want to open the 1880 census entry?").
 
 ### The opener (a chat front end's first message)
 
