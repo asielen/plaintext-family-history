@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.7",
-  "generated": "2026-11-18",
+  "generated": "2026-11-19",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -1147,7 +1147,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d386238729e30fb4c1de8a98a86340b749207a64f753529bc94f2e7bbbab5408",
+      "sha256": "491e7e9e126e592f9a031bc2ed45376c2ed7cac63482617dfa02c0ec21e2d836",
       "spec_version": "2.7"
     },
     {
