@@ -8,7 +8,7 @@ A family-history archive made of plain files you can open in any text editor, wi
 
 For a hundred years genealogy lived in a filing cabinet, and anyone could open the drawer. No login, no subscription, no file format that stopped opening. Your great-grandchildren could pull the folder and read it. Modern genealogy software and websites have lost that.
 
-Plaintext is that filing cabinet, built to last for generations. Your records are ordinary files in formats that will still open decades from now: Markdown text, CSV and YAML, JPEG and TIFF images with their captions written inside them. Every fact traces back to the source that states it, and nothing the AI suggests counts until you accept it. Search, family trees, a website and the assistant all sit on top of those files and are rebuilt from them. Delete every one of those layers and the archive still reads, the way the drawer still opens.
+Plaintext is that filing cabinet, built to last for generations. Your records are ordinary files in formats that will still open decades from now: Markdown text, CSV and YAML, JPEG and TIFF images with their captions written inside them. Every fact traces back to the source that states it, and nothing the AI suggests counts until you accept it. Search, family trees, a website and the assistant all sit on top of those files and are rebuilt from them. Delete every one of those layers and the archive still reads.
 
 ## Start your archive
 
@@ -28,7 +28,7 @@ It checks Python and the helper packages and creates your archive with `fha inst
 
 ### Step by step
 
-In a terminal opened in this repo's folder:
+In a terminal (the Command Prompt on Windows, the Terminal app on a Mac) opened in this repo's folder:
 
 1. **Install the helper packages** (one time):
 
@@ -66,15 +66,15 @@ The full first-day walkthrough, with a "did it work?" check after every step, is
 
 ### With no tools at all
 
-Reading this fifty years from now, and none of these tools run any more? The format and the tools are both written down so they can be rebuilt. [`SPEC.md`](SPEC.md) describes every file, and [`TOOLING.md`](TOOLING.md) describes every tool in enough detail to write it again from scratch in whatever language people use by then. Until then, or if you never want the tools, [`quickstart-template/`](quickstart-template/) (or [the zip](downloads/quickstart-template.zip)) is a blank archive you fill in by hand with any text editor, and [`quickstart-example/`](quickstart-example/) is a filled-in fictional one. Both use the same format, so tools can take them over later.
+If none of these tools run any more when you read this, the format and the tools are both written down so they can be rebuilt. [`SPEC.md`](SPEC.md) describes every file, and [`TOOLING.md`](TOOLING.md) describes every tool in enough detail to write it again from scratch in whatever language people use by then. Until then, or if you never want the tools, [`quickstart-template/`](quickstart-template/) (or [the zip](downloads/quickstart-template.zip)) is a blank archive you fill in by hand with any text editor, and [`quickstart-example/`](quickstart-example/) is a filled-in fictional one. Both use the same format, so tools can take them over later.
 
 ## How the system works
 
-Everything in this project depends on the record format. It is the filing cabinet, and the backbone of the research.
+Everything in this project depends on the record format.
 
 **A fact is something a source says, and it lives in that source.** A source is a plain text file paired with the evidence itself, such as a scan or a PDF. A death certificate's image sits in your archive's `documents/` folder, and beside it in `sources/` is a text file that describes it and lists the claims it makes (who died, when, where, who reported it). So every claim in the archive traces back to the source it came from. Everything else, from people's profiles to family trees to the website, is built up from those sources and claims.
 
-**Nothing is a fact until a person says so.** Claims start as `suggested`, whether the AI drafted them or you typed them. They move to `accepted` only when you review them. The AI can do the filing and the drafting. It can't decide what is true about your family.
+**Nothing is a fact until a person says so.** Claims start as `suggested`, whether the AI drafted them or you typed them. They move to `accepted` only when you review them. The AI can do the filing and the drafting, but it can't decide what is true about your family.
 
 > 💬 *"Let's review the claims you drafted."*
 
@@ -90,7 +90,7 @@ There are five kinds of record, each a plain Markdown file or a section of one:
 
 Records link to each other with `[[wikilinks]]`, the double-bracket links that note-taking editors such as Obsidian and Foam use, and those links make up your research web. Every record has a short ID in its file name or its fields, so a link like `[[p-de957bcda1|Thomas Hartley]]` keeps working when a file is renamed or moved. You can also link by name (`[[Grandpa Joe]]`) and the tools fill in the ID later. [`docs/USING_WITH_OBSIDIAN.md`](docs/USING_WITH_OBSIDIAN.md) covers opening the archive as an Obsidian vault.
 
-From that web of sources and claims come the views genealogists are used to: profiles, family trees, timelines, a website. Each one is rebuilt from the records the same way every time, so none of them can drift from the evidence. The AI is the assistant, not the researcher.
+From that web of sources and claims come the views genealogists are used to: profiles, family trees, timelines, a website. Each one is rebuilt from the records the same way every time, so none of them can drift from the evidence.
 
 A search index keeps the archive quick to work with. It is rebuilt whenever records change and powers search, family trees, the website and a daily research report that flags contradictions and possible connections. The index is a cache rather than a record: delete it and `fha index` makes a new one.
 

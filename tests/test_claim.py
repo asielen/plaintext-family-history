@@ -3018,8 +3018,8 @@ class NegatedEvidenceConflictTests(unittest.TestCase):
 
 class EchoOnSuccessTests(unittest.TestCase):
     """The exact PowerShell single-quote de-quoting repro from issue #54:
-    `Calvin George "Cal" Hartley` arrives at the tool as
-    `Calvin George Cal Hartley` (embedded double quotes lost before this
+    `Calvin "Cal" Hartley` arrives at the tool as
+    `Calvin Cal Hartley` (embedded double quotes lost before this
     tool ever sees the argument). Guard-proven: before this fix, the two
     runs below produced byte-IDENTICAL success messages ('Set C-…: value
     updated') - captured against `tools/claim.py` as of the branch point
@@ -3039,7 +3039,7 @@ class EchoOnSuccessTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_value_success_message_now_shows_the_written_value(self) -> None:
-        correct = 'Calvin George "Cal" Hartley'
+        correct = 'Calvin "Cal" Hartley'
         result = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=correct)
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         all_text = ' '.join(m.text for m in result.messages)
@@ -3049,8 +3049,8 @@ class EchoOnSuccessTests(unittest.TestCase):
         # The corrupted write LOOKS different in the output now - that is
         # the whole fix. The source is re-seeded between the two writes so
         # both start from the exact same claim state and are comparable.
-        correct = 'Calvin George "Cal" Hartley'
-        mangled = 'Calvin George Cal Hartley'   # what PowerShell 5.1 delivers
+        correct = 'Calvin "Cal" Hartley'
+        mangled = 'Calvin Cal Hartley'   # what PowerShell 5.1 delivers
         r_correct = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=correct)
         self.source.write_text(_CLAIM_BLOCK, encoding='utf-8')
         r_mangled = claim.run_claim(self.root, claim_id='C-aa11bb22cc', value=mangled)
@@ -3094,7 +3094,7 @@ class EchoOnSuccessTests(unittest.TestCase):
         # - a live mint's summary line never showed the value it just wrote
         # either, the identical blind spot one level over.
         _write_person(self.root, 'P-aaaaaaaaaa', 'Anna Smith')
-        value = 'Calvin George "Cal" Hartley, laborer'
+        value = 'Calvin "Cal" Hartley, laborer'
         result = claim.run_claim_new(
             self.root, source_id='S-1111111111', claim_type='occupation',
             value=value, persons=['P-aaaaaaaaaa'])

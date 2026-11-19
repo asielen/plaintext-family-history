@@ -1708,8 +1708,8 @@
       };
       clearAutoLog(); // nothing was saved: the box goes back to what Capture will save
       setStageResult(newKeys.length || newPeople.length
-        ? 'I found more on the page — check the people below, then press ' + ancCaptureLabel() + '.'
-        : 'The details on the page have changed — check them below, then press ' + ancCaptureLabel() + '.', 'warn');
+        ? 'More details are on the page now. Check the people below, then press ' + ancCaptureLabel() + '.'
+        : 'The details on the page have changed. Check them below, then press ' + ancCaptureLabel() + '.', 'warn');
       return { staged: false };
     }
 

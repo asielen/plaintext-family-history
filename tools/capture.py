@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-capture.py - fha capture: the web-record intake on-ramp (TOOLING §13b).
+capture.py - fha capture: bring web records into the inbox (TOOLING §13b).
 
   fha capture [--url URL] [--title "…"] [--type TYPE] [--date DATE] [--asset FILE]
 

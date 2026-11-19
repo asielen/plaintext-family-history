@@ -6,5 +6,4 @@ A running list of things you want to find out. Jot them as they occur to you.
 - origin: human
 - status: open
 - context:
-  - (you, today) e.g. "Where exactly was Grandpa born? The census says 'New York'
-    but the family says Brooklyn."
+  - (you, today) e.g. "Where exactly was Grandpa born? The census says 'New York' but the family says Brooklyn."

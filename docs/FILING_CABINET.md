@@ -1,109 +1,64 @@
-# The Filing Cabinet - Paper You Know, Mapped to the System
+# The Filing Cabinet
 
-If you've ever kept family research in a real filing cabinet, you already understand this archive.
-It's the same shelf of folders, the same habits - just in plain files that won't fade, jam, or get
-discontinued. Here's the whole thing, drawer by drawer.
+If you've ever kept family research in a real filing cabinet, you already understand this archive. It's the same drawers and folders and the same habits, kept in plain files that won't fade or stop opening. This page goes through it drawer by drawer.
 
 ---
 
 ## The drawers
 
-| In the system | The paper equivalent | What it is |
+| In the archive | The paper equivalent | What it is |
 |---|---|---|
-| `inbox/` | **The pile on your desk** | Everything that just came in - scans, downloads, a photo a cousin mailed - waiting to be sorted and filed. Nothing here is filed yet. |
-| `sources/` | **Evidence folders, by citation** | One folder per *piece of evidence*: a census page, a certificate, a letter, an interview. The original is the document; the folder is what you wrote *about* it. |
-| `people/` | **Couple dividers** | A divider per ancestral couple, the way you'd separate "the Hartleys" from "the Bennetts." Each person gets a sheet; their facts aren't on the sheet - they're the underlined lines in the evidence folders. |
-| `places/` | **The gazetteer card** | A single list of every place you've touched - where it is, and what it was called when. One card per real spot on the map, forever. |
-| `notes/` | **Your research legal pad** | Open questions, half-formed leads, "check the 1901 census for this branch." Thinking in progress, not filed conclusions. |
-| `photos/` | **The photo boxes** | Your actual pictures, kept in whatever order you already like. Never relabeled, never reshuffled by the system - it reads from the box, it doesn't rearrange it. |
-| `documents/` | **The scans drawer** | The actual scan and recording files the `sources/` folders point at - certificates, clippings, audio, transcripts. Lay it out in any folders you like - by type, by family line, by decade - anything you place in a folder keeps its spot when it's processed (something dropped loose at the drawer's top level gets filed into a type folder for you), and you can rearrange the drawer whenever you like: the ID tag in each filed item's name ties it to its evidence folder, and one command (`fha reconcile`, or just ask the assistant) re-ties everything after a reshuffle. |
-| `fha.yaml` | **The label that says where the boxes are** | One small card noting which drive or shelf the photo boxes and scans drawer actually live on (they're often too big for the cabinet itself). |
+| `inbox/` | **The pile on your desk** | Everything that just came in (scans, downloads, a photo a cousin mailed) waiting to be sorted and filed. Nothing here is filed yet. |
+| `sources/` | **Evidence folders** | One folder per *piece of evidence*: a census page, a certificate, a letter, an interview. The original is the document; the folder is what you wrote *about* it. |
+| `people/` | **Couple dividers** | A divider per ancestral couple, the way you'd separate "the Hartleys" from "the Bennetts." Each person gets a sheet. Their facts aren't on the sheet; they're the underlined lines in the evidence folders. |
+| `places/` | **The gazetteer card** | A single list of every place in your research: where it is, and what it was called when. One card per real place on the map. |
+| `notes/` | **Your research legal pad** | Open questions, leads, "check the 1901 census for this branch." Thinking in progress, not filed conclusions. |
+| `photos/` | **The photo boxes** | Your pictures, kept in whatever order you already like. The archive reads from the boxes and never relabels or rearranges them. |
+| `documents/` | **The scans drawer** | The scan and recording files the `sources/` folders point at: certificates, clippings, audio, transcripts. Arrange it in any folders you like; [GETTING_STARTED](GETTING_STARTED.md#where-things-live) explains what happens when you file into it or move things around. |
+| `fha.yaml` | **The label that says where the boxes are** | One small card noting which drive or shelf the photo boxes and scans drawer are on (they're often too big for the cabinet itself). |
 
-> `photos/`, `documents/`, and `inbox/` are often kept on an external drive instead of inside the
-> cabinet - they're the big, heavy items. `fha.yaml` is the note that says where they went. The
-> light, durable paper - `sources/`, `people/`, `places/`, `notes/` - stays in the cabinet.
+> `photos/`, `documents/` and `inbox/` are often kept on an external drive instead of inside the cabinet, because they're the large, heavy items. `fha.yaml` is the note that says where they went. The light paper (`sources/`, `people/`, `places/`, `notes/`) stays in the cabinet.
 
-**Photo box or scans drawer?** The split is about *management*, not content: if it lives (or
-belongs) in your photo library, it's a photo; everything else - including a photograph *of* a
-document - goes in the scans drawer. When you drop a scanned record that happens to be a `.jpg`
-into the pile, say what it is in the note that travels with it (e.g. `source_type: census`) so it
-files into the right drawer. And plenty of in-between things need no choice at all: a postcard can
-keep its picture side in the photo box while its typed-up transcription sits in the scans drawer -
-both filed under the same evidence folder - and if something does land in the wrong drawer,
-`fha process refile` moves it to the other one and corrects the paperwork in one step.
+**Photo box or scans drawer?** Decide by where it's kept, not what it shows. If it lives (or belongs) in your photo library, it's a photo; everything else, including a photograph *of* a document, goes in the scans drawer. When you drop a scanned record that happens to be a `.jpg` into the pile, say what it is in the note that goes with it (for example `source_type: census`) so it's filed in the right drawer. A postcard can keep its picture side in the photo box and its typed transcription in the scans drawer, both under the same evidence folder. If something lands in the wrong drawer, `fha process refile` moves it and updates the paperwork in one step.
 
-**One evidence folder, or two?** A folder holds every facet of *one* piece of evidence - fronts,
-backs, extra scans, the pages of a multi-page letter written across several sittings, or a ledger
-whose entries run for months. Two separately published things - two different newspaper clippings,
-even about the same event, even mailed in the same envelope - are two evidence folders, not one.
-When in doubt: could each item stand as its own citation? If yes, it gets its own folder.
+**One evidence folder, or two?** A folder holds every part of *one* piece of evidence: fronts, backs, extra scans, the pages of a letter written over several days, a ledger whose entries run for months. Two separately published things, such as two different newspaper clippings, get two folders, even if they're about the same event and arrived in the same envelope. When in doubt, ask whether each item could be cited on its own. If yes, it gets its own folder.
 
-A couple divider's label also lists that couple's children, and it quietly flags anything worth
-seeing at a glance - a child who joined by adoption rather than birth (`Ruth (adopted)`), or a
-person who belongs to more than one branch and is filed under another divider (`Thomas Hartley
-(also #128 - see 040)`). The assistant keeps these labels fresh; you never edit them by hand.
+A couple divider's label also lists that couple's children and marks two things you'd want to see at a glance: a child who joined the family by adoption (`Ruth (adopted)`), and a person who belongs to more than one branch and is filed under another divider (`Thomas Hartley (also #128 - see 040)`). The assistant keeps these labels up to date; you never edit them by hand.
 
 ---
 
 ## The two habits that make it work
 
-These aren't system features - they're the filing discipline any good researcher already keeps.
-The archive just makes them automatic.
+These are filing habits any careful researcher already has. The archive keeps them for you.
 
 **Underline what the evidence proves; pencil in your guesses.**
 
-- A **claim** is a fact you'd *underline in ink* on the evidence: "this certificate says she was
-  born 12 March 1898." It lives in the evidence folder, right next to the document that backs it,
-  and it's marked the day you accepted it.
-- A **hypothesis** is a *pencil note in the margin*: "maybe this is the same John as the one in the
-  1881 census?" A guess, clearly a guess, never mistaken for a proven fact. When evidence turns the
-  pencil note into ink, it becomes a real claim.
+- A **claim** is a fact you'd *underline in ink* on the evidence: "this certificate says she was born 12 March 1898." It lives in the evidence folder, next to the document that backs it, and it's dated the day you accepted it.
+- A **working answer** is a *pencil note in the margin*: "maybe this is the same John as the one in the 1881 census?" It's clearly a guess and never mistaken for a proven fact. When evidence turns the pencil note into ink, it becomes a claim.
 
-That single distinction - ink vs. pencil, proven vs. guessed - is the honesty the whole system is
-built to protect.
+Keeping ink and pencil apart is what lets anyone reading the archive tell what's proven from what's guessed.
 
 ---
 
 ## Where does a note go?
 
-Research produces four kinds of paper, and each has a home:
+Research produces four kinds of paper, and each has a place:
 
-- **Something someone asserted** - "Aunt Mary said the farm burned in 1922" - is *evidence*. It
-  goes in the pile (`inbox/`), gets filed as a source, and its assertions become claims you can
-  review. Even a half-page of jotted memories counts; the note itself is the document.
-- **Something to find out** - "check the 1901 census for this branch" - is an *open question*. Note
-  the free-form Research Notes section right on a person's own page does NOT hold these - it is a
-  scratchpad the assistant never re-checks. An open question needs its own heading (`## Q:`) so it's
-  found again: if the person already has a separate research sheet, it goes there; otherwise it goes
-  on the shared question log (`notes/questions.md`), still fully findable, just not filed under their
-  name. (A person whose research outgrows a page's worth of questions can get a separate research
-  sheet of their own at that point - an escape valve for when there's a lot to say, not the default
-  starting home.)
-- **Something you believe but can't prove yet** - "maybe this is the same John as the 1881
-  census" - is a *working answer* to an open question: it goes on that question's own entry, as a
-  `guess:` line with its `id:`, the reason for it (`basis:`) and what evidence would settle it
-  (`verify:`), wherever the question already lives.
-- **A search you already ran** - even one that found nothing - goes in the *research log*, so you
-  (and the assistant) never re-run it blind.
+- **Something someone told you or wrote down** ("Aunt Mary said the farm burned in 1922") is *evidence*. It goes in the pile (`inbox/`), gets filed as a source, and what it says becomes claims you can review. Even half a page of jotted memories counts; the note itself is the document.
+- **Something to find out** ("check the 1901 census for this branch") is an *open question*. Give it its own `## Q:` heading so the assistant can find it again and track it. If the person has a separate research file, it goes there; otherwise it goes in the shared question list, `notes/questions.md`. (The Research Notes section on a person's page is free-form; the assistant doesn't track questions written there.)
+- **Something you believe but can't prove yet** ("maybe this is the same John as in the 1881 census") is a *working answer* to an open question. It goes on that question's entry, wherever the question lives, with why you think so and what evidence would settle it. The template in `notes/questions.md` shows the lines to fill in.
+- **A search you already ran**, even one that found nothing, goes in the *research log* (`notes/research-log.md`), so neither you nor the assistant runs it again for nothing.
 
-Everything else - working notes that span people, draft write-ups - lives on the legal pad
-(`notes/research/`). You can hand the assistant a pile of old notes and sort them into these homes
-together, one chunk at a time.
+Everything else (working notes that cover several people, drafts) goes on the legal pad, `notes/research/`. You can hand the assistant a pile of old notes and sort them into these places together, a piece at a time.
 
 ---
 
 ## Why a cabinet of plain files instead of an app
 
-A program can read your handwriting and sort your pile for you - and this one does, through the AI
-assistant. But the *cabinet itself* is plain paper-equivalent files on your own disk, because that's
-what lasts. Apps get discontinued; subscriptions lapse; file formats are abandoned. A drawer of
-plain files opens with nothing but a text editor and an image viewer, this year and in fifty.
+A program can read your handwriting and sort your pile for you, and this one does, through the AI assistant. But the cabinet itself is plain files on your own disk, because those last. Apps get discontinued and subscriptions lapse; a drawer of plain files opens with a text editor and an image viewer, this year and in fifty.
 
-The tools are the helpful clerk who files, fetches, and reads things back to you. The cabinet is
-yours, and it would still be a perfectly good cabinet if every tool vanished tomorrow.
+The tools file, fetch and read things back to you. The cabinet is yours, and it would still be a complete cabinet if the tools were gone.
 
 ---
 
-*Want the formal version of any drawer? See [GLOSSARY.md](GLOSSARY.md) for every term and ID type,
-or `SPEC.md`, in this same folder, for the full rulebook. Just want to start filing?
-[GETTING_STARTED.md](GETTING_STARTED.md).*
+*Want the formal version of any drawer? See [GLOSSARY.md](GLOSSARY.md) for every term and ID type, or `SPEC.md`, in this same folder, for the full rules. Ready to start filing? See [GETTING_STARTED.md](GETTING_STARTED.md).*

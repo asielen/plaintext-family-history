@@ -1,126 +1,101 @@
-# Setup From a Zip - No GitHub, No Git, No Clone
+# Setup From a Zip (No GitHub, No Git)
 
-**Who this is for:** you received (or downloaded) this project as a **zip file**, and you want to
-set up your archive without learning git or making a GitHub account. You don't need either. Git
-is just a tool for sharing and tracking history - useful later, never required to start. A zip is
-simply a folder in a box; unzip it and you have a folder.
+**Who this is for:** you received or downloaded this project as a **zip file**, and you want to set up your archive without learning git or making a GitHub account. You need neither. Git is a tool for sharing and tracking changes; it can be useful later but is never required. A zip is a folder packed into one file: unzip it and you have the folder.
 
-This page stands on its own. If you follow it start to finish, you'll have a working archive and
-have run your first command - no other setup page required (though the
-[five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
-is the natural next read).
+Follow this page start to finish and you'll have a working archive and have run your first command. The [five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#file-your-first-document-five-minutes) is the next thing to read.
 
 ---
 
-## Step 1 - Unzip it somewhere permanent
+## Step 1: Unzip it somewhere permanent
 
-Find the zip file (often named something like `plaintext-family-history.zip`). Unzip it into a
-place you'll keep for the long haul - your **Documents** folder is perfect. Avoid Downloads or
-Desktop, which people tend to clean out.
+Find the zip file (often named something like `plaintext-family-history.zip`). Unzip it into a place you'll keep for good; your **Documents** folder is a good choice. Avoid Downloads or the Desktop, which people tend to clean out.
 
-- **Windows:** right-click the zip → "Extract All…" → choose a location like
-  `Documents\family-history`.
-- **Mac:** double-click the zip; a folder appears next to it. Drag that folder into
-  `Documents`.
+- **Windows:** right-click the zip, choose "Extract All…", and pick a location like `Documents\plaintext-family-history`.
+- **Mac:** double-click the zip; a folder appears next to it. Drag that folder into `Documents`.
 
-Open the folder you just unzipped. Inside you'll see `tools`, `SPEC.md`, `AGENTS.md`, an
-`archive-template` folder, and more. **This folder is your workshop** - the tools and the rules
-live here. Your actual family records will live in a folder *inside* it, which you make in Step 3.
+Open the folder you just unzipped. Inside you'll see `tools`, `SPEC.md`, `AGENTS.md`, an `archive-template` folder and more. **This folder is your workshop:** the tools and the rules live here. Your family records go in a separate folder, which you make in Step 4.
 
 ---
 
-## Step 2 - Install Python (the one program you must install)
+## Step 2: Install Python
 
-The tools run on Python - free, and the only *program* you install. (A few small helper
-packages complete it in Step 5, with a single command - no installer, no download page.
-`exiftool`, for photo metadata, is optional and can wait; the AI assistant that operates the
-archive is covered in [GETTING_STARTED](GETTING_STARTED.md#4-your-ai-assistant-required).)
+The tools run on Python, which is free and is the only program you install. (A few small helper packages come in Step 3 with one command. `exiftool`, for photo metadata, is optional and can wait; the AI assistant is covered in [GETTING_STARTED](GETTING_STARTED.md#4-your-ai-assistant-required).)
 
 1. Go to **<https://www.python.org/downloads/>** and click "Download Python."
 2. Run the installer. **On Windows, tick "Add Python to PATH"** before clicking Install.
 
-**Did it work?** Open a terminal (Command Prompt on Windows, Terminal on Mac), type:
+**Did it work?** Open a terminal (Command Prompt on Windows, Terminal on Mac) and type:
 
 ```
 python --version
 ```
 
-A line like `Python 3.12.1` (3.10 or newer) means you're good. On a Mac you may need to type
-`python3` instead of `python` - if so, use `python3` everywhere below.
+A line like `Python 3.12.1` (3.10 or newer) means it worked. On a Mac you may need to type `python3` instead of `python`; if so, use `python3` everywhere below.
 
 ---
 
-## Step 3 - Make your archive folder
+## Step 3: Install the helpers
 
-Your family records live in their own folder, separate from the tools, so the two never get
-tangled. The empty starting skeleton is the `archive-template` folder already sitting in your
-workshop.
+Open a terminal **in your workshop folder**:
 
-1. **Copy the `archive-template` folder** (right-click → Copy, then Paste in the same place).
-2. **Rename the copy** to something like `my-family-archive`.
+- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `cmd` and press Enter. A terminal opens in that folder.
+- **Mac:** in Terminal, type `cd ` (with a space), drag the unzipped folder onto the window and press Enter.
 
-You now have a layout like this:
-
-```
-family-history/            ← the folder you unzipped (your workshop)
-├── tools/                 ← the fha tools
-├── SPEC.md  AGENTS.md …   ← the rules
-├── archive-template/      ← the blank skeleton (leave it alone)
-└── my-family-archive/     ← YOUR records live here
-    ├── fha.yaml           ← settings
-    ├── inbox/             ← drop new scans here
-    ├── sources/  people/  places/  notes/
-    └── …
-```
-
-Because the tools sit right beside your archive in the same unzipped folder, everything works
-fully offline, from this folder, with no internet and no GitHub - exactly the point.
-
----
-
-## Step 4 - Point `fha.yaml` at your photos and documents
-
-Open `fha.yaml` inside `my-family-archive` with a plain text editor (Notepad on Windows,
-TextEdit on Mac - not Word). It tells the tools where your files live.
-
-- **Starting with nothing yet?** Leave it as-is. The defaults work; come back when you have a
-  photo library to connect.
-- **Already have folders of photos or documents?** Copy-paste examples for a plain local folder,
-  an external drive, and an existing photo library are commented right inside `fha.yaml` itself,
-  just above the settings they explain - uncomment the one that matches you and edit the path.
-  (If you set this up with `fha install` instead of copying `archive-template/` by hand, pointing
-  a setting outside the archive also removes its now-empty placeholder folder - expected, not a
-  problem, and it comes back if you ever point the setting back inside.)
-
----
-
-## Step 5 - Finish the install and run your first command
-
-Time to confirm the tools work. Open a terminal **in your workshop folder**:
-
-- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `cmd`, and
-  press Enter - a terminal opens already pointed at that folder.
-- **Mac:** in Terminal, type `cd ` (with a space), drag the unzipped folder onto the window, and
-  press Enter.
-
-First, the helper packages promised in Step 2 - Python's built-in installer fetches them in one
-command:
+Then run:
 
 ```
 python -m pip install -r tools/requirements.txt
 ```
 
-**Did it work?** Run `python -c "import yaml"` - printing *nothing at all* is the good sign. (If
-it says `No module named 'yaml'`, the install didn't land - run the install command again and
-read its last lines for the reason.)
+**Did it work?** Run `python -c "import yaml"`. If it prints nothing at all, the helpers are installed. (If it says `No module named 'yaml'`, run the install command again and read its last lines for the reason.)
 
-Now run the linter against your archive - it checks that everything is shaped correctly. Type it
-the way your system wants it, from inside the workshop folder you unzipped:
+---
+
+## Step 4: Make your archive
+
+In the same terminal, run the line for your system:
 
 ```
-./fha lint --root my-family-archive      # macOS / Linux
-.\fha lint --root my-family-archive      # Windows PowerShell
-fha lint --root my-family-archive        # Windows Command Prompt
+./fha install ../my-family-archive      # macOS / Linux
+.\fha install ..\my-family-archive      # Windows PowerShell
+fha install ..\my-family-archive        # Windows Command Prompt
+```
+
+That creates a `my-family-archive` folder beside the workshop, with its own copy of the tools, the manual and the assistant's instructions:
+
+```
+Documents/
+├── plaintext-family-history/   ← the folder you unzipped (your workshop)
+└── my-family-archive/          ← YOUR records live here
+    ├── START_HERE.md           ← explains the archive to anyone who opens it
+    ├── fha.yaml                ← settings
+    ├── inbox/                  ← drop new scans here
+    ├── sources/  people/  places/  notes/
+    ├── docs/                   ← the manual
+    └── …
+```
+
+Everything works offline, with no internet and no GitHub.
+
+---
+
+## Step 5: Point `fha.yaml` at your photos and documents
+
+Open `fha.yaml` inside `my-family-archive` with a plain text editor (Notepad on Windows, TextEdit on Mac, not Word). It tells the tools where your files live.
+
+- **Starting with nothing yet?** Leave it as it is. The defaults work; come back when you have a photo library to connect.
+- **Already have folders of photos or documents?** Examples for a local folder, an external drive and an existing photo library are written as comments in `fha.yaml`, above the settings they explain. Remove the `#` from the one that matches and edit the path. If you point a setting outside the archive, the empty folder of that name inside the archive is removed; it comes back if you point the setting back inside.
+
+---
+
+## Step 6: Run your first command
+
+Open a terminal in your new `my-family-archive` folder (the same way as in Step 3) and run the check:
+
+```
+./fha check      # macOS / Linux
+.\fha check      # Windows PowerShell
+fha check        # Windows Command Prompt
 ```
 
 A fresh archive prints:
@@ -129,70 +104,29 @@ A fresh archive prints:
 ✓ No issues found.
 ```
 
-That's your green light: Python works, the tools work, and your archive is valid. (`--root`
-tells the tools which archive folder to use; `fha` is the launcher file sitting in the unzipped
-folder that finds and runs the tool program for you. On **macOS or Linux** type `./fha lint …`;
-in Windows **PowerShell**, `.\fha lint …`; the Windows **Command Prompt** takes it bare.)
+Python works, the tools work and your archive is valid. (`fha` is a launcher file in your archive folder that finds and runs the tools; the [cheat sheet](CHEATSHEET.md#typing-fha) explains how to type it.)
 
 ---
 
-## You're set - what now
+## What now
 
-- **File your first document:** the
-  [five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#part-3--file-your-first-document-five-minutes)
-  picks up exactly here - drop a scan in `inbox/`, let the assistant process it, accept the facts
-  it suggests.
-- **Set up the AI assistant** that operates the archive day to day:
-  [GETTING_STARTED, Part 1 §4](GETTING_STARTED.md#4-your-ai-assistant-required).
+- **File your first document:** the [five-minute walkthrough in GETTING_STARTED](GETTING_STARTED.md#file-your-first-document-five-minutes) starts here. Drop a scan in `inbox/`, let the assistant process it, and accept the facts it suggests.
+- **Set up the AI assistant** that runs the archive day to day: [GETTING_STARTED, step 4](GETTING_STARTED.md#4-your-ai-assistant-required).
 
-## Keeping up to date (still no git)
+## Keeping up to date without git
 
-This section's copy-over method needs no tools at all. If your archive carries its own tools
-(the assisted `fha install` way below), the full update ritual - preview, apply, review,
-health-check - lives in [UPDATING.md](UPDATING.md) instead.
+When a newer version comes out, download the new zip and unzip it beside the old workshop. Then, from inside your archive folder, run:
 
-When a newer version of the project comes out, you don't need git for that either. Download the
-new zip, unzip it, and copy these over the old ones in your workshop:
+```
+fha update-tools --dry-run --repo "PATH-TO-THE-NEW-FOLDER"
+```
 
-- the `tools/` folder,
-- the rulebooks `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
-- and the launchers `fha` and `fha.cmd` from the top of the unzipped folder.
+to preview, and the same command without `--dry-run` to apply. It backs up anything you edited before replacing it, never deletes anything, and never touches your records, `fha.yaml` or place list. The full steps are in [UPDATING.md](UPDATING.md). Once the archive is updated you can delete the old workshop folder.
 
-The launchers matter: they are what lets you type `./fha lint` (Mac/Linux) or `fha lint`
-(Windows) instead of the longer `python tools/fha.py lint`. A workshop from an older zip
-predates them, so if you skip them, every command in these guides comes back
-"command not found". Copying them once fixes that for good - and if you'd rather not, the
-longer `python tools/fha.py ...` form keeps working everywhere.
+## Building an archive by hand
 
-**Never touch your `my-family-archive` folder when updating** - your records aren't part of the
-download and stay exactly as they are.
+If you'd rather not use the tools at all, copy the `archive-template` folder out of the workshop, rename the copy, and fill in records with a text editor. `archive-template/README.md` explains the templates. You can run `fha install` on that copy later as long as you haven't edited anything in it yet.
 
-> **The assisted way (optional).** If you'd rather have the tools live *inside* your archive -
-> with the program itself tucked into a hidden `.fha/` folder so the archive root stays clean,
-> showing only your data plus `START_HERE.md` (the one page that explains the archive to anyone
-> who opens it), `fha.yaml`, the agent rulebooks `AGENTS.md` and `CLAUDE.md`, the launchers, and
-> `docs/` (this manual, including `GETTING_STARTED.md`, `CHEATSHEET.md` and `SPEC.md`) -
-> use `fha install` **instead of**
-> copying `archive-template` in Step 3. It sets up the archive folder with both the skeleton files
-> and the tools in one step:
->
-> ```
-> ./fha install my-family-archive      # macOS / Linux
-> .\fha install my-family-archive      # Windows PowerShell
-> fha install my-family-archive        # Windows Command Prompt
-> ```
->
-> Run this from your workshop folder, naming the folder you want. A folder that does not exist
-> yet is the simplest case - the installer creates the skeleton itself. Pointing it at a copy of
-> `archive-template` you have not edited yet works too; it stops only once you have started
-> filling the archive in, so that it can never overwrite work in progress. Then, with each new download,
-> `fha update-tools --repo <the-new-unzipped-folder>` (run from inside your archive) pulls the
-> improvements in for you: it backs up anything you've edited before replacing it, never deletes,
-> and never touches your `fha.yaml` or place list. No git required either way.
+## Backups
 
-> **Backups are your safety net, not git.** Since you're not using GitHub, make your own copies:
-> `fha backup --root my-family-archive` writes a dated, verified zip into a folder
-> beside your archive - copy that zip somewhere separate (an external drive, another computer, a
-> cloud-storage folder). Your records are plain files, so that zip is a complete, future-proof
-> backup: to restore it, just unzip. (Photos and documents aren't included unless you add
-> `--include-assets` - the command names them every time so nothing is skipped silently.)
+Without git, your own copies are how you undo a mistake. `fha backup` writes a dated, checked zip into a folder beside your archive. Copy that zip somewhere separate: an external drive, another computer or a cloud-storage folder. Your records are plain files, so that zip is a complete backup; to restore it, unzip it. Photos and documents aren't included unless you add `--include-assets`, and the command names them every time so nothing is left out silently.

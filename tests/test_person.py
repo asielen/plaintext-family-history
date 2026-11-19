@@ -2845,7 +2845,7 @@ class PromoteTests(unittest.TestCase):
 
 RENAME_PID = 'P-rm6wr4t70q'
 RENAME_FOLDER = '040 Thomas Kelly + Betty Turley Kelly [Mary]'
-RENAME_NEW_FOLDER = '040 Thomas Kelly + Betty Slamon Kelly [Mary]'
+RENAME_NEW_FOLDER = '040 Thomas Kelly + Betty Marsh Kelly [Mary]'
 
 
 def _rename_profile_text(name: str, *, variants: str | None = None) -> str:
@@ -2911,11 +2911,11 @@ class RenameTests(unittest.TestCase):
         # lowercase even though the record's own id: field stays display-cased.
         new_folder = self.root / 'people' / RENAME_NEW_FOLDER
         pid_lower = RENAME_PID.lower()
-        return (new_folder / f'kelly__betty_slamon_{pid_lower}.md',
-                new_folder / f'kelly__betty_slamon_research_{pid_lower}.md')
+        return (new_folder / f'kelly__betty_marsh_{pid_lower}.md',
+                new_folder / f'kelly__betty_marsh_research_{pid_lower}.md')
 
     def test_happy_path_renames_everything(self) -> None:
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly',
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly',
                                 keep_variant=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         self.assertEqual(res.data['status'], 'ok')
@@ -2928,7 +2928,7 @@ class RenameTests(unittest.TestCase):
         self.assertFalse(self.timeline.exists())   # stale GENERATED companion gone
 
         text = new_profile.read_text(encoding='utf-8')
-        self.assertIn('name: Betty Slamon Kelly', text)
+        self.assertIn('name: Betty Marsh Kelly', text)
         # The OLD name was filed into name_variants: alongside the existing one.
         self.assertIn('Betty T. Kelly', text)
         self.assertIn('Betty Turley Kelly', text)
@@ -2949,7 +2949,7 @@ class RenameTests(unittest.TestCase):
 
     def test_dry_run_writes_nothing(self) -> None:
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly',
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly',
                                 keep_variant=True, dry_run=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN)
         self.assertEqual(res.data['status'], 'dry-run')
@@ -2957,15 +2957,15 @@ class RenameTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertTrue(self.folder.is_dir())   # old folder name untouched
         all_text = ' '.join(m.text for m in res.messages)
-        self.assertIn('Betty Slamon Kelly', all_text)
+        self.assertIn('Betty Marsh Kelly', all_text)
         self.assertIn(RENAME_NEW_FOLDER, all_text)
 
     def test_without_keep_variant_old_name_is_dropped_not_filed(self) -> None:
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         new_profile, _ = self._new_paths()
         text = new_profile.read_text(encoding='utf-8')
-        self.assertIn('name: Betty Slamon Kelly', text)
+        self.assertIn('name: Betty Marsh Kelly', text)
         # The existing variant survives; the old NAME is never auto-added
         # without --keep-variant.
         self.assertIn('Betty T. Kelly', text)
@@ -2984,9 +2984,9 @@ class RenameTests(unittest.TestCase):
         profile.write_text(
             _rename_profile_text('Betty Cole', variants='Betty Cole Hartley'),
             encoding='utf-8')
-        res = person.run_rename(self.root, pid, 'Betty Slamon Kelly', keep_variant=True)
+        res = person.run_rename(self.root, pid, 'Betty Marsh Kelly', keep_variant=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
-        new_path = folder / f'kelly__betty_slamon_{pid.lower()}.md'
+        new_path = folder / f'kelly__betty_marsh_{pid.lower()}.md'
         variants = read_record(new_path)['meta'].get('name_variants')
         self.assertIn('Betty Cole Hartley', variants)   # existing entry untouched
         self.assertIn('Betty Cole', variants)            # OLD name filed away too
@@ -2994,7 +2994,7 @@ class RenameTests(unittest.TestCase):
     def test_keep_variant_exact_duplicate_is_still_a_clean_no_op(self) -> None:
         # Control for the fix above: an EXACT existing entry must still be
         # recognised (no duplicate line added), just not a mere substring.
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly',
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly',
                                 keep_variant=True)
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         new_profile, _ = self._new_paths()
@@ -3006,7 +3006,7 @@ class RenameTests(unittest.TestCase):
         # .cache/index.sqlite caches - so a live rename must remind the
         # human to reindex, the same as set-living/set-sex/set-profile-photo
         # do for their own single-field writes.
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         all_text = ' '.join(m.text for m in res.messages)
         self.assertIn('fha index', all_text)
@@ -3074,7 +3074,7 @@ class RenameTests(unittest.TestCase):
         # companion by name.
         hand_file = self.folder / f'kelly__betty_turley_photos_{RENAME_PID}.md'
         hand_file.write_text('# Hand-curated photo notes\nNot generated.\n', encoding='utf-8')
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         # It moved with the folder rename but was never deleted.
         moved = self.root / 'people' / RENAME_NEW_FOLDER / hand_file.name
@@ -3089,7 +3089,7 @@ class RenameTests(unittest.TestCase):
         odd_folder = self.root / 'people' / '040 Thomas Kelly + Betty [Mary]'
         self.folder.rename(odd_folder)
         profile = odd_folder / f'kelly__betty_turley_{RENAME_PID}.md'
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
         self.assertIsNone(res.data['new_folder'])
         self.assertTrue(odd_folder.is_dir())   # folder name untouched
@@ -3097,7 +3097,7 @@ class RenameTests(unittest.TestCase):
         # stub_filename embeds the lowercase-normalized id (see _new_paths's
         # own comment) - RENAME_PID's own literal 'P-' prefix must be
         # lowered too, or this checks a filename never actually written.
-        new_profile = odd_folder / f'kelly__betty_slamon_{RENAME_PID.lower()}.md'
+        new_profile = odd_folder / f'kelly__betty_marsh_{RENAME_PID.lower()}.md'
         self.assertTrue(new_profile.exists())
 
     def test_cwd_inside_folder_blocks_only_the_folder_step(self) -> None:
@@ -3108,7 +3108,7 @@ class RenameTests(unittest.TestCase):
         old_cwd = os.getcwd()
         os.chdir(self.folder)
         try:
-            res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+            res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         finally:
             os.chdir(old_cwd)
         self.assertEqual(res.exit_code, EXIT_WARNINGS)
@@ -3119,9 +3119,9 @@ class RenameTests(unittest.TestCase):
         # still sit under the OLD folder name. stub_filename embeds the
         # lowercase-normalized id (see _new_paths's own comment), so
         # RENAME_PID's literal 'P-' prefix must be lowered here too.
-        old_new_profile = self.folder / f'kelly__betty_slamon_{RENAME_PID.lower()}.md'
+        old_new_profile = self.folder / f'kelly__betty_marsh_{RENAME_PID.lower()}.md'
         self.assertTrue(old_new_profile.exists())
-        self.assertIn('name: Betty Slamon Kelly',
+        self.assertIn('name: Betty Marsh Kelly',
                       old_new_profile.read_text(encoding='utf-8'))
         warning_text = ' '.join(m.text for m in res.messages if m.level == 'warning')
         self.assertIn('current folder is inside', warning_text)
@@ -3132,7 +3132,7 @@ class RenameTests(unittest.TestCase):
         import fha
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            rc = fha.main(['person', 'rename', RENAME_PID, 'Betty Slamon Kelly',
+            rc = fha.main(['person', 'rename', RENAME_PID, 'Betty Marsh Kelly',
                            '--dry-run', '--root', str(self.root)])
         self.assertEqual(rc, 0)
         self.assertIn('[dry-run]', out.getvalue())
@@ -3142,7 +3142,7 @@ class RenameTests(unittest.TestCase):
         import fha
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            rc = fha.main(['person', 'rename', RENAME_PID, 'Betty Slamon Kelly',
+            rc = fha.main(['person', 'rename', RENAME_PID, 'Betty Marsh Kelly',
                            '--keep-variant', '--root', str(self.root)])
         self.assertEqual(rc, 0)
         new_profile, _ = self._new_paths()
@@ -3158,7 +3158,7 @@ class RenameTests(unittest.TestCase):
         self.profile.write_text(
             f'---\nid: {RENAME_PID}\nname: Betty Turley Kelly\nliving: false\n'
             f'status: merged\nmerged_into: {survivor}\n---\n', encoding='utf-8')
-        res = person.run_rename(self.root, RENAME_PID, 'Betty Slamon Kelly')
+        res = person.run_rename(self.root, RENAME_PID, 'Betty Marsh Kelly')
         self.assertEqual(res.exit_code, EXIT_FAILURE)
         self.assertEqual(res.data['status'], 'merged')
         self.assertIn(survivor.lower(), res.messages[-1].text)

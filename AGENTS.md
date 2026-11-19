@@ -6,7 +6,7 @@
 
 If you are working in the **public Plaintext spec repo** (it contains `SPEC.md`, `TOOLING.md`, `tools/`, `example-archive/` and `archive-template/`, but the repo root is NOT itself a populated archive), your default mode is **tool-building** or **spec-refinement**, never `research`. Do not treat the repo root as a family archive. Use `example-archive/` only as a fictional fixture. Never add real family data.
 
-A human here who asks to start their own archive ("get me started") wants setup, not tool-building. Follow [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) Parts 1 and 2 with them (Python, `python -m pip install -r tools/requirements.txt`, then `fha install <a folder outside this repo>`), and tell them to open the new folder in a fresh session and say "Let's do the setup interview". Never create the archive inside this repo.
+A human here who asks to start their own archive ("get me started") wants setup, not tool-building. Follow [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) "Set up your computer" and "Make your archive" with them (Python, `python -m pip install -r tools/requirements.txt`, then `fha install <a folder outside this repo>`), and tell them to open the new folder in a fresh session and say "Let's do the setup interview". Never create the archive inside this repo.
 
 When these instructions live at the root of a **real archive** (created from `archive-template/`, containing actual `sources/`, `people/`, etc.), the rules below apply in full and `research` is the default mode.
 

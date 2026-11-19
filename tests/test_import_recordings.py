@@ -10,9 +10,10 @@ safety contract promised to leave unknown.
 What is covered here:
 
   1. DOC/CODE AGREEMENT - the confidence gate, the mispair gate and the timestamp
-     coverage gate that SKILL.md and TOOLING_INTERFACE.md advertise are the
-     scripts' actual defaults, and the documented Stage B command really does
-     rely on those defaults (it passes no --min-confidence).
+     coverage gate that SKILL.md advertises are the scripts' actual defaults,
+     TOOLING_INTERFACE.md links SKILL.md rather than restating them, and the
+     documented Stage B command really does rely on those defaults (it passes
+     no --min-confidence).
   2. DOC/CLI AGREEMENT - every `fha` verb and every script flag written in a
      SKILL.md code fence exists. A workflow that stops at a parser error is a
      broken workflow.
@@ -206,14 +207,18 @@ class DocumentedGatesTest(unittest.TestCase):
         self.assertIn('%g%% agreement' % (100.0 * (1.0 + gate) / 2.0), flat)
         self.assertIn('%g%% coverage' % (100.0 * gate), flat)
 
-    def test_tooling_interface_states_the_shipped_gate(self):
+    def test_tooling_interface_points_at_the_skill_for_the_gates(self):
+        """The design entry names the gates and leaves the numbers to SKILL.md.
+
+        A number quoted in two documents drifts in one of them, so the design
+        doc links the skill instead of restating its thresholds.
+        """
         entry = [ln for ln in self.tooling.splitlines()
                  if ln.startswith('- `import-recordings`')]
         self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
-        gate = attribute_speakers.DEFAULT_MIN_CONFIDENCE
-        self.assertIn('confidence of %.2f or better' % gate, entry[0])
-        self.assertIn('%g%% agreement' % (100.0 * (1.0 + gate) / 2.0), entry[0])
-        self.assertIn('%g%% coverage' % (100.0 * gate), entry[0])
+        self.assertIn('.claude/skills/import-recordings/SKILL.md', entry[0])
+        self.assertNotRegex(entry[0], r'\d%|\b0\.\d\d\b',
+                            'gate numbers belong in SKILL.md, not the design entry')
 
     def test_the_unverified_field_figure_is_marked_as_unverified(self):
         """96% at ~75% coverage was measured under the OLD arithmetic.
@@ -273,13 +278,6 @@ class DocumentedGatesTest(unittest.TestCase):
         self.assertIn('--replace', self.skill)
         self.assertIn('does not overwrite the first one', self.skill)
 
-    def test_tooling_interface_states_the_replace_flag_and_the_gate(self):
-        entry = [ln for ln in self.tooling.splitlines()
-                 if ln.startswith('- `import-recordings`')]
-        self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
-        self.assertIn('--replace', entry[0])
-        self.assertIn('20 matched words', entry[0])
-
     def test_skill_md_documents_the_kept_transcript_recovery(self):
         """The one partial result the script can produce has to be in the prose.
 
@@ -289,12 +287,6 @@ class DocumentedGatesTest(unittest.TestCase):
         """
         self.assertIn('the transcript is kept', self.skill.lower())
         self.assertIn('--replace', self.skill)
-
-    def test_tooling_interface_states_the_kept_transcript_recovery(self):
-        entry = [ln for ln in self.tooling.splitlines()
-                 if ln.startswith('- `import-recordings`')]
-        self.assertEqual(len(entry), 1, 'the import-recordings design entry moved')
-        self.assertIn('kept', entry[0])
 
     def test_replace_and_force_are_separate_flags_in_the_parser(self):
         """The decision itself: one flag must not mean two safety overrides."""

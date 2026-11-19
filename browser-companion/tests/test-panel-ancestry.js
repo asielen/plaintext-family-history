@@ -649,7 +649,7 @@ test('round 3 (Codex PRRT_kwDOS6vm6c61wZYJ): Details opened after the panel read
   // The first Capture reads the page again, finds the Details, and saves nothing.
   await late.capture();
   assert.strictEqual(late.written.length, 0);
-  assert.strictEqual(late.result(), 'I found more on the page — check the people below, then press Capture this photo.');
+  assert.strictEqual(late.result(), 'More details are on the page now. Check the people below, then press Capture this photo.');
   assert.match(late.resultClass(), /warn/);
   assert.deepStrictEqual(late.$('people-list').children.map((l) => [l.children[1].textContent, l.children[0].checked]),
     [['Thomas Hartley', true], ['Margaret Hartley', true]]);
@@ -764,7 +764,7 @@ test('#261 audit A1: photo B is never filed with photo A\'s date - the form show
   assert.strictEqual(p.$('f-date').value, '1919-06-12'); // A's, as first read
   await p.capture();
   assert.strictEqual(p.written.length, 0, 'nothing is saved while the form shows another photo\'s details');
-  assert.match(p.result(), /check .* then press Capture this photo/);
+  assert.match(p.result(), /Check .* then press Capture this photo/);
   assert.match(p.resultClass(), /warn/);
   assert.strictEqual(p.$('f-date').value, '1958-02-04');
   assert.strictEqual(p.$('f-title').value, 'Photo B title');

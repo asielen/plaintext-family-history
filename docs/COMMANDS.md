@@ -1296,8 +1296,8 @@ Correct a person's name: frontmatter, files, and (when safe) the couple folder.
 ```text
 Correct a person's name everywhere it is mechanically derivable.
 
-  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly"
-  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
+  fha person rename P-2b3c4d5e6f "Betty Marsh Kelly"
+  fha person rename P-2b3c4d5e6f "Betty Marsh Kelly" --keep-variant
   fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
 
 Rewrites name: (and, with --keep-variant, files the old name into
@@ -1321,7 +1321,7 @@ write (before the folder step) rolls itself back.
 | Argument | What it does |
 |---|---|
 | `P-id` | The person to rename (e.g. P-2b3c4d5e6f). |
-| `NAME` | The corrected full name, e.g. "Betty Slamon Kelly". |
+| `NAME` | The corrected full name, e.g. "Betty Marsh Kelly". |
 | `--keep-variant` | File the OLD name into name_variants: instead of losing it. |
 | `--surname` `TEXT` | Override the renamed filename's surname split, for names no automatic split can be expected to get right (Spanish double surnames, particles like "van der", surname-first conventions). --surname "" means no surname at all. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
