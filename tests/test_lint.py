@@ -33,6 +33,7 @@ CLI, so the checks run over a fresh in-memory registry with no prior `fha index`
 
 import datetime
 import io
+import json
 import os
 import re
 import subprocess
@@ -2647,6 +2648,104 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         result = lint.run_lint(self.root, {})
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertIn('W124', [m.code for m in result.messages])
+
+    # ── #316: plain-text evidence that is not .md/.txt ─────────────────────
+
+    def test_a_family_tree_export_is_its_own_words(self) -> None:
+        # A GEDCOM filed as a source is the evidence itself, in plain text.
+        # Flagging it put every tree export in the "transcribe these" backlog
+        # forever, and the only way out was a meaningless copy of the tree.
+        self._write_source([(f'documents/trees/family-tree_{_W124_SID}.ged', 'tree')])
+        self.assertEqual(self._codes(), [])
+
+    def test_a_captured_page_and_site_data_do_not_stand_in_for_a_transcript(self) -> None:
+        # A captured census record ships the record image, the website's saved
+        # page and the site's data. The search reads the page and the data, but
+        # they are the site's copy and reading (SPEC: site-data is never a
+        # transcript), so the record itself still has no words in the archive.
+        self._write_source([
+            _IMAGE,
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.html', 'webpage'),
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
+        ])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertIn('fha source extract', found[0].message)
+        self.assertIn("website's copy, not a transcript", found[0].message)
+
+    def test_a_source_that_is_only_a_saved_page_is_not_flagged(self) -> None:
+        # Owner decision 2026-11-18: the search already reads the page and
+        # there is no picture behind it, so asking for a transcript of it would
+        # only add a copy of the page to the "transcribe these" list.
+        self._write_source([
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.html', 'webpage'),
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
+        ])
+        self.assertEqual(self._codes(), [])
+
+    def test_an_xhtml_page_copy_alone_is_not_flagged(self) -> None:
+        self._write_source([
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.xhtml', 'webpage'),
+        ])
+        self.assertEqual(self._codes(), [])
+
+    def test_site_data_alone_still_asks_for_a_transcript(self) -> None:
+        # The site's data is its reading of the record, never a transcript.
+        self._write_source([
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
+        ])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertNotIn('scan, photograph', found[0].message)
+        self.assertIn("website's data", found[0].message)
+
+    def _page_and_data(self, data: dict) -> None:
+        page = f'documents/charts/harkness-chart-webpage_{_W124_SID}.html'
+        record_data = f'documents/charts/harkness-chart-record-data_{_W124_SID}.json'
+        self._write_source([(page, 'webpage'), (record_data, 'site-data')])
+        (self.root / record_data).write_text(json.dumps(data), encoding='utf-8')
+
+    def test_a_record_image_that_failed_to_download_is_not_forgotten(self) -> None:
+        # When the record image cannot be downloaded, capture files the page
+        # in its place and the data says so. The missing image must stay on
+        # the list, with the way to fetch it.
+        self._page_and_data({'record': {'imageId': '4194580_00123',
+                                        'imageSaved': False}})
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertIn('image was not saved', found[0].message)
+        self.assertIn('--more <the-image-file> record', found[0].message)
+
+    def test_a_household_member_whose_page_is_already_filed_is_not_flagged(self) -> None:
+        # Every member of a census household after the first links the same
+        # image, already filed with the first capture. Telling the owner to
+        # download it again would re-file the same page.
+        for same in ({'record': 'S-2h4k6m8p0r', 'url': 'https://example.org/r/1',
+                      'name': 'Rose Harkness'},
+                     {'where': 'archive', 'source': 'S-2h4k6m8p0r'}):
+            self._page_and_data({'record': {'imageId': '4194580_00123',
+                                            'imageSaved': False,
+                                            'same_image_as': same}})
+            self.assertEqual(self._codes(), [], same)
+
+    def test_unsaved_memorial_photos_are_not_forgotten(self) -> None:
+        self._page_and_data({'photos': [{'role': 'grave-1', 'file': None,
+                                         'error': 'no answer'}]})
+        self.assertEqual(len(self._codes()), 1)
+
+    def test_an_obituary_page_with_its_data_is_not_flagged(self) -> None:
+        # No image field at all: nothing says an image exists.
+        self._page_and_data({'record': {'name': 'Rose Harkness'},
+                             'citation': 'An obituary'})
+        self.assertEqual(self._codes(), [])
+
+    def test_a_record_whose_image_was_saved_elsewhere_is_judged_by_its_files(self) -> None:
+        self._page_and_data({'record': {'imageId': '4194580_00123',
+                                        'imageSaved': True}})
+        self.assertEqual(self._codes(), [])
 
 
 _E011_SID = 'S-5n7q9s1t3v'

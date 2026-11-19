@@ -13,7 +13,7 @@ silently and expensively when they drift:
 
  2. THE SHIPPED PREDICATES ARE QUOTED, NOT RE-DERIVED. The skill's definition of
     "image-only" and the scope of its marker contract must be the vocabulary
-    `_lib` already owns (`TEXT_COMPANION_ROLES`, `SEARCHABLE_TEXT_SUFFIXES`,
+    `_lib` already owns (`TEXT_COMPANION_ROLES`, `TRANSCRIPT_TEXT_SUFFIXES`,
     `file_entry_carries_text`). A second hand-written copy of a rule drifts on
     the first new role, and then lint's W124, `fha find --text`'s coverage note
     and this skill disagree about which sources are unreadable.
@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import confirm  # noqa: E402
 import process  # noqa: E402
 from _lib import (  # noqa: E402
-    SEARCHABLE_TEXT_SUFFIXES,
+    TRANSCRIPT_TEXT_SUFFIXES,
     TEXT_COMPANION_ROLES,
     file_entry_carries_text,
     strip_unaccepted_drafts,
@@ -154,7 +154,7 @@ class ShippedPredicatesAreQuotedTest(unittest.TestCase):
 
     def test_marker_scope_lists_exactly_the_indexed_suffixes(self):
         section = self.skill.split('**Scope.**', 1)[1].split('\n\n', 1)[0]
-        for suffix in SEARCHABLE_TEXT_SUFFIXES:
+        for suffix in TRANSCRIPT_TEXT_SUFFIXES:
             self.assertIn(suffix, section)
         for role in TEXT_COMPANION_ROLES:
             self.assertIn(role, section)

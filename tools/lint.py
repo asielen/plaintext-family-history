@@ -112,7 +112,10 @@ from _lib import (
     contradiction_question_heading,
     claim_death_reading,
     edtf_bounds,
+    file_entry_is_searched_copy,
+    file_entry_is_page_copy,
     files_carry_searchable_text,
+    unsaved_image_checker,
     finding_to_message,
     bracket_given_name,
     is_genetic_parent_subtype,
@@ -4513,14 +4516,23 @@ def _check_untranscribed_evidence(
     answer a warning). A source with no files listed is not flagged - there is
     nothing to transcribe. Warning, not error: an untranscribed source is a
     normal state of research, and the fix is work, not a correction.
+
+    A family tree exported as a GEDCOM (`.ged`) is the evidence's own words and
+    never trips this (SPEC §6, #316), and neither does a source whose files are
+    only saved web pages (with or without the site's data): the search reads
+    the page and there is no picture to transcribe. A page or data file beside
+    a record image does not clear it, and site data alone does not either -
+    it is the site's reading, not a transcript - but the message names those
+    files for what they are rather than calling every file a scan.
     """
+    image_unsaved = unsaved_image_checker(registry.archive_root, registry.fha_config)
     for sid, meta in sorted(registry.source_meta.items()):
         raw_files = meta.get('files') or []
         entries = [
             (str(f.get('role', '')), str(f.get('file', '')))
             for f in raw_files if isinstance(f, dict)
         ]
-        if not entries or files_carry_searchable_text(entries):
+        if not entries or files_carry_searchable_text(entries, image_unsaved):
             continue
 
         accepted = [
@@ -4532,17 +4544,45 @@ def _check_untranscribed_evidence(
 
         path = registry.source_paths.get(sid, registry.archive_root / str(sid))
         display = fmt_id_display(sid)
+        copies = sum(1 for role, f in entries if file_entry_is_searched_copy(role, f))
+        if copies == len(entries) and any(
+                file_entry_is_page_copy(role, f) for role, f in entries):
+            # A page and its data, flagged only because the data says the
+            # record's image was not saved (files_carry_searchable_text).
+            kind = (f'the record\'s image was not saved when {display} was '
+                    'captured, so the archive holds only the website\'s page '
+                    'and its data, not the record itself. ')
+            fix = ('Download the image from the site and drop it into the '
+                   'capture panel, or attach it with `fha process <one of its '
+                   'files> --more <the-image-file> record`; then read it and '
+                   'attach what it says with `--more <your-transcript.md> '
+                   'transcript`. ')
+        elif copies == len(entries):
+            # Only a site's data (a source with a saved page and no picture is
+            # not flagged at all): the search reads it, so "scan, photograph,
+            # PDF or recording" would be wrong about it.
+            kind = (f'the only files of {display} are a website\'s data about '
+                    'the record, with no transcript beside them. A search reads '
+                    'that data, but it is the website\'s reading of the record, '
+                    'not the record\'s own words. ')
+            fix = ('Open the record and type out what it says, then attach it '
+                   'with `fha process <one of its files> --more '
+                   '<your-transcript.md> transcript`. ')
+        else:
+            also = (' (its saved web page or site data is searched, but it is '
+                    'the website\'s copy, not a transcript)') if copies else ''
+            kind = (f'the evidence of {display} is a scan, photograph, PDF or '
+                    f'recording with no transcript beside it{also}. A search of '
+                    'your archive cannot look inside it, so anything written in '
+                    'this document reads as though it were not there. ')
+            fix = ('If it is a PDF that carries its own text layer, run '
+                   f'`fha source extract {display}`; otherwise read the file and '
+                   'type out what it says, then attach it with `fha process '
+                   '<one of its files> --more <your-transcript.md> transcript`. ')
         findings.append(Finding('W', 'W124', path,
             f'{len(accepted)} accepted claim(s) rest on evidence this archive '
-            f'holds no words for: every file of {display} is a scan, '
-            'photograph, PDF or recording with no transcript beside it. '
-            'A search of your archive cannot look inside them, so '
-            'anything written in this document reads as though it were not '
-            'there. If it is a PDF that carries its own text layer, run '
-            f'`fha source extract {display}`; otherwise read the file and type '
-            'out what it says, then attach it with `fha process <one of its '
-            'files> --more <your-transcript.md> transcript`. Either way, run '
-            '`fha index` afterwards so the words become searchable.'))
+            f'holds no words for: {kind}{fix}Then run `fha index` so the words '
+            'become searchable.'))
 
 
 # ── W137: evidence pointed at by folder path, not by its source ID (#249) ────

@@ -1862,6 +1862,257 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         self.assertIn('could not check which sources have no searchable text', out)
         self.assertIn('fha index', out)
 
+    # ── #316: plain-text evidence beyond .md/.txt ──────────────────────────
+
+    def _write(self, rel: str, content: str | bytes) -> None:
+        path = self.archive_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding='utf-8')
+
+    def test_a_name_only_in_a_family_tree_export_is_found(self) -> None:
+        # A tree exported as a GEDCOM is plain text. A name that appears only
+        # in it came back "No results", with no hint the tree was never read.
+        self._write('documents/trees/family-tree_S-4k6m8p0r2t.ged',
+                    '0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Tobias /Quenby/\n'
+                    '1 BIRT\n2 DATE 1842\n0 TRLR\n')
+        code, out = self._search('Quenby')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Found 1 result(s)', out)
+        self.assertIn('family-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_a_utf16_tree_export_is_still_read(self) -> None:
+        # Older genealogy programs write UTF-16 with a byte-order mark.
+        self._write('documents/trees/old-tree_S-4k6m8p0r2t.ged',
+                    '0 @I1@ INDI\n1 NAME Tobias /Quenby/\n'.encode('utf-16'))
+        _, out = self._search('Quenby')
+        self.assertIn('old-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_a_saved_web_page_is_searched_by_what_it_shows(self) -> None:
+        self._write(
+            'documents/census/census-webpage_S-4k6m8p0r2t.html',
+            '<html><head><title>1880 census</title><style>.Quenby{}</style>'
+            '<script>var Wexcombe = 1;</script></head>'
+            '<body><nav>Home Search Records</nav>'
+            '<table><tr><th>Name</th><td>Tobias <b>Quenby</b></td></tr></table>'
+            '</body></html>')
+        _, out = self._search('Tobias Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        # A word that appears only inside the page's script is not a finding.
+        _, out = self._search('Wexcombe')
+        self.assertIn('No results', out)
+        # Nor is a tag name.
+        _, out = self._search('tbody')
+        self.assertIn('No results', out)
+
+    def test_site_data_is_searched_by_its_values(self) -> None:
+        self._write('documents/census/census-record-data_S-4k6m8p0r2t.json',
+                    json.dumps({'person': {'givenName': 'Tobias',
+                                           'surname': 'Quenby'}}))
+        _, out = self._search('Quenby')
+        self.assertIn('census-record-data_S-4k6m8p0r2t.json', out)
+        _, out = self._search('givenName')
+        self.assertIn('No results', out)
+
+    def test_a_tree_export_counts_as_text_for_the_coverage_note(self) -> None:
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
+    def test_a_page_copy_beside_a_scan_does_not_count_for_the_coverage_note(self) -> None:
+        # The website's copy is searched, but it is not the record's words.
+        self._add_file(_MUTE_SID, 'documents/charts/chart-webpage_S-2h4k6m8p0r.html',
+                       'webpage')
+        self._add_file(_MUTE_SID, 'documents/charts/chart-data_S-2h4k6m8p0r.json',
+                       'site-data')
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+
+    def test_an_ansi_tree_export_keeps_its_accents(self) -> None:
+        # Older programs save a tree in Windows ANSI. Read as UTF-8 with bad
+        # bytes dropped, "Müller" became "Mller" and a search for it failed.
+        self._write('documents/trees/ansi-tree_S-4k6m8p0r2t.ged',
+                    '0 HEAD\n1 CHAR ANSI\n0 @I1@ INDI\n1 NAME Anna /Müller/\n'
+                    .encode('cp1252'))
+        _, out = self._search('Müller')
+        self.assertIn('ansi-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_cdata_in_a_saved_page_is_searched(self) -> None:
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.xhtml',
+                    '<html><body><p><![CDATA[Tobias Quenby, farmer]]></p>'
+                    '</body></html>')
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.xhtml', out)
+
+    def _counting_parser(self):
+        """Swap in a PageTextParser that counts how often a page is parsed."""
+        import _lib
+        made = []
+        real = _lib.PageTextParser
+
+        class Counting(real):
+            def __init__(self) -> None:
+                made.append(1)
+                super().__init__()
+
+        _lib.PageTextParser = Counting
+        self.addCleanup(setattr, _lib, 'PageTextParser', real)
+        return made
+
+    def test_an_unchanged_page_is_parsed_once_across_searches(self) -> None:
+        # Two hundred large saved pages made every search take half a minute,
+        # because every page was parsed on every query - and the family
+        # surname is on most of them, so no cheap check could skip them.
+        page = 'documents/census/census-webpage_S-4k6m8p0r2t.html'
+        self._write(page, '<html><body><p>Tobias <b>Quenby</b></p></body></html>')
+        self._write('documents/census/other-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Ellen Marsh, widow</p></body></html>')
+        made = self._counting_parser()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 2)          # first search reads both pages
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 2)          # second search parses nothing
+        # A changed page is read again, and the change is what is found.
+        self._write(page, '<html><body><p>Tobias Wexcombe, farmer</p></body></html>')
+        _, out = self._search('Wexcombe')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 3)
+
+    def test_after_fha_index_the_first_search_parses_nothing(self) -> None:
+        # `fha index` runs after every capture and filing. Reading the new
+        # pages there means the first search after a capture batch is as fast
+        # as the next, instead of a long wait that looks like a hang.
+        import argparse as _argparse
+        import index
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Tobias Quenby</p></body></html>')
+        self.conn.close()   # the real build replaces this fixture's index
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            index._run_index(_argparse.Namespace(
+                root=str(self.archive_root), source=None, verbose=False))
+        self.conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        made = self._counting_parser()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(made, [])
+
+    def test_a_long_first_read_says_so_before_the_wait(self) -> None:
+        for i in range(21):
+            self._write(f'documents/census/p{i}-webpage_S-4k6m8p0r2t.html',
+                        f'<html><body><p>Page {i}</p></body></html>')
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self._search('Quenby')
+        self.assertIn('Reading 21 saved web pages for the first time', err.getvalue())
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self._search('Quenby')
+        self.assertNotIn('Reading', err.getvalue())
+
+    def test_a_page_whose_record_image_was_not_saved_counts_as_unread(self) -> None:
+        # Same rule as lint W124: the page stands in for an image the capture
+        # could not download, and the data says so.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/census/c-webpage_S-2h4k6m8p0r.html', 'webpage')
+        self._add_file(_MUTE_SID, 'documents/census/c-record-data_S-2h4k6m8p0r.json',
+                       'site-data')
+        self.conn.commit()
+        self._write('documents/census/c-webpage_S-2h4k6m8p0r.html',
+                    '<html><body>Census</body></html>')
+        data = 'documents/census/c-record-data_S-2h4k6m8p0r.json'
+        self._write(data, json.dumps({'record': {'imageId': 'x1', 'imageSaved': False}}))
+        _, out = self._search('Harkness')
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        # A census household's later member: its page is already filed.
+        self._write(data, json.dumps({'record': {
+            'imageId': 'x1', 'imageSaved': False,
+            'same_image_as': {'where': 'archive', 'source': 'S-3j5n7q9s1t'}}}))
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+        self._write(data, json.dumps({'record': {'name': 'An obituary'}}))
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
+    def _damaged_cache_is_replaced(self, damage) -> None:
+        page = 'documents/census/census-webpage_S-4k6m8p0r2t.html'
+        self._write(page, '<html><body><p>Tobias Quenby</p></body></html>')
+        self._search('Quenby')
+        cache = self.archive_root / '.cache' / 'page-text.sqlite'
+        damage(cache)
+        made = self._counting_parser()
+        _, out = self._search('Quenby')            # finds the damage, starts afresh
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 1)             # the second search is fast again
+
+    def test_a_cache_full_of_garbage_is_replaced(self) -> None:
+        self._damaged_cache_is_replaced(
+            lambda cache: cache.write_bytes(os.urandom(8192)))
+
+    def test_a_truncated_cache_is_replaced(self) -> None:
+        def truncate(cache: Path) -> None:
+            data = cache.read_bytes()
+            cache.write_bytes(data[:len(data) // 2 + 100])
+        self._damaged_cache_is_replaced(truncate)
+
+    def test_an_all_ansi_file_is_read_in_one_pass(self) -> None:
+        # A large tree export saved in ANSI throughout is decoded in one pass,
+        # not byte by byte, and still reads right.
+        import _lib
+        raw = '1 NAME Anna /Müller/ of Zürich\n'.encode('cp1252')
+        calls = []
+        real = _lib._cp1252_for_bad_bytes
+        _lib.codecs.register_error(_lib._CP1252_FALLBACK,
+                                   lambda e: (calls.append(1), real(e))[1])
+        try:
+            self.assertEqual(_lib._decode_text_file(raw), raw.decode('cp1252'))
+            self.assertEqual(calls, [])
+            mixed = 'Äbersold '.encode('utf-8') + b'\x92' + ' Wäckerlin'.encode('utf-8')
+            self.assertEqual(_lib._decode_text_file(mixed), 'Äbersold \u2019 Wäckerlin')
+            self.assertEqual(calls, [1])
+        finally:
+            _lib.codecs.register_error(_lib._CP1252_FALLBACK, real)
+
+    def test_a_stray_windows_byte_keeps_the_accents_on_its_own_line(self) -> None:
+        self._write('documents/letters/letter-transcript_S-4k6m8p0r2t.md',
+                    'Line with Äbersold and stray '.encode('utf-8') + b'\x92'
+                    + ' here, then Wäckerlin.\n'.encode('utf-8'))
+        _, out = self._search('Äbersold')
+        self.assertIn('letter-transcript_S-4k6m8p0r2t.md', out)
+
+    def test_a_deleted_or_unwritable_page_cache_changes_no_answer(self) -> None:
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Tobias Quenby</p></body></html>')
+        _, out = self._search('Quenby')
+        cache = self.archive_root / '.cache' / 'page-text.sqlite'
+        self.assertTrue(cache.is_file())
+        cache.unlink()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        # A cache that cannot be opened (here a folder sits where the file
+        # goes) only costs speed.
+        cache.unlink()
+        cache.mkdir()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+
+    def test_one_stray_windows_byte_keeps_the_rest_of_the_file_right(self) -> None:
+        # A UTF-8 transcript with one Windows apostrophe pasted into it must
+        # still find an accented name on another line.
+        self._write('documents/letters/letter-transcript_S-4k6m8p0r2t.md',
+                    'It was Mary\x92s house.\n'.encode('latin-1')
+                    + 'Signed, Hans Wäckerlin\n'.encode('utf-8'))
+        _, out = self._search('Wäckerlin')
+        self.assertIn('letter-transcript_S-4k6m8p0r2t.md', out)
+
 
 # Four transcripts of the same kind of evidence, in the four states the
 # transcribe-source marker contract defines.
@@ -2167,6 +2418,34 @@ class JsonCoverageNoteTests(unittest.TestCase):
         self.assertTrue(hits)
         self.assertIn('no searchable text for 1 of its 2 sources', note)
         self.assertEqual(hits, find.search_json(self.archive_root, {}, 'Harkness'))
+
+    def test_the_index_only_search_counts_a_tree_export_as_unread(self) -> None:
+        # The workbench and --json search only the index, and the index never
+        # holds a tree export. A name only in the tree comes back empty there,
+        # so the caveat must count the tree as unread and say where to look,
+        # not shrink as though the tree had been searched.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        tree = self.archive_root / 'documents/trees/family-tree_S-2h4k6m8p0r.ged'
+        tree.parent.mkdir(parents=True, exist_ok=True)
+        tree.write_text('0 @I1@ INDI\n1 NAME Tobias /Quenby/\n', encoding='utf-8')
+        hits, note = find.search_json_with_coverage(self.archive_root, {}, 'Quenby')
+        self.assertEqual(hits, [])
+        self.assertIn('no searchable text for 1 of its 2 sources', note)
+        self.assertIn('fha find --text', note)
+        self.assertIn('family tree export', note)
+
+    def test_run_find_json_counts_a_tree_export_as_unread(self) -> None:
+        # `fha find --json` goes through run_find_json, not the engine above;
+        # it reads only the index too, so it must give the same answer.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        result = find.run_find_json(self.archive_root, {}, query='Quenby')
+        note = result.data['coverage_note']
+        self.assertIn('no searchable text for 1 of its 2 sources', note)
+        self.assertIn('family tree export', note)
 
     def test_a_kind_filtered_search_is_not_charged_for_the_count(self) -> None:
         # A --kind lookup is "which record do you mean", not "what does this
