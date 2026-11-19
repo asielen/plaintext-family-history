@@ -6302,7 +6302,8 @@ class ClaimTextCutByHashW156Tests(unittest.TestCase):
         codes, _p, _t = self._run(self._claim('', value='#4 Main St'))
         (w,) = codes.get('W156', [])
         self.assertIn('Nothing reaches the index', w.message)
-        self.assertIn('fha claim c-7dddddddd2 --value "#4 Main St"', w.message)
+        from _lib import shell_quote
+        self.assertIn('fha claim c-7dddddddd2 --value ' + shell_quote('#4 Main St'), w.message)
         self.assertIn("`value: '#4 Main St'`", w.message)
 
     def test_a_block_that_is_not_a_claim_list_is_left_to_e010(self) -> None:
