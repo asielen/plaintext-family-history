@@ -1466,8 +1466,8 @@ def _normalize_subtree_arg(
     Normalize an --under/--not-under argument to the catalog's alias form.
 
     Catalog paths are stored as 'photos/<relative posix path>', so both the
-    natural relative form ('Woodbury/1950s') and the alias form
-    ('photos/Woodbury/1950s') must mean the same subtree; backslashes are
+    natural relative form ('Easton/1950s') and the alias form
+    ('photos/Easton/1950s') must mean the same subtree; backslashes are
     accepted because the person typing them is often on Windows - and so is
     an absolute path pasted from Explorer, which resolves through the
     configured photos root (`path_to_alias`) when the caller supplies the
@@ -2014,8 +2014,8 @@ def _disambiguated_slug(value: str) -> str:
 
     Case and surrounding space are folded before comparing and before hashing,
     because every filter this serves matches case-insensitively (`_under_subtree`
-    casefolds, keyword is a LOWER() match, FTS is case-insensitive): 'Woodbury'
-    and 'woodbury' select the same photos and must share one page.
+    casefolds, keyword is a LOWER() match, FTS is case-insensitive): 'Easton'
+    and 'easton' select the same photos and must share one page.
     """
     slug = _slugify(value)
     canonical = (value or '').strip().lower()
@@ -2074,7 +2074,7 @@ def _subtree_token_value(
 ) -> str | None:
     """The subtree string a filename token is built from: the catalog's alias form.
 
-    '--under Woodbury', '--under photos/Woodbury' and an absolute path into
+    '--under Easton', '--under photos/Easton' and an absolute path into
     that same folder all select the same photos, so they belong on the same
     gallery page; `_normalize_subtree_arg` is the one function that knows that
     mapping, and it is re-run here (the filename is computed after the match,
@@ -2105,7 +2105,7 @@ def _filter_slug_parts(
     One shared builder so the filter-only landing spot and the person-plus-filter
     suffix stay identical (F4). EDTF goes through `_edtf_slug` so its qualifiers
     survive as distinct tokens (F6). The subtree filters participate too, so
-    `--under Woodbury` and `--under Church` galleries never overwrite each
+    `--under Easton` and `--under Cole` galleries never overwrite each
     other (#35). Every free-text value goes through `_disambiguated_slug`, so
     two values `_slugify` would flatten together keep separate pages.
     """
@@ -3732,7 +3732,7 @@ def run_tag_person_plan(
     if bool(from_face_tag) == bool(paths):
         raise ValueError('exactly one of --from-face-tag or --paths is required')
     if not is_valid_id(person_id) or id_type_of(person_id) != 'P':
-        raise ValueError(f'{person_id!r} is not a valid P-id')
+        raise ValueError(f'{person_id!r} is not a valid p-id')
     person_id = normalize_id(person_id)
     if person_id not in scan_person_record_ids(archive_root):
         raise ValueError(f'{person_id} is not a known person in the archive')
@@ -5206,7 +5206,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     # form supplies it, which `_cmd_find`'s getattr(..., None) handles.
     find_p = deferred.add_parser('find', help='Query the photo catalog')
     find_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    find_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this p-id (any confidence tier)')
+    find_p.add_argument('--person', metavar='p-id', help='Photos resolved to this p-id (any confidence tier)')
     find_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     find_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     find_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
@@ -5219,7 +5219,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
         'gallery', help='Build a clickable single-file HTML page of the matching photos'
     )
     gallery_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    gallery_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this p-id (any confidence tier)')
+    gallery_p.add_argument('--person', metavar='p-id', help='Photos resolved to this p-id (any confidence tier)')
     gallery_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     gallery_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     gallery_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
@@ -5255,7 +5255,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
 
     tag_p = deferred.add_parser('tag-person', help='Write a bare p-id keyword onto matched or explicit photos')
     tag_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    tag_p.add_argument('person_id', metavar='P-ID', help='Person to tag')
+    tag_p.add_argument('person_id', metavar='p-id', help='Person to tag')
     tag_p.add_argument('--from-face-tag', metavar='TAG', help='Tag every photo whose cached face region carries this name')
     tag_p.add_argument('--paths', nargs='+', metavar='PATH', help='Tag these specific catalog paths')
     tag_p.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview the candidate list without writing or prompting')
@@ -5579,7 +5579,7 @@ def _cmd_find(args: argparse.Namespace) -> int:
         # --person filters photo_people, which only ever holds P-ids; a valid but
         # wrong-type id (S-/C-/…) would otherwise pass and silently match nothing.
         if not is_valid_id(person) or id_type_of(person) != 'P':
-            print(f'ERROR: {person!r} is not a valid P-id.', file=sys.stderr)
+            print(f'ERROR: {person!r} is not a valid p-id. p-ids look like p-de957bcda1.', file=sys.stderr)
             return EXIT_FAILURE
 
     try:
@@ -5631,9 +5631,9 @@ def _cmd_gallery(args: argparse.Namespace) -> int:
         # Validated here (not in the engine) exactly like _cmd_find.
         if not is_valid_id(person) or id_type_of(person) != 'P':
             print(
-                f'ERROR: {person!r} is not a valid person id. A P-id looks like '
-                f'P-de957bcda1 (the letter P, a dash, then ten characters). '
-                f'Run `fha find <name>` to see the P-id you want.',
+                f'ERROR: {person!r} is not a valid person id. A p-id looks like '
+                f'p-de957bcda1 (the letter p, a dash, then ten characters). '
+                f'Run `fha find <name>` to see the p-id you want.',
                 file=sys.stderr,
             )
             return EXIT_FAILURE

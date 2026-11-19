@@ -1172,7 +1172,7 @@ def _place_write_result(archive_root: Path, place_id: str) -> tuple[Result, str 
     if not (is_valid_id(place_id) and id_type_of(place_id) == 'L'):
         result_fail(result, 'refused',
                     f'{place_id!r} is not a valid place ID. l-ids look like '
-                    'l-7c1a9f4e22: a l, a dash and 10 characters '
+                    'l-7c1a9f4e22: an l, a dash and 10 characters '
                     'from the archive alphabet.')
         return result, None, 'refused'
     pid = normalize_id(place_id)
@@ -1542,7 +1542,7 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
         print('ERROR: pass --place L-id or --all.', file=sys.stderr)
         return EXIT_FAILURE
     if place_id and not (is_valid_id(place_id) and id_type_of(place_id) == 'L'):
-        print(f'ERROR: {place_id!r} is not a valid L-id.', file=sys.stderr)
+        print(f'ERROR: {place_id!r} is not a valid l-id. l-ids look like l-7c1a9f4e22.', file=sys.stderr)
         return EXIT_FAILURE
 
     result = run_geocode(

@@ -1417,7 +1417,7 @@ def run_add_discovery(
     for ref in (refs or []):
         if not is_valid_id(ref):
             return _fail(result, 'invalid-id',
-                         f'{ref!r} is not a valid archive ID. Refs are S-/P-/C-/L-/H- ids, '
+                         f'{ref!r} is not a valid archive ID. Refs are s-/p-/c-/l-/h- ids, '
                          'e.g. s-fa1234567b or p-de957bcda1.')
         norm_refs.append(normalize_id(ref))
         ref_tokens.append(f'[{fmt_id_display(normalize_id(ref))}]')

@@ -305,7 +305,7 @@ def run_source_note(
         return _refuse(
             'refused',
             f'{source_id!r} is not a valid source ID. s-ids look like '
-            's-2b3c4d5e6f: a s, a dash and 10 characters from '
+            's-2b3c4d5e6f: an s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -429,7 +429,7 @@ def run_source_edit_note(
         return _refuse(
             'refused',
             f'{source_id!r} is not a valid source ID. s-ids look like '
-            's-2b3c4d5e6f: a s, a dash and 10 characters from '
+            's-2b3c4d5e6f: an s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -662,7 +662,7 @@ def run_source_clear_keyword(
         return _refuse(
             'refused',
             f'{source_id!r} is not a valid source ID. s-ids look like '
-            's-2b3c4d5e6f: a s, a dash and 10 characters from '
+            's-2b3c4d5e6f: an s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -1410,7 +1410,7 @@ def run_source_set_primary(
         return _refuse(
             'refused',
             f'{source_id!r} is not a valid source ID. s-ids look like '
-            's-2b3c4d5e6f: a s, a dash and 10 characters from '
+            's-2b3c4d5e6f: an s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     shown_id = fmt_id_display(sid)
@@ -2551,8 +2551,8 @@ def run_source_extract(
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return result_fail(result, 'refused',
-                           f'{source_id!r} is not a valid source ID - S-ids look '
-                           'like S-fa1234567b.')
+                           f'{source_id!r} is not a valid source ID. s-ids look '
+                           'like s-fa1234567b.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
 

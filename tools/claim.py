@@ -788,7 +788,7 @@ def _clear_problem(
                         'Nothing was changed.')
     if persons is not None and not persons:
         return (), ('--persons was empty, but a claim must name at least one person. '
-                    'Pass the P-ids it is about, comma-separated (e.g. --persons '
+                    'Pass the p-ids it is about, comma-separated (e.g. --persons '
                     'p-de957bcda1), or leave --persons off to keep the list as it is. '
                     'Nothing was changed.')
     return tuple(fields), None
@@ -2598,7 +2598,7 @@ def run_claim_batch(
 
     if not deduped:
         return _fail(result, 'failed',
-                     'No claim id given - pass at least one c-id (e.g. c-fd0000001a).')
+                     'No claim id given. Pass at least one c-id (e.g. c-fd0000001a).')
 
     if len(deduped) == 1:
         # One distinct claim: the exact single-id contract, field edits and
@@ -3176,7 +3176,7 @@ def run_claim_new(
 
     if claim_id:
         if not (is_valid_id(claim_id) and id_type_of(claim_id) == 'C'):
-            return _fail(result, 'invalid-id', f'{claim_id!r} is not a valid C-id.')
+            return _fail(result, 'invalid-id', f'{claim_id!r} is not a valid c-id. c-ids look like c-fd0000001a.')
         cid = normalize_id(claim_id)
         if cid in scan_ids_in_tree(archive_root):
             return _fail(

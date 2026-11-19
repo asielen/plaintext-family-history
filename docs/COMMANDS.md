@@ -114,7 +114,7 @@ The index is a disposable cache, always rebuildable from your files.
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root |
-| `--source` `S-ID` | Upsert only this source (incremental mode) |
+| `--source` `s-id` | Upsert only this source (incremental mode) |
 | `-v`, `--verbose` | Show progress (full rebuilds only; ignored with --source) |
 
 ## `fha lint`
@@ -452,8 +452,8 @@ nothing is written.
 
 | Argument | What it does |
 |---|---|
-| `[P-ID]` | One person to show in detail, by ID or by full name (default: the direct line) |
-| `--all` | List every person, stubs included (not with a P-ID) |
+| `[p-id]` | One person to show in detail, by ID or by full name (default: the direct line) |
+| `--all` | List every person, stubs included (not with a p-id) |
 | `--include-suggested` | Count suggested claims as well as accepted ones |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
@@ -514,7 +514,7 @@ Query the photo catalog
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root (overrides auto-detection) |
-| `--person` `P-ID` | Photos resolved to this p-id (any confidence tier) |
+| `--person` `p-id` | Photos resolved to this p-id (any confidence tier) |
 | `--keyword` `TERM` | Case-insensitive substring match against cached keywords |
 | `--edtf` `EDTF` | Bounds-overlap filter against each photo's resolved date |
 | `--text` `TEXT` | Full-text search over title/caption/comment/keywords (photo_fts) |
@@ -529,7 +529,7 @@ Build a clickable single-file HTML page of the matching photos
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root (overrides auto-detection) |
-| `--person` `P-ID` | Photos resolved to this p-id (any confidence tier) |
+| `--person` `p-id` | Photos resolved to this p-id (any confidence tier) |
 | `--keyword` `TERM` | Case-insensitive substring match against cached keywords |
 | `--edtf` `EDTF` | Bounds-overlap filter against each photo's resolved date |
 | `--text` `TEXT` | Full-text search over title/caption/comment/keywords (photo_fts) |
@@ -573,7 +573,7 @@ Write a bare p-id keyword onto matched or explicit photos
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root (overrides auto-detection) |
-| `P-ID` | Person to tag |
+| `p-id` | Person to tag |
 | `--from-face-tag` `TAG` | Tag every photo whose cached face region carries this name |
 | `--paths` `PATH [PATH ...]` | Tag these specific catalog paths |
 | `--dry-run` | Preview the candidate list without writing or prompting |
@@ -902,7 +902,7 @@ freely and run `fha reconcile`. Preview with --dry-run first.
 
 | Argument | What it does |
 |---|---|
-| `S-ID` | The source whose file is filed in the wrong root, e.g. s-2b3c4d5e6f |
+| `s-id` | The source whose file is filed in the wrong root, e.g. s-2b3c4d5e6f |
 | `--to` `{photos,documents}` | Which root the file belongs in |
 | `--file` `NAME` | Which of the record's files to move, by name; needed only when the record lists more than one |
 | `--dest` `SUBPATH` | Destination folder under the target root. Required with --to photos (e.g. "1880s" or "Family/Hartley"); with --to documents it defaults to documents/{type}/ |
@@ -1296,9 +1296,9 @@ Correct a person's name: frontmatter, files, and (when safe) the couple folder.
 ```text
 Correct a person's name everywhere it is mechanically derivable.
 
-  fha person rename p-2b3c4d5e6f "Betty Slamon Kelly"
-  fha person rename p-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
-  fha person rename p-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly"
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
+  fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
 
 Rewrites name: (and, with --keep-variant, files the old name into
 name_variants: rather than losing it), and renames the profile and research
@@ -1320,7 +1320,7 @@ write (before the folder step) rolls itself back.
 
 | Argument | What it does |
 |---|---|
-| `p-id` | The person to rename (e.g. p-2b3c4d5e6f). |
+| `P-id` | The person to rename (e.g. P-2b3c4d5e6f). |
 | `NAME` | The corrected full name, e.g. "Betty Slamon Kelly". |
 | `--keep-variant` | File the OLD name into name_variants: instead of losing it. |
 | `--surname` `TEXT` | Override the renamed filename's surname split, for names no automatic split can be expected to get right (Spanish double surnames, particles like "van der", surname-first conventions). --surname "" means no surname at all. |
@@ -1827,9 +1827,9 @@ Copy your whole archive into one dated zip file, kept outside the archive.
 If any folder cannot be read, no zip is written at all, because a backup
 missing part of your archive would look exactly like a good one. That covers
 a folder that will not open, one that is a shortcut to somewhere else, and
-(with --include-assets) a photos or documents folder that is not there. Reconnect the drive or fix the folder and run it
-again; --allow-incomplete writes it anyway, clearly marked, for a folder that
-is gone for good.
+(with --include-assets) a photos or documents folder that is not there.
+Reconnect the drive or fix the folder and run it again; --allow-incomplete
+writes it anyway, clearly marked, for a folder that is gone for good.
 
 Photos and documents are not included unless you pass --include-assets (they
 are often huge and often live on another drive; the output names them every

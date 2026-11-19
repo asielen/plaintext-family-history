@@ -1228,7 +1228,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
         return {'status': 'bad-args', 'text': None,
-                'messages': [f'ERROR: {pid!r} is not a valid P-id.']}
+                'messages': [f'ERROR: {pid!r} is not a valid p-id. p-ids look like p-2b3c4d5e6f.']}
 
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=True)
     if conn is None:

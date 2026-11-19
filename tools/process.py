@@ -2264,7 +2264,7 @@ def _parse_people_ids(raw: str | None, archive_root: Path) -> list[str]:
                 f'{tok!r} is not a valid p-id. p-ids look like p-de957bcda1: '
                 'a p, a dash and 10 characters from the archive alphabet '
                 '(0-9 and lowercase a-z, except i, l, o, u). '
-                'Run `fha find <name>` to look up the right P-id.'
+                'Run `fha find <name>` to look up the right p-id.'
             )
         normalized = normalize_id(tok)
         if normalized not in known_people:
@@ -5543,7 +5543,7 @@ def process_refile(
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         raise ProcessError(
             f'{source_id!r} is not a valid source ID. s-ids look like '
-            's-2b3c4d5e6f: a s, a dash and 10 characters from the '
+            's-2b3c4d5e6f: an s, a dash and 10 characters from the '
             'archive alphabet (0-9 and lowercase a-z, except i, l, o, u). '
             'Run `fha find <a word from the title>` to look one up.')
     sid = fmt_id_display(normalize_id(source_id))
@@ -6329,7 +6329,7 @@ def _mint_one_source_id(archive_root: Path, source_id: str | None = None) -> str
     """
     if source_id:
         if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
-            raise ProcessError(f'{source_id!r} is not a valid S-id.')
+            raise ProcessError(f'{source_id!r} is not a valid s-id. s-ids look like s-2b3c4d5e6f.')
         sid = normalize_id(source_id)
         if sid in scan_ids_in_tree(archive_root):
             raise ProcessError(
@@ -6636,7 +6636,7 @@ def build_process_refile_parser() -> argparse.ArgumentParser:
         description=_REFILE_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('source_id', metavar='S-ID',
+    p.add_argument('source_id', metavar='s-id',
                    help='The source whose file is filed in the wrong root, e.g. s-2b3c4d5e6f')
     p.add_argument('--to', required=True, choices=('photos', 'documents'),
                    help='Which root the file belongs in')

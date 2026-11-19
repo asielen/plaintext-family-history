@@ -1696,8 +1696,8 @@ class PromotionCandidatesTests(unittest.TestCase):
             self._person(self.KID, 'Kid Person', 'F', 'curated'), encoding='utf-8')
         (self.root / 'people' / 'stubs' / f'pa__p_{self.PA}.md').write_text(
             self._person(self.PA, 'Pa Person', 'M'), encoding='utf-8')
-        (self.root / 'people' / 'stubs' / f'woodbury__frank_{self.FRIEND}.md').write_text(
-            self._person(self.FRIEND, 'Frank S. Woodbury', 'M'), encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'bradford__frank_{self.FRIEND}.md').write_text(
+            self._person(self.FRIEND, 'Frank S. Bradford', 'M'), encoding='utf-8')
         rel = (
             f'- value: "{self.KID} child of {self.PA}"\n'
             f'  id: C-4aaaaaaaaa\n  type: relationship\n  subtype: biological\n'
@@ -1736,7 +1736,7 @@ class PromotionCandidatesTests(unittest.TestCase):
         self.assertIn('Pa Person', body)
         self.assertIn(f'fha person promote {self.PA.lower()}', body)
         # #80: the claim-heavy non-direct stub is now offered the verb too.
-        self.assertIn('Frank S. Woodbury', body)
+        self.assertIn('Frank S. Bradford', body)
         self.assertIn('6 accepted claims and no curated profile', body)
         self.assertIn(f'fha person promote {self.FRIEND.lower()} --into connections/', body)
 
@@ -1745,7 +1745,7 @@ class PromotionCandidatesTests(unittest.TestCase):
             threshold_line='promotion:\n  claims_threshold: 9\n', friend_claims=6)
         body = '\n'.join(self._section(cfg))
         # 6 accepted claims no longer crosses a threshold of 9.
-        self.assertNotIn('Frank S. Woodbury', body)
+        self.assertNotIn('Frank S. Bradford', body)
         self.assertIn('Pa Person', body)   # the direct-line bucket is unaffected
 
     def test_bad_threshold_falls_back_with_a_note(self) -> None:
@@ -1753,7 +1753,7 @@ class PromotionCandidatesTests(unittest.TestCase):
             threshold_line='promotion:\n  claims_threshold: lots\n', friend_claims=6)
         body = '\n'.join(self._section(cfg))
         self.assertIn('using the default 5', body)
-        self.assertIn('Frank S. Woodbury', body)
+        self.assertIn('Frank S. Bradford', body)
 
     def test_empty_state_is_one_plain_line(self) -> None:
         cfg = self._build(friend_claims=1)

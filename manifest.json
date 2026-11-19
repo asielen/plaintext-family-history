@@ -660,7 +660,7 @@
     {
       "path": ".fha/tools/backup.py",
       "category": "operating",
-      "sha256": "bb0ec52a82553ac393930957dc4e0227bd6f2a132b29d8250956c01d985e587d",
+      "sha256": "37aba484fc92c1389a2f99b2b69bfaa4354a20245eaf0caf3945998fe46f98b9",
       "spec_version": "2.7",
       "src": "tools/backup.py"
     },
@@ -716,14 +716,14 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "2056cf02737a83dafd6b6fdabe7828982b07d73fe9940b9dc2cb8384407beab5",
+      "sha256": "506195ab4927b4eb131b7e3757ee243cebee6ce1122c6329d8b2797249ebed61",
       "spec_version": "2.7",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "18ac72ceadd9e3aceae76e80276b71f861b6c168058d3702d2fca748359444ac",
+      "sha256": "b6f49510d62b2c34f71b1a15f28e55278b9a69688332202b06479f0814a0e1b9",
       "spec_version": "2.7",
       "src": "tools/confirm.py"
     },
@@ -765,7 +765,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "f886999ceb02d416f1a25e0a1afba48ccbf7446b45bb9e2d5a632d15e3b369b2",
+      "sha256": "7090faa3eaad78fd550c074bb1361d64d5b8cb41affdb462b2d77e8051b40016",
       "spec_version": "2.7",
       "src": "tools/gedcom.py"
     },
@@ -786,7 +786,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "ca950eb6d8046b699dd4089dc663b0efa59b3dc54998d99d035f64301031e476",
+      "sha256": "15382bb9258fb09b0a44a12002034aed0b74e3673065c414836e1e719de7dc12",
       "spec_version": "2.7",
       "src": "tools/index.py"
     },
@@ -807,7 +807,7 @@
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
-      "sha256": "4caa34252568b1e4a32e00f9d10e4079c31b70d186f41f848c7f71035a7d1ed0",
+      "sha256": "95eed9594a96ca5f825741304f5b789b80564ce501e5766f490d231b9dbbb8a8",
       "spec_version": "2.7",
       "src": "tools/metrics.py"
     },
@@ -828,28 +828,28 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "63d28c97a8ff0c97f6c540dcc6e34b9b3b1216eb4644d4d30e9da85c04f90c1b",
+      "sha256": "3fd25e0ed1869f821794213589dbf41b798f242a8aeccf374ebc2c60dfed070d",
       "spec_version": "2.7",
       "src": "tools/person.py"
     },
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "75ca0b30b8dd3ff4cfefb6094b55e545f4636a2c375030d70bb9b9bdf111ab0f",
+      "sha256": "f81e4f393ca1576c57fc0d91b5a4b3e2a2937bdc9a0944dd8698bc0e23400719",
       "spec_version": "2.7",
       "src": "tools/photoindex.py"
     },
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "3fa78925bb4bf8bdb1a249c31d9167c0456c5aaf59b275dc3450bcc7c362a761",
+      "sha256": "065bc30d8b30e1f7a0e4cce89cd3847b121dba4cf9f21227acbf0c2786be878a",
       "spec_version": "2.7",
       "src": "tools/places.py"
     },
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "15eab1a192acf43bf85925a98953b05d0ab1a298f1fc7907295d4efc3306c9aa",
+      "sha256": "a0abd7532af55584259064c78aafbcb937eaa6778ae66a6e147f6d25b2458db0",
       "spec_version": "2.7",
       "src": "tools/process.py"
     },
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "9374d9ad4d7631f536deb2d3ab938ef00fc764dec8d3b115107d8a2d71414ff2",
+      "sha256": "7bdf65e0fb1b3d3f62e682f02cf5610034aef6d2a91d7b3391db04c7554e8fc2",
       "spec_version": "2.7",
       "src": "tools/source.py"
     },
@@ -1059,7 +1059,7 @@
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "f5f3c826fb34ea923270f41b3469f6db69fcaf412a7bdf4f54151ca36d8ac63a",
+      "sha256": "6537701ae09a60d8d8a0ef5877b20778cb2ca84ac4f481c575a14520f0867934",
       "spec_version": "2.7",
       "src": "tools/wikitree.py"
     },
@@ -1126,7 +1126,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "dacda6a0bf1e9142683fdbd5141c558cc61245e93284c788447b0e79b3b2be5f",
+      "sha256": "ca7eee3e2a89db8d98d69f142b80e773b07e9414184df708cf8ed393d9abfc4e",
       "spec_version": "2.7"
     },
     {

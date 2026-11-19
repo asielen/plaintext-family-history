@@ -1049,7 +1049,7 @@ def run_new(
     stubs_dir = archive_root / 'people' / 'stubs'
     if person_id:
         if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
-            return _refuse_result(result, 'refused', f'{person_id!r} is not a valid P-id.')
+            return _refuse_result(result, 'refused', f'{person_id!r} is not a valid p-id. p-ids look like p-2b3c4d5e6f.')
         pid = normalize_id(person_id)
         # Reuse is refused only when a person RECORD already carries this id -
         # not on any textual mention of it. The workbench's claim-reference
@@ -1368,7 +1368,7 @@ def run_new_from_file(
         result.note_changed(target)
         result.add('info', f"Created {fmt_id_display(pid)} ({r['name']}) - "
                            f'people/stubs/{target.name}.', path=target)
-    result.add('info', f'Next: `fha index`, then `fha person relate <P-id> '
+    result.add('info', f'Next: `fha index`, then `fha person relate <p-id> '
                        '--parent|--child|--sibling|--spouse <p-id2>` to tie them to family.',
                next_step='fha index')
     return result
@@ -4025,9 +4025,9 @@ def _add_promote_arguments(sub: argparse._SubParsersAction) -> None:
 _RENAME_DESCRIPTION = """\
 Correct a person's name everywhere it is mechanically derivable.
 
-  fha person rename p-2b3c4d5e6f "Betty Slamon Kelly"
-  fha person rename p-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
-  fha person rename p-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly"
+  fha person rename P-2b3c4d5e6f "Betty Slamon Kelly" --keep-variant
+  fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
 
 Rewrites name: (and, with --keep-variant, files the old name into
 name_variants: rather than losing it), and renames the profile and research
@@ -4055,8 +4055,8 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
         description=_RENAME_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    rn.add_argument('person_id', metavar='p-id',
-                    help='The person to rename (e.g. p-2b3c4d5e6f).')
+    rn.add_argument('person_id', metavar='P-id',
+                    help='The person to rename (e.g. P-2b3c4d5e6f).')
     rn.add_argument('new_name', metavar='NAME',
                     help='The corrected full name, e.g. "Betty Slamon Kelly".')
     rn.add_argument('--keep-variant', action='store_true', dest='keep_variant',
