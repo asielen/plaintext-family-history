@@ -47,6 +47,7 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import codecs
 import dataclasses
 import datetime
 import fnmatch
@@ -105,6 +106,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    file_entry_carries_text   - one files: entry -> is its content searchable text?
 #    files_carry_searchable_text - a source's files: block -> any text at all?
 #    file_entry_is_searched_copy - a page copy or site data: searched, not the words
+#    file_entry_is_page_copy   - a saved .html/.htm/.xhtml page copy
 #    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
 #    read_searchable_text      - a file's words as the text search reads them
 #    PageTextCache             - each saved page's visible text, parsed once (.cache/)
@@ -8867,6 +8869,19 @@ def file_entry_is_searched_copy(role: str, path: str) -> bool:
             and _entry_suffix(path) in TEXT_SEARCH_SUFFIXES)
 
 
+# A saved page copy, read by what it shows. Not `.mhtml`: the search cannot read it.
+_PAGE_COPY_SUFFIXES: frozenset[str] = frozenset({'.html', '.htm', '.xhtml'})
+
+
+def file_entry_is_page_copy(role: str, path: str) -> bool:
+    """Is this a saved copy of a web page the search reads (`.html`/`.htm`/`.xhtml`)?
+
+    Decided by the file, not the role: a `webpage` screenshot saved as a
+    picture is an image the search cannot read.
+    """
+    return _entry_suffix(path) in _PAGE_COPY_SUFFIXES
+
+
 def _entry_suffix(path: str) -> str:
     return PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
 
@@ -8883,8 +8898,19 @@ def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool
 
     A source with no files at all is not "unreadable" - there is nothing to
     read - so callers test emptiness separately rather than folding it in here.
+
+    A source whose files are ONLY saved web-page copies (with or without the
+    site's data) also counts (SPEC §6, owner decision 2026-11-18): the search
+    already reads the page, and there is no picture behind it to transcribe.
+    A page filed beside a record image does not count - the image still holds
+    words nobody has written out - and site data alone never does: it is the
+    site's reading, never a transcript.
     """
-    return any(file_entry_carries_text(role, path) for role, path in file_entries)
+    entries = list(file_entries)
+    if any(file_entry_carries_text(role, path) for role, path in entries):
+        return True
+    return (any(file_entry_is_page_copy(role, path) for role, path in entries)
+            and all(file_entry_is_searched_copy(role, path) for role, path in entries))
 
 
 class PageTextParser(HTMLParser):
@@ -8979,30 +9005,27 @@ def _decode_text_file(raw: bytes) -> str:
     A GEDCOM from an older program can be UTF-16 (with its byte-order mark),
     ANSI or ANSEL, and an older saved page is often Windows ANSI. A UTF-16 file
     read as UTF-8 loses every name to the zero bytes between its letters, so
-    the mark is honoured. A line that is not valid UTF-8 is read as Windows
-    ANSI (cp1252), so "Müller" stays "Müller" rather than becoming "Mller";
-    an ANSEL accent then shows as a stray letter beside its base letter, which
-    still leaves the name findable.
-
-    The fallback is per line, not per file: a UTF-8 transcript with one stray
-    Windows apostrophe pasted into it keeps every other line's accents right,
-    so "Wäckerlin" on another line is still found.
+    the mark is honoured. Everything else is read as UTF-8, and only the bytes
+    that are not valid UTF-8 are read as Windows ANSI (cp1252): a file saved
+    in ANSI keeps "Müller" rather than "Mller", and a UTF-8 transcript with
+    one stray Windows apostrophe pasted into it keeps every accent around it,
+    so "Äbersold" on the same line is still found. An ANSEL accent shows as a
+    stray letter beside its base letter, which still leaves the name findable.
     """
     if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
         return raw.decode('utf-16', errors='ignore')
     if raw.startswith(b'\xef\xbb\xbf'):
         raw = raw[3:]
-    try:
-        return raw.decode('utf-8')
-    except UnicodeDecodeError:
-        pass
-    lines = []
-    for line in raw.split(b'\n'):
-        try:
-            lines.append(line.decode('utf-8'))
-        except UnicodeDecodeError:
-            lines.append(line.decode('cp1252', errors='ignore'))
-    return '\n'.join(lines)
+    return raw.decode('utf-8', errors=_CP1252_FALLBACK)
+
+
+def _cp1252_for_bad_bytes(err: UnicodeDecodeError) -> tuple[str, int]:
+    """Decode handler: the bytes UTF-8 rejected, read as Windows ANSI."""
+    return err.object[err.start:err.end].decode('cp1252', errors='ignore'), err.end
+
+
+_CP1252_FALLBACK = 'fha-cp1252-fallback'
+codecs.register_error(_CP1252_FALLBACK, _cp1252_for_bad_bytes)
 
 
 def _json_leaf_text(value: Any, out: list[str]) -> None:
@@ -9080,16 +9103,44 @@ class PageTextCache:
         path = Path(archive_root) / '.cache' / 'page-text.sqlite'
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(path))
-            if conn.execute('PRAGMA user_version').fetchone()[0] != _PAGE_TEXT_CACHE_VERSION:
-                conn.execute('DROP TABLE IF EXISTS page_text')
-                conn.execute(f'PRAGMA user_version = {_PAGE_TEXT_CACHE_VERSION}')
-            conn.execute(
-                'CREATE TABLE IF NOT EXISTS page_text ('
-                'path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, text TEXT)')
-            self.conn = conn
-        except (OSError, sqlite3.Error):
-            self.conn = None
+        except OSError:
+            return
+        # A damaged cache file (a crash mid-write, a bad disk sector) would
+        # otherwise make every search re-read every page, forever. It is
+        # disposable, so it is deleted and started afresh, once.
+        for _attempt in range(2):
+            conn = None
+            try:
+                conn = sqlite3.connect(str(path))
+                self._prepare(conn)
+                self.conn = conn
+                return
+            except sqlite3.OperationalError:
+                # Read-only, locked, or not openable at all: leave it alone and
+                # let the search parse pages as it would with no cache.
+                if conn is not None:
+                    conn.close()
+                return
+            except sqlite3.DatabaseError:
+                if conn is not None:
+                    conn.close()
+                try:
+                    for leftover in (path, path.with_name(path.name + '-journal')):
+                        leftover.unlink(missing_ok=True)
+                except OSError:
+                    return
+
+    @staticmethod
+    def _prepare(conn: sqlite3.Connection) -> None:
+        """Check the file is a sound cache of this version, or make it one."""
+        if conn.execute('PRAGMA quick_check(1)').fetchone()[0] != 'ok':
+            raise sqlite3.DatabaseError('page-text cache is damaged')
+        if conn.execute('PRAGMA user_version').fetchone()[0] != _PAGE_TEXT_CACHE_VERSION:
+            conn.execute('DROP TABLE IF EXISTS page_text')
+            conn.execute(f'PRAGMA user_version = {_PAGE_TEXT_CACHE_VERSION}')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS page_text ('
+            'path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, text TEXT)')
 
     def _cached(self, path: Path, st: os.stat_result) -> str | None:
         if self.conn is None:

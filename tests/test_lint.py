@@ -2673,23 +2673,33 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertIn('fha source extract', found[0].message)
         self.assertIn("website's copy, not a transcript", found[0].message)
 
-    def test_a_page_copy_alone_is_not_called_a_scan(self) -> None:
+    def test_a_source_that_is_only_a_saved_page_is_not_flagged(self) -> None:
+        # Owner decision 2026-11-18: the search already reads the page and
+        # there is no picture behind it, so asking for a transcript of it would
+        # only add a copy of the page to the "transcribe these" list.
         self._write_source([
             (f'documents/charts/harkness-chart-webpage_{_W124_SID}.html', 'webpage'),
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
         ])
-        found = self._codes()
-        self.assertEqual(len(found), 1, [f.message for f in found])
-        self.assertNotIn('scan, photograph', found[0].message)
-        self.assertIn("website's saved copy", found[0].message)
+        self.assertEqual(self._codes(), [])
 
-    def test_an_xhtml_page_copy_gets_the_page_copy_wording(self) -> None:
+    def test_an_xhtml_page_copy_alone_is_not_flagged(self) -> None:
         self._write_source([
             (f'documents/charts/harkness-chart-webpage_{_W124_SID}.xhtml', 'webpage'),
         ])
+        self.assertEqual(self._codes(), [])
+
+    def test_site_data_alone_still_asks_for_a_transcript(self) -> None:
+        # The site's data is its reading of the record, never a transcript.
+        self._write_source([
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
+        ])
         found = self._codes()
         self.assertEqual(len(found), 1, [f.message for f in found])
         self.assertNotIn('scan, photograph', found[0].message)
-        self.assertIn("website's saved copy", found[0].message)
+        self.assertIn("website's data", found[0].message)
 
 
 _E011_SID = 'S-5n7q9s1t3v'

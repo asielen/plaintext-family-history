@@ -75,8 +75,10 @@ sources (`_lib.file_entry_carries_text`): an entry carries text when its `role:`
 `transcription` or `extracted-text`, **or** its file is a `.md`, `.txt` or `.ged` (whatever its role; a
 family tree exported as a GEDCOM is its own words). Everything else is opaque — a `.jpg`, a `.tif`, a
 `.pdf`, an `.m4a` — however much text a human eye can see in it. A captured record's saved page (`.html`)
-and site data (`.json`) do not count either: `fha find --text` reads them, but they are the website's copy
-and reading of the record, so the record image still needs a transcript.
+and site data (`.json`) do not count beside a record image: `fha find --text` reads them, but they are the
+website's copy and reading of the record, so the image still needs a transcript. Site data alone is still
+image-only work. A source whose files are only saved pages (with or without site data) is not: the search
+reads the page and there is no picture to transcribe (`_lib.files_carry_searchable_text`).
 A source with no `files:` at all is not image-only; there is nothing to read.
 
 Two consequences worth stating plainly to the human:

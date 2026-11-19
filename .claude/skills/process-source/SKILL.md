@@ -93,8 +93,10 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    `extracted-text`, and no `.md`/`.txt`/`.ged` file (`_lib.file_entry_carries_text`, the same rule
    `fha lint`'s W124 and `fha find --text`'s coverage note use). A scan, a photograph and a PDF with
    no text layer are all image-only, however much text a human eye can see in them. So is a captured
-   record whose only text is the website's saved page (`.html`) or its data (`.json`): the search
-   reads those, but they are the site's copy, not a transcript of the record.
+   record image whose only text beside it is the website's saved page (`.html`) or its data
+   (`.json`): the search reads those, but they are the site's copy, not a transcript of the image. A
+   source that is only a saved page (with or without its data) is not image-only: there is no picture
+   to transcribe (`_lib.files_carry_searchable_text`).
 
    **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
    Not after, and not "if there's time". The transcript exists *first* so the claims you draft in

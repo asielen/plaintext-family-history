@@ -2016,6 +2016,36 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
             self._search('Quenby')
         self.assertNotIn('Reading', err.getvalue())
 
+    def _damaged_cache_is_replaced(self, damage) -> None:
+        page = 'documents/census/census-webpage_S-4k6m8p0r2t.html'
+        self._write(page, '<html><body><p>Tobias Quenby</p></body></html>')
+        self._search('Quenby')
+        cache = self.archive_root / '.cache' / 'page-text.sqlite'
+        damage(cache)
+        made = self._counting_parser()
+        _, out = self._search('Quenby')            # finds the damage, starts afresh
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 1)             # the second search is fast again
+
+    def test_a_cache_full_of_garbage_is_replaced(self) -> None:
+        self._damaged_cache_is_replaced(
+            lambda cache: cache.write_bytes(os.urandom(8192)))
+
+    def test_a_truncated_cache_is_replaced(self) -> None:
+        def truncate(cache: Path) -> None:
+            data = cache.read_bytes()
+            cache.write_bytes(data[:len(data) // 2 + 100])
+        self._damaged_cache_is_replaced(truncate)
+
+    def test_a_stray_windows_byte_keeps_the_accents_on_its_own_line(self) -> None:
+        self._write('documents/letters/letter-transcript_S-4k6m8p0r2t.md',
+                    'Line with Äbersold and stray '.encode('utf-8') + b'\x92'
+                    + ' here, then Wäckerlin.\n'.encode('utf-8'))
+        _, out = self._search('Äbersold')
+        self.assertIn('letter-transcript_S-4k6m8p0r2t.md', out)
+
     def test_a_deleted_or_unwritable_page_cache_changes_no_answer(self) -> None:
         self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
                     '<html><body><p>Tobias Quenby</p></body></html>')

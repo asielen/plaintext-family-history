@@ -4445,10 +4445,12 @@ def _check_untranscribed_evidence(
     normal state of research, and the fix is work, not a correction.
 
     A family tree exported as a GEDCOM (`.ged`) is the evidence's own words and
-    never trips this (SPEC §6, #316). A website's saved page copy or its data
-    file does not clear it - it is the site's copy and reading of the record,
-    not a transcript - but the message names those files for what they are
-    rather than calling every file a scan.
+    never trips this (SPEC §6, #316), and neither does a source whose files are
+    only saved web pages (with or without the site's data): the search reads
+    the page and there is no picture to transcribe. A page or data file beside
+    a record image does not clear it, and site data alone does not either -
+    it is the site's reading, not a transcript - but the message names those
+    files for what they are rather than calling every file a scan.
     """
     for sid, meta in sorted(registry.source_meta.items()):
         raw_files = meta.get('files') or []
@@ -4470,12 +4472,13 @@ def _check_untranscribed_evidence(
         display = fmt_id_display(sid)
         copies = sum(1 for role, f in entries if file_entry_is_searched_copy(role, f))
         if copies == len(entries):
-            # Only a saved web page and/or a site's data: the search reads them,
-            # so "scan, photograph, PDF or recording" would be wrong about them.
-            kind = (f'the only files of {display} are a website\'s saved copy '
-                    'of the record or its data, with no transcript beside them. '
-                    'A search reads those, but they are the website\'s copy and '
-                    'its reading of the record, not the record\'s own words. ')
+            # Only a site's data (a source with a saved page and no picture is
+            # not flagged at all): the search reads it, so "scan, photograph,
+            # PDF or recording" would be wrong about it.
+            kind = (f'the only files of {display} are a website\'s data about '
+                    'the record, with no transcript beside them. A search reads '
+                    'that data, but it is the website\'s reading of the record, '
+                    'not the record\'s own words. ')
             fix = ('Open the record and type out what it says, then attach it '
                    'with `fha process <one of its files> --more '
                    '<your-transcript.md> transcript`. ')

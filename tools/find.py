@@ -88,6 +88,7 @@ from _lib import (
     configure_utf8_stdout,
     edtf_bounds,
     file_entry_carries_text,
+    files_carry_searchable_text,
     format_edtf_error,
     id_type_of,
     is_valid_edtf,
@@ -845,8 +846,8 @@ def _count_sources_without_text(
     try:
         total = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
         with_files: set[str] = set()
-        with_text: set[str] = set()
         with_index_text: set[str] = set()
+        on_disk: dict[str, list[tuple[str, str]]] = {}
         for sid, role, path, exists in conn.execute(
             'SELECT source_id, role, path, exists_on_disk FROM source_files'
         ):
@@ -855,11 +856,14 @@ def _count_sources_without_text(
             with_files.add(sid)
             if exists == 0:
                 continue
-            if file_entry_carries_text(role or '', path or ''):
-                with_text.add(sid)
+            on_disk.setdefault(sid, []).append((role or '', path or ''))
             if file_entry_carries_text(role or '', path or '',
                                        TRANSCRIPT_TEXT_SUFFIXES):
                 with_index_text.add(sid)
+        # The source-level rule lint and metrics share: a .ged counts, and so
+        # does a source whose files are only saved web pages.
+        with_text = {sid for sid, entries in on_disk.items()
+                     if files_carry_searchable_text(entries)}
         for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
             if row[0]:
                 with_text.add(row[0])
