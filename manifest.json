@@ -146,7 +146,7 @@
     {
       "path": ".agents/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "7e75f2eb6978c8ce04f86748d982688c020944391a2783828b2a31265d3fc116",
+      "sha256": "f2a6f9394bb966c97ddcf5ef1313fd0098d4ba3f67849bfcf990e9eeb62b0d62",
       "spec_version": "2.5",
       "src": ".claude/skills/share-and-export/SKILL.md"
     },
@@ -322,7 +322,7 @@
     {
       "path": ".claude/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "7e75f2eb6978c8ce04f86748d982688c020944391a2783828b2a31265d3fc116",
+      "sha256": "f2a6f9394bb966c97ddcf5ef1313fd0098d4ba3f67849bfcf990e9eeb62b0d62",
       "spec_version": "2.5"
     },
     {
@@ -811,7 +811,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "7ae051c6bfcd6444eb0344574733731cd050d7d1ba8b8eb53fcdb576e4fa869f",
+      "sha256": "b7245bf306016e7739e813c4c97519b05cdd8aab2d2a9baa158507ed37da6397",
       "spec_version": "2.5",
       "src": "tools/gedcom.py"
     },
@@ -1172,7 +1172,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "cef3749947bb78d8831229fa5b81f14298b09e4cb85b7b6ee77d66118cd40f80",
+      "sha256": "9f6e83dd728f7ac91e91861851eb58ec9419d23b2294588425245858c5cc4e69",
       "spec_version": "2.5"
     },
     {
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "fbe96df9c85d8c394170ffe917f490cfe618cbb3fcc56723750bb2b373b6907f",
+      "sha256": "ed02852caa98785d867a2fa3e10027129e8085959c0c07138b7fcff4ad82dcfd",
       "spec_version": "2.5",
       "src": "TOOLING.md"
     },
