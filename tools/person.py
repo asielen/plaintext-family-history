@@ -333,6 +333,7 @@ from _lib import (
     yaml_edtf,
     yaml_inline,
     safe_load_yaml,
+    scalar_line_comment,
     set_person_living,
 )
 
@@ -354,18 +355,18 @@ run_set_living = set_person_living
 
 
 def _replace_scalar_line(line: str, key: str, value: str) -> str:
-    """Rewrite one `key:` line to a new bare-scalar value, preserving a
-    trailing comment. Generalizes `_replace_living_line` for any single-line
-    scalar frontmatter field (same shape, parametric on the key name)."""
-    m = re.match(rf'^({re.escape(key)}:)([ \t]*)([^#]*?)([ \t]*)(#.*?)?(\r?)$', line)
-    if m is None:  # caller matched the key already; this is belt-and-braces
+    """Rewrite one `key:` line to `value` (already rendered, e.g. through
+    `yaml_inline`), keeping a real trailing comment.
+
+    Where the old value ends comes from the YAML reader
+    (`_lib.scalar_line_comment`), not from the first `#` on the line: a
+    quoted `name: 'Mary Lot #2 Smith'` holds its `#`, and taking it for a
+    comment left `#2 Smith'` behind on every rename (#367 review)."""
+    cr = '\r' if line.endswith('\r') else ''
+    body = line[:-1] if cr else line
+    if not re.match(rf'^{re.escape(key)}:', body):  # caller matched the key already
         return line
-    comment = m.group(5)
-    cr = m.group(6)
-    if comment:
-        sep = m.group(4) or '  '
-        return f'{key}: {value}{sep}{comment}{cr}'
-    return f'{key}: {value}{cr}'
+    return f'{key}: {value}{scalar_line_comment(body)}{cr}'
 
 
 def run_set_profile_photo(

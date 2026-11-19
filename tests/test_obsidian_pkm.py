@@ -116,11 +116,14 @@ class TreeEdgeNatureTests(unittest.TestCase):
 
 # ── 06c: Templater pack emits spec-valid records ────────────────────────────────
 
-def _fill_template(text: str) -> str:
+def _fill_template(text: str, name: str = 'Test Person', title: str = 'Test Source') -> str:
     """Crudely render a Templater template the way Obsidian would: drop the
-    leading `<%* … -%>` JS block and substitute the `<% … %>` outputs."""
+    leading `<%* … -%>` JS block and substitute the `<% … %>` outputs
+    (`JSON.stringify` as `json.dumps`, which writes the same string)."""
     text = re.sub(r'<%\*.*?-%>\s*', '', text, flags=re.S)
-    text = text.replace('<% name %>', 'Test Person').replace('<% title %>', 'Test Source')
+    text = (text.replace('<% JSON.stringify(name) %>', json.dumps(name))
+            .replace('<% JSON.stringify(title) %>', json.dumps(title))
+            .replace('<% name %>', name).replace('<% title %>', title))
     text = re.sub(r'<% tp\.date\.now\([^)]*\) %>', '2026-01-01', text)
     text = re.sub(r'<%.*?%>', 'x', text)
     return text.lstrip()
@@ -140,16 +143,27 @@ class TemplaterPackTests(unittest.TestCase):
 
     def test_person_template_lints_without_error(self):
         filled = _fill_template((self.PACK / 'new-person.md').read_text(encoding='utf-8'))
-        self.assertIn('name: Test Person', filled)
+        self.assertIn('name: "Test Person"', filled)
         # No ID + a hand-named file = the valid pre-machine state; no E-level finding.
         errors = self._lint_one('people/stubs/test-person.md', filled)
         self.assertEqual(errors, [], f'unexpected: {[(f.code, f.message) for f in errors]}')
 
     def test_source_template_lints_without_error(self):
         filled = _fill_template((self.PACK / 'new-source.md').read_text(encoding='utf-8'))
-        self.assertIn('title: Test Source', filled)
+        self.assertIn('title: "Test Source"', filled)
         errors = self._lint_one('sources/notes/test-source.md', filled)
         self.assertEqual(errors, [], f'unexpected: {[(f.code, f.message) for f in errors]}')
+
+    def test_a_typed_name_or_title_with_a_hash_reads_back_whole(self):
+        # #364: the prompt's answer goes in quoted, so `Lot #4` is not cut
+        # to `Lot` by YAML reading the rest as a comment.
+        from _lib import FRONT_RE, safe_load_yaml
+        for tmpl, key, kw in (('new-person.md', 'name', {'name': 'Ann "Nan" Doe #2'}),
+                              ('new-source.md', 'title', {'title': 'Deed to Lot #4: block 2'})):
+            with self.subTest(template=tmpl):
+                filled = _fill_template((self.PACK / tmpl).read_text(encoding='utf-8'), **kw)
+                meta = safe_load_yaml(FRONT_RE.match(filled).group(1))
+                self.assertEqual(meta[key], kw[key])
 
     def test_graph_config_is_valid_json(self):
         json.loads((self.PACK / 'graph.json').read_text(encoding='utf-8'))

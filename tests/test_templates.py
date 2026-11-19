@@ -129,6 +129,34 @@ class FilledTemplatesLintTests(_ArchiveBase):
                     self.assertEqual(claim_fields_cut_by_hash(
                         f'## Claims\n```yaml\n{item}\n```\n'), [])
 
+    def test_frontmatter_example_lines_keep_their_text_whole(self):
+        # #364: the templates' frontmatter lines, as shipped and with each
+        # commented example uncommented, hand the reader the whole text - no
+        # W157 telling the owner his own help comment was cut off. A copy
+        # filled in by typing over the example keeps the aligned comment.
+        from _lib import (FRONT_RE, PERSON_FREE_TEXT_FIELDS, PLACE_FREE_TEXT_FIELDS,
+                          SOURCE_FREE_TEXT_FIELDS, text_fields_cut_by_hash)
+        every = {**PERSON_FREE_TEXT_FIELDS, **SOURCE_FREE_TEXT_FIELDS}
+        key_re = re.compile(r'^#\s*(' + '|'.join(sorted(every)) + r'):')
+        for path in sorted(TEMPLATES.rglob('*.md')):
+            fm = FRONT_RE.match(path.read_text(encoding='utf-8'))
+            if fm is None:
+                continue
+            with self.subTest(file=path.name, line='as shipped'):
+                self.assertEqual(text_fields_cut_by_hash(fm.group(1), every), [])
+            for n, ln in enumerate(fm.group(1).splitlines(), 2):
+                if not key_re.match(ln):
+                    continue
+                with self.subTest(file=path.name, line=n):
+                    self.assertEqual(text_fields_cut_by_hash(
+                        ln.lstrip('#').strip() + '\n', every), [])
+        # places.yaml: its whole commented example entry, uncommented.
+        raw = (TEMPLATES / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        example = '\n'.join(ln.replace('# ', '', 1) for ln in raw.splitlines()
+                            if ln.startswith('# - ') or ln.startswith('#   '))
+        self.assertIn('name:', example)
+        self.assertEqual(text_fields_cut_by_hash(example + '\n', PLACE_FREE_TEXT_FIELDS), [])
+
 
 class TemplatesAreSkippedTests(_ArchiveBase):
     def _install_templates(self):

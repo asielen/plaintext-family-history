@@ -63,6 +63,10 @@ from _lib import (
     RETIRED_NEEDS_REVIEW,
     claim_status,
     claim_fields_cut_by_hash,
+    PERSON_FREE_TEXT_FIELDS,
+    PLACE_FREE_TEXT_FIELDS,
+    SOURCE_FREE_TEXT_FIELDS,
+    text_fields_cut_by_hash,
     claim_is_parked,
     file_name_surname_mismatch,
     merge_pointer,
@@ -1021,6 +1025,15 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     else:
         if places_error is not None:
             findings.append(Finding('E', 'E010', places_path, places_error))
+    if places_rows and places_path.is_file():
+        # W157 needs the raw lines: the parsed names have already lost the
+        # text after a ` #`. The file read fine just above.
+        try:
+            places_text = places_path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            places_text = ''
+        _check_frontmatter_text_cut_by_hash(places_path, places_text,
+                                            PLACE_FREE_TEXT_FIELDS, findings, 'place')
     for place in places_rows:
         pid = normalize_id(str(place.get('id', '')))
         if pid and pid.startswith('l-'):
@@ -1167,6 +1180,8 @@ def _process_person_file(path: Path, registry: Registry,
     # Parse errors → E010
     for code, msg in rec['parse_errors']:
         findings.append(Finding('E', code, path, msg))
+    _check_frontmatter_text_cut_by_hash(path, rec.get('frontmatter') or '',
+                                        PERSON_FREE_TEXT_FIELDS, findings, 'person')
 
     pid_raw = str(meta.get('id', ''))
     pid = normalize_id(pid_raw)
@@ -1571,10 +1586,64 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
             aside = 'it can simply be deleted'
         else:
             aside = 'it can simply be deleted, or moved into notes: to keep it'
+        read = f'Only {hit["kept"]!r} {shown}' if hit['kept'] else f'Nothing {shown}'
         findings.append(Finding('W', 'W156', path,
-            f'{who}\'s {key}: stops at the "#". Only {hit["kept"]!r} {shown}; '
+            f'{who}\'s {key}: stops at the "#". {read}; '
             f'"{hit["dropped"]}" is read as a hidden comment and dropped. If it is all '
             f'part of the {key}, {fix}. If the part after # is a real comment, {aside}.'))
+
+
+# The `fha person` flag that rewrites just that one frontmatter field (W157).
+# Only the estimate places qualify: `fha person rename` would also rename the
+# person's files, which is more than putting quotes around a line.
+_PERSON_FIELD_FLAGS = {'birth_place': '--birth-place', 'death_place': '--death-place'}
+
+
+def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
+                                        findings: list[Finding],
+                                        record: str = 'record') -> None:
+    """W157: a displayed frontmatter field cut short at a ` #` (#364).
+
+    `title: Deed to Lot #4 of block 2` reads as "Deed to Lot": YAML takes the
+    rest as a comment, and every page, the index and the site show the stub
+    with no warning. The frontmatter twin of W156, found the same way
+    (`_lib.text_fields_cut_by_hash` on the raw block) with the same fix
+    rules: a command only when one rewrites just that field and the text
+    survives being pasted (no `$`, backtick or `"`), else the hand-quoted
+    line. A `#` two spaces or more past the text, with a space after it, is
+    a comment written on purpose, as the templates do, and is left alone.
+    `record` is `person`, `source` or `place`; for `places.yaml` the hit
+    names its place. Nothing here edits a record."""
+    for hit in text_fields_cut_by_hash(block, fields):
+        key, field, whole, rid = hit['key'], hit['field'], hit['whole'], hit['record_id']
+        owner = ''
+        if record == 'place':
+            owner = f"place {fmt_id_display(rid)}'s " if rid else "a place's "
+        if '.' in field:
+            what = f'The {key}: under {owner}{field.split(".", 1)[0]}:'
+        elif hit['item']:
+            what = f'An entry of {owner}{key}:'
+        else:
+            what = f'{owner}{key}:'
+            what = what[0].upper() + what[1:] if owner else what
+        # A real comment after the text stays on the fixed line.
+        hand = (f'`- {yaml_inline(whole)}{hit["aside"]}`' if hit['item'] and '.' not in field
+                else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
+        where = 'places.yaml' if record == 'place' else 'the record file'
+        flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
+        if rid and flag and not any(ch in whole for ch in '$`"'):
+            fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
+                   f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
+        else:
+            fix = f'put quotes around it by hand in {where}: {hand}'
+        read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
+                'and the site show' if hit['kept'] else
+                'Nothing is read, so every page, the index and the site show it empty')
+        findings.append(Finding('W', 'W157', path,
+            f'{what} stops at the "#". {read}; "{hit["dropped"]}" is read as a '
+            f'hidden comment and dropped. If it is all part of the {key}, {fix}. If the '
+            'part after # is a note to yourself, it can simply be deleted, or kept by '
+            'leaving two spaces before the # and one after it.'))
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
@@ -1723,6 +1792,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _check_ai_passes(meta, rec.get('body') or '', path, findings)
     _check_people_name_comments(path, registry, findings)
     _check_claim_text_cut_by_hash(path, rec.get('body') or '', findings)
+    _check_frontmatter_text_cut_by_hash(path, rec.get('frontmatter') or '',
+                                        SOURCE_FREE_TEXT_FIELDS, findings, 'source')
     _check_main_file_mark(meta, path, findings)
 
     # E014: source_date EDTF check (forgiving: loose-but-clear → W109 suggestion)

@@ -1485,6 +1485,51 @@ class RelateTests(unittest.TestCase):
         self.assertIn('\r\n  - to:', after)
 
 
+class RewriteKeepsQuotedHashTests(unittest.TestCase):
+    """#367 review: a rewrite of a `key:` line took the first `#` anywhere,
+    even inside quotes, as a comment. Renaming "Mary Lot #2 Smith" to "Mary
+    Smith" wrote `name: Mary Smith #2 Smith'`, and every rename after it
+    stacked more of the old name onto the line."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _name_line(self) -> str:
+        (path,) = list((self.root / 'people').rglob('*_p-*.md'))
+        return next(ln for ln in path.read_text(encoding='utf-8').split('\n')
+                    if ln.startswith('name:'))
+
+    def test_renaming_away_a_hash_leaves_a_clean_line(self) -> None:
+        import lint
+        res = person.run_new(self.root, 'Ann Lot #2 Bell')
+        pid = res.data['person_id']
+        self.assertEqual(self._name_line(), "name: 'Ann Lot #2 Bell'")
+        for _ in range(2):
+            res = person.run_rename(self.root, pid, 'Ann Bell')
+        self.assertEqual(self._name_line(), 'name: Ann Bell')
+        findings, _reg = lint._run_lint_core(self.root, {})
+        self.assertEqual([f.message for f in findings if f.code == 'W157'], [])
+
+    def test_a_real_comment_after_a_quoted_value_is_kept(self) -> None:
+        self.assertEqual(
+            person._replace_scalar_line("name: 'Ann #2 Bell'   # from the Bible",
+                                        'name', 'Ann Bell'),
+            'name: Ann Bell   # from the Bible')
+        self.assertEqual(
+            person._replace_scalar_line('sex: M  # per the census\r', 'sex', 'F'),
+            'sex: F  # per the census\r')
+        self.assertEqual(
+            person._replace_scalar_line('profile_photo: "a #1.jpg"', 'profile_photo',
+                                        "'b #2.jpg'"),
+            "profile_photo: 'b #2.jpg'")
+
+
 class EstimateTests(unittest.TestCase):
     """fha person estimate: provisional, unsourced birth:/death: writes."""
 
@@ -1505,6 +1550,16 @@ class EstimateTests(unittest.TestCase):
         lines = self.stub.read_text(encoding='utf-8').split('\n')
         living_idx = next(i for i, l in enumerate(lines) if l.startswith('living:'))
         self.assertEqual(lines[living_idx + 1], 'birth: 1870')
+
+    def test_a_place_with_a_hash_reads_back_whole_and_lints_clean(self) -> None:
+        # #364: the command lint W157 offers for a cut birth_place must save
+        # the whole text, not hand YAML another ` #` to cut.
+        import lint
+        result = person.run_estimate(self.root, PID, birth_place='Lot #4, Easton')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(read_record(self.stub)['meta']['birth_place'], 'Lot #4, Easton')
+        findings, _reg = lint._run_lint_core(self.root, {})
+        self.assertEqual([f.message for f in findings if f.code == 'W157'], [])
 
     def test_a_before_date_and_an_octal_looking_year_read_back(self) -> None:
         # #208 audit: estimate wrote dates bare, so 'before 1920' became the
