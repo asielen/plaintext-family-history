@@ -153,9 +153,9 @@ Look at the photos it lists, then edit that `file:` line to point at the right o
 
 ---
 
-## A big import left loose files in my documents folder
+## Loose files at the top of my documents folder
 
-**What happened.** A large import (a GEDCOM, a batch of captures, a pile of scans processed at once) can leave many filed documents sitting loose at the top of your documents folder instead of in folders by type.
+**What happened.** The tools file each new document into a folder for its type. Files can still end up loose at the top of your documents folder: ones processed by an older version of the tools, ones dropped in by hand, or ones brought over from another archive.
 
 **Fix.** Ask the assistant to tidy them up, or run `fha reorganize`. It proposes the whole tidy-up at once and shows you the plan first, changing nothing; add `--apply` to do it (it asks you to confirm). It only moves files that are still exactly where a tool filed them, so anything you've already arranged by hand is left alone. Each record's list of files is updated in the same step as the move, so nothing points at the wrong place. Photos are never moved.
 

@@ -1162,7 +1162,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "9b5b5b5bbe778741de7ed6f8c25fd27ac4c77d0d9453125ac09935367779cf7c",
+      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
       "spec_version": "2.7"
     },
     {
@@ -1200,7 +1200,7 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "7746edb011e04d7fe763feeaa65718e0f97948645e89aa5913fb945f60828eea",
+      "sha256": "d5b7354732758c8dda8cfddbd51c8054089473a3f352c594d55ddb389c8d2a91",
       "spec_version": "2.7"
     },
     {

@@ -54,9 +54,13 @@ You should see something like `Python 3.12.1` (any 3.10 or newer is fine). If yo
 
 ### 2. The Python helpers (required)
 
-The tools use a few small, free helper packages. Python's built-in installer (`pip`) fetches them with one command. In a terminal opened in the project folder (the one with `tools/` inside), run the command below. To open a terminal in a folder on Windows, open the folder in File Explorer, click the address bar, type `cmd` and press Enter. On a Mac, open Terminal, type `cd ` (with a space), drag the folder onto the window and press Enter.
+The tools use a few small, free helper packages. Python's built-in installer (`pip`) fetches them with one command, run from the project folder.
 
 The project folder is your copy of Plaintext Family History: either a clone made with git, or the zip from the project's GitHub page (the green "Code" button, then "Download ZIP"), unzipped somewhere permanent such as your Documents folder. [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) walks through the zip.
+
+To open a terminal in a folder on Windows, open the folder in File Explorer, click the address bar, type `cmd` and press Enter. On a Mac, open Terminal, type `cd ` (with a space), drag the folder onto the window and press Enter.
+
+In a terminal opened in the project folder (the one with `tools/` inside), run:
 
 ```
 python -m pip install -r tools/requirements.txt
