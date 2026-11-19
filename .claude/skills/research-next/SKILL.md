@@ -5,7 +5,7 @@ description: >
   research?". Checks the research log FIRST, then combines open questions, working answers, and the
   gaps `fha report` computes with historical context (which record sets exist for the era/place, where
   they're held) into concrete, ranked research leads. May write a guess as a working answer on a question
-  entry (`origin: agent`); it writes leads and working answers, never claims. Logs any executed search back to
+  the human asked, credited `(agent)` on its dated context line; it writes leads and working answers, never claims. Logs any executed search back to
   `notes/research-log.md`.
 ---
 
@@ -78,11 +78,11 @@ The archive already knows what it doesn't know: open questions, working answers 
 - Leads and working answers only. **Never** a claim (no source, no claim).
 - A computed gap is never written as a question; a question entry exists because the human asked it or because it carries a working answer.
 - Log-aware: no lead duplicates a recent logged nil (within the 18-month horizon); state "already searched (date)" before proposing.
-- A working answer is the question entry's `id`/`guess`/`basis`/`verify` lines, `origin: agent`, `status: open`, in the research file or `notes/questions.md`. It never goes into a source's `## Claims`.
-- Executed searches are logged in `notes/research-log.md` (including nils). The log is the record; the chat is not.
+- A working answer is the question entry's `id`/`guess`/`basis`/`verify` lines on a question the human asked (`origin:` stays the question's origin; the guess is credited `(agent)` on its dated `context:` line), `status: open`, in the research file or `notes/questions.md`. It never goes into a source's `## Claims`.
+- Executed searches are logged in `notes/research-log.md` (including nils), since nothing said in the chat carries over to the next session.
 
 ## Done when
 
 - "Where should I look for X?" in a session on `example-archive` produces concrete, **ranked** leads with "already searched (date)" annotations present, and **no** lead duplicates a recent logged nil.
-- Any guess written down is a working answer on a question entry (`origin: agent`, `status: open`, with `id`/`guess`/`basis`/`verify`), never a claim, and no computed gap was written as a question.
+- Any guess written down is a working answer on a question entry (`status: open`, with `id`/`guess`/`basis`/`verify`, and the guess credited `(agent)` on its dated `context:` line), never a claim, and no computed gap was written as a question.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9).

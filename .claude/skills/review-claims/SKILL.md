@@ -171,7 +171,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
 - The offer states the registry situation only after checking it: the town name goes through `fha find --json … --kind place` **before** the nudge is spoken, so "isn't on the list yet" is a checked fact and an already-registered town is offered as a link, not minted a second time.
 - A place nudge answered yes **reopens the close-out** (`fha index`, `fha places lint`, `fha lint`), since it writes after the done-gate and `fha confirm place` doesn't reindex. A session never ends on that write. Read `fha places lint` there for what the write *added*; a pre-existing PL finding elsewhere in the registry is the archive's standing state and not this session's to chase.
 - Record no separate `ai_passes:` entry here *unless* you drafted a new claim in this session (a manual addition you formatted). Plain acceptance of existing drafts is the human's pass, not the AI's.
-- Any record ID you write into prose (a note, a spawned question, a story) is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs belong only inside claims-block YAML fields and tool arguments (_STANDARD.md §11).
+- Any record ID you write into prose (a note, a spawned question, a story) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs belong only inside claims-block YAML fields and tool arguments (_STANDARD.md §11).
 
 ## Done when
 

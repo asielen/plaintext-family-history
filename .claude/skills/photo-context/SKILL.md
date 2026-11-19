@@ -66,7 +66,7 @@ Invoked only, never automatically or in bulk. Triggers: "what do we know about t
    ```yaml
    ai_passes:
      - {date: 2026-07-01, by: {your-model-id}, task: caption, note: "photo-context summary, approved text"}
-     # `by` is your real model identifier - a placeholder, not a value to copy
+     # `by` is your real model identifier; the braces are a placeholder to fill in
    ```
    Then reindex just that source (a source edit makes the main index stale) and refresh the photo catalog too. `photoindex_status` watches every `sources/photos/*.md` mtime, so this edit also makes `.cache/photos.sqlite` look stale, and the next `fha photoindex find` or `set-summary` in this session would warn or refuse otherwise:
    ```

@@ -49,7 +49,7 @@ When a front end asks for an opener, run `fha calendar today --json` (fall back 
 
 ## Guardrails
 
-- Any record ID written into prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11). In speech, say the name, not the ID.
+- Any record ID written into prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11). In speech, say the name, not the ID.
 - Never add a family detail the tool's output does not carry; never present general history as something the family did or saw; never name a source the tool did not list.
 - Never speak a suggested-only line as fact; never pass `--include-suggested` unless he asked for drafts.
 - Never write anything: no claim, no note, no discovery. A win he wants kept is the `today` skill's `fha confirm discovery` path, on his say-so.

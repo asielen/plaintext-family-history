@@ -63,8 +63,8 @@ An edit can span layers (a restyled *and* reworded homepage). Split it: the colo
 
 For each classified delta, show the human the precise source edit you intend (the file, and the before and after in words a text-editor user understands) and get his yes before writing:
 
-- **Styling → `.fha/design/custom.css`.** Translate the inline HTML style into a token override or rule appended to `custom.css` (docs/DESIGN.md, "Customizing"): *"You made the links green in the HTML. I'll add `:root { --accent: #3e4a3a; }` to `.fha/design/custom.css` so every page picks it up. OK?"* Prefer a token override to a brittle selector; append to his existing `custom.css` instead of rewriting it.
-- **Homepage copy → `notes/home.md`.** Merge the reworded prose into `home.md`, keeping his existing words around it. Photo embeds stay in Obsidian embed form (`![[s-id|caption]]`), not raw `<img>`; the build renders the derivative and caption from that (docs/CUSTOMIZING_SITE.md).
+- **Styling → `.fha/design/custom.css`.** Translate the inline HTML style into a token override or rule appended to `custom.css` (`.fha/docs/DESIGN.md` in an installed archive, "Customizing"): *"You made the links green in the HTML. I'll add `:root { --accent: #3e4a3a; }` to `.fha/design/custom.css` so every page picks it up. OK?"* Prefer a token override to a brittle selector; append to his existing `custom.css` instead of rewriting it.
+- **Homepage copy → `notes/home.md`.** Merge the reworded prose into `home.md`, keeping his existing words around it. Photo embeds stay in Obsidian embed form (`![[s-id|caption]]`), not raw `<img>`; the build renders the derivative and caption from that (docs/CUSTOMIZING_SITE.md, "Putting a photo in your writing").
 - **Person prose → the record.** Fold the edited biography or story text into that person's `people/…` file, merged around existing prose, never over it. If the edit is a **fact**, stop and route it as a `suggested` claim through `review-claims` (or draft it with `write-biography`'s marker rules): a factual sentence needs a `[[s-…]]` citation, and only the human moves it to accepted.
 - **Title / hero → `fha.yaml` `site:`.** Set `site.archive_name`, or `site.hero.title` / `.tagline` / `.image`, in the one config file: plain YAML, previewed as the exact lines you'll add.
 
@@ -87,7 +87,7 @@ Open the regenerated page and confirm the human's change is present *because it 
 - **Never** patch or preserve the generated HTML as the fix. The source is the fix; the HTML is rebuilt.
 - **Never** teach or trick `fha site` into reading its own output; the diff-against-baseline reconciliation is this skill's alone.
 - **Never** write a source change without showing it and getting an explicit yes: one confirmation per change, and silence accepts nothing.
-- Any record ID folded into prose (a person record, `notes/home.md`, free text routed to a source) is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).
+- Any record ID folded into prose (a person record, `notes/home.md`, free text routed to a source) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).
 - **Never** overwrite the human's existing `custom.css`, `home.md`, or record prose (append and merge around it), and **never** edit below a `GENERATED` header; route a fix that landed on a generated block to its upstream record instead.
 - **Never** fold an unsourced *fact* from a hand-edit straight into a record as accepted prose. It goes through the claim gate like any other fact.
 - Respect privacy on the rebuild: it is a standalone snapshot, so redaction, EXIF-stripping, and living-co-depiction drops all still apply to anything the human added.

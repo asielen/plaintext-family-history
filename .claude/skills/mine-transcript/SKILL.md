@@ -81,7 +81,7 @@ Explicit invocation only: "mine grandpa's interview", "pull the claims out of th
 - Selective: narrative colour becomes a Story, never a claim.
 - The transcript text is **byte-unchanged**: never deleted, rewritten, or trimmed.
 - Names resolve via candidate proposals or confirmed stubs, never silent guesses.
-- Any record ID written into `## Stories` or `## Notes` prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only inside claims-block YAML fields and tool arguments (_STANDARD.md §11).
+- Any record ID written into `## Stories` or `## Notes` prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only inside claims-block YAML fields and tool arguments (_STANDARD.md §11).
 
 ## Done when
 

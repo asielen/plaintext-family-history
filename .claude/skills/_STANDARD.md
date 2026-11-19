@@ -59,7 +59,7 @@ The same plain-writing rules govern both the lines a skill tells the agent to sa
 - **Soft wrap.** One paragraph or one list item per line in the file. Code, tables and lists keep their line breaks.
 - **Example names come from `example-archive/`** (the Hartley family), never from a real family.
 
-## 5. Forgiving, not fussy
+## 5. Accept messy input
 
 Messy input is the normal condition of this work (AGENTS.md §"Who you serve"). Loose dates, informal names, half-written notes and imperfect hand-edits are expected: infer what he meant or ask one plain question. Never hard-refuse because input isn't schema-clean. Stalling on a fuzzy date protects nothing and leaves him stuck.
 
@@ -84,7 +84,7 @@ A question is written only when the human asks it or two claims conflict. A gap 
 
 - Run `fha` from the archive root. **Preview before any write:** every mutating verb takes `--dry-run`. Use it, show the human what will change, then apply.
 - **Check exit codes:** 0 clean · 1 warnings · 2 errors · 3 tool failure. Never proceed past a 2 or 3 silently; read the tool's TOOLING.md section before retrying on unexpected behavior.
-- **Query the index, not the tree.** Person, claim and photo questions are `fha` calls; never bulk-read `photos/` or `documents/` into context.
+- **Query the index.** Person, claim and photo questions are `fha` calls; never bulk-read `photos/` or `documents/` into context.
 - Run `fha lint` after any batch of edits; it is the done-gate.
 
 ## 9. Verification is behavioral (there is no unit test)

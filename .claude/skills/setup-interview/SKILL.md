@@ -204,7 +204,7 @@ Say plainly what happens next: *"That's everything. I've drafted N facts from wh
 - A given birth year gets the same treatment, via `fha person estimate --birth` on the resolved `p-id`, for the same reason.
 - `root_person`/`root_generation` are hand-edited into `fha.yaml` (a plain, documented-editable file), never into `places.yaml` or `.cache/`, which stay off-limits to hand-editing.
 - `root_generation: children` is written only when he actually chooses it; the unset default (`self`) is left unwritten, matching the template's own convention.
-- Any record ID written into prose (the source's `## Notes`, the hand-off sentence) is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only inside the claims-block YAML, frontmatter lists, and tool arguments (_STANDARD.md §11).
+- Any record ID written into prose (the source's `## Notes`, the hand-off sentence) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only inside the claims-block YAML, frontmatter lists, and tool arguments (_STANDARD.md §11).
 - Runs once per archive in the ordinary case; if `root_person` is already set, this skill confirms with him before minting or writing anything else.
 - The step 0 place-backlog offer fires at most **once per run**, only past the 20-claim bar, only on an explicit yes, and is never repeated once declined or ignored in the same session, the same discipline `process-source`'s own place-registration offer uses. A registered cluster is written **only** via `fha confirm place`, exactly as `process-source`/`place-research` write one, never by hand-editing `places.yaml`.
 

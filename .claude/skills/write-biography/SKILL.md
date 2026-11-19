@@ -58,7 +58,7 @@ Extending an existing biography keeps the register already on the page unless th
    - Write in the resolved style's voice (see "Voice" above): plain and warm, never mechanical. Narrative adds cited or clearly flagged texture and never invents.
    - **Pronouns come from the person record** (SPEC Appendix A.7): from `gender:` when it is present, else from `sex:`. When neither says, write the name and keep the prose neutral rather than guess. Never infer them from a first name, a photo, or a role in a claim.
    - **Every factual sentence carries its source** as a `[[s-…]]` link: *"He worked as a bookkeeper for the Plains Junction Railroad by 1880 [[s-4f5f215e60]]."*
-   - **That is a citation rule, not a layout rule, so write paragraphs.** Flowing paragraphs, hard-wrapped at ~85 columns, with a blank line between them. Several cited sentences share a paragraph whenever they share a subject, era, or episode (typically 3-6 sentences); never write one sentence per line. The Biography section is already "chaptered by era/place" (SPEC §16), and the paragraph is that chaptering's working unit.
+   - **That is a citation rule, not a layout rule, so write paragraphs.** Flowing paragraphs, one paragraph per line in the file (the editor wraps it; never hard-wrap), with a blank line between them. Several cited sentences share a paragraph whenever they share a subject, era, or episode (typically 3-6 sentences); never write one sentence per line. The Biography section is already "chaptered by era/place" (SPEC §16), and the paragraph is that chaptering's working unit.
    - `fha views summary` writes the **summary lines** at the top (Born / Died / Married / Parents / Children) from accepted claims, so never draft them. Only where the human has taken them over by hand (no GENERATED markers) do they follow the citation rule: one citation per fact-line. The **body** takes all relevant citations.
    - Anything you can't cite to an accepted claim must read explicitly as context or story ("Family recollection holds that …"), never as a stated fact. When in doubt, cut it or move it to Stories.
 
@@ -67,7 +67,7 @@ Extending an existing biography keeps the register already on the page unless th
    fha find <p-id>        # confirm each person link resolves
    fha find <s-id>        # confirm each source link resolves
    ```
-   Prefer the `[[ID|display]]` form (`[[p-cd795c61e0|Margaret A. Cole]]`). A name-link (`[[Margaret Cole]]`) resolves through the alias layer, but pin to the ID when the name could be shared. Never write an ID you haven't confirmed exists.
+   Prefer the `[[id|display]]` form (`[[p-cd795c61e0|Margaret A. Cole]]`). A name-link (`[[Margaret Cole]]`) resolves through the alias layer, but pin to the ID when the name could be shared. Never write an ID you haven't confirmed exists.
 
 4. **Wrap all new prose in AI-DRAFT markers, drafting around human text.**
    ```markdown
@@ -100,7 +100,7 @@ Extending an existing biography keeps the register already on the page unless th
 
 - No fact from a `suggested` claim; no unverified `[[p-…]]`/`[[s-…]]` link; no edit below a GENERATED header; no overwrite of human text.
 - The citation contract is the same in both styles. Narrative never invents scenes, dialogue, weather, or interior states; its color is cited claims or clearly flagged period context. A style choice changes the voice, never what counts as a fact.
-- Layout is the same in both styles: flowing paragraphs, blank-line separated, hard-wrapped at ~85 columns, never one sentence per line. These are plain-text records a person reads directly in an editor. One sentence per line reads as a list of assertions rather than a life, and it is the clearest sign a block was machine-drafted.
+- Layout is the same in both styles: flowing paragraphs, blank-line separated, one paragraph per line in the file (never hard-wrapped), never one sentence per line, and no dashes used as punctuation (use a comma, a period or parentheses). These are plain-text records a person reads directly in an editor. One sentence per line reads as a list of assertions rather than a life, and it is the clearest sign a block was machine-drafted.
 - New prose stays AI-DRAFT until `fha confirm draft`; acceptance is the human's decision, not a hand-edit.
 - Uncited prose reads as context or story, never as fact.
 - **AI-DRAFT prose never publishes until accepted.** `fha site` and `fha wikitree` both exclude a draft block (the prose back to the previous marker or section heading, plus the marker itself) until the human accepts it (`fha confirm draft` → AI-ACCEPTED, which makes the prose publishable). The exclusion fails closed: an unmarked paragraph directly above your draft is withheld with it until acceptance. Keep the end-of-block marker tight against the block you wrote, and draft around human text rather than in the middle of it.
@@ -111,5 +111,5 @@ Extending an existing biography keeps the register already on the page unless th
 - Every `[[p-…]]`/`[[s-…]]` resolves: post-run `fha lint` shows no **E004**.
 - Acceptance flips markers via `fha confirm draft`, not by hand-editing.
 - A session drafting in **each named style** keeps the identical citation density (every factual sentence cited) and the lint baseline. The AI-DRAFT marker and the AI-pass task both name the style used. With no session ask and no `fha.yaml` `biography:` block, the voice is `chronicle`.
-- The drafted `## Biography` prose reads as flowing, blank-line-separated paragraphs, hard-wrapped at ~85 columns, with no run of consecutive lines each ending on a sentence boundary with its own `[[s-…]]`, in either named style.
+- The drafted `## Biography` prose reads as flowing, blank-line-separated paragraphs, each paragraph on one line with no hard wraps and no dashes used as punctuation, with no run of consecutive lines each ending on a sentence boundary with its own `[[s-…]]`, in either named style.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9).

@@ -39,7 +39,7 @@ This is **migration mode** (AGENTS.md §"Operating modes"): bulk intake of exist
 - Every pass over a source (whisper, label transfer, mining) is recorded in that source's `ai_passes:` frontmatter list before you hand back (_STANDARD.md §3.3, SPEC §14). Nothing lints for it.
 - Living people: a recording of someone alive is ordinary archive material, but the person record's `living:` flag must be right, and anything the human flags as sensitive gets `restricted: true` on the source (SPEC §19).
 
-The content-hash duplicate check and the container-metadata date read are `fha` verbs: `fha media dedupe` and `fha media probe` (TOOLING.md §6a). The local whisper run and the speaker-label transfer are this skill's own `scripts/`, because they depend on a local model and produce working drafts rather than archive records. All four are read-only on the archive: they report, and `fha process` is the only thing that writes. If a further capability is missing, **stop and name it**; do not hand-roll it in prose (`_STANDARD.md` §6).
+The content-hash duplicate check and the container-metadata date read are `fha` verbs: `fha media dedupe` and `fha media probe` (TOOLING.md §6a). The local whisper run and the speaker-label transfer are this skill's own `scripts/`: whisper depends on a local model, the label transfer works only on the paired app and whisper transcripts this skill produces, and both produce working drafts rather than archive records. All four are read-only on the archive: they report, and `fha process` is the only thing that writes. If a further capability is missing, **stop and name it**; do not hand-roll it in prose (`_STANDARD.md` §6).
 
 ## Flow
 
@@ -246,7 +246,7 @@ True acoustic diarization (`pyannote.audio`) is the only route to speaker identi
 
 ## Guardrails
 
-- Any record ID written into prose is `[[ ]]`-wrapped, `[[ID|Name]]` preferred; bare IDs only in structured slots (claims-block YAML, frontmatter lists, tool arguments). See _STANDARD.md §11.
+- Any record ID written into prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured slots (claims-block YAML, frontmatter lists, tool arguments). See _STANDARD.md §11.
 - Every drafted claim is `status: suggested`; **nothing** is `accepted` in this skill, and silence is never consent.
 - **Never rename or move an archived asset by hand.** Documents-root renames happen only through `fha process`; a cross-root correction is `fha process refile --dry-run` first. Nothing under the photos root is ever renamed. Moves *within* a root are the human's to make; `fha reconcile` fixes the paths.
 - **Every path a script here writes gets a filename of its own.** `--json`, `--out`, `--report`, `--outdir`/`--name`: none may resolve onto an incoming recording, an archived original, another output of the same run, or `fha.yaml`, including through `./`, a differing case, or a symlink. The dedupe report and the two attribution outputs refuse the run on a collision; the whisper outputs do **not** check, so they go to the scratchpad and nowhere else.
