@@ -671,7 +671,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "072e3ea3f4b24642c20c91b6fbb2cd67dfe2b0500e6f91c72b24b1f41e861398",
+      "sha256": "e98a4d6f330ee30a3c9259195f012ae5ca231c4a1b295ec465049b2442d2a2f3",
       "spec_version": "2.7",
       "src": "docs/DESIGN.md"
     },
@@ -1183,7 +1183,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "df432a148b7c77b82dcecccc87e8ec101bc7d271f69b552a25eaa97e01660991",
+      "sha256": "0009ecbecf3a242a294415b753bdec66b4eb711b2c23e3165b71b9e2944373c4",
       "spec_version": "2.7"
     },
     {

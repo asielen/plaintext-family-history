@@ -37,13 +37,13 @@ This is a **repo-development tracking doc**, like `RELEASE_CHECKLIST.md`. It is 
 
 ---
 
-## 3. Write-path reads still use a guard that misses decode errors
+## 3. Write-path reads still use a guard that misses decode errors (#68)
 
 **Where:** the `_lib.read_text_exact` call sites outside `tools/lint.py`, in `confirm.py`, `person.py`, `packet.py`, `process.py`, `source.py`, `claim.py`, `places.py`, `convert_mining.py`, `normalize_links.py`, `reconcile.py` and `serve.py` among others.
 
 **Issue:** `read_text_exact` decodes UTF-8 strictly, and these sites sit inside a `try: ... except OSError:`, which does not catch `UnicodeDecodeError` (a **ValueError**). So a record or note saved in another codepage (cp1252, a Windows editor's default) raises past the refusal path of a *write* verb. The plainest case: `fha confirm discovery` (`run_add_discovery` in `tools/confirm.py`) appends to `notes/discoveries.md` by reading the whole log first, so one cp1252 byte anywhere in that log makes every later discovery entry fail with the raw codec text through `fha.py`'s catch-all ("something went wrong: 'utf-8' codec can't decode byte 0xf3 …", exit 3) and a "run `fha doctor`" line that does not name the file. `fha lint` W128 does name it, but nothing points the human there from the failure.
 
-**Why it errs safe:** these are read-modify-write paths, and the read is what fails, so nothing is written, nothing is truncated and no private material leaks. The cost is a dead-end refusal, not lost data. That is why the sites are being fixed one caller at a time (see `_lib.read_record`'s docstring) rather than by making that function hand every existing guard an empty record. `lint.py`, whose write paths skip an undecodable file rather than rewriting bytes they could not read, is the model.
+**Why it errs safe:** these are read-modify-write paths, and the read is what fails, so nothing is written, nothing is truncated and no private material leaks. The cost is a dead-end refusal, not lost data. That is why #68 is being closed one caller at a time (see `_lib.read_record`'s docstring) rather than by making that function hand every existing guard an empty record. `lint.py`, whose write paths skip an undecodable file rather than rewriting bytes they could not read, is the model.
 
 **Proposed approach:** per tool, not repo-wide. A write verb already has a natural channel: refuse *this one file* with W128's plain cause and the re-save fix, leave the file untouched, and keep the tool's existing exit-code convention for a refusal. Never re-encode: the file is the human's, and it is not damaged, only saved in another encoding.
 
@@ -89,4 +89,5 @@ These are not fixes. Each stays here until it has a design section in `TOOLING.m
 - **"Possible duplicate people" in `fha report`.** People coming from Ancestry expect duplicate flags. `fha confirm merge` exists, but nothing surfaces candidate pairs (similar name, compatible birth years, shared places), even though the merge-identities skill speaks of "the report flagged a possible duplicate".
 - **Photo-tagging progress in the archive totals.** `fha metrics` reports people, sources, claims and searchable text, but not how many photos are still untagged ("18 photos untagged"), which would read the photo index.
 - **`fha views canvas`.** A regenerable Obsidian `.canvas` (or Mermaid) family tree drawn from relationship claims, so an Obsidian user can see the tree without leaving the vault. `fha views tree` emits JSON or DOT only.
+- **A generated family summary on the home page.** An at-a-glance panel built from the index each run, never hand-edited: how many people the archive holds, its surnames, the span of years it covers, the earliest ancestor on the main line, and a short list of recent discoveries.
 - **More custom prose pages on the site.** `notes/home.md` is the one custom prose page. A `notes/narrative/` folder of "chapters" (a migration story, a war letter, a family-recipe page), with the site building a small table of contents across them, would use the same source-first model. It needs answers first: whether a chapter naming a living person is redacted, how chapters are ordered, and whether they appear in the standalone snapshot.

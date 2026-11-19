@@ -106,7 +106,7 @@ Flat, square and document-like: no drop shadows, no rounded cards, no pills. Sep
 - **Source citations** (`.fn-ref` + `ol.footnotes`): the reading view never shows a backend id. A cited source is a small superscript number (`.fn-ref`) that jumps to a numbered Sources list at the foot of the page (`ol.footnotes`), where each source is named and linked. Repeated citations of one source share a number. Withheld sources collapse to a **single shared "Restricted" footnote** (their count and identity never leak, and the label never repeats inline). A source the author named in prose (`[[s-id|text]]`) stays a plain link; a claim reference (`[c-id]`) cites its backing source; a dangling id renders nothing.
 - **Stub references** (`.stub-ref`): a person named but without a page of their own gets a dotted underline (no link), matching the tree's dotted stub node. A person with a page is an ordinary link.
 
-Citations, callouts and tree nodes carry no colored left border; each has its own treatment, so one motif doesn't tie unrelated things together. The only colored left edge is the pedigree card's paternal or maternal tint (see Register patterns).
+Citations, callouts and tree nodes carry no colored left border; each has its own treatment, so one motif doesn't tie unrelated things together. Colored left edges are kept for marks that carry a meaning: the pedigree cards' paternal or maternal tint and the subject card (`.ped-node.ped-branch-1/2`, `.ped-node.ped-self`; see Register patterns), the not-for-publication banner on single-file views (`.view-banner` in `design/view.css`), and the workbench's warning callout (`.wb-warn-callout` in `tools/templates/workbench/workbench.css`).
 
 ---
 

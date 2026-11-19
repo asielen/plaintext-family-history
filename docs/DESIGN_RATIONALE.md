@@ -61,7 +61,7 @@ It is **not a DNA match workbench.** It stores DNA *conclusions*, as claims and 
 
 It does **not restore or colorize photos.** Tools never alter pixels.
 
-It is **not a website builder.** `fha site` renders the archive as a static snapshot that can be rebuilt at any time. Every customization is a plain file a person can edit in a text editor (`custom.css`, `notes/home.md`, the `site:` block in `fha.yaml`), and the generator never reads the HTML it wrote, so the same inputs always give the same site. A hand-edited page is folded back into those files by the reconcile-site-edits skill rather than by the generator. Assembling arbitrary pages from components is what a content-management system does, and the archive stays durable by staying plain files.
+It is **not a website builder.** `fha site` renders the archive as a static snapshot that can be rebuilt at any time. Every customization is a plain file a person can edit in a text editor (`custom.css`, `notes/home.md`, the `site:` block in `fha.yaml`), and the generator never reads the HTML it wrote, so the same inputs always give the same site. A hand-edited page is folded back into those files by the reconcile-site-edits skill rather than by the generator.
 
 **Why.** A blind sample of about 3,000 posts from a large online genealogy forum, gathered with no search terms, sorted like this:
 
