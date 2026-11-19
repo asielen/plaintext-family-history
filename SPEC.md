@@ -20,11 +20,11 @@ This spec describes a **target system**. Normative language (*must*, *should*, *
 
 ## 1. What this is
 
-For most of the history of genealogy, research lived in filing cabinets: the document in the drawer, the note stuck to the document, the binder of typed family sheets, the shoebox of labeled photographs. **Anyone could open the drawer**, with no login, subscription or software, and a descendant could still pull the folder and read it a century later.
+For most of the history of genealogy, research lived in filing cabinets: the document in the drawer, the note stuck to the document, the binder of typed family sheets, the shoebox of labeled photographs. **Anyone could open the drawer**, with no login, subscription or schema migration, and a descendant could still pull the folder and read it a century later.
 
 This project keeps that property. It grounds research in a plain file system and stacks three layers *on top of it*, never in place of it: a 20th-century layer (durable digital formats, embedded metadata), a 21st-century layer (search, structured claims, generated indexes) and an AI layer (assisted extraction, research feeds). Strip away every layer above the files and the archive still works.
 
-The archive comes first. It *may* use genealogy software, but genealogy software never holds the archive. The deliverables are **this written spec** and **a kit of small, replaceable scripts**. The format and the process are what lasts; every tool is a borrowed engine or regenerable glue.
+The archive comes first. It *may* use genealogy software, but genealogy software never holds the archive. The deliverable is **this written spec** and **a kit of small, replaceable scripts**. There is no app. The format and the process are what lasts; every tool is a borrowed engine or regenerable glue.
 
 The standard is *good-enough* research practice, kept maintainable and searchable for future generations: research that someone can pick up in fifty years, on whatever computers look like then, and continue.
 
@@ -41,9 +41,9 @@ The standard is *good-enough* research practice, kept maintainable and searchabl
 The system is built around four layers, starting from the source material and working up to what gets shared with the world. Each layer may only depend on the layers below it, and nothing above the first layer is ever allowed to become the truth. This document defines layer 1 precisely and constrains how the other three are permitted to behave.
 
 1. **Durable archive layer:** files, folders, embedded metadata, markdown records, YAML blocks, stable IDs. *(Parts II-III.)*
-2. **Working interface layer**: optional editors and apps over the files, such as Obsidian or the like for notes, photo management software (like Lightroom), an AI session for research, a genealogy app fed by export. **The working or ingesting interface is never the truth.** Tooling that supports research or ingestion exists only for those purposes and is never load-bearing: it owns no data, and the archive must not notice if it disappears.
-3. **Generated intelligence layer**: the index, full-text search, generated views (timelines, sources-indexes, family trees), AI-built caches. Fully rebuildable from layer 1, on demand, every time.
-4. **Publication/export layer**: the static HTML explorer, person packets, profile exports, share packages. Derived outputs, never stored objects.
+2. **Working interface layer:** optional editors and apps over the files, such as Obsidian or the like for notes, photo management software (like Lightroom), an AI session for research, a genealogy app fed by export. **The working or ingesting interface is never the truth.** Tooling that supports research or ingestion exists only for those purposes and is never load-bearing: it owns no data, and the archive must not notice if it disappears.
+3. **Generated intelligence layer:** the index, full-text search, generated views (timelines, sources-indexes, family trees), AI-built caches. Fully rebuildable from layer 1, on demand, every time.
+4. **Publication/export layer:** the static HTML explorer, person packets, profile exports, share packages. Derived outputs, never stored objects.
 
 ## 4. From file to fact: the processing path
 
@@ -55,7 +55,7 @@ A file earns more structure only when it earns attention:
 - The next level connects the dots between the file and the research. This is done through **Claims**: a claim is a single fact supported by the source, such as a birth, a residence, a marriage, a relationship. Claims should be created *inside the source record*, parallel to the evidence they rest on (§8).
 - Once a fact exists as a claim, it can be **cited in research**: a person's profile states the fact in prose and cites the source, so any reader can walk from the sentence to the evidence (§18).
 
-The same born-minimal pattern governs everything else. A **person** mentioned in a census enters as a stub (an ID and a name) and graduates to curated only when actively researched; expect dozens of curated profiles among ~2,000 stubs. An **assertion** in an interview transcript stays as searchable text in the preserved transcript until it is substantive enough to be processed into a claim. Roughly 1 photo in 50 carries evidence that needs a source record. Hand-labor scales with *curiosity*, not with the size of the family; that is what makes a 2,000-person, 10,000-photo archive maintainable by one person.
+The same born-minimal pattern governs everything else. A **person** mentioned in a census enters as a stub (an ID and a name) and graduates to curated only when actively researched; expect dozens of curated profiles among ~2,000 stubs. An **assertion** in an interview transcript stays as searchable text in the preserved transcript until it is substantive enough to be processed into a claim. In observed collections, roughly 1 photo in 50 carries evidence for a source record. Hand-labor scales with *curiosity*, not with the size of the family; that is what makes a 2,000-person, 10,000-photo archive maintainable by one person.
 
 ## 5. Tooling philosophy
 
@@ -71,7 +71,7 @@ Own the format and the glue; borrow the hard engines (exiftool, OCR, transcripti
 
 1. **Original content untouched.** Tools never alter pixels, audio, scan content, or document text. Three sanctioned, controlled operations exist: processing renames a *documents-root* file (filename only, never content or location; photos are never renamed while they live in the photos root), `fha process refile` moves a misfiled original across the two asset roots (§12.1's narrow correction, with the rename handled at the crossing, §13), and tools may write the spec'd non-destructive embedded metadata (§20: `SOURCE:` source keywords, bare `p-id` person keywords, date-confidence keywords, captions, AI markers), which are preservation operations, not content edits.
 2. **Rebuildable.** Anything the tool generates can be rebuilt from the archive.
-3. **Links to stable IDs**: or at minimum does not block adding them later.
+3. **Links to stable IDs:** or at minimum does not block adding them later.
 4. **Plain export.** No knowledge trapped in an opaque store.
 5. **Privacy-aware.** Can respect the `living`/`restricted` flags (§19).
 6. **Disposable.** If the tool dies, the archive survives without it.
@@ -110,7 +110,7 @@ The day-to-day research workbench is an **agentic CLI harness opened on the arch
 
 **Assets share their source's identity.** All files of a processed source (fronts, backs, copy B, negatives, pages, transcripts) are *copies and facets of one piece of evidence*, so they all carry the source's ID: in their filenames for documents-root files (§13), in embedded keywords for photos-root files (§20, never renamed). Searching a cited ID in filenames+keywords surfaces the record *and* the files together. Unprocessed files (most photos) are **not** auto-assigned IDs: renaming ten thousand files would buy nothing, since filename plus embedded metadata already identifies them completely. IDs are assigned at processing, on need: the processing path (§4) applied to identity itself.
 
-**What each ID is for**: the usage map that justifies each one's existence:
+**What each ID is for:** the usage map that justifies each one's existence:
 
 - **`s-` ids** are the *citation and retrieval unit*: prose cites them (§18), filenames carry them, embedded keywords repeat them. A reader of the archive needs only s-ids.
 - **`c-` ids** are the *assertion unit*, used almost entirely by tooling and active research: claim-to-claim links (`corroborates`, `contradicts`, supersession), review tracking and backlogs, the linter's cross-checks (summary block ↔ accepted claims), generated timelines, and the rare precision citation `[[c-…]]` for one disputed assertion. Readers never need them; the system does.
@@ -126,9 +126,9 @@ A claim is a single sourced assertion. Claims live in a fenced YAML list under t
 
 ### 8.1 Three orthogonal axes
 
-**type**: *what* is asserted. Controlled vocabulary (§8.2).
+**type:** *what* is asserted. Controlled vocabulary (§8.2).
 
-**status**: *how reviewed*. The fact-safety lifecycle:
+**status:** *how reviewed*. The fact-safety lifecycle:
 
 ```
 suggested → accepted | disputed | rejected | superseded
@@ -136,11 +136,11 @@ suggested → accepted | disputed | rejected | superseded
 
 Nothing reaches `accepted` without human review. AI-generated claims always enter at `suggested`. `superseded` claims are kept, pointing forward via `notes`. A reviewer who has looked at a claim and cannot yet settle it leaves it `suggested` and writes the `reviewed:` date. So a suggested claim with a `reviewed:` date has been looked at and is still open; one with no date has not been looked at yet. (A source that says something only weakly is the other axis: `accepted` + low confidence, §8.5. A guess no source states is not a claim at all; it is a working answer, §17.)
 
-**significance**: *how much it defines a complete record*. Set by the claim's type (§8.2), never per claim.
+**significance:** *how much it defines a complete record*. Set by the claim's type (§8.2), never per claim.
 
 ### 8.2 Type vocabulary and significance table
 
-This table is the archive's own and editable; editing it is a spec change (see Governance), never a per-claim choice.
+This table is the spec's own and editable; editing it is a spec change (see Governance), never a per-claim choice.
 
 | Significance | Types | Role |
 |---|---|---|
@@ -264,7 +264,7 @@ Negative facts ("we researched and it did not happen") are an optional extension
 
 A human reading the archive never needs claims: prose cites *sources*, and the reader's path is profile → source record → file. Claims exist to power tooling: timelines, completeness checks, sources-indexes, exports, review workflows, contradiction detection. The source file is each claim's durable, human-readable home; all *querying* happens against the generated index, rebuilt from disk on demand. Tooling must abstract claims away from readers while depending on them completely; the full design implications live in `TOOLING.md`. The cost of files-as-truth (edit, then reindex) is accepted.
 
-Claims live in a fenced ` ```yaml ` block - not because the parser needs the fence but because it helps markdown tooling render it as a block instead of as loose text, and keeps a value's stray `#` or `*` literal. (Frontmatter needs no fence only because it is treated as a special entity by markdown editors such as Obsidian, which is also why frontmatter links can be clickable and a fenced block's cannot - and why the cross-linking lives in the frontmatter `people:` / `places:` fields (§14), not the claims block.) Inside the claims block, **`persons:` is written one person per line as a quoted, pinned link with the name beside it** - `- "[[p-…|Margaret Cole]]"` - so a reader with no tools sees who the claim is about. The ID is what is read; the name is for the human and may go stale after a rename without breaking anything. `roles:` and `place:` stay **bare IDs** (`roles: {child: p-…}`, `place: l-…`): they repeat people already named in `persons:` a few lines above, and `place_text` already carries the place's name. Readers are forgiving in `persons:` and `roles:` alike: a bare ID, `[[ID]]`, `[[ID|Name]]`, or a name that resolves unambiguously (§18) all name the same person. Claims written by hand without the `yaml` fence are still read under `## Claims`, and the linter adds the fence later.
+Claims live in a fenced ` ```yaml ` block. The parser does not need the fence; it helps markdown tooling render the claims as a block instead of as loose text, and keeps a value's stray `#` or `*` literal. (Frontmatter needs no fence only because it is treated as a special entity by markdown editors such as Obsidian, which is also why frontmatter links can be clickable and a fenced block's cannot, and why the cross-linking lives in the frontmatter `people:` / `places:` fields (§14), not the claims block.) Inside the claims block, **`persons:` is written one person per line as a quoted, pinned link with the name beside it** (`- "[[p-…|Margaret Cole]]"`), so a reader with no tools sees who the claim is about. The ID is what is read; the name is for the human and may go stale after a rename without breaking anything. `roles:` and `place:` stay **bare IDs** (`roles: {child: p-…}`, `place: l-…`): they repeat people already named in `persons:` a few lines above, and `place_text` already carries the place's name. Readers are forgiving in `persons:` and `roles:` alike: a bare ID, `[[ID]]`, `[[ID|Name]]`, or a name that resolves unambiguously (§18) all name the same person. Claims written by hand without the `yaml` fence are still read under `## Claims`, and the linter adds the fence later.
 
 ## 9. Persons
 
@@ -351,7 +351,7 @@ The ID is the more durable identity. A filename is mutable and can collide; an I
 - The type prefix (`p`/`s`/`c`/`l`/`h`) is the **only** meaning an ID carries, safe because a record never changes type. Nothing else is ever encoded: no dates, names, or sequence. Anything correctable (in genealogy: everything) lives in metadata.
 - **Alphabet:** Crockford Base32, `0123456789abcdefghjkmnpqrstvwxyz` (the letters `i l o u` are deliberately omitted to avoid confusion with `1 0` and accidental words). Because matching ignores case, an ID can never collide with itself across a case-insensitive filesystem (macOS, Windows).
 - 10 Base32 chars ≈ 32¹⁰ ≈ 1.1 × 10¹⁵ values (~50 bits): collision probability at family scale is vanishingly small, and the linter checks for duplicate IDs anyway, so a rare collision is caught.
-- **IDs are immutable**: never changed, never reused, including for deleted records.
+- **IDs are immutable:** never changed, never reused, including for deleted records.
 - **No registry.** IDs are random, so no counter or ID database exists. **The archive itself is the registry**: every record carries its ID, so the set of used IDs is always derivable by walking the tree. Minting tools generate a candidate and check existence (against the tree, or the rebuildable index as a cache). Two machines mint independently. Sequential IDs are rejected precisely because they would require the registry this design avoids.
 - IDs are assigned **on need** (at processing), never in bulk to unprocessed files (§7).
 - **Minting is the machine's job.** `fha id mint` (or any tool, on first contact with an id-less record) generates a candidate and checks it appears nowhere in the tree. A human may mint one by hand (ten characters from the alphabet above, checked absent), but nothing requires it.
@@ -772,12 +772,12 @@ Per the filename grammars of §13, a person, stub or curated alike (§9), has, i
 
 | File (`{surname}__{given}…`) | Nature |
 |---|---|
-| `…_p-xxxx.md` | **Profile**: the "hand this to grandma" document. One shape at either tier: a stub and a curated profile scaffold the same sections (§9); only the folder and the `tier:` flag differ, and how much of the body a human has filled in. |
-| `…_research_p-xxxx.md` | **OPTIONAL working file**: this person's open questions and working answers (§17) and a `## Research Notes` of its own. It exists only once something is written in it (§16b); most people never have one. |
+| `…_p-xxxx.md` | **Profile:** the "hand this to grandma" document. One shape at either tier: a stub and a curated profile scaffold the same sections (§9); only the folder and the `tier:` flag differ, and how much of the body a human has filled in. |
+| `…_research_p-xxxx.md` | **OPTIONAL working file:** this person's open questions and working answers (§17) and a `## Research Notes` of its own. It exists only once something is written in it (§16b); most people never have one. |
 | `…_view_timeline_p-xxxx.md` | **Generated** from claims, EDTF-sorted. Never hand-edited. |
 | `…_view_draft-queue_p-xxxx.md` | **Generated** uncited-claim backlog; consumed by write-biography. Never hand-edited. |
 
-**Profile structure**: frontmatter (§9), then:
+**Profile structure:** frontmatter (§9), then:
 
 ```markdown
 # Thomas Edward Hartley (1840-1941)
@@ -855,10 +855,10 @@ Notes connect to the core elements through ID links in their text, and linked fr
 
 Everything not yet proved climbs one ladder, written in one place: the question entry (§17b).
 
-1. **Question**: something not known. "Who were Margaret Cole's parents?"
-2. **Working answer**: the same entry, with a guess, the reason for it, and what would settle it. A guess is not a separate object: answering a question without proof is adding those lines, and the entry gains an `h-` id so it can be referred to.
-3. **Build on it**: research may continue past a guess. A guessed relationship may be entered on the person's `relationships:` with `status: hypothesis` and `hypothesis: h-…` naming this entry (§9), so the tree can be followed past it and anyone reading the tie can find why it is believed; the tree and the site draw it as a guess, and exports leave it out.
-4. **Settle**: one of three ways:
+1. **Question:** something not known. "Who were Margaret Cole's parents?"
+2. **Working answer:** the same entry, with a guess, the reason for it, and what would settle it. A guess is not a separate object: answering a question without proof is adding those lines, and the entry gains an `h-` id so it can be referred to.
+3. **Build on it:** research may continue past a guess. A guessed relationship may be entered on the person's `relationships:` with `status: hypothesis` and `hypothesis: h-…` naming this entry (§9), so the tree can be followed past it and anyone reading the tie can find why it is believed; the tree and the site draw it as a guess, and exports leave it out.
+4. **Settle:** one of three ways:
    - a source says it: process the source, and its claim carries the fact like any other;
    - the pieces add up: write the reasoning as a proof-argument source (§14), a short write-up of why the evidence, taken together, proves it, whose claim cites the evidence;
    - it is wrong: the guess is ruled out. Its lines leave the entry and one dated `context:` line records it (`ruled out h-…: Daniel Cole - his daughter Margaret died in 1852`), so the same guess is not made again. The question stays open for the next guess, which gets a new `h-` id.
@@ -1088,8 +1088,8 @@ physical_location:               # optional: where the PHYSICAL original lives (
   as_of: 2025-05
 ```
 
-- **`rights`**: `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
-- **`physical_location`**: who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
+- **`rights`:** `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
+- **`physical_location`:** who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
 
 ### A.7 Person: `gender` and `external_ids`
 
