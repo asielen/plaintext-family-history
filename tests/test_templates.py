@@ -114,6 +114,21 @@ class FilledTemplatesLintTests(_ArchiveBase):
         findings, reg = lint._run_lint_core(self.root, {})
         self.assertIn(lid.lower(), reg.place_ids)
 
+    def test_uncommenting_a_claim_example_line_keeps_its_text_whole(self):
+        # #361 review: `# place_text: Fairview, Kansas   # OPTIONAL - ...`
+        # uncommented as-is would hand the reader "Fairview, Kansas" plus a
+        # W156 telling the owner to paste the help text into the claim.
+        from _lib import claim_fields_cut_by_hash
+        key_re = re.compile(r'^\s*#\s*(-\s*)?(value|notes|place_text|anchor|value_org):')
+        for path in sorted(TEMPLATES.rglob('*.md')):
+            for n, ln in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                if not key_re.match(ln):
+                    continue
+                item = '- ' + ln.lstrip().lstrip('#').strip().lstrip('-').strip()
+                with self.subTest(file=path.name, line=n):
+                    self.assertEqual(claim_fields_cut_by_hash(
+                        f'## Claims\n```yaml\n{item}\n```\n'), [])
+
 
 class TemplatesAreSkippedTests(_ArchiveBase):
     def _install_templates(self):

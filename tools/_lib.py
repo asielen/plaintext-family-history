@@ -9486,6 +9486,56 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
     return alias_map.get(key)
 
 
+def persons_named(conn: sqlite3.Connection, text: str) -> list[dict]:
+    """The people a typed name could mean, for a command that takes a person.
+
+    Reads the index's `aliases` table, the same surface `[[Name]]` links
+    resolve through: a person's `name:`, `aliases:` and name variants, matched
+    whole and without regard to case. Returns [{'id', 'name', 'birth',
+    'death'}] for every active (not merged) person carrying it, sorted by
+    name and id. One match is the person meant; two or more is a choice the
+    human makes (two John Smiths are normal, SPEC §7), so a caller never
+    picks one; none sends him to `fha find`, which searches by part of a
+    name."""
+    key = ' '.join(strip_link_wrapper(str(text)).lower().split())
+    if not key:
+        return []
+    # Spacing is compared collapsed on both sides, so "Jose  Smith" written
+    # with two spaces is found by the name typed with one, and the other
+    # way round. The LIKE narrows the rows (each space may stand for any
+    # run of characters); the exact comparison is the collapsed one below.
+    escaped = key.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    rows = conn.execute(
+        "SELECT a.alias, p.id, p.name, p.birth, p.death FROM aliases a "
+        "JOIN persons p ON p.id = a.canonical_id "
+        "WHERE a.alias LIKE ? ESCAPE '\\' "
+        "AND COALESCE(p.status, 'active') != 'merged'",
+        ('%' + escaped.replace(' ', '%') + '%',)).fetchall()
+    found: dict[str, dict] = {}
+    for alias, pid, name, birth, death in rows:
+        if id_type_of(str(pid)) == 'P' and ' '.join(str(alias).lower().split()) == key:
+            found[pid] = {'id': pid, 'name': name or '', 'birth': birth or '',
+                          'death': death or ''}
+    return sorted(found.values(), key=lambda m: (m['name'], m['id']))
+
+
+def person_name_refusal(text: str, matches: list[dict], example: str) -> str:
+    """The plain message for a typed name that is not one person: who it
+    could be (two or more, each with an ID and dates to tell them apart),
+    or that nobody carries it, with the `fha find` search as the next step.
+    `example` is the command to rerun with an ID, e.g. `fha metrics P-...`."""
+    if matches:
+        who = '; '.join(
+            f"{m['name']} {fmt_id_display(m['id'])}"
+            + (f" ({m['birth'] or '?'} - {m['death'] or '?'})"
+               if m['birth'] or m['death'] else '')
+            for m in matches)
+        return (f'{len(matches)} people are named {text!r}: {who}. Run {example} with '
+                'the ID of the one you mean.')
+    return (f'No one in the index is named {text!r}. Run `fha find "{text}"` to search '
+            f'by part of a name, then {example} with the ID it shows.')
+
+
 def resolve_typed_ref(
     raw: object,
     alias_map: dict[str, str] | None,
@@ -11470,6 +11520,81 @@ def claims_in_text(text: str) -> list | None:
     return parsed if isinstance(parsed, list) else None
 
 
+# Claim fields a person types free text into. Unquoted, a ` #` inside one
+# starts a YAML comment, so everything after it vanishes from the index.
+CLAIM_FREE_TEXT_FIELDS = ('value', 'notes', 'place_text', 'anchor', 'value_org')
+
+# A space or Tab, then `#`: where YAML starts a comment inside a plain scalar.
+_SPACE_HASH_RE = re.compile(r'[ \t]#')
+
+
+def claim_fields_cut_by_hash(text: str) -> list[dict]:
+    """Claim fields whose unquoted text a ` #` cuts short (#355).
+
+    A genealogist types `value: Lot #4 of block 2`. YAML reads `Lot` as the
+    value and `#4 of block 2` as a comment, so the index, the timeline and
+    the site show "Lot" and nothing says a word. The record file still holds
+    the whole line; only the reader drops it.
+
+    Read from the raw `## Claims` block of a record TEXT (a whole file or its
+    body), not from parsed values: the parsed value has already lost the
+    tail. Each hit is `{'claim_id', 'key', 'kept', 'dropped', 'whole'}`:
+    what the reader keeps, the lost text from the `#` on, and the line as
+    the person most likely meant it. Only plain
+    (unquoted, non-block) scalars of `CLAIM_FREE_TEXT_FIELDS` count: a quoted
+    value or a `notes: >` block keeps its `#`. A block that does not parse
+    gives no hits (E010 already reports it). Cheap on a whole archive: the
+    YAML is composed only when a line that is not wholly a comment holds a
+    space-then-`#` (every real hit is on such a line), so a template's
+    commented examples never force the slow parse."""
+    if yaml is None:
+        return []
+    cm = CLAIMS_RE.search(text)
+    if cm is None:
+        return []
+    block = cm.group(1)
+    if not any(_SPACE_HASH_RE.search(line) for line in block.split('\n')
+               if not line.lstrip().startswith('#')):
+        return []
+    try:
+        # The pure-Python composer, so marks are character offsets into
+        # `block` (libyaml's are not guaranteed to be).
+        root = yaml.compose(block, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return []
+    if not isinstance(root, yaml.SequenceNode):
+        return []
+    hits: list[dict] = []
+    for item in root.value:
+        if not isinstance(item, yaml.MappingNode):
+            continue
+        claim_id = ''
+        fields = []
+        for key_node, val_node in item.value:
+            key = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+            if key == 'id' and isinstance(val_node, yaml.ScalarNode):
+                claim_id = str(val_node.value).strip()
+            if key in CLAIM_FREE_TEXT_FIELDS and isinstance(val_node, yaml.ScalarNode):
+                fields.append((key, val_node))
+        for key, node in fields:
+            if node.style is not None or not node.value:
+                continue          # quoted or block scalar, or an empty value
+            end = node.end_mark.index
+            eol = block.find('\n', end)
+            rest = block[end:eol if eol != -1 else len(block)].rstrip('\r')
+            if not re.match(r'[ \t]+#', rest):
+                continue
+            dropped = rest.strip()
+            if not dropped[1:].strip():
+                continue          # a bare `#` at the end: nothing was lost
+            kept = node.value
+            hits.append({
+                'claim_id': claim_id, 'key': key, 'kept': kept,
+                'dropped': dropped, 'whole': kept + rest.rstrip(),
+            })
+    return hits
+
+
 def claim_in_text(text: str, claim_id: str) -> dict | None:
     """The one claim `claim_id` names in a record's TEXT, parsed the way
     `read_record` parses it (scalars coerced), or None when the fenced
@@ -13176,6 +13301,44 @@ _CENSUS_COUNTRY_NAMES: dict[str, str] = {
     'canada': 'Canada',
 }
 
+# A hand-registered or GEDCOM-derived place often stops at the state or
+# province ("Elm Creek, Kansas"). These full names stand for their country,
+# so such a census still counts toward that country's years. A name that is
+# also somewhere else a census could have been taken is left out (see
+# _CENSUS_STATE_NAMES_LEFT_OUT), because counting it could credit a foreign
+# census as a U.S. or Canadian year; a place ending in one of those still
+# needs its country written.
+_CENSUS_STATE_NAMES: dict[str, tuple[str, ...]] = {
+    'United States': (
+        'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
+        'connecticut', 'delaware', 'district of columbia', 'idaho', 'illinois',
+        'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'massachusetts',
+        'michigan', 'minnesota', 'mississippi', 'missouri', 'nebraska', 'nevada',
+        'new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina',
+        'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania',
+        'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas',
+        'utah', 'vermont', 'virginia', 'washington', 'west virginia', 'wisconsin',
+        'wyoming'),
+    'Canada': (
+        'alberta', 'british columbia', 'manitoba', 'new brunswick',
+        'northwest territories', 'nova scotia', 'nunavut', 'ontario',
+        'prince edward island', 'quebec', 'québec', 'saskatchewan', 'yukon'),
+}
+# Left out on purpose, each with the reason. Not read by the code: kept so
+# the next person to touch the list sees why these are missing.
+_CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
+    'georgia': 'also a country',
+    'florida': 'also a department of Uruguay',
+    'maine': 'also a historic province of France',
+    'maryland': 'also a county of Liberia',
+    'montana': 'also a province of Bulgaria',
+    'hawaii': 'a kingdom and republic with its own censuses until 1898',
+    'newfoundland': 'not part of Canada until 1949, after most of its table',
+    'newfoundland and labrador': 'not part of Canada until 1949, after most of its table',
+}
+_CENSUS_COUNTRY_NAMES.update(
+    {state: country for country, states in _CENSUS_STATE_NAMES.items() for state in states})
+
 
 def _claim_year(date_min: Any, date_max: Any, date_edtf: Any) -> tuple[int | None, int | None]:
     """A claim's (earliest, latest) year, each None where it is unknown.
@@ -13214,8 +13377,9 @@ def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
 
 
 def census_country_key(country: str | None) -> str | None:
-    """The CENSUS_YEARS key for a country name as written, or None when the
-    archive has no census table for it."""
+    """The CENSUS_YEARS key for a country name as written (or a U.S. state
+    or Canadian province standing for it), or None when the archive has no
+    census table for it."""
     if not country:
         return None
     norm = country.lower().replace('.', '').strip()
@@ -13232,12 +13396,14 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
       persons:         pid -> persons row as a dict (merged records left out:
                        the index already credits their claims to the survivor)
       claims:          cid -> {type, subtype, status, parked, negated,
-                       information, source_id, place_id, y_lo, y_hi}
+                       information, source_id, place_id, date, y_lo, y_hi}
                        (`parked`: PARKED_CLAIM_SQL, read for the
                        review-queue mode)
       claim_people:    cid -> [(pid, role), ...] via claim_role_pairs
       person_claims:   pid -> [cid, ...] every claim that names them, any role
       source_types:    sid -> source_type
+      source_years:    sid -> (earliest, latest) year of the source's own date
+      source_places:   sid -> {lid, ...} from the source's `places:`
       places:          lid -> {hierarchy, within}
     """
     persons = {
@@ -13261,6 +13427,7 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
             'information': (r['information'] or '').strip().lower(),
             'source_id': r['source_id'],
             'place_id': normalize_id(str(r['place_id'])) if r['place_id'] else None,
+            'date': (r['date_edtf'] or '').strip(),
             'y_lo': lo, 'y_hi': hi,
         }
     raw_people: dict[str, list[tuple[str, Any]]] = {}
@@ -13276,10 +13443,15 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     source_claims: dict[str, list[str]] = {}
     for cid, c in claims.items():
         source_claims.setdefault(c['source_id'], []).append(cid)
-    source_types = {
-        r['id']: (r['source_type'] or '').strip().lower()
-        for r in conn.execute('SELECT id, source_type FROM sources')
-    }
+    source_types: dict[str, str] = {}
+    source_years: dict[str, tuple[int | None, int | None]] = {}
+    for r in conn.execute('SELECT id, source_type, date_edtf, date_min, date_max FROM sources'):
+        source_types[r['id']] = (r['source_type'] or '').strip().lower()
+        source_years[r['id']] = _claim_year(r['date_min'], r['date_max'], r['date_edtf'])
+    source_places: dict[str, set[str]] = {}
+    for r in conn.execute('SELECT source_id, place_id FROM source_places'):
+        if r['place_id']:
+            source_places.setdefault(r['source_id'], set()).add(normalize_id(str(r['place_id'])))
     places = {
         normalize_id(str(r['id'])): {
             'hierarchy': r['hierarchy'],
@@ -13295,7 +13467,8 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     return {
         'persons': persons, 'claims': claims, 'claim_people': claim_people,
         'person_claims': person_claims, 'source_claims': source_claims,
-        'source_types': source_types, 'places': places, 'source_people': source_people,
+        'source_types': source_types, 'source_years': source_years,
+        'source_places': source_places, 'places': places, 'source_people': source_people,
     }
 
 
@@ -13329,9 +13502,10 @@ def _own_vital_claims(ctx: dict, pid: str, statuses: tuple[str, ...],
 _VITAL_EVENT_TYPES = ('birth', 'baptism', 'marriage', 'divorce', 'death', 'burial')
 
 
-def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
-    """Does this source record the person's own death or burial? Then it is
-    their death record, whatever else it gives."""
+def _own_deaths_on_source(ctx: dict, source_id: Any, pid: str) -> list[dict]:
+    """The person's own death and burial claims on this source. A source
+    that records their death is their death record, whatever else it gives."""
+    out = []
     for cid in ctx['source_claims'].get(source_id, ()):
         c = ctx['claims'][cid]
         # A rejected or disputed reading of the source says nothing about it.
@@ -13344,8 +13518,27 @@ def _records_own_death(ctx: dict, source_id: Any, pid: str) -> bool:
             if subjects is None:
                 subjects = [p for p, _r in pairs]
             if pid in subjects:
-                return True
-    return False
+                out.append(c)
+    return out
+
+
+# A baptism this close to the burial on the same register is the infant's
+# own entry, made at the time, not a later reading of the burial.
+INFANT_REGISTER_YEARS = 2
+
+
+def _infant_register_baptism(c: dict, deaths: list[dict]) -> bool:
+    """Is this baptism dated within INFANT_REGISTER_YEARS of every death or
+    burial of the same person on the same register? Both must be dated, the
+    baptism to within that many years too: an undated entry, or one dated
+    only "1800/1850", could be an adult's baptism read decades later."""
+    if (c['type'] != 'baptism' or c['y_lo'] is None or c['y_hi'] is None
+            or c['y_hi'] - c['y_lo'] > INFANT_REGISTER_YEARS):
+        return False
+    for d in deaths:
+        if d['y_hi'] is None or not 0 <= d['y_hi'] - c['y_lo'] <= INFANT_REGISTER_YEARS:
+            return False
+    return True
 
 
 def _is_record_of_event(ctx: dict, cid: str) -> bool:
@@ -13357,7 +13550,12 @@ def _is_record_of_event(ctx: dict, cid: str) -> bool:
     vital record, and `information:` is usually left unset on hand-typed
     claims, so such a source counts as a death record only - unless the
     claim says `information: primary`. Judged per claim, so the husband and
-    the widow get the same answer about the same marriage."""
+    the widow get the same answer about the same marriage.
+
+    One shape is told apart without that mark: an infant's baptism and
+    burial on one parish register. A baptism dated within
+    INFANT_REGISTER_YEARS of the burial is the baptism entry itself; an
+    adult's baptism decades before the burial stays a later reading."""
     c = ctx['claims'][cid]
     if (ctx['source_types'].get(c['source_id']) != 'vital-record'
             or c['information'] == 'secondary'):
@@ -13368,7 +13566,11 @@ def _is_record_of_event(ctx: dict, cid: str) -> bool:
     subjects = vital_subjects(c['type'], pairs)
     if subjects is None:
         subjects = [p for p, _r in pairs]
-    return not any(_records_own_death(ctx, c['source_id'], s) for s in subjects)
+    for s in subjects:
+        deaths = _own_deaths_on_source(ctx, c['source_id'], s)
+        if deaths and not _infant_register_baptism(c, deaths):
+            return False
+    return True
 
 
 def _is_census_claim(ctx: dict, c: dict) -> bool:
@@ -13377,6 +13579,58 @@ def _is_census_claim(ctx: dict, c: dict) -> bool:
     return c['type'] == 'census' or (
         c['type'] == 'residence'
         and ctx['source_types'].get(c['source_id']) == 'census')
+
+
+def _census_year_key(ctx: dict, c: dict) -> tuple[bool, str | None]:
+    """Does this life claim put the person on a census in its year, and
+    under which country's name?
+
+    Returns (counts, country): `country` is the raw last part of the place
+    hierarchy, None for a census entry naming no registered place (which
+    may count for any country, as it always has).
+
+    A census entry (`_is_census_claim`) counts under its own place. So does
+    any other claim mined from a `census` source - an occupation or an
+    event written down by the enumerator - but only where the record says
+    which census it is: the claim's year lies inside the source's own date
+    (both within a couple of years), so an immigration year or a birth year
+    read off the page never passes for a census year, and its country comes
+    from the claim's place or, failing that, the one country the source's
+    `places:` name. Without both, it does not count: a gap shows rather
+    than a census year nobody filed. Birth, baptism, marriage, divorce,
+    death and burial claims never count, even dated in the census year."""
+    raw = _place_country(ctx['places'], c['place_id'])
+    if _is_census_claim(ctx, c):
+        return True, raw
+    if (ctx['source_types'].get(c['source_id']) != 'census'
+            or c['type'] in _VITAL_EVENT_TYPES):
+        return False, None
+    s_lo, s_hi = ctx['source_years'].get(c['source_id'], (None, None))
+    if (s_lo is None or s_hi is None or s_hi - s_lo > 2
+            or not s_lo <= c['y_lo'] <= c['y_hi'] <= s_hi):
+        return False, None
+    if raw is None:
+        named = set()
+        for lid in ctx['source_places'].get(c['source_id'], ()):
+            country = _place_country(ctx['places'], lid)
+            named.add(census_country_key(country) or country)
+        if len(named) != 1 or None in named:
+            return False, None
+        raw = next(iter(named))
+    return True, raw
+
+
+def _best_dated(claims: list[tuple[str, dict]]) -> list[tuple[str, dict]]:
+    """The claims among these whose date is the narrowest, in years: an
+    exact death ("19 Jan 1941") over a recollection ("about 1940", read as
+    1939 to 1941). Claims with an open or missing end are kept only when
+    no claim is dated at both ends. Used for the death year, where a vague
+    date's early end would otherwise cut a census year the exact one asks."""
+    dated = [(cid, c) for cid, c in claims if c['y_lo'] is not None and c['y_hi'] is not None]
+    if not dated:
+        return claims
+    span = min(c['y_hi'] - c['y_lo'] for _cid, c in dated)
+    return [(cid, c) for cid, c in dated if c['y_hi'] - c['y_lo'] == span]
 
 
 def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[str, dict]]:
@@ -13450,7 +13704,8 @@ def _person_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> tuple[int |
     Birth comes from their own birth claims, then the provisional estimate on
     their record, and only then a baptism - an adult baptised in 1900 was not
     born in 1900. Death comes from their own death or burial claims, then the
-    provisional estimate. Each is the earliest year the record allows."""
+    provisional estimate, read from the best-dated of those claims
+    (`_best_dated`). Each is the earliest year the record allows."""
     person = ctx['persons'].get(pid, {})
     birth_claims = _own_vital_claims(ctx, pid, statuses, ('birth',))
     birth = _first_year(birth_claims)
@@ -13461,18 +13716,25 @@ def _person_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> tuple[int |
         birth = _provisional_year(person.get('birth'))
         if birth is None:
             birth = _first_year(_own_vital_claims(ctx, pid, statuses, ('baptism',)))
-    death = _first_year(_own_vital_claims(ctx, pid, statuses, ('death', 'burial')))
+    death = _first_year(_best_dated(_own_vital_claims(ctx, pid, statuses, ('death', 'burial'))))
     if death is None:
         death = _provisional_year(person.get('death'))
     earliest = _first_year(_counted_claims(ctx, pid, statuses))
     return birth, death, earliest
 
 
-def _birth_by_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[int]:
+def _birth_by_years(ctx: dict, pid: str,
+                    statuses: tuple[str, ...]) -> tuple[list[int], bool]:
     """The latest year each of the person's own birth records allows (`189X`
     could be 1899): their birth and baptism claims, else the provisional
     estimate on their record, else, birth unknown, every record of them (a
-    person in an 1850 census was born by 1850)."""
+    person in an 1850 census was born by 1850).
+
+    The flag says which: True for birth claims and the provisional
+    estimate, where each year is one reading of the same birth and they may
+    disagree; False for baptisms and the every-record fallback, where each
+    year is a separate event the person was born by (two baptisms are two
+    events, and the earlier one bounds the birth)."""
     # Same order as `_person_years`: birth claims, then the provisional
     # estimate, and only then a baptism (an adult baptism says little of age).
     births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('birth',))
@@ -13482,13 +13744,21 @@ def _birth_by_years(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[int]
         lo, hi = edtf_bounds(str(provisional))
         hi_year = _claim_year(lo, hi, provisional)[1]
         births = [hi_year] if hi_year is not None else []
-    if not births:
-        births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('baptism',))
-                  if c['y_hi'] is not None]
-    if not births:
-        births = [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, statuses)
-                  if c['y_hi'] is not None]
-    return births
+    if births:
+        return births, True
+    baptisms = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('baptism',))
+                if c['y_hi'] is not None]
+    if baptisms:
+        return baptisms, False
+    return [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, statuses)
+            if c['y_hi'] is not None], False
+
+
+# Birth claims this close together are readings of one birth (a census age
+# off by a few years), so the latest of them is the latest possible birth.
+# Further apart, they may be two people merged into one record, and the
+# earlier one keeps the death gap visible.
+BIRTH_READINGS_AGREE_YEARS = 10
 
 
 def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int) -> dict:
@@ -13502,14 +13772,20 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     from free text, and a census year on file that fits a country's table
     widens that country's start. Only records of the person's own life place
     them or date them (`_life_claims`): a mention on a son's death
-    certificate says nothing about where or when the father lived.
+    certificate says nothing about where or when the father lived. A
+    hierarchy that stops at a U.S. state or Canadian province still names
+    its country (`census_country_key`).
 
     With no death year on file, years after their latest record are not
     asked, and while the table has later years they may have lived through,
     the check is `partial` and says so: an unknown death is never read as
     "nothing more to find".
 
-    A year is on file when a census entry (`_is_census_claim`) among their
+    The death year is the best-dated death or burial (`_best_dated`), so
+    an exact date is not cut short by a vaguer recollection of it.
+
+    A year is on file when a census entry, or another claim the census
+    source dates to its own year (`_census_year_key`), among their
     own life claims is dated in it - not one naming them only as an
     informant or witness (SPEC §8.3: the neighbour who gave the enumerator
     the household's details was not enumerated with it). Birth claims are
@@ -13533,11 +13809,14 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
+        if c['y_lo'] is not None and c['y_hi'] is not None and c['y_hi'] - c['y_lo'] <= 2:
+            counts, census_raw = _census_year_key(ctx, c)
+            if counts:
+                census_key = census_country_key(census_raw)
+                found_by.setdefault(census_key or census_raw, set()).update(
+                    range(c['y_lo'], c['y_hi'] + 1))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
-        if (_is_census_claim(ctx, c) and c['y_lo'] is not None and c['y_hi'] is not None
-                and c['y_hi'] - c['y_lo'] <= 2):
-            found_by.setdefault(key or raw, set()).update(range(c['y_lo'], c['y_hi'] + 1))
         if raw and not key:
             other_countries.add(raw)
         if not key:
@@ -13573,8 +13852,19 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # inside it count when found and are never reported missing, since the
     # person may or may not have been alive for them.
     death_claims = _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
-    death_hi = max((c['y_hi'] for _cid, c in death_claims if c['y_hi'] is not None),
+    best_deaths = _best_dated(death_claims)
+    death_hi = max((c['y_hi'] for _cid, c in best_deaths if c['y_hi'] is not None),
                    default=None)
+    # Say which claim set the death year when a vaguer one was set aside, so
+    # the owner can see why that one's date did not decide.
+    set_aside = [c['date'] for cid, c in death_claims
+                 if (cid, c) not in best_deaths and c['date']]
+    death_note = ''
+    if set_aside and death is not None:
+        best_dates = ', '.join(sorted({c['date'] for _cid, c in best_deaths if c['date']}))
+        death_note = (f'death year {death} from the best-dated death or burial record '
+                      f'({best_dates}); the vaguer ' + ', '.join(sorted(set(set_aside)))
+                      + ' set aside')
     prov = ctx['persons'].get(pid, {}).get('death')
     if death_hi is None and prov and is_valid_edtf(str(prov)):
         lo_s, hi_s = edtf_bounds(str(prov))
@@ -13597,7 +13887,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # may have lived through. They are surely dead only END_OF_LIFE_YEARS
     # after the LATEST birth year any record allows, so a conflicting later
     # birth keeps those years open.
-    births_by = _birth_by_years(ctx, pid, statuses)
+    births_by, _from_birth = _birth_by_years(ctx, pid, statuses)
     alive_cap = min(this_year, max(births_by) + END_OF_LIFE_YEARS) if births_by else this_year
     expected: list[int] = []
     extras_all: list[int] = []
@@ -13648,6 +13938,8 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if blocked:
             return {**base, 'state': 'partial', 'detail': note}
         return {**base, 'state': 'na', 'detail': 'lived through no census year on file'}
+    if death_note:
+        note = f'{note}; {death_note}' if note else death_note
     tail = f'; {note}' if note else ''
     if not missing:
         return {**base, 'state': 'partial' if blocked else 'met',
@@ -13826,17 +14118,24 @@ def _check_end_of_life(ctx: dict, pid: str, statuses: tuple[str, ...], this_year
                        END_OF_LIFE_YEARS ago, when the record itself is
                        likely wrong and the check says so
 
-    "Born over 130 years ago" reads the earliest of the latest years each
-    birth record allows (`_birth_by_years`): a birth of `189X` could be
-    1899, and when two birth records disagree the earlier one asks for the
-    death, since a gap shown is safer than a gap hidden."""
+    "Born over 130 years ago" reads the latest year they can have been born
+    (`_birth_by_years`): a birth of `189X` could be 1899, and when birth
+    claims disagree by up to BIRTH_READINGS_AGREE_YEARS (1890 and 1900) the
+    later one decides, since someone who may have been born 126 years ago
+    may still be living. Claims further apart (1850 and 1900) are not one
+    birth read two ways, so the earlier decides and the gap stays visible.
+    Birth unknown, their first baptism, or else their first record, stands
+    in: they were born by then."""
     own = _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
     if own:
         return {'check': 'end-of-life', 'state': 'met', 'claims': [cid for cid, _c in own],
                 'detail': 'death or burial on file'}
     living = str(ctx['persons'].get(pid, {}).get('living') or 'unknown').lower()
-    births = _birth_by_years(ctx, pid, statuses)
-    born_by = min(births) if births else None
+    births, readings = _birth_by_years(ctx, pid, statuses)
+    born_by = None
+    if births:
+        agree = max(births) - min(births) <= BIRTH_READINGS_AGREE_YEARS
+        born_by = max(births) if readings and agree else min(births)
     very_old = born_by is not None and this_year - born_by > END_OF_LIFE_YEARS
     if living == 'false':
         return {'check': 'end-of-life', 'state': 'missing', 'claims': [],

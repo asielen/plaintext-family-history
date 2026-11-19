@@ -56,6 +56,7 @@ fha backup   --root my-family-archive   # dated zip beside the archive - restore
 fha update-tools --dry-run --repo . --root my-family-archive  # preview a tools update (docs/UPDATING.md)
 fha relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
 fha metrics --root my-family-archive   # who still lacks a birth, census or marriage record?
+fha metrics "Ann Smith" --root my-family-archive   # one person's checks in detail, by name or P-id
 fha calendar today --root my-family-archive   # who in the family was born, married or died on this day?
 fha person new "Ann Smith" --sex F --root my-family-archive   # add one new person (refuses a name already on file)
 fha person new --from-file people.tsv --root my-family-archive   # add a list at once: name, sex, surname per line, tab-separated
