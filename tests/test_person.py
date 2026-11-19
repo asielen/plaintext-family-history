@@ -1506,6 +1506,16 @@ class EstimateTests(unittest.TestCase):
         living_idx = next(i for i, l in enumerate(lines) if l.startswith('living:'))
         self.assertEqual(lines[living_idx + 1], 'birth: 1870')
 
+    def test_a_place_with_a_hash_reads_back_whole_and_lints_clean(self) -> None:
+        # #364: the command lint W157 offers for a cut birth_place must save
+        # the whole text, not hand YAML another ` #` to cut.
+        import lint
+        result = person.run_estimate(self.root, PID, birth_place='Lot #4, Easton')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(read_record(self.stub)['meta']['birth_place'], 'Lot #4, Easton')
+        findings, _reg = lint._run_lint_core(self.root, {})
+        self.assertEqual([f.message for f in findings if f.code == 'W157'], [])
+
     def test_a_before_date_and_an_octal_looking_year_read_back(self) -> None:
         # #208 audit: estimate wrote dates bare, so 'before 1920' became the
         # list ['..1920'] and a year like 0750 the octal number 488, both

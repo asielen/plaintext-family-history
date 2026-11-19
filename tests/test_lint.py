@@ -6318,5 +6318,155 @@ class ClaimTextCutByHashW156Tests(unittest.TestCase):
         self.assertEqual([h['kept'] for h in _lib.claim_fields_cut_by_hash(hit)], ['Lot'])
 
 
+
+class FrontmatterTextCutByHashW157Tests(unittest.TestCase):
+    """#364: `title: Deed to Lot #4 of block 2` reads as "Deed to Lot" - YAML
+    takes the rest as a comment - so every page and the site show the stub
+    and nothing said so. Lint names each displayed frontmatter field (and
+    each places.yaml text field) a ` #` cuts short, from the raw line, with
+    the fix. A comment two spaces past the text, the way the templates and
+    the tools write one, is left alone. Lint never edits the record."""
+
+    SID = 's-7dddddddd1'
+    PID = 'p-7dddddddd3'
+    LID = 'l-7dddddddd4'
+
+    def _run(self, source_fm: str = 'title: A deed\n', person_fm: str = 'name: Ann Doe\n',
+             places: str | None = None) -> tuple[dict, Path]:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        (root / 'people' / 'stubs').mkdir(parents=True)
+        (root / 'sources' / 'other' / f'deed_{self.SID}.md').write_text(
+            f'---\nid: {self.SID}\nsource_type: other\ncreated: 2026-01-01\n'
+            f'{source_fm}---\n', encoding='utf-8')
+        (root / 'people' / 'stubs' / f'doe__ann_{self.PID}.md').write_text(
+            f'---\nid: {self.PID}\n{person_fm}living: false\n'
+            'created: 2026-01-01\ntier: stub\n---\n', encoding='utf-8')
+        if places is not None:
+            (root / 'places').mkdir()
+            (root / 'places' / 'places.yaml').write_text(places, encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out, root
+
+    @staticmethod
+    def _labels(codes: dict) -> list[str]:
+        return sorted(m.message.split(' stops at', 1)[0] for m in codes.get('W157', []))
+
+    def test_an_unquoted_title_cut_at_a_hash_warns_with_the_hand_fix(self) -> None:
+        codes, root = self._run(source_fm='title: Deed to Lot #4 of block 2\n')
+        (w,) = codes.get('W157', [])
+        self.assertEqual(w.severity, 'W')
+        self.assertTrue(str(w.path).endswith(f'deed_{self.SID}.md'))
+        self.assertIn('title: stops at the "#". Only \'Deed to Lot\' is read', w.message)
+        self.assertIn('"#4 of block 2" is read as a hidden comment', w.message)
+        self.assertIn("`title: 'Deed to Lot #4 of block 2'`", w.message)
+        # No fha command rewrites a title, so none is offered.
+        self.assertNotIn('`fha ', w.message)
+        # Report-only.
+        self.assertIn('title: Deed to Lot #4 of block 2\n', (
+            root / 'sources' / 'other' / f'deed_{self.SID}.md').read_text(encoding='utf-8'))
+
+    def test_every_displayed_source_field_is_checked(self) -> None:
+        codes, _r = self._run(source_fm=(
+            'title: A deed\naliases:\n  - lot #4 deed\nrepository: Box #2\n'
+            'subtype: plat #7\nprovenance: Lot #4 papers\ncitation: Deed book #3, page 12\n'
+            'files:\n  - file: x.txt\n    note: page #2\nrights:\n  holder: Smith #1\n'
+            'physical_location:\n  holder: Shelf #9\n'))
+        self.assertEqual(self._labels(codes), [
+            'An entry of aliases:', 'The holder: under physical_location:',
+            'The holder: under rights:', 'The note: under files:',
+            'citation:', 'provenance:', 'repository:', 'subtype:'])
+        hands = ' '.join(m.message for m in codes['W157'])
+        self.assertIn("`- 'lot #4 deed'`", hands)
+        self.assertIn("`note: 'page #2'`", hands)
+
+    def test_person_names_and_lists_are_checked(self) -> None:
+        codes, _r = self._run(person_fm=(
+            'name: Ann Doe #2\nname_variants:\n  - Annie #2\n'
+            'also_known_as: [Nan]\nmarried_name: Ann Roe #2\n'))
+        self.assertEqual(self._labels(codes), [
+            'An entry of name_variants:', 'married_name:', 'name:'])
+        # `fha person rename` also renames files, so it is not offered for a quoting fix.
+        self.assertFalse(any('fha person' in m.message for m in codes['W157']))
+
+    def test_a_restricted_name_variant_is_read_by_its_value(self) -> None:
+        codes, _r = self._run(person_fm=(
+            'name: Ann Doe\nname_variants:\n  - value: Nan #2\n    restricted: true\n'))
+        self.assertEqual(self._labels(codes), ['The value: under name_variants:'])
+
+    def test_an_estimate_place_offers_the_estimate_command(self) -> None:
+        codes, _r = self._run(person_fm='name: Ann Doe\nbirth_place: Lot #4, Easton\n')
+        (w,) = codes.get('W157', [])
+        self.assertIn(f'fha person estimate {self.PID} --birth-place ', w.message)
+        self.assertIn('Lot #4, Easton', w.message.split('--birth-place', 1)[1])
+        self.assertIn("`birth_place: 'Lot #4, Easton'`", w.message)
+
+    def test_text_a_shell_would_mangle_gets_only_the_hand_fix(self) -> None:
+        for place in ('Lot #4 $5 plat', 'Lot #4 `old`', 'Lot #4 "corner"'):
+            with self.subTest(place=place):
+                codes, _r = self._run(person_fm=f'name: Ann Doe\ndeath_place: {place}\n')
+                (w,) = codes.get('W157', [])
+                self.assertNotIn('fha person', w.message)
+                self.assertIn('put quotes around it by hand', w.message)
+
+    def test_quoted_block_aligned_comment_and_other_keys_are_quiet(self) -> None:
+        codes, _r = self._run(
+            source_fm=("title: 'Deed to Lot #4'\nrepository: unknown        # where it lives\n"
+                       'citation: >\n  Deed book #3, folded\nsubtype: plat\t# tabbed note\n'
+                       'source_date: 1880  # an estimate\nprovider: Lot#4\n'),
+            person_fm=('name: Ann Doe   # the name at birth\n'
+                       'surname: Doe   # set by hand: the file name sorts under this surname\n'
+                       'birth_place: "Lot #4, Easton"   # unsourced, goes with the birth estimate\n'
+                       'sex: F # per the census\n'))
+        self.assertNotIn('W157', codes)
+
+    def test_an_aligned_comment_after_lost_text_stays_a_comment(self) -> None:
+        codes, _r = self._run(source_fm='title: Lot #4 deed   # from Aunt Ruth\n')
+        (w,) = codes.get('W157', [])
+        self.assertIn("`title: 'Lot #4 deed'`", w.message)
+        self.assertIn('"#4 deed" is read as a hidden comment', w.message)
+
+    def test_places_yaml_names_the_place(self) -> None:
+        codes, _r = self._run(places=(
+            f'- id: {self.LID}\n  name: Ward #5\n  hierarchy: Ward #5, Riverton\n'
+            '  alt_names:\n    - Fifth Ward #5\n  notes: Laid out in 1855   # Wikipedia\n'
+            '  history:\n    - period: 1855/1861\n      hierarchy: Ward #5, Kansas Territory\n'))
+        msgs = [m.message for m in codes.get('W157', [])]
+        self.assertEqual(len(msgs), 4, msgs)
+        shown = self.LID
+        joined = ' '.join(msgs)
+        self.assertIn(f"Place {shown}'s name: stops at", joined)
+        self.assertIn(f"Place {shown}'s hierarchy: stops at", joined)
+        self.assertIn(f"An entry of place {shown}'s alt_names:", joined)
+        self.assertIn(f"The hierarchy: under place {shown}'s history:", joined)
+        self.assertTrue(all('in places.yaml' in m for m in msgs))
+
+    def test_frontmatter_whose_hashes_are_only_comments_skips_the_parse(self) -> None:
+        import _lib
+        fm = ('id: s-7dddddddd1\n# title: Lot #4   # a commented example\n'
+              'repository: unknown        # aligned comment\n')
+        with unittest.mock.patch.object(_lib.yaml, 'compose',
+                                        side_effect=AssertionError('parsed')) as compose:
+            self.assertEqual(_lib.text_fields_cut_by_hash(fm, _lib.SOURCE_FREE_TEXT_FIELDS), [])
+            compose.assert_not_called()
+        self.assertEqual(
+            [h['kept'] for h in _lib.text_fields_cut_by_hash(
+                fm + 'title: Lot #4\n', _lib.SOURCE_FREE_TEXT_FIELDS)], ['Lot'])
+
+    def test_the_shipped_archives_carry_no_cut_frontmatter(self) -> None:
+        from _lib import load_fha_yaml
+        for name in ('example-archive', 'quickstart-example', 'archive-template',
+                     'quickstart-template'):
+            with self.subTest(archive=name):
+                root = ROOT / name
+                findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+                self.assertEqual([f.message for f in findings if f.code == 'W157'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

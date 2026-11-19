@@ -6,7 +6,7 @@
 const title = await tp.system.prompt("Short title (e.g. 1880 census, Hartley household)");
 -%>
 ---
-title: <% title %>
+title: <% JSON.stringify(title) %>
 source_type: other       # photo | census | vital-record | newspaper | letter | interview | ...
 # source_date:           # optional, when the source was made (a year is fine)
 # repository:            # optional, where the original lives

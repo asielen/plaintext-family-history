@@ -124,6 +124,7 @@ from _lib import (
     resolve_root_arg,
     strip_generational_suffix,
     safe_load_yaml,
+    yaml_inline,
 )
 
 import yaml
@@ -216,14 +217,9 @@ def _name_slot(text: str) -> str:
     return (slot or 'unknown')[:60]
 
 
-def _yaml_inline(value: str) -> str:
-    """Single-line YAML scalar, quoted exactly when the parser needs it."""
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# The one quoting rule every writer shares (`_lib.yaml_inline`): a title or
+# name holding ` #` comes out quoted, so YAML never reads its tail as a comment.
+_yaml_inline = yaml_inline
 
 
 def _oneline(text: str) -> str:

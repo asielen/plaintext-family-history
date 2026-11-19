@@ -6,7 +6,7 @@
 const name = await tp.system.prompt("Full name (e.g. Thomas Edward Hartley)");
 -%>
 ---
-name: <% name %>
+name: <% JSON.stringify(name) %>
 # sex: M                 # optional: M | F | intersex | unknown
 # gender:                # optional: identity, in plain words (only if relevant)
 living: unknown          # true | false | unknown  (unknown is treated as living in exports)

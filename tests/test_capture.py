@@ -91,6 +91,16 @@ class CaptureTestCase(unittest.TestCase):
         self.assertTrue(log.exists())
         self.assertIn('repository: example.com', log.read_text(encoding='utf-8'))
 
+    def test_a_page_title_with_a_hash_reads_back_whole(self) -> None:
+        # #364: `title: Deed to Lot #4` unquoted would read back as "Deed to
+        # Lot". The stub quotes it with the shared `_lib.yaml_inline`.
+        import _lib
+        self.assertIs(capture._yaml_inline, _lib.yaml_inline)
+        self._capture('<html><title>Deed to Lot #4 of block 2</title></html>',
+                      url='https://x.test/deed')
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['title'], 'Deed to Lot #4 of block 2')
+
     def _log_entries(self) -> list[dict]:
         import index
         text = (self.archive / 'notes' / 'research-log.md').read_text(encoding='utf-8')

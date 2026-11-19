@@ -120,9 +120,8 @@ from _lib import (
     scan_person_record_ids,
     stub_filename,
     write_text_exact_atomic,
+    yaml_inline,
 )
-
-import yaml
 
 configure_utf8_stdout()
 
@@ -146,14 +145,9 @@ def _slugify(text: str) -> str:
     return slug or 'item'
 
 
-def _yaml_inline(value: str) -> str:
-    """Single-line YAML scalar, quoted exactly when the parser needs it."""
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# The one quoting rule every writer shares (`_lib.yaml_inline`): a title or
+# name holding ` #` comes out quoted, so YAML never reads its tail as a comment.
+_yaml_inline = yaml_inline
 
 
 # ── Legacy parsing ────────────────────────────────────────────────────────────

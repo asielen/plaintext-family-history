@@ -137,6 +137,7 @@ from _lib import (
     resolve_root_arg,
     update_path_manifest,
     write_text_exact_atomic,
+    yaml_inline,
 )
 
 import yaml
@@ -581,20 +582,9 @@ def _slugify(text: str) -> str:
     return slug or 'capture'
 
 
-def _yaml_inline(value: str) -> str:
-    """Render a string as a single-line YAML scalar, quoting only when needed.
-
-    The same discipline `process.py` uses: free-form citation/title/URL text can
-    carry YAML-significant characters (`: `, a leading `-`), so each scalar is
-    round-tripped through the emitter and quoted exactly when the parser needs
-    it - otherwise the stub's frontmatter would not re-parse on `fha process`.
-    """
-    rendered = yaml.safe_dump(
-        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
-    ).strip()
-    if rendered.endswith('...'):
-        rendered = rendered[:-3].strip()
-    return rendered
+# The one quoting rule every writer shares (`_lib.yaml_inline`): a title or
+# name holding ` #` comes out quoted, so YAML never reads its tail as a comment.
+_yaml_inline = yaml_inline
 
 
 # A page that is one person's own page on a site (SPEC A.7 `external_ids`):
