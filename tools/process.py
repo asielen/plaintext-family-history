@@ -4396,8 +4396,8 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     slug is the one the source's primary document already carries (its stem
     without `_{S-id}` and without the `-{copy}-{role}` its own `files:` entry
     names), or the record's own slug when the primary is a photo (photos are
-    never renamed, so their name is no guide) or is named by its S-id alone. The scan's real
-    name is not lost: it is recorded as `original_filename:`.
+    never renamed, so their name is no guide) or is named by its S-id alone.
+    The scan's real name is not lost: it is recorded as `original_filename:`.
 
     Two names are kept, both the recording and transcript skills'
     deliberate conventions (owner decision on PR #287):
