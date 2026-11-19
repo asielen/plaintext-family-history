@@ -166,7 +166,7 @@ Before declaring any task complete, run the following six cross-cutting checks o
 
 ## Code-review mode
 
-**Invoked** as a pre-push review of the current branch, and re-invoked for any commit added after it (implementation loop step 10, the pre-push gate: never push a range the review has not seen). Share the review results before fixing anything.
+**Invoked** as a pre-push review of the current branch, and re-invoked for any commit added after it (implementation loop step 10, the pre-push gate: never push a range the review has not seen). Share the review results, then ask before fixing anything.
 
 Use the full repository context as well as the diff. Read the changed files, nearby files, tests, docs, CLI/API definitions, schemas, config files and project instructions. Look for issues that are likely to survive implementation but get caught during PR review.
 
