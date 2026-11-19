@@ -6265,5 +6265,101 @@ class OldCaptureLogW152Tests(unittest.TestCase):
         self.assertNotIn('W152', self._codes(root))
 
 
+class ClaimTextCutByHashW156Tests(unittest.TestCase):
+    """#355: `value: Lot #4 of block 2` reads as "Lot" - YAML takes the rest
+    as a comment - so the timeline and site show a stub and nothing said so.
+    Lint names each free-text claim field a ` #` cuts short, from the raw
+    line, with the `fha claim` command that keeps the whole text. It never
+    edits the claim itself."""
+
+    SID = 's-7dddddddd1'
+
+    def _run(self, claim_lines: str) -> tuple[dict, Path, str]:
+        root = Path(tempfile.mkdtemp())
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        (root / 'sources' / 'other').mkdir(parents=True)
+        path = root / 'sources' / 'other' / f'deed_{self.SID}.md'
+        text = (f'---\nid: {self.SID}\ntitle: A deed\nsource_type: other\n'
+                'created: 2026-01-01\n---\n\n## Claims\n```yaml\n'
+                f'{claim_lines}```\n')
+        path.write_text(text, encoding='utf-8')
+        from _lib import load_fha_yaml
+        findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
+        out: dict = {}
+        for f in findings:
+            out.setdefault(f.code, []).append(f)
+        return out, path, text
+
+    def _claim(self, field_lines: str, value: str = 'Deed to the home lot') -> str:
+        return (f'- value: {value}\n  id: c-7dddddddd2\n  type: residence\n'
+                '  persons: [Someone]\n  status: accepted\n  reviewed: 2026-01-02\n'
+                f'  confidence: high\n{field_lines}')
+
+    def test_an_unquoted_value_cut_at_a_hash_warns_with_the_fix(self) -> None:
+        codes, path, text = self._run(self._claim('', value='Lot #4 of block 2'))
+        (w,) = codes.get('W156', [])
+        self.assertEqual(w.severity, 'W')
+        self.assertIn("Only 'Lot' reaches the index", w.message)
+        self.assertIn('"#4 of block 2" is read as a hidden comment', w.message)
+        self.assertIn('fha claim c-7dddddddd2 --value', w.message)
+        self.assertIn('Lot #4 of block 2', w.message)
+        self.assertIn("value: 'Lot #4 of block 2'", w.message)
+        # Report-only: an accepted claim is never touched by lint.
+        self.assertEqual(path.read_text(encoding='utf-8'), text)
+
+    def test_notes_place_text_and_anchor_are_checked_too(self) -> None:
+        codes, _p, _t = self._run(self._claim(
+            '  notes: lived at Apt # B\n  place_text: 12 Main St #3\n'
+            '  anchor: page 4 #2\n'))
+        keys = sorted(m.message.split("'s ", 1)[1].split(':', 1)[0]
+                      for m in codes.get('W156', []))
+        self.assertEqual(keys, ['anchor', 'notes', 'place_text'])
+
+    def test_quoted_block_and_unhashed_text_are_quiet(self) -> None:
+        codes, _p, _t = self._run(self._claim(
+            '  notes: >\n    Apt # B, written in a folded block\n'
+            "  place_text: '12 Main St #3'\n  anchor: Lot#4\n"
+            '  date: 1850  # a note on the date, not free text\n',
+            value='"Lot #4 of block 2"'))
+        self.assertNotIn('W156', codes)
+
+    def test_text_a_shell_would_mangle_gets_only_the_hand_fix(self) -> None:
+        # PowerShell 5.1 eats `$5` and splits on `\"`, so a pasted command
+        # would save different words than the archive holds. Hand-quoting
+        # in the file is the only advice given.
+        for notes in ('Paid $5 for lot #4; it\'s "cheap"', 'lot #4 of the `old` plat',
+                      'lot #4, "the corner one"'):
+            with self.subTest(notes=notes):
+                codes, _p, _t = self._run(self._claim(f'  notes: {notes}\n'))
+                (w,) = codes.get('W156', [])
+                self.assertNotIn('fha claim', w.message)
+                self.assertIn('put quotes around it by hand', w.message)
+
+    def test_a_real_comment_can_simply_be_deleted(self) -> None:
+        codes, _p, _t = self._run(self._claim('', value='Lot #4 of block 2'))
+        (w,) = codes.get('W156', [])
+        self.assertIn('can simply be deleted', w.message)
+
+    def test_value_org_says_only_what_is_read(self) -> None:
+        # No tool shows value_org, so "reaches the index, timelines and the
+        # site" would be untrue for it.
+        codes, _p, _t = self._run(self._claim('  value_org: Lodge #12 of the order\n'))
+        (w,) = codes.get('W156', [])
+        self.assertIn("Only 'Lodge' is read", w.message)
+        self.assertNotIn('timelines', w.message)
+
+    def test_a_block_whose_only_hashes_are_comment_lines_skips_the_parse(self) -> None:
+        import _lib
+        block = ('## Claims\n```yaml\n- value: Deed\n  id: c-7dddddddd2\n'
+                 '  # place_text: Fairview   # the place as written\n'
+                 '# A RELATIONSHIP claim  # example\n```\n')
+        with unittest.mock.patch.object(_lib.yaml, 'compose',
+                                        side_effect=AssertionError('parsed')) as compose:
+            self.assertEqual(_lib.claim_fields_cut_by_hash(block), [])
+            compose.assert_not_called()
+        hit = block.replace('- value: Deed', '- value: Lot #4')
+        self.assertEqual([h['kept'] for h in _lib.claim_fields_cut_by_hash(hit)], ['Lot'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -14,7 +14,9 @@ hand-written SQL. Five checks per person (TOOLING §7a):
   Death or burial on file, asked of anyone marked not living, or born over
                   130 years ago
 
-plus archive-wide totals and the direct line's progress by generation.
+plus archive-wide totals and the direct line's progress by generation. One
+person can be named by ID or by full name (`_lib.persons_named`, the index's
+alias table); a name two people share is refused with both listed.
 
 A pure read over `.cache/index.sqlite`; nothing is written, and nothing it
 computes is ever stored in a record (SPEC §17b - a gap a tool can compute is
@@ -67,6 +69,8 @@ from _lib import (
     normalize_id,
     open_index_db,
     person_completeness,
+    person_name_refusal,
+    persons_named,
     resolve_root_arg,
     resolve_root_generation,
     root_generation_seed_position,
@@ -147,19 +151,31 @@ def run_metrics(archive_root: Path, fha_config: dict, *, person: str | None = No
                        'they cannot go together. Run `fha metrics <p-id>` or '
                        '`fha metrics --all`.')
         return r
+    pid = None
     if person is not None:
         pid = normalize_id(person)
-        if not is_valid_id(pid) or id_type_of(pid) != 'P':
+        if is_valid_id(pid) and id_type_of(pid) != 'P':
             r = Result(ok=False, exit_code=EXIT_ERRORS, data={'error': 'bad-id'})
             r.add('error', f'{person!r} is not a person ID. Give one like '
-                           '`fha metrics p-de957bcda1`, or leave it off for the whole '
-                           'direct line. `fha find "<name>"` looks an ID up by name.')
+                           '`fha metrics p-de957bcda1` or a name, or leave it off for the '
+                           'whole direct line. `fha find "<name>"` looks an ID up by name.')
             return r
 
-    conn = open_index_db(archive_root, _REQUIRED_TABLES)
+    conn = open_index_db(archive_root, _REQUIRED_TABLES + ('aliases',))
     if conn is None:
         return Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-index'})
     try:
+        if pid is not None and not is_valid_id(pid):
+            # A name: one person carrying it is the person meant; two or more,
+            # or nobody, is refused with the choices and the next step.
+            matches = persons_named(conn, person)
+            if len(matches) != 1:
+                r = Result(ok=False, exit_code=EXIT_ERRORS,
+                           data={'error': 'ambiguous-name' if matches else 'bad-id',
+                                 'candidates': [m['id'] for m in matches]})
+                r.add('error', person_name_refusal(person, matches, '`fha metrics <p-id>`'))
+                return r
+            pid = normalize_id(matches[0]['id'])
         ctx = completeness_context(conn)
         direct, direct_note = _direct_line(conn, fha_config)
         year = this_year if this_year is not None else datetime.date.today().year
@@ -330,6 +346,8 @@ How well documented is each person?
 
   fha metrics               The archive in numbers, then the direct line by generation
   fha metrics p-xxxxxxxxxx  One person's five checks, each with what is missing
+  fha metrics "Mary Smith"  The same, by full name (two people with that name:
+                            it lists them so you can pick one by ID)
   fha metrics --all         Every person, stubs included
   fha metrics --include-suggested
                             Count suggested claims too (records found, not yet reviewed)
@@ -343,7 +361,8 @@ nothing is written."""
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('person', nargs='?', metavar='P-ID',
-                   help='One person to show in detail (default: the direct line)')
+                   help='One person to show in detail, by ID or by full name '
+                        '(default: the direct line)')
     p.add_argument('--all', action='store_true', dest='everyone',
                    help='List every person, stubs included (not with a P-ID)')
     p.add_argument('--include-suggested', action='store_true', dest='include_suggested',

@@ -169,5 +169,38 @@ class ErrorPathTests(unittest.TestCase):
         json.loads(json.dumps(r.as_dict()))   # must not raise
 
 
+
+class NameInsteadOfIdTests(unittest.TestCase):
+    """Either person may be given by full name: one person carrying it is
+    the person meant; a shared name or nobody is refused, never guessed."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _build()
+
+    def test_an_unambiguous_name_resolves(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'ann aye', 'Bea Bee')
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(r.data['blood']['relationship'], 'first cousin')
+
+    def test_a_name_nobody_carries_points_to_find(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'Nobody Here', B)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertIn('fha find "Nobody Here"', r.messages[0].text)
+
+    def test_a_shared_name_is_refused_with_both_listed(self):
+        root = _build()
+        twin = 'P-jjjjjjjjjj'
+        (root / 'people' / 'stubs' / f'p__{twin[2:]}_{twin}.md').write_text(
+            f'---\nid: {twin}\nname: Bea Bee\nsex: F\nliving: false\ntier: stub\n---\n',
+            encoding='utf-8')
+        index_mod.build_index(root, load_fha_yaml(root))
+        r = relate.run_relate(root, load_fha_yaml(root), A, 'Bea Bee')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r.data['error'], 'ambiguous-name')
+        self.assertEqual(sorted(c.lower() for c in r.data['candidates']),
+                         sorted([B.lower(), twin.lower()]))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "be9d6f82c9688fe1398b0192e25792190e0b04a91cdb4d0fa0f944be980b446a",
+      "sha256": "2e457723493115a04d795e272ac1574f42fd7bf60ce737e795931e93dd2bbdfe",
       "spec_version": "2.6",
       "src": "tools/_lib.py"
     },
@@ -839,7 +839,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "a042a7d0be4d7883d6a79f825f467f2a4df07f195f17b23a8a507ddf75ea3b2d",
+      "sha256": "7cf968a10a32b4a2c1c5632ac39645d559ed81e910ee85d163b9cb5248c1792d",
       "spec_version": "2.6",
       "src": "tools/lint.py"
     },
@@ -853,7 +853,7 @@
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
-      "sha256": "3197acb6f2fb6e31d67eaa6d93f5441bada99795f0f25f905f4ab36db134f30f",
+      "sha256": "4caa34252568b1e4a32e00f9d10e4079c31b70d186f41f848c7f71035a7d1ed0",
       "spec_version": "2.6",
       "src": "tools/metrics.py"
     },
@@ -909,7 +909,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "a778a4b94245eaaed840172e4e7881d761882815bc0b0417bd08e0b9d0d0b190",
+      "sha256": "53ca18926d1af6dbebba0a8f88dff7755a437513f09e12a7c978a8465f409259",
       "spec_version": "2.6",
       "src": "tools/relate.py"
     },
@@ -1147,7 +1147,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d02160dd9ff5cc4db356f925d9f7e7ddf7d2a293897e1065dc7ea97adbf935b7",
+      "sha256": "5916978d21b04260b95b53b8b8ca6186cfccbaee932011c3ede31ef374221a99",
       "spec_version": "2.6"
     },
     {
@@ -1166,13 +1166,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "241a078e0d55578a5fc2c5b7c5f7d7172c73a154f186cc717b999669d5615153",
+      "sha256": "10f24b512f85ad7c162482a6f85fab2275bbb28534eae301b80346dbb81f3e0d",
       "spec_version": "2.6"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "319da32b96ce45449c029b9fda888b92b371a3e2b5f498079d905cdf913419f8",
+      "sha256": "3e04567cb67d7743c3d7de3831ac8060424709f05bc607326bb4a7e9273fd5f6",
       "spec_version": "2.6"
     },
     {
@@ -1190,7 +1190,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "16df2d6dd0cd11184a67b058a95ee77d27f03dcfc6ec837d027af7f82526eeac",
+      "sha256": "62911f3f6c7a484fbfb95aa3813b7e46c133da09d8c0651e1d12f5314b240fd0",
       "spec_version": "2.6"
     },
     {
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "7324de448eb4cf6831c13365fcbe8b1bbe50de9b9f45b33538583eae282a98b6",
+      "sha256": "98a16e9c0a89d61837fe3a9cfeb167ad8c9ad44396ea3b04122378942b92e4ff",
       "spec_version": "2.6",
       "src": "TOOLING.md"
     },
@@ -1387,7 +1387,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "180b89d8704bc11caa4b611f094e270144b3128f819e9942968a4c702a7a0a50",
+      "sha256": "b39f0e86a96881edd06d0d6028ebb8ec5074e1b29d4f07f80dd01a6c0dda2b87",
       "spec_version": "2.6",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
