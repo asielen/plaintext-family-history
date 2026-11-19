@@ -976,6 +976,10 @@ def _indexed_transcript_paths(conn: sqlite3.Connection | None) -> set[str]:
         return set()   # old-schema or damaged index: the search still runs
 
 
+# More unread saved pages than this and the search says it is reading them.
+_FIRST_READ_NOTE_AT = 20
+
+
 def _match_context(text: str, m: re.Match) -> str:
     """The words around a match, as one short line for the result list.
 
@@ -1097,10 +1101,21 @@ def _find_text(
         if not scan_dir.is_dir():
             continue
         suffixes = tuple(g.lstrip('*').lower() for g in globs)
-        for p in sorted(
+        files = sorted(
             f for f in walk_files(scan_dir, on_error=text_on_error)
             if f.name.lower().endswith(suffixes)
-        ):
+        )
+        pages = [f for f in files if is_markup_text_file(f)]
+        if pages:
+            if page_cache is None:
+                page_cache = PageTextCache(archive_root)
+            unread = sum(1 for f in pages if not page_cache.is_fresh(f))
+            if unread > _FIRST_READ_NOTE_AT:
+                # Say so before the wait, so a long first search does not
+                # look like a hang. `fha index` normally does this reading.
+                print(f'Reading {unread} saved web pages for the first time; '
+                      'later searches are fast.', file=sys.stderr, flush=True)
+        for p in files:
             try:
                 rel = str(p.relative_to(archive_root))
             except ValueError:

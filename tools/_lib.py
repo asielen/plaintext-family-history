@@ -108,6 +108,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
 #    read_searchable_text      - a file's words as the text search reads them
 #    PageTextCache             - each saved page's visible text, parsed once (.cache/)
+#    warm_page_text_cache      - `fha index` reads new or changed pages into it
 #
 #  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
 #    roles_by_person           - a claim's (pid, role) pairs -> every role each
@@ -8994,19 +8995,33 @@ class PageTextCache:
         except (OSError, sqlite3.Error):
             self.conn = None
 
+    def _cached(self, path: Path, st: os.stat_result) -> str | None:
+        if self.conn is None:
+            return None
+        try:
+            row = self.conn.execute(
+                'SELECT mtime_ns, size, text FROM page_text WHERE path = ?',
+                (os.path.abspath(path),)).fetchone()
+        except sqlite3.Error:
+            return None
+        if row and row[0] == st.st_mtime_ns and row[1] == st.st_size:
+            return row[2] or ''
+        return None
+
+    def is_fresh(self, path: Path) -> bool:
+        """Is this page's text already kept, unchanged since it was read?"""
+        try:
+            return self._cached(path, Path(path).stat()) is not None
+        except OSError:
+            return True   # a page that cannot be read costs no parsing
+
     def text(self, path: Path) -> str:
         """The page's searchable text, parsed only when it changed. Raises OSError."""
         st = Path(path).stat()   # before reading: a save in between reads as changed
         key = os.path.abspath(path)
-        if self.conn is not None:
-            try:
-                row = self.conn.execute(
-                    'SELECT mtime_ns, size, text FROM page_text WHERE path = ?',
-                    (key,)).fetchone()
-            except sqlite3.Error:
-                row = None
-            if row and row[0] == st.st_mtime_ns and row[1] == st.st_size:
-                return row[2] or ''
+        cached = self._cached(path, st)
+        if cached is not None:
+            return cached
         text = read_searchable_text(path)
         if self.conn is not None:
             try:
@@ -9016,6 +9031,18 @@ class PageTextCache:
             except sqlite3.Error:
                 pass   # read-only or full: the answer is unchanged, only slower
         return text
+
+    def forget_all_but(self, keep: set[str]) -> None:
+        """Drop the kept text of every page not in `keep` (absolute paths)."""
+        if self.conn is None:
+            return
+        try:
+            gone = [row[0] for row in self.conn.execute('SELECT path FROM page_text')
+                    if row[0] not in keep]
+            self.conn.executemany('DELETE FROM page_text WHERE path = ?',
+                                  [(g,) for g in gone])
+        except sqlite3.Error:
+            pass
 
     def close(self) -> None:
         if self.conn is None:
@@ -9027,6 +9054,45 @@ class PageTextCache:
         finally:
             self.conn.close()
             self.conn = None
+
+
+def warm_page_text_cache(
+    archive_root: Path, fha_config: dict, on_many=None, many: int = 20,
+) -> int:
+    """Read every new or changed saved page into the page cache. Returns how many.
+
+    `fha index` runs this, and it runs after every capture and filing, so the
+    first search after a batch of captured records is as fast as the next one
+    rather than spending half a minute reading the new pages while the person
+    at the keyboard wonders whether it has hung. Pages no longer in the
+    documents folder are dropped from the cache. Quiet, and never a failure:
+    a missing documents folder or a read-only `.cache/` just leaves the work
+    to the search. `on_many(n)` is called first when more than `many` pages
+    need reading, so the caller can say why this run takes longer.
+    """
+    docs = resolve_path('documents', fha_config, archive_root)
+    if not docs.is_dir():
+        return 0
+    pages = [p for p in walk_files(docs) if is_markup_text_file(p)]
+    cache = PageTextCache(archive_root) if pages or (
+        Path(archive_root) / '.cache' / 'page-text.sqlite').exists() else None
+    if cache is None or cache.conn is None:
+        return 0
+    read = 0
+    try:
+        unread = [p for p in pages if not cache.is_fresh(p)]
+        if on_many is not None and len(unread) > many:
+            on_many(len(unread))
+        for page in unread:
+            try:
+                cache.text(page)
+                read += 1
+            except OSError:
+                continue
+        cache.forget_all_but({os.path.abspath(p) for p in pages})
+    finally:
+        cache.close()
+    return read
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────

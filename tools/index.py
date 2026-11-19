@@ -109,6 +109,7 @@ from _lib import (
     update_path_manifest,
     vital_subjects,
     walk_files,
+    warm_page_text_cache,
     write_path_manifest,
     safe_load_yaml,
 )
@@ -2750,6 +2751,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_run_index)
 
 
+def _say_reading_pages(count: int) -> None:
+    """One line before a long read of new saved pages, so it is not taken for a hang."""
+    print(f'Reading {count} new saved web pages so searches of them are fast; '
+          'this takes a moment once.', flush=True)
+
+
 def _run_index(args: argparse.Namespace) -> int:
     """argparse → build_index / upsert_source bridge; returns the exit code.
 
@@ -2807,6 +2814,7 @@ def _run_index(args: argparse.Namespace) -> int:
             )
             return EXIT_FAILURE
         print(f'Upserted source {args.source}')
+        warm_page_text_cache(archive_root, fha_config, on_many=_say_reading_pages)
         if parse_warnings:
             for _rel, _code, text in parse_warnings:
                 print(f'WARNING: {text}', file=sys.stderr)
@@ -2822,6 +2830,9 @@ def _run_index(args: argparse.Namespace) -> int:
                 f'Index cache is out of date or unreadable{suffix}; rebuilding from archive files.'
             )
         result = build_index(archive_root, fha_config, verbose=getattr(args, 'verbose', False))
+        # Read new or changed saved pages now, so the first search after a
+        # capture batch is fast (_lib.warm_page_text_cache).
+        warm_page_text_cache(archive_root, fha_config, on_many=_say_reading_pages)
         # Render the Result's warnings (the _cmd layer's job): each already
         # names the record and the fix, per the next-step rule.
         for m in result.messages:

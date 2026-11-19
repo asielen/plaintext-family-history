@@ -1985,6 +1985,37 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
         self.assertEqual(len(made), 3)
 
+    def test_after_fha_index_the_first_search_parses_nothing(self) -> None:
+        # `fha index` runs after every capture and filing. Reading the new
+        # pages there means the first search after a capture batch is as fast
+        # as the next, instead of a long wait that looks like a hang.
+        import argparse as _argparse
+        import index
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Tobias Quenby</p></body></html>')
+        self.conn.close()   # the real build replaces this fixture's index
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            index._run_index(_argparse.Namespace(
+                root=str(self.archive_root), source=None, verbose=False))
+        self.conn = sqlite3.connect(str(self.archive_root / '.cache' / 'index.sqlite'))
+        made = self._counting_parser()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(made, [])
+
+    def test_a_long_first_read_says_so_before_the_wait(self) -> None:
+        for i in range(21):
+            self._write(f'documents/census/p{i}-webpage_S-4k6m8p0r2t.html',
+                        f'<html><body><p>Page {i}</p></body></html>')
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self._search('Quenby')
+        self.assertIn('Reading 21 saved web pages for the first time', err.getvalue())
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self._search('Quenby')
+        self.assertNotIn('Reading', err.getvalue())
+
     def test_a_deleted_or_unwritable_page_cache_changes_no_answer(self) -> None:
         self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
                     '<html><body><p>Tobias Quenby</p></body></html>')
