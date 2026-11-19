@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.7",
-  "generated": "2026-11-18",
+  "generated": "2026-11-19",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -370,7 +370,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "d75b842dd83045533f5492025d7703ccbd3d6fa61087612af2633174aaa54acc",
+      "sha256": "2801d3c3805928ed1fa60eec664434ecfa53e92263bf12e307f445280738ae46",
       "spec_version": "2.7",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -405,7 +405,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "ef5e5ccfa10474f0d5b3062a7733245dc14b03c1b549c3f1d2be12622e8389c2",
+      "sha256": "f9edc042b5d0b474429da4606b40443058211505da7bc96a29f5b6a84dc50187",
       "spec_version": "2.7",
       "src": "browser-companion/manifest.json"
     },
@@ -566,7 +566,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "fa358244ac86618dab950800e39c8e20b4a76cfe6baeecda9c60e4e720db8b02",
+      "sha256": "1119e2c6289b270929bd7042b7a0db69b0c0108b7637b7d63a6aa31b880989be",
       "spec_version": "2.7",
       "src": "browser-companion/src/panel.js"
     },
@@ -685,7 +685,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9b11592644719476f933c60222397d5e2209b31760d35eb65c109a1278da3863",
+      "sha256": "22c67b5727c66aca4ba3a5eda1f1185a9bff4e358119040946545ab5d807edda",
       "spec_version": "2.7",
       "src": "tools/README.md"
     },
