@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.7, 2026-11-18**
+**Version 2.8, 2026-11-19**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -91,7 +91,7 @@ AI can do the most for this archive and the most damage to it, so it gets its ow
 3. **Extraction is indexing, not preservation.** Originals (transcripts especially) are preserved verbatim in the archive, so AI mining can be selective and can be *re-run* anytime as models improve. Each extraction pass over a source is recorded in that source's frontmatter `ai_passes:` list (who, when, what, §14).
 4. AI tooling passes the archive test like everything else.
 
-The day-to-day research workbench is an **agentic CLI harness opened on the archive root**: an AI that reads and edits the files directly, runs the `fha` tools as its hands, and sits beside a plain text editor so human and AI work the same files in the same place. **Claude Code is the current operating choice; it is not a required one.** Vendor lock-in is kept low by design: the harness configuration lives in open formats at the archive root (`AGENTS.md` as the canonical agent instructions, with `CLAUDE.md` deferring to it; skills in the portable SKILL.md standard), no harness-only state is ever load-bearing, and any agent harness honoring the contract above is an acceptable drop-in. Harness configuration and the workflow skills are specified in `TOOLING_INTERFACE.md` (summarized in `TOOLING.md` §16). Other modes keep their own surfaces: chat projects for thought-partnership, headless pipelines for batch work, Obsidian/Lightroom/the generated site for human browsing.
+The day-to-day research workbench is an **agentic CLI harness opened on the archive root**: an AI that reads and edits the files directly, runs the `fha` tools as its hands, and sits beside a plain text editor so human and AI work the same files in the same place. **Claude Code is the current operating choice; it is not a required one.** Vendor lock-in is prevented structurally: the harness configuration lives in open formats at the archive root (`AGENTS.md` as the canonical agent instructions, with `CLAUDE.md` deferring to it; skills in the portable SKILL.md standard), no harness-only state is ever load-bearing, and any agent harness honoring the contract above is an acceptable drop-in. Harness configuration and the workflow skills are specified in `TOOLING_INTERFACE.md` (summarized in `TOOLING.md` §16). Other modes keep their own surfaces: chat projects for thought-partnership, headless pipelines for batch work, Obsidian/Lightroom/the generated site for human browsing.
 
 ---
 
