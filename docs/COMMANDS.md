@@ -558,7 +558,7 @@ List photo groups with conflicting variant dates
 
 ### `fha photoindex reconcile`
 
-Re-match moved photos by SOURCE: keyword; flag the rest as missing
+Re-match moved photos by name and SOURCE: keyword; flag the rest as missing
 
 | Argument | What it does |
 |---|---|
@@ -1848,7 +1848,7 @@ time). To restore a backup: unzip it. That's the whole procedure.
 Re-tie moved documents (and photos) to their records
 
 ```text
-Re-tie moved files to their records. Rearrange the documents folder any way you like, then run this: every filed document is found again by the ID in its name and its record updated. A filed photo moved within the photos folder is found again by the SOURCE: keyword inside it (from the photo catalog, or read with --with-exif), and the photo catalog is reconciled too when one exists. Preview with --dry-run first.
+Re-tie moved files to their records. Rearrange the documents folder any way you like, then run this: every filed document is found again by the ID in its name and its record updated. A filed photo moved within the photos folder is found again by its name and the SOURCE: keyword inside it (from the photo catalog, or read with --with-exif), and the photo catalog is reconciled too when one exists. Preview with --dry-run first.
 ```
 
 | Argument | What it does |

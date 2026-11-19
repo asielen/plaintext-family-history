@@ -38,8 +38,8 @@ keyword is not unique to one picture - a back scan carries its front's, and
 photo managers copy it onto edits and exports - so a missing photos-alias
 `files:` entry is re-tied automatically ONLY when:
 
-  - exactly one unlisted file anywhere under the photos root has the entry's
-    exact filename,
+  - exactly one file anywhere under the photos root has the entry's exact
+    filename, and no record lists that file,
   - that file carries the record's own `SOURCE:` keyword and no other
     source's, and
   - no other entry of the same record has that filename (a front and back of
@@ -60,7 +60,14 @@ after the move.
 
 The photo catalog itself is `fha photoindex reconcile`'s machinery; when a
 catalog exists this tool runs it too (pass-through of --dry-run/--with-exif),
-so one command reconciles every file type - the §9 contract. Importing
+so one command reconciles every file type - the §9 contract. Both passes
+apply the one rule above through `_lib.photo_retie_target`, to the same
+candidates (every file with the name), and word them through
+`_lib.photo_retie_candidates` (#297). The catalog pass runs before the
+record reports are said: for a filed photo, the candidates it found (it
+reads the keywords of every new photo, this pass only of same-named ones)
+join the record's report, and its own proposal for that photo is dropped,
+so each photo gets one warning. Importing
 photoindex here follows report.py's orchestrator precedent (a tool whose whole
 job is running other tools' engines does import them; ordinary tools still
 never do).
@@ -132,6 +139,9 @@ from _lib import (
     normalize_id,
     parse_filename,
     photoindex_config_drift,
+    photo_retie_candidates,
+    photo_retie_same_named,
+    photo_retie_target,
     path_to_alias,
     read_record,
     read_text_exact,
@@ -588,13 +598,16 @@ def _plan_photos(
     """Plan the photo-record heals (#289) without writing anything.
 
     Returns {'heals': {record_path: [(old, new), ...]}, 'reports': [...],
-    'notices': [(level, text), ...], 'stale': int}.
+    'notices': [(level, text), ...], 'stale': int, 'unlisted': {alias, ...}}.
+    Each report is the keyword arguments of `_photo_report`, kept unrendered
+    so `run_reconcile` can add what the catalog pass found before saying it.
 
     The one rule (owner decision): a missing photos-alias entry is re-tied
-    automatically ONLY when exactly one unlisted file under the photos root
-    has the entry's exact filename, that file carries the record's own
-    `SOURCE:` keyword and no other source's, and no other entry of the same
-    record has that filename (a front and back of one name in two folders can
+    automatically ONLY when exactly one file under the photos root has the
+    entry's exact filename (a file carrying only another source's keyword
+    is not counted), that file is listed by no record, it carries the
+    record's own `SOURCE:` keyword and no other source's, and no other entry
+    of the same record has that filename (a front and back of one name in two folders can
     trade places, and the front would then pass for the back). A keyword is
     not unique to one picture - a back scan carries its front's, and photo
     managers copy it onto edits and exports - so the name has to agree too.
@@ -614,7 +627,7 @@ def _plan_photos(
     Raises RuntimeError for a malformed `photos_ignore:` (from the shared
     walker); the caller reports it once for both photo passes.
     """
-    plan = {'heals': {}, 'reports': [], 'notices': [], 'stale': 0}
+    plan = {'heals': {}, 'reports': [], 'notices': [], 'stale': 0, 'unlisted': set()}
     stale = _stale_photo_entries(archive_root, fha_config, records)
     plan['stale'] = sum(len(aliases) for _rec, _meta, aliases in stale)
     if not stale:
@@ -645,8 +658,12 @@ def _plan_photos(
 
     listed = _listed_file_keys(archive_root, fha_config, records)
     unlisted = {a: p for a, p in on_disk.items() if _file_key(p) not in listed}
+    plan['unlisted'] = set(unlisted)
+    # Candidates are every file with the name, listed or not: the catalog
+    # pass decides from the same set (#297), so a listed or catalogued
+    # same-named photo makes both passes report rather than one moving.
     by_name: dict[str, list[str]] = {}
-    for alias in unlisted:
+    for alias in sorted(on_disk):
         by_name.setdefault(PurePosixPath(alias).name, []).append(alias)
 
     # After a roots: (or photos_ignore:) change the catalog's rows describe
@@ -656,7 +673,7 @@ def _plan_photos(
     drifted = photoindex_config_drift(archive_root, fha_config)
     catalog = {} if drifted else _catalog_source_ids(archive_root)
     sids_of: dict[str, frozenset] = {}
-    for alias, p in unlisted.items():
+    for alias, p in on_disk.items():
         row = catalog.get(alias)
         if row is None:
             continue
@@ -676,7 +693,7 @@ def _plan_photos(
                          if a not in sids_of})
         if wanted:
             try:
-                found, _unread = _read_source_keywords([unlisted[a] for a in wanted])
+                found, _unread = _read_source_keywords([on_disk[a] for a in wanted])
             except RuntimeError as e:
                 if shutil.which('exiftool') is None:
                     exif_note = 'exiftool is not installed'
@@ -688,12 +705,14 @@ def _plan_photos(
                     'Run `fha doctor` to check exiftool, then run '
                     '`fha reconcile --with-exif` again.'))
             else:
-                alias_of = {unlisted[a]: a for a in wanted}
+                alias_of = {on_disk[a]: a for a in wanted}
                 for p, sids in found.items():
                     sids_of[alias_of[p]] = sids
 
     carriers_by_sid: dict[str, list[str]] = {}
     for alias, sids in sids_of.items():
+        if alias not in unlisted:
+            continue   # a photo another entry lists is not this one moved
         for sid in sids:
             carriers_by_sid.setdefault(sid, []).append(alias)
 
@@ -705,13 +724,14 @@ def _plan_photos(
         for alias in aliases:
             name = PurePosixPath(alias.replace('\\', '/')).name
             same = by_name.get(name, [])
-            if (len(same) == 1 and own and sids_of.get(same[0]) == frozenset({own})
-                    and names.count(name) == 1):
-                claims.setdefault(same[0], []).append((rec_path, alias))
+            target = photo_retie_target(
+                photo_retie_same_named(same, own, sids_of), own, sids_of)
+            if target and target in unlisted and names.count(name) == 1:
+                claims.setdefault(target, []).append((rec_path, alias))
                 continue
-            plan['reports'].append(_photo_report(
-                rec_path, alias, own, same, sids_of,
-                carriers_by_sid.get(own, []) if own else [], with_exif))
+            plan['reports'].append(dict(
+                rec_path=rec_path, alias=alias, own=own, same=same, sids_of=sids_of,
+                carriers=carriers_by_sid.get(own, []) if own else [], with_exif=with_exif))
     for cand, claimants in sorted(claims.items()):
         if len(claimants) == 1:
             rec_path, alias = claimants[0]
@@ -719,9 +739,32 @@ def _plan_photos(
             continue
         # Two records with the same id: neither gets the file.
         for rec_path, alias in claimants:
-            plan['reports'].append(_photo_report(
-                rec_path, alias, '', [cand], sids_of, [], with_exif))
+            plan['reports'].append(dict(
+                rec_path=rec_path, alias=alias, own='', same=[cand], sids_of=sids_of,
+                carriers=[], with_exif=with_exif))
     return plan
+
+
+def _merge_catalog_finding(report: dict, finding: dict | None, unlisted: set) -> dict:
+    """One record report, with what the catalog pass found for the same photo.
+
+    The catalog pass reads the keywords of every new photo, the record pass
+    only of the same-named ones (#297). So an -Edit copy saved since the last
+    scan is a candidate the catalog pass knows and the record pass does not.
+    Its candidates carrying the record's own S-id, and unlisted, join the
+    record's report, so `fha reconcile` names each candidate once, in one
+    warning per photo.
+    """
+    if not finding or not report['own']:
+        return report
+    own = report['own']
+    sids_of = dict(report['sids_of'])
+    for alias, sids in (finding.get('sids') or {}).items():
+        sids_of.setdefault(alias, frozenset(sids))
+    carriers = set(report['carriers'])
+    carriers.update(a for a in finding.get('carriers') or []
+                    if a in unlisted and own in sids_of.get(a, frozenset()))
+    return {**report, 'sids_of': sids_of, 'carriers': sorted(carriers)}
 
 
 def _photo_report(
@@ -730,39 +773,14 @@ def _photo_report(
 ) -> str:
     """The one message for a missing photo entry that is not re-tied.
 
-    Names the entry, the candidates found - same name and the record's own
-    keyword first, then same name, then the keyword under another name - and
-    the exact `file:` line to edit. A candidate whose keywords were not read
-    says so and names `--with-exif`, the flag that reads them.
+    Names the entry, the candidates found (`_lib.photo_retie_candidates`,
+    the wording the catalog pass shares) and the exact `file:` line to edit.
+    A candidate whose keywords were not read says so and names
+    `--with-exif`, the flag that reads them.
     """
-    own_label = fmt_id_display(own) if own else 'its source ID'
-
-    def describe(cand: str) -> tuple[int, str]:
-        sids = sids_of.get(cand)
-        if sids is None:
-            hint = '' if with_exif else ' - `fha reconcile --with-exif` reads it'
-            return 2, f'{cand} (same name, keywords not read{hint})'
-        if own and own in sids and len(sids) == 1:
-            return 0, f'{cand} (same name, carries {own_label})'
-        if own and own in sids:
-            others = ', '.join(fmt_id_display(s) for s in sorted(sids - {own}))
-            return 1, f'{cand} (same name, carries {own_label} and also {others})'
-        if sids:
-            others = ', '.join(fmt_id_display(s) for s in sorted(sids))
-            return 3, f'{cand} (same name, but carries {others})'
-        return 3, f'{cand} (same name, no source keyword)'
-
-    ranked = [describe(c) for c in same]
-    same_set = set(same)
-    ranked += [(4, f'{c} (carries {own_label} under another name)')
-               for c in sorted(carriers) if c not in same_set]
-    ranked.sort()
-    if ranked:
-        found = ('Possible matches, most likely first: '
-                 + '; '.join(text for _rank, text in ranked[:8])
-                 + (f'; and {len(ranked) - 8} more' if len(ranked) > 8 else '') + '. ')
-    else:
-        found = 'No photo with its name or its source ID was found under the photos folder. '
+    found = photo_retie_candidates(
+        own, same, sids_of, carriers,
+        unread_hint='' if with_exif else '`fha reconcile --with-exif` reads it')
     return (f'{rec_path.name}: {alias!r} is missing from disk and was not re-tied. '
             f'{found}Edit the `file: {alias}` line in {rec_path.name} to the '
             "photo's new path under photos/, then run `fha lint`.")
@@ -1151,9 +1169,31 @@ def run_reconcile(
             if not (heal_count or ambiguous or missing or unlisted):
                 result.add('info', 'Documents all tied to their records - nothing to heal.')
 
+    # Photo catalog side (TOOLING §9: one command reconciles every file type).
+    # Only when a catalog exists - an archive that never built one should not
+    # fail. Skipped after a malformed photos_ignore:, already reported above
+    # (the catalog pass would only refuse it a second time). Run before the
+    # record reports are said, so one warning per photo can carry what both
+    # passes found (#297); the record plan above was made from the catalog
+    # as it stood before this pass moved any row, and this pass never reads
+    # the records, so the order changes no decision.
+    photo_result = None
+    catalog_error = None
+    catalog_findings: dict[str, dict] = {}
+    if photo_plan is not None and (archive_root / '.cache' / 'photos.sqlite').exists():
+        try:
+            photo_result = photoindex.run_reconcile(
+                archive_root, fha_config, with_exif=with_exif, dry_run=dry_run)
+        except RuntimeError as e:
+            catalog_error = str(e)
+        else:
+            for finding in (photo_result.data or {}).get('proposals') or []:
+                catalog_findings[finding['alias']] = finding
+
     # Photos filed on source records (#289). Planned in full before any of
     # its rewrites land, from the catalog as it stood before the catalog pass
-    # below moves rows, so the preview and the real run agree.
+    # moved rows, so the preview and the real run agree.
+    said_by_records: set[str] = set()
     if photo_plan is not None:
         photo_heals = _drop_duplicate_targets(
             archive_root, fha_config, photo_plan['heals'], result)
@@ -1174,8 +1214,11 @@ def run_reconcile(
             photo_records_healed = _apply(archive_root, photo_heals, result)
             result.data['photos_healed'] = photo_records_healed
             records_healed += photo_records_healed
-        for line in photo_plan['reports']:
-            result.add('warning', line)
+        for report in photo_plan['reports']:
+            key = report['alias'].replace('\\', '/')
+            said_by_records.add(key)
+            result.add('warning', _photo_report(**_merge_catalog_finding(
+                report, catalog_findings.get(key), photo_plan['unlisted'])))
         if not (photo_plan['stale'] or photo_plan['notices']):
             # Says only what was checked: every listed photo path still opens.
             result.add('info', 'No filed photo is missing from disk - nothing to re-tie.')
@@ -1189,23 +1232,16 @@ def run_reconcile(
                    f'Run {refresh} so searches see the new locations, and '
                    '`fha lint` to confirm everything is tied down.')
 
-    # Photo catalog side (TOOLING §9: one command reconciles every file type).
-    # Only when a catalog exists - an archive that never built one should not
-    # fail. Skipped after a malformed photos_ignore:, already reported above
-    # (the catalog pass would only refuse it a second time).
     if photo_plan is None:
         return _finalize(result)
-    if (archive_root / '.cache' / 'photos.sqlite').exists():
-        try:
-            photo_result = photoindex.run_reconcile(
-                archive_root, fha_config, with_exif=with_exif, dry_run=dry_run)
-        except RuntimeError as e:
-            # A malformed photos_ignore: (or any other refusal photoindex
-            # raises for its own config) must land as a plain error line in
-            # this front door's summary, beside the documents-side results -
-            # never as a traceback that hides them.
-            result.add('error', f'photos: {e}')
-            return _finalize(result)
+    if catalog_error is not None:
+        # A malformed photos_ignore: (or any other refusal photoindex
+        # raises for its own config) must land as a plain error line in
+        # this front door's summary, beside the documents-side results -
+        # never as a traceback that hides them.
+        result.add('error', f'photos: {catalog_error}')
+        return _finalize(result)
+    if photo_result is not None:
         for msg in photo_result.messages:
             result.add(msg.level, f'photos: {msg.text}',
                        next_step=getattr(msg, 'next_step', None))
@@ -1222,6 +1258,13 @@ def run_reconcile(
             # Matching by picture is gated until every photo has been read
             # (#220): say why no photo was matched that way.
             result.add('info', 'photos: ' + photoindex._content_waiting_message(waiting))
+        for finding in d.get('proposals') or []:
+            # A catalog row the one rule would not re-tie, while a photo
+            # with its name or keyword exists (#297). A photo filed on a
+            # record was already reported above, with these candidates
+            # folded in: one warning per photo.
+            if finding['alias'] not in said_by_records:
+                result.add('warning', f"photos: {finding['text']}")
         if d.get('content_unchecked'):
             # Some new photos could not be read, so photoindex took no
             # content match at all this run (#220 audit F2) - say so.
@@ -1285,8 +1328,8 @@ _CLI_DESCRIPTION = (
     'Re-tie moved files to their records. Rearrange the documents folder any '
     'way you like, then run this: every filed document is found again by the '
     'ID in its name and its record updated. A filed photo moved within the '
-    'photos folder is found again by the SOURCE: keyword inside it (from the '
-    'photo catalog, or read with --with-exif), and the photo catalog is '
+    'photos folder is found again by its name and the SOURCE: keyword inside '
+    'it (from the photo catalog, or read with --with-exif), and the photo catalog is '
     'reconciled too when one exists. Preview with --dry-run first.'
 )
 

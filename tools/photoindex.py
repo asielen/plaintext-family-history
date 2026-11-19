@@ -37,9 +37,10 @@ can be recomputed in full after every scan from already-scraped rows.
 tag-person` are the two sub-commands that touch on-disk state or embedded
 metadata. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
-re-matched by its embedded `SOURCE:` keyword, or - for a photo that is not
-a source - by the content fingerprint each scan stores for it (#49), never
-by trusting the old path); `tag-person` writes a bare `P-id` keyword into specific photos -
+re-matched when exactly one untracked file has its exact filename and
+carries its `SOURCE:` keyword and no other, the rule `fha reconcile`'s
+record pass uses (#297); or by the content fingerprint each scan stores for
+it (#49); never by trusting the old path, and never by a keyword alone); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
 tag` name - making a human identification durable in the file itself.
 `fha photoindex set-summary` is, the second embedded-
@@ -147,11 +148,15 @@ CODE MAP
                                  move (same rules as the full rebuild)
     _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
                                  (+ optional collector for folders it could not read)
-    _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
+    _scrape_source_ids        - exiftool read of every SOURCE: keyword on untracked candidates
+    _aliases_by_name          - filename -> aliases, for the exact-filename re-tie rule
+    _rows_per_source_name     - (S-id, filename) -> catalog rows, the re-tie's sibling check
+    _catalog_proposals        - plain report for a sourced row that was not re-tied (#297)
     _content_rematches        - pair vanished rows with untracked files by fingerprint:
                                  one holder catalog-wide, one untracked file (#49, #220 audit)
-    run_reconcile             - re-match moved files by source_id, then by content
-                                 fingerprint; flag the rest as MISSING
+    run_reconcile             - re-match moved files by exact name + source_id, then by
+                                 content fingerprint; flag the rest as MISSING, with a
+                                 proposal where a candidate exists
 
   Tag-person (fha photoindex tag-person)
     run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
@@ -214,7 +219,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -274,6 +279,9 @@ from _lib import (
     photo_date_pattern_to_edtf as _placeholder_to_edtf,
     photoindex_config_drift,
     photoindex_config_fingerprint,
+    photo_retie_candidates,
+    photo_retie_same_named,
+    photo_retie_target,
     photoindex_manifest_path,
     photoindex_record_manifest,
     photoindex_status,
@@ -3077,17 +3085,18 @@ def _on_disk_aliases(
     return out
 
 
-def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
+def _scrape_source_ids(paths: list[Path]) -> dict[Path, tuple[str, ...]]:
     """
-    Read the SOURCE: keyword (if any) off each candidate file via exiftool,
-    keyed by the candidate's resolved Path.
+    Read every SOURCE: keyword off each candidate file via exiftool: the
+    S-ids it carries, in keyword order, keyed by the candidate's Path.
 
-    Used only by reconcile's re-match step: an untracked file's *content*
-    identity (its embedded SOURCE: keyword) is the only reliable way to tell
-    whether it is a missing cached photo that moved, since its new filename
-    carries no S-id (photos are never renamed - SPEC §13).
+    Used only by reconcile: the re-tie rule (`_lib.photo_retie_target`)
+    needs every S-id a file carries, because a file carrying a second
+    source's keyword is not re-tied. A file exiftool returned no row for,
+    or a row with its own `Error`, is left out (not read), never "carries
+    no keyword"; a file read with no SOURCE: keyword maps to ().
     """
-    out: dict[Path, str] = {}
+    out: dict[Path, tuple[str, ...]] = {}
     for start in range(0, len(paths), _EXIFTOOL_BATCH_SIZE):
         batch = paths[start:start + _EXIFTOOL_BATCH_SIZE]
         rows_by_file = {
@@ -3096,13 +3105,14 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
         }
         for p in batch:
             row = rows_by_file.get(p.resolve())
-            if not row:
+            if not row or row.get('Error'):
                 continue
+            sids: list[str] = []
             for kw in _extract_keywords(row):
                 m = _SOURCE_KEYWORD_RE.match(kw.strip())
-                if m:
-                    out[p] = normalize_id(m.group(1))
-                    break
+                if m and normalize_id(m.group(1)) not in sids:
+                    sids.append(normalize_id(m.group(1)))
+            out[p] = tuple(sids)
     return out
 
 
@@ -3207,6 +3217,80 @@ def _content_rematches(
     return sorted(pairs), [], 0, 0
 
 
+def _aliases_by_name(aliases) -> dict[str, list[str]]:
+    """filename -> [alias, ...] for a set of photo aliases, sorted."""
+    out: dict[str, list[str]] = {}
+    for alias in sorted(aliases):
+        out.setdefault(PurePosixPath(alias).name, []).append(alias)
+    return out
+
+
+def _rows_per_source_name(cached: dict[str, str | None]) -> dict[tuple[str, str], int]:
+    """(S-id, filename) -> how many catalog rows of that source have that
+    filename, live or `MISSING:`. A re-tie needs it to be 1 (`run_reconcile`)."""
+    out: dict[tuple[str, str], int] = {}
+    for path, source_id in cached.items():
+        if source_id:
+            key = (normalize_id(source_id), PurePosixPath(_live_alias(path)).name)
+            out[key] = out.get(key, 0) + 1
+    return out
+
+
+def _catalog_sids(conn: sqlite3.Connection, aliases) -> dict[str, frozenset]:
+    """alias -> every S-id its catalog row carries, for the catalogued ones
+    among `aliases`: every `SOURCE:` keyword in photo_keywords, else the
+    row's source_id. The re-tie rule reads a same-named catalogued photo's
+    keywords from here (#297)."""
+    wanted = set(aliases)
+    found: dict[str, set[str]] = {}
+    for path, kw in conn.execute('SELECT path, keyword FROM photo_keywords'):
+        if path in wanted:
+            m = _SOURCE_KEYWORD_RE.match(str(kw).strip())
+            found.setdefault(path, set())
+            if m:
+                found[path].add(normalize_id(m.group(1)))
+    for path, source_id in conn.execute('SELECT path, source_id FROM photos'):
+        if path in wanted:
+            sids = found.setdefault(path, set())
+            if not sids and source_id:
+                sids.add(normalize_id(source_id))
+    return {path: frozenset(sids) for path, sids in found.items()}
+
+
+def _catalog_proposals(
+    missing: dict[str, str | None], by_name: dict[str, list[str]],
+    sids_of: dict[str, frozenset],
+) -> list[dict]:
+    """One proposal per sourced catalog row that was not re-tied while some
+    file has its filename or carries its `SOURCE:` keyword: {'alias',
+    'text', 'same', 'carriers', 'sids'}. The text words the candidates with
+    `_lib.photo_retie_candidates`, as the record pass words them; `fha
+    reconcile` folds `carriers` and `sids` into the record's own report for
+    a filed photo, so it says one thing about one photo. A row with no
+    candidate at all is only reported missing."""
+    out: list[dict] = []
+    for old_path, source_id in sorted(missing.items()):
+        if not source_id:
+            continue
+        own = normalize_id(source_id)
+        alias = _live_alias(old_path)
+        same = by_name.get(PurePosixPath(alias).name, [])
+        carriers = sorted(a for a, sids in sids_of.items() if own in sids)
+        if not same and not carriers:
+            continue
+        found = photo_retie_candidates(own, same, sids_of, carriers)
+        out.append({
+            'alias': alias,
+            'text': (f'{alias!r} is missing from disk, and its photo catalog entry was '
+                     f'not re-tied. {found}Nothing was moved: the catalog keeps the '
+                     'entry, marked missing, so its caption and keywords stay searchable.'),
+            'same': list(same),
+            'carriers': carriers,
+            'sids': {a: sorted(sids_of[a]) for a in {*same, *carriers} if a in sids_of},
+        })
+    return out
+
+
 def run_reconcile(
     archive_root: Path, fha_config: dict, with_exif: bool = False, dry_run: bool = False,
 ) -> Result:
@@ -3217,11 +3301,17 @@ def run_reconcile(
     failing that, nothing photoindex can verify), so a row whose path no
     longer exists on disk is handled three ways:
 
-      - re-matched (only with --with-exif): an untracked on-disk file's own
-        SOURCE: keyword equals a missing row's -> the row's path (and its
-        photo_keywords/photo_face_regions/photo_people rows) move to the new
-        path silently. Without --with-exif there is no way to read a
-        candidate's embedded keyword, so no keyword re-match is attempted.
+      - re-matched (only with --with-exif): by the one rule `fha
+        reconcile`'s record pass uses (`_lib.photo_retie_target`, #297):
+        exactly one file under the photos root, catalogued or not, has the
+        missing row's exact filename, it is untracked, it carries the row's
+        SOURCE: keyword and no other source's, and no other catalog row of
+        that source has the same filename -> the row's
+        path (and its photo_keywords/photo_face_regions/photo_people rows)
+        move to the new path. A keyword under another name is not enough:
+        a back scan, an -Edit copy or an export carries it too. Without
+        --with-exif there is no way to read a candidate's embedded keyword,
+        so no keyword re-match is attempted.
       - re-tied by content (#49, with or without --with-exif): a row still
         unmatched whose stored fingerprint (`_photo_fingerprint`) is held by
         no other row in the catalog and found on exactly one untracked file
@@ -3243,7 +3333,11 @@ def run_reconcile(
         the row's source_id/path history survives until a later --with-exif
         retry heals it - the two exceptions being a file back at the alias its
         row remembers, and an alias now excluded by `photos_ignore:`, which no
-        retry could ever heal. Either mutation also re-derives that row's
+        retry could ever heal. Under --with-exif, a sourced row flagged this
+        way while an untracked file has its filename or carries its keyword
+        gets one plain proposal in `proposals`, in the record pass's words
+        (`_lib.photo_retie_candidates`): the candidates, and that nothing
+        was moved. Either mutation also re-derives that row's
         group's primary and resolved date from its still-live members
         (_recompute_group_fields, the rule a full scan uses), so a group can
         never keep naming a vanished variant as the file to open, nor keep a
@@ -3291,7 +3385,7 @@ def run_reconcile(
 
     Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...]
     (by keyword or by content), 'rematched_by_content': [(old, new), ...],
-    'missing': [path, ...], 'new_count': int,
+    'missing': [path, ...], 'proposals': [{'alias', 'text', ...}, ...], 'new_count': int,
     'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
     'stale_hold_failed': bool, 'unreadable_dirs': [alias, ...],
     'held_unreadable': int}.
@@ -3299,7 +3393,7 @@ def run_reconcile(
     empty = {
         'rematched': [], 'rematched_by_content': [], 'content_unchecked': [],
         'content_waiting': {'unread': 0},
-        'missing': [], 'new_count': 0,
+        'missing': [], 'proposals': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [], 'stale_hold_failed': False,
         'unreadable_dirs': [], 'held_unreadable': 0,
     }
@@ -3387,9 +3481,24 @@ def run_reconcile(
             }
             untracked = {alias: p for alias, p in on_disk.items() if alias not in cached}
 
-            candidate_source_ids: dict[Path, str] = {}
+            scraped: dict[Path, tuple[str, ...]] = {}
             if with_exif and untracked:
-                candidate_source_ids = _scrape_source_ids(list(untracked.values()))
+                scraped = _scrape_source_ids(list(untracked.values()))
+            # The first S-id each file carries: what the content pass and the
+            # new-file report attach it to.
+            candidate_source_ids = {p: sids[0] for p, sids in scraped.items() if sids}
+            # Every S-id per untracked alias, for the re-tie rule; an alias
+            # absent here was not read.
+            sids_by_alias = {
+                alias: frozenset(scraped[p]) for alias, p in untracked.items() if p in scraped
+            }
+            # The re-tie looks at every file with the row's name, catalogued
+            # or not - the set `fha reconcile`'s record pass decides from -
+            # so a same-named photo already in the catalog makes the match
+            # uncertain here too, and the row is reported, not moved (#297).
+            # A catalogued file's S-ids come from its catalog keywords.
+            on_disk_by_name = _aliases_by_name(on_disk)
+            sids_on_disk = {**_catalog_sids(conn, on_disk), **sids_by_alias}
 
             rematched: list[tuple[str, str]] = []
             rematched_paths: list[Path] = []
@@ -3397,25 +3506,41 @@ def run_reconcile(
             # primary and resolved date need re-deriving from surviving
             # members before commit (_recompute_group_fields).
             affected_group_ids: set[str] = set()
-            if missing and candidate_source_ids:
-                claimed: set[str] = set()
+            if missing and scraped:
+                # The one rule `fha reconcile`'s record pass uses (#289, #297,
+                # owner decision): exactly one untracked file with the row's
+                # exact filename, carrying its source's keyword and no other,
+                # and no other row of that source with the same filename (a
+                # front and back of one name in two folders could trade
+                # places). A keyword alone is not enough: a back scan carries
+                # its front's, and photo managers copy it onto edits and
+                # exports. Everything else is left for the content pass, then
+                # reported as a proposal below.
+                rows_per_name = _rows_per_source_name(cached)
+                claims: dict[str, list[str]] = {}
                 for old_path, source_id in missing.items():
                     if not source_id:
                         continue
-                    hits = [
-                        alias for alias, p in untracked.items()
-                        if alias not in claimed and candidate_source_ids.get(p) == source_id
-                    ]
-                    if len(hits) == 1:
-                        new_path = hits[0]
-                        claimed.add(new_path)
-                        if not dry_run:
-                            _move_cached_path(conn, old_path, new_path)
-                            gid = _group_id_of(conn, new_path)
-                            if gid:
-                                affected_group_ids.add(gid)
-                        rematched.append((old_path, new_path))
-                        rematched_paths.append(untracked[new_path])
+                    own = normalize_id(source_id)
+                    name = PurePosixPath(_live_alias(old_path)).name
+                    target = photo_retie_target(
+                        photo_retie_same_named(
+                            on_disk_by_name.get(name, []), own, sids_on_disk),
+                        own, sids_on_disk)
+                    if target in untracked and rows_per_name.get((own, name)) == 1:
+                        claims.setdefault(target, []).append(old_path)
+                for new_path, olds in sorted(claims.items()):
+                    if len(olds) != 1:
+                        continue   # two rows want one file: neither gets it
+                    old_path = olds[0]
+                    if not dry_run:
+                        _move_cached_path(conn, old_path, new_path)
+                        gid = _group_id_of(conn, new_path)
+                        if gid:
+                            affected_group_ids.add(gid)
+                    rematched.append((old_path, new_path))
+                    rematched_paths.append(untracked[new_path])
+                claimed = {new for _old, new in rematched}
                 rematched_old = {old for old, _new in rematched}
                 missing = {p: sid for p, sid in missing.items() if p not in rematched_old}
                 untracked = {a: p for a, p in untracked.items() if a not in claimed}
@@ -3444,6 +3569,13 @@ def run_reconcile(
                 content_new = {new for _old, new in rematched_by_content}
                 missing = {p: sid for p, sid in missing.items() if p not in content_old}
                 untracked = {a: p for a, p in untracked.items() if a not in content_new}
+
+            # A sourced row still missing, with a file that has its name or
+            # its keyword, is a proposal for the human, in the record pass's
+            # words: what was found, and that nothing was moved.
+            proposals: list[dict] = []
+            if missing and scraped:
+                proposals = _catalog_proposals(missing, on_disk_by_name, sids_on_disk)
 
             if not dry_run:
                 # Rows already MISSING: whose fingerprint was never known -
@@ -3498,6 +3630,7 @@ def run_reconcile(
                 'content_unchecked': content_unchecked,
                 'content_waiting': content_waiting,
                 'missing': now_missing,
+                'proposals': proposals,
                 'new_count': len(untracked),
                 'new_sourced': new_sourced,
                 'new_unsourced': new_unsourced,
@@ -5107,7 +5240,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     report_p.set_defaults(func=_cmd_report)
 
     reconcile_p = deferred.add_parser(
-        'reconcile', help='Re-match moved photos by SOURCE: keyword; flag the rest as missing'
+        'reconcile', help='Re-match moved photos by name and SOURCE: keyword; flag the rest as missing'
     )
     reconcile_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
     reconcile_p.add_argument(
@@ -5666,6 +5799,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'  RE-MATCHED  {old} -> {new}{how}')
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
+    for finding in result.get('proposals') or []:
+        print(f"  NOT RE-TIED {finding['text']}")
     waiting = result.get('content_waiting') or {}
     if waiting.get('unread'):
         print(_content_waiting_message(waiting))

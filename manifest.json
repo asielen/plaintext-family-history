@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ad1611bd06ab8727a47a83c43b2e8c424aa69d80b859226a762f8405c02de542",
+      "sha256": "c501e62370f53333d920ecacd80e9d71ac16ddb4ad6f8a2b4d7bf85364d0868e",
       "spec_version": "2.6",
       "src": "tools/_lib.py"
     },
@@ -881,7 +881,7 @@
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "33b8a85bb3b863ca230fd9e76fe54f8a7120e41ed3eb029239ea2e78d0253c7c",
+      "sha256": "a17e2bf55e04f1823b0179048878d9928c0e8d90742f874d36f65db9c693d05d",
       "spec_version": "2.6",
       "src": "tools/photoindex.py"
     },
@@ -895,14 +895,14 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "750d65d34c5122c53300b381725539c172cc9275b07d335eeeb731c6eb5aedb6",
+      "sha256": "ef563eec3174be0cbf2b6648ef0a963fd2c121849af89a0554ec0fa514d5693b",
       "spec_version": "2.6",
       "src": "tools/process.py"
     },
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "44be2b95183162a9e3e6e9a844e99a02df5eb5a6660d8fd611c6e9f34f2b4262",
+      "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
       "spec_version": "2.6",
       "src": "tools/reconcile.py"
     },
@@ -1172,7 +1172,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "3e04567cb67d7743c3d7de3831ac8060424709f05bc607326bb4a7e9273fd5f6",
+      "sha256": "ee456f77c2d46179b3d9323788c9999481e74332f7d6dbd7b1c9d4699ae92b4a",
       "spec_version": "2.6"
     },
     {
@@ -1239,14 +1239,14 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "6b699a86441f67aa5ad03a5da33540e2105c1cd0e276681f4e5765ea02bc9ed2",
+      "sha256": "3beb6d50acb3f1d6cb20d311bc1a0b0b9aed0d829cb79079781398a212f53201",
       "spec_version": "2.6",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "327ba6b7de15d4e25fd2254741a3c70377b35e0aa84056cfcd93f7e874cccaea",
+      "sha256": "99b5f8c83f286af2e121169ae15062f26b14abfa42415844fcbef09f9d03e0d9",
       "spec_version": "2.6"
     },
     {
