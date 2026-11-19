@@ -2640,6 +2640,39 @@ class PhotoindexTests(unittest.TestCase):
 
     # ── reconcile (TOOLING §9) ─────────────────────────────────────────
 
+    def test_reconcile_renamed_file_with_only_its_keyword_is_a_proposal(self) -> None:
+        # #297: a keyword alone is not unique to one picture (an -Edit copy,
+        # a back scan and an export all carry it), so a file under another
+        # name is reported, never re-tied - the rule `fha reconcile`'s record
+        # pass already follows (#289). Before #297 this test required the
+        # row to move onto the renamed file.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']}}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            (archive / 'photos' / 'wedding_1902.jpg').rename(
+                archive / 'photos' / 'wedding_renamed.jpg')
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']} for p in paths]
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True)
+
+            self.assertEqual(result['rematched'], [])
+            self.assertEqual(result['missing'], ['MISSING:photos/wedding_1902.jpg'])
+            self.assertEqual(len(result['proposals']), 1, result['proposals'])
+            text = result['proposals'][0]
+            self.assertIn("'photos/wedding_1902.jpg' is missing from disk", text)
+            self.assertIn('not re-tied', text)
+            self.assertIn('photos/wedding_renamed.jpg (carries', text)
+            self.assertIn('under another name', text)
+            self.assertIn('Nothing was moved', text)
+
     def test_reconcile_rematches_moved_file_by_source_id(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -2653,9 +2686,11 @@ class PhotoindexTests(unittest.TestCase):
             photoindex._run_exiftool = fake_exiftool
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
-            # Simulate the file moving outside fha: same SOURCE: keyword, new name.
+            # Simulate the file moving outside fha: same name and SOURCE:
+            # keyword, new folder (#297: the exact filename is required).
             old = archive / 'photos' / 'wedding_1902.jpg'
-            new = archive / 'photos' / 'wedding_renamed.jpg'
+            new = archive / 'photos' / '1902' / 'wedding_1902.jpg'
+            new.parent.mkdir()
             old.rename(new)
 
             def reconcile_exiftool(paths: list[Path]) -> list[dict]:
@@ -2674,23 +2709,24 @@ class PhotoindexTests(unittest.TestCase):
             # must still run (only absent/unreadable short-circuit).
             self.assertIn(result['status'], ('fresh', 'stale'))
             self.assertEqual(
-                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/1902/wedding_1902.jpg')],
             )
             self.assertEqual(result['missing'], [])
+            self.assertEqual(result['proposals'], [])
             self.assertEqual(result['new_count'], 0)
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
                 paths = [row[0] for row in conn.execute('SELECT path FROM photos')]
-                self.assertIn('photos/wedding_renamed.jpg', paths)
+                self.assertIn('photos/1902/wedding_1902.jpg', paths)
                 self.assertNotIn('photos/wedding_1902.jpg', paths)
 
-                # The renamed file was its group's primary_path; that must move too,
+                # The moved file was its group's primary_path; that must move too,
                 # or `photo_groups` would keep pointing at a path with no `photos` row.
                 primary = conn.execute(
                     "SELECT primary_path FROM photo_groups WHERE group_id LIKE 'SOURCE:%'"
                 ).fetchone()[0]
-                self.assertEqual(primary, 'photos/wedding_renamed.jpg')
+                self.assertEqual(primary, 'photos/1902/wedding_1902.jpg')
             finally:
                 conn.close()
 
@@ -2713,8 +2749,10 @@ class PhotoindexTests(unittest.TestCase):
             photoindex._run_exiftool = fake_exiftool
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
+            # A move keeps the filename (#297: a re-tie needs it).
             old = archive / 'photos' / 'wedding_1902.jpg'
-            new = archive / 'photos' / 'wedding_renamed.jpg'
+            new = archive / 'photos' / '1902' / 'wedding_1902.jpg'
+            new.parent.mkdir()
             old.rename(new)
 
             photoindex._run_exiftool = lambda paths: [
@@ -2724,15 +2762,15 @@ class PhotoindexTests(unittest.TestCase):
                 archive, {'roots': {'photos': 'photos'}}, with_exif=True,
             )
             self.assertEqual(
-                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/1902/wedding_1902.jpg')],
             )
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
                 rows = conn.execute(
-                    "SELECT path, caption FROM photo_fts WHERE path='photos/wedding_renamed.jpg'"
+                    "SELECT path, caption FROM photo_fts WHERE path='photos/1902/wedding_1902.jpg'"
                 ).fetchall()
-                self.assertEqual(rows, [('photos/wedding_renamed.jpg', 'Reception party')])
+                self.assertEqual(rows, [('photos/1902/wedding_1902.jpg', 'Reception party')])
                 stale = conn.execute(
                     "SELECT 1 FROM photo_fts WHERE path='photos/wedding_1902.jpg'"
                 ).fetchone()
@@ -3112,15 +3150,16 @@ class PhotoindexTests(unittest.TestCase):
             # rename, so the fake matches on either filename the photo has
             # carried rather than just its name at scan time.
             def fake_exiftool(paths: list[Path]) -> list[dict]:
-                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
-                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                rows = {'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']}}
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
             photoindex._run_exiftool = fake_exiftool
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
+            # Moved into a folder under its own name (#297: a re-tie needs it).
             old = archive / 'photos' / 'wedding_1902.jpg'
-            new = archive / 'photos' / 'wedding_renamed.jpg'
+            new = archive / 'photos' / '1902' / 'wedding_1902.jpg'
+            new.parent.mkdir()
             old.rename(new)
 
             fha_config = {'roots': {'photos': 'photos'}}
@@ -3131,7 +3170,8 @@ class PhotoindexTests(unittest.TestCase):
             # still be a rematch candidate once --with-exif is used later.
             second = photoindex.run_reconcile(archive, fha_config, with_exif=True)
             self.assertEqual(
-                second['rematched'], [('MISSING:photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+                second['rematched'],
+                [('MISSING:photos/wedding_1902.jpg', 'photos/1902/wedding_1902.jpg')],
             )
             self.assertEqual(second['missing'], [])
 
@@ -3140,15 +3180,16 @@ class PhotoindexTests(unittest.TestCase):
             archive = _copy_fixture(Path(d))
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
-                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
-                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                rows = {'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']}}
                 return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
 
             photoindex._run_exiftool = fake_exiftool
             photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
+            # Moved into a folder under its own name (#297: a re-tie needs it).
             old = archive / 'photos' / 'wedding_1902.jpg'
-            new = archive / 'photos' / 'wedding_renamed.jpg'
+            new = archive / 'photos' / '1902' / 'wedding_1902.jpg'
+            new.parent.mkdir()
             old.rename(new)
 
             # Simulate content edited at move time: the file's real mtime now
@@ -3160,7 +3201,7 @@ class PhotoindexTests(unittest.TestCase):
             fha_config = {'roots': {'photos': 'photos'}}
             result = photoindex.run_reconcile(archive, fha_config, with_exif=True)
             self.assertEqual(
-                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/1902/wedding_1902.jpg')],
             )
             self.assertEqual(result['new_count'], 0)
 
@@ -6954,22 +6995,101 @@ class ContentFingerprintTests(unittest.TestCase):
 
     def test_a_source_keyword_match_wins_over_content(self) -> None:
         # The SOURCE: keyword is the source's own identity; a fingerprint is
-        # only for what the keyword cannot place.
+        # only for what the keyword cannot place. The move keeps the photo's
+        # name, which a keyword re-tie needs (#297).
         self._put('deed.jpg', self._picture(8))
         self.captions['deed.jpg'] = ''
-
-        def with_source(paths: list[Path]) -> list[dict]:
-            return [{'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']}
-                    for p in paths if p.name in ('deed.jpg', 'deed-moved.jpg')] + [
-                    {'SourceFile': str(p)} for p in paths
-                    if p.name not in ('deed.jpg', 'deed-moved.jpg')]
-
-        photoindex._run_exiftool = with_source
+        self._keywords_on({'deed.jpg': 'S-123456789a'})
         photoindex.run_scan(self.archive, self.CFG)
-        (self.photos / 'deed.jpg').rename(self.photos / 'deed-moved.jpg')
+        (self.photos / 'deeds').mkdir()
+        (self.photos / 'deed.jpg').rename(self.photos / 'deeds' / 'deed.jpg')
         result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
-        self.assertEqual(result['rematched'], [('photos/deed.jpg', 'photos/deed-moved.jpg')])
+        self.assertEqual(result['rematched'], [('photos/deed.jpg', 'photos/deeds/deed.jpg')])
         self.assertEqual(result['rematched_by_content'], [])
+        self.assertEqual(result['proposals'], [])
+
+    # ── #297: the record pass's one rule, inside the catalog pass ──────────
+
+    def _keywords_on(self, sid_by_name: dict[str, str]) -> None:
+        """exiftool stand-in: each named file carries `SOURCE: <sid>`."""
+        def with_source(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Caption-Abstract': self.captions.get(p.name, ''),
+                     **({'Keywords': [f'SOURCE: {sid_by_name[p.name]}']}
+                        if p.name in sid_by_name else {})}
+                    for p in paths]
+        photoindex._run_exiftool = with_source
+
+    def test_an_edit_copy_carrying_the_keyword_is_a_proposal_not_a_move(self) -> None:
+        # The original is deleted while an -Edit copy (a different picture,
+        # so no content match) carries its keyword. Before #297 the catalog
+        # row moved onto the copy.
+        self._put('deed.jpg', self._picture(11), caption='The deed, 1911')
+        self._keywords_on({'deed.jpg': 'S-123456789a', 'deed-Edit.jpg': 'S-123456789a'})
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').unlink()
+        self._put('deed-Edit.jpg', self._picture(12))
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['missing'], ['MISSING:photos/deed.jpg'])
+        self.assertEqual(len(result['proposals']), 1, result['proposals'])
+        self.assertIn('photos/deed-Edit.jpg (carries', result['proposals'][0])
+        rows = self._rows()
+        self.assertNotIn('photos/deed-Edit.jpg', rows)
+        self.assertEqual(rows['MISSING:photos/deed.jpg'][0], 'The deed, 1911')
+
+    def test_one_same_named_carrier_moves_the_row(self) -> None:
+        # Exact filename, one candidate, this source's keyword only: a move.
+        # A different picture (a re-save) still moves: the keyword decides.
+        self._put('deed.jpg', self._picture(13), caption='The deed, 1911')
+        self._keywords_on({'deed.jpg': 'S-123456789a'})
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').unlink()
+        (self.photos / 'land').mkdir()
+        self._put('land/deed.jpg', self._picture(14))
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [('photos/deed.jpg', 'photos/land/deed.jpg')])
+        self.assertEqual(result['missing'], [])
+        self.assertEqual(result['proposals'], [])
+        self.assertEqual(self._rows()['photos/land/deed.jpg'][0], 'The deed, 1911')
+
+    def test_two_same_named_carriers_are_a_proposal(self) -> None:
+        self._put('deed.jpg', self._picture(15), caption='The deed, 1911')
+        self._keywords_on({'deed.jpg': 'S-123456789a'})
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').unlink()
+        for folder, seed in (('a', 16), ('b', 17)):
+            (self.photos / folder).mkdir()
+            self._put(f'{folder}/deed.jpg', self._picture(seed))
+        before = self._rows()
+        preview = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True, dry_run=True)
+        self.assertEqual(self._rows(), before)
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(preview['proposals'], result['proposals'])
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['missing'], ['MISSING:photos/deed.jpg'])
+        self.assertEqual(len(result['proposals']), 1, result['proposals'])
+        for cand in ('photos/a/deed.jpg', 'photos/b/deed.jpg'):
+            self.assertIn(f'{cand} (same name, carries', result['proposals'][0])
+        rows = self._rows()
+        self.assertNotIn('photos/a/deed.jpg', rows)
+        self.assertNotIn('photos/b/deed.jpg', rows)
+
+    def test_a_same_named_file_carrying_a_second_source_is_a_proposal(self) -> None:
+        self._put('deed.jpg', self._picture(18))
+        self._keywords_on({'deed.jpg': 'S-123456789a'})
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').unlink()
+        (self.photos / 'land').mkdir()
+        self._put('land/deed.jpg', self._picture(19))
+
+        def two_sources(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p),
+                     'Keywords': ['SOURCE: S-123456789a', 'SOURCE: S-0000000001']}
+                    for p in paths]
+        photoindex._run_exiftool = two_sources
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [])
+        self.assertIn('and also', result['proposals'][0])
 
     def test_dry_run_reports_the_re_tie_and_changes_nothing(self) -> None:
         self._put('farm.jpg', self._picture(9))

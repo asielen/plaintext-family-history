@@ -35,8 +35,10 @@ in its filename or folder - exactly so you can reorganize your library safely. A
 the cache just needs to find the files in their new spots.
 
 **Fix.** Ask: *"Reconcile the photo index."* (Or run
-`fha photoindex reconcile --root my-family-archive`.) It re-matches moved files by
-their embedded ID. Any file it genuinely can't find is flagged so you can point it out. If a photo
+`fha photoindex reconcile --root my-family-archive`.) It re-matches a moved file when
+exactly one photo has its name and carries its embedded ID, and a renamed one when its picture
+is unchanged. A different file carrying the same ID, such as an `-Edit` copy, is listed as a
+possible match and is never re-matched on its own. Any file it genuinely can't find is flagged so you can point it out. If a photo
 won't reconnect, it may have been re-saved by an editor that stripped the metadata - tell the
 assistant and it'll re-tag it. (`fha doctor` checks whether the photo index has fallen behind the
 photos folder, so it'll often catch this for you first.)

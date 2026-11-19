@@ -60,7 +60,10 @@ after the move.
 
 The photo catalog itself is `fha photoindex reconcile`'s machinery; when a
 catalog exists this tool runs it too (pass-through of --dry-run/--with-exif),
-so one command reconciles every file type - the §9 contract. Importing
+so one command reconciles every file type - the §9 contract. Both passes
+apply the one rule above through `_lib.photo_retie_target` and word their
+candidates through `_lib.photo_retie_candidates` (#297), so a catalog row is
+never moved onto a photo the record pass only reported. Importing
 photoindex here follows report.py's orchestrator precedent (a tool whose whole
 job is running other tools' engines does import them; ordinary tools still
 never do).
@@ -132,6 +135,8 @@ from _lib import (
     normalize_id,
     parse_filename,
     photoindex_config_drift,
+    photo_retie_candidates,
+    photo_retie_target,
     path_to_alias,
     read_record,
     read_text_exact,
@@ -705,8 +710,7 @@ def _plan_photos(
         for alias in aliases:
             name = PurePosixPath(alias.replace('\\', '/')).name
             same = by_name.get(name, [])
-            if (len(same) == 1 and own and sids_of.get(same[0]) == frozenset({own})
-                    and names.count(name) == 1):
+            if photo_retie_target(same, own, sids_of) and names.count(name) == 1:
                 claims.setdefault(same[0], []).append((rec_path, alias))
                 continue
             plan['reports'].append(_photo_report(
@@ -730,39 +734,14 @@ def _photo_report(
 ) -> str:
     """The one message for a missing photo entry that is not re-tied.
 
-    Names the entry, the candidates found - same name and the record's own
-    keyword first, then same name, then the keyword under another name - and
-    the exact `file:` line to edit. A candidate whose keywords were not read
-    says so and names `--with-exif`, the flag that reads them.
+    Names the entry, the candidates found (`_lib.photo_retie_candidates`,
+    the wording the catalog pass shares) and the exact `file:` line to edit.
+    A candidate whose keywords were not read says so and names
+    `--with-exif`, the flag that reads them.
     """
-    own_label = fmt_id_display(own) if own else 'its source ID'
-
-    def describe(cand: str) -> tuple[int, str]:
-        sids = sids_of.get(cand)
-        if sids is None:
-            hint = '' if with_exif else ' - `fha reconcile --with-exif` reads it'
-            return 2, f'{cand} (same name, keywords not read{hint})'
-        if own and own in sids and len(sids) == 1:
-            return 0, f'{cand} (same name, carries {own_label})'
-        if own and own in sids:
-            others = ', '.join(fmt_id_display(s) for s in sorted(sids - {own}))
-            return 1, f'{cand} (same name, carries {own_label} and also {others})'
-        if sids:
-            others = ', '.join(fmt_id_display(s) for s in sorted(sids))
-            return 3, f'{cand} (same name, but carries {others})'
-        return 3, f'{cand} (same name, no source keyword)'
-
-    ranked = [describe(c) for c in same]
-    same_set = set(same)
-    ranked += [(4, f'{c} (carries {own_label} under another name)')
-               for c in sorted(carriers) if c not in same_set]
-    ranked.sort()
-    if ranked:
-        found = ('Possible matches, most likely first: '
-                 + '; '.join(text for _rank, text in ranked[:8])
-                 + (f'; and {len(ranked) - 8} more' if len(ranked) > 8 else '') + '. ')
-    else:
-        found = 'No photo with its name or its source ID was found under the photos folder. '
+    found = photo_retie_candidates(
+        own, same, sids_of, carriers,
+        unread_hint='' if with_exif else '`fha reconcile --with-exif` reads it')
     return (f'{rec_path.name}: {alias!r} is missing from disk and was not re-tied. '
             f'{found}Edit the `file: {alias}` line in {rec_path.name} to the '
             "photo's new path under photos/, then run `fha lint`.")
@@ -1222,6 +1201,11 @@ def run_reconcile(
             # Matching by picture is gated until every photo has been read
             # (#220): say why no photo was matched that way.
             result.add('info', 'photos: ' + photoindex._content_waiting_message(waiting))
+        for text in d.get('proposals') or []:
+            # A catalog row the one rule would not re-tie, while a photo
+            # with its name or keyword exists (#297): the same report the
+            # record pass gives, never a silent move onto that photo.
+            result.add('warning', f'photos: {text}')
         if d.get('content_unchecked'):
             # Some new photos could not be read, so photoindex took no
             # content match at all this run (#220 audit F2) - say so.
@@ -1285,8 +1269,8 @@ _CLI_DESCRIPTION = (
     'Re-tie moved files to their records. Rearrange the documents folder any '
     'way you like, then run this: every filed document is found again by the '
     'ID in its name and its record updated. A filed photo moved within the '
-    'photos folder is found again by the SOURCE: keyword inside it (from the '
-    'photo catalog, or read with --with-exif), and the photo catalog is '
+    'photos folder is found again by its name and the SOURCE: keyword inside '
+    'it (from the photo catalog, or read with --with-exif), and the photo catalog is '
     'reconciled too when one exists. Preview with --dry-run first.'
 )
 
