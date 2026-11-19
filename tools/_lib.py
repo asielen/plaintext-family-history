@@ -3495,13 +3495,16 @@ def photo_retie_target(
     and photo managers copy it onto edits and exports. So a missing photo is
     re-tied only when exactly one candidate has its exact filename and that
     file carries this source's `SOURCE:` keyword and no other source's.
-    `same_named` is the candidates with the missing photo's filename,
-    `sids_of` maps a candidate to the S-ids it carries (a candidate missing
-    from it was not read). Shared by both `fha reconcile` passes, the
-    record pass and the photo-catalog pass, so one command never re-ties a
-    photo on one side and reports it as a proposal on the other. Each caller
-    adds its own sibling check (another entry or row of the same source with
-    that filename) before acting on the answer.
+    `same_named` is every file under the photos root with the missing
+    photo's filename, `sids_of` maps a candidate to the S-ids it carries (a
+    candidate missing from it was not read). Shared by both `fha reconcile`
+    passes, the record pass and the photo-catalog pass, and both pass the
+    same candidates (every same-named file, listed on a record or in the
+    catalog or neither), so one command does not re-tie a photo on one side
+    and report it as a proposal on the other. Each caller then checks the
+    file is free to take (not listed on a record; not already a catalog
+    row) and adds its own sibling check (another entry or row of the same
+    source with that filename) before acting on the answer.
     """
     if (len(same_named) == 1 and own_sid
             and sids_of.get(same_named[0]) == frozenset({own_sid})):

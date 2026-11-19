@@ -3235,32 +3235,58 @@ def _rows_per_source_name(cached: dict[str, str | None]) -> dict[tuple[str, str]
     return out
 
 
+def _catalog_sids(conn: sqlite3.Connection, aliases) -> dict[str, frozenset]:
+    """alias -> every S-id its catalog row carries, for the catalogued ones
+    among `aliases`: every `SOURCE:` keyword in photo_keywords, else the
+    row's source_id. The re-tie rule reads a same-named catalogued photo's
+    keywords from here (#297)."""
+    wanted = set(aliases)
+    found: dict[str, set[str]] = {}
+    for path, kw in conn.execute('SELECT path, keyword FROM photo_keywords'):
+        if path in wanted:
+            m = _SOURCE_KEYWORD_RE.match(str(kw).strip())
+            found.setdefault(path, set())
+            if m:
+                found[path].add(normalize_id(m.group(1)))
+    for path, source_id in conn.execute('SELECT path, source_id FROM photos'):
+        if path in wanted:
+            sids = found.setdefault(path, set())
+            if not sids and source_id:
+                sids.add(normalize_id(source_id))
+    return {path: frozenset(sids) for path, sids in found.items()}
+
+
 def _catalog_proposals(
-    missing: dict[str, str | None], untracked: dict[str, Path],
-    sids_by_alias: dict[str, frozenset],
-) -> list[str]:
-    """One plain message per sourced catalog row that was not re-tied while
-    some untracked file has its filename or carries its `SOURCE:` keyword.
-    The candidates are worded by `_lib.photo_retie_candidates`, as the
-    record pass words them, so `fha reconcile` says one thing about one
-    photo. A row with no candidate at all is only reported missing."""
-    by_name = _aliases_by_name(untracked)
-    out: list[str] = []
+    missing: dict[str, str | None], by_name: dict[str, list[str]],
+    sids_of: dict[str, frozenset],
+) -> list[dict]:
+    """One proposal per sourced catalog row that was not re-tied while some
+    file has its filename or carries its `SOURCE:` keyword: {'alias',
+    'text', 'same', 'carriers', 'sids'}. The text words the candidates with
+    `_lib.photo_retie_candidates`, as the record pass words them; `fha
+    reconcile` folds `carriers` and `sids` into the record's own report for
+    a filed photo, so it says one thing about one photo. A row with no
+    candidate at all is only reported missing."""
+    out: list[dict] = []
     for old_path, source_id in sorted(missing.items()):
         if not source_id:
             continue
         own = normalize_id(source_id)
         alias = _live_alias(old_path)
         same = by_name.get(PurePosixPath(alias).name, [])
-        carriers = sorted(a for a, sids in sids_by_alias.items()
-                          if own in sids and a in untracked)
+        carriers = sorted(a for a, sids in sids_of.items() if own in sids)
         if not same and not carriers:
             continue
-        found = photo_retie_candidates(own, same, sids_by_alias, carriers)
-        out.append(
-            f'{alias!r} is missing from disk, and its photo catalog entry was not '
-            f're-tied. {found}Nothing was moved: the catalog keeps the entry, marked '
-            'missing, so its caption and keywords stay searchable.')
+        found = photo_retie_candidates(own, same, sids_of, carriers)
+        out.append({
+            'alias': alias,
+            'text': (f'{alias!r} is missing from disk, and its photo catalog entry was '
+                     f'not re-tied. {found}Nothing was moved: the catalog keeps the '
+                     'entry, marked missing, so its caption and keywords stay searchable.'),
+            'same': list(same),
+            'carriers': carriers,
+            'sids': {a: sorted(sids_of[a]) for a in {*same, *carriers} if a in sids_of},
+        })
     return out
 
 
@@ -3276,9 +3302,10 @@ def run_reconcile(
 
       - re-matched (only with --with-exif): by the one rule `fha
         reconcile`'s record pass uses (`_lib.photo_retie_target`, #297):
-        exactly one untracked file has the missing row's exact filename, it
-        carries the row's SOURCE: keyword and no other source's, and no
-        other catalog row of that source has the same filename -> the row's
+        exactly one file under the photos root, catalogued or not, has the
+        missing row's exact filename, it is untracked, it carries the row's
+        SOURCE: keyword and no other source's, and no other catalog row of
+        that source has the same filename -> the row's
         path (and its photo_keywords/photo_face_regions/photo_people rows)
         move to the new path. A keyword under another name is not enough:
         a back scan, an -Edit copy or an export carries it too. Without
@@ -3357,7 +3384,7 @@ def run_reconcile(
 
     Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...]
     (by keyword or by content), 'rematched_by_content': [(old, new), ...],
-    'missing': [path, ...], 'proposals': [text, ...], 'new_count': int,
+    'missing': [path, ...], 'proposals': [{'alias', 'text', ...}, ...], 'new_count': int,
     'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...],
     'stale_hold_failed': bool, 'unreadable_dirs': [alias, ...],
     'held_unreadable': int}.
@@ -3464,6 +3491,13 @@ def run_reconcile(
             sids_by_alias = {
                 alias: frozenset(scraped[p]) for alias, p in untracked.items() if p in scraped
             }
+            # The re-tie looks at every file with the row's name, catalogued
+            # or not - the set `fha reconcile`'s record pass decides from -
+            # so a same-named photo already in the catalog makes the match
+            # uncertain here too, and the row is reported, not moved (#297).
+            # A catalogued file's S-ids come from its catalog keywords.
+            on_disk_by_name = _aliases_by_name(on_disk)
+            sids_on_disk = {**_catalog_sids(conn, on_disk), **sids_by_alias}
 
             rematched: list[tuple[str, str]] = []
             rematched_paths: list[Path] = []
@@ -3481,7 +3515,6 @@ def run_reconcile(
                 # its front's, and photo managers copy it onto edits and
                 # exports. Everything else is left for the content pass, then
                 # reported as a proposal below.
-                untracked_by_name = _aliases_by_name(untracked)
                 rows_per_name = _rows_per_source_name(cached)
                 claims: dict[str, list[str]] = {}
                 for old_path, source_id in missing.items():
@@ -3490,8 +3523,8 @@ def run_reconcile(
                     own = normalize_id(source_id)
                     name = PurePosixPath(_live_alias(old_path)).name
                     target = photo_retie_target(
-                        untracked_by_name.get(name, []), own, sids_by_alias)
-                    if target and rows_per_name.get((own, name)) == 1:
+                        on_disk_by_name.get(name, []), own, sids_on_disk)
+                    if target in untracked and rows_per_name.get((own, name)) == 1:
                         claims.setdefault(target, []).append(old_path)
                 for new_path, olds in sorted(claims.items()):
                     if len(olds) != 1:
@@ -3537,9 +3570,9 @@ def run_reconcile(
             # A sourced row still missing, with a file that has its name or
             # its keyword, is a proposal for the human, in the record pass's
             # words: what was found, and that nothing was moved.
-            proposals: list[str] = []
+            proposals: list[dict] = []
             if missing and scraped:
-                proposals = _catalog_proposals(missing, untracked, sids_by_alias)
+                proposals = _catalog_proposals(missing, on_disk_by_name, sids_on_disk)
 
             if not dry_run:
                 # Rows already MISSING: whose fingerprint was never known -
@@ -5763,8 +5796,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'  RE-MATCHED  {old} -> {new}{how}')
     for path in result['missing']:
         print(f'  MISSING     {_live_alias(path)}')
-    for text in result.get('proposals') or []:
-        print(f'  NOT RE-TIED {text}')
+    for finding in result.get('proposals') or []:
+        print(f"  NOT RE-TIED {finding['text']}")
     waiting = result.get('content_waiting') or {}
     if waiting.get('unread'):
         print(_content_waiting_message(waiting))

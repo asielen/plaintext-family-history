@@ -760,8 +760,9 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         # #297: the original is deleted while an -Edit copy (a different
         # picture, saved after the last scan) carries its keyword. Both
         # passes of one command follow one rule: the record is untouched
-        # with a proposal, and the catalog row is not moved onto the copy
-        # but reported in the same words.
+        # with a proposal, and the catalog row is not moved onto the copy.
+        # One warning for the photo, naming the copy the catalog pass found
+        # (its keyword read covers every new photo).
         self._scan()
         (self.root / 'photos' / 'portrait_1880.jpg').unlink()
         self._place('wedding_1902.jpg', 'photos/portrait_1880-Edit.jpg', PHOTO_SID)
@@ -771,15 +772,33 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         catalog = self._catalog_paths()
         self.assertNotIn('photos/portrait_1880-Edit.jpg', catalog)
         self.assertIn('MISSING:photos/portrait_1880.jpg', catalog)
-        proposals = [m.text for m in result.messages
-                     if m.level == 'warning' and m.text.startswith('photos: ')
-                     and 'was not re-tied' in m.text]
-        self.assertEqual(len(proposals), 1, [m.text for m in result.messages])
-        self.assertIn("'photos/portrait_1880.jpg' is missing from disk", proposals[0])
-        self.assertIn('photos/portrait_1880-Edit.jpg (carries', proposals[0])
-        self.assertIn('under another name', proposals[0])
-        self.assertIn('Nothing was moved', proposals[0])
+        about = [m.text for m in result.messages
+                 if m.level == 'warning' and 'was not re-tied' in m.text]
+        self.assertEqual(len(about), 1, [m.text for m in result.messages])
+        self.assertTrue(about[0].startswith(self.record.name), about[0])
+        self.assertIn("'photos/portrait_1880.jpg' is missing from disk", about[0])
+        self.assertIn('photos/portrait_1880-Edit.jpg (carries', about[0])
+        self.assertIn('under another name', about[0])
+        self.assertNotIn('No photo with its name or its source ID', about[0])
         self.assertFalse(any('1 catalog row(s) re-tied' in m.text for m in result.messages))
+
+    def test_a_catalogued_same_named_photo_stops_both_passes(self) -> None:
+        # A different, keyword-less photo of the same name is already in the
+        # catalog; the filed photo moves, keyword intact. Neither pass can
+        # be sure which file is meant, so both report and neither moves.
+        self._place('wedding_1902.jpg', 'photos/other/portrait_1880.jpg')
+        self._scan()
+        self._move('photos/portrait_1880.jpg', 'photos/new/portrait_1880.jpg')
+        before = self.record.read_text(encoding='utf-8')
+        result = self._run(with_exif=True)
+        self._assert_reported(result, before, 'photos/new/portrait_1880.jpg',
+                              'photos/other/portrait_1880.jpg')
+        catalog = self._catalog_paths()
+        self.assertNotIn('photos/new/portrait_1880.jpg', catalog)
+        self.assertIn('MISSING:photos/portrait_1880.jpg', catalog)
+        about = [m.text for m in result.messages
+                 if m.level == 'warning' and 'was not re-tied' in m.text]
+        self.assertEqual(len(about), 1, about)
 
     def test_a_moved_photo_moves_the_record_and_the_catalog_row_together(self) -> None:
         # The exact name and one carrier: both passes re-tie, and say so.

@@ -2666,7 +2666,7 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(result['rematched'], [])
             self.assertEqual(result['missing'], ['MISSING:photos/wedding_1902.jpg'])
             self.assertEqual(len(result['proposals']), 1, result['proposals'])
-            text = result['proposals'][0]
+            text = result['proposals'][0]['text']
             self.assertIn("'photos/wedding_1902.jpg' is missing from disk", text)
             self.assertIn('not re-tied', text)
             self.assertIn('photos/wedding_renamed.jpg (carries', text)
@@ -7032,7 +7032,7 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertEqual(result['rematched'], [])
         self.assertEqual(result['missing'], ['MISSING:photos/deed.jpg'])
         self.assertEqual(len(result['proposals']), 1, result['proposals'])
-        self.assertIn('photos/deed-Edit.jpg (carries', result['proposals'][0])
+        self.assertIn('photos/deed-Edit.jpg (carries', result['proposals'][0]['text'])
         rows = self._rows()
         self.assertNotIn('photos/deed-Edit.jpg', rows)
         self.assertEqual(rows['MISSING:photos/deed.jpg'][0], 'The deed, 1911')
@@ -7069,10 +7069,34 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertEqual(result['missing'], ['MISSING:photos/deed.jpg'])
         self.assertEqual(len(result['proposals']), 1, result['proposals'])
         for cand in ('photos/a/deed.jpg', 'photos/b/deed.jpg'):
-            self.assertIn(f'{cand} (same name, carries', result['proposals'][0])
+            self.assertIn(f'{cand} (same name, carries', result['proposals'][0]['text'])
         rows = self._rows()
         self.assertNotIn('photos/a/deed.jpg', rows)
         self.assertNotIn('photos/b/deed.jpg', rows)
+
+    def test_a_catalogued_same_named_photo_makes_it_a_proposal(self) -> None:
+        # A different photo of the same name is already in the catalog: the
+        # record pass would count it as a candidate, so this pass does too,
+        # and the moved photo's row is reported, not moved.
+        self._put('deed.jpg', self._picture(20), caption='The deed, 1911')
+        (self.photos / 'other').mkdir()
+        self._put('other/deed.jpg', self._picture(21))
+
+        def not_the_other_one(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p),
+                     **({} if 'other' in p.parts else {'Keywords': ['SOURCE: S-123456789a']})}
+                    for p in paths]
+        photoindex._run_exiftool = not_the_other_one
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'deed.jpg').unlink()
+        (self.photos / 'land').mkdir()
+        self._put('land/deed.jpg', self._picture(22))
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'], [])
+        self.assertEqual(result['missing'], ['MISSING:photos/deed.jpg'])
+        text = result['proposals'][0]['text']
+        self.assertIn('photos/land/deed.jpg (same name, carries', text)
+        self.assertIn('photos/other/deed.jpg (same name, no source keyword)', text)
 
     def test_a_same_named_file_carrying_a_second_source_is_a_proposal(self) -> None:
         self._put('deed.jpg', self._picture(18))
@@ -7089,7 +7113,7 @@ class ContentFingerprintTests(unittest.TestCase):
         photoindex._run_exiftool = two_sources
         result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
         self.assertEqual(result['rematched'], [])
-        self.assertIn('and also', result['proposals'][0])
+        self.assertIn('and also', result['proposals'][0]['text'])
 
     def test_dry_run_reports_the_re_tie_and_changes_nothing(self) -> None:
         self._put('farm.jpg', self._picture(9))
