@@ -107,6 +107,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    file_entry_is_searched_copy - a page copy or site data: searched, not the words
 #    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
 #    read_searchable_text      - a file's words as the text search reads them
+#    PageTextCache             - each saved page's visible text, parsed once (.cache/)
 #
 #  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
 #    roles_by_person           - a claim's (pid, role) pairs -> every role each
@@ -8881,17 +8882,30 @@ def _decode_text_file(raw: bytes) -> str:
     A GEDCOM from an older program can be UTF-16 (with its byte-order mark),
     ANSI or ANSEL, and an older saved page is often Windows ANSI. A UTF-16 file
     read as UTF-8 loses every name to the zero bytes between its letters, so
-    the mark is honoured. A file that is not valid UTF-8 is read as Windows
+    the mark is honoured. A line that is not valid UTF-8 is read as Windows
     ANSI (cp1252), so "Müller" stays "Müller" rather than becoming "Mller";
     an ANSEL accent then shows as a stray letter beside its base letter, which
     still leaves the name findable.
+
+    The fallback is per line, not per file: a UTF-8 transcript with one stray
+    Windows apostrophe pasted into it keeps every other line's accents right,
+    so "Wäckerlin" on another line is still found.
     """
     if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
         return raw.decode('utf-16', errors='ignore')
+    if raw.startswith(b'\xef\xbb\xbf'):
+        raw = raw[3:]
     try:
-        return raw.decode('utf-8-sig')
+        return raw.decode('utf-8')
     except UnicodeDecodeError:
-        return raw.decode('cp1252', errors='ignore')
+        pass
+    lines = []
+    for line in raw.split(b'\n'):
+        try:
+            lines.append(line.decode('utf-8'))
+        except UnicodeDecodeError:
+            lines.append(line.decode('cp1252', errors='ignore'))
+    return '\n'.join(lines)
 
 
 def _json_leaf_text(value: Any, out: list[str]) -> None:
@@ -8905,29 +8919,11 @@ def _json_leaf_text(value: Any, out: list[str]) -> None:
         out.append(str(value))
 
 
-def _markup_could_contain(raw_text: str, query: str) -> bool:
-    """Could a page's visible text contain `query`? A cheap check before parsing.
-
-    Parsing a large saved page costs far more than reading it, and a search
-    reads every page on every query. The parsed text only ever joins the
-    page's own text runs with spaces, so each word of the query must appear,
-    whole, somewhere in the page as written (entities decoded). A page missing
-    any word cannot match and is not parsed. Case is ignored, as the search
-    ignores it. A query with no words is never filtered.
-    """
-    words = query.lower().split()
-    if not words:
-        return True
-    haystack = html.unescape(raw_text).lower()
-    return all(w in haystack for w in words)
-
-
-def read_searchable_text(path: Path, *, query: str | None = None) -> str:
+def read_searchable_text(path: Path) -> str:
     """A file's words as `fha find --text` reads them. Raises OSError.
 
-    With `query` (a literal, matched ignoring case), a page or XML file that
-    cannot contain it is not parsed and comes back empty; the caller is only
-    asking whether it matches.
+    Parsing a large saved page costs far more than reading it, so a caller
+    that reads pages on every search goes through PageTextCache instead.
 
     A saved web page (`.html`, `.htm`, `.xhtml`) and an `.xml` file are read by
     what they show, not their markup: a search for a word must not match a tag
@@ -8939,8 +8935,6 @@ def read_searchable_text(path: Path, *, query: str | None = None) -> str:
     text = _decode_text_file(Path(path).read_bytes())
     suffix = Path(path).suffix.lower()
     if suffix in _MARKUP_TEXT_SUFFIXES:
-        if query is not None and not _markup_could_contain(text, query):
-            return ''
         parser = PageTextParser()
         try:
             parser.feed(text)
@@ -8957,6 +8951,82 @@ def read_searchable_text(path: Path, *, query: str | None = None) -> str:
         _json_leaf_text(data, parts)
         return '\n'.join(parts)
     return text
+
+
+def is_markup_text_file(path: Path) -> bool:
+    """Is this a saved page or XML file, read by what it shows (and cached)?"""
+    return Path(path).suffix.lower() in _MARKUP_TEXT_SUFFIXES
+
+
+# Bump when PageTextParser or read_searchable_text changes what a page reads
+# as, so every cached page is read afresh by the new code.
+_PAGE_TEXT_CACHE_VERSION = 1
+
+
+class PageTextCache:
+    """Each saved page's visible text, kept so a page is parsed once.
+
+    A folder of captured records holds a saved copy of every page, often a few
+    hundred kilobytes of markup each, and the family surname is on most of
+    them. Parsing every page on every search made one search take half a
+    minute. The text is kept in `.cache/page-text.sqlite`, keyed by the page's
+    full path with its modification time and size, so an edited or replaced
+    page is read again and an unchanged one never is.
+
+    Disposable like everything in `.cache/`: delete it and the next search
+    rebuilds it. A missing, read-only or damaged cache only costs speed - the
+    page is parsed as before and the search answers the same.
+    """
+
+    def __init__(self, archive_root: Path) -> None:
+        self.conn: sqlite3.Connection | None = None
+        path = Path(archive_root) / '.cache' / 'page-text.sqlite'
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(path))
+            if conn.execute('PRAGMA user_version').fetchone()[0] != _PAGE_TEXT_CACHE_VERSION:
+                conn.execute('DROP TABLE IF EXISTS page_text')
+                conn.execute(f'PRAGMA user_version = {_PAGE_TEXT_CACHE_VERSION}')
+            conn.execute(
+                'CREATE TABLE IF NOT EXISTS page_text ('
+                'path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, text TEXT)')
+            self.conn = conn
+        except (OSError, sqlite3.Error):
+            self.conn = None
+
+    def text(self, path: Path) -> str:
+        """The page's searchable text, parsed only when it changed. Raises OSError."""
+        st = Path(path).stat()   # before reading: a save in between reads as changed
+        key = os.path.abspath(path)
+        if self.conn is not None:
+            try:
+                row = self.conn.execute(
+                    'SELECT mtime_ns, size, text FROM page_text WHERE path = ?',
+                    (key,)).fetchone()
+            except sqlite3.Error:
+                row = None
+            if row and row[0] == st.st_mtime_ns and row[1] == st.st_size:
+                return row[2] or ''
+        text = read_searchable_text(path)
+        if self.conn is not None:
+            try:
+                self.conn.execute(
+                    'INSERT OR REPLACE INTO page_text VALUES (?, ?, ?, ?)',
+                    (key, st.st_mtime_ns, st.st_size, text))
+            except sqlite3.Error:
+                pass   # read-only or full: the answer is unchanged, only slower
+        return text
+
+    def close(self) -> None:
+        if self.conn is None:
+            return
+        try:
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
+        finally:
+            self.conn.close()
+            self.conn = None
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────

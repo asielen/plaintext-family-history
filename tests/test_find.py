@@ -1949,10 +1949,8 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         _, out = self._search('Quenby')
         self.assertIn('census-webpage_S-4k6m8p0r2t.xhtml', out)
 
-    def test_a_page_that_cannot_match_is_never_parsed(self) -> None:
-        # Two hundred large saved pages made one search take half a minute,
-        # because every page was parsed on every query. A page that does not
-        # contain every word of the query, as written, cannot match.
+    def _counting_parser(self):
+        """Swap in a PageTextParser that counts how often a page is parsed."""
         import _lib
         made = []
         real = _lib.PageTextParser
@@ -1962,19 +1960,55 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
                 made.append(1)
                 super().__init__()
 
+        _lib.PageTextParser = Counting
+        self.addCleanup(setattr, _lib, 'PageTextParser', real)
+        return made
+
+    def test_an_unchanged_page_is_parsed_once_across_searches(self) -> None:
+        # Two hundred large saved pages made every search take half a minute,
+        # because every page was parsed on every query - and the family
+        # surname is on most of them, so no cheap check could skip them.
+        page = 'documents/census/census-webpage_S-4k6m8p0r2t.html'
+        self._write(page, '<html><body><p>Tobias <b>Quenby</b></p></body></html>')
         self._write('documents/census/other-webpage_S-4k6m8p0r2t.html',
                     '<html><body><p>Ellen Marsh, widow</p></body></html>')
-        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
-                    '<html><body><p>Tobias <b>Quenby</b> &amp; family</p>'
-                    '</body></html>')
-        _lib.PageTextParser = Counting
-        try:
-            _, out = self._search('tobias QUENBY')
-        finally:
-            _lib.PageTextParser = real
+        made = self._counting_parser()
+        _, out = self._search('Quenby')
         self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
-        self.assertNotIn('other-webpage', out)
-        self.assertEqual(len(made), 1)
+        self.assertEqual(len(made), 2)          # first search reads both pages
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 2)          # second search parses nothing
+        # A changed page is read again, and the change is what is found.
+        self._write(page, '<html><body><p>Tobias Wexcombe, farmer</p></body></html>')
+        _, out = self._search('Wexcombe')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertEqual(len(made), 3)
+
+    def test_a_deleted_or_unwritable_page_cache_changes_no_answer(self) -> None:
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Tobias Quenby</p></body></html>')
+        _, out = self._search('Quenby')
+        cache = self.archive_root / '.cache' / 'page-text.sqlite'
+        self.assertTrue(cache.is_file())
+        cache.unlink()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        # A cache that cannot be opened (here a folder sits where the file
+        # goes) only costs speed.
+        cache.unlink()
+        cache.mkdir()
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+
+    def test_one_stray_windows_byte_keeps_the_rest_of_the_file_right(self) -> None:
+        # A UTF-8 transcript with one Windows apostrophe pasted into it must
+        # still find an accented name on another line.
+        self._write('documents/letters/letter-transcript_S-4k6m8p0r2t.md',
+                    'It was Mary\x92s house.\n'.encode('latin-1')
+                    + 'Signed, Hans Wäckerlin\n'.encode('utf-8'))
+        _, out = self._search('Wäckerlin')
+        self.assertIn('letter-transcript_S-4k6m8p0r2t.md', out)
 
 
 # Four transcripts of the same kind of evidence, in the four states the

@@ -100,6 +100,8 @@ from _lib import (
     fmt_id_display,
     index_merge_survivors,
     normalize_place_text,
+    PageTextCache,
+    is_markup_text_file,
     read_searchable_text,
     open_index_db,
     path_to_alias,
@@ -920,9 +922,12 @@ def _searchable_text_note(
         'searchable when it carries its own text layer; a scan or a photograph '
         'has to be read and typed out. `fha find <S-id>` lists what files a '
         'source has.'
-        + (f' {trees} of them are a family tree export or another plain-text '
-           'file this search does not read; `fha find --text "<words>"` '
-           'searches those.' if trees else '')
+        + ((' 1 of them is a family tree export or another plain-text file '
+            'this search does not read; `fha find --text "<words>"` searches it.'
+            if trees == 1 else
+            f' {trees} of them are family tree exports or other plain-text '
+            'files this search does not read; `fha find --text "<words>"` '
+            'searches those.') if trees else '')
     )
 
 
@@ -1087,6 +1092,7 @@ def _find_text(
     # answer the human has no way to question.
     text_unreadable: list[Path] = []
     text_on_error = unreadable_dir_recorder(text_unreadable)
+    page_cache: PageTextCache | None = None   # opened on the first saved page
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
@@ -1104,8 +1110,14 @@ def _find_text(
             try:
                 # A saved page is read by what it shows and a site's data by
                 # its values (_lib.read_searchable_text), so a search never
-                # matches a tag, a script or a field name.
-                text = read_searchable_text(p, query=query)
+                # matches a tag, a script or a field name. A page's text comes
+                # from the page cache, so it is parsed once, not every search.
+                if is_markup_text_file(p):
+                    if page_cache is None:
+                        page_cache = PageTextCache(archive_root)
+                    text = page_cache.text(p)
+                else:
+                    text = read_searchable_text(p)
                 m = pattern.search(text)
                 if m:
                     context = _match_context(text, m)
@@ -1129,6 +1141,8 @@ def _find_text(
                     seen_paths.add(rel)
             except OSError:
                 pass
+    if page_cache is not None:
+        page_cache.close()
 
     # places/places.yaml is the record store for places (TOOLING) but isn't a
     # directory of .md files like the scan_dirs above, so it needs its own pass.
