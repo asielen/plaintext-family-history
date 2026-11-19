@@ -263,6 +263,76 @@ class MoreNamingTests(InboxFilingTestCase):
         self.assertEqual(rc, EXIT_CLEAN, err)
         self.assertTrue(named.is_file())
 
+    def test_a_page_already_named_for_the_source_gets_its_role_once(self) -> None:
+        # #356's own example: a scanner's `260828-022` with its page 2,
+        # `260828-022-page-2.tif`, files as `260828-022-page-2_S`, never
+        # `260828-022-page-2-page-2_S`.
+        scan = self._put(self.inbox / 'Box' / '260828-022.tif', TIFF)
+        rc, _out, err = self._run(str(scan), '--type', 'letter')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next((self.docs / 'letter').glob('260828-022_s-*.tif'))
+        sid = primary.stem.split('_')[-1]
+        page = self._put(self.inbox / 'Box' / '260828-022-page-2.tif', TIFF)
+
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(sorted(p.name for p in (self.docs / 'letter').iterdir()), sorted([
+            f'260828-022_{sid}.tif', f'260828-022-page-2_{sid}.tif']))
+
+    def test_a_scanner_name_on_a_named_source_takes_the_sources_slug(self) -> None:
+        primary, record, sid = self._file_letter()
+        page = self._put(self.inbox / 'Box' / '260828-022-page-2.tif', TIFF)
+
+        rc, _out, err = self._run(str(primary), '--more', str(page), 'page-2')
+
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(self._files_entries(record)[1]['file'],
+                         f'documents/letter/postcard-from-aunt-1908-page-2_{sid}.tif')
+
+    def test_a_main_file_with_its_own_role_lends_only_the_slug(self) -> None:
+        # #356: a Find a Grave memorial's main file is `{slug}-grave-1_S`.
+        # A photo added later is `{slug}-grave-3_S`, not
+        # `{slug}-grave-1-grave-3_S`.
+        bundle = self.inbox / 'memorial'
+        bundle.mkdir()
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Orrin Pell memorial\nsource_type: website\nfiles:\n'
+            '  - file: grave-1.jpg\n    role: grave-1\n    is_primary: true\n'
+            '  - file: grave-2.jpg\n    role: grave-2\n---\nNotes.\n', encoding='utf-8')
+        self._put(bundle / 'grave-1.jpg', JPEG + b' 1')
+        self._put(bundle / 'grave-2.jpg', JPEG + b' 2')
+        rc, _out, err = self._run(str(bundle))
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        primary = next((self.docs / 'website').glob('orrin-pell-memorial-grave-1_s-*.jpg'))
+        sid = primary.stem.split('_')[-1]
+        later = self._put(self.inbox / 'grave-3.jpg', JPEG + b' 3')
+
+        rc, _out, err = self._run(str(primary), '--more', str(later), 'grave-3')
+
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertEqual(sorted(p.name for p in (self.docs / 'website').iterdir()), sorted([
+            f'orrin-pell-memorial-grave-1_{sid}.jpg',
+            f'orrin-pell-memorial-grave-2_{sid}.jpg',
+            f'orrin-pell-memorial-grave-3_{sid}.jpg',
+        ]))
+
+    def test_a_main_file_named_by_its_s_id_alone_lends_the_records_slug(self) -> None:
+        # #356: a main file with no slug in its name (`_s-….pdf`) has none
+        # to share, so the record's name is used, never the word 'source'.
+        primary, record, sid = self._file_letter()
+        bare = primary.with_name(f'_{sid}.pdf')
+        primary.rename(bare)
+        record.write_text(record.read_text(encoding='utf-8').replace(primary.name, bare.name),
+                          encoding='utf-8')
+        page = self._put(self.inbox / 'scan-9.tif', TIFF)
+
+        rc, _out, err = self._run(str(bare), '--more', str(page), 'page-2')
+
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue((self.docs / 'letter' / f'postcard-from-aunt-1908-page-2_{sid}.tif')
+                        .is_file(), sorted(p.name for p in (self.docs / 'letter').iterdir()))
+
     def test_two_attachments_with_one_role_are_told_to_use_a_copy_letter(self) -> None:
         primary, record, sid = self._file_letter()
         one = self._put(self.inbox / 'a.jpg', JPEG)

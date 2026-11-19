@@ -154,6 +154,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #                                 then hand off to the engine below
 #    _more_file_kind           - which root a --more file joins (a record's page: documents, #274)
 #    _attachment_base          - the source slug a --more attachment is named with (#278)
+#    _names_something          - does a filed stem name anything before its _{S-id}?
 #    _outside_roots_message    - "move it into the inbox" refusal for a file outside every root
 #    _attach_more_engine       - the attach logic proper: identity-mark + files: entry
 #
@@ -4393,8 +4394,9 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
     so the pages of one item sort together and carry the item's name. The
     slug is the one the source's primary document already carries (its stem
-    without `_{S-id}`), or the record's own slug when the primary is a photo
-    (photos are never renamed, so their name is no guide). The scan's real
+    without `_{S-id}` and without the `-{copy}-{role}` its own `files:` entry
+    names), or the record's own slug when the primary is a photo (photos are
+    never renamed, so their name is no guide) or is named by its S-id alone. The scan's real
     name is not lost: it is recorded as `original_filename:`.
 
     Two names are kept, both the recording and transcript skills'
@@ -4422,9 +4424,19 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     for entry in meta.get('files') or []:
         if (files_entry_is_main(entry)
                 and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
-            slug = _strip_sid_suffix(PurePosixPath(str(entry['file'])).stem, sid)
+            stem = PurePosixPath(str(entry['file'])).stem
+            if _names_something(stem, sid):
+                # A main file can carry its own `-{copy}-{role}` (a Find a
+                # Grave memorial's main file is `{slug}-grave-1_…`). That
+                # tail names that one file, not the source, so the next
+                # file attached never inherits it.
+                slug = _strip_suffix_tail(_strip_sid_suffix(stem, sid), '',
+                                          str(entry.get('role') or ''),
+                                          str(entry.get('copy') or '') or None)
             break
     if not slug:
+        # A main file named by its S-id alone (`_s-….pdf`) has no slug to
+        # share; the record's own name does.
         slug = _strip_sid_suffix(record_path.stem, sid)
     own = _slugify(more_file.stem)
     prefixes = [slug]
@@ -4455,6 +4467,13 @@ def _strip_suffix_tail(own: str, prefix: str, role: str, copy: str | None) -> st
 def _strip_sid_suffix(stem: str, sid: str) -> str:
     """A filename stem without its trailing `_{S-id}`, slugified."""
     return _slugify(re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE))
+
+
+def _names_something(stem: str, sid: str) -> bool:
+    """Is there a name in `stem` before its `_{S-id}`? Asked before
+    slugifying, since `_slugify` turns an empty name into 'source'."""
+    rest = re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE)
+    return re.search(r'[a-z0-9]', rest, re.IGNORECASE) is not None
 
 
 def _outside_roots_message(
