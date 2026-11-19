@@ -7098,6 +7098,30 @@ class ContentFingerprintTests(unittest.TestCase):
         self.assertIn('photos/land/deed.jpg (same name, carries', text)
         self.assertIn('photos/other/deed.jpg (same name, no source keyword)', text)
 
+    def test_another_sources_catalogued_photo_of_the_same_name_does_not_block(self) -> None:
+        # Camera names repeat across folders: a catalogued photo of the same
+        # name carrying only another source's keyword is that source's
+        # photo, so the moved one is still re-tied.
+        self._put('IMG_0001.JPG', self._picture(23), caption='The deed, 1911')
+        (self.photos / '2019').mkdir()
+        self._put('2019/IMG_0001.JPG', self._picture(24))
+
+        def by_folder(paths: list[Path]) -> list[dict]:
+            return [{'SourceFile': str(p), 'Keywords': [
+                'SOURCE: S-0000000001' if '2019' in p.parts else 'SOURCE: S-123456789a']}
+                for p in paths]
+        photoindex._run_exiftool = by_folder
+        photoindex.run_scan(self.archive, self.CFG)
+        (self.photos / 'new').mkdir()
+        # Moved and re-saved, so its picture data differs: only the
+        # name-and-keyword rule can place it, not the content fingerprint.
+        (self.photos / 'IMG_0001.JPG').unlink()
+        self._put('new/IMG_0001.JPG', self._picture(25))
+        result = photoindex.run_reconcile(self.archive, self.CFG, with_exif=True)
+        self.assertEqual(result['rematched'],
+                         [('photos/IMG_0001.JPG', 'photos/new/IMG_0001.JPG')])
+        self.assertEqual(result['proposals'], [])
+
     def test_a_same_named_file_carrying_a_second_source_is_a_proposal(self) -> None:
         self._put('deed.jpg', self._picture(18))
         self._keywords_on({'deed.jpg': 'S-123456789a'})

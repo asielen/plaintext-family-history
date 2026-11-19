@@ -179,6 +179,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    photoindex_config_drift   - plain words for how those settings changed since
 #    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #    photo_reconcile_route     - can `fha reconcile` find a moved photo here, and how
+#    photo_retie_same_named    - which same-named files count as candidates (#297)
 #    photo_retie_target        - the one file a missing photo may be re-tied to (#297)
 #    photo_retie_candidates    - "possible matches" wording for one that was not
 #
@@ -3496,7 +3497,7 @@ def photo_retie_target(
     re-tied only when exactly one candidate has its exact filename and that
     file carries this source's `SOURCE:` keyword and no other source's.
     `same_named` is every file under the photos root with the missing
-    photo's filename, `sids_of` maps a candidate to the S-ids it carries (a
+    photo's filename, less those `photo_retie_same_named` sets aside, `sids_of` maps a candidate to the S-ids it carries (a
     candidate missing from it was not read). Shared by both `fha reconcile`
     passes, the record pass and the photo-catalog pass, and both pass the
     same candidates (every same-named file, listed on a record or in the
@@ -3510,6 +3511,30 @@ def photo_retie_target(
             and sids_of.get(same_named[0]) == frozenset({own_sid})):
         return same_named[0]
     return None
+
+
+def photo_retie_same_named(
+    same_named: list[str], own_sid: str, sids_of: dict, settled,
+) -> list[str]:
+    """The same-named files that count as candidates for one missing photo.
+
+    Every file under the photos root with the photo's filename counts,
+    except one that is already settled elsewhere (listed on a record, for
+    the record pass; already a catalog row, for the catalog pass) AND
+    carries another source's `SOURCE:` keyword and not this one. Camera
+    names like IMG_0001.JPG repeat across folders, and another source's
+    filed photo is not this one moved. A settled file carrying this
+    source's keyword, no keyword, or keywords not read still counts, so it
+    keeps the match uncertain. Both `fha reconcile` passes filter through
+    here before `photo_retie_target`, so they decide from the same set.
+    """
+    out = []
+    for alias in same_named:
+        sids = sids_of.get(alias)
+        if alias in settled and sids and own_sid not in sids:
+            continue
+        out.append(alias)
+    return out
 
 
 def photo_retie_candidates(

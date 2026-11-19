@@ -787,6 +787,9 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         # catalog; the filed photo moves, keyword intact. Neither pass can
         # be sure which file is meant, so both report and neither moves.
         self._place('wedding_1902.jpg', 'photos/other/portrait_1880.jpg')
+        self._scan_move_and_expect_refusal()
+
+    def _scan_move_and_expect_refusal(self) -> None:
         self._scan()
         self._move('photos/portrait_1880.jpg', 'photos/new/portrait_1880.jpg')
         before = self.record.read_text(encoding='utf-8')
@@ -799,6 +802,33 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         about = [m.text for m in result.messages
                  if m.level == 'warning' and 'was not re-tied' in m.text]
         self.assertEqual(len(about), 1, about)
+
+    def test_another_sources_filed_photo_of_the_same_name_does_not_block(self) -> None:
+        # Camera names (IMG_0001.JPG) repeat across folders. Another
+        # record's filed photo with the same name, carrying only that
+        # source's keyword, is not this photo moved: both passes still
+        # re-tie this one.
+        other_sid = 'S-0000000001'
+        other = self._write_photo_record(other_sid, ['photos/2019/portrait_1880.jpg'])
+        self._place('wedding_1902.jpg', 'photos/2019/portrait_1880.jpg', other_sid)
+        self._scan()
+        self._move('photos/portrait_1880.jpg', 'photos/new/portrait_1880.jpg')
+        result = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/new/portrait_1880.jpg'])
+        self.assertEqual(self._files(other), ['photos/2019/portrait_1880.jpg'])
+        catalog = self._catalog_paths()
+        self.assertIn('photos/new/portrait_1880.jpg', catalog)
+        self.assertIn('photos/2019/portrait_1880.jpg', catalog)
+        self.assertNotIn('MISSING:photos/portrait_1880.jpg', catalog)
+        self.assertFalse(any('was not re-tied' in m.text for m in result.messages),
+                         [m.text for m in result.messages])
+
+    def test_catalogued_same_named_photo_without_a_keyword_still_blocks(self) -> None:
+        # The same file set aside above, but carrying no keyword: it may be
+        # this photo with its keyword lost, so it still counts.
+        self._place('wedding_1902.jpg', 'photos/other/portrait_1880.jpg')
+        self._write_photo_record('S-0000000001', ['photos/other/portrait_1880.jpg'])
+        self._scan_move_and_expect_refusal()
 
     def test_a_moved_photo_moves_the_record_and_the_catalog_row_together(self) -> None:
         # The exact name and one carrier: both passes re-tie, and say so.
