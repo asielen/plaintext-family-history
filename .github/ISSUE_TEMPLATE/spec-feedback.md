@@ -8,5 +8,4 @@ labels: spec
 
 **The issue** What's unclear, contradictory, or missing?
 
-**Genealogical context (if any)** Is there a real research scenario this affects?
-(Use fictional/placeholder names.)
+**Genealogical context (if any)** Is there a real research scenario this affects? (Use fictional or placeholder names.)

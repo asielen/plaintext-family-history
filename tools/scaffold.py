@@ -386,14 +386,11 @@ _VENDOR_RENAMES: dict[str, str] = {
 
 # Individual docs that are PROJECT documentation rather than owner documentation,
 # and so belong with the machinery rather than in the archive's readable `docs/`.
-# `DESIGN.md` is the visual language for whoever builds the templates; `SITE_PLAN`
-# is an explicit roadmap - work not yet done, which has no business presenting
-# itself as guidance in someone's family archive. The rest of `docs/` is the
-# manual an owner reaches for when something is wrong, which is exactly when a
-# hidden folder helps least, so it stays at the root.
+# `DESIGN.md` is the visual language for whoever builds the templates. The rest
+# of `docs/` is the manual an owner reaches for when something is wrong, which
+# is exactly when a hidden folder helps least, so it stays at the root.
 _VENDORED_DOCS = frozenset({
     'docs/DESIGN.md',
-    'docs/SITE_PLAN.md',
 })
 
 # The template folder whose *contents* seed the skeleton. The folder itself is

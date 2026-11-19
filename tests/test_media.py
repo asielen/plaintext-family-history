@@ -4,11 +4,11 @@ test_media.py - fha media dedupe / fha media probe (issues #43, #44).
 Two things are pinned here, matching the module's own two halves:
 
   1. THE COVERAGE INVARIANT (dedupe). `find_duplicate_media.py`'s own history
-     (`.claude/skills/import-recordings/GAP.md`, `tests/test_import_recordings.py`)
+     (the COVERAGE INVARIANT section of `tools/media.py`'s docstring)
      is five review rounds each finding a different way the interim script
      answered a smaller question than the one it claimed to. `media.py` ports
      that script's coverage-walking logic, and this file proves each of the
-     five failure modes GAP.md documents is still caught by the port, built as
+     five failure modes that docstring documents is still caught by the port, built as
      real fixtures rather than asserted from memory: an unhashable same-size
      candidate, a root the config names but the disk lacks, a directory
      symlink, a symlink loop, and a batch containing its own duplicate.
@@ -25,7 +25,7 @@ Two things are pinned here, matching the module's own two halves:
      four documented cases: a quicktime creationdate that settles the offset
      outright, a filename clock that solves it, neither (must say so plainly,
      never fall back to mtime), and the midnight-straddle flag. The
-     `filename_time + duration == creation_time` cross-check GAP.md calls out
+     `filename_time + duration == creation_time` cross-check TOOLING §6a relies on
      is asserted directly (`test_the_cross_check_invariant_holds`).
 
 Run: python -m unittest tests.test_media -v   (from the repo root; py -3.14)
@@ -68,7 +68,7 @@ def _make_archive(root: Path, roots_yaml: str | None = None) -> Path:
 
 
 class DedupeCoverageInvariantTests(unittest.TestCase):
-    """The five GAP.md failure modes, each built as a real fixture."""
+    """The five coverage failure modes, each built as a real fixture."""
 
     def setUp(self):
         import tempfile
@@ -195,7 +195,7 @@ class DedupeCoverageInvariantTests(unittest.TestCase):
         dup = next(r for r in result.data['results'] if r['verdict'] == 'duplicate')
         self.assertIn('repeat_of', dup)
 
-    # -- The two consequences GAP.md calls out by name ------------------------
+    # -- The two consequences the module docstring names ------------------------
     def test_a_file_already_inside_a_media_root_is_reported_already_filed(self):
         """A file handed to the verb that IS the archive's own copy: never `new`."""
         result = media.run_media_dedupe(self.archive, self._fha_config(),
@@ -343,12 +343,12 @@ class ArithmeticTests(unittest.TestCase):
                 self.assertEqual(media._parse_filename_clock(name), expected)
 
     def test_a_relative_weekday_label_carries_no_clock(self):
-        """GAP.md's own example of a filename clock that solves nothing."""
+        """The standard example of a filename clock that solves nothing."""
         self.assertIsNone(media._parse_filename_clock('Thursday at 3-11 PM.m4a'))
 
     def test_the_cross_check_invariant_holds(self):
         """filename_time + duration == creation_time (once offset is applied) -
-        GAP.md's own noted invariant, held for every recording carrying a clock."""
+        the noted invariant, held for every recording carrying a clock."""
         filename_dt = datetime.datetime(1998, 6, 14, 20, 15, 0)
         duration = 300.0   # five minutes
         real_offset = datetime.timedelta(hours=-5)
