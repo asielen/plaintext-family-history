@@ -414,6 +414,8 @@ How are two people related? Blood degree + shortest social path.
 Show how two people are related.
 
   fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
+                              two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
 
 A read-only view over accepted relationship claims: nothing is written.
@@ -421,8 +423,8 @@ A read-only view over accepted relationship claims: nothing is written.
 
 | Argument | What it does |
 |---|---|
-| `P-A` | First person ID |
-| `P-B` | Second person ID |
+| `P-A` | First person: ID or full name |
+| `P-B` | Second person: ID or full name |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 
@@ -435,6 +437,8 @@ How well documented is each person?
 
   fha metrics               The archive in numbers, then the direct line by generation
   fha metrics p-xxxxxxxxxx  One person's five checks, each with what is missing
+  fha metrics "Mary Smith"  The same, by full name (two people with that name:
+                            it lists them so you can pick one by ID)
   fha metrics --all         Every person, stubs included
   fha metrics --include-suggested
                             Count suggested claims too (records found, not yet reviewed)
@@ -448,7 +452,7 @@ nothing is written.
 
 | Argument | What it does |
 |---|---|
-| `[P-ID]` | One person to show in detail (default: the direct line) |
+| `[P-ID]` | One person to show in detail, by ID or by full name (default: the direct line) |
 | `--all` | List every person, stubs included (not with a P-ID) |
 | `--include-suggested` | Count suggested claims as well as accepted ones |
 | `--json` | Machine-readable JSON output |
@@ -775,6 +779,8 @@ Export your tree to a GEDCOM file for another genealogy app.
   fha gedcom <P-id> --mode descendants    Export from one person, down the line
   fha gedcom <P-id> --mode ancestors      Export from one person, up the line
   fha gedcom --all --out family.ged       Choose the output file
+  fha gedcom --all --basic --out dna.ged  For a DNA site: names, dates, places
+                                          and family links only
 
 Living people are redacted by default (use --include-living to override). GEDCOM
 is the portable format Ancestry, RootsMagic, and others read; it is a one-way
@@ -791,6 +797,7 @@ Importing a GEDCOM from Ancestry or another program? That is the separate
 | `--generations` `N` | Depth cap for descendants/ancestors (default: unlimited). |
 | `--all` | Export every person in the index. Do not combine with a P-id (they conflict); --all needs no --mode. |
 | `--include-living` | Export living/unknown persons in full (default: redacted). |
+| `--basic` | For a DNA site: only names, sex, birth/death/marriage dates and places, and family links. No sources, citations or archive IDs leave the archive. |
 | `--out` `FILE` | Write to FILE (default: stdout). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 

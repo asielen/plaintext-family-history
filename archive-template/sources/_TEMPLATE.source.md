@@ -71,7 +71,8 @@ created: 2026-01-01        # the date you added this (any date is fine)
   #   Listed with his wife and two daughters in the Fairview enumeration.
 
   # --- You can ignore everything below at first. ---
-  # place_text: Fairview, Kansas   # OPTIONAL - the place exactly as the source wrote it
+  # OPTIONAL - the place exactly as the source wrote it:
+  # place_text: Fairview, Kansas
   # information: primary           # OPTIONAL (advanced) - primary / secondary: was the informant there?
   # evidence: direct               # OPTIONAL (advanced) - direct / indirect: does it state the fact outright?
 

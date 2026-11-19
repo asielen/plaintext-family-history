@@ -56,6 +56,8 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    person_name_refusal,
+    persons_named,
     resolve_root_arg,
 )
 
@@ -88,7 +90,7 @@ configure_utf8_stdout()
 # edges; siblings are NOT stored (they are derived from shared parents below).
 _SOCIAL_RELS = frozenset({'friend', 'associate', 'neighbor', 'spouse'})
 
-_REQUIRED_TABLES = ('persons', 'relationships', 'claims')
+_REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'aliases')
 
 
 def _load_graph(conn) -> tuple[dict, dict, dict]:
@@ -339,8 +341,8 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
     a_raw, b_raw = person_a, person_b
     pid_a, pid_b = normalize_id(person_a), normalize_id(person_b)
     for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
-        if not is_valid_id(pid) or id_type_of(pid) != 'P':
-            msg = (f'{raw!r} is not a person ID. Give two P-ids, '
+        if is_valid_id(pid) and id_type_of(pid) != 'P':
+            msg = (f'{raw!r} is not a person ID. Give two P-ids or full names, '
                    f'e.g. `fha relate P-de957bcda1 P-83e768cacb`.')
             r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-id'})
             r.add('error', msg, path=archive_root)
@@ -352,6 +354,22 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         return Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-index'})
 
     try:
+        # A name: one person carrying it is the person meant; two or more, or
+        # nobody, is refused with the choices and the next step.
+        resolved = []
+        for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
+            if not is_valid_id(pid):
+                matches = persons_named(conn, raw)
+                if len(matches) != 1:
+                    r = Result(ok=False, exit_code=EXIT_FAILURE,
+                               data={'error': 'ambiguous-name' if matches else 'bad-id',
+                                     'candidates': [m['id'] for m in matches]})
+                    r.add('error', person_name_refusal(raw, matches, '`fha relate`'),
+                          path=archive_root)
+                    return r
+                pid = normalize_id(matches[0]['id'])
+            resolved.append(pid)
+        pid_a, pid_b = resolved
         people, genetic_parents, adjacency = _load_graph(conn)
     except Exception:
         conn.close()
@@ -450,6 +468,8 @@ _CLI_DESCRIPTION = """\
 Show how two people are related.
 
   fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
+                              two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
 
 A read-only view over accepted relationship claims: nothing is written."""
@@ -462,8 +482,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('person_a', metavar='P-A', help='First person ID')
-    p.add_argument('person_b', metavar='P-B', help='Second person ID')
+    p.add_argument('person_a', metavar='P-A', help='First person: ID or full name')
+    p.add_argument('person_b', metavar='P-B', help='Second person: ID or full name')
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')

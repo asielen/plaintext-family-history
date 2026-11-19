@@ -4,10 +4,10 @@ description: >
   Run when the human wants family material to leave the archive or be kept safe: "export this
   for my aunt", "share the tree with my family", "send grandma's file to my cousin", "make a
   packet for Thomas", "publish this to WikiTree", "give me something for a USB stick", "back
-  everything up", "move my tree to RootsMagic / another program". Picks the right export tool
-  for the person and medium (packet / gedcom / site / wikitree / backup), explains the privacy
-  defaults in plain words BEFORE running, previews first, and reports exactly what went out and
-  what stayed home. It writes only export artifacts and backups - never archive records.
+  everything up", "move my tree to RootsMagic / another program", "upload my tree to MyHeritage
+  for my DNA matches". Picks the right export tool for the person and medium (packet / gedcom /
+  site / wikitree / backup), explains the privacy defaults in plain words BEFORE running,
+  previews first, and reports exactly what went out and what stayed home. It writes only export artifacts and backups - never archive records.
   Importing a tree INTO the archive is not this skill (that is a gedcom-import / migration
   conversation).
 ---
@@ -26,8 +26,9 @@ was held back. See [`../_STANDARD.md`](../_STANDARD.md).
 
 Any of: "export this for my aunt", "share the tree with my family", "send grandma's file to my
 cousin", "make a packet for Thomas", "publish this to WikiTree", "give me something for a USB
-stick", "back everything up", "move my tree to RootsMagic / another program". It does **not** run
-for "import my Ancestry tree into here" — see Guardrails.
+stick", "back everything up", "move my tree to RootsMagic / another program", "upload my tree
+to MyHeritage for my DNA matches". It does **not** run for "import my Ancestry tree into here"
+— see Guardrails.
 
 ## The contract for this skill
 
@@ -54,6 +55,7 @@ for "import my Ancestry tree into here" — see Guardrails.
    |---|---|
    | Everything about one person, for a relative to read | `fha packet <P-id>` |
    | Loading into another genealogy program (Ancestry, RootsMagic, Gramps…) | `fha gedcom [--all \| <P-id> --mode descendants\|ancestors\|connected] --out FILE` |
+   | Uploading a tree to a DNA site (MyHeritage, Ancestry DNA, FamilyTreeDNA…) so it can compare matches | `fha gedcom --basic [--all \| <P-id> --mode ancestors] --out FILE` |
    | Browsing on a computer, a USB stick, or "the family website" | `fha site --standalone` |
    | Publishing one ancestor's profile publicly | `fha wikitree <P-id> [--out FILE]` |
    | A safety copy, nothing leaves home | `fha backup` |
@@ -68,6 +70,12 @@ for "import my Ancestry tree into here" — see Guardrails.
    - **gedcom** — "Living people go in as 'Living', with their dates and details withheld, so the
      tree's shape survives but their information stays home. Anything private or DNA-backed is
      left out entirely — there's no switch to include that."
+   - **gedcom --basic** (a DNA site) — "A DNA site only needs names, birth, death and marriage
+     dates and places, and who is whose parent, to compare your matches. This version sends just
+     that: none of your source titles, notes or the archive's own reference numbers go with it,
+     and living people are still 'Living'." Use `--basic` for every DNA-site upload, without
+     waiting to be asked: a full export carries every source's title, and a title such as an
+     interview or a cousin's letter can name a living relative the export otherwise hides.
    - **site --standalone** — "This build is the redacted version, safe to hand to family or carry
      on a drive. (There's also an unredacted `--linked` preview, but that one's for checking your
      own work on this machine only — never to share.)"
