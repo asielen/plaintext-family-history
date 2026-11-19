@@ -714,7 +714,7 @@ source_class: original        # original | derivative | authored; tools write it
                               #   (original unless known otherwise; proofs: authored). Appendix A.3
 subtype: campaign card        # optional free text refining source_type, chiefly when it is `other`
 original_language: de         # optional; language of the evidence itself, only when not English (BCP-47/ISO-639)
-repository: family collection # where the evidence came from / lives
+repository: family collection  # where the evidence came from / lives
 citation: >
   Campaign card for T. E. Hartley, candidate for Clerk of the District
   Court, Fairview, Kansas, circa November 1880.

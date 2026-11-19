@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "0506750972612aa83000d1d8b29c19a7d4651f2ba10b97fed2a0ff900c573b7c",
+      "sha256": "20a35e61880aca12a7699b3a361ee94152be6e6d1efbf903bfd39c714bca406a",
       "spec_version": "2.7",
       "src": "tools/_lib.py"
     },
@@ -713,7 +713,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "a5c1340f488bab3c49f59bb7d1c4036b00d043c6f005152e52fd866fb2b82410",
+      "sha256": "25acda72089a295906adeefaaccfaecba474a16d126c4810607795c0c03bc8fd",
       "spec_version": "2.7",
       "src": "tools/capture.py"
     },
@@ -776,7 +776,7 @@
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "a8d5277ca184b970564ff774297ebdea486f71267ffaed5f72a280e05531489d",
+      "sha256": "5661bb8a619be0f7d4af510fb56b5673330d3197a99ad990432440054776e62a",
       "spec_version": "2.7",
       "src": "tools/convert_mining.py"
     },
@@ -818,7 +818,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "eaf5c0b80fcfce5e821ef8ebe1846b22a9b9f0908ab565c7d306b8c7c7b13ddf",
+      "sha256": "70f1b580d274cf9cd8881cc596e415c9f08a6d1efaac9c66fba32735f6cdb8ad",
       "spec_version": "2.7",
       "src": "tools/gedcom_import.py"
     },
@@ -839,7 +839,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "563627c126590ed598072ae1179fa381c605ad2cd5038ea4e33532f5a23b1641",
+      "sha256": "77b4b3e5877a3bfdef438241faf95489904fc341329a97dc0b587da00f53a5ae",
       "spec_version": "2.7",
       "src": "tools/lint.py"
     },
@@ -874,7 +874,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "efd7e6a4137cf8154f10522d662470d80a9baa300c3e81240f29d651e6dc163e",
+      "sha256": "462d79844203f17ac2bc5a86681148c99c0a5db7af35e26fbf4ee390bf8034d9",
       "spec_version": "2.7",
       "src": "tools/person.py"
     },
@@ -1147,7 +1147,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "5916978d21b04260b95b53b8b8ca6186cfccbaee932011c3ede31ef374221a99",
+      "sha256": "d386238729e30fb4c1de8a98a86340b749207a64f753529bc94f2e7bbbab5408",
       "spec_version": "2.7"
     },
     {
@@ -1232,14 +1232,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "baf58552ab18738a197bb3c7a6c4b3e9902c6fe6bc6610835845e197a8ae76bb",
+      "sha256": "5c430e0e295a2d7cb32d83d7563cfb269109ead79f0f32e50b60c85f1d116154",
       "spec_version": "2.7",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "07d3919f50a243defaad9e9f53fbd3828340801b2a509578cb6e44d25b4a6147",
+      "sha256": "3626e367b5b13a55c251f98afe99340706f132604d46ac62c980a47e83d0d41d",
       "spec_version": "2.7",
       "src": "TOOLING.md"
     },
