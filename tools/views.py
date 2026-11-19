@@ -4022,7 +4022,7 @@ def run_sources_index(
         print(
             'ERROR: --format html has no sources list to build - each '
             "person's sources are listed in the ## Sources section of their "
-            'own record (refresh it with `fha views sources-index <P-id>`, no '
+            'own record (refresh it with `fha views sources-index <p-id>`, no '
             "--format flag). Use `fha site` to publish the person's page.",
             file=sys.stderr)
         return _views_result(EXIT_FAILURE)
@@ -4652,16 +4652,16 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
 _CLI_DESCRIPTION = """\
 Build always-current summary pages from your records.
 
-  fha views timeline <P-id>        A person's life chronology
-  fha views sources-index <P-id>   Every source about a person
-  fha views summary <P-id>         Born / Died / Married / Parents / Children
+  fha views timeline <p-id>        A person's life chronology
+  fha views sources-index <p-id>   Every source about a person
+  fha views summary <p-id>         Born / Died / Married / Parents / Children
                                    lines under the person's name
-  fha views draft-queue <P-id>     Accepted facts not yet written into the bio
+  fha views draft-queue <p-id>     Accepted facts not yet written into the bio
   fha views refresh                Rebuild every view for all curated people
 
 Add --format html (refresh also takes --format both) for a printable
-single-file page under generated/views/ - private and unredacted, with a
-visible not-for-publication banner; share through `fha site` instead.
+single-file page under generated/views/ (private and unredacted, with a
+visible not-for-publication banner); share through `fha site` instead.
 
 These pages are generated and rebuildable; edit the records, not the pages."""
 
@@ -4670,7 +4670,7 @@ These pages are generated and rebuildable; edit the records, not the pages."""
 # also takes 'both').
 _FORMAT_HELP = (
     'md (default): the companion .md beside the profile. html: a standalone '
-    'printable page under generated/views/ (private and unredacted - it '
+    'printable page under generated/views/ (private and unredacted; it '
     'carries a visible not-for-publication banner; share through `fha site`).'
 )
 
@@ -4693,11 +4693,11 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'timeline',
         help='Generate per-person timeline view.',
         description=(
-            'Generate {name}_timeline_{P-id}.md in the person\'s folder.\n'
+            'Generate {name}_timeline_{p-id}.md in the person\'s folder.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
-    tl.add_argument('person_id', nargs='?', metavar='P-id',
+    tl.add_argument('person_id', nargs='?', metavar='p-id',
                     help='Person to generate for.')
     tl.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
@@ -4714,11 +4714,11 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             'Rewrite the ## Sources GENERATED region inside a person\'s own\n'
             'profile (works on a stub too, so it can be populated before\n'
             'promotion). There is no separate sources-index file and no\n'
-            '--format html page - the list lives inside the profile.\n'
+            '--format html page; the list lives inside the profile.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
-    si.add_argument('person_id', nargs='?', metavar='P-id',
+    si.add_argument('person_id', nargs='?', metavar='p-id',
                     help="Person whose ## Sources section to refresh (stub or curated).")
     si.add_argument('--all-curated', action='store_true',
                     help='Refresh every curated profile\'s ## Sources section.')
@@ -4742,7 +4742,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             'fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
-    sm.add_argument('person_id', nargs='?', metavar='P-id',
+    sm.add_argument('person_id', nargs='?', metavar='p-id',
                     help='Person whose summary lines to write (stub or curated).')
     sm.add_argument('--all-curated', action='store_true',
                     help="Write every curated profile's summary lines.")
@@ -4754,11 +4754,11 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'draft-queue',
         help='Generate per-person draft-queue (uncited-claim backlog) view.',
         description=(
-            'Generate {name}_draft-queue_{P-id}.md in the person\'s folder.\n'
+            'Generate {name}_draft-queue_{p-id}.md in the person\'s folder.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
-    dq.add_argument('person_id', nargs='?', metavar='P-id',
+    dq.add_argument('person_id', nargs='?', metavar='p-id',
                     help='Person to generate for.')
     dq.add_argument('--all-curated', action='store_true',
                     help='Generate for every curated person.')
@@ -4777,7 +4777,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--fix-promote', action='store_true', dest='fix_promote',
                     help='Promote the direct-line stubs (W119) after a preview '
-                         'and an Apply? confirmation - tier flip, move into the '
+                         'and an Apply? confirmation: tier flip, move into the '
                          'couple folder, research file scaffold.')
     br.add_argument('--realign', action='store_true',
                     help='Bring the whole promoted tree back in line with the '
@@ -4807,7 +4807,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
         ),
     )
-    tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
+    tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument(
         '--mode', choices=['ancestors', 'descendants', 'fan'], required=True,
         help='ancestors: pedigree BFS; descendants: all descendants + in-law spouses; '
@@ -4822,9 +4822,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         # (the HTML tree arrives with the site's full-tree feature) instead of
         # a bare argparse choices error.
         '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
-        help='Output format (default: json). html is not available yet - it '
-             'arrives with the site-wide family tree; run `fha site` for a '
-             'browsable tree today.',
+        help='Output format (default: json). html is not available here; run '
+             '`fha site` for a browsable tree.',
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
     tr.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
@@ -4840,8 +4839,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             'draft-queue, and any old couple-folder sources-index.md) from the\n'
             'people/ tree, and single-file HTML views under generated/views/. Uses the <!-- GENERATED\n'
             '… --> whole-file header as the sole signal, file by file; never touches\n'
-            'profiles or manually authored files - including a profile whose own\n'
-            '## Sources section is a GENERATED-BEGIN/END region (#76): that region is\n'
+            'profiles or manually authored files, including a profile whose own\n'
+            '## Sources section is a GENERATED-BEGIN/END region: that region is\n'
             'rewritten in place by `fha views sources-index`, never deleted by this\n'
             'command, because ownership here is judged by a FILE\'s first line, and a\n'
             "profile's first line is always its frontmatter fence, never a region\n"
@@ -4939,7 +4938,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     rf.set_defaults(func=_cmd_refresh)
 
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
-    tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')
+    tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
     tr.add_argument('--generations', type=int, metavar='N')
     tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
@@ -4949,18 +4948,18 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
 
 
 def _add_person_curated_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument('person_id', nargs='?', metavar='P-id')
+    p.add_argument('person_id', nargs='?', metavar='p-id')
     p.add_argument('--all-curated', action='store_true')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format')
 
 
 def _add_summary_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument('person_id', nargs='?', metavar='P-id')
+    p.add_argument('person_id', nargs='?', metavar='p-id')
     p.add_argument('--all-curated', action='store_true')
 
 
 def _add_si_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument('person_id', nargs='?', metavar='P-id')
+    p.add_argument('person_id', nargs='?', metavar='p-id')
     p.add_argument('--all-curated', action='store_true')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format')
 

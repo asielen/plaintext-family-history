@@ -533,7 +533,7 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Find people who keep showing up together - possible relatives or associates.
+Find people who keep showing up together: possible relatives or associates.
 
   fha cooccur                  Pairs sharing sources, places, or organizations
   fha cooccur --threshold 3    Require more shared sources before suggesting a pair

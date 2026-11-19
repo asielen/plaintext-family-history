@@ -26,7 +26,7 @@ OUT = ROOT / 'docs' / 'COMMANDS.md'
 
 HEADER = """# fha command reference
 
-> **Generated - do not edit.** Written by `build_commands_doc.py` from the
+> **Generated; do not edit.** Written by `build_commands_doc.py` from the
 > commands' own definitions, so it always matches the tools. Every command
 > also prints this help with `--help` (`fha lint --help`).
 

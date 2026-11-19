@@ -5,7 +5,7 @@ process.py - fha process: Stage A of the intake pipeline.
   fha process <file> [--type TYPE] [--title "…"] [--date DATE] [--slug SLUG]
                                                                  Process one asset
   fha process <photo> --more <file> ROLE[:copy]                  Attach a file to its source
-  fha process refile <S-id> --to photos|documents [--type TYPE] [--dest SUB]
+  fha process refile <s-id> --to photos|documents [--type TYPE] [--dest SUB]
                                                                  Move a filed file across roots
   fha process <photo> --variants one|separate                    Answer the front/back question up front
   fha process <file> --dry-run                                   Preview, write nothing
@@ -2261,8 +2261,8 @@ def _parse_people_ids(raw: str | None, archive_root: Path) -> list[str]:
             continue
         if not is_valid_id(tok) or id_type_of(tok) != 'P':
             raise ProcessError(
-                f'{tok!r} is not a valid P-id. P-ids look like P-de957bcda1 - '
-                'a P followed by a dash and 10 characters from the archive alphabet '
+                f'{tok!r} is not a valid p-id. p-ids look like p-de957bcda1: '
+                'a p, a dash and 10 characters from the archive alphabet '
                 '(0-9 and lowercase a-z, except i, l, o, u). '
                 'Run `fha find <name>` to look up the right P-id.'
             )
@@ -5542,8 +5542,8 @@ def process_refile(
     """
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         raise ProcessError(
-            f'{source_id!r} is not a valid source ID. S-ids look like '
-            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from the '
+            f'{source_id!r} is not a valid source ID. s-ids look like '
+            's-2b3c4d5e6f: a s, a dash and 10 characters from the '
             'archive alphabet (0-9 and lowercase a-z, except i, l, o, u). '
             'Run `fha find <a word from the title>` to look one up.')
     sid = fmt_id_display(normalize_id(source_id))
@@ -6491,10 +6491,10 @@ File a new document or photo into the archive with a permanent ID.
 
   fha process <file>                        File one document or photo
   fha process <photo> --more <file> ROLE    Attach another file to its source
-  fha process refile <S-id> --to photos|documents [--dest SUB]
+  fha process refile <s-id> --to photos|documents [--dest SUB]
                                             Move a filed file to the other root
   fha process <photo> --variants one        A photo with its back beside it: file
-                                            both as ONE source without being asked
+                                            both as one source without being asked
                                             (or --variants separate)
   fha process <photo> --dest "Cemetery Visit 2021"
                                             File an inbox photo into that folder of
@@ -6502,21 +6502,21 @@ File a new document or photo into the archive with a permanent ID.
   fha process <file> --dry-run              Preview, write nothing
 
 Documents are renamed with their new ID (the old name is kept as provenance);
-photos are never renamed. This is the deterministic step; drafting claims and
+photos are never renamed. This step is mechanical; drafting claims and
 reviewing them come after, through the process-source and review-claims skills."""
 
 
 _REFILE_CLI_DESCRIPTION = """\
-Move a filed source file to the other asset root - the filing correction.
+Move a filed source file to the other asset root to correct how it was filed.
 
-  fha process refile S-2b3c4d5e6f --to photos --dest 1880s    records drawer -> photo library
-  fha process refile S-2b3c4d5e6f --to documents --type census   photo library -> records
-  fha process refile S-2b3c4d5e6f --file scan-back.jpg --to photos --dest 1880s
+  fha process refile s-2b3c4d5e6f --to photos --dest 1880s    records drawer -> photo library
+  fha process refile s-2b3c4d5e6f --to documents --type census   photo library -> records
+  fha process refile s-2b3c4d5e6f --file scan-back.jpg --to photos --dest 1880s
 
 Fixes a filing decision after the fact: a scan processed as a document that
 belongs in the photo library, or a photo that is really a record. The file is
 moved, renamed for its new root's rules, and the source record updated, all in
-one transaction. Reorganizing WITHIN a root is not this command - move files
+one transaction. Reorganizing within a root is not this command: move files
 freely and run `fha reconcile`. Preview with --dry-run first."""
 
 
@@ -6637,11 +6637,11 @@ def build_process_refile_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('source_id', metavar='S-ID',
-                   help='The source whose file is filed in the wrong root, e.g. S-2b3c4d5e6f')
+                   help='The source whose file is filed in the wrong root, e.g. s-2b3c4d5e6f')
     p.add_argument('--to', required=True, choices=('photos', 'documents'),
                    help='Which root the file belongs in')
     p.add_argument('--file', metavar='NAME', dest='file_name',
-                   help='Which of the record\'s files to move, by name - needed '
+                   help='Which of the record\'s files to move, by name; needed '
                         'only when the record lists more than one')
     p.add_argument('--dest', metavar='SUBPATH',
                    help='Destination folder under the target root. Required with '
@@ -6651,7 +6651,7 @@ def build_process_refile_parser() -> argparse.ArgumentParser:
                    help='What kind of source this really is, e.g. census. Rewrites '
                         'source_type: and moves the record to sources/{type}/ in the '
                         'same transaction. Required with --to documents when the '
-                        'record is still typed photo - a scan leaving the photo '
+                        'record is still typed photo, because a scan leaving the photo '
                         'library is not a family photo any more')
     p.add_argument('--yes', action='store_true',
                    help='Skip the photo-catalog confirmation (--to documents)')
@@ -6735,25 +6735,25 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Attach FILE to the existing source as ROLE[:copy]')
     p.add_argument('--dest', metavar='SUBPATH',
                    help='The folder of your photo library to file a photo into, '
-                        'when filing it out of the inbox - e.g. '
+                        'when filing it out of the inbox, e.g. '
                         '--dest "Cemetery Visit 2021". Without it the photo is '
                         'filed at the top of the library. Also applies to the '
                         'photos of a notes.md bundle folder')
-    p.add_argument('--people', metavar='P-IDS',
-                   help='Comma-separated P-ids of people in this photo - e.g. '
-                        '"P-de957bcda1,P-ab3c8f0e12". Writes each as a bare keyword '
+    p.add_argument('--people', metavar='p-ids',
+                   help='Comma-separated p-ids of people in this photo, e.g. '
+                        '"p-de957bcda1,p-ab3c8f0e12". Writes each as a bare keyword '
                         'in the photo file and populates the source record\'s people: '
                         'list. Photos only; use `fha photoindex tag-person` to tag '
                         'photos already processed.')
     p.add_argument('--physical-location', metavar='HOLDER', dest='physical_location',
                    help='Who keeps the paper original of a scanned document, e.g. '
-                        '"Aunt Ruth" - recorded on the source with the current month as the date. '
+                        '"Aunt Ruth". It is recorded on the source with the current month as the date. '
                         'Without it you are asked when filing a scan '
                         '(press Enter to skip)')
     p.add_argument('--variants', choices=('one', 'separate'),
                    help='When the photo has variations beside it (a back, a second '
-                        'print, a crop), process them as ONE source or as separate '
-                        'sources without being asked - the answer to the '
+                        'print, a crop), process them as one source or as separate '
+                        'sources without being asked: the answer to the '
                         '[one / separate / skip] question, for scripts and agents')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 

@@ -2546,7 +2546,7 @@ Clip an open web-record page into your inbox to process later.
   fha capture --ingest               Sweep staged capture bundles into the inbox
 
 Writes a stub in inbox/, never a finished source; a later `fha process` turns it
-into a real record. It reads only the page you already have - never logs in.
+into a real record. It reads only the page you already have and never logs in.
 --path is different: it never reads anything, it just remembers where a file
 (often a photo) already lives, so it enters the queue without being moved."""
 
@@ -2574,7 +2574,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Asset to stage alongside the stub (an image, or the saved page HTML)')
     p.add_argument('--path', metavar='PATH',
                    help='Register a file that must stay exactly where it is (a photo '
-                        'library is never reorganized) - writes a pointer stub only, '
+                        'library is never reorganized). Writes a pointer stub only; '
                         'never moves, renames, or reads the file itself')
     p.add_argument('--note', metavar='TEXT',
                    help='A note to record with --path (goes in the stub body)')

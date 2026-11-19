@@ -106,23 +106,23 @@ def _run_brackets(root: Path, **kwargs):
 class SpouseExtendedBaseUnitTests(unittest.TestCase):
     """The shared add-only rule, exercised directly."""
 
-    NAMES = {'p-1': 'Robert E. Church', 'p-2': 'Jeanne Stemler'}
+    NAMES = {'p-1': 'Calvin G. Hartley', 'p-2': 'Ethel Cole'}
 
     def test_appends_the_other_partner_on_an_exact_match(self) -> None:
         base, other = spouse_extended_base(
-            '004 Robert E. Church', ['p-1', 'p-2'], self.NAMES)
-        self.assertEqual(base, '004 Robert E. Church + Jeanne Stemler')
-        self.assertEqual(other, 'Jeanne Stemler')
+            '004 Calvin G. Hartley', ['p-1', 'p-2'], self.NAMES)
+        self.assertEqual(base, '004 Calvin G. Hartley + Ethel Cole')
+        self.assertEqual(other, 'Ethel Cole')
 
     def test_match_is_case_and_whitespace_insensitive(self) -> None:
         base, other = spouse_extended_base(
-            '004 robert  e. church', ['p-1', 'p-2'], self.NAMES)
-        self.assertEqual(base, '004 robert  e. church + Jeanne Stemler')
-        self.assertEqual(other, 'Jeanne Stemler')
+            '004 calvin  g. hartley', ['p-1', 'p-2'], self.NAMES)
+        self.assertEqual(base, '004 calvin  g. hartley + Ethel Cole')
+        self.assertEqual(other, 'Ethel Cole')
 
     def test_existing_plus_half_is_never_touched(self) -> None:
-        for written in ('004 Robert E. Church + Jeannie',
-                        '004 Robert E. Church + (second wife)'):
+        for written in ('004 Calvin G. Hartley + Ettie',
+                        '004 Calvin G. Hartley + (second wife)'):
             base, other = spouse_extended_base(
                 written, ['p-1', 'p-2'], self.NAMES)
             self.assertEqual(base, written)
@@ -130,25 +130,25 @@ class SpouseExtendedBaseUnitTests(unittest.TestCase):
 
     def test_nonmatching_base_is_left_alone(self) -> None:
         base, other = spouse_extended_base(
-            '004 Church Family', ['p-1', 'p-2'], self.NAMES)
-        self.assertEqual(base, '004 Church Family')
+            '004 Hartley Family', ['p-1', 'p-2'], self.NAMES)
+        self.assertEqual(base, '004 Hartley Family')
         self.assertIsNone(other)
 
     def test_requires_exactly_two_partners(self) -> None:
         for ids in (['p-1'], ['p-1', 'p-2', 'p-3']):
             names = {**self.NAMES, 'p-3': 'Third Person'}
             base, other = spouse_extended_base(
-                '004 Robert E. Church', ids, names)
-            self.assertEqual(base, '004 Robert E. Church')
+                '004 Calvin G. Hartley', ids, names)
+            self.assertEqual(base, '004 Calvin G. Hartley')
             self.assertIsNone(other)
 
     def test_partner_without_a_name_is_never_written(self) -> None:
         # A partner whose display name fell back to their bare P-id must not
         # end up in a folder name (folder names are for humans).
-        names = {'p-1': 'Robert E. Church', 'p-2': 'p-2'}
+        names = {'p-1': 'Calvin G. Hartley', 'p-2': 'p-2'}
         base, other = spouse_extended_base(
-            '004 Robert E. Church', ['p-1', 'p-2'], names)
-        self.assertEqual(base, '004 Robert E. Church')
+            '004 Calvin G. Hartley', ['p-1', 'p-2'], names)
+        self.assertEqual(base, '004 Calvin G. Hartley')
         self.assertIsNone(other)
 
     def test_both_partners_same_name_is_ambiguous_and_skipped(self) -> None:
@@ -165,20 +165,20 @@ class SpouseExtendedBaseUnitTests(unittest.TestCase):
         # add-only rule would never revisit `+ unknown` once the real name
         # lands, so the folder would carry the placeholder forever.
         for placeholder in ('unknown', 'Unknown', 'None', '', '  ', 'null'):
-            names = {'p-1': 'Robert E. Church', 'p-2': placeholder}
+            names = {'p-1': 'Calvin G. Hartley', 'p-2': placeholder}
             base, other = spouse_extended_base(
-                '004 Robert E. Church', ['p-1', 'p-2'], names)
-            self.assertEqual(base, '004 Robert E. Church', repr(placeholder))
+                '004 Calvin G. Hartley', ['p-1', 'p-2'], names)
+            self.assertEqual(base, '004 Calvin G. Hartley', repr(placeholder))
             self.assertIsNone(other, repr(placeholder))
 
     def test_a_placeholder_base_is_never_extended(self) -> None:
         # The other half of the same rule: a folder invented for a person with
-        # no recorded name ('004 unknown') must not gain `+ Jeanne Stemler`.
+        # no recorded name ('004 unknown') must not gain `+ Ethel Cole`.
         # This rule only ADDS and never touches a base that already carries a
         # `+`, so the placeholder would sit in the folder name for good once
         # the unnamed partner was finally named.
         for placeholder in ('unknown', 'Unknown', 'None', 'null'):
-            names = {'p-1': placeholder, 'p-2': 'Jeanne Stemler'}
+            names = {'p-1': placeholder, 'p-2': 'Ethel Cole'}
             base, other = spouse_extended_base(
                 f'004 {placeholder}', ['p-1', 'p-2'], names)
             self.assertEqual(base, f'004 {placeholder}', repr(placeholder))
@@ -196,25 +196,25 @@ class NewCoupleFolderNameTests(unittest.TestCase):
 
     def test_both_named_gives_the_couple_convention(self) -> None:
         self.assertEqual(
-            self._name([{'pos': 4, 'name': 'Robert E. Church'},
-                        {'pos': 5, 'name': 'Jeanne Stemler'}]),
-            '004 Robert E. Church + Jeanne Stemler')
+            self._name([{'pos': 4, 'name': 'Calvin G. Hartley'},
+                        {'pos': 5, 'name': 'Ethel Cole'}]),
+            '004 Calvin G. Hartley + Ethel Cole')
 
     def test_a_placeholder_partner_is_left_off(self) -> None:
         self.assertEqual(
-            self._name([{'pos': 4, 'name': 'Robert E. Church'},
+            self._name([{'pos': 4, 'name': 'Calvin G. Hartley'},
                         {'pos': 5, 'name': 'unknown'}]),
-            '004 Robert E. Church')
+            '004 Calvin G. Hartley')
 
     def test_a_placeholder_even_slot_yields_to_the_known_partner(self) -> None:
-        # The permanent-name trap: '004 unknown + Jeanne Stemler' already
+        # The permanent-name trap: '004 unknown + Ethel Cole' already
         # carries a `+`, so W103's add-only rule would never repair it once the
         # even-slot person is named. Name the folder for the partner we know.
         for placeholder in ('unknown', 'None', '', 'null'):
             self.assertEqual(
                 self._name([{'pos': 4, 'name': placeholder},
-                            {'pos': 5, 'name': 'Jeanne Stemler'}]),
-                '004 Jeanne Stemler', repr(placeholder))
+                            {'pos': 5, 'name': 'Ethel Cole'}]),
+                '004 Ethel Cole', repr(placeholder))
 
     def test_two_placeholders_keep_the_even_slot_placeholder(self) -> None:
         # Nothing better is available; this is what promoting one unnamed stub
@@ -225,29 +225,29 @@ class NewCoupleFolderNameTests(unittest.TestCase):
             '004 unknown')
 
     def test_a_lone_member_names_itself(self) -> None:
-        self.assertEqual(self._name([{'pos': 4, 'name': 'Robert E. Church'}]),
-                         '004 Robert E. Church')
-        self.assertEqual(self._name([{'pos': 5, 'name': 'Jeanne Stemler'}]),
-                         '004 Jeanne Stemler')
+        self.assertEqual(self._name([{'pos': 4, 'name': 'Calvin G. Hartley'}]),
+                         '004 Calvin G. Hartley')
+        self.assertEqual(self._name([{'pos': 5, 'name': 'Ethel Cole'}]),
+                         '004 Ethel Cole')
 
 
 class SpouseFolderNameTests(unittest.TestCase):
     """The live-archive case: both partners curated in the couple folder, the
     folder named after only one of them - both backends propose the add."""
 
-    FOLDER = 'people/004 Robert E. Church [Lisa + Robert]'
+    FOLDER = 'people/004 Calvin G. Hartley [Ada + Calvin]'
 
     def _files(self, folder: str | None = None) -> dict[str, str]:
         folder = folder or self.FOLDER
         claims = (_rel_claim('C-3111111111', KID, [ROB, JEA])
                   + _rel_claim('C-3222222222', KID2, [ROB, JEA]))
         return {
-            f'{folder}/church__robert_{ROB}.md':
-                _ptext(ROB, 'Robert E. Church', 'M', 'curated'),
-            f'{folder}/stemler__jeanne_{JEA}.md':
-                _ptext(JEA, 'Jeanne Stemler', 'F', 'curated'),
-            f'people/stubs/church__lisa_{KID}.md': _ptext(KID, 'Lisa Church', 'F'),
-            f'people/stubs/church__robert_jr_{KID2}.md': _ptext(KID2, 'Robert Church'),
+            f'{folder}/hartley__calvin_{ROB}.md':
+                _ptext(ROB, 'Calvin G. Hartley', 'M', 'curated'),
+            f'{folder}/cole__ethel_{JEA}.md':
+                _ptext(JEA, 'Ethel Cole', 'F', 'curated'),
+            f'people/stubs/hartley__ada_{KID}.md': _ptext(KID, 'Ada Hartley', 'F'),
+            f'people/stubs/hartley__calvin_jr_{KID2}.md': _ptext(KID2, 'Calvin Hartley'),
             f'sources/notes/{SID.lower()}.md': (
                 f'---\nid: {SID}\ntitle: Rel\nsource_type: other\n---\n\n'
                 f'## Claims\n```yaml\n{claims}```\n'),
@@ -259,8 +259,8 @@ class SpouseFolderNameTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(
             issues[0]['new_name'],
-            '004 Robert E. Church + Jeanne Stemler [Lisa + Robert]')
-        self.assertIn('names only one partner - add Jeanne Stemler',
+            '004 Calvin G. Hartley + Ethel Cole [Ada + Calvin]')
+        self.assertIn('names only one partner - add Ethel Cole',
                       issues[0]['msg'])
         # The bracket list was already correct: it must be carried over
         # byte-for-byte, not re-derived (and not reported as stale).
@@ -268,11 +268,11 @@ class SpouseFolderNameTests(unittest.TestCase):
 
     def test_views_leaves_a_two_partner_name_alone(self) -> None:
         root = _build(self._files(
-            'people/004 Robert E. Church + Jeanne Stemler [Lisa + Robert]'))
+            'people/004 Calvin G. Hartley + Ethel Cole [Ada + Calvin]'))
         self.assertEqual(_views_w103(root), [])
 
     def test_views_never_guesses_at_a_hand_crafted_base(self) -> None:
-        root = _build(self._files('people/004 Church Family [Lisa + Robert]'))
+        root = _build(self._files('people/004 Hartley Family [Ada + Calvin]'))
         self.assertEqual(_views_w103(root), [])
 
     def test_lint_mirrors_the_same_proposal(self) -> None:
@@ -280,25 +280,25 @@ class SpouseFolderNameTests(unittest.TestCase):
         findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
         w103 = [f for f in findings if f.code == 'W103']
         self.assertEqual(len(w103), 1)
-        self.assertIn('names only one partner - add Jeanne Stemler',
+        self.assertIn('names only one partner - add Ethel Cole',
                       w103[0].message)
         self.assertIn('fha views brackets --fix', w103[0].message)
 
     def test_lint_leaves_a_two_partner_name_alone(self) -> None:
         root = _build(self._files(
-            'people/004 Robert E. Church + Jeanne Stemler [Lisa + Robert]'))
+            'people/004 Calvin G. Hartley + Ethel Cole [Ada + Calvin]'))
         findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
         self.assertEqual([f for f in findings if f.code == 'W103'], [])
 
     def test_both_backends_leave_a_placeholder_base_alone(self) -> None:
         # The folder a promotion had to invent for a partner with no recorded
-        # name. Adding `+ Jeanne Stemler` here would fix the placeholder in
+        # name. Adding `+ Ethel Cole` here would fix the placeholder in
         # place forever (the add-only rule never revisits a base with a `+`),
         # so both backends stay silent until the human names the person.
         files = self._files()
-        rob_key = next(k for k in files if 'church__robert_P-3c' in k)
+        rob_key = next(k for k in files if 'hartley__calvin_P-3c' in k)
         files[rob_key] = _ptext(ROB, 'unknown', 'M', 'curated')
-        placeholder_folder = 'people/004 unknown [Lisa + Robert]'
+        placeholder_folder = 'people/004 unknown [Ada + Calvin]'
         moved = {}
         for key, text in files.items():
             moved[key.replace(self.FOLDER, placeholder_folder)] = text
@@ -308,12 +308,12 @@ class SpouseFolderNameTests(unittest.TestCase):
         self.assertEqual([f for f in findings if f.code == 'W103'], [])
 
     def test_spouse_add_and_stale_bracket_combine_in_one_rename(self) -> None:
-        root = _build(self._files('people/004 Robert E. Church [Lisa]'))
+        root = _build(self._files('people/004 Calvin G. Hartley [Ada]'))
         issues = _views_w103(root)
         self.assertEqual(len(issues), 1)
         self.assertEqual(
             issues[0]['new_name'],
-            '004 Robert E. Church + Jeanne Stemler [Lisa + Robert]')
+            '004 Calvin G. Hartley + Ethel Cole [Ada + Calvin]')
         self.assertIn('names only one partner', issues[0]['msg'])
         self.assertIn('stale bracket list', issues[0]['msg'])
 

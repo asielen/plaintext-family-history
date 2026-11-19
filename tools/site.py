@@ -10033,8 +10033,8 @@ Build a browsable family website you can open in any browser.
   fha site --standalone   The same shareable snapshot, named explicitly
   fha site --linked       An unredacted local preview (for yourself, not to share)
 
-Opens from a plain file, no server needed - want to see your tree? build the
-site and open it. Living people and restricted material are redacted by default."""
+The site opens from a plain file with no server: build it, then open it.
+Living people and restricted material are redacted by default."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:

@@ -1556,7 +1556,7 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     dd_p.add_argument('incoming', metavar='FILE_OR_FOLDER', nargs='+',
                       help='the recording(s) that arrived (files, or folders to walk)')
     dd_p.add_argument('--json', metavar='PATH', default=None,
-                      help='also write the findings as JSON (a filename of its own - a path '
+                      help='also write the findings as JSON (a filename of its own; a path '
                            'landing on a recording, an archived file, or fha.yaml is refused)')
     dd_p.add_argument('--quiet', action='store_true', help='print only warnings/errors')
     root_arg(dd_p)
@@ -1581,7 +1581,7 @@ Both are read-only. `dedupe` content-hashes incoming media against everything
 already filed (size first, SHA-256 only on a size collision) so a phone
 export renamed by the app never becomes a second source record for one
 recording. `probe` reads a recording's true duration and container
-creation_time, and derives its local start time - never guessing the
+creation_time, and derives its local start time without guessing the
 timezone the recording was made in."""
 
 

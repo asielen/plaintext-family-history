@@ -1964,7 +1964,7 @@ def run_report(
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Your session briefing: what's new, what's worth a look, what to work on next.
+Your session briefing: what's new and what to work on next.
 
   fha report                    The research feed (discoveries first, chores next)
   fha report --full             Everything, not just the highlights

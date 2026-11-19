@@ -6,8 +6,8 @@ human-directed registry edits (TOOLING §10, SPEC §15).
   fha places lint [--root PATH]
   fha places candidates [--root PATH] [--threshold N] [--include-suggested]
   fha places geocode [--place L-id] [--all] [--offline] [--root PATH]
-  fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
-  fha places note L-id --text TEXT [--dry-run]
+  fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
+  fha places note l-id --text TEXT [--dry-run]
 
 `fha places lint` checks `places/places.yaml` (via the index's `places`/
 `place_names`/`place_history` tables) plus `claims.place_id` for registry
@@ -1171,8 +1171,8 @@ def _place_write_result(archive_root: Path, place_id: str) -> tuple[Result, str 
     result = Result(data={'status': None, 'place_id': None, 'path': None})
     if not (is_valid_id(place_id) and id_type_of(place_id) == 'L'):
         result_fail(result, 'refused',
-                    f'{place_id!r} is not a valid place ID. L-ids look like '
-                    'L-7c1a9f4e22 - an L followed by a dash and 10 characters '
+                    f'{place_id!r} is not a valid place ID. l-ids look like '
+                    'l-7c1a9f4e22: a l, a dash and 10 characters '
                     'from the archive alphabet.')
         return result, None, 'refused'
     pid = normalize_id(place_id)
@@ -1619,11 +1619,11 @@ _CLI_DESCRIPTION = """\
 Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
-  fha places candidates              Recurring place-text worth a registry entry
-  fha places geocode (--place L-id | --all)  Fill in coordinates (offline, confirmed one by one)
-  fha places set L-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
-  fha places note L-id --text "..."  Append a dated research note to the place
-  fha places edit-note L-id --old-text "..." --text "..."  Rewrite one existing note
+  fha places candidates              Place text that recurs often enough for a registry entry
+  fha places geocode (--place l-id | --all)  Fill in coordinates (offline, confirmed one by one)
+  fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
+  fha places note l-id --text "..."  Append a dated research note to the place
+  fha places edit-note l-id --old-text "..." --text "..."  Rewrite one existing note
                                      (--old-text is the note's whole paragraph)
 
 "Am I spelling this town three different ways?", "which place should become a
@@ -1652,13 +1652,13 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                                help='Minimum occurrences for a candidate cluster (default: 3).')
     candidates_p.add_argument('--include-suggested', action='store_true', dest='include_suggested',
                                help='Also cluster place_text on status: suggested claims (normally '
-                                    'excluded) - a one-time pre-review backlog scan, e.g. right after '
+                                    'excluded): a one-time scan of a backlog not yet reviewed, e.g. right after '
                                     'a fresh `fha gedcom import`, not the everyday view.')
     candidates_p.set_defaults(func=_cmd_places_candidates)
 
     geocode_p = deferred.add_parser('geocode', help='Backfill coords/alt-names from the offline GeoNames dump')
     geocode_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (auto-detected if omitted).')
-    geocode_p.add_argument('--place', metavar='L-id', help='Geocode only this place.')
+    geocode_p.add_argument('--place', metavar='l-id', help='Geocode only this place.')
     geocode_p.add_argument('--all', action='store_true', help='Geocode every registry place lacking coordinates.')
     geocode_p.add_argument('--offline', action='store_true',
                            help='Never download; match only against an already-cached GeoNames dump.')
@@ -1668,12 +1668,12 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     set_p = deferred.add_parser(
         'set', help="Set a place's coordinates, alt-names, or names-over-time (full replace per field)")
-    set_p.add_argument('place_id', metavar='L-id', help='The place to update.')
+    set_p.add_argument('place_id', metavar='l-id', help='The place to update.')
     set_p.add_argument('--coords', metavar='"LAT, LON"',
-                       help='New coordinates, latitude first - e.g. "39.8000, -95.6000".')
+                       help='New coordinates, latitude first, e.g. "39.8000, -95.6000".')
     set_p.add_argument('--aka', metavar='NAME', action='append',
-                       help='One also-known-as name, taken verbatim (commas and all - '
-                            '"Washington, D.C." is one name); repeat the flag for more. '
+                       help='One also-known-as name, taken verbatim, commas and all '
+                            '("Washington, D.C." is one name); repeat the flag for more. '
                             'The given set replaces the old list; a lone `--aka -` '
                             'clears it.')
     set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append',
@@ -1686,7 +1686,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     set_p.set_defaults(func=_cmd_places_set)
 
     note_p = deferred.add_parser('note', help='Append a dated research note to a place')
-    note_p.add_argument('place_id', metavar='L-id', help='The place the note is about.')
+    note_p.add_argument('place_id', metavar='l-id', help='The place the note is about.')
     note_p.add_argument('--text', metavar='TEXT', required=True,
                         help='The note, in your own words (loose citations welcome).')
     note_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -1698,14 +1698,14 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     edit_note_p = deferred.add_parser(
         'edit-note',
         help="Rewrite one existing research note on a place (named by its whole current paragraph)",
-        description=("Rewrite ONE existing research note on a place - the other notes are "
+        description=("Rewrite one existing research note on a place; the other notes are "
                      "untouched. --old-text names the note by its exact current text: give the "
                      "whole paragraph, word for word, not one sentence of it. If it is only part "
                      "of a note, is not found, or appears more than once, nothing is written and "
                      "the message says which."))
-    edit_note_p.add_argument('place_id', metavar='L-id', help='The place whose note is being corrected.')
+    edit_note_p.add_argument('place_id', metavar='l-id', help='The place whose note is being corrected.')
     edit_note_p.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                             help="The note's current text - the whole paragraph, exactly as it stands.")
+                             help="The note's current text: the whole paragraph, exactly as it stands.")
     edit_note_p.add_argument('--text', metavar='TEXT', required=True,
                              help='The corrected note text.')
     edit_note_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -1740,14 +1740,14 @@ def _standalone_main(argv: list[str] | None = None) -> int:
 
     geocode_p = subs.add_parser('geocode')
     geocode_p.add_argument('--root', metavar='PATH')
-    geocode_p.add_argument('--place', metavar='L-id')
+    geocode_p.add_argument('--place', metavar='l-id')
     geocode_p.add_argument('--all', action='store_true')
     geocode_p.add_argument('--offline', action='store_true')
     geocode_p.add_argument('--dry-run', action='store_true', dest='dry_run')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
     set_p = subs.add_parser('set')
-    set_p.add_argument('place_id', metavar='L-id')
+    set_p.add_argument('place_id', metavar='l-id')
     set_p.add_argument('--coords', metavar='"LAT, LON"')
     set_p.add_argument('--aka', metavar='NAME', action='append')
     set_p.add_argument('--history', metavar='"PERIOD | HIERARCHY"', action='append')
@@ -1756,14 +1756,14 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     set_p.set_defaults(func=_cmd_places_set)
 
     note_p = subs.add_parser('note')
-    note_p.add_argument('place_id', metavar='L-id')
+    note_p.add_argument('place_id', metavar='l-id')
     note_p.add_argument('--text', metavar='TEXT', required=True)
     note_p.add_argument('--root', metavar='PATH')
     note_p.add_argument('--dry-run', action='store_true', dest='dry_run')
     note_p.set_defaults(func=_cmd_places_note)
 
     edit_note_p = subs.add_parser('edit-note')
-    edit_note_p.add_argument('place_id', metavar='L-id')
+    edit_note_p.add_argument('place_id', metavar='l-id')
     edit_note_p.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text')
     edit_note_p.add_argument('--text', metavar='TEXT', required=True)
     edit_note_p.add_argument('--root', metavar='PATH')

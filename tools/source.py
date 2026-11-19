@@ -304,8 +304,8 @@ def run_source_note(
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _refuse(
             'refused',
-            f'{source_id!r} is not a valid source ID. S-ids look like '
-            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            f'{source_id!r} is not a valid source ID. s-ids look like '
+            's-2b3c4d5e6f: a s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -428,8 +428,8 @@ def run_source_edit_note(
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _refuse(
             'refused',
-            f'{source_id!r} is not a valid source ID. S-ids look like '
-            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            f'{source_id!r} is not a valid source ID. s-ids look like '
+            's-2b3c4d5e6f: a s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -661,8 +661,8 @@ def run_source_clear_keyword(
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _refuse(
             'refused',
-            f'{source_id!r} is not a valid source ID. S-ids look like '
-            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            f'{source_id!r} is not a valid source ID. s-ids look like '
+            's-2b3c4d5e6f: a s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -1409,8 +1409,8 @@ def run_source_set_primary(
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _refuse(
             'refused',
-            f'{source_id!r} is not a valid source ID. S-ids look like '
-            'S-2b3c4d5e6f - an S followed by a dash and 10 characters from '
+            f'{source_id!r} is not a valid source ID. s-ids look like '
+            's-2b3c4d5e6f: a s, a dash and 10 characters from '
             'the archive alphabet.')
     sid = normalize_id(source_id)
     shown_id = fmt_id_display(sid)
@@ -1740,13 +1740,13 @@ def _add_extract_arguments(sub: argparse._SubParsersAction) -> None:
                      'names another) and writes '
                      'the embedded text layer, page by page, into a '
                      '[Page N]-labeled companion the assistant can mine like a '
-                     'transcript - seconds instead of reading hundreds of pages '
+                     'transcript, in seconds instead of reading hundreds of pages '
                      'by eye. The PDF itself is never touched. Needs the pypdf '
                      f'helper package ({pip_command("pypdf")}).'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    x.add_argument('source_id', metavar='S-id',
-                   help='The source whose PDF to extract (e.g. S-2b3c4d5e6f).')
+    x.add_argument('source_id', metavar='s-id',
+                   help='The source whose PDF to extract (e.g. s-2b3c4d5e6f).')
     x.add_argument('--pages', metavar='RANGES',
                    help='Only these pages, e.g. `1-60` or `1-60,102,200-210` '
                         '(default: every page).')
@@ -1785,13 +1785,13 @@ def _cmd_source_clear_keyword(args: argparse.Namespace) -> int:
 _CLEAR_KEYWORD_DESCRIPTION = """\
 Clear or correct one embedded keyword on a source's documents-root file.
 
-  fha source clear-keyword S-2b3c4d5e6f --keyword "Margaret Hartley"
-  fha source clear-keyword S-2b3c4d5e6f --keyword "Margaret Hartley" \\
+  fha source clear-keyword s-2b3c4d5e6f --keyword "Margaret Hartley"
+  fha source clear-keyword s-2b3c4d5e6f --keyword "Margaret Hartley" \\
       --replace-with "Margaret Cole"
 
 Reads the file's keyword fields (IPTC Keywords, XMP dc:subject and
 Lightroom's hierarchical keywords), matches --keyword case-insensitively, and
-removes the EXACT on-file value from every field it sits in - so a keyword
+removes the exact on-file value from every field it sits in, so a keyword
 typed slightly differently on the command line refuses instead of silently
 doing nothing. --replace-with writes the correction into every keyword field
 the file takes, skipping one that already names it (a Lightroom "People|..."
@@ -1809,7 +1809,7 @@ def _add_clear_keyword_arguments(sub: argparse._SubParsersAction) -> None:
         description=_CLEAR_KEYWORD_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ck.add_argument('source_id', metavar='S-id',
+    ck.add_argument('source_id', metavar='s-id',
                     help='The source whose documents-root file to correct.')
     ck.add_argument('--keyword', metavar='TEXT', required=True,
                     help='The keyword to remove, exactly as it reads (matched '
@@ -1840,17 +1840,17 @@ def _cmd_source_set_primary(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
-_SET_PRIMARY_DESCRIPTION = """Choose which photo is the main image of a source - its front, not its back.
+_SET_PRIMARY_DESCRIPTION = """Choose which photo is the main image of a source (its front, not its back).
 
-  fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif" --dry-run
-  fha source set-primary S-2b3c4d5e6f --file "Smith-Farm-01400.tif"
+  fha source set-primary s-2b3c4d5e6f --file "Smith-Farm-01400.tif" --dry-run
+  fha source set-primary s-2b3c4d5e6f --file "Smith-Farm-01400.tif"
 
 Changes only the source record's files: list: the named photo becomes the
 main image (is_primary: true), and the photo that was the main
 image is listed by what its name says it is (role: back, say). No photo is
 renamed or touched, and the record's title and filename stay as they are.
-`fha doctor` names the records that need this (#200: an older `fha process`
-could make a photo's back its main image). Preview first with --dry-run."""
+`fha doctor` names the records whose main image is a photo's back. Preview
+first with --dry-run."""
 
 
 def _add_set_primary_arguments(sub: argparse._SubParsersAction) -> None:
@@ -1861,8 +1861,8 @@ def _add_set_primary_arguments(sub: argparse._SubParsersAction) -> None:
         description=_SET_PRIMARY_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sp.add_argument('source_id', metavar='S-id',
-                    help='The source whose main image to change (e.g. S-2b3c4d5e6f).')
+    sp.add_argument('source_id', metavar='s-id',
+                    help='The source whose main image to change (e.g. s-2b3c4d5e6f).')
     sp.add_argument('--file', metavar='NAME', required=True,
                     help='The photo to make the main image: its filename, or its '
                          'full files: path when two photos share a name.')
@@ -2992,13 +2992,13 @@ def run_source_extract(
 
 
 _CLI_DESCRIPTION = """\
-Update a source record directly - the deterministic source-field write-backs.
+Update a source record directly, one field or section at a time.
 
-  fha source note S-2b3c4d5e6f --text "..."
-  fha source edit-note S-2b3c4d5e6f --old-text "..." --text "..."
-  fha source extract S-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
-  fha source clear-keyword S-2b3c4d5e6f --keyword "..." [--replace-with "..."]
-  fha source set-primary S-2b3c4d5e6f --file "front-scan.tif"
+  fha source note s-2b3c4d5e6f --text "..."
+  fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
+  fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
+  fha source clear-keyword s-2b3c4d5e6f --keyword "..." [--replace-with "..."]
+  fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
@@ -3007,16 +3007,16 @@ text layer into a derived [Page N]-labeled companion file (needs the pypdf
 helper package); clear-keyword removes (or corrects) one embedded keyword on
 a documents-root file, the tool-mediated fix for a stray tag `fha lint
 --with-exif` (W131) finds; set-primary chooses which photo is a source's main
-image (its front, not its back - the fix `fha doctor` names)."""
+image (its front, not its back), the fix `fha doctor` names."""
 
 _NOTE_DESCRIPTION = """\
-Add a note to a source - appended to the end of its ## Notes section.
+Add a note to the end of a source's ## Notes section.
 
-  fha source note S-2b3c4d5e6f --text "Found in Grandma's cedar chest, 2024."
+  fha source note s-2b3c4d5e6f --text "Found in Grandma's cedar chest, 2024."
 
 Always append-only: an existing note is never edited or removed, and nothing
 outside ## Notes changes (the frontmatter and ## Claims are never touched).
-A source marked superseded still accepts notes - the audit trail stays open.
+A source marked superseded still accepts notes.
 Preview the change first with --dry-run."""
 
 
@@ -3028,8 +3028,8 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
         description=_NOTE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    n.add_argument('source_id', metavar='S-id',
-                   help='The source to update (e.g. S-2b3c4d5e6f).')
+    n.add_argument('source_id', metavar='s-id',
+                   help='The source to update (e.g. s-2b3c4d5e6f).')
     n.add_argument('--text', metavar='TEXT', required=True,
                    help='The note to add, in your own words.')
     n.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -3040,16 +3040,16 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _EDIT_NOTE_DESCRIPTION = """\
-Rewrite ONE existing ## Notes paragraph - the rest of the section is untouched.
+Rewrite one existing ## Notes paragraph; the rest of the section is untouched.
 
-  fha source edit-note S-2b3c4d5e6f \\
+  fha source edit-note s-2b3c4d5e6f \\
       --old-text "Found in the cedar chest." --text "Found in Grandma's cedar chest, 2024."
 
 The note is named by its exact current text (--old-text): give the whole
-paragraph, word for word - one sentence of it is not enough. If --old-text is
+paragraph, word for word; one sentence of it is not enough. If --old-text is
 only part of a note, is not found, or appears more than once, nothing is
-written and the message says which. Deleting a note stays a hand edit to the
-record file - this only rewrites. Preview first with --dry-run."""
+written and the message says which. This command only rewrites; deleting a
+note stays a hand edit to the record file. Preview first with --dry-run."""
 
 
 def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
@@ -3060,10 +3060,10 @@ def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
         description=_EDIT_NOTE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    en.add_argument('source_id', metavar='S-id',
+    en.add_argument('source_id', metavar='s-id',
                     help='The source whose note is being corrected.')
     en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                    help="The note's current text - the whole paragraph, exactly as it stands.")
+                    help="The note's current text: the whole paragraph, exactly as it stands.")
     en.add_argument('--text', metavar='TEXT', required=True,
                     help='The corrected note text.')
     en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -3077,7 +3077,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'source' onto the main fha parser."""
     p = subs.add_parser(
         'source',
-        help='Source-record write-backs: note (append), edit-note (rewrite one), '
+        help='Change a source record: note (append), edit-note (rewrite one), '
              'extract (PDF text layer), clear-keyword (fix a stray keyword), '
              'set-primary (choose the main image)',
         description=_CLI_DESCRIPTION,

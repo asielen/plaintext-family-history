@@ -147,14 +147,14 @@ class HostArchiveTestCase(unittest.TestCase):
     # ── Capability 2: suggestNames ───────────────────────────────────────────
 
     def test_suggest_names_matches_name_and_alias(self) -> None:
-        self._person('sielen01.md', 'Mark B Sielen', 'P-sielen01', 'Marky Sielen')
+        self._person('hartley01.md', 'Thomas E Hartley', 'P-hartley01', 'Thom Hartley')
         self._person('hartley1.md', 'Calvin Hartley', 'P-hartley1')
-        resp = capture._host_suggest_names(self.archive, self.config, 'siel', 8)
+        resp = capture._host_suggest_names(self.archive, self.config, 'thom', 8)
         self.assertTrue(resp['ok'])
-        self.assertIn('Mark B Sielen', resp['names'])
-        self.assertIn('Marky Sielen', resp['names'])          # alias matched
+        self.assertIn('Thomas E Hartley', resp['names'])
+        self.assertIn('Thom Hartley', resp['names'])          # alias matched
         self.assertNotIn('Calvin Hartley', resp['names'])
-        self.assertNotIn('P-sielen01', resp['names'])         # id alias never suggested
+        self.assertNotIn('P-hartley01', resp['names'])         # id alias never suggested
 
     def test_suggest_names_respects_limit_and_empty(self) -> None:
         self._person('a.md', 'Anna Smith', 'P-aaaaaa01')

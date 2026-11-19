@@ -3085,7 +3085,7 @@ class EventClaimSaysWhoseEventE021Tests(unittest.TestCase):
         self.assertEqual([f.code for f in self._lint(claims)], ['E021'])
 
     def test_a_source_titled_after_a_survivor_is_flagged(self) -> None:
-        # Alan Sielen's case: his mother's obituary, indexed under his name.
+        # A son's case: his mother's obituary, indexed under his name.
         claims = (f'- value: "Mary died"\n  id: c-3333333333\n  type: death\n'
                   f'  persons: [{self.MOTHER}]\n  status: accepted\n  confidence: high\n')
         found = self._lint(claims, title='Paul Snyder - U.S., Obituary Collection',

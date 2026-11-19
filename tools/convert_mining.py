@@ -1154,7 +1154,7 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
 _CLI_DESCRIPTION = """\
 Migrate a legacy transcript-mining project into archive records (one-time).
 
-  fha convert-mining            Print the conversion plan (dry run - writes nothing)
+  fha convert-mining            Print the conversion plan (dry run, writes nothing)
   fha convert-mining --apply    Write the records
 
 Dry-run by default. It reads a `mining/` folder of old text files and turns it

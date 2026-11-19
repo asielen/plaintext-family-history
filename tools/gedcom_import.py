@@ -2089,13 +2089,13 @@ def _cmd_import(args: argparse.Namespace) -> int:
 # (persona-E posture: no decorative flags).
 _CLI_DESCRIPTION = """Bring a tree from Ancestry (or any genealogy program) into your archive.
 
-  fha gedcom import family-tree.ged            Show the plan - writes nothing
+  fha gedcom import family-tree.ged            Show the plan; writes nothing
   fha gedcom import family-tree.ged --apply    Do the import
 
 Download your tree as a GEDCOM (.ged) file, then run this. The file itself is
 filed as one source (your original untouched); every person becomes a record
-with their dates; every statement becomes a SUGGESTED fact for you to review
-later, family by family - nothing imported is treated as proven. Re-importing
+with their dates; every statement becomes a suggested fact for you to review
+later, family by family. Nothing imported is treated as proven. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
   --plan-out FILE    Also write the full, uncut plan text to FILE."""
@@ -2107,7 +2107,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--apply', action='store_true',
                    help='Write the records (default: print the dry-run plan only).')
     p.add_argument('--plan-out', metavar='FILE', dest='plan_out',
-                   help='Also write the FULL (uncapped) plan text to FILE - refused '
+                   help='Also write the full (uncapped) plan text to FILE; refused '
                         'inside the archive except its out/ folder.')
     p.add_argument('--root', metavar='PATH',
                    help='Archive root (auto-detected if omitted).')

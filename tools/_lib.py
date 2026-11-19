@@ -6139,8 +6139,8 @@ def set_person_living(
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         return _refuse(
             'refused',
-            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
-            '- a P followed by a dash and 10 characters from the archive alphabet.')
+            f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f: '
+            'a p, a dash and 10 characters from the archive alphabet.')
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
@@ -16217,7 +16217,7 @@ def resync_person_profile_rows(
     of `relocate_person_in_index` (which only ever handles a MOVE, not a
     same-path content change).
 
-    WHY THIS EXISTS: `fha views sources-index <P-id>` (#76) rewrites the `##
+    WHY THIS EXISTS: `fha views sources-index <p-id>` (#76) rewrites the `##
     Sources` region INSIDE the profile - a real content edit to a file the
     mtime watermark ALWAYS counts (#37 excludes only companions, never
     profiles). Left alone, that edit correctly stales the index - and then
@@ -16600,7 +16600,7 @@ def shell_quote(word: str) -> str:
     carry a literal `"` (a free-text field can; a `sys.executable` path
     cannot). `claim.py` (issue #54) hit exactly that shape of bug from the
     other direction: Windows PowerShell 5.1 silently dropped the embedded
-    `"` from `Robert Justin "Bob" Knipscheer` before the tool ever saw the
+    `"` from `Calvin George "Cal" Hartley` before the tool ever saw the
     argument. `subprocess.list2cmdline` implements the MSVCRT argv-escaping
     algorithm Python itself relies on to launch a Windows subprocess
     correctly (backslash-escaping embedded quotes rather than dropping

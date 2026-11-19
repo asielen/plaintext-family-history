@@ -2,7 +2,7 @@
 """
 wikitree.py - fha wikitree: render a curated profile to the WikiTree dialect.
 
-  fha wikitree <P-id> [--out FILE] [--root PATH]
+  fha wikitree <p-id> [--out FILE] [--root PATH]
 
 Renders one curated person's profile prose into the user's extended **WikiTree
 dialect** (TOOLING §13) - the markup family-tree wikis expect, not vanilla
@@ -1689,8 +1689,8 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
 _CLI_DESCRIPTION = """\
 Render a person's profile into WikiTree's markup for a family-tree wiki.
 
-  fha wikitree <P-id>              Print the WikiTree-dialect profile
-  fha wikitree <P-id> --out FILE   Write it to a file
+  fha wikitree <p-id>              Print the WikiTree-dialect profile
+  fha wikitree <p-id> --out FILE   Write it to a file
 
 Turns a curated person's profile prose and its citations into the wiki markup
 WikiTree expects. Privacy rules are enforced: restricted material is withheld."""
@@ -1703,7 +1703,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
+    p.add_argument('person_id', metavar='p-id', help='Curated person to export.')
     p.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     p.set_defaults(func=_cmd_wikitree)
@@ -1715,7 +1715,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         prog='fha wikitree', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')
+    parser.add_argument('person_id', metavar='p-id', help='Curated person to export.')
     parser.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     parser.set_defaults(func=_cmd_wikitree)

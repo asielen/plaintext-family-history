@@ -5206,7 +5206,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     # form supplies it, which `_cmd_find`'s getattr(..., None) handles.
     find_p = deferred.add_parser('find', help='Query the photo catalog')
     find_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    find_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this P-id (any confidence tier)')
+    find_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this p-id (any confidence tier)')
     find_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     find_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     find_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
@@ -5219,7 +5219,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
         'gallery', help='Build a clickable single-file HTML page of the matching photos'
     )
     gallery_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
-    gallery_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this P-id (any confidence tier)')
+    gallery_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this p-id (any confidence tier)')
     gallery_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     gallery_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
     gallery_p.add_argument('--text', metavar='TEXT', help='Full-text search over title/caption/comment/keywords (photo_fts)')
@@ -5253,7 +5253,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     )
     reconcile_p.set_defaults(func=_cmd_reconcile)
 
-    tag_p = deferred.add_parser('tag-person', help='Write a bare P-id keyword onto matched or explicit photos')
+    tag_p = deferred.add_parser('tag-person', help='Write a bare p-id keyword onto matched or explicit photos')
     tag_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
     tag_p.add_argument('person_id', metavar='P-ID', help='Person to tag')
     tag_p.add_argument('--from-face-tag', metavar='TAG', help='Tag every photo whose cached face region carries this name')
@@ -5266,7 +5266,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     )
     summary_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
     summary_p.add_argument('path', nargs='?', metavar='PATH', help='One catalog photo path to write (as printed by fha photoindex find)')
-    summary_p.add_argument('--group', metavar='GROUP-ID', help='Write every variant in this photo group instead of one file (e.g. "SOURCE:S-ab12cd34ef")')
+    summary_p.add_argument('--group', metavar='GROUP-ID', help='Write every variant in this photo group instead of one file (e.g. "SOURCE:s-ab12cd34ef")')
     summary_p.add_argument('--text', required=True, metavar='TEXT', help='The new summary text (stored AI-marked, as "AI: <text>")')
     summary_p.add_argument('--append', action='store_true', help='Keep an existing AI summary and add this one below it instead of replacing it')
     summary_p.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview the old and new comment per file without writing or prompting')
@@ -5278,10 +5278,10 @@ _CLI_DESCRIPTION = """\
 Make your photo library searchable without opening Lightroom.
 
   fha photoindex                       Scan the photos root into the catalog
-  fha photoindex find --person <P-id>  Every photo of someone
-  fha photoindex gallery --person <P-id>  A clickable HTML page of the same photos
-  fha photoindex triage --top 20       Un-filed photos worth processing next
-  fha photoindex tag-person <P-id>     Tag a face across every copy
+  fha photoindex find --person <p-id>  Every photo of someone
+  fha photoindex gallery --person <p-id>  A clickable HTML page of the same photos
+  fha photoindex triage --top 20       Un-filed photos to process next
+  fha photoindex tag-person <p-id>     Tag a face across every copy
   fha photoindex set-summary <path> --text "..."   Update a photo's AI summary
 
 Photos are never renamed; identity lives in the embedded metadata."""
