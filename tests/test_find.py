@@ -1862,6 +1862,77 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         self.assertIn('could not check which sources have no searchable text', out)
         self.assertIn('fha index', out)
 
+    # ── #316: plain-text evidence beyond .md/.txt ──────────────────────────
+
+    def _write(self, rel: str, content: str | bytes) -> None:
+        path = self.archive_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding='utf-8')
+
+    def test_a_name_only_in_a_family_tree_export_is_found(self) -> None:
+        # A tree exported as a GEDCOM is plain text. A name that appears only
+        # in it came back "No results", with no hint the tree was never read.
+        self._write('documents/trees/family-tree_S-4k6m8p0r2t.ged',
+                    '0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Tobias /Quenby/\n'
+                    '1 BIRT\n2 DATE 1842\n0 TRLR\n')
+        code, out = self._search('Quenby')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Found 1 result(s)', out)
+        self.assertIn('family-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_a_utf16_tree_export_is_still_read(self) -> None:
+        # Older genealogy programs write UTF-16 with a byte-order mark.
+        self._write('documents/trees/old-tree_S-4k6m8p0r2t.ged',
+                    '0 @I1@ INDI\n1 NAME Tobias /Quenby/\n'.encode('utf-16'))
+        _, out = self._search('Quenby')
+        self.assertIn('old-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_a_saved_web_page_is_searched_by_what_it_shows(self) -> None:
+        self._write(
+            'documents/census/census-webpage_S-4k6m8p0r2t.html',
+            '<html><head><title>1880 census</title><style>.Quenby{}</style>'
+            '<script>var Wexcombe = 1;</script></head>'
+            '<body><nav>Home Search Records</nav>'
+            '<table><tr><th>Name</th><td>Tobias <b>Quenby</b></td></tr></table>'
+            '</body></html>')
+        _, out = self._search('Tobias Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        # A word that appears only inside the page's script is not a finding.
+        _, out = self._search('Wexcombe')
+        self.assertIn('No results', out)
+        # Nor is a tag name.
+        _, out = self._search('tbody')
+        self.assertIn('No results', out)
+
+    def test_site_data_is_searched_by_its_values(self) -> None:
+        self._write('documents/census/census-record-data_S-4k6m8p0r2t.json',
+                    json.dumps({'person': {'givenName': 'Tobias',
+                                           'surname': 'Quenby'}}))
+        _, out = self._search('Quenby')
+        self.assertIn('census-record-data_S-4k6m8p0r2t.json', out)
+        _, out = self._search('givenName')
+        self.assertIn('No results', out)
+
+    def test_a_tree_export_counts_as_text_for_the_coverage_note(self) -> None:
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
+    def test_a_page_copy_beside_a_scan_does_not_count_for_the_coverage_note(self) -> None:
+        # The website's copy is searched, but it is not the record's words.
+        self._add_file(_MUTE_SID, 'documents/charts/chart-webpage_S-2h4k6m8p0r.html',
+                       'webpage')
+        self._add_file(_MUTE_SID, 'documents/charts/chart-data_S-2h4k6m8p0r.json',
+                       'site-data')
+        self.conn.commit()
+        _, out = self._search('Harkness')
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+
 
 # Four transcripts of the same kind of evidence, in the four states the
 # transcribe-source marker contract defines.

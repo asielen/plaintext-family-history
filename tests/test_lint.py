@@ -2648,6 +2648,40 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_WARNINGS)
         self.assertIn('W124', [m.code for m in result.messages])
 
+    # ── #316: plain-text evidence that is not .md/.txt ─────────────────────
+
+    def test_a_family_tree_export_is_its_own_words(self) -> None:
+        # A GEDCOM filed as a source is the evidence itself, in plain text.
+        # Flagging it put every tree export in the "transcribe these" backlog
+        # forever, and the only way out was a meaningless copy of the tree.
+        self._write_source([(f'documents/trees/family-tree_{_W124_SID}.ged', 'tree')])
+        self.assertEqual(self._codes(), [])
+
+    def test_a_captured_page_and_site_data_do_not_stand_in_for_a_transcript(self) -> None:
+        # A captured census record ships the record image, the website's saved
+        # page and the site's data. The search reads the page and the data, but
+        # they are the site's copy and reading (SPEC: site-data is never a
+        # transcript), so the record itself still has no words in the archive.
+        self._write_source([
+            _IMAGE,
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.html', 'webpage'),
+            (f'documents/charts/harkness-chart-record-data_{_W124_SID}.json',
+             'site-data'),
+        ])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertIn('fha source extract', found[0].message)
+        self.assertIn("website's copy, not a transcript", found[0].message)
+
+    def test_a_page_copy_alone_is_not_called_a_scan(self) -> None:
+        self._write_source([
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.html', 'webpage'),
+        ])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertNotIn('scan, photograph', found[0].message)
+        self.assertIn("website's saved copy", found[0].message)
+
 
 _E011_SID = 'S-5n7q9s1t3v'
 _E011_SOURCE = '''---

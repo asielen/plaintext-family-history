@@ -67,6 +67,7 @@ import tempfile
 import time
 import unicodedata
 from collections import deque
+from html.parser import HTMLParser
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
@@ -95,12 +96,17 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    picture_data_hash         - a JPEG/PNG's picture identity, blind to metadata writes
 #                                (jpeg_picture_hash, png_picture_hash; photoindex + process)
 #    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
-#    SEARCHABLE_TEXT_SUFFIXES  - file extensions the text search actually reads
+#    TRANSCRIPT_TEXT_SUFFIXES  - file kinds `fha index` loads as a transcript companion
+#    EVIDENCE_TEXT_SUFFIXES    - file kinds that ARE the evidence's words (+ .ged)
+#    TEXT_SEARCH_SUFFIXES      - file kinds `fha find --text` reads (+ web copies, data)
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
 #
 #  Which sources a text search can see inside (#46)
 #    file_entry_carries_text   - one files: entry -> is its content searchable text?
 #    files_carry_searchable_text - a source's files: block -> any text at all?
+#    file_entry_is_searched_copy - a page copy or site data: searched, not the words
+#    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
+#    read_searchable_text      - a file's words as the text search reads them
 #
 #  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
 #    roles_by_person           - a claim's (pid, role) pairs -> every role each
@@ -2279,12 +2285,35 @@ TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
 _COMPOUND_FILE_ROLES: tuple[str, ...] = tuple(sorted(
     (r for r in TEXT_COMPANION_ROLES if '-' in r), key=len, reverse=True))
 
-# File extensions the archive's text search actually opens and reads. Anything
-# else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
-# text layer is only searchable once `fha source extract` has dumped it into a
-# companion, and an image or a recording only once somebody has written out what
-# it says.
-SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
+# Three nested sets of plain-text file kinds, because "the computer can read
+# this file" and "this file is the evidence's own words" are different promises
+# (#316). A family tree exported as a GEDCOM is the evidence itself, so a source
+# filed from one must not sit in the "transcribe these" backlog; a website's
+# saved copy of a census page is searchable, but it is the site's copy and its
+# reading of the record, never a transcript of the record (SPEC §6 file roles).
+#
+# Anything outside all three - a scan, a photograph, a PDF, a recording - is
+# opaque to the search: a PDF's own text layer is only searchable once
+# `fha source extract` has dumped it into a companion, and an image or a
+# recording only once somebody has written out what it says.
+#
+# TRANSCRIPT_TEXT_SUFFIXES: what `fha index` loads into its transcript table
+#   from a role-tagged companion. Kept to the small hand-written formats so a
+#   multi-megabyte tree export never lands in the index.
+TRANSCRIPT_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
+# EVIDENCE_TEXT_SUFFIXES: a file of one of these kinds IS the source's words as
+#   text, with no role needed (SPEC §6: `.md`, `.txt`, `.ged`). This is the set
+#   lint W124, find's coverage note and the metrics share read.
+EVIDENCE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES | {'.ged'}
+# TEXT_SEARCH_SUFFIXES: every kind `fha find --text` opens and reads. The extra
+#   kinds are a captured page's saved copy and a site's data; they are searched
+#   (by what they show, not their markup - read_searchable_text) but never count
+#   as the source's words.
+TEXT_SEARCH_SUFFIXES: frozenset[str] = EVIDENCE_TEXT_SUFFIXES | {
+    '.html', '.htm', '.json', '.csv', '.xml'}
+# The older name, kept so a vendored script that imports it keeps working; it
+# always meant the transcript gate.
+SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES
 
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
@@ -8699,21 +8728,39 @@ def file_entry_carries_text(role: str, path: str) -> bool:
 
     Two ways it can, and they are the only two: the entry is tagged with a role
     that means "this file is what the evidence says" (`transcript`,
-    `transcription`, `extracted-text`), or the file is itself a plain-text file
-    the search reads anyway (a `.md` or `.txt` attached with no role at all).
+    `transcription`, `extracted-text`), or the file is itself the evidence as
+    plain text (a `.md`, `.txt` or `.ged` attached with no role at all - a
+    family tree exported as a GEDCOM is its own words, #316).
 
     Everything else - a scan, a photograph, a PDF, a recording - holds its words
     in a form no text search can read. That is true of a PDF with a perfectly
-    good text layer, too, until `fha source extract` dumps it into a companion:
-    the search opens `.md` and `.txt` files and nothing else.
+    good text layer, too, until `fha source extract` dumps it into a companion.
+    A website's saved page copy or its data file (`.html`, `.json`) is read by
+    the search but does not count: it is the site's copy and reading of the
+    record, never a transcript of it (SPEC §6).
 
     The role is what decides, not the extension, because a role-tagged companion
     is a promise about the file's content that outranks any guess from its name.
     """
     if str(role or '').strip().lower() in TEXT_COMPANION_ROLES:
         return True
-    suffix = PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
-    return suffix in SEARCHABLE_TEXT_SUFFIXES
+    return _entry_suffix(path) in EVIDENCE_TEXT_SUFFIXES
+
+
+def file_entry_is_searched_copy(role: str, path: str) -> bool:
+    """Is this a file the search reads that still is not the evidence's words?
+
+    A captured web record ships its saved page and the site's data beside the
+    record image. `fha find --text` reads both, so a warning that says the
+    source's files are all "scans, photographs, PDFs or recordings" would be
+    wrong about them; this lets W124 say what they really are.
+    """
+    return (not file_entry_carries_text(role, path)
+            and _entry_suffix(path) in TEXT_SEARCH_SUFFIXES)
+
+
+def _entry_suffix(path: str) -> str:
+    return PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
 
 
 def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool:
@@ -8730,6 +8777,142 @@ def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool
     read - so callers test emptiness separately rather than folding it in here.
     """
     return any(file_entry_carries_text(role, path) for role, path in file_entries)
+
+
+class PageTextParser(HTMLParser):
+    """Collect title / first h1 / base href / canonical / meta / visible text.
+
+    A single forgiving pass (HTMLParser tolerates the malformed markup real
+    pages ship). `<script>`/`<style>` bodies are dropped from the visible text;
+    `<title>` text is captured for the title but kept out of the body so the
+    text reads as page content, not chrome. Shared by `fha capture` (reading a
+    page into a citation) and the text search (reading a saved page copy by
+    what it shows, so a search for "script" does not match every page).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._title_parts: list[str] = []
+        self._in_title = False
+        self._h1_parts: list[str] = []
+        self._in_h1 = False
+        self._h1_done = False
+        self.base_href: str | None = None
+        self.canonical: str | None = None
+        self.meta: dict[str, str] = {}
+        self._text_parts: list[str] = []
+        self._skip_depth = 0  # inside <script>/<style>
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        a = {k.lower(): (v or '') for k, v in attrs}
+        if tag in ('script', 'style'):
+            self._skip_depth += 1
+        elif tag == 'title':
+            self._in_title = True
+        elif tag == 'h1' and not self._h1_done:
+            self._in_h1 = True
+        elif tag == 'base' and a.get('href'):
+            self.base_href = self.base_href or a['href']
+        elif tag == 'link' and 'canonical' in a.get('rel', '').lower() and a.get('href'):
+            self.canonical = self.canonical or a['href']
+        elif tag == 'meta':
+            key = a.get('property') or a.get('name')
+            if key and 'content' in a:
+                self.meta.setdefault(key.lower(), a['content'])
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:
+        # Self-closing <meta .../> / <base .../> / <link .../> never fire an end
+        # tag, so route them through the same start handler.
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ('script', 'style') and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif tag == 'title':
+            self._in_title = False
+        elif tag == 'h1' and self._in_h1:
+            self._in_h1 = False
+            self._h1_done = True
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+            return
+        if self._in_h1:
+            self._h1_parts.append(data)
+        self._text_parts.append(data)
+
+    def title(self) -> str | None:
+        return collapse_whitespace(''.join(self._title_parts)) or None
+
+    def h1(self) -> str | None:
+        return collapse_whitespace(''.join(self._h1_parts)) or None
+
+    def text(self) -> str:
+        return collapse_whitespace(' '.join(self._text_parts))
+
+
+def collapse_whitespace(text: str) -> str:
+    """Collapse all runs of whitespace to single spaces and trim."""
+    return ' '.join((text or '').split())
+
+
+def _decode_text_file(raw: bytes) -> str:
+    """Bytes to text the way the search needs it: never refuse a file.
+
+    A GEDCOM from an older program can be UTF-16 (with its byte-order mark),
+    ANSI or ANSEL. A UTF-16 file read as UTF-8 loses every name to the zero
+    bytes between its letters, so the mark is honoured; anything else is read
+    as UTF-8 with undecodable bytes dropped, which keeps every plain-ASCII
+    name findable.
+    """
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return raw.decode('utf-16', errors='ignore')
+    return raw.decode('utf-8-sig', errors='ignore')
+
+
+def _json_leaf_text(value: Any, out: list[str]) -> None:
+    if isinstance(value, dict):
+        for v in value.values():
+            _json_leaf_text(v, out)
+    elif isinstance(value, list):
+        for v in value:
+            _json_leaf_text(v, out)
+    elif value is not None and not isinstance(value, bool):
+        out.append(str(value))
+
+
+def read_searchable_text(path: Path) -> str:
+    """A file's words as `fha find --text` reads them. Raises OSError.
+
+    A saved web page (`.html`, `.htm`) and an `.xml` file are read by what they
+    show, not their markup: a search for a word must not match a tag name or a
+    page's script. A `.json` data file is read by its values, not its field
+    names, so a search for "name" does not match every record a site saved;
+    a file that does not parse as JSON is read as it stands. Everything else
+    (`.md`, `.txt`, `.ged`, `.csv`) is read as it stands.
+    """
+    text = _decode_text_file(Path(path).read_bytes())
+    suffix = Path(path).suffix.lower()
+    if suffix in ('.html', '.htm', '.xml'):
+        parser = PageTextParser()
+        try:
+            parser.feed(text)
+            parser.close()
+        except Exception:
+            pass   # forgiving: whatever was collected before the break is kept
+        return '\n'.join(p for p in (parser.title(), parser.text()) if p)
+    if suffix == '.json':
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return text
+        parts: list[str] = []
+        _json_leaf_text(data, parts)
+        return '\n'.join(parts)
+    return text
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────

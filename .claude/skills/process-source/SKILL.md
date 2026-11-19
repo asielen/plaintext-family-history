@@ -90,9 +90,11 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 3. **Check whether the archive will hold any of this source's words.** After `fha process` has filed
    the item, look at the record's `files:` inventory. A source is **image-only** when none of its
    entries holds text a search can read — no entry whose `role:` is `transcript`, `transcription` or
-   `extracted-text`, and no `.md`/`.txt` file (`_lib.file_entry_carries_text`, the same rule
+   `extracted-text`, and no `.md`/`.txt`/`.ged` file (`_lib.file_entry_carries_text`, the same rule
    `fha lint`'s W124 and `fha find --text`'s coverage note use). A scan, a photograph and a PDF with
-   no text layer are all image-only, however much text a human eye can see in them.
+   no text layer are all image-only, however much text a human eye can see in them. So is a captured
+   record whose only text is the website's saved page (`.html`) or its data (`.json`): the search
+   reads those, but they are the site's copy, not a transcript of the record.
 
    **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
    Not after, and not "if there's time". The transcript exists *first* so the claims you draft in

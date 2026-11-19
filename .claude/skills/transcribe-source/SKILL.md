@@ -72,8 +72,11 @@ fha find <S-id>            # the record, its files: inventory, and every attache
 A source is **image-only** when none of its `files:` entries holds text a search can read. Use the tools'
 own rule, so this skill and `fha lint`'s W124 and `fha find --text`'s coverage note always count the same
 sources (`_lib.file_entry_carries_text`): an entry carries text when its `role:` is `transcript`,
-`transcription` or `extracted-text`, **or** its file is a `.md` or `.txt` (whatever its role). Everything
-else is opaque — a `.jpg`, a `.tif`, a `.pdf`, an `.m4a` — however much text a human eye can see in it.
+`transcription` or `extracted-text`, **or** its file is a `.md`, `.txt` or `.ged` (whatever its role; a
+family tree exported as a GEDCOM is its own words). Everything else is opaque — a `.jpg`, a `.tif`, a
+`.pdf`, an `.m4a` — however much text a human eye can see in it. A captured record's saved page (`.html`)
+and site data (`.json`) do not count either: `fha find --text` reads them, but they are the website's copy
+and reading of the record, so the record image still needs a transcript.
 A source with no `files:` at all is not image-only; there is nothing to read.
 
 Two consequences worth stating plainly to the human:

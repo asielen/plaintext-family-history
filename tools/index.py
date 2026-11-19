@@ -63,9 +63,9 @@ from _lib import (
     EXIT_WARNINGS,
     ID_RE,
     INDEX_SCHEMA_VERSION,
-    SEARCHABLE_TEXT_SUFFIXES,
     TEXT_COMPANION_ROLES,
     TOKEN_RE,
+    TRANSCRIPT_TEXT_SUFFIXES,
     FhaConfigError,
     Message,
     Result,
@@ -464,11 +464,14 @@ _RELATIONSHIPS_SOCIAL_SUBTYPES = SOCIAL_TIE_SUBTYPES
 # The vocabulary lives in _lib because `fha lint` counts the same files this
 # loads, and one shared rule is what keeps the two from drifting apart.
 #
-# _lib.SEARCHABLE_TEXT_SUFFIXES is the second half of the gate: a transcript is
+# _lib.TRANSCRIPT_TEXT_SUFFIXES is the second half of the gate: a transcript is
 # only a transcript if it is text. A role tag can land on anything - a `.m4a`
 # attached as `role: transcript` by a slip of the hand - and reading a media
 # file as UTF-8 would fail on every build and print a "re-save it as UTF-8"
 # warning naming a file that was never text at all.
+# A tree export (`.ged`) counts as the source's words for lint and is read by
+# `fha find --text`, but it is never loaded here: a multi-megabyte family tree
+# in the transcript table would swamp every ranked search.
 
 
 # ── Unreadable records ────────────────────────────────────────────────────────
@@ -1581,7 +1584,7 @@ def _index_source(
         # the main archive fills it in.
         suffix = Path(file_path.replace('\\', '/')).suffix.lower()
         if (role.strip().lower() in TEXT_COMPANION_ROLES
-                and suffix in SEARCHABLE_TEXT_SUFFIXES
+                and suffix in TRANSCRIPT_TEXT_SUFFIXES
                 and resolved.exists()):
             try:
                 dump_text = resolved.read_text(encoding='utf-8')

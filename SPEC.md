@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.5 - 2026-11-18**
+**Version 2.6 - 2026-11-18**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -675,7 +675,7 @@ The deliberate style difference - person files underscored, source files hyphena
 | `annotated` | that page with the item boxed - a capture-time derivative, never the newspaper |
 | `{kind}-N` | a grave memorial's photos, numbered per kind: `grave-1`, `person-1`, `family-1`, `document-1`, `flowers-1`, `cemetery-1`, `other-1`, `photo-1` |
 
-**A text role makes a source searchable.** A source is searchable by its words only when one of its files carries a text role - `transcript` (or `transcription`) or `extracted-text` - or is itself a text file (`.md`, `.txt`). A source whose evidence is only images, scans or recordings is invisible to text search until such a companion is attached.
+**A text role makes a source searchable.** A source is searchable by its words only when one of its files carries a text role - `transcript` (or `transcription`) or `extracted-text` - or is itself a text file (`.md`, `.txt`, `.ged`) - a family tree exported as a GEDCOM is the evidence itself. A source whose evidence is only images, scans or recordings is invisible to text search until such a companion is attached. A `webpage` copy or `site-data` file is read by text search but never makes a source searchable by its words: it is the site's copy and reading of the record.
 
 **Copies and derivatives.**
 

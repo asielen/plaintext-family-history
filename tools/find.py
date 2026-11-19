@@ -81,6 +81,7 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    TEXT_SEARCH_SUFFIXES,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
@@ -98,6 +99,7 @@ from _lib import (
     fmt_id_display,
     index_merge_survivors,
     normalize_place_text,
+    read_searchable_text,
     open_index_db,
     path_to_alias,
     PHOTO_EXTENSIONS,
@@ -133,6 +135,7 @@ configure_utf8_stdout()
 #    _count_sources_without_text - how many sources hold no text at all (#46)
 #    _searchable_text_note     - the coverage caveat printed with every result
 #    _indexed_transcript_paths - which paths transcripts_fts holds (for the regex pass)
+#    _match_context            - a short line of words around a text match
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related: neighborhood queries over the relational index
@@ -945,6 +948,24 @@ def _indexed_transcript_paths(conn: sqlite3.Connection | None) -> set[str]:
         return set()   # old-schema or damaged index: the search still runs
 
 
+def _match_context(text: str, m: re.Match) -> str:
+    """The words around a match, as one short line for the result list.
+
+    A record keeps its lines short, so its matching line is the context. A web
+    page's visible text or a site's data can be one very long line, where the
+    first 120 characters would show the page's menu and not the match, so a
+    long line is cut to a window around the match instead.
+    """
+    line_start = text.rfind('\n', 0, m.start()) + 1
+    line_end = text.find('\n', m.end())
+    if line_end == -1:
+        line_end = len(text)
+    if line_end - line_start <= 120:
+        return text[line_start:line_end].strip()
+    start = max(line_start, m.start() - 50)
+    return text[start:min(line_end, start + 120)].strip()
+
+
 def _find_text(
     query: str,
     archive_root: Path,
@@ -1018,7 +1039,11 @@ def _find_text(
             pass   # FTS tables absent (index built without note content) - fall through
 
     # re.search pass over all record directories.
-    # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
+    # The documents root is read for every plain-text kind a source can hold
+    # (_lib.TEXT_SEARCH_SUFFIXES): transcripts, a family tree exported as a
+    # GEDCOM, a captured page's saved copy and a site's data (#316). Without
+    # that, a name that appears only in the tree export comes back "not found"
+    # with no hint that the tree was never read.
     # Resolve the documents root via fha.yaml 'roots:' so external asset roots work.
     doc_root_raw = (fha_config or {}).get('roots', {}).get('documents')
     if doc_root_raw:
@@ -1032,7 +1057,7 @@ def _find_text(
         (archive_root / 'sources', ('*.md',)),
         (archive_root / 'people',  ('*.md',)),
         (archive_root / 'notes',   ('*.md',)),
-        (docs_root,                ('*.md', '*.txt')),
+        (docs_root,                tuple(f'*{s}' for s in sorted(TEXT_SEARCH_SUFFIXES))),
     ]
     # Same error seam as the id scan: this pass IS the answer when the index is
     # absent, and a folder that will not list turns "no results" into a wrong
@@ -1054,15 +1079,13 @@ def _find_text(
             if rel in seen_paths:
                 continue
             try:
-                text = p.read_text(encoding='utf-8', errors='ignore')
+                # A saved page is read by what it shows and a site's data by
+                # its values (_lib.read_searchable_text), so a search never
+                # matches a tag, a script or a field name.
+                text = read_searchable_text(p)
                 m = pattern.search(text)
                 if m:
-                    # Extract 2 lines of context around the match
-                    line_start = text.rfind('\n', 0, m.start()) + 1
-                    line_end = text.find('\n', m.end())
-                    if line_end == -1:
-                        line_end = len(text)
-                    context = text[line_start:line_end].strip()[:120]
+                    context = _match_context(text, m)
                     # Is this file one of the transcripts the index loaded? The
                     # index keys them by their alias-form path ('documents/…'),
                     # which is what `rel` already is for an internal documents
