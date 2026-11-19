@@ -98,7 +98,7 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    source that is only a saved page (with or without its data) is not image-only: there is no picture
    to transcribe (`_lib.files_carry_searchable_text`). The exception is a capture whose record image
    failed to download: its data says so (`record.imageSaved: false` with an `imageId` and no
-   `same_image_as`, or a memorial photo with no `file`). Tell the human the image is missing and how
+   `same_image_as`, or a memorial photo with no `file` and no `same_image_as`). Tell the human the image is missing and how
    to fetch it (download it from the site and drop it into the capture panel, or attach it with
    `fha process <one of its files> --more <the-image-file> record`); do not treat the page as enough.
 

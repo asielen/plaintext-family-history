@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "95ccd8e729bd1da86ff93d87709c2d2ebe7dda39bb9c2aff1b0a71712480e95a",
+      "sha256": "22dc1673840b7330fd742917774efbaeee18098f5e19b47d0e2ae4d49b82008a",
       "spec_version": "2.6",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -188,7 +188,7 @@
     {
       "path": ".agents/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "2d09e5f1720f35274237321210e8251db95c7285d0be236102c6ac7cc2192929",
+      "sha256": "fbd396687874becd63776bbea4960d51df6b7c06175d128e74a4b4a5437ed0ef",
       "spec_version": "2.6",
       "src": ".claude/skills/transcribe-source/SKILL.md"
     },
@@ -292,7 +292,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "95ccd8e729bd1da86ff93d87709c2d2ebe7dda39bb9c2aff1b0a71712480e95a",
+      "sha256": "22dc1673840b7330fd742917774efbaeee18098f5e19b47d0e2ae4d49b82008a",
       "spec_version": "2.6"
     },
     {
@@ -358,7 +358,7 @@
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "2d09e5f1720f35274237321210e8251db95c7285d0be236102c6ac7cc2192929",
+      "sha256": "fbd396687874becd63776bbea4960d51df6b7c06175d128e74a4b4a5437ed0ef",
       "spec_version": "2.6"
     },
     {

@@ -80,7 +80,7 @@ website's copy and reading of the record, so the image still needs a transcript.
 image-only work. A source whose files are only saved pages (with or without site data) is not: the search
 reads the page and there is no picture to transcribe (`_lib.files_carry_searchable_text`) - unless its data
 says the capture failed to save the record's image (`record.imageSaved: false` with an `imageId` and no
-`same_image_as`, or a memorial photo with no `file`). Then the image is the missing evidence: ask the human
+`same_image_as`, or a memorial photo with no `file` and no `same_image_as`). Then the image is the missing evidence: ask the human
 to fetch it and attach it as `record` first, and transcribe it once it is there.
 A source with no `files:` at all is not image-only; there is nothing to read.
 
