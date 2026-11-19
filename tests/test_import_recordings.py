@@ -374,8 +374,7 @@ class DocumentedCommandsExistTest(unittest.TestCase):
 
         `fha media dedupe` shipped (issue #43, `tools/media.py`) and retired
         the interim `find_duplicate_media.py` enactment this test used to
-        pin (GAP.md; `import-recordings/SKILL.md` step 3 now calls the real
-        verb). The retired script is kept on disk as a design-precedent
+        pin (`import-recordings/SKILL.md` step 3 calls the real verb). The retired script is kept on disk as a design-precedent
         citation for `attribute_speakers.py`/`backup.py` (its own docstring
         says so), so its existence is still worth asserting - but the SKILL.md
         step itself must name the real, live command."""
@@ -2920,10 +2919,10 @@ class RecordingDateOrderingTest(unittest.TestCase):
 # 6. House style
 # ---------------------------------------------------------------------------
 class SkillScriptStyleTest(unittest.TestCase):
-    """The owner's no-em-dash rule for source files (AGENTS_TOOLING.md)."""
+    """The owner's no-dash rule for source files (AGENTS_TOOLING.md)."""
 
     def test_new_script_has_no_em_dashes(self):
-        """Newly authored source files use ` - `, never a dash character.
+        """Newly authored source files carry no em or en dash character.
 
         Only the new script is checked: attribute_speakers.py carries legacy
         em dashes throughout, and the rule is to convert a line when you edit

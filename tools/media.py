@@ -80,7 +80,7 @@ exists to close.
 
 EXIT CODES
 ==========
-`fha media dedupe` uses its own four-code ladder - given in GAP.md and
+`fha media dedupe` uses its own four-code ladder - given in TOOLING §6a and
 matched exactly to the interim script's - rather than the tool suite's usual
 0=clean/1=warnings/2=errors/3=failure meaning. Read the numbers as what they
 literally mean here, not as that other ladder:
@@ -183,7 +183,7 @@ STAGING_ROOT_ALIAS = 'inbox'
 
 HASH_CHUNK = 1 << 20   # 1 MiB reads
 
-# fha media dedupe's own exit-code ladder (GAP.md's contract; NOT the tool
+# fha media dedupe's own exit-code ladder (TOOLING §6a's contract; NOT the tool
 # suite's usual 0/1/2/3 = clean/warnings/errors/failure meaning - see the
 # module docstring's EXIT CODES section).
 DEDUPE_CLEAR = 0
@@ -1178,7 +1178,7 @@ def _parse_filename_clock(name: str) -> datetime.datetime | None:
     Matches the handful of shapes an app or a camera actually writes
     (`2020-06-14 15.30.00`, `2020-06-14_15-30-00`, `20200614_153000`,
     `hartley-1998-06-14T20-15-00`). Deliberately does NOT try to solve a
-    relative label like "Thursday at 3-11 PM" - GAP.md's own example of a
+    relative label like "Thursday at 3-11 PM" - the standard example of a
     filename clock that carries no absolute date, and the reason this
     function returning None (offset unsolved) is a correct, expected outcome
     for exactly that case, not a bug to chase.
@@ -1345,8 +1345,8 @@ def run_media_probe(archive_root: Path, fha_config: dict, *, file_arg: str) -> R
     `data`: `{file, backend, duration_seconds, creation_time_utc, offset,
     offset_source, local_start, local_start_date, utc_date, crosses_midnight,
     filename_clock}`. `offset_source` is one of `'quicktime_creationdate'`,
-    `'filename_clock'`, or `None` (never determined) - GAP.md's own
-    requirement that the verb say WHERE the offset came from, not just what
+    `'filename_clock'`, or `None` (never determined) - the probe contract's
+    requirement (TOOLING §6a) that the verb say WHERE the offset came from, not just what
     it computed. See the module docstring's EXIT CODES section for the ladder.
     """
     result = Result(data={
