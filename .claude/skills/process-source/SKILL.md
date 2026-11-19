@@ -90,9 +90,17 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
 3. **Check whether the archive will hold any of this source's words.** After `fha process` has filed
    the item, look at the record's `files:` inventory. A source is **image-only** when none of its
    entries holds text a search can read — no entry whose `role:` is `transcript`, `transcription` or
-   `extracted-text`, and no `.md`/`.txt` file (`_lib.file_entry_carries_text`, the same rule
+   `extracted-text`, and no `.md`/`.txt`/`.ged` file (`_lib.file_entry_carries_text`, the same rule
    `fha lint`'s W124 and `fha find --text`'s coverage note use). A scan, a photograph and a PDF with
-   no text layer are all image-only, however much text a human eye can see in them.
+   no text layer are all image-only, however much text a human eye can see in them. So is a captured
+   record image whose only text beside it is the website's saved page (`.html`) or its data
+   (`.json`): the search reads those, but they are the site's copy, not a transcript of the image. A
+   source that is only a saved page (with or without its data) is not image-only: there is no picture
+   to transcribe (`_lib.files_carry_searchable_text`). The exception is a capture whose record image
+   failed to download: its data says so (`record.imageSaved: false` with an `imageId` and no
+   `same_image_as`, or a memorial photo with no `file` and no `same_image_as`). Tell the human the image is missing and how
+   to fetch it (download it from the site and drop it into the capture panel, or attach it with
+   `fha process <one of its files> --more <the-image-file> record`); do not treat the page as enough.
 
    **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
    Not after, and not "if there's time". The transcript exists *first* so the claims you draft in

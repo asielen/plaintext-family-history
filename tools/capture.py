@@ -48,7 +48,7 @@ library (the project adds no dependency before Jinja2 in M8).
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  HTML parsing (stdlib html.parser - shared with the recipes)
-#    _PageParser               - one pass: title / first h1 / base / canonical / meta / text
+#    _PageParser               - _lib.PageTextParser: title / first h1 / base / canonical / meta / text
 #    parse_html                - _PageParser → a ParsedPage of the fields recipes read
 #    _TableParser, extract_tables - table rows as text grids (household/index tables)
 #    visible_text, domain_of, meta_content, first_nonempty - recipe-facing helpers
@@ -123,7 +123,9 @@ from _lib import (
     EXIT_WARNINGS,
     SOURCE_TYPES,
     FhaConfigError,
+    PageTextParser,
     Result,
+    collapse_whitespace,
     configure_utf8_stdout,
     format_edtf_error,
     format_source_type_error,
@@ -222,82 +224,10 @@ class ParsedPage:
     text: str
 
 
-class _PageParser(HTMLParser):
-    """Collect title / first h1 / base href / canonical / meta / visible text.
-
-    A single forgiving pass (HTMLParser tolerates the malformed markup real
-    pages ship). `<script>`/`<style>` bodies are dropped from the visible text;
-    `<title>` text is captured for the title but kept out of the body so the
-    snippet reads as page content, not chrome.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._title_parts: list[str] = []
-        self._in_title = False
-        self._h1_parts: list[str] = []
-        self._in_h1 = False
-        self._h1_done = False
-        self.base_href: str | None = None
-        self.canonical: str | None = None
-        self.meta: dict[str, str] = {}
-        self._text_parts: list[str] = []
-        self._skip_depth = 0  # inside <script>/<style>
-
-    def handle_starttag(self, tag: str, attrs: list) -> None:
-        a = {k.lower(): (v or '') for k, v in attrs}
-        if tag in ('script', 'style'):
-            self._skip_depth += 1
-        elif tag == 'title':
-            self._in_title = True
-        elif tag == 'h1' and not self._h1_done:
-            self._in_h1 = True
-        elif tag == 'base' and a.get('href'):
-            self.base_href = self.base_href or a['href']
-        elif tag == 'link' and 'canonical' in a.get('rel', '').lower() and a.get('href'):
-            self.canonical = self.canonical or a['href']
-        elif tag == 'meta':
-            key = a.get('property') or a.get('name')
-            if key and 'content' in a:
-                self.meta.setdefault(key.lower(), a['content'])
-
-    def handle_startendtag(self, tag: str, attrs: list) -> None:
-        # Self-closing <meta .../> / <base .../> / <link .../> never fire an end
-        # tag, so route them through the same start handler.
-        self.handle_starttag(tag, attrs)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in ('script', 'style') and self._skip_depth > 0:
-            self._skip_depth -= 1
-        elif tag == 'title':
-            self._in_title = False
-        elif tag == 'h1' and self._in_h1:
-            self._in_h1 = False
-            self._h1_done = True
-
-    def handle_data(self, data: str) -> None:
-        if self._skip_depth > 0:
-            return
-        if self._in_title:
-            self._title_parts.append(data)
-            return
-        if self._in_h1:
-            self._h1_parts.append(data)
-        self._text_parts.append(data)
-
-    def title(self) -> str | None:
-        return _clean_ws(''.join(self._title_parts)) or None
-
-    def h1(self) -> str | None:
-        return _clean_ws(''.join(self._h1_parts)) or None
-
-    def text(self) -> str:
-        return _clean_ws(' '.join(self._text_parts))
-
-
-def _clean_ws(text: str) -> str:
-    """Collapse all runs of whitespace to single spaces and trim."""
-    return ' '.join((text or '').split())
+# The page parser is shared with the text search (a saved page copy is searched
+# by what it shows), so it lives in _lib; these names keep the recipes' view.
+_PageParser = PageTextParser
+_clean_ws = collapse_whitespace
 
 
 def parse_html(html: str) -> ParsedPage:

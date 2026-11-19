@@ -81,11 +81,14 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    TEXT_SEARCH_SUFFIXES,
+    TRANSCRIPT_TEXT_SUFFIXES,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
     edtf_bounds,
     file_entry_carries_text,
+    files_carry_searchable_text,
     format_edtf_error,
     id_type_of,
     is_valid_edtf,
@@ -98,6 +101,9 @@ from _lib import (
     fmt_id_display,
     index_merge_survivors,
     normalize_place_text,
+    PageTextCache,
+    is_markup_text_file,
+    read_searchable_text,
     open_index_db,
     path_to_alias,
     PHOTO_EXTENSIONS,
@@ -107,6 +113,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     transcript_text_is_unchecked,
+    unsaved_image_checker_for_index,
     unreadable_dir_recorder,
     walk_files,
 )
@@ -133,6 +140,7 @@ configure_utf8_stdout()
 #    _count_sources_without_text - how many sources hold no text at all (#46)
 #    _searchable_text_note     - the coverage caveat printed with every result
 #    _indexed_transcript_paths - which paths transcripts_fts holds (for the regex pass)
+#    _match_context            - a short line of words around a text match
 #    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related: neighborhood queries over the relational index
@@ -805,10 +813,15 @@ def _print_unseen_folders(
 
 def _count_sources_without_text(
     conn: sqlite3.Connection,
-) -> tuple[int, int] | None:
+) -> tuple[int, int, int] | None:
     """How many of the sources this search covered hold no text at all?
 
-    Returns `(unreadable, total)`, or None when the index cannot answer.
+    Returns `(unreadable, not_in_index, total)`, or None when the index cannot
+    answer. `unreadable` is for the CLI text search, which also reads the
+    documents folder and so sees a family tree export (`.ged`); `not_in_index`
+    is for a search that reads only the index (`fha find --json`, the
+    workbench), which never holds a tree export (#316). Both come from one pass
+    so neither surface pays twice.
 
     A source whose files are all scans, photographs, PDFs or recordings puts
     nothing into the archive as text. A text search over it returns nothing and
@@ -834,7 +847,8 @@ def _count_sources_without_text(
     try:
         total = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
         with_files: set[str] = set()
-        with_text: set[str] = set()
+        with_index_text: set[str] = set()
+        on_disk: dict[str, list[tuple[str, str]]] = {}
         for sid, role, path, exists in conn.execute(
             'SELECT source_id, role, path, exists_on_disk FROM source_files'
         ):
@@ -843,21 +857,31 @@ def _count_sources_without_text(
             with_files.add(sid)
             if exists == 0:
                 continue
-            if file_entry_carries_text(role or '', path or ''):
-                with_text.add(sid)
+            on_disk.setdefault(sid, []).append((role or '', path or ''))
+            if file_entry_carries_text(role or '', path or '',
+                                       TRANSCRIPT_TEXT_SUFFIXES):
+                with_index_text.add(sid)
+        # The source-level rule lint and metrics share: a .ged counts, and so
+        # does a source whose files are only saved web pages.
+        image_unsaved = unsaved_image_checker_for_index(conn)
+        with_text = {sid for sid, entries in on_disk.items()
+                     if files_carry_searchable_text(entries, image_unsaved)}
         for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
             if row[0]:
                 with_text.add(row[0])
+                with_index_text.add(row[0])
     except sqlite3.Error:
         # An old-schema or damaged index: the rest of the search still works off
         # whatever tables it does have, and the caller says plainly that the
         # coverage question went unanswered rather than implying full coverage.
         return None
-    return len(with_files - with_text), int(total)
+    return (len(with_files - with_text), len(with_files - with_index_text),
+            int(total))
 
 
 def _searchable_text_note(
     conn: sqlite3.Connection | None, *, found_something: bool,
+    index_only: bool = False,
 ) -> str | None:
     """The line that tells the reader how much of the archive this search read.
 
@@ -872,6 +896,11 @@ def _searchable_text_note(
     The named next steps are the ones that exist today: `fha source extract`
     for a PDF carrying its own text layer, and reading the file. Naming a verb
     the tools do not have would be a promise this program cannot keep.
+
+    `index_only` is for a surface that searches the index alone (`--json`, the
+    workbench). The index never holds a family tree export, so those sources
+    are counted as unread there and named, with `fha find --text` as the way to
+    search them (#316).
     """
     if conn is None:
         return ('Note: could not check which sources have no searchable text - '
@@ -882,9 +911,11 @@ def _searchable_text_note(
         return ('Note: could not check which sources have no searchable text - '
                 'the search index is out of date. Run `fha index`, then search '
                 'again.')
-    unreadable, total = counted
+    no_words, not_in_index, total = counted
+    unreadable = not_in_index if index_only else no_words
     if not unreadable:
         return None
+    trees = (not_in_index - no_words) if index_only else 0
     lead = ('These results are not the whole picture'
             if found_something else
             'Nothing was found, but this search could not look everywhere')
@@ -897,6 +928,12 @@ def _searchable_text_note(
         'searchable when it carries its own text layer; a scan or a photograph '
         'has to be read and typed out. `fha find <S-id>` lists what files a '
         'source has.'
+        + ((' 1 of them is a family tree export or another plain-text file '
+            'this search does not read; `fha find --text "<words>"` searches it.'
+            if trees == 1 else
+            f' {trees} of them are family tree exports or other plain-text '
+            'files this search does not read; `fha find --text "<words>"` '
+            'searches those.') if trees else '')
     )
 
 
@@ -943,6 +980,28 @@ def _indexed_transcript_paths(conn: sqlite3.Connection | None) -> set[str]:
             'SELECT DISTINCT path FROM transcripts_fts') if row[0]}
     except sqlite3.Error:
         return set()   # old-schema or damaged index: the search still runs
+
+
+# More unread saved pages than this and the search says it is reading them.
+_FIRST_READ_NOTE_AT = 20
+
+
+def _match_context(text: str, m: re.Match) -> str:
+    """The words around a match, as one short line for the result list.
+
+    A record keeps its lines short, so its matching line is the context. A web
+    page's visible text or a site's data can be one very long line, where the
+    first 120 characters would show the page's menu and not the match, so a
+    long line is cut to a window around the match instead.
+    """
+    line_start = text.rfind('\n', 0, m.start()) + 1
+    line_end = text.find('\n', m.end())
+    if line_end == -1:
+        line_end = len(text)
+    if line_end - line_start <= 120:
+        return text[line_start:line_end].strip()
+    start = max(line_start, m.start() - 50)
+    return text[start:min(line_end, start + 120)].strip()
 
 
 def _find_text(
@@ -1018,7 +1077,11 @@ def _find_text(
             pass   # FTS tables absent (index built without note content) - fall through
 
     # re.search pass over all record directories.
-    # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
+    # The documents root is read for every plain-text kind a source can hold
+    # (_lib.TEXT_SEARCH_SUFFIXES): transcripts, a family tree exported as a
+    # GEDCOM, a captured page's saved copy and a site's data (#316). Without
+    # that, a name that appears only in the tree export comes back "not found"
+    # with no hint that the tree was never read.
     # Resolve the documents root via fha.yaml 'roots:' so external asset roots work.
     doc_root_raw = (fha_config or {}).get('roots', {}).get('documents')
     if doc_root_raw:
@@ -1032,21 +1095,33 @@ def _find_text(
         (archive_root / 'sources', ('*.md',)),
         (archive_root / 'people',  ('*.md',)),
         (archive_root / 'notes',   ('*.md',)),
-        (docs_root,                ('*.md', '*.txt')),
+        (docs_root,                tuple(f'*{s}' for s in sorted(TEXT_SEARCH_SUFFIXES))),
     ]
     # Same error seam as the id scan: this pass IS the answer when the index is
     # absent, and a folder that will not list turns "no results" into a wrong
     # answer the human has no way to question.
     text_unreadable: list[Path] = []
     text_on_error = unreadable_dir_recorder(text_unreadable)
+    page_cache: PageTextCache | None = None   # opened on the first saved page
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
         suffixes = tuple(g.lstrip('*').lower() for g in globs)
-        for p in sorted(
+        files = sorted(
             f for f in walk_files(scan_dir, on_error=text_on_error)
             if f.name.lower().endswith(suffixes)
-        ):
+        )
+        pages = [f for f in files if is_markup_text_file(f)]
+        if pages:
+            if page_cache is None:
+                page_cache = PageTextCache(archive_root)
+            unread = sum(1 for f in pages if not page_cache.is_fresh(f))
+            if unread > _FIRST_READ_NOTE_AT:
+                # Say so before the wait, so a long first search does not
+                # look like a hang. `fha index` normally does this reading.
+                print(f'Reading {unread} saved web pages for the first time; '
+                      'later searches are fast.', file=sys.stderr, flush=True)
+        for p in files:
             try:
                 rel = str(p.relative_to(archive_root))
             except ValueError:
@@ -1054,15 +1129,19 @@ def _find_text(
             if rel in seen_paths:
                 continue
             try:
-                text = p.read_text(encoding='utf-8', errors='ignore')
+                # A saved page is read by what it shows and a site's data by
+                # its values (_lib.read_searchable_text), so a search never
+                # matches a tag, a script or a field name. A page's text comes
+                # from the page cache, so it is parsed once, not every search.
+                if is_markup_text_file(p):
+                    if page_cache is None:
+                        page_cache = PageTextCache(archive_root)
+                    text = page_cache.text(p)
+                else:
+                    text = read_searchable_text(p)
                 m = pattern.search(text)
                 if m:
-                    # Extract 2 lines of context around the match
-                    line_start = text.rfind('\n', 0, m.start()) + 1
-                    line_end = text.find('\n', m.end())
-                    if line_end == -1:
-                        line_end = len(text)
-                    context = text[line_start:line_end].strip()[:120]
+                    context = _match_context(text, m)
                     # Is this file one of the transcripts the index loaded? The
                     # index keys them by their alias-form path ('documents/…'),
                     # which is what `rel` already is for an internal documents
@@ -1083,6 +1162,8 @@ def _find_text(
                     seen_paths.add(rel)
             except OSError:
                 pass
+    if page_cache is not None:
+        page_cache.close()
 
     # places/places.yaml is the record store for places (TOOLING) but isn't a
     # directory of .md files like the scan_dirs above, so it needs its own pass.
@@ -1094,12 +1175,7 @@ def _find_text(
                 text = places_path.read_text(encoding='utf-8', errors='ignore')
                 m = pattern.search(text)
                 if m:
-                    line_start = text.rfind('\n', 0, m.start()) + 1
-                    line_end = text.find('\n', m.end())
-                    if line_end == -1:
-                        line_end = len(text)
-                    context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context, False))
+                    hits.append((rel, _match_context(text, m), False))
                     seen_paths.add(rel)
             except OSError:
                 pass
@@ -2644,7 +2720,8 @@ def search_json_with_coverage(
         hits = _ranked_search(conn, query, kinds, limit)
         if kinds is not None:
             return hits, None
-        return hits, _searchable_text_note(conn, found_something=bool(hits))
+        return hits, _searchable_text_note(
+            conn, found_something=bool(hits), index_only=True)
     except sqlite3.OperationalError:
         # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
         # table probe confirms the required tables EXIST, not that every
@@ -2721,7 +2798,7 @@ def run_find_json(
         try:
             results = _ranked_search(conn, query, kinds, limit)
             coverage_note = _searchable_text_note(
-                conn, found_something=bool(results))
+                conn, found_something=bool(results), index_only=True)
         except sqlite3.OperationalError:
             return Result(ok=False, exit_code=EXIT_FAILURE).add(
                 'error',

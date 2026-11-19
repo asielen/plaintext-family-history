@@ -530,6 +530,15 @@ against its terms; the one-record rule avoids both.
   provisional. A citation with no file is labelled "held elsewhere". A saved
   page says it is a copy of the page, not the original record. A site's own
   index of a record is filed as site data, never as a transcript.
+- **Searchable is not the same as transcribed.** `fha find --text` reads a
+  saved page by what it shows and a site's data by its values, so a name on
+  the page is found. Beside a record image, neither counts as the record's
+  own words: lint keeps asking for a transcript of the image, because the
+  site's index is the site's reading, and a misreading there would otherwise
+  pass as evidence. Site data alone is the same. A source that is only a
+  saved page has no picture behind it to read, and the search already reads
+  the page, so it is not sent to the backlog. A family tree exported as a
+  GEDCOM is the evidence itself, so it counts as its own words too.
 - **Do not invent what the page does not say.** A memorial site gives a death
   date but no burial date; capture does not make one up. A volunteer's
   compilation is filed as a website, a derivative source, not as a vital
@@ -543,7 +552,9 @@ against its terms; the one-record rule avoids both.
 
 **What we rejected.** Bulk or automated downloading. Logging in for the user.
 Per-site parsing in the browser. A capture that writes a finished record
-rather than a stub for review.
+rather than a stub for review. Counting a saved page or a site's data as the
+transcript of a record image filed beside it. Asking for a transcript of a
+saved page that is the whole of a source.
 
 ---
 

@@ -47,6 +47,7 @@ from __future__ import annotations
 import base64
 import binascii
 import calendar
+import codecs
 import dataclasses
 import datetime
 import fnmatch
@@ -67,6 +68,7 @@ import tempfile
 import time
 import unicodedata
 from collections import deque
+from html.parser import HTMLParser
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
@@ -95,12 +97,22 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    picture_data_hash         - a JPEG/PNG's picture identity, blind to metadata writes
 #                                (jpeg_picture_hash, png_picture_hash; photoindex + process)
 #    TEXT_COMPANION_ROLES      - files: roles that hold a source's words as text
-#    SEARCHABLE_TEXT_SUFFIXES  - file extensions the text search actually reads
+#    TRANSCRIPT_TEXT_SUFFIXES  - file kinds `fha index` loads as a transcript companion
+#    EVIDENCE_TEXT_SUFFIXES    - file kinds that ARE the evidence's words (+ .ged)
+#    TEXT_SEARCH_SUFFIXES      - file kinds `fha find --text` reads (+ web copies, data)
 #    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
 #
 #  Which sources a text search can see inside (#46)
 #    file_entry_carries_text   - one files: entry -> is its content searchable text?
 #    files_carry_searchable_text - a source's files: block -> any text at all?
+#    file_entry_is_searched_copy - a page copy or site data: searched, not the words
+#    file_entry_is_page_copy   - a saved .html/.htm/.xhtml page copy
+#    site_data_says_image_unsaved - a capture's data: the record image was not saved
+#    unsaved_image_checker(_for_index) - that check, for files_carry_searchable_text
+#    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
+#    read_searchable_text      - a file's words as the text search reads them
+#    PageTextCache             - each saved page's visible text, parsed once (.cache/)
+#    warm_page_text_cache      - `fha index` reads new or changed pages into it
 #
 #  Who a claim is really about - roles:, never the whole persons: list (SPEC §8.3)
 #    roles_by_person           - a claim's (pid, role) pairs -> every role each
@@ -2282,12 +2294,34 @@ TEXT_COMPANION_ROLES: frozenset[str] = frozenset({
 _COMPOUND_FILE_ROLES: tuple[str, ...] = tuple(sorted(
     (r for r in TEXT_COMPANION_ROLES if '-' in r), key=len, reverse=True))
 
-# File extensions the archive's text search actually opens and reads. Anything
-# else - a scan, a photograph, a PDF, a recording - is opaque to it: a PDF's own
-# text layer is only searchable once `fha source extract` has dumped it into a
-# companion, and an image or a recording only once somebody has written out what
-# it says.
-SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
+# Three nested sets of plain-text file kinds, because "the computer can read
+# this file" and "this file is the evidence's own words" are different promises
+# (#316). A family tree exported as a GEDCOM is the evidence itself, so a source
+# filed from one must not sit in the "transcribe these" backlog; a website's
+# saved copy of a census page is searchable, but it is the site's copy and its
+# reading of the record, never a transcript of the record (SPEC §6 file roles).
+#
+# Anything outside all three - a scan, a photograph, a PDF, a recording - is
+# opaque to the search: a PDF's own text layer is only searchable once
+# `fha source extract` has dumped it into a companion, and an image or a
+# recording only once somebody has written out what it says.
+#
+# TRANSCRIPT_TEXT_SUFFIXES: what `fha index` loads into its transcript table
+#   from a role-tagged companion. Kept to the small hand-written formats so a
+#   multi-megabyte tree export never lands in the index.
+TRANSCRIPT_TEXT_SUFFIXES: frozenset[str] = frozenset({'.md', '.txt'})
+# EVIDENCE_TEXT_SUFFIXES: a file of one of these kinds IS the source's words as
+#   text, with no role needed (SPEC §6: `.md`, `.txt`, `.ged`). This is the set
+#   lint W124, find's coverage note and the metrics share read.
+EVIDENCE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES | {'.ged'}
+# TEXT_SEARCH_SUFFIXES: every kind `fha find --text` opens and reads. The extra
+#   kinds are a captured page's saved copy and a site's data; they are searched
+#   (by what they show, not their markup - read_searchable_text) but never count
+#   as the source's words.
+TEXT_SEARCH_SUFFIXES: frozenset[str] = EVIDENCE_TEXT_SUFFIXES | {
+    '.html', '.htm', '.xhtml', '.json', '.csv', '.xml'}
+# The kinds read by what they show rather than as they stand.
+_MARKUP_TEXT_SUFFIXES: frozenset[str] = frozenset({'.html', '.htm', '.xhtml', '.xml'})
 
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
@@ -8790,29 +8824,70 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
 
 # ── Which sources a text search can see inside (#46) ─────────────────────────
 
-def file_entry_carries_text(role: str, path: str) -> bool:
+def file_entry_carries_text(
+    role: str, path: str, suffixes: frozenset[str] | None = None,
+) -> bool:
     """Does one `files:` entry put the source's words into the archive as text?
 
     Two ways it can, and they are the only two: the entry is tagged with a role
     that means "this file is what the evidence says" (`transcript`,
-    `transcription`, `extracted-text`), or the file is itself a plain-text file
-    the search reads anyway (a `.md` or `.txt` attached with no role at all).
+    `transcription`, `extracted-text`), or the file is itself the evidence as
+    plain text (a `.md`, `.txt` or `.ged` attached with no role at all - a
+    family tree exported as a GEDCOM is its own words, #316).
 
     Everything else - a scan, a photograph, a PDF, a recording - holds its words
     in a form no text search can read. That is true of a PDF with a perfectly
-    good text layer, too, until `fha source extract` dumps it into a companion:
-    the search opens `.md` and `.txt` files and nothing else.
+    good text layer, too, until `fha source extract` dumps it into a companion.
+    A website's saved page copy or its data file (`.html`, `.json`) is read by
+    the search but does not count: it is the site's copy and reading of the
+    record, never a transcript of it (SPEC §6).
 
     The role is what decides, not the extension, because a role-tagged companion
     is a promise about the file's content that outranks any guess from its name.
+
+    `suffixes` narrows the plain-text kinds for a surface that reads less than
+    the whole set: the workbench's ranked search reads only the index, which
+    never holds a tree export, so its coverage count passes
+    TRANSCRIPT_TEXT_SUFFIXES and a GEDCOM-only source counts as unread there.
     """
     if str(role or '').strip().lower() in TEXT_COMPANION_ROLES:
         return True
-    suffix = PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
-    return suffix in SEARCHABLE_TEXT_SUFFIXES
+    return _entry_suffix(path) in (
+        EVIDENCE_TEXT_SUFFIXES if suffixes is None else suffixes)
 
 
-def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool:
+def file_entry_is_searched_copy(role: str, path: str) -> bool:
+    """Is this a file the search reads that still is not the evidence's words?
+
+    A captured web record ships its saved page and the site's data beside the
+    record image. `fha find --text` reads both, so a warning that says the
+    source's files are all "scans, photographs, PDFs or recordings" would be
+    wrong about them; this lets W124 say what they really are.
+    """
+    return (not file_entry_carries_text(role, path)
+            and _entry_suffix(path) in TEXT_SEARCH_SUFFIXES)
+
+
+# A saved page copy, read by what it shows. Not `.mhtml`: the search cannot read it.
+_PAGE_COPY_SUFFIXES: frozenset[str] = frozenset({'.html', '.htm', '.xhtml'})
+
+
+def file_entry_is_page_copy(role: str, path: str) -> bool:
+    """Is this a saved copy of a web page the search reads (`.html`/`.htm`/`.xhtml`)?
+
+    Decided by the file, not the role: a `webpage` screenshot saved as a
+    picture is an image the search cannot read.
+    """
+    return _entry_suffix(path) in _PAGE_COPY_SUFFIXES
+
+
+def _entry_suffix(path: str) -> str:
+    return PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
+
+
+def files_carry_searchable_text(
+    file_entries: Iterable[tuple[str, str]], image_unsaved=None,
+) -> bool:
     """True when at least one of a source's files holds text a search can read.
 
     `file_entries` is an iterable of `(role, path)` pairs - the shape both
@@ -8824,8 +8899,436 @@ def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool
 
     A source with no files at all is not "unreadable" - there is nothing to
     read - so callers test emptiness separately rather than folding it in here.
+
+    A source whose files are ONLY saved web-page copies (with or without the
+    site's data) also counts (SPEC §6, owner decision 2026-11-18): the search
+    already reads the page, and there is no picture behind it to transcribe.
+    A page filed beside a record image does not count - the image still holds
+    words nobody has written out - and site data alone never does: it is the
+    site's reading, never a transcript.
+
+    Nor does a page whose capture could not save the record's image. Capture
+    files the page in place of the image when the download fails, and its
+    data says so; without this the missing record image would drop out of
+    W124 and be forgotten. `image_unsaved(role, path)` answers that from a
+    site-data file (`unsaved_image_checker`); without it the data is not read.
     """
-    return any(file_entry_carries_text(role, path) for role, path in file_entries)
+    entries = list(file_entries)
+    if any(file_entry_carries_text(role, path) for role, path in entries):
+        return True
+    page_only = (any(file_entry_is_page_copy(role, path) for role, path in entries)
+                 and all(file_entry_is_searched_copy(role, path)
+                         for role, path in entries))
+    if not page_only:
+        return False
+    return image_unsaved is None or not any(
+        image_unsaved(role, path) for role, path in entries)
+
+
+def site_data_says_image_unsaved(path: Path) -> bool:
+    """Does a capture's site-data file say the record has an image it did not save?
+
+    Positive evidence only: the Ancestry and FamilySearch readers write
+    `record.imageId` (the image the record links to) and `record.imageSaved`,
+    with `record.same_image_as` when the image is already filed with another
+    capture (a census household's later members); the Find a Grave reader lists the memorial's `photos`, each with the
+    `file` it was saved as, or `same_image_as` when it is already filed. A
+    file that cannot be read, is not JSON, or does not carry those fields
+    proves nothing, and an obituary or memorial page with no image is not
+    reported.
+    """
+    try:
+        data = json.loads(_decode_text_file(Path(path).read_bytes()))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    rec = data.get('record')
+    # `same_image_as` marks a household member whose census page is already
+    # filed with the first member's capture: its image is not missing.
+    if (isinstance(rec, dict) and rec.get('imageSaved') is False
+            and rec.get('imageId') and not rec.get('same_image_as')):
+        return True
+    photos = data.get('photos')
+    return isinstance(photos, list) and any(
+        isinstance(p, dict) and not p.get('file') and not p.get('same_image_as')
+        for p in photos)
+
+
+def unsaved_image_checker(archive_root: Path, fha_config: dict):
+    """An `image_unsaved(role, path)` for files_carry_searchable_text.
+
+    Reads a `.json` entry (resolved through the archive's roots) only when
+    asked, and only once.
+    """
+    seen: dict[str, bool] = {}
+
+    def image_unsaved(role: str, path: str) -> bool:
+        if _entry_suffix(path) != '.json':
+            return False
+        if path not in seen:
+            seen[path] = site_data_says_image_unsaved(
+                resolve_path(path, fha_config, archive_root))
+        return seen[path]
+
+    return image_unsaved
+
+
+def unsaved_image_checker_for_index(conn: sqlite3.Connection):
+    """The same checker for a caller that holds only the index connection.
+
+    The archive is the folder above the index's `.cache/`. Returns None for an
+    index that is not an archive's (an in-memory or test database).
+    """
+    try:
+        rows = conn.execute('PRAGMA database_list').fetchall()
+    except sqlite3.Error:
+        return None
+    main = next((r[2] for r in rows if r[1] == 'main' and r[2]), None)
+    if not main or Path(main).parent.name != '.cache':
+        return None
+    archive_root = Path(main).parent.parent
+    return unsaved_image_checker(archive_root, load_fha_yaml(archive_root))
+
+
+class PageTextParser(HTMLParser):
+    """Collect title / first h1 / base href / canonical / meta / visible text.
+
+    A single forgiving pass (HTMLParser tolerates the malformed markup real
+    pages ship). `<script>`/`<style>` bodies are dropped from the visible text;
+    `<title>` text is captured for the title but kept out of the body so the
+    text reads as page content, not chrome. Shared by `fha capture` (reading a
+    page into a citation) and the text search (reading a saved page copy by
+    what it shows, so a search for "script" does not match every page).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._title_parts: list[str] = []
+        self._in_title = False
+        self._h1_parts: list[str] = []
+        self._in_h1 = False
+        self._h1_done = False
+        self.base_href: str | None = None
+        self.canonical: str | None = None
+        self.meta: dict[str, str] = {}
+        self._text_parts: list[str] = []
+        self._skip_depth = 0  # inside <script>/<style>
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        a = {k.lower(): (v or '') for k, v in attrs}
+        if tag in ('script', 'style'):
+            self._skip_depth += 1
+        elif tag == 'title':
+            self._in_title = True
+        elif tag == 'h1' and not self._h1_done:
+            self._in_h1 = True
+        elif tag == 'base' and a.get('href'):
+            self.base_href = self.base_href or a['href']
+        elif tag == 'link' and 'canonical' in a.get('rel', '').lower() and a.get('href'):
+            self.canonical = self.canonical or a['href']
+        elif tag == 'meta':
+            key = a.get('property') or a.get('name')
+            if key and 'content' in a:
+                self.meta.setdefault(key.lower(), a['content'])
+
+    def handle_startendtag(self, tag: str, attrs: list) -> None:
+        # Self-closing <meta .../> / <base .../> / <link .../> never fire an end
+        # tag, so route them through the same start handler.
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ('script', 'style') and self._skip_depth > 0:
+            self._skip_depth -= 1
+        elif tag == 'title':
+            self._in_title = False
+        elif tag == 'h1' and self._in_h1:
+            self._in_h1 = False
+            self._h1_done = True
+
+    def unknown_decl(self, data: str) -> None:
+        # `<![CDATA[ ... ]]>` in an XHTML page or an XML file is text the page
+        # shows; HTMLParser hands it here rather than to handle_data.
+        if data.startswith('CDATA['):
+            self.handle_data(data[len('CDATA['):])
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        if self._in_title:
+            self._title_parts.append(data)
+            return
+        if self._in_h1:
+            self._h1_parts.append(data)
+        self._text_parts.append(data)
+
+    def title(self) -> str | None:
+        return collapse_whitespace(''.join(self._title_parts)) or None
+
+    def h1(self) -> str | None:
+        return collapse_whitespace(''.join(self._h1_parts)) or None
+
+    def text(self) -> str:
+        return collapse_whitespace(' '.join(self._text_parts))
+
+
+def collapse_whitespace(text: str) -> str:
+    """Collapse all runs of whitespace to single spaces and trim."""
+    return ' '.join((text or '').split())
+
+
+def _decode_text_file(raw: bytes) -> str:
+    """Bytes to text the way the search needs it: never refuse a file.
+
+    A GEDCOM from an older program can be UTF-16 (with its byte-order mark),
+    ANSI or ANSEL, and an older saved page is often Windows ANSI. A UTF-16 file
+    read as UTF-8 loses every name to the zero bytes between its letters, so
+    the mark is honoured. Everything else is read as UTF-8, and only the bytes
+    that are not valid UTF-8 are read as Windows ANSI (cp1252): a file saved
+    in ANSI keeps "Müller" rather than "Mller", and a UTF-8 transcript with
+    one stray Windows apostrophe pasted into it keeps every accent around it,
+    so "Äbersold" on the same line is still found. An ANSEL accent shows as a
+    stray letter beside its base letter, which still leaves the name findable.
+    """
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return raw.decode('utf-16', errors='ignore')
+    if raw.startswith(b'\xef\xbb\xbf'):
+        raw = raw[3:]
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        pass
+    # No UTF-8 letter anywhere: a file saved in ANSI throughout, read in one
+    # pass (the per-byte handler costs seconds on a large tree export).
+    if _UTF8_MULTIBYTE.search(raw) is None:
+        return raw.decode('cp1252', errors='ignore')
+    return raw.decode('utf-8', errors=_CP1252_FALLBACK)
+
+
+def _cp1252_for_bad_bytes(err: UnicodeDecodeError) -> tuple[str, int]:
+    """Decode handler: the bytes UTF-8 rejected, read as Windows ANSI."""
+    return err.object[err.start:err.end].decode('cp1252', errors='ignore'), err.end
+
+
+_UTF8_MULTIBYTE = re.compile(rb'[\xc2-\xf4][\x80-\xbf]')
+_CP1252_FALLBACK = 'fha-cp1252-fallback'
+codecs.register_error(_CP1252_FALLBACK, _cp1252_for_bad_bytes)
+
+
+def _json_leaf_text(value: Any, out: list[str]) -> None:
+    if isinstance(value, dict):
+        for v in value.values():
+            _json_leaf_text(v, out)
+    elif isinstance(value, list):
+        for v in value:
+            _json_leaf_text(v, out)
+    elif value is not None and not isinstance(value, bool):
+        out.append(str(value))
+
+
+def read_searchable_text(path: Path) -> str:
+    """A file's words as `fha find --text` reads them. Raises OSError.
+
+    Parsing a large saved page costs far more than reading it, so a caller
+    that reads pages on every search goes through PageTextCache instead.
+
+    A saved web page (`.html`, `.htm`, `.xhtml`) and an `.xml` file are read by
+    what they show, not their markup: a search for a word must not match a tag
+    name or a page's script. A `.json` data file is read by its values, not its field
+    names, so a search for "name" does not match every record a site saved;
+    a file that does not parse as JSON is read as it stands. Everything else
+    (`.md`, `.txt`, `.ged`, `.csv`) is read as it stands.
+    """
+    text = _decode_text_file(Path(path).read_bytes())
+    suffix = Path(path).suffix.lower()
+    if suffix in _MARKUP_TEXT_SUFFIXES:
+        parser = PageTextParser()
+        try:
+            parser.feed(text)
+            parser.close()
+        except Exception:
+            pass   # forgiving: whatever was collected before the break is kept
+        return '\n'.join(p for p in (parser.title(), parser.text()) if p)
+    if suffix == '.json':
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return text
+        parts: list[str] = []
+        _json_leaf_text(data, parts)
+        return '\n'.join(parts)
+    return text
+
+
+def is_markup_text_file(path: Path) -> bool:
+    """Is this a saved page or XML file, read by what it shows (and cached)?"""
+    return Path(path).suffix.lower() in _MARKUP_TEXT_SUFFIXES
+
+
+# Bump when PageTextParser or read_searchable_text changes what a page reads
+# as, so every cached page is read afresh by the new code.
+_PAGE_TEXT_CACHE_VERSION = 1
+
+
+class PageTextCache:
+    """Each saved page's visible text, kept so a page is parsed once.
+
+    A folder of captured records holds a saved copy of every page, often a few
+    hundred kilobytes of markup each, and the family surname is on most of
+    them. Parsing every page on every search made one search take half a
+    minute. The text is kept in `.cache/page-text.sqlite`, keyed by the page's
+    full path with its modification time and size, so an edited or replaced
+    page is read again and an unchanged one never is.
+
+    Disposable like everything in `.cache/`: delete it and the next search
+    rebuilds it. A missing, read-only or damaged cache only costs speed - the
+    page is parsed as before and the search answers the same.
+    """
+
+    def __init__(self, archive_root: Path) -> None:
+        self.conn: sqlite3.Connection | None = None
+        path = Path(archive_root) / '.cache' / 'page-text.sqlite'
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        # A damaged cache file (a crash mid-write, a bad disk sector) would
+        # otherwise make every search re-read every page, forever. It is
+        # disposable, so it is deleted and started afresh, once.
+        for _attempt in range(2):
+            conn = None
+            try:
+                conn = sqlite3.connect(str(path))
+                self._prepare(conn)
+                self.conn = conn
+                return
+            except sqlite3.OperationalError:
+                # Read-only, locked, or not openable at all: leave it alone and
+                # let the search parse pages as it would with no cache.
+                if conn is not None:
+                    conn.close()
+                return
+            except sqlite3.DatabaseError:
+                if conn is not None:
+                    conn.close()
+                try:
+                    for leftover in (path, path.with_name(path.name + '-journal')):
+                        leftover.unlink(missing_ok=True)
+                except OSError:
+                    return
+
+    @staticmethod
+    def _prepare(conn: sqlite3.Connection) -> None:
+        """Check the file is a sound cache of this version, or make it one."""
+        if conn.execute('PRAGMA quick_check(1)').fetchone()[0] != 'ok':
+            raise sqlite3.DatabaseError('page-text cache is damaged')
+        if conn.execute('PRAGMA user_version').fetchone()[0] != _PAGE_TEXT_CACHE_VERSION:
+            conn.execute('DROP TABLE IF EXISTS page_text')
+            conn.execute(f'PRAGMA user_version = {_PAGE_TEXT_CACHE_VERSION}')
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS page_text ('
+            'path TEXT PRIMARY KEY, mtime_ns INTEGER, size INTEGER, text TEXT)')
+
+    def _cached(self, path: Path, st: os.stat_result) -> str | None:
+        if self.conn is None:
+            return None
+        try:
+            row = self.conn.execute(
+                'SELECT mtime_ns, size, text FROM page_text WHERE path = ?',
+                (os.path.abspath(path),)).fetchone()
+        except sqlite3.Error:
+            return None
+        if row and row[0] == st.st_mtime_ns and row[1] == st.st_size:
+            return row[2] or ''
+        return None
+
+    def is_fresh(self, path: Path) -> bool:
+        """Is this page's text already kept, unchanged since it was read?"""
+        try:
+            return self._cached(path, Path(path).stat()) is not None
+        except OSError:
+            return True   # a page that cannot be read costs no parsing
+
+    def text(self, path: Path) -> str:
+        """The page's searchable text, parsed only when it changed. Raises OSError."""
+        st = Path(path).stat()   # before reading: a save in between reads as changed
+        key = os.path.abspath(path)
+        cached = self._cached(path, st)
+        if cached is not None:
+            return cached
+        text = read_searchable_text(path)
+        if self.conn is not None:
+            try:
+                self.conn.execute(
+                    'INSERT OR REPLACE INTO page_text VALUES (?, ?, ?, ?)',
+                    (key, st.st_mtime_ns, st.st_size, text))
+            except sqlite3.Error:
+                pass   # read-only or full: the answer is unchanged, only slower
+        return text
+
+    def forget_all_but(self, keep: set[str]) -> None:
+        """Drop the kept text of every page not in `keep` (absolute paths)."""
+        if self.conn is None:
+            return
+        try:
+            gone = [row[0] for row in self.conn.execute('SELECT path FROM page_text')
+                    if row[0] not in keep]
+            self.conn.executemany('DELETE FROM page_text WHERE path = ?',
+                                  [(g,) for g in gone])
+        except sqlite3.Error:
+            pass
+
+    def close(self) -> None:
+        if self.conn is None:
+            return
+        try:
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
+        finally:
+            self.conn.close()
+            self.conn = None
+
+
+def warm_page_text_cache(
+    archive_root: Path, fha_config: dict, on_many=None, many: int = 20,
+) -> int:
+    """Read every new or changed saved page into the page cache. Returns how many.
+
+    The `fha index` command runs this (`fha serve` and `fha report` rebuild
+    through build_index and do not), and the capture and filing skills run
+    `fha index` afterwards, so the first search after a batch of captured
+    records is as fast as the next one
+    rather than spending half a minute reading the new pages while the person
+    at the keyboard wonders whether it has hung. Pages no longer in the
+    documents folder are dropped from the cache. Quiet, and never a failure:
+    a missing documents folder or a read-only `.cache/` just leaves the work
+    to the search. `on_many(n)` is called first when more than `many` pages
+    need reading, so the caller can say why this run takes longer.
+    """
+    docs = resolve_path('documents', fha_config, archive_root)
+    if not docs.is_dir():
+        return 0
+    pages = [p for p in walk_files(docs) if is_markup_text_file(p)]
+    cache = PageTextCache(archive_root) if pages or (
+        Path(archive_root) / '.cache' / 'page-text.sqlite').exists() else None
+    if cache is None or cache.conn is None:
+        return 0
+    read = 0
+    try:
+        unread = [p for p in pages if not cache.is_fresh(p)]
+        if on_many is not None and len(unread) > many:
+            on_many(len(unread))
+        for page in unread:
+            try:
+                cache.text(page)
+                read += 1
+            except OSError:
+                continue
+        cache.forget_all_but({os.path.abspath(p) for p in pages})
+    finally:
+        cache.close()
+    return read
 
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────
@@ -14497,7 +15000,9 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
     for r in conn.execute('SELECT source_id, role, path FROM source_files'):
         files.setdefault(r['source_id'], []).append((r['role'] or '', r['path'] or ''))
     with_files = [sid for sid in ctx['source_types'] if files.get(sid)]
-    with_text = [sid for sid in with_files if files_carry_searchable_text(files[sid])]
+    image_unsaved = unsaved_image_checker_for_index(conn)
+    with_text = [sid for sid in with_files
+                 if files_carry_searchable_text(files[sid], image_unsaved)]
 
     thinnest: list[dict] = []
     if direct_line:
