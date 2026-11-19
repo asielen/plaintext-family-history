@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.7",
-  "generated": "2026-11-18",
+  "generated": "2026-11-19",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -1232,7 +1232,7 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "5c430e0e295a2d7cb32d83d7563cfb269109ead79f0f32e50b60c85f1d116154",
+      "sha256": "32d71401493cbb359e3bbf2a60e389611738f5c90942e281b632dbdba5cb847c",
       "spec_version": "2.7",
       "src": "SPEC.md"
     },
