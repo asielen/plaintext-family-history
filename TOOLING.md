@@ -485,8 +485,7 @@ fha person promote <p-id> [--into FOLDER] [--dry-run] [--root PATH]
 - Guard: the new frontmatter must parse, the key equal the target, `id` and every other field unchanged; else refuse, nothing written.
 - A merged tombstone is refused, naming the survivor (SPEC §9). Same value: `already`. `--dry-run`: unified diff. A live write reminds to run `fha index` (advice, not a warning exit).
 
-**`set-living`.** `living:` drives redaction in every export (SPEC §9, §19). Output states the privacy consequence (`false` opens exports; `true`/`unknown` redact). The death-accept step (§3b) uses this writer with a compare-and-set guard; `set-living` itself has none.
-Exit codes: 0 written/`already`/dry-run · 1 not found (with `fha find`) · 2 argparse · 3 bad root or id, tombstone, guard refusal, file error. `data.status` ∈ ok/already/dry-run/not-found/merged/refused.
+**`set-living`.** `living:` drives redaction in every export (SPEC §9, §19). Output states the privacy consequence (`false` opens exports; `true`/`unknown` redact). The death-accept step (§3b) uses this writer with a compare-and-set guard; `set-living` itself has none. Exit codes: 0 written/`already`/dry-run · 1 not found (with `fha find`) · 2 argparse · 3 bad root or id, tombstone, guard refusal, file error. `data.status` ∈ ok/already/dry-run/not-found/merged/refused.
 
 **`set-sex`.** M | F | intersex | unknown, case-folded. `sex:` drives Ahnentafel placement (§7: `F` mother/odd slot, else father/even; W120). A live change says: run `fha index`, then `fha views brackets`, `--realign` to apply; index first, since placement reads the indexed `sex:`. Workbench verb `person.set-sex`.
 
@@ -1152,7 +1151,7 @@ Both writers (and gallery tiles) refuse a `MISSING:` path and name `reconcile`.
 - Present paths are untouched; unknown files are logged as new.
 - `--with-exif` reads every `SOURCE:` keyword on untracked files, and a missing row is re-matched by the record-side rule below: exactly one file, catalogued or not, has its exact filename, it is untracked, and it carries its `SOURCE:` and no other, and no other row of that source shares the name (`_lib.photo_retie_target`). A keyword under another name (an `-Edit` copy, a back scan, an export) or several same-named candidates is a proposal (`proposals`), worded as the record side words it (`_lib.photo_retie_candidates`), and nothing moves.
 - Unmatched rows stay as `MISSING:` + alias (still searchable); group primary and date are re-derived. Group, `--under` and `--not-under` read the alias under the prefix.
-- A scan clears `MISSING:` only when the file returns to its alias or the alias is ignored, never by inference. The catalog's paths are a cache; a photo's identity is the `SOURCE:` keyword in the file.
+- A scan clears `MISSING:` only when the file returns to its alias or the alias is ignored, never by inference. The catalog's paths are a cache: a filed photo's identity is its `SOURCE:` keyword, and an unfiled one's is its content fingerprint.
 - Reconcile is folded into `fha doctor` and the report's freshness step; the plan is computed before any row moves, so `--dry-run` matches the real run.
 
 **`fha reconcile`** heals all types: documents re-match by `_{s-id}` filename (unique hit rewrites the line; duplicates reported; unlisted s-id files reported with `fha process --more`), then photos. Working-copy mode is a no-op; an unreachable root warns.
@@ -1379,7 +1378,7 @@ Two commands copy the operating layer from a public-repo clone into a private ar
 - **Skeleton:** `fha.yaml`, `START_HERE.md`, empty record dirs with `.gitkeep`, seeded `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, `design/custom.css`, `.gitignore`, `.gitattributes`.
 - **Never shipped:** the tool-building docs (`TOOLING_INGESTION.md`, `TOOLING_INTERFACE.md`, `AGENTS_TOOLING.md`), `example-archive/`, `archive-template/` itself (its contents seed the skeleton), `tests/`, `.github/`, `.claude/settings.json` (permission grants are personal), `PRIVACY.md`, `RELEASE_CHECKLIST.md`, and the project `README.md`. An archive's entry point is `START_HERE.md` for a reader and `docs/GETTING_STARTED.md` for the owner.
 
-**Archive layout.** Machinery lives in hidden `.fha/`: `tools/`, `design/`, `browser-companion/` (for chrome://extensions "Load unpacked"), and `docs/` (`DESIGN.md`, `SITE_PLAN.md`). The root holds the record folders, `START_HERE.md`, `fha.yaml`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `.claude/skills/`, launchers. Every other doc lives in `docs/`: the owner docs (`GETTING_STARTED.md`, `CHEATSHEET.md`) sit there in the repo too, while `SPEC.md` and `TOOLING.md` stay at the repo root and install as `docs/SPEC.md`, `docs/TOOLING.md`. The repo otherwise stays flat; the remap is install-time only. Install never rewrites links, so a shipped doc's relative links must resolve where it lands; a reference that cannot be right in both repo and archive (anything to or from `SPEC.md` and `TOOLING.md`) is a plain file name or an absolute URL, never a relative link. `START_HERE.md` is a skeleton seed: written once, delivered by `fha update-tools` to an archive that never had one, never overwritten.
+**Archive layout.** Machinery lives in hidden `.fha/`: `tools/`, `design/`, `browser-companion/` (for chrome://extensions "Load unpacked"), and `docs/` (`DESIGN.md`). The root holds the record folders, `START_HERE.md`, `fha.yaml`, `AGENTS.md`, `CLAUDE.md`, `docs/`, `.claude/skills/`, launchers. Every other doc lives in `docs/`: the owner docs (`GETTING_STARTED.md`, `CHEATSHEET.md`) sit there in the repo too, while `SPEC.md` and `TOOLING.md` stay at the repo root and install as `docs/SPEC.md`, `docs/TOOLING.md`. The repo otherwise stays flat; the remap is install-time only. Install never rewrites links, so a shipped doc's relative links must resolve where it lands; a reference that cannot be right in both repo and archive (anything to or from `SPEC.md` and `TOOLING.md`) is a plain file name or an absolute URL, never a relative link. `START_HERE.md` is a skeleton seed: written once, delivered by `fha update-tools` to an archive that never had one, never overwritten.
 
 **`fha install <archive-path> [--repo PATH] [--dry-run]`** runs from a clone (the archive has no `fha` yet). Before writing anything it checks for Python 3.10 or later (a hard stop with a download pointer) and `exiftool` (an advisory: the install goes ahead and the photo features wait until it is installed). It creates the folder if absent, or fills an existing folder that has no tools, writes skeleton plus operating layer, and stamps `.plaintext-version` (manifest version and per-file checksums). The archive is then self-contained.
 
@@ -1487,7 +1486,7 @@ Copies the archive into one dated zip outside it. **Restore needs no tool: unzip
 
 **`--dry-run`** prints the plan (destination, per-top-folder counts and sizes, exclusions, assets note, completeness refusal) and creates nothing. `Result.data` keys on every arm: `status`, `zip_path`, `files`, `bytes`, `assets_included`, `skipped_roots`, `folders`, `excluded`, `unreadable_dirs`, `complete`; `changed` = zip + stamp.
 
-## 13f. `originals_backup:`: one pristine copy before a photo is written into
+## 13f. `originals_backup:` (one pristine copy before a photo is written into)
 
 ```yaml
 originals_backup: D:/PhotoOriginals     # absolute, or relative to the archive root
@@ -1815,5 +1814,4 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha photoindex triage` | The report's triage section. |
 | `fha lint --format-check/--format-write` | Cleanup sessions; always diff-previewed. |
 
-**Slash surfaces:** the harness exposes each `.claude/skills/{name}/` folder as its own slash command (`/today` is the `today` skill, no separate wrapper file needed).
-Everything else is conversational; skills auto-trigger on matching requests.
+**Slash surfaces:** the harness exposes each `.claude/skills/{name}/` folder as its own slash command (`/today` is the `today` skill, no separate wrapper file needed). Everything else is conversational; skills auto-trigger on matching requests.

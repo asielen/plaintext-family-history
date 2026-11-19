@@ -2912,10 +2912,10 @@ class RecordingDateOrderingTest(unittest.TestCase):
 # 6. House style
 # ---------------------------------------------------------------------------
 class SkillScriptStyleTest(unittest.TestCase):
-    """The owner's no-em-dash rule for source files (AGENTS_TOOLING.md)."""
+    """The owner's no-dash rule for source files (AGENTS_TOOLING.md)."""
 
     def test_new_script_has_no_em_dashes(self):
-        """Newly authored source files use ` - `, never a dash character.
+        """Newly authored source files carry no em or en dash character.
 
         Only the new script is checked: attribute_speakers.py carries legacy
         em dashes throughout, and the rule is to convert a line when you edit
