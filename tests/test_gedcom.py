@@ -1,4 +1,5 @@
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1034,6 +1035,177 @@ class UnreadablePrivacyRecordTests(unittest.TestCase):
         inside = gedcom.run_gedcom(self.root, self.AUNT, mode='connected', include_living=True)
         self.assertTrue([m for m in inside['messages'] if 'birth_S-0000000001' in m])
         self.assertEqual(inside.exit_code, gedcom.EXIT_WARNINGS)
+
+
+# -- --basic: the DNA-site export (TOOLING §13a) --------------------------------
+
+_TAG_LINE = re.compile(r'^\d+ (SOUR|REFN|NOTE|OBJE|_UID)( |$)')
+
+
+def _header_end(lines: list[str]) -> int:
+    """Index of the first record after HEAD. The header is the one place a
+    basic export may still say SOUR (`1 SOUR fha` names the program that wrote
+    the file, which GEDCOM 5.5.1 requires) or NOTE (the do-not-re-import note)."""
+    return next(i for i, ln in enumerate(lines) if ln.startswith('0 ') and i > 0)
+
+
+def _strip_citations(text: str) -> list[str]:
+    """A full export with its sources taken out by hand, the way the issue's
+    one-off script did it: every level-0 SOUR record, and every SOUR pointer
+    and REFN line outside the header. What a basic export must equal, line for
+    line - so nothing else (a name, a date, a place, a link) goes missing."""
+    lines = text.split('\r\n')
+    end = _header_end(lines)
+    out, skipping = lines[:end], False
+    for ln in lines[end:]:
+        if ln.startswith('0 '):
+            skipping = ln.endswith(' SOUR')
+        if skipping:
+            continue
+        parts = ln.split(' ', 2)
+        if len(parts) >= 2 and parts[1] in ('SOUR', 'REFN'):
+            continue
+        out.append(ln)
+    return out
+
+
+class BasicExportOnExampleArchiveTests(unittest.TestCase):
+    """`fha gedcom --basic` on the example archive: the export a DNA site gets.
+
+    A DNA site needs names, sex, life-event dates and places and the family
+    links. A full export also carries every source title, and a title can name
+    a living relative whose own record is redacted to "Living"."""
+
+    @classmethod
+    def setUpClass(cls):
+        import contextlib
+        import io
+        import shutil
+        import index as index_mod
+        from _lib import load_fha_yaml
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name) / 'archive'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            index_mod.build_index(root, load_fha_yaml(root))
+        cls.root = root
+        cls.full = gedcom.run_gedcom(root, None, all_persons=True)
+        cls.basic = gedcom.run_gedcom(root, None, all_persons=True, basic=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_the_full_export_carries_sources_and_ids(self):
+        # The guard's other side: without this the absence checks below would
+        # pass on an archive that had nothing to leave out.
+        text = self.full['text']
+        self.assertRegex(text, r'(?m)^0 @S\d+@ SOUR')
+        self.assertRegex(text, r'(?m)^2 SOUR @S\d+@')
+        self.assertRegex(text, r'(?m)^1 REFN ')
+
+    def test_basic_writes_no_source_records(self):
+        self.assertEqual(self.basic['status'], 'ok')
+        self.assertNotRegex(self.basic['text'], r'(?m)^0 @S')
+
+    def test_basic_writes_no_citations_notes_media_or_ids_outside_the_header(self):
+        lines = self.basic['text'].split('\r\n')
+        leaked = [ln for ln in lines[_header_end(lines):] if _TAG_LINE.match(ln)]
+        self.assertEqual(leaked, [])
+
+    def test_basic_has_the_same_people_and_families(self):
+        for tag in ('INDI', 'FAM'):
+            pattern = rf'(?m)^0 @\w+@ {tag}\r?$'
+            self.assertEqual(len(re.findall(pattern, self.basic['text'])),
+                             len(re.findall(pattern, self.full['text'])), tag)
+        self.assertEqual(self.basic['person_count'], self.full['person_count'])
+        self.assertEqual(self.basic['family_count'], self.full['family_count'])
+
+    def test_basic_leaves_no_pointer_dangling(self):
+        text = self.basic['text']
+        defined = set(re.findall(r'(?m)^0 @(\w+)@ ', text))
+        used = set()
+        for ln in text.split('\r\n'):
+            if not ln.startswith('0 '):
+                used.update(re.findall(r'@(\w+)@', ln))
+        self.assertTrue(used)
+        self.assertEqual(used - defined, set())
+
+    def test_basic_keeps_every_name_date_place_and_link(self):
+        self.assertEqual(self.basic['text'].split('\r\n'),
+                         _strip_citations(self.full['text']))
+        for pattern in (r'(?m)^1 BIRT\r?$', r'(?m)^2 DATE ', r'(?m)^2 PLAC ',
+                        r'(?m)^1 MARR\r?$', r'(?m)^1 FAMC @', r'(?m)^1 CHIL @'):
+            self.assertRegex(self.basic['text'], pattern)
+
+    def test_basic_still_redacts_living_people(self):
+        text = self.basic['text']
+        self.assertGreater(text.count('1 NAME /Living/'), 0)
+        self.assertEqual(text.count('1 NAME /Living/'),
+                         self.full['text'].count('1 NAME /Living/'))
+        self.assertNotIn('Alex James', text)
+        self.assertNotIn('Carol Anne', text)
+
+    def test_basic_says_what_it_left_out(self):
+        self.assertTrue([m for m in self.basic['messages'] if m.startswith('Basic export')])
+        self.assertFalse([m for m in self.full['messages'] if m.startswith('Basic export')])
+
+    def test_the_cli_flag_reaches_the_file(self):
+        import contextlib
+        import io
+        out = Path(self._tmp.name) / 'dna.ged'
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = gedcom._standalone_main(
+                ['--all', '--basic', '--out', str(out), '--root', str(self.root)])
+        self.assertEqual(code, gedcom.EXIT_CLEAN)
+        self.assertEqual(out.read_bytes().decode('utf-8'), self.basic['text'])
+
+
+class BasicExportEventTests(unittest.TestCase):
+    """An event known only from its source, with no date or place, gives a DNA
+    site nothing to match on: a basic export leaves it out rather than write a
+    bare `1 BIRT`, while the full export keeps it with its citation."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        conn = _make_index(self.root)
+        _add_person(conn, 'p-0000000001', 'John Smith', 'M', surname='Smith')
+        _add_source(conn, 's-0000000001', 'Letter from a cousin')
+        _add_claim(conn, 'c-0000000001', 'birth', ['p-0000000001'],
+                   source_id='s-0000000001')
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_an_undated_unplaced_event_is_left_out_of_basic(self):
+        full = gedcom.run_gedcom(self.root, None, all_persons=True)
+        basic = gedcom.run_gedcom(self.root, None, all_persons=True, basic=True)
+        self.assertIn('1 BIRT', full['text'])
+        self.assertIn('Letter from a cousin', full['text'])
+        self.assertNotIn('BIRT', basic['text'])
+        self.assertNotIn('Letter from a cousin', basic['text'])
+
+    def test_an_undated_unplaced_marriage_is_kept_bare_in_basic(self):
+        # A bare `1 MARR` still tells a DNA site the two married; only its
+        # source goes.
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        _add_person(conn, 'p-0000000002', 'Mary Jones', 'F', surname='Jones')
+        _spouse(conn, 'p-0000000001', 'p-0000000002')
+        _add_source(conn, 's-0000000002', 'Interview with a cousin')
+        _add_claim(conn, 'c-0000000002', 'marriage', ['p-0000000001', 'p-0000000002'],
+                   source_id='s-0000000002')
+        conn.commit()
+        conn.close()
+        basic = gedcom.run_gedcom(self.root, None, all_persons=True, basic=True)
+        self.assertIn('1 MARR', basic['text'])
+        self.assertNotIn('Interview with a cousin', basic['text'])
+        self.assertNotRegex(basic['text'], r'(?m)^2 SOUR')
 
 
 if __name__ == '__main__':

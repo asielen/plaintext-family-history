@@ -779,6 +779,8 @@ Export your tree to a GEDCOM file for another genealogy app.
   fha gedcom <P-id> --mode descendants    Export from one person, down the line
   fha gedcom <P-id> --mode ancestors      Export from one person, up the line
   fha gedcom --all --out family.ged       Choose the output file
+  fha gedcom --all --basic --out dna.ged  For a DNA site: names, dates, places
+                                          and family links only
 
 Living people are redacted by default (use --include-living to override). GEDCOM
 is the portable format Ancestry, RootsMagic, and others read; it is a one-way
@@ -795,6 +797,7 @@ Importing a GEDCOM from Ancestry or another program? That is the separate
 | `--generations` `N` | Depth cap for descendants/ancestors (default: unlimited). |
 | `--all` | Export every person in the index. Do not combine with a P-id (they conflict); --all needs no --mode. |
 | `--include-living` | Export living/unknown persons in full (default: redacted). |
+| `--basic` | For a DNA site: only names, sex, birth/death/marriage dates and places, and family links. No sources, citations or archive IDs leave the archive. |
 | `--out` `FILE` | Write to FILE (default: stdout). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 

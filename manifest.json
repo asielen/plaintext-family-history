@@ -146,7 +146,7 @@
     {
       "path": ".agents/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "7e75f2eb6978c8ce04f86748d982688c020944391a2783828b2a31265d3fc116",
+      "sha256": "f2a6f9394bb966c97ddcf5ef1313fd0098d4ba3f67849bfcf990e9eeb62b0d62",
       "spec_version": "2.5",
       "src": ".claude/skills/share-and-export/SKILL.md"
     },
@@ -322,7 +322,7 @@
     {
       "path": ".claude/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "7e75f2eb6978c8ce04f86748d982688c020944391a2783828b2a31265d3fc116",
+      "sha256": "f2a6f9394bb966c97ddcf5ef1313fd0098d4ba3f67849bfcf990e9eeb62b0d62",
       "spec_version": "2.5"
     },
     {
@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "44d3d469ca60e5c444d425ab7cfd570e5e1edbeb1af7abed9dc42aff0a8433f1",
+      "sha256": "5232e6fb190193cebca1aac9a484ca71ba858e9918f41a6444e2831af530b5db",
       "spec_version": "2.5",
       "src": "tools/_lib.py"
     },
@@ -811,7 +811,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "7ae051c6bfcd6444eb0344574733731cd050d7d1ba8b8eb53fcdb576e4fa869f",
+      "sha256": "b7245bf306016e7739e813c4c97519b05cdd8aab2d2a9baa158507ed37da6397",
       "spec_version": "2.5",
       "src": "tools/gedcom.py"
     },
@@ -1172,7 +1172,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "122884258d6555b1574400c493ffe0c2ca74a372cf68c336602d4fc3c774e111",
+      "sha256": "3e04567cb67d7743c3d7de3831ac8060424709f05bc607326bb4a7e9273fd5f6",
       "spec_version": "2.5"
     },
     {
@@ -1190,7 +1190,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "8243719a52c7ce4e526510bb092ccada30a0a44f2c0107049fe237b499bd4d76",
+      "sha256": "b06ce33006e8a830a5121c40e018eafb60e2d201f484599de18c26f60b8e0bed",
       "spec_version": "2.5"
     },
     {
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "49a435dafcd235122d81f236e080f216cf0b8bca51d537c66867cb51a996d15f",
+      "sha256": "fc55a3b948629c4e7684ea7c4e993af05c63adb302b4395ea97b7b0ce3fa1a65",
       "spec_version": "2.5",
       "src": "TOOLING.md"
     },

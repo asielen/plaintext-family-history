@@ -3,8 +3,8 @@
 gedcom.py - fha gedcom: derive a GEDCOM 5.5.1 exchange file (TOOLING §13a).
 
   fha gedcom [<P-id>] [--mode descendants|ancestors|connected]
-             [--generations N] [--all] [--include-living] [--out FILE]
-             [--root PATH]
+             [--generations N] [--all] [--include-living] [--basic]
+             [--out FILE] [--root PATH]
 
 GEDCOM is a one-way bridge to other genealogy applications. It is *derived* at
 export time from the index's `relationships` edges and accepted vital claims -
@@ -53,6 +53,23 @@ SOURCES
 Every exported vital fact's `source_id` becomes a `SOUR` pointer to a top-level
 `SOUR` record (TITL = source title, REFN = the S-id), so the citation trail
 follows the facts into the other application.
+
+BASIC EXPORT (--basic)
+----------------------
+A DNA site (MyHeritage, Ancestry DNA and the like) reads a tree only to compare
+matches: it needs names, sex, the life events with their dates and places, and
+the family links. Everything else in a full export is extra that leaves the
+archive for nothing, and some of it is a quiet leak: a source title such as an
+interview or a cousin's letter can name a living relative whose own record is
+redacted to "Living". `--basic` writes the same people and families with the
+same redaction, and leaves out every source record, every citation pointer
+under an event, and every REFN archive id. The exporter writes no NOTE, OBJE or
+_UID outside the header in either mode, so nothing else needs dropping. The
+records are never written in the first place (not filtered out of the text
+afterwards), so no pointer can be left aimed at a record that is not there.
+A birth or death with neither a date nor a place says nothing a match can
+use, so a basic export leaves it out rather than writing a bare `1 BIRT`. A
+marriage is kept even then: `1 MARR` alone still tells a match the two married.
 
 CODE MAP
 --------
@@ -786,7 +803,9 @@ def _emit_event(tag: str, claim: sqlite3.Row | None, conn: sqlite3.Connection,
     date = _edtf_to_gedcom(claim['date_edtf'])
     place = _place_name(conn, claim['place_id'], claim['place_text'], place_cache)
     src = claim['source_id']
-    if not (date or place or src):
+    # A basic export passes no source xrefs, so a source alone does not make
+    # an event worth writing there (module docstring, BASIC EXPORT).
+    if not (date or place or (src and src in src_xref)):
         return []
     lines = [f'1 {tag}']
     if date:
@@ -806,7 +825,10 @@ def _emit_individual(
     fam_xref: dict[frozenset[str], str],
     src_xref: dict[str, str], place_cache: dict[str, str],
     include_living: bool, restricted_persons: set[str] = frozenset(),
+    with_ids: bool = True,
 ) -> list[str]:
+    """One INDI record. `with_ids` False (a `--basic` export) leaves out the
+    REFN line, the archive id another program would otherwise keep."""
     pid = person['id']
     redacted = _is_redacted(person, include_living, restricted_persons)
     lines = [f'0 @{xref}@ INDI']
@@ -833,7 +855,7 @@ def _emit_individual(
     if pid in child_fam:
         lines.append(f'1 FAMC @{fam_xref[child_fam[pid]]}@')
 
-    if not redacted:
+    if with_ids and not redacted:
         lines.append(f'1 REFN {fmt_id_display(pid)}')
     return lines
 
@@ -902,9 +924,11 @@ def _gedcom_payload(
     generations: int | None = None,
     all_persons: bool = False,
     include_living: bool = False,
+    basic: bool = False,
 ) -> dict:
     """
-    Build a GEDCOM 5.5.1 export. Returns:
+    Build a GEDCOM 5.5.1 export. `basic` writes no source records, citations
+    or archive ids (module docstring, BASIC EXPORT). Returns:
       {'status': 'ok'|'not-found'|'no-index'|'no-persons'|'bad-args',
        'text': str|None, 'messages': [str, ...],
        'person_count': int, 'family_count': int}
@@ -1028,12 +1052,14 @@ def _gedcom_payload(
         marriages = _load_marriages(conn, _public_claim_row)
 
         # Collect the sources actually cited by an emitted, non-redacted fact.
+        # A basic export cites none, so with no source xrefs no SOUR record and
+        # no SOUR pointer is ever written.
         used_sources: set[str] = set()
-        for (vp, _t), claim in vitals.items():
+        for (vp, _t), claim in ([] if basic else vitals.items()):
             if (vp in included and claim['source_id']
                     and not _is_redacted(persons[vp], include_living, restricted_persons)):
                 used_sources.add(claim['source_id'])
-        for key, _children in families:
+        for key, _children in ([] if basic else families):
             if any(_is_redacted(persons[p], include_living, restricted_persons) for p in key):
                 continue
             m = marriages.get(key)
@@ -1057,7 +1083,7 @@ def _gedcom_payload(
             lines += _emit_individual(
                 persons[pid_], person_xref[pid_], conn, vitals, person_fams,
                 child_fam, fam_xref, src_xref, place_cache, include_living,
-                restricted_persons,
+                restricted_persons, with_ids=not basic,
             )
         for key, children in families:
             lines += _emit_family(
@@ -1069,6 +1095,12 @@ def _gedcom_payload(
 
         lines.append('0 TRLR')
 
+        if basic:
+            messages.append(
+                'Basic export: names, sex, birth, death and marriage dates and places, '
+                'and the family links only. No sources, citations or archive IDs '
+                'were written.'
+            )
         living_redacted = sum(
             1 for p in included
             if p not in restricted_persons and not include_living
@@ -1173,6 +1205,7 @@ def run_gedcom(
     generations: int | None = None,
     all_persons: bool = False,
     include_living: bool = False,
+    basic: bool = False,
 ) -> Result:
     """Build a GEDCOM 5.5.1 export and return a Result.
 
@@ -1183,7 +1216,7 @@ def run_gedcom(
     """
     payload = _gedcom_payload(
         archive_root, pid, mode=mode, generations=generations,
-        all_persons=all_persons, include_living=include_living,
+        all_persons=all_persons, include_living=include_living, basic=basic,
     )
     status = payload['status']
     # Mirror _cmd_gedcom's per-status exit codes so headless callers returning
@@ -1223,6 +1256,7 @@ def _cmd_gedcom(args: argparse.Namespace) -> int:
         generations=generations,
         all_persons=all_persons,
         include_living=getattr(args, 'include_living', False),
+        basic=getattr(args, 'basic', False),
     )
 
     for m in result['messages']:
@@ -1278,6 +1312,10 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'P-id (they conflict); --all needs no --mode.')
     p.add_argument('--include-living', action='store_true', dest='include_living',
                    help='Export living/unknown persons in full (default: redacted).')
+    p.add_argument('--basic', action='store_true',
+                   help='For a DNA site: only names, sex, birth/death/marriage dates '
+                        'and places, and family links. No sources, citations or '
+                        'archive IDs leave the archive.')
     p.add_argument('--out', metavar='FILE', help='Write to FILE (default: stdout).')
 
 
@@ -1289,6 +1327,8 @@ Export your tree to a GEDCOM file for another genealogy app.
   fha gedcom <P-id> --mode descendants    Export from one person, down the line
   fha gedcom <P-id> --mode ancestors      Export from one person, up the line
   fha gedcom --all --out family.ged       Choose the output file
+  fha gedcom --all --basic --out dna.ged  For a DNA site: names, dates, places
+                                          and family links only
 
 Living people are redacted by default (use --include-living to override). GEDCOM
 is the portable format Ancestry, RootsMagic, and others read; it is a one-way
