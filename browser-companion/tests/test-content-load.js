@@ -33,8 +33,9 @@ const SAMPLE = (name) => fs.readFileSync(path.join(__dirname, '..', '..', 'tests
 // it the page has no storage to ask, as on an add-on that cannot read it.
 // `scripts` are the page's script texts (Newspapers.com's page data).
 // `clone` is what the page copy clones (a stand-in with the pictures to inline).
+// `named` is what the people harvest's schema.org Person name query finds.
 function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head = {}, title = 'A page', storage, scripts = [],
-  clone } = {}) {
+  clone, named = [] } = {}) {
   const listeners = [];
   const el = (tag) => ({ tagName: tag, textContent: '', innerText: '', getAttribute: () => null, closest: () => null });
   const headTag = (sel) => {
@@ -54,7 +55,7 @@ function loadPage({ url, cookie = '', links = [], fetch, canonical, tree, head =
     images: [],
     querySelector: (sel) => headTag(sel) || (canonical && /canonical|og:url/.test(sel)
       ? { getAttribute: (a) => (a === 'href' ? canonical : null) } : null),
-    querySelectorAll: (sel) => (/3:1:/.test(sel) ? links : []),
+    querySelectorAll: (sel) => (/3:1:/.test(sel) ? links : /schema\.org\/Person.*itemprop="name"/.test(sel) ? named : []),
     getElementById: () => null,
     childNodes: tree ? tree.childNodes : [],
   };
@@ -267,6 +268,39 @@ test('prefill on a memorial starts from what the memorial says; its gallery page
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.prefill.findagraveMemorial, true);
   assert.strictEqual(r.prefill.title, 'A page');
+});
+
+test('a memorial with Seen It running starts the form with clean names, never its badges (#357)', async () => {
+  const tree = parse(SAMPLE('findagrave-memorial-seen-it'));
+  const r = await loadPage({ url: MEMORIAL, tree, fetch: findagrave() }).ask({ action: 'prefill' });
+  assert.deepStrictEqual(r.prefill.people,
+    ['Calvin George Hartley', 'Thomas Hartley', 'Harriet Frances Hartley', 'Warren Calvin Hartley']);
+});
+
+// A page's every text, as the browser's textContent gives it: Seen It's too.
+function withTextContent(el) {
+  const all = (n) => (n.nodeType === 3 ? n.nodeValue : (n.childNodes || []).map(all).join(''));
+  el.textContent = all(el);
+  return el;
+}
+
+test('people named in schema.org Person markup are harvested without Seen It\'s badges (#357)', async () => {
+  // Seen It puts its pills inside a linked name ("[itemprop=name]") on every
+  // page it marks - a Find a Grave search, a cemetery's list of burials.
+  const tree = parse('<div itemscope itemtype="https://schema.org/Person"><a href="/memorial/900000011/orrin-pell">' +
+    '<h2 itemprop="name">Orrin Pell<span class="nsi-pills" data-nsi-for="fag:900000011">' +
+    '<span class="nsi-pill nsi-seen">Seen 1× · last Nov 8</span></span></h2></a></div>' +
+    '<div itemscope itemtype="https://schema.org/Person"><a href="/memorial/900000012/ada-pell">' +
+    '<h2 itemprop="name">Ada Pell<span class="nsi-pills"><span class="nsi-pill nsi-captured">' +
+    '📑 Index in archive · S-7k2m9x4q1p</span></span></h2></a></div>');
+  const named = [];
+  (function walk(n) {
+    if (n.nodeType === 1 && n.getAttribute('itemprop') === 'name') named.push(withTextContent(n));
+    (n.childNodes || []).forEach(walk);
+  })(tree);
+  const r = await loadPage({ url: 'https://www.findagrave.com/cemetery/9990001/memorial-search', named,
+    fetch: findagrave() }).ask({ action: 'prefill' });
+  assert.deepStrictEqual(r.prefill.people, ['Orrin Pell', 'Ada Pell']);
 });
 
 test('the memorial is read from the page, with its hints and title', async () => {
