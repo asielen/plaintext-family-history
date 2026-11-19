@@ -4752,5 +4752,87 @@ class PronounsTests(unittest.TestCase):
         self.assertEqual(claim._pronouns({'sex': 'unknown'}), ('they', 'them'))
 
 
+class HashInClaimTextTests(unittest.TestCase):
+    """#355: a value like "Lot #4 of block 2" written unquoted reads as "Lot"
+    (YAML starts a comment at ` #`), so the timeline and site showed a stub.
+    Everything `fha claim` writes keeps the whole text, in the file and in the
+    index; and the command lint's W156 suggests repairs a hand-typed one."""
+
+    SOURCE = 's-7k2m9q4w1e'       # the 1850 census source in the example archive
+    CLAIM = 'c-9r4t7y2b6h'        # its accepted residence claim
+    PERSON = 'p-075114a0f8'
+    TEXT = 'Lot #4 of block 2'
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not EXAMPLE.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+        import index
+        import lint
+        cls.index = index
+        cls.lint = lint
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'archive'
+        shutil.copytree(EXAMPLE, self.root)
+        self.config = load_fha_yaml(self.root)
+        self.source = next((self.root / 'sources').rglob(f'*_{self.SOURCE}.md'))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _indexed(self, cid: str) -> tuple:
+        self.index.build_index(self.root, self.config)
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            return conn.execute(
+                'SELECT value, place_text FROM claims WHERE id=?', (cid.lower(),)).fetchone()
+        finally:
+            conn.close()
+
+    def _w156(self) -> list:
+        return [m for m in self.lint.run_lint(self.root, self.config).messages
+                if m.code == 'W156']
+
+    def test_the_shared_quoting_rule_keeps_a_hash(self) -> None:
+        # `fha claim`, `fha convert-mining` and `fha gedcom import` all write
+        # claim text through `_lib.yaml_inline`.
+        import yaml
+        for text in (self.TEXT, 'Apt # B', 'Motor #444932', 'tab\t#here', 'ends #'):
+            with self.subTest(text=text):
+                line = f'value: {_lib_mod.yaml_inline(text)}'
+                self.assertEqual(yaml.safe_load(line)['value'], text)
+
+    def test_a_new_claim_keeps_every_hash_field_whole(self) -> None:
+        result = claim.run_claim_new(
+            self.root, source_id=self.SOURCE, claim_type='residence', value=self.TEXT,
+            persons=[self.PERSON], place_text='12 Main St #3', anchor='page 4 #2',
+            notes='Apt # B on the plat', status='suggested')
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        cid = result['claim_id']
+        written = {c['id']: c for c in read_record(self.source)['claims']}[cid]
+        self.assertEqual(written['value'], self.TEXT)
+        self.assertEqual(written['notes'], 'Apt # B on the plat')
+        self.assertEqual(written['anchor'], 'page 4 #2')
+        self.assertEqual(self._indexed(cid), (self.TEXT, '12 Main St #3'))
+        self.assertEqual(self._w156(), [])
+
+    def test_the_fix_lint_suggests_repairs_a_hand_typed_value(self) -> None:
+        text = self.source.read_text(encoding='utf-8')
+        old = '- value: Caleb C. Hartley household residing in Easton, New York (1850)'
+        self.assertIn(old, text)
+        self.source.write_text(text.replace(old, f'- value: {self.TEXT}'), encoding='utf-8')
+        self.assertEqual(self._indexed(self.CLAIM)[0], 'Lot')
+        (w,) = self._w156()
+        self.assertIn(f'--value {_lib_mod.shell_quote(self.TEXT)}', w.text)
+
+        # The accepted claim changes only on the human's own command.
+        result = claim.run_claim(self.root, claim_id=self.CLAIM, value=self.TEXT)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, result.messages)
+        self.assertEqual(self._indexed(self.CLAIM)[0], self.TEXT)
+        self.assertEqual(self._w156(), [])
+
+
 if __name__ == '__main__':
     unittest.main()
