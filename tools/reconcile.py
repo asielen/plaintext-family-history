@@ -604,8 +604,8 @@ def _plan_photos(
 
     The one rule (owner decision): a missing photos-alias entry is re-tied
     automatically ONLY when exactly one file under the photos root has the
-    entry's exact filename (a file another record lists that carries only
-    another source's keyword is not counted), that file is listed by no record, it carries the
+    entry's exact filename (a file carrying only another source's keyword
+    is not counted), that file is listed by no record, it carries the
     record's own `SOURCE:` keyword and no other source's, and no other entry
     of the same record has that filename (a front and back of one name in two folders can
     trade places, and the front would then pass for the back). A keyword is
@@ -659,7 +659,6 @@ def _plan_photos(
     listed = _listed_file_keys(archive_root, fha_config, records)
     unlisted = {a: p for a, p in on_disk.items() if _file_key(p) not in listed}
     plan['unlisted'] = set(unlisted)
-    listed_aliases = set(on_disk) - set(unlisted)
     # Candidates are every file with the name, listed or not: the catalog
     # pass decides from the same set (#297), so a listed or catalogued
     # same-named photo makes both passes report rather than one moving.
@@ -724,9 +723,9 @@ def _plan_photos(
                  for e in (meta.get('files') or []) if isinstance(e, dict)]
         for alias in aliases:
             name = PurePosixPath(alias.replace('\\', '/')).name
-            same = photo_retie_same_named(
-                by_name.get(name, []), own, sids_of, listed_aliases)
-            target = photo_retie_target(same, own, sids_of)
+            same = by_name.get(name, [])
+            target = photo_retie_target(
+                photo_retie_same_named(same, own, sids_of), own, sids_of)
             if target and target in unlisted and names.count(name) == 1:
                 claims.setdefault(target, []).append((rec_path, alias))
                 continue
@@ -1220,8 +1219,6 @@ def run_reconcile(
             said_by_records.add(key)
             result.add('warning', _photo_report(**_merge_catalog_finding(
                 report, catalog_findings.get(key), photo_plan['unlisted'])))
-        for pairs in photo_heals.values():
-            said_by_records.update(old.replace('\\', '/') for old, _new in pairs)
         if not (photo_plan['stale'] or photo_plan['notices']):
             # Says only what was checked: every listed photo path still opens.
             result.add('info', 'No filed photo is missing from disk - nothing to re-tie.')

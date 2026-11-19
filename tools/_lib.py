@@ -3497,12 +3497,12 @@ def photo_retie_target(
     re-tied only when exactly one candidate has its exact filename and that
     file carries this source's `SOURCE:` keyword and no other source's.
     `same_named` is every file under the photos root with the missing
-    photo's filename, less those `photo_retie_same_named` sets aside, `sids_of` maps a candidate to the S-ids it carries (a
-    candidate missing from it was not read). Shared by both `fha reconcile`
-    passes, the record pass and the photo-catalog pass, and both pass the
-    same candidates (every same-named file, listed on a record or in the
-    catalog or neither), so one command does not re-tie a photo on one side
-    and report it as a proposal on the other. Each caller then checks the
+    photo's filename, less those `photo_retie_same_named` sets aside;
+    `sids_of` maps a candidate to the S-ids it carries (a candidate missing
+    from it was not read). Shared by both `fha reconcile` passes, the record
+    pass and the photo-catalog pass, and both pass the same candidates, so
+    one command does not re-tie a photo on one side and report it as a
+    proposal on the other. Each caller then checks the
     file is free to take (not listed on a record; not already a catalog
     row) and adds its own sibling check (another entry or row of the same
     source with that filename) before acting on the answer.
@@ -3514,24 +3514,24 @@ def photo_retie_target(
 
 
 def photo_retie_same_named(
-    same_named: list[str], own_sid: str, sids_of: dict, settled,
+    same_named: list[str], own_sid: str, sids_of: dict,
 ) -> list[str]:
     """The same-named files that count as candidates for one missing photo.
 
     Every file under the photos root with the photo's filename counts,
-    except one that is already settled elsewhere (listed on a record, for
-    the record pass; already a catalog row, for the catalog pass) AND
-    carries another source's `SOURCE:` keyword and not this one. Camera
-    names like IMG_0001.JPG repeat across folders, and another source's
-    filed photo is not this one moved. A settled file carrying this
-    source's keyword, no keyword, or keywords not read still counts, so it
-    keeps the match uncertain. Both `fha reconcile` passes filter through
-    here before `photo_retie_target`, so they decide from the same set.
+    except one that carries another source's `SOURCE:` keyword and not this
+    one: it cannot be this photo moved. Camera names like IMG_0001.JPG
+    repeat across folders, whether or not the other photo is filed or
+    catalogued yet. A file carrying this source's keyword, no keyword, or
+    keywords not read still counts, so it keeps the match uncertain. Both
+    `fha reconcile` passes filter through here before `photo_retie_target`,
+    so they decide from the same set; their reports still name every
+    same-named file, so the human sees the other source's photo too.
     """
     out = []
     for alias in same_named:
         sids = sids_of.get(alias)
-        if alias in settled and sids and own_sid not in sids:
+        if sids and own_sid not in sids:
             continue
         out.append(alias)
     return out

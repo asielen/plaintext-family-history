@@ -823,6 +823,27 @@ class PhotoRecordReconcileTests(unittest.TestCase):
         self.assertFalse(any('was not re-tied' in m.text for m in result.messages),
                          [m.text for m in result.messages])
 
+    def test_another_sources_photo_not_yet_catalogued_does_not_block(self) -> None:
+        # The same camera-name case, but the other source's photo was filed
+        # after the last scan, so it is on a record and not in the catalog.
+        # It carries only that source's keyword, so neither pass counts it:
+        # the record and the catalog row both move, and no catalog row is
+        # left missing for good.
+        self._scan()
+        other_sid = 'S-0000000001'
+        other = self._write_photo_record(other_sid, ['photos/2019/portrait_1880.jpg'])
+        self._place('wedding_1902.jpg', 'photos/2019/portrait_1880.jpg', other_sid)
+        other_before = other.read_text(encoding='utf-8')
+        self._move('photos/portrait_1880.jpg', 'photos/new/portrait_1880.jpg')
+        result = self._run(with_exif=True)
+        self.assertEqual(self._files(), ['photos/new/portrait_1880.jpg'])
+        self.assertEqual(other.read_text(encoding='utf-8'), other_before)
+        catalog = self._catalog_paths()
+        self.assertIn('photos/new/portrait_1880.jpg', catalog)
+        self.assertNotIn('MISSING:photos/portrait_1880.jpg', catalog)
+        self.assertFalse(any('was not re-tied' in m.text for m in result.messages),
+                         [m.text for m in result.messages])
+
     def test_catalogued_same_named_photo_without_a_keyword_still_blocks(self) -> None:
         # The same file set aside above, but carrying no keyword: it may be
         # this photo with its keyword lost, so it still counts.

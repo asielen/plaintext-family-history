@@ -3259,7 +3259,7 @@ def _catalog_sids(conn: sqlite3.Connection, aliases) -> dict[str, frozenset]:
 
 def _catalog_proposals(
     missing: dict[str, str | None], by_name: dict[str, list[str]],
-    sids_of: dict[str, frozenset], catalogued: set[str],
+    sids_of: dict[str, frozenset],
 ) -> list[dict]:
     """One proposal per sourced catalog row that was not re-tied while some
     file has its filename or carries its `SOURCE:` keyword: {'alias',
@@ -3274,8 +3274,7 @@ def _catalog_proposals(
             continue
         own = normalize_id(source_id)
         alias = _live_alias(old_path)
-        same = photo_retie_same_named(
-            by_name.get(PurePosixPath(alias).name, []), own, sids_of, catalogued)
+        same = by_name.get(PurePosixPath(alias).name, [])
         carriers = sorted(a for a, sids in sids_of.items() if own in sids)
         if not same and not carriers:
             continue
@@ -3499,9 +3498,6 @@ def run_reconcile(
             # uncertain here too, and the row is reported, not moved (#297).
             # A catalogued file's S-ids come from its catalog keywords.
             on_disk_by_name = _aliases_by_name(on_disk)
-            # Already catalogued: a same-named one carrying only another
-            # source's keyword is that source's photo, not a candidate.
-            catalogued = {alias for alias in on_disk if alias not in untracked}
             sids_on_disk = {**_catalog_sids(conn, on_disk), **sids_by_alias}
 
             rematched: list[tuple[str, str]] = []
@@ -3528,8 +3524,8 @@ def run_reconcile(
                     own = normalize_id(source_id)
                     name = PurePosixPath(_live_alias(old_path)).name
                     target = photo_retie_target(
-                        photo_retie_same_named(on_disk_by_name.get(name, []), own,
-                                               sids_on_disk, catalogued),
+                        photo_retie_same_named(
+                            on_disk_by_name.get(name, []), own, sids_on_disk),
                         own, sids_on_disk)
                     if target in untracked and rows_per_name.get((own, name)) == 1:
                         claims.setdefault(target, []).append(old_path)
@@ -3579,8 +3575,7 @@ def run_reconcile(
             # words: what was found, and that nothing was moved.
             proposals: list[dict] = []
             if missing and scraped:
-                proposals = _catalog_proposals(
-                    missing, on_disk_by_name, sids_on_disk, catalogued)
+                proposals = _catalog_proposals(missing, on_disk_by_name, sids_on_disk)
 
             if not dry_run:
                 # Rows already MISSING: whose fingerprint was never known -
