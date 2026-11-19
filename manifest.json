@@ -6,7 +6,7 @@
     {
       "path": ".agents/skills/README.md",
       "category": "operating",
-      "sha256": "c343a569b5162dc18d54f22ba817bd4b73bb6843a7eaf730afa55df2bf83bfca",
+      "sha256": "4338b80f90337529ec0d86a75b159658781f49b12d780b223ece8af4d2258963",
       "spec_version": "2.7",
       "src": ".claude/skills/README.md"
     },
@@ -118,7 +118,7 @@
     {
       "path": ".agents/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "017222403c6d9f7f1556a33278deeb4c717df632b4fbf268fe8ddf8fd9c2c1cb",
+      "sha256": "a3183a4f2c3ad2bb5ffe0b7c4fc1a3e70b5d6c88b02ddfe7336e905dd6b641aa",
       "spec_version": "2.7",
       "src": ".claude/skills/reconcile-site-edits/SKILL.md"
     },
@@ -202,7 +202,7 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "c343a569b5162dc18d54f22ba817bd4b73bb6843a7eaf730afa55df2bf83bfca",
+      "sha256": "4338b80f90337529ec0d86a75b159658781f49b12d780b223ece8af4d2258963",
       "spec_version": "2.7"
     },
     {
@@ -298,7 +298,7 @@
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
-      "sha256": "017222403c6d9f7f1556a33278deeb4c717df632b4fbf268fe8ddf8fd9c2c1cb",
+      "sha256": "a3183a4f2c3ad2bb5ffe0b7c4fc1a3e70b5d6c88b02ddfe7336e905dd6b641aa",
       "spec_version": "2.7"
     },
     {
@@ -671,16 +671,9 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "971b1b7e1712356f7d90b328a248549a2052b90c7c586d22544bae5f367e0d17",
+      "sha256": "e98a4d6f330ee30a3c9259195f012ae5ca231c4a1b295ec465049b2442d2a2f3",
       "spec_version": "2.7",
       "src": "docs/DESIGN.md"
-    },
-    {
-      "path": ".fha/docs/SITE_PLAN.md",
-      "category": "operating",
-      "sha256": "87609c57b7cef2bf09e0e360dd2500ff7d75fbd99543ce8cbd9a1bd0b98947b2",
-      "spec_version": "2.7",
-      "src": "docs/SITE_PLAN.md"
     },
     {
       "path": ".fha/tools/README.md",
@@ -937,7 +930,7 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "b016a784599b7d44313a644b0044bd77bedadc5f6cde8ba722552d5b6039114a",
+      "sha256": "7715b5ea65580ac8799988264da611bd244801aae5079e748c9df4d7dd2008bc",
       "spec_version": "2.7",
       "src": "tools/scaffold.py"
     },
@@ -1147,7 +1140,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d386238729e30fb4c1de8a98a86340b749207a64f753529bc94f2e7bbbab5408",
+      "sha256": "28da713f636cd0023ff6cc57e0e47faf8ee049d6eebfd87e57e52beaa29231e9",
       "spec_version": "2.7"
     },
     {
@@ -1190,7 +1183,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "3fbc2dafb02aaea7caafcef72f24f3ce44193e2776e52b210434fd5096dc616e",
+      "sha256": "0009ecbecf3a242a294415b753bdec66b4eb711b2c23e3165b71b9e2944373c4",
       "spec_version": "2.7"
     },
     {
@@ -1239,7 +1232,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "3626e367b5b13a55c251f98afe99340706f132604d46ac62c980a47e83d0d41d",
+      "sha256": "bab763b73918c53d128d6e7660fc50f8a69c74b646421957476646ddba2f677a",
       "spec_version": "2.7",
       "src": "TOOLING.md"
     },
