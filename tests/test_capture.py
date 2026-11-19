@@ -837,6 +837,27 @@ class CaptureTestCase(unittest.TestCase):
         # (proves the harvest_date path still fires).
         self.assertEqual(meta['source_date'], '1898')
 
+    def test_newspapers_page_saved_with_seen_it_badges(self) -> None:
+        # #357: a clipping saved by hand with Seen It running, and no
+        # description of its own. Its badge ("Seen 3x · last Nov 8, 2025")
+        # is not the newspaper: never the body, and never the date.
+        html = ('<html><head><title>Hartley Notice - The Fairview Gazette</title>'
+                '<meta property="og:site_name" content="Newspapers.com"></head><body>'
+                '<h1>The Fairview Gazette</h1><article><p>MARRIED - Mr. Orrin Pell to Miss '
+                'Ada Webb.</p></article>'
+                '<div id="nsi-page-badge"><span class="nsi-pills">'
+                '<span class="nsi-pill nsi-archive">📚 Page in archive</span>'
+                '<span class="nsi-pill nsi-seen">Seen 3× · last Nov 8, 2025</span></span>'
+                '<span class="nsi-marks"><button class="nsi-mark">✓ Nothing here</button></span>'
+                '</div></body></html>')
+        rc = self._capture(html, url='https://www.newspapers.com/clip/1/x/')
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertIn('Orrin Pell', rec['body'])
+        for badge in ('Page in archive', 'Seen 3', 'Nothing here', '2025'):
+            self.assertNotIn(badge, rec['body'])
+        self.assertNotIn('source_date', rec['meta'])
+
     def test_newspapers_article_url_keeps_the_clip_link(self) -> None:
         # Today's clipping address is /article/{slug}/{id}/; the upstream clip
         # link must still be recovered from it, as from the older /clip/{id}/.
@@ -984,6 +1005,22 @@ class CaptureTestCase(unittest.TestCase):
         # TI-067: the Seen It add-on's badge is not the memorial
         for badge in ('Seen 2', 'Not in archive'):
             self.assertNotIn(badge, body)
+
+    def test_findagrave_memorial_saved_with_seen_it_running(self) -> None:
+        # #357: Seen It's pills inside each family member's linked name, and
+        # its page badge, are not the memorial's family.
+        url = 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley'
+        rc = self._capture(_sample('findagrave-memorial-seen-it'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['people'], ['Calvin George Hartley', 'Thomas Hartley',
+                                                 'Harriet Frances Hartley', 'Warren Calvin Hartley'])
+        self.assertIn('Family (Parents): Thomas Hartley (1810–1880)', rec['body'])
+        self.assertIn('Family (Spouse): Harriet Frances Hartley (1846–1915)', rec['body'])
+        text = self._only_stub().read_text(encoding='utf-8')
+        for badge in ('Seen 1', 'Seen 3', 'Opened 2', 'Index in archive', 'In archive', 'Not ours',
+                      'Later', 'Captured, not filed', 'S-7k2m9x4q1p', 'S-3n8v5c2w0r'):
+            self.assertNotIn(badge, text)
 
     def test_findagrave_memorial_saved_by_hand_with_no_address(self) -> None:
         # PR #221 audit (F11): filed with no URL, the memorial's canonical link

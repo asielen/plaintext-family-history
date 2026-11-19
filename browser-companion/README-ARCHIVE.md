@@ -386,6 +386,8 @@ open the memorial it shows now.
   image, the add-on says so plainly and you can download the file yourself and
   drop it into the panel.
 - It records the page's web address, never a folder path from your computer.
+- It never saves the Seen It add-on's badges ("Seen 1× · last Nov 8", "In archive")
+  as part of a record, its people's names or a page copy, on any site.
 - It sends nothing anywhere. Captures go to your Downloads folder and then into
   your archive - nowhere else, and never onto the public web. The one question it
   may ask the Seen It add-on, on your own computer, is whether the archive

@@ -18,7 +18,7 @@ from capture import (
     parse_html,
     visible_text,
 )
-from capture_recipes._common import harvest_date
+from capture_recipes._common import harvest_date, strip_seen_it
 
 SOURCE_NAME = 'Newspapers.com'
 PRIORITY = 30
@@ -83,6 +83,10 @@ def _clip_id(url: str | None) -> str | None:
 
 
 def extract(html: str, url: str | None) -> dict:
+    # A page saved with Seen It running carries its badges ("Seen 3x",
+    # "Page in archive"); they are not the newspaper, so they never reach
+    # the body, the date or the page number.
+    html = strip_seen_it(html)
     page = parse_html(html)
     publication = first_nonempty(
         meta_content(page, 'article:publication', 'publication'),

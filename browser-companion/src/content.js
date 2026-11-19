@@ -314,7 +314,9 @@
           if (atype && NON_PERSON_TYPES.has(atype)) return; // skip
           ancestor = ancestor.parentElement;
         }
-        add(el.textContent);
+        // ancText, not textContent: Seen It puts its badges inside a linked
+        // name ("Seen 1× · last Nov 8"), and they are not the person's name.
+        add(ancText(el));
       });
     return names.slice(0, 12); // a pre-fill list, not an exhaustive index
   }
