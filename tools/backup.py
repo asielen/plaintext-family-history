@@ -186,11 +186,11 @@ _EXCLUDED_DIRS = {
     '.git': 'git history is its own backup channel; zipping it doubles the size for no restore value',
 }
 _EXCLUDED_FILES = {
-    'WORKING_COPY': 'machine-local working-copy marker - it must never travel',
+    'WORKING_COPY': 'machine-local working-copy marker; it must never travel',
 }
 
-_RESTORE_LINE = ("To restore: unzip this file. That's the whole procedure - "
-                 'a backup is just your files.')
+_RESTORE_LINE = ('To restore: unzip this file. A backup is just your files, '
+                 'so nothing else is needed.')
 
 _STAMP_NAME = 'last_backup.json'
 
@@ -1276,23 +1276,23 @@ def _cmd_backup(result: Result) -> int:
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Copy your whole archive into one dated zip file, kept OUTSIDE the archive.
+Copy your whole archive into one dated zip file, kept outside the archive.
 
   fha backup                      records-only zip in a folder beside the archive
   fha backup --include-assets     also pack the photos/documents roots
   fha backup --to D:/Backups      choose where the zip goes
   fha backup --dry-run            show the plan; write nothing
 
-If any folder cannot be read - it will not open, it is a shortcut to somewhere
-else, or (with --include-assets) your whole photos or documents folder is not
-there - no zip is written at all: a backup missing part of your archive would
-look exactly like a good one. Reconnect the drive or fix the folder and run it
-again; --allow-incomplete writes it anyway, clearly marked, for a folder that
-is gone for good.
+If any folder cannot be read, no zip is written at all, because a backup
+missing part of your archive would look exactly like a good one. That covers
+a folder that will not open, one that is a shortcut to somewhere else, and
+(with --include-assets) a photos or documents folder that is not there.
+Reconnect the drive or fix the folder and run it again; --allow-incomplete
+writes it anyway, clearly marked, for a folder that is gone for good.
 
-Photos and documents are NOT included unless you pass --include-assets (they
-are often huge and often live on another drive - the output names them every
-time). To restore a backup: unzip it. That's the whole procedure."""
+Photos and documents are not included unless you pass --include-assets (they
+are often huge and often live on another drive; the output names them every
+time). To restore a backup, unzip it."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:

@@ -2,7 +2,7 @@
 """
 claim.py - fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8).
 
-  fha claim <C-id> [<C-id> ...]
+  fha claim <c-id> [<c-id> ...]
                    --status accepted|disputed|rejected|superseded|suggested
                    [--reviewed DATE] [--reviewed-by NAME] [--value "…"] [--date EDTF]
                    [--type TYPE] [--place L-id] [--place-text TEXT]
@@ -77,7 +77,7 @@ way, distinct from a `rejected` claim the reviewer has ruled out.
 
 **Compatibility change (2026-07, deliberate):** `--status` is now OPTIONAL on
 the edit verb. Before this build every call had to move the status; now a
-field-only correction (`fha claim <C-id> --place L-baba9801fa`) is legal on its
+field-only correction (`fha claim <c-id> --place l-baba9801fa`) is legal on its
 own, and at least one mutation flag (`--status`/`--value`/`--date`/`--type`/
 `--place`/`--place-text`/`--persons`/`--confidence`/`--information`/
 `--evidence`/`--anchor`/`--notes`) is required so a bare `fha claim <C-id>`
@@ -89,8 +89,8 @@ never touches status or reviewed.
 only "value updated" / "place_text updated" - identical whether the value
 written was the one intended or a corrupted one (the concrete repro: on
 Windows PowerShell 5.1 a single-quoted string loses embedded double quotes
-before the tool ever sees the argument, so `Robert Justin "Bob" Knipscheer`
-silently arrives as `Robert Justin Bob Knipscheer`; `--dry-run` showed this in
+before the tool ever sees the argument, so `Calvin "Cal" Hartley`
+silently arrives as `Calvin Cal Hartley`; `--dry-run` showed this in
 its diff, a live run did not show it at all). Every free-text/vocabulary field
 this verb (and `fha claim new`) can write now echoes the value it actually
 wrote as an extra `field: value` line on success - cheap insurance against any
@@ -132,7 +132,7 @@ the command works even when `.cache/index.sqlite` is stale or absent. After a
 write, re-run `fha index` so the new status enters the query surface.
 
 **Batch status moves (2026-07, TOOLING §3b amendment).** The edit verb takes
-SEVERAL C-ids at once - `fha claim C-a C-b C-c --status accepted` - because the
+SEVERAL c-ids at once - `fha claim c-a c-b c-c --status accepted` - because the
 review gesture "accept 1, 2 and 4" is one human decision per claim delivered in
 one breath, and the tool should meet that gesture with one command, not four
 retypings. The gate: a batch is legal ONLY for a status-only mutation (any of
@@ -233,7 +233,7 @@ CODE MAP
                                 (un-accepted, or edited): say who is still marked as
                                 no longer living (never reverted)
 
-  fha claim <C-id> [<C-id> ...] (review + field edit; batch = status-only)
+  fha claim <c-id> [<c-id> ...] (review + field edit; batch = status-only)
     _find_claim_record        - scan sources/ for the .md holding one C-id
     _existing_role_target_pids - P-ids an existing roles: map already names
                                 (#126/#173: a --persons REPLACE must not orphan one)
@@ -691,8 +691,8 @@ def _validate_field_args(
 
     if place is not None and not (is_valid_id(place) and id_type_of(place) == 'L'):
         return _fail(result, 'failed',
-                     f'--place {place!r} is not a valid place ID. L-ids look like '
-                     'L-baba9801fa. For the place as the source wrote it, use '
+                     f'--place {place!r} is not a valid place ID. l-ids look like '
+                     'l-baba9801fa. For the place as the source wrote it, use '
                      '--place-text (the two may be given together).'), None, None
 
     persons_norm: list[str] | None = None
@@ -701,7 +701,7 @@ def _validate_field_args(
         if bad_shape:
             return _fail(result, 'failed',
                          'Not a valid person ID: ' + ', '.join(repr(p) for p in bad_shape)
-                         + '. P-ids look like P-de957bcda1.'), None, None
+                         + '. p-ids look like p-de957bcda1.'), None, None
         missing = _unresolvable_person_ids(archive_root, persons)
         if missing:
             return _notfound(
@@ -788,8 +788,8 @@ def _clear_problem(
                         'Nothing was changed.')
     if persons is not None and not persons:
         return (), ('--persons was empty, but a claim must name at least one person. '
-                    'Pass the P-ids it is about, comma-separated (e.g. --persons '
-                    'P-de957bcda1), or leave --persons off to keep the list as it is. '
+                    'Pass the p-ids it is about, comma-separated (e.g. --persons '
+                    'p-de957bcda1), or leave --persons off to keep the list as it is. '
                     'Nothing was changed.')
     return tuple(fields), None
 
@@ -1606,7 +1606,7 @@ def _accept_refusal(archive_root: Path, claim: dict, *,
 
 
 def _event_reading_line(archive_root: Path, claim: dict) -> str | None:
-    """'c-… records the DEATH of Beverly Knipscheer (p-…).' - said on every
+    """'c-… records the DEATH of Thomas Edward Hartley (p-…).' - said on every
     accept of an event claim, so whoever accepts reads in plain words whose
     event they just made a fact."""
     found = _event_subjects(claim)
@@ -2048,8 +2048,8 @@ def run_claim(
         result.exit_code = EXIT_FAILURE
         result.data['status'] = 'invalid-id'
         result.add('error',
-                   f'{claim_id!r} is not a valid claim ID. C-ids look like C-fd0000001a - '
-                   'a C followed by a dash and 10 characters from the archive alphabet.')
+                   f'{claim_id!r} is not a valid claim ID. c-ids look like c-fd0000001a: '
+                   'a c, a dash and 10 characters from the archive alphabet.')
         return result
 
     cid = normalize_id(claim_id)
@@ -2598,7 +2598,7 @@ def run_claim_batch(
 
     if not deduped:
         return _fail(result, 'failed',
-                     'No claim id given - pass at least one C-id (e.g. C-fd0000001a).')
+                     'No claim id given. Pass at least one c-id (e.g. c-fd0000001a).')
 
     if len(deduped) == 1:
         # One distinct claim: the exact single-id contract, field edits and
@@ -2667,8 +2667,8 @@ def run_claim_batch(
     for raw in deduped:
         if not (is_valid_id(raw) and id_type_of(raw) == 'C'):
             return _fail(result, 'invalid-id',
-                         f'{raw!r} is not a valid claim ID. C-ids look like C-fd0000001a - '
-                         'a C followed by a dash and 10 characters from the archive '
+                         f'{raw!r} is not a valid claim ID. c-ids look like c-fd0000001a: '
+                         'a c, a dash and 10 characters from the archive '
                          'alphabet. The whole batch was left unwritten - fix that id and '
                          're-run.')
 
@@ -3108,7 +3108,7 @@ def run_claim_new(
 
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _fail(result, 'invalid-id',
-                     f'{source_id!r} is not a valid source ID. S-ids look like S-fa1234567b.')
+                     f'{source_id!r} is not a valid source ID. s-ids look like s-fa1234567b.')
 
     sid = normalize_id(source_id)
     result.data['source_id'] = fmt_id_display(sid)
@@ -3176,7 +3176,7 @@ def run_claim_new(
 
     if claim_id:
         if not (is_valid_id(claim_id) and id_type_of(claim_id) == 'C'):
-            return _fail(result, 'invalid-id', f'{claim_id!r} is not a valid C-id.')
+            return _fail(result, 'invalid-id', f'{claim_id!r} is not a valid c-id. c-ids look like c-fd0000001a.')
         cid = normalize_id(claim_id)
         if cid in scan_ids_in_tree(archive_root):
             return _fail(
@@ -3425,9 +3425,9 @@ def _cmd_claim_new(args: argparse.Namespace) -> int:
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument('claim_ids', metavar='C-id', nargs='+',
-                   help='The claim(s) to review (e.g. C-fd0000001a). Several C-ids apply '
-                        'one status move to each - batches are status-only, and any bad id '
+    p.add_argument('claim_ids', metavar='c-id', nargs='+',
+                   help='The claim(s) to review (e.g. c-fd0000001a). Several c-ids apply '
+                        'one status move to each. Batches are status-only, and any bad id '
                         'stops the whole batch before anything is written.')
     p.add_argument('--status', choices=REVIEW_STATUSES,
                    help='The review status to set; `suggested` parks a claim you looked at but '
@@ -3449,16 +3449,16 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Optionally correct the claim's date (EDTF, e.g. 1880 or 1880-06-15).")
     p.add_argument('--type', dest='claim_type', metavar='TYPE', choices=sorted(CLAIM_TYPES),
                    help='Optionally correct the claim type (SPEC §8.2). Changing TO '
-                        'relationship is refused - see `fha claim --help`.')
-    p.add_argument('--place', metavar='L-id',
+                        'relationship is refused (see `fha claim --help`).')
+    p.add_argument('--place', metavar='l-id',
                    help='Optionally set the normalized place link. An existing '
                         'place_text: (the place as the source wrote it) is left '
-                        'untouched - the two coexist (SPEC §15).')
+                        'untouched; the two coexist (SPEC §15).')
     p.add_argument('--place-text', metavar='TEXT', dest='place_text',
                    help='Optionally set the place as written in the source. An '
                         'existing place: link is left untouched.')
-    p.add_argument('--persons', metavar='P-id[,P-id...]',
-                   help='Optionally REPLACE the whole persons: list, comma-separated P-ids '
+    p.add_argument('--persons', metavar='p-id[,p-id...]',
+                   help='Optionally replace the whole persons: list, comma-separated p-ids '
                         '(every id must already have a person record).')
     p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
                    help='Optionally set the evidence-quality level (SPEC §8.5; separate '
@@ -3473,17 +3473,17 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                         'correlation (indirect), or is it evidence of an absence (negative).')
     p.add_argument('--anchor', metavar='TEXT',
                    help='Optionally set the position inside the source this claim rests on '
-                        '(a timestamp, page, or line - e.g. "00:14:32" or "p. 12").')
+                        '(a timestamp, page, or line, e.g. "00:14:32" or "p. 12").')
     p.add_argument('--notes', metavar='TEXT',
-                   help='Optionally REPLACE the claim\'s notes: - the context/detail behind '
-                        'it. Safe even when the existing notes: is a multi-line block '
+                   help='Optionally replace the claim\'s notes: (the context or detail behind '
+                        'it). Safe even when the existing notes: is a multi-line block '
                         '(notes: > or notes: |); the whole field is replaced, never appended.')
     p.add_argument('--clear', metavar='FIELD', action='append',
                    help='Remove an optional field from the claim (repeatable): one of '
                         + ', '.join(CLEARABLE_CLAIM_FIELDS) + '. The field goes whole (a '
                         'multi-line value with it); comments and the other keys stay as '
                         'written. Required fields '
-                        '(value, type, persons, status, confidence) cannot be cleared - '
+                        '(value, type, persons, status, confidence) cannot be cleared; '
                         'correct them with their own flag.')
     p.add_argument('--confirm-deceased', action='store_true', dest='confirm_deceased',
                    help='Accept a death or burial claim for a person marked living: true, '
@@ -3502,51 +3502,51 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def _add_new_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument('--source', required=True, metavar='S-id', dest='source_id',
-                   help='The source this claim is cited to (e.g. S-fa1234567b).')
+    p.add_argument('--source', required=True, metavar='s-id', dest='source_id',
+                   help='The source this claim is cited to (e.g. s-fa1234567b).')
     p.add_argument('--type', required=True, dest='claim_type', metavar='TYPE',
                    choices=sorted(CLAIM_TYPES),
-                   help='The claim type (SPEC §8.2). relationship is refused - see below.')
+                   help='The claim type (SPEC §8.2). relationship is refused (see below).')
     p.add_argument('--value', required=True, metavar='TEXT',
                    help='The human-readable summary of the assertion.')
     p.add_argument('--date', metavar='DATE',
-                   help='When it happened - EDTF (1880-06-15) or plain words like "about 1880".')
-    p.add_argument('--place', metavar='L-id',
-                   help='The place, by its registry id (e.g. L-baba9801fa).')
+                   help='When it happened: EDTF (1880-06-15) or plain words like "about 1880".')
+    p.add_argument('--place', metavar='l-id',
+                   help='The place, by its registry id (e.g. l-baba9801fa).')
     p.add_argument('--place-text', metavar='TEXT', dest='place_text',
-                   help='The place as written in the source - alone when it has no '
-                        'L-id yet, or beside --place to keep the wording too.')
-    p.add_argument('--persons', metavar='P-id[,P-id...]',
-                   help='Who the claim is about, comma-separated P-ids. Optional, but lint '
+                   help='The place as written in the source: alone when it has no '
+                        'l-id yet, or beside --place to keep the wording too.')
+    p.add_argument('--persons', metavar='p-id[,p-id...]',
+                   help='Who the claim is about, comma-separated p-ids. Optional, but lint '
                         'will flag the claim until at least one is linked.')
     p.add_argument('--negated', action='store_true',
-                   help='Mint a confirmed ABSENCE (SPEC §8.6): "we researched and it did not '
-                        'happen" - e.g. --type marriage --negated --value "no marriage found" '
+                   help='Mint a confirmed absence (SPEC §8.6): "we researched and it did not '
+                        'happen". For example --type marriage --negated --value "no marriage found" '
                         'records confirmed-never-married. Writes negated: true and its pairing '
                         'evidence: negative on the claim.')
     p.add_argument('--subtype', metavar='WORD',
                    help='Free-text refinement of the type (e.g. deacon for occupation).')
     p.add_argument('--status', choices=NEW_CLAIM_STATUSES, default='accepted',
-                   help='Review state to mint at (default: accepted - a human directing this '
-                        'IS the review; AI callers must pass --status suggested).')
+                   help='Review state to mint at (default: accepted, because a person typing this '
+                        'command is the review; AI callers must pass --status suggested).')
     p.add_argument('--confidence', choices=CONFIDENCE_VALUES,
                    help='Evidence-quality level (SPEC §8.5). Defaults from the source\'s '
                         'source_type (vital-record: high, interview: low, else medium).')
     p.add_argument('--information', choices=INFORMATION_VALUES,
                    help='Mills information value (SPEC §8.5): was the informant behind '
                         'this assertion there at the time (primary), reporting secondhand '
-                        '(secondary), or unknown. Optional - omit if undetermined.')
+                        '(secondary), or unknown. Optional; omit if undetermined.')
     p.add_argument('--evidence', choices=EVIDENCE_VALUES,
                    help='Mills evidence value (SPEC §8.5): does the source answer the '
                         'question directly (direct), only through correlation (indirect), '
                         'or is it evidence of an absence (negative). --negated sets this to '
-                        'negative automatically - --evidence must agree if both are given.')
+                        'negative automatically, and --evidence must agree if both are given.')
     p.add_argument('--anchor', metavar='TEXT',
                    help='Position inside the source this claim rests on (a timestamp, '
-                        'page, or line - e.g. "00:14:32" or "p. 12").')
+                        'page, or line, e.g. "00:14:32" or "p. 12").')
     p.add_argument('--notes', metavar='TEXT',
-                   help='The context/detail behind the claim - EXPECTED (not required) on '
-                        'a substantive or low-confidence-vital claim (lint W109 pings an '
+                   help='The context or detail behind the claim. Expected, though not required, on '
+                        'a substantive or low-confidence vital claim (lint W109 flags an '
                         'accepted one with none).')
     p.add_argument('--confirm-deceased', action='store_true', dest='confirm_deceased',
                    help='Accept a death or burial claim for a person marked living: true, '
@@ -3570,15 +3570,15 @@ def _add_new_arguments(p: argparse.ArgumentParser) -> None:
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Record your verdict on a suggested fact - the human decision point.
+Record your verdict on a suggested fact.
 
-  fha claim <C-id> --status accepted   Confirm a fact (stamps today's date)
-  fha claim <C-id> --status disputed|rejected|superseded
-  fha claim <C-id> --status suggested  Looked at it, cannot settle it yet
+  fha claim <c-id> --status accepted   Confirm a fact (stamps today's date)
+  fha claim <c-id> --status disputed|rejected|superseded
+  fha claim <c-id> --status suggested  Looked at it, cannot settle it yet
                                        (stays suggested, dated today)
-  fha claim C-a C-b C-c --status accepted   One verdict for several claims at once
-  fha claim <C-id> --place L-baba9801fa   Correct a field without touching status
-  fha claim <C-id> --clear place_text     Remove an optional field (repeatable)
+  fha claim c-a c-b c-c --status accepted   One verdict for several claims at once
+  fha claim <c-id> --place l-baba9801fa   Correct a field without touching status
+  fha claim <c-id> --clear place_text     Remove an optional field (repeatable)
 
 Only you move a claim to accepted. Nothing becomes a fact until you decide here.
 Accepting a death or burial claim also marks the person who died as no longer
@@ -3590,7 +3590,7 @@ At least one of --status/--value/--date/--type/--place/--place-text/--persons/
 evidence, anchor, notes); an empty --place-text/--anchor/--notes is refused
 rather than written as an empty line, and --value can be corrected but never
 emptied (every claim needs one). Several
-C-ids at once move status only - every id is checked first, and one bad id
+c-ids at once move status only: every id is checked first, and one bad id
 stops the whole batch before anything is written; field corrections take
 exactly one claim. Preview any change first with --dry-run.
 
@@ -3599,12 +3599,12 @@ To mint a brand-new claim onto a source, use `fha claim new` (`fha claim new --h
 _NEW_CLI_DESCRIPTION = """\
 Mint a brand-new claim onto an existing source record.
 
-  fha claim new --source S-… --type occupation --value "Bookkeeper, 1874 directory" \\
-      --persons P-… --date 1874 --status accepted
+  fha claim new --source s-… --type occupation --value "Bookkeeper, 1874 directory" \\
+      --persons p-… --date 1874 --status accepted
 
-Defaults to --status accepted (typing this command IS the review). Pass
+Defaults to --status accepted (typing this command is the review). Pass
 --status suggested for an AI-drafted claim awaiting human review.
---type relationship is refused - it needs a roles: map this command does not
+--type relationship is refused because it needs a roles: map this command does not
 build; use `fha person relate` (hypothesis) or `fha confirm cooccur` (sourced)
 instead. --information/--evidence/--anchor/--notes (SPEC §8.4/§8.5) mint the
 Mills analysis fields and context note in the same step, instead of needing a
@@ -3621,8 +3621,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     pattern `fha gedcom import` uses (TOOLING §13a2)."""
     p = subs.add_parser(
         'claim',
-        help='Review claims: move status (one C-id or several) and/or correct fields '
-             '(human-directed write-back)',
+        help='Review claims: move status (one c-id or several) and/or correct fields '
+             '(your decision, written to the record)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

@@ -91,3 +91,9 @@ These are not fixes. Each stays here until it has a design section in `TOOLING.m
 - **`fha views canvas`.** A regenerable Obsidian `.canvas` (or Mermaid) family tree drawn from relationship claims, so an Obsidian user can see the tree without leaving the vault. `fha views tree` emits JSON or DOT only.
 - **A generated family summary on the home page.** An at-a-glance panel built from the index each run, never hand-edited: how many people the archive holds, its surnames, the span of years it covers, the earliest ancestor on the main line, and a short list of recent discoveries.
 - **More custom prose pages on the site.** `notes/home.md` is the one custom prose page. A `notes/narrative/` folder of "chapters" (a migration story, a war letter, a family-recipe page), with the site building a small table of contents across them, would use the same source-first model. It needs answers first: whether a chapter naming a living person is redacted, how chapters are ordered, and whether they appear in the standalone snapshot.
+
+---
+
+## 8. Code cleanup
+
+- **The legacy dismissal file.** `_lib.load_cooccur_dismissed` still reads `.cache/cooccur_dismissed.json` beside `notes/cooccur_dismissed.json` and migrates it. TOOLING §14a2 names only the `notes/` file, so once no archive carries the old one, the `.cache/` read can go.

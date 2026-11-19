@@ -629,7 +629,7 @@ class SetLivingRefusalTests(unittest.TestCase):
         result = person.run_set_living(self.root, 'grandma', 'false')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'refused')
-        self.assertIn('P-2b3c4d5e6f', result.messages[0].text)  # the example id
+        self.assertIn('p-2b3c4d5e6f', result.messages[0].text)  # the example id
 
     def test_invalid_value_refused_headless(self) -> None:
         # The CLI stops a bad literal at argparse (exit 2); a headless caller

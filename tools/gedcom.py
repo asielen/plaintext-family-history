@@ -952,7 +952,7 @@ def _gedcom_payload(
                     'person_count': 0, 'family_count': 0}
         if not is_valid_id(pid) or id_type_of(pid) != 'P':
             return {'status': 'bad-args', 'text': None,
-                    'messages': [f'ERROR: {pid!r} is not a valid P-id.'],
+                    'messages': [f'ERROR: {pid!r} is not a valid p-id. p-ids look like p-2b3c4d5e6f.'],
                     'person_count': 0, 'family_count': 0}
 
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=True)
@@ -1300,7 +1300,7 @@ def _cmd_gedcom(args: argparse.Namespace) -> int:
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument('person_id', metavar='P-id', nargs='?',
+    p.add_argument('person_id', metavar='p-id', nargs='?',
                    help='Seed person for traversal (omit with --all).')
     p.add_argument('--mode', choices=('descendants', 'ancestors', 'connected'),
                    default='descendants',
@@ -1309,7 +1309,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Depth cap for descendants/ancestors (default: unlimited).')
     p.add_argument('--all', action='store_true',
                    help='Export every person in the index. Do not combine with a '
-                        'P-id (they conflict); --all needs no --mode.')
+                        'p-id (they conflict); --all needs no --mode.')
     p.add_argument('--include-living', action='store_true', dest='include_living',
                    help='Export living/unknown persons in full (default: redacted).')
     p.add_argument('--basic', action='store_true',
@@ -1324,8 +1324,8 @@ _CLI_DESCRIPTION = """\
 Export your tree to a GEDCOM file for another genealogy app.
 
   fha gedcom --all                        Export everyone
-  fha gedcom <P-id> --mode descendants    Export from one person, down the line
-  fha gedcom <P-id> --mode ancestors      Export from one person, up the line
+  fha gedcom <p-id> --mode descendants    Export from one person, down the line
+  fha gedcom <p-id> --mode ancestors      Export from one person, up the line
   fha gedcom --all --out family.ged       Choose the output file
   fha gedcom --all --basic --out dna.ged  For a DNA site: names, dates, places
                                           and family links only
@@ -1335,7 +1335,7 @@ is the portable format Ancestry, RootsMagic, and others read; it is a one-way
 export, never re-imported as truth.
 
 Importing a GEDCOM from Ancestry or another program? That is the separate
-`fha gedcom import <file.ged>` - this command is the exporter."""
+`fha gedcom import <file.ged>`; this command is the exporter."""
 
 
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:

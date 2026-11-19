@@ -119,7 +119,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help='Find where an ID appears in the archive',
         aliases=['find'],
     )
-    check_p.add_argument('id_value', metavar='ID', help='ID to locate (e.g. P-de957bcda1)')
+    check_p.add_argument('id_value', metavar='ID', help='ID to locate (e.g. p-de957bcda1)')
     check_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root')
 
     id_parser.set_defaults(func=_run_id)

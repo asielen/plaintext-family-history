@@ -360,11 +360,11 @@ nothing is written."""
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument('person', nargs='?', metavar='P-ID',
+    p.add_argument('person', nargs='?', metavar='p-id',
                    help='One person to show in detail, by ID or by full name '
                         '(default: the direct line)')
     p.add_argument('--all', action='store_true', dest='everyone',
-                   help='List every person, stubs included (not with a P-ID)')
+                   help='List every person, stubs included (not with a p-id)')
     p.add_argument('--include-suggested', action='store_true', dest='include_suggested',
                    help='Count suggested claims as well as accepted ones')
     p.add_argument('--json', action='store_true', dest='use_json',

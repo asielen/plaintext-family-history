@@ -2300,9 +2300,9 @@ class KeywordScanRespectsPhotosIgnoreTests(unittest.TestCase):
         self.addCleanup(__import__('shutil').rmtree, tmp, True)
         root = Path(tmp)
         photos = root / 'photos'
-        (photos / 'Woodbury').mkdir(parents=True)
+        (photos / 'Easton').mkdir(parents=True)
         (photos / 'Flickr Export' / 'deep').mkdir(parents=True)
-        (photos / 'Woodbury' / 'keep.jpg').write_bytes(b'x')
+        (photos / 'Easton' / 'keep.jpg').write_bytes(b'x')
         (photos / 'Flickr Export' / 'bulk.jpg').write_bytes(b'x')
         (photos / 'Flickr Export' / 'deep' / 'deeper.jpg').write_bytes(b'x')
         cfg = {} if photos_ignore is None else {'photos_ignore': photos_ignore}
@@ -2317,18 +2317,18 @@ class KeywordScanRespectsPhotosIgnoreTests(unittest.TestCase):
 
     def test_without_the_setting_every_photo_is_scanned(self) -> None:
         self.assertEqual(self._scanned(), {
-            'Woodbury/keep.jpg',
+            'Easton/keep.jpg',
             'Flickr Export/bulk.jpg',
             'Flickr Export/deep/deeper.jpg',
         })
 
     def test_an_ignored_subtree_is_skipped_wholesale(self) -> None:
-        self.assertEqual(self._scanned('Flickr Export/*'), {'Woodbury/keep.jpg'})
+        self.assertEqual(self._scanned('Flickr Export/*'), {'Easton/keep.jpg'})
 
     def test_matching_is_case_insensitive_like_the_scan(self) -> None:
         # The photo library sits on a case-insensitive filesystem on Windows
         # and macOS; 'flickr export' failing to prune reads as a broken feature.
-        self.assertEqual(self._scanned('flickr export/*'), {'Woodbury/keep.jpg'})
+        self.assertEqual(self._scanned('flickr export/*'), {'Easton/keep.jpg'})
 
     def test_a_malformed_setting_prunes_nothing_rather_than_guessing(self) -> None:
         # photoindex is where the human is shown the real parse error.
@@ -3085,7 +3085,7 @@ class EventClaimSaysWhoseEventE021Tests(unittest.TestCase):
         self.assertEqual([f.code for f in self._lint(claims)], ['E021'])
 
     def test_a_source_titled_after_a_survivor_is_flagged(self) -> None:
-        # Alan Sielen's case: his mother's obituary, indexed under his name.
+        # A son's case: his mother's obituary, indexed under his name.
         claims = (f'- value: "Mary died"\n  id: c-3333333333\n  type: death\n'
                   f'  persons: [{self.MOTHER}]\n  status: accepted\n  confidence: high\n')
         found = self._lint(claims, title='Paul Snyder - U.S., Obituary Collection',

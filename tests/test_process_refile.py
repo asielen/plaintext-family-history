@@ -812,7 +812,7 @@ class ProcessRefileTestCase(unittest.TestCase):
 
         self.assertEqual(rc, EXIT_FAILURE)
         self.assertIn('not a valid source ID', err)
-        self.assertIn('S-2b3c4d5e6f', err)  # jargon ships an example
+        self.assertIn('s-2b3c4d5e6f', err)  # jargon ships an example
         self.assertNotIn('Traceback', err)
 
     def test_record_not_found_exits_one_and_names_find(self) -> None:

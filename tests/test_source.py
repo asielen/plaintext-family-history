@@ -251,7 +251,7 @@ class SourceNoteRefusalTests(unittest.TestCase):
         result = source.run_source_note(self.root, 'grandmas-bible', text='x')
         self.assertEqual(result.exit_code, EXIT_FAILURE)
         self.assertEqual(result.data['status'], 'refused')
-        self.assertIn('S-2b3c4d5e6f', result.messages[0].text)   # the example id
+        self.assertIn('s-2b3c4d5e6f', result.messages[0].text)   # the example id
 
     def test_wrong_id_type_refused(self) -> None:
         result = source.run_source_note(self.root, 'P-aaaaaaaaaa', text='x')

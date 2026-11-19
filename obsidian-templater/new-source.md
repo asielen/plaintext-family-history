@@ -1,8 +1,8 @@
 <%*
 // Plaintext source record (Obsidian Templater): one source = one piece of evidence
-// (a photo, a certificate, a census page, a letter). Leave the ID out - `fha` mints
-// it on first contact. Drop the original file in your documents/ or photos/ tree and
-// list it under files: when you have it; a notes-only source is valid too.
+// (a photo, a certificate, a census page, a letter). Leave the ID out;
+// `fha lint --fix-ids` adds it later. Drop the original file in your documents/ or
+// photos/ tree and list it under files: when you have it; a notes-only source is valid too.
 const title = await tp.system.prompt("Short title (e.g. 1880 census, Hartley household)");
 -%>
 ---
@@ -12,7 +12,7 @@ source_type: other       # photo | census | vital-record | newspaper | letter | 
 # repository:            # optional, where the original lives
 # original_language:     # optional, if the source is not in English (de, fr, la, ...)
 # restricted: true       # optional, keep this source out of anything you share publicly
-people: []               # who this source is about - type [[ and pick names
+people: []               # who this source is about: type [[ and pick names
 created: <% tp.date.now("YYYY-MM-DD") %>
 ---
 

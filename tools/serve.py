@@ -2959,13 +2959,13 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'serve',
-        help='Open the localhost workbench - a private, editable view of the archive.',
+        help='Open the localhost workbench, a private, editable view of the archive.',
         description=(
             'Start a local, private web workbench for this archive.\n\n'
             '  fha serve                 open it in your browser on 127.0.0.1:8765\n'
             '  fha serve --port 8766     use a different port\n'
             '  fha serve --no-browser    start it but do not open a browser\n\n'
-            'It runs on this machine only - no network, no login. Every button is an '
+            'It runs on this machine only, with no network and no login. Every button is an '
             'fha command, previewed before it writes. Stop it with Ctrl-C; nothing is lost.'),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

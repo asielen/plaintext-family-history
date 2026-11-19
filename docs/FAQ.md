@@ -1,97 +1,107 @@
 # FAQ
 
 ### Why files instead of a database or an app?
-Because apps and databases don't last.
-Formats change, companies fold, subscriptions lapse, schemas migrate.
-Plain files on disk - text and standard image formats - are readable in fifty years with nothing but a text editor and an image viewer.
-The database (a SQLite index) still exists here; it's just a *disposable cache* rebuilt from the files, never the truth.
 
-### Then why involve AI at all, if durability is the point?
-Because AI is enormously useful for the *labor* of genealogy - reading a census page, extracting claims from an interview, surfacing connections you missed - and useless as a *source of truth*.
-So the spec uses it exactly there: AI drafts, a human reviews, and nothing AI produces becomes a fact without a person accepting it.
-The AI is an interface and a research assistant, never the store of record.
+Apps and databases don't last. Formats change, companies fold, subscriptions lapse. Plain files on disk, in text and standard image formats, can be read in fifty years with a text editor and an image viewer. There is a database here (a SQLite index), but the tools rebuild it from the files whenever they need to, so losing it costs nothing.
+
+### Then why involve AI at all?
+
+AI is good at the labor of genealogy: reading a census page, pulling the facts out of an interview, spotting connections you missed. It is a poor place to keep the truth. So the assistant drafts, a person reviews, and nothing it produces becomes a fact until a person accepts it. The records stay in your files.
 
 ### Is this finished software I can install?
-Not as a polished installer yet.
-The core `fha` tools are present for filing, linting, indexing, finding, reporting, photo indexing, and export, but this is still a working plain-file project rather than a packaged app.
-Some assistant workflows are still future skill-layer work; the durable part is the *format* and the *process*, and the tools stay replaceable around those files.
 
-### How is this different from Gramps, webtrees, Ancestry, etc.?
-Those are genealogy *applications* - excellent, but database- or service-first: your data lives in their store or schema.
-Plaintext inverts that.
-The archive is plain files you own; a genealogy app can be *fed* from it (via GEDCOM export) but never owns it.
-If you love an app's tree view, generate a GEDCOM and use it - the truth stays in your files.
-And it works in the other direction too: coming *from* Ancestry (or any app), download your tree as a GEDCOM file and `fha gedcom import` files it - every person becomes a record and every assertion a reviewable suggestion, so years of clicking arrive as leads, not lost work.
+There is no app installer. You set up an archive with one command (`fha install`) from a terminal, and from then on the AI assistant runs the tools for you. The tools cover filing, checking, searching, reporting, photo indexing and exports, and the assistant has workflows for processing an inbox, reviewing claims, writing biographies and more. The part meant to last is the file format; the tools can be replaced around it.
+
+### How is this different from Gramps, webtrees or Ancestry?
+
+Those are genealogy applications. They're good ones, but your data lives in their database or on their service. Here the archive is plain files you own. A genealogy program can still be fed from it with a GEDCOM export, so if you like another program's tree view, export and use it; your files stay the record.
+
+It works the other way too. Coming from Ancestry or any other program, download your tree as a GEDCOM file and `fha gedcom import` files it: every person becomes a record and every statement in your tree becomes a suggestion for you to review, so years of work arrive ready to check.
 
 ### What happens to my photos?
-They're never renamed or moved while they live in your photo library (so your catalog stays intact) - the one exception, `fha process refile` for a photo that turned out to be a record, asks you first and reminds you to remove it from your catalog.
-They can live anywhere - an external drive, your existing library - and `fha.yaml` maps to them.
-Identity rides in embedded metadata (a keyword), not the filename, so reorganizing them never breaks anything.
-Pointing `photos:` (or `documents:`/`inbox:`) outside the archive this way also removes the empty
-`photos/` placeholder folder that would otherwise sit inside the archive holding nothing - one
-less thing to wonder about. Point it back inside later and the folder returns.
+
+They're never renamed or moved while they're in your photo library, so your photo program's catalog stays intact. The one exception is `fha process refile`, for a photo that turned out to be a record; it asks you first and reminds you to remove the photo from your catalog. Photos can live anywhere (an external drive, your existing library) and `fha.yaml` says where. A photo's ID is stored inside the file as a keyword, not in its name, so reorganizing them breaks nothing.
+
+If you point `photos:` (or `documents:` or `inbox:`) outside the archive, the empty `photos/` folder inside the archive is removed. Point it back inside later and the folder returns.
 
 ### Does every photo or document need to become a source?
-No. There are three perfectly good resting states, and most files stay in the first forever:
-1. **Just filed.** A photo sits in the photo box - it can still be tagged with who's in it, captioned, and found through the photo index, all without any source record. A scan sits in the scans drawer, findable by its name. Roughly one photo in fifty carries evidence worth more than this; "just filed" is a complete, legitimate state, not a backlog.
-2. **Filed with a note.** Something interesting but not evidentiary - a keepsake, a scenic photo from the farm - can get a *minimal* evidence folder: a title, links to who and where it's about, and a paragraph of notes saying what it is and why it was kept. **No claims required - a source with only notes is completely valid** (the record template says so itself). It then shows up in that person's source list, on the generated site, in family packets, and in full-text search. "Keywords" simply go in that notes paragraph; the notes are searched. This is also how you keep material you *investigated and rejected* - a debunked surname pamphlet, a disproven legend: the notes record the verdict, so neither you nor the assistant ever mistakes it for evidence later, and the fact that it was checked isn't lost.
-3. **Fully worked.** Evidence that asserts checkable facts gets claims drafted, reviewed, and cited.
 
-A clipping with no `people:` link to anyone in your archive is a different case from any of the three above - even one that names someone in its prose, as long as that name isn't tied to an archive person (a mayor or a neighbor mentioned in passing, not a relative you're tracking). The line isn't whether any name appears in the text; it's whether the source links to an archive person at all. File it as `source_type: ephemera` (SPEC §14) with `people:` left empty rather than linked to a "who it's about" that doesn't exist. Because nothing links it to a person, it will *not* show up on anyone's source list, site page, or packet - those are all found by following a person's links, or a claim that names them, so this only holds while you also leave its `## Claims` block empty (the normal shape for a clipping like this). It's still kept and still findable: it gets its own page and shows up in the generated site's homepage Sources list (grouped by decade, with an "Undated" group for open dates), and its notes are searched like any other. If a clipping does turn out to name someone in your archive, even in passing, it isn't ephemera - retype it and link that person, and it becomes case 2 above.
+No. There are three good places for a file to stop, and most files stay at the first:
 
-Move a file up a rung only when it earns it - the system never nags you about the ones that stay put.
+1. **Just filed.** A photo sits in the photo library. It can still be tagged with who's in it, captioned and found through the photo index, without any source record. A scan sits in the documents folder, findable by its name. This is a finished state, not a backlog.
+2. **Filed with a note.** Something kept for interest rather than evidence (a keepsake, a photo of the farm) can get a short source record: a title, links to who and where it's about, and a paragraph saying what it is and why it was kept. **A source with notes and no claims is complete.** It then shows up in that person's source list, on the family website, in family packets and in full-text search. Put any keywords in the notes paragraph; the notes are searched. This is also how you keep something you *checked and rejected*, such as a debunked surname pamphlet or a disproved legend. The notes record the verdict, so neither you nor the assistant mistakes it for evidence later.
+3. **Fully worked.** Evidence that states facts you can check gets claims drafted, reviewed and cited.
+
+A clipping that links to nobody in your archive is a different case. It may name people in its text (a mayor, a neighbor mentioned in passing), as long as none of them is a relative you're tracking. File it as `source_type: ephemera` with `people:` left empty and no claims. Nothing links it to a person, so it won't show up on anyone's source list, website page or packet. It is still kept and findable: it gets its own page, appears in the website homepage's Sources list (grouped by decade, with an "Undated" group), and its notes are searched like any other. If a clipping turns out to name someone in your archive, even in passing, it isn't ephemera: change its type, link that person, and it becomes case 2.
+
+Move a file up a level only when you have a reason to. The tools don't remind you about the ones that stay where they are.
 
 ### Is this thing a photo or a document?
-Decide by *where it should live*, not what it looks like: if it belongs in your photo library, it's a photo; everything else - scans, clippings, even a photograph of a document - belongs in the scans drawer. A scanned record saved as a `.jpg` files correctly when its note says what it is (`source_type: census`); and an in-between item like a postcard can keep its picture side in the photo box while its transcription sits in the scans drawer, both under one evidence folder. And if one was filed to the wrong side, it isn't stuck: `fha process refile` moves it over and corrects the paperwork in one step.
 
-### My family isn't Anglo - mononyms, two surnames, surname-first, an ancestor with only a given name. Does this handle that?
-Yes. The only thing a surname does here is decide where a person sorts in their folder, so families land together. If someone has no surname - a mononym, an enslaved ancestor recorded by a single given name, an Icelandic patronymic, a foundling - they simply sort in a "no surname" group, and their full name, in its true cultural order, lives in the record itself. Two-surname and surname-first systems work the same way: you pick the name to sort by, and the page shows the name however it should really be written.
+Decide by where it should live, not by what it looks like. If it belongs in your photo library, it's a photo. Everything else (scans, clippings, even a photograph of a document) goes in the documents folder. A scanned record saved as a `.jpg` is filed correctly when its note says what it is (`source_type: census`). An in-between item like a postcard can keep its picture side in the photo library and its transcription in the documents folder, both under one source record. If something was filed on the wrong side, `fha process refile` moves it over and updates the record in one step.
+
+### My family isn't Anglo: mononyms, two surnames, surname-first names, an ancestor with only a given name. Does this handle that?
+
+Yes. A surname only decides where a person sorts in their folder, so families land together. Someone with no surname (a mononym, an enslaved ancestor recorded by a single given name, an Icelandic patronymic, a foundling) sorts in a "no surname" group, and their full name, in its own cultural order, is written in the record. For two surnames or surname-first names you choose the name to sort by, and the page shows the name the way it should be written.
 
 ### Can I keep a translation of a foreign-language record?
-Yes. Drop the original and its translation together, and the translation is filed beside the original as its own helper file, with the language of each noted. The original is never altered - the translation sits next to it, the way a typed-up transcription does.
 
-### How does it stay honest about what's proven vs. guessed?
-Three ways.
-Every factual statement cites a source, or it's explicitly marked as story/context/speculation.
-Claims carry a confidence level and a review status.
-And guesses live as *hypotheses* - a separate, clearly-labeled state - until evidence promotes them to sourced claims.
-The linter flags anything that drifts.
+Yes. Drop the original and its translation in together, and the translation is filed beside the original as its own file, with the language of each noted. The original is never changed; the translation sits next to it the way a typed transcription does.
 
-### How do I record an adoption, a step-parent, or a surrogate without it looking like a mistake?
-You list it as a relationship with its *nature* attached. A child can have a biological father and an adoptive father at the same time - you write both, mark one `biological` and one `adoptive`, and the archive treats both as true rather than flagging them as a conflict. The same goes for step-parents, foster and guardian arrangements, surrogacy and donor conception, and even ties that aren't family at all, like an employer or a fellow member of a military unit or a lodge. If your situation doesn't match a word on the list, just describe it in plain language - the assistant suggests the closest standard term but never refuses what you wrote.
+### How does it keep proven facts apart from guesses?
 
-### If I record an adopted ancestor, do they mess up the family-tree numbering?
-No. The numbered pedigree follows only the *genetic* line, so an adoptive parent, a step-parent, or a guardian is shown on the person's page and in the family folder but isn't counted into the blood numbering. You see the whole truth - who raised them and who they descend from - and the tree math stays correct. The same is true for surrogacy and donor conception: the genetic contributor anchors the number, and the gestational or intended parent is shown right beside it.
+Every factual statement cites a source, or is plainly marked as story, context or speculation. Each claim has a confidence level and a review status. Guesses are kept as *working answers* on an open question until a source proves them and a claim takes over. `fha lint` flags anything that drifts from those rules.
 
-### Whose name goes in the "root person" setting - mine, or my children's?
-Yours, if that's who the archive is about. Set `root_person` to yourself and add `root_generation: children` to `fha.yaml`: your children become #1, collectively (a fiction with no folder of their own - it's just how the count is anchored), you're #2, your father #4, his father #8, and so on doubling back through the generations. This works even with no children in the archive yet, unlike the old way of anchoring at yourself, which required naming one of your actual children as `root_person` instead and left a childless researcher with no way to be numbered at all. If you'd rather the archive be centred on a specific descendant, you can still name a child (or any of their full siblings - they share the same ancestors, so any one works) as `root_person` and leave `root_generation` at its default, `self`: the numbering then counts outward from that person, who becomes #1, their father #2, his father #4, and so on. The one thing to get right either way: naming yourself as `root_person` while leaving `root_generation` at `self` starts the count one generation too high, and every ancestral folder number comes out one generation off - nothing about the folders themselves looks wrong, because they were all numbered by the same count. So the tools check the setting itself: if `root_person` has a child on record and `root_generation` isn't `children`, `fha lint` and `fha views brackets` say so and name the fix (usually, adding `root_generation: children`). It's a note, not an error - anchoring at yourself without it is a legitimate choice if you mean it. If you change either setting later, rebuild the index and then run the realign pass, and the already-filed folders are renumbered for you in one previewed step.
+### How do I record an adoption, a step-parent or a surrogate without it looking like a mistake?
 
-### Can I record that someone was in a regiment, a tribe, the Masons, or worked for a railroad?
-Yes - these are all *memberships*, recorded the same way as a family relationship: the person belongs to the group, and the group's name is written in plain words. That covers military units, tribal enrollment, lodges and clubs, employers, churches, and event participation. The organization itself stays a simple name (Plaintext doesn't keep separate "organization" records), but the membership is a real, searchable connection you can cite to a source - a unit roster, a Dawes Roll, a directory.
+List the relationship with its *nature* attached. A child can have a biological father and an adoptive father at the same time: write both, mark one `biological` and one `adoptive`, and the archive treats both as true instead of flagging a conflict. The same goes for step-parents, foster and guardian arrangements, surrogacy and donor conception, and ties that aren't family at all, like an employer or a fellow member of a military unit or a lodge. If your situation doesn't match a word on the list, describe it in plain language; the assistant suggests the closest standard term but keeps what you wrote.
+
+### If I record an adopted ancestor, does that upset the family-tree numbering?
+
+No. The numbered tree follows only the genetic line. An adoptive parent, a step-parent or a guardian is shown on the person's page and in the family folder but isn't counted into the numbering. You see who raised them and who they descend from, and the numbers stay correct. Surrogacy and donor conception work the same way: the genetic parent takes the number, and the gestational or intended parent is shown beside them.
+
+### Whose name goes in the "root person" setting: mine, or my children's?
+
+**If the archive is about you,** set `root_person` to yourself and add `root_generation: children` to `fha.yaml`. Your children together become number 1 (they share one number and have no folder of their own), you are number 2, your father number 4, his father number 8, and so on back through the generations. This works even if you have no children in the archive.
+
+**If you'd rather centre it on a particular child,** name that child (or any of their full siblings, since they share the same ancestors) as `root_person` and leave `root_generation` at its default, `self`. That person becomes number 1, their father number 2, his father number 4.
+
+The one combination to avoid is naming yourself as `root_person` and leaving `root_generation` at `self`. That starts the count one generation too high, and every ancestor folder number comes out one generation off. The folders don't look wrong, because they were all numbered the same way, so the tools check the setting: if `root_person` has a child on record and `root_generation` isn't `children`, `fha lint` and `fha views brackets` say so and name the fix. It's a note, not an error, since you might mean it.
+
+If you change either setting later, run `fha index` and then ask the assistant to realign the folders (`fha views brackets --realign`). It renumbers the folders you've already filed in one step, and shows you the changes first.
+
+### Can I record that someone was in a regiment, a tribe or the Masons, or worked for a railroad?
+
+Yes. These are all *memberships*, recorded the same way as a family relationship: the person belongs to the group, and the group's name is written in plain words. That covers military units, tribal enrollment, lodges and clubs, employers, churches and events. The organization itself is just a name (there are no separate organization records), but the membership is a searchable connection you can cite to a source: a unit roster, a Dawes Roll, a directory.
 
 ### How do I find out how two people in my tree are related?
-Ask the assistant, and it works it out from your records: the blood relationship (like "first cousin twice removed") by following the family line, and the plain-language path between any two people even when they're not blood relatives. It only uses connections you've actually recorded, so the answer is as good as your tree.
+
+Ask the assistant. It works it out from your records: the blood relationship (like "first cousin twice removed") by following the family line, and the plain-language path between any two people even when they aren't blood relatives. It only uses connections you've recorded, so the answer is only as complete as your tree.
 
 ### Do I have to make IDs, or know everything before I write it down?
-No to both. You name a file something sensible and link to records by name - `[[Grandpa Joe]]`, `[[Hartley family bible]]`, a nickname works too. The machine IDs are the tools' job: run `fha lint` and it assigns them, keeps your filename as an alias so your name-links keep working, and tidies up. And you can record what you only half-know - a birth year you're fairly sure of but can't yet prove goes down as a *provisional* date, and the assistant just keeps it on a "still to source" list until the record turns up. Recording what you know before you can prove it is the normal starting point.
+
+No to both. Name a file something sensible and link to records by name (`[[Grandpa Joe]]`, `[[Hartley family bible]]`, or a nickname). The IDs are the tools' job: ask the assistant, or run `fha lint --fix-ids`, and each record gets one, with your filename kept as an alias so your name links keep working. You can also write down what you only half know. A birth year you're fairly sure of but can't prove yet goes in as a *provisional* date, and the assistant keeps it on a "still to source" list until the record turns up.
 
 ### Do I have to use Claude Code?
-No. The agent instructions live in `AGENTS.md`, a plain document any capable agent can read; `CLAUDE.md` is a one-line pointer to it.
-Claude Code is the reference harness, but the design deliberately avoids locking to it.
-Any agent that reads `AGENTS.md` gets the same behavior - including the workflow playbooks in `.claude/skills/`, which are plain markdown any agent can follow (AGENTS.md's "Playbooks" section tells it to). For OpenAI Codex specifically: it reads `AGENTS.md` natively with no setup, and finds the same skills at `.agents/skills/` (an installed archive carries both copies); run it with the **workspace-write** approval mode so it can edit records and run the `fha` tools inside the archive but asks before touching anything outside it.
 
-### Can I use this with Obsidian (or another Markdown app)?
-Yes - a Plaintext archive *is* an Obsidian vault: Markdown files with YAML frontmatter and `[[wikilinks]]`. Point Obsidian at the archive folder and it opens, no conversion. Your `[[person]]` and `[[place]]` links draw the graph; vitals, relationships, gender, and privacy flags live in person frontmatter you can query with Dataview or Bases. The per-claim detail stays in fenced ` ```yaml ` blocks so notes render cleanly - those you query through the assistant or `fha`, not Dataview, so a first Dataview attempt over claims is expected to come back empty. An optional Templater pack (`obsidian-templater/`) gives one-click new-person / new-source notes, and the generated site (`fha site`) renders a navigable family tree. You never have to type `fha` for day-to-day writing - create, link, and cite in the vault, and run the tools (or ask the assistant) when you want IDs minted, checks run, or an export. See [USING_WITH_OBSIDIAN.md](USING_WITH_OBSIDIAN.md).
+No. The assistant's instructions are in `AGENTS.md`, a plain document any capable AI assistant can read; `CLAUDE.md` points Claude Code to it. The project is tested with Claude Code but doesn't depend on it. Any assistant that reads `AGENTS.md` gets the same behavior, including the workflow skills in `.claude/skills/`, which are plain Markdown any assistant can follow. OpenAI Codex reads `AGENTS.md` with no setup and finds the same skills in `.agents/skills/` (an installed archive carries both copies). Run Codex in its **workspace-write** approval mode so it can edit records and run the `fha` tools inside the archive but asks before touching anything outside it.
 
-### Can I keep my archive in Dropbox / iCloud Drive / OneDrive, or edit it from two places at once?
-You can store it there, but treat it like a shared spreadsheet: one editor at a time. Nothing in the tools takes a lock, so the archive assumes a single writer - you, or an assistant acting for you, but never both at the same moment, and never two assistants at once. That is a deliberate choice, not an oversight: a real lock would need a background service watching the archive at all times, and this project avoids exactly that kind of always-on machinery (`TOOLING.md`'s "no daemons, watchers, or schedulers" principle). It costs nothing when it is just you at one keyboard, which is how almost everyone uses this.
-The risk is real once a *continuously syncing* folder or a *second, concurrent* editor enters the picture: a sync service can rewrite a file in the background while a tool is mid-save, and an AI agent working the archive while you hand-edit the same files at the same time can each save a version that silently overwrites the other's - with nothing to warn either of you. Neither corrupts your records (they are still plain text you can open and fix), but a change can quietly vanish. The safe pattern: finish one session - yours or the assistant's - before starting the next, and if you must sync to a second machine, prefer **`fha working-copy` mode** (a second machine carrying just the plain-text records via git, `SPEC.md` §12.4): git actually tells you about a conflicting edit instead of silently picking one, which a folder-sync tool never does.
+### Can I use this with Obsidian or another Markdown app?
+
+Yes. A Plaintext archive is already an Obsidian vault: Markdown files with YAML frontmatter and `[[wikilinks]]`. Point Obsidian at the archive folder and it opens with no conversion. See [USING_WITH_OBSIDIAN.md](USING_WITH_OBSIDIAN.md) for what works in the vault and what to run the tools for.
+
+### Can I keep my archive in Dropbox, iCloud Drive or OneDrive, or edit it from two places at once?
+
+You can store it there, but treat it like a shared spreadsheet: one editor at a time. The tools don't lock files, so they assume a single writer: you, or an assistant working for you, but never both at the same moment and never two assistants at once. A lock would need a program running in the background all the time, and the project avoids that. With one person at one keyboard, which is how almost everyone uses it, this never comes up.
+
+It matters once a folder that syncs continuously, or a second editor working at the same time, is involved. A sync service can rewrite a file while a tool is saving it, and an assistant working the archive while you hand-edit the same files can each save over the other's change, with nothing to warn either of you. Your records aren't damaged (they're still plain text you can open and fix), but a change can disappear. Finish one session, yours or the assistant's, before starting the next. If you need the archive on a second computer, use **`fha working-copy`**, which carries the text records there through git; git tells you when two edits conflict instead of quietly keeping one.
 
 ### Can I share this with family without exposing living people or private data?
-Yes - that's built into the export tools.
-The static-site generator produces a self-contained snapshot containing only publication-eligible material: living (and possibly-living) people are redacted, sensitive material (including all DNA) is excluded by default.
-Anything you mark *restricted* - a person, a single sensitive fact, a source, or a former name - is kept out of public output the same way, and out of family packets unless you choose to include it; a relative who asks to be left out entirely (`by-request`) is honored everywhere with no override.
-Changing someone's living status later - a relative passes away, or a record turns out to describe someone long gone - is one command: `fha person set-living <P-id> false` (the assistant can run it for you, and it always tells you what the change means for your exports). When you accept a death or burial record for someone whose status was "unknown", that happens for you, and you are told so; someone you marked as living is never changed without asking you.
+
+Yes; the export tools handle it. The family website (`fha site`) leaves out living and possibly-living people and all sensitive material, including all DNA, by default. Anything you mark *restricted* (a person, a single sensitive fact, a source or a former name) is kept out of anything public the same way, and out of family packets unless you choose to include it. A relative who asks to be left out entirely (`restricted: by-request`) is left out everywhere, with no override.
+
+When someone's living status changes (a relative dies, or a record turns out to describe someone long gone), one command updates it: `fha person set-living <p-id> false`. The assistant can run it for you and tells you what the change means for your exports. When you accept a death or burial record for someone whose status was "unknown", the status changes for you and you're told; someone you marked as living is never changed without asking you.
 
 ### Does this manage my DNA matches and triangulation?
-No, and on purpose. Plaintext stores DNA *conclusions* - "these two people are related, and here's the proof" - as ordinary claims and proof-argument sources, always kept private. It is deliberately not a match workbench: manage your raw matches, shared-cM, and triangulation in the tools built for that (Ancestry, GEDmatch, DNA Painter), then bring the conclusion back here as a claim. The durable archive holds what you concluded, not the scratch work that got you there.
+
+No. The archive stores DNA *conclusions* ("these two people are related, and here's the proof") as ordinary claims and proof-argument sources, always kept private. Manage raw matches, shared centimorgans and triangulation in the tools built for that (Ancestry, GEDmatch, DNA Painter), then bring the conclusion back here as a claim.

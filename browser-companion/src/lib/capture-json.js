@@ -184,7 +184,7 @@
   // every shell the archive documents except the Windows Command Prompt. The
   // project spells it per shell and has done since the first owner doc -
   // `./fha <command>` on macOS/Linux, `.\fha <command>` in Windows PowerShell,
-  // a bare `fha <command>` in cmd.exe (CHEATSHEET.md "Running fha";
+  // a bare `fha <command>` in cmd.exe (CHEATSHEET.md "Typing fha";
   // GETTING_STARTED.md; docs/SETUP_FROM_ZIP.md). The card renders one of those
   // two prefixed forms rather than inventing a third spelling.
   //

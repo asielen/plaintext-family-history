@@ -3565,7 +3565,7 @@ def register(subs: argparse._SubParsersAction) -> None:
         help='Refresh an archive\'s tools/rulebooks from an updated public clone.',
         description=(
             'Compare your archive against a newer copy of the public tools and '
-            'pull in improvements. Never deletes and never overwrites your edits - '
+            'pull in improvements. Never deletes and never overwrites your edits: '
             'anything you customized is backed up first. Run from inside your '
             'archive with --repo pointing at the updated tools.'
         ),

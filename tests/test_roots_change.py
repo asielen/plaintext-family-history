@@ -52,18 +52,18 @@ def _make_archive(tmp: Path) -> Path:
     _write(root / 'fha.yaml', 'roots:\n  photos: photos\n  documents: documents\n')
     (root / 'people').mkdir(parents=True)
     (root / 'places').mkdir(parents=True)
-    _write(root / 'photos' / 'Woodbury' / 'portrait.jpg', 'x')
-    _write(root / 'photos' / 'Church' / 'wedding.jpg', 'x')
-    _write(root / 'photos' / 'Church' / 'gone.jpg', 'x')
+    _write(root / 'photos' / 'Easton' / 'portrait.jpg', 'x')
+    _write(root / 'photos' / 'Cole' / 'wedding.jpg', 'x')
+    _write(root / 'photos' / 'Cole' / 'gone.jpg', 'x')
     _write(root / 'sources' / 'photos' / 'portrait_S-0000000001.md',
            '---\nid: S-0000000001\ntitle: Portrait\nsource_type: photo\n'
            'created: 2026-01-01\nfiles:\n'
-           '  - file: photos/Woodbury/portrait.jpg\n    role: front\n---\n')
+           '  - file: photos/Easton/portrait.jpg\n    role: front\n---\n')
     _write(root / 'sources' / 'photos' / 'wedding_S-0000000002.md',
            '---\nid: S-0000000002\ntitle: Wedding\nsource_type: photo\n'
            'created: 2026-01-01\nfiles:\n'
-           '  - file: photos/Church/wedding.jpg\n    role: front\n'
-           '  - file: photos/Church/gone.jpg\n    role: back\n---\n')
+           '  - file: photos/Cole/wedding.jpg\n    role: front\n'
+           '  - file: photos/Cole/gone.jpg\n    role: back\n---\n')
     return root
 
 
@@ -86,28 +86,28 @@ class RootsChangeCoreTests(unittest.TestCase):
 
             # `gone.jpg` vanishes BEFORE the change - it must not be counted
             # against the change (it was already broken).
-            (root / 'photos' / 'Church' / 'gone.jpg').unlink()
+            (root / 'photos' / 'Cole' / 'gone.jpg').unlink()
 
-            report = _lib.roots_change_orphans(root, _cfg('photos/Woodbury'))
+            report = _lib.roots_change_orphans(root, _cfg('photos/Easton'))
             self.assertEqual(len(report), 1)
             item = report[0]
             self.assertEqual(item['alias'], 'photos')
             self.assertEqual(item['old'], 'photos')
-            self.assertEqual(item['new'], 'photos/Woodbury')
+            self.assertEqual(item['new'], 'photos/Easton')
             # Both filed photos: alias paths are relative to the root, so
-            # narrowing to photos/Woodbury makes even photos/Woodbury/portrait.jpg
-            # resolve to .../Woodbury/Woodbury/portrait.jpg - EVERYTHING filed
+            # narrowing to photos/Easton makes even photos/Easton/portrait.jpg
+            # resolve to .../Easton/Easton/portrait.jpg - EVERYTHING filed
             # under the alias orphans, which is precisely why the change is a
             # trap. gone.jpg was broken before the change and is not counted.
             self.assertEqual(item['orphaned'], 2)
             self.assertEqual(sorted(item['sample']),
-                             ['photos/Church/wedding.jpg', 'photos/Woodbury/portrait.jpg'])
+                             ['photos/Cole/wedding.jpg', 'photos/Easton/portrait.jpg'])
 
             # Sticky: the stamp still remembers the old value, so a second
             # look reports the same thing instead of accepting the damage.
             stamp = json.loads((root / '.cache' / ROOTS_STAMP_NAME).read_text())
             self.assertEqual(stamp['photos'], 'photos')
-            self.assertEqual(len(_lib.roots_change_orphans(root, _cfg('photos/Woodbury'))), 1)
+            self.assertEqual(len(_lib.roots_change_orphans(root, _cfg('photos/Easton'))), 1)
 
             # Reverting clears it.
             self.assertEqual(_lib.roots_change_orphans(root, _cfg('photos')), [])
@@ -147,7 +147,7 @@ class RootsChangeSurfacesTests(unittest.TestCase):
             self.assertFalse((root / '.cache' / ROOTS_STAMP_NAME).exists())
             # With no stamp there is nothing to compare, so no W121 either -
             # even on a value that WOULD orphan. Recording is what arms it.
-            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos/Woodbury')))
+            self.assertNotIn('W121', self._lint_codes(root, _cfg('photos/Easton')))
 
     def test_lint_emits_w121_on_fha_yaml_ahead_of_the_e011s(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -155,7 +155,7 @@ class RootsChangeSurfacesTests(unittest.TestCase):
             _lib.roots_change_orphans(root, _cfg('photos'))   # what fha index / doctor do
             self.assertNotIn('W121', self._lint_codes(root, _cfg('photos')))
 
-            findings, _r = lint._run_lint_core(root, _cfg('photos/Woodbury'))
+            findings, _r = lint._run_lint_core(root, _cfg('photos/Easton'))
             codes = [f.code for f in findings]
             self.assertIn('W121', codes)
             self.assertIn('E011', codes)
@@ -174,7 +174,7 @@ class RootsChangeSurfacesTests(unittest.TestCase):
             root = _make_archive(Path(d))
             _lib.roots_change_orphans(root, _cfg('photos'))
             with redirect_stdout(io.StringIO()):
-                res = doctor.run_doctor(root, _cfg('photos/Woodbury'))
+                res = doctor.run_doctor(root, _cfg('photos/Easton'))
             ids = [c['id'] for c in res.data['checks']]
             self.assertIn('root_change:photos', ids)
             check = next(c for c in res.data['checks'] if c['id'] == 'root_change:photos')
@@ -188,11 +188,11 @@ class RootsChangeSurfacesTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 first = index.build_index(root, _cfg('photos'))
                 self.assertEqual(first.exit_code, EXIT_CLEAN)
-                second = index.build_index(root, _cfg('photos/Woodbury'))
+                second = index.build_index(root, _cfg('photos/Easton'))
             self.assertEqual(second.exit_code, EXIT_WARNINGS)
             texts = [m.text for m in second.messages if m.path == 'fha.yaml']
             self.assertEqual(len(texts), 1)
-            self.assertIn('photos/Church/wedding.jpg', texts[0])
+            self.assertIn('photos/Cole/wedding.jpg', texts[0])
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stubs.py - fha stubs: mint person stubs for unresolved P-id references.
+stubs.py - fha stubs: mint person stubs for unresolved p-id references.
 
   fha stubs                           Scan claims and create missing stubs
   fha stubs --from-names "A; B; C"    Mint new P-ids + stubs for named people
@@ -292,7 +292,7 @@ Create placeholder records for people who are named but not yet filed.
   fha stubs --dry-run                Preview without writing
 
 Like dropping a blank labeled folder in the cabinet for a name you've heard but
-not yet researched. --from-names runs INSTEAD of the reference scan, not with it.
+not yet researched. --from-names replaces the reference scan; the two do not run together.
 A name that already has a record is refused (nothing is created) so the same
 person is never filed twice; add --force when it really is someone else."""
 
@@ -300,14 +300,14 @@ person is never filed twice; add --force when it really is someone else."""
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'stubs',
-        help='Mint person stubs for unresolved P-id references',
+        help='Mint person stubs for unresolved p-id references',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
     p.add_argument(
         '--from-names', metavar='NAMES',
-        help='Semicolon-separated names to mint IDs and stubs for. Runs INSTEAD '
+        help='Semicolon-separated names to mint IDs and stubs for. Runs instead '
              'of the unresolved-reference scan, not in addition to it.',
     )
     p.add_argument('--dry-run', action='store_true',

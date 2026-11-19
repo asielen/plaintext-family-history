@@ -331,7 +331,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "d75b842dd83045533f5492025d7703ccbd3d6fa61087612af2633174aaa54acc",
+      "sha256": "2801d3c3805928ed1fa60eec664434ecfa53e92263bf12e307f445280738ae46",
       "spec_version": "2.8",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "ef5e5ccfa10474f0d5b3062a7733245dc14b03c1b549c3f1d2be12622e8389c2",
+      "sha256": "f9edc042b5d0b474429da4606b40443058211505da7bc96a29f5b6a84dc50187",
       "spec_version": "2.8",
       "src": "browser-companion/manifest.json"
     },
@@ -436,7 +436,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "96864f8288b8dba84cdddd20041a460bab8d3b57edcefdee50ae8c1e5af91e4e",
+      "sha256": "976ece592f730e3ae80739ab6d5d6671af441fc30e8eb36aace6e512ff501b3a",
       "spec_version": "2.8",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -527,7 +527,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "fa358244ac86618dab950800e39c8e20b4a76cfe6baeecda9c60e4e720db8b02",
+      "sha256": "1119e2c6289b270929bd7042b7a0db69b0c0108b7637b7d63a6aa31b880989be",
       "spec_version": "2.8",
       "src": "browser-companion/src/panel.js"
     },
@@ -639,14 +639,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "9b11592644719476f933c60222397d5e2209b31760d35eb65c109a1278da3863",
+      "sha256": "22c67b5727c66aca4ba3a5eda1f1185a9bff4e358119040946545ab5d807edda",
       "spec_version": "2.8",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "20a35e61880aca12a7699b3a361ee94152be6e6d1efbf903bfd39c714bca406a",
+      "sha256": "89d4721682e1ba0ae614bb39c20cd923991e5dc83854bf9dd0a647d539da801e",
       "spec_version": "2.8",
       "src": "tools/_lib.py"
     },
@@ -660,14 +660,14 @@
     {
       "path": ".fha/tools/backup.py",
       "category": "operating",
-      "sha256": "fe06c3d4bfb8f13e490b00f5ff818a918117f6b2db17a4137b396506a038b37a",
+      "sha256": "37aba484fc92c1389a2f99b2b69bfaa4354a20245eaf0caf3945998fe46f98b9",
       "spec_version": "2.8",
       "src": "tools/backup.py"
     },
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "25acda72089a295906adeefaaccfaecba474a16d126c4810607795c0c03bc8fd",
+      "sha256": "b4cd421be8496f0c5553b275fe3ad811e18d1140c02cde8ed4a161d8e5a5f182",
       "spec_version": "2.8",
       "src": "tools/capture.py"
     },
@@ -716,35 +716,35 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "0e80c7268a3eec9d36fa2168397ad89a28e2f3532b642f31db957d476acd021c",
+      "sha256": "aadb7f473153f217ac1c7473e8e0f65c841cb0be13a6c5ec81550a6ec364312f",
       "spec_version": "2.8",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "d730e94826353267d4bc713412356d143b5839574107dc904a310a76e7199f96",
+      "sha256": "b6f49510d62b2c34f71b1a15f28e55278b9a69688332202b06479f0814a0e1b9",
       "spec_version": "2.8",
       "src": "tools/confirm.py"
     },
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "5661bb8a619be0f7d4af510fb56b5673330d3197a99ad990432440054776e62a",
+      "sha256": "174fa9d434f9acdd087d61354a7b2b6524169d75cbbde9a61bc7ec0b7f04c97d",
       "spec_version": "2.8",
       "src": "tools/convert_mining.py"
     },
     {
       "path": ".fha/tools/cooccur.py",
       "category": "operating",
-      "sha256": "7c94fe5e96503ad8234e400cf9299f9931131d334da6605d68a6d7fc5e061f11",
+      "sha256": "948c83646f70e4dfededa4ce3116d47ec3a4547ebd306d82acd5612b3b2af907",
       "spec_version": "2.8",
       "src": "tools/cooccur.py"
     },
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "25d6c54ca91ece6b5a7f756abd3653500cdd86d2cade7fe81dbbd0ae985701ac",
+      "sha256": "aab328eebd48421d6fff1f8d9d2ddd0edfa233577e3f96c0bb8551917b871c2c",
       "spec_version": "2.8",
       "src": "tools/doctor.py"
     },
@@ -758,35 +758,35 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "c815e0dfe6c72d6cf994963d091c45081d20427f24b4af2bdcce5e9281eae4dd",
+      "sha256": "c7a56d5fdddbfeb387412f640091ff0e800ab18b3b23b194e1985e1422a21b1f",
       "spec_version": "2.8",
       "src": "tools/find.py"
     },
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "b7245bf306016e7739e813c4c97519b05cdd8aab2d2a9baa158507ed37da6397",
+      "sha256": "7090faa3eaad78fd550c074bb1361d64d5b8cb41affdb462b2d77e8051b40016",
       "spec_version": "2.8",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "70f1b580d274cf9cd8881cc596e415c9f08a6d1efaac9c66fba32735f6cdb8ad",
+      "sha256": "1232562f0335b0b8bd44a37ebc99702c15559e3862c98f7a232095e3b6e9f5fc",
       "spec_version": "2.8",
       "src": "tools/gedcom_import.py"
     },
     {
       "path": ".fha/tools/id.py",
       "category": "operating",
-      "sha256": "0e95e59bde45c76ce5851b63a8eaf8b5dbe7e8158132f7744a7cc1525659b1cf",
+      "sha256": "ac2b127ddfa69c0a32b10188777506a3acf261e9c727d2e0db2d5bbed6882fe4",
       "spec_version": "2.8",
       "src": "tools/id.py"
     },
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "ca950eb6d8046b699dd4089dc663b0efa59b3dc54998d99d035f64301031e476",
+      "sha256": "15382bb9258fb09b0a44a12002034aed0b74e3673065c414836e1e719de7dc12",
       "spec_version": "2.8",
       "src": "tools/index.py"
     },
@@ -800,56 +800,56 @@
     {
       "path": ".fha/tools/media.py",
       "category": "operating",
-      "sha256": "f5954f35bbc5d6559f52f7c2b6c85f87e0951131c8e4edef4932ab74028f39f1",
+      "sha256": "b108673ed67aef898b7b2c81499021f2778215cc6a4fca96ae24cf2fd3625369",
       "spec_version": "2.8",
       "src": "tools/media.py"
     },
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
-      "sha256": "4caa34252568b1e4a32e00f9d10e4079c31b70d186f41f848c7f71035a7d1ed0",
+      "sha256": "95eed9594a96ca5f825741304f5b789b80564ce501e5766f490d231b9dbbb8a8",
       "spec_version": "2.8",
       "src": "tools/metrics.py"
     },
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "b6c65f5860f2fe8b9e901310531fe468418ccfb4deec35b997dff32f4aa9b183",
+      "sha256": "a4cfa14a86c207bda8998c629b66fb93e2dddc868c128dbac8b93777129da09e",
       "spec_version": "2.8",
       "src": "tools/normalize_links.py"
     },
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "2e9b89f31e4e49c49eac8709a0a550cb91ce68f7bdf32139d745b0bc20ed9879",
+      "sha256": "088b56789eca21d0624e9c241dcfdac2248a3a2a928377f78178e3be23a6af14",
       "spec_version": "2.8",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "94270eefdaca66fee9c167e7d03653ff9faae6e73de1cee46c39d08477a8d5c3",
+      "sha256": "2f679a88a68fae773690639389c6a37c50a6a9cd29211e15eb6da18829741ce2",
       "spec_version": "2.8",
       "src": "tools/person.py"
     },
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "a17e2bf55e04f1823b0179048878d9928c0e8d90742f874d36f65db9c693d05d",
+      "sha256": "f81e4f393ca1576c57fc0d91b5a4b3e2a2937bdc9a0944dd8698bc0e23400719",
       "spec_version": "2.8",
       "src": "tools/photoindex.py"
     },
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "0787c627a5f055533386bb96131f9a453cdaf07bf490bc0f4e180136b6ce7135",
+      "sha256": "065bc30d8b30e1f7a0e4cce89cd3847b121dba4cf9f21227acbf0c2786be878a",
       "spec_version": "2.8",
       "src": "tools/places.py"
     },
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "ef563eec3174be0cbf2b6648ef0a963fd2c121849af89a0554ec0fa514d5693b",
+      "sha256": "a0abd7532af55584259064c78aafbcb937eaa6778ae66a6e147f6d25b2458db0",
       "spec_version": "2.8",
       "src": "tools/process.py"
     },
@@ -870,14 +870,14 @@
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
-      "sha256": "da070a7065f96275314f91ee1c8d93703ae2270a436fce7fded1c43c75f81fa1",
+      "sha256": "f25fb336dd0c142e7f8ef4ee28834c1317e0e7cd7cc6b94cd354ae31a3029576",
       "spec_version": "2.8",
       "src": "tools/reorganize.py"
     },
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "9a1f8d570d548a218a34afd263e02030908f7538bc5429b8bfcbe22527f0a1c8",
+      "sha256": "4e22cfe9d10ed885ec4d233d37a01d733a866c99b089d6e6dc11b43cab90683a",
       "spec_version": "2.8",
       "src": "tools/report.py"
     },
@@ -891,35 +891,35 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "7715b5ea65580ac8799988264da611bd244801aae5079e748c9df4d7dd2008bc",
+      "sha256": "804a6b9d994fb95550d3305aeeda393eefc44eaff15a755807bb60d477d77a5d",
       "spec_version": "2.8",
       "src": "tools/scaffold.py"
     },
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "c44a88dc1c3d96a132fda6a4363c76f6777a7aad65994d805f0da6f05c0638b2",
+      "sha256": "9f3a75a63db299425f73807fa66fb030b4f2890e3c002e0458a82817d0213507",
       "spec_version": "2.8",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "42e5135469da985efda0106a6fbcd89af87b8c763cc689324d3a5d9770c3383e",
+      "sha256": "fb9ce96b6e810e6ae45637dc340d5a361a74f260f5392ba3c15fc83619b16a03",
       "spec_version": "2.8",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "a8919bf16f5461c1ea176a2ccc9ebad0e0c9ef82647f92868146e4d3b62a0765",
+      "sha256": "7bdf65e0fb1b3d3f62e682f02cf5610034aef6d2a91d7b3391db04c7554e8fc2",
       "spec_version": "2.8",
       "src": "tools/source.py"
     },
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "72a27fa5641a1dc487ced57f8b1096400e126dacea3ef0fe98a31ceb159f3999",
+      "sha256": "58040b72cef27ccec405ba07985a3cdb5cfe4c7544af50fb9283602642146662",
       "spec_version": "2.8",
       "src": "tools/stubs.py"
     },
@@ -1052,14 +1052,14 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "49b83ac07b9ad2413eaa78cba9e8cb6bd809577087fbc2d3edc0703fdea5206a",
+      "sha256": "dd0b4469dbbe97ceb2c2f8ec0e188c0c47e82572a36585ffb8f58ea281ab3f97",
       "spec_version": "2.8",
       "src": "tools/views.py"
     },
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "3d1ebbd6a237b21f677226c8763920845500418ccb5b9195fa1f97163c759d93",
+      "sha256": "6537701ae09a60d8d8a0ef5877b20778cb2ca84ac4f481c575a14520f0867934",
       "spec_version": "2.8",
       "src": "tools/wikitree.py"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "28da713f636cd0023ff6cc57e0e47faf8ee049d6eebfd87e57e52beaa29231e9",
+      "sha256": "064228f8e0c5e5fa743a20fb6f46f2a7188116b3f97d21e335d7eb4014459fab",
       "spec_version": "2.8"
     },
     {
@@ -1113,32 +1113,32 @@
     {
       "path": "START_HERE.md",
       "category": "skeleton",
-      "sha256": "86c29a696143cf7ff5b70f6241a673ca782d2089d27aa2adfdf4f2c03b3d35a5",
+      "sha256": "1b7c0c7e72ef2de9ac58b10e8405d8c28c2f8d89a14415bc5dc5780e5f73c4f6",
       "spec_version": "2.8",
       "src": "archive-template/START_HERE.md"
     },
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "10f24b512f85ad7c162482a6f85fab2275bbb28534eae301b80346dbb81f3e0d",
+      "sha256": "1c5c1b224fd971684cef8800ee3fa22288710f6d0769aba3a4029d6b9b412c95",
       "spec_version": "2.8"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "90db14105930839f55bbb1e944c7777df14484fae13ac5ccbd2af9166df79c0e",
+      "sha256": "279a57dad5c834819945ecfd6d053e402b24805af0773c8068c0d765223b0989",
       "spec_version": "2.8"
     },
     {
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
-      "sha256": "d06a812c6a3ac3dfabd6499300fac934313685303ca5a8bff6313646e6b16926",
+      "sha256": "9278028f192891e5326c995c7dd121655e2c16ba6d0860c467763c7ee4390501",
       "spec_version": "2.8"
     },
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "25ed30ffd9b957034f35b683f53f439789f2f8cfec346d60a06c5a3e0443752e",
+      "sha256": "620c22122f3cf7af1f808cd7318aba189538a520e954e8ce57999788af0f87e1",
       "spec_version": "2.8"
     },
     {
@@ -1150,37 +1150,37 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "71976295b727d0210e7c7e583680478e6d263d2af8a838124aaf44980b346104",
+      "sha256": "b59439c6b72cb4e6dc0239915c8a7bc7301bb1b4fed387ca5faec8287d66583e",
       "spec_version": "2.8"
     },
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "c3d1c07572944fad75b61008ac107430848fe09a134f22bda7db836886b0abcc",
+      "sha256": "e9b74850c6b390ae120951043fb4b7b16363af889a21aa0b801cc4872b70b347",
       "spec_version": "2.8"
     },
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "9ecbf802a4a0a5f4fa0ad19b2fcffe8dc9e0b4812a5104017ae1bd80999d4be9",
+      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
       "spec_version": "2.8"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "be26972bc984ec79a267cc91a56085108285ca4fcbf7eea1acc24d163db6dfa3",
+      "sha256": "7362e921df20f9cd7070ea24a38b688906a0e2087e1545826895da3d46330554",
       "spec_version": "2.8"
     },
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "27604b4aef2cbb0386e12b02e9868a2d8b99df946422b7c5e6380ed8e6374978",
+      "sha256": "08b0c04cf044c63d76fb4801dbd6b11e8aa46f7fee926b5809c430324edb8220",
       "spec_version": "2.8"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "727a2aee66a099bdff9b3757f6d6abf04730c6607cfc5239e355ad2883b2ed8c",
+      "sha256": "ffade4453d9f7f6f887c83e9861a9dd773a3950667d0bc93574ab4b4b3078910",
       "spec_version": "2.8"
     },
     {
@@ -1193,26 +1193,26 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "c90986f562525b62275aaeebe233b6959b984d25289be7652228b88f05da9380",
+      "sha256": "2fb228a620abe6977657fdd1caa45a7460fea56cfac002b8658befd672b9e40b",
       "spec_version": "2.8",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "99b5f8c83f286af2e121169ae15062f26b14abfa42415844fcbef09f9d03e0d9",
+      "sha256": "d5b7354732758c8dda8cfddbd51c8054089473a3f352c594d55ddb389c8d2a91",
       "spec_version": "2.8"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "cdd6cefe639a741624e6c8ace9a48704f28fd548f023cfdf7e26d266fff1fb31",
+      "sha256": "918b8e01d82fbf464b4efd686fdc620757b037c2e63a93d8c54912ad6e2a1e47",
       "spec_version": "2.8"
     },
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "f24762667d309ab0c8955871f5ab7228447e3bc283e74d69afe3519dff103246",
+      "sha256": "752568030f5e659c1ad1fcbe99a5104a38aef83e3e0e048bb401b5c2aad17cb5",
       "spec_version": "2.8"
     },
     {
@@ -1251,7 +1251,7 @@
     {
       "path": "inbox/_TEMPLATE.notes.md",
       "category": "skeleton",
-      "sha256": "79400550bb625bd2d2efec131562bda5716929877c4160a9ff8d9697cf2b652a",
+      "sha256": "6a0145ed0c2f1156ce1ce1f5fefff3448eeb046896fabe8d220e2cf79d2e1d99",
       "spec_version": "2.8",
       "src": "archive-template/inbox/_TEMPLATE.notes.md"
     },
@@ -1265,14 +1265,14 @@
     {
       "path": "notes/home.md",
       "category": "skeleton",
-      "sha256": "d12147343331de942810abc66be3f9c673c02add5cab06fe677afe240ec098ae",
+      "sha256": "b9af518b9b16489454704afdb460985839d856934e28564d891f83d136343ba9",
       "spec_version": "2.8",
       "src": "archive-template/notes/home.md"
     },
     {
       "path": "notes/questions.md",
       "category": "skeleton",
-      "sha256": "03b7d41e5e43d4ad4c146883c76f372488b30e61d758fc952e59a4b25b8da00b",
+      "sha256": "5c9941bdf734b6bc9cb1e4b76bc18015b1339cc621b75011b79427c11061403b",
       "spec_version": "2.8",
       "src": "archive-template/notes/questions.md"
     },
@@ -1286,14 +1286,14 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "93b94fb07fdc8183e50526549e7d77ec84c1bb0750494b5b4879b769a453fdc0",
+      "sha256": "857adc48d1cf0d8212163e64b2af8563473c3b363a3eeda6434ee143793131a9",
       "spec_version": "2.8",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
     {
       "path": "people/_TEMPLATE.research.md",
       "category": "skeleton",
-      "sha256": "fa8f21637034113db82d7aaf7410c1d9c3ca510692a1cea2ba0fa5f15bea8e5e",
+      "sha256": "b27c23617ed6afa16d1ceba8c56090cf2ba6dd3859272e9516932a1422b83875",
       "spec_version": "2.8",
       "src": "archive-template/people/_TEMPLATE.research.md"
     },
@@ -1341,7 +1341,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "b39f0e86a96881edd06d0d6028ebb8ec5074e1b29d4f07f80dd01a6c0dda2b87",
+      "sha256": "ee22d287cdcba846b1311c9c362cb63894d145f188bf6c0a09af2ff1807a9aa0",
       "spec_version": "2.8",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }

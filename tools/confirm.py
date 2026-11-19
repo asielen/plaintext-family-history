@@ -3,14 +3,14 @@
 confirm.py - fha confirm: human-directed write-back for detection candidates
 and confirmed decisions (AGENTS.md, TOOLING §14a / §14a2 / §14a3 / §15a).
 
-  fha confirm xref      <C-a> <C-b> --as corroborates|contradicts [--dry-run]
-  fha confirm cooccur   <P-a> <P-b> --source <S-id> --subtype friend|associate|neighbor
+  fha confirm xref      <c-a> <c-b> --as corroborates|contradicts [--dry-run]
+  fha confirm cooccur   <p-a> <p-b> --source <s-id> --subtype friend|associate|neighbor
                                     [--accept [--reviewed DATE]] [--dry-run]
   fha confirm dismiss   <P-a> <P-b> [--dry-run]
   fha confirm place     <C-id> [<C-id> …] (--name NAME [--hierarchy H] | --into <L-id>) [--dry-run]
   fha confirm discovery "<text>" [--refs S-…,P-…] [--dry-run]
   fha confirm draft     <P-id> [--dry-run]
-  fha confirm merge     <P-merged> --into <P-survivor> --reason "<why>" [--dry-run]
+  fha confirm merge     <p-merged> --into <p-survivor> --reason "<why>" [--dry-run]
 
 The deterministic *detection* tools (`fha xref`, `fha cooccur`, `fha places
 candidates`) only ever read - they print candidate pairs/clusters for a human to
@@ -578,7 +578,7 @@ def run_confirm_xref(
         if not (is_valid_id(cid) and id_type_of(cid) == 'C'):
             return _fail(result, 'invalid-id',
                          f'The {label} argument {cid!r} is not a valid claim ID. '
-                         'C-ids look like C-fd0000001a - a C, a dash, then 10 archive-alphabet '
+                         'c-ids look like c-fd0000001a: a c, a dash, then 10 archive-alphabet '
                          'characters.')
     if relation not in XREF_RELATIONS:
         return _fail(result, 'invalid-relation',
@@ -862,7 +862,7 @@ def run_confirm_cooccur(
         if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
             return _fail(result, 'invalid-id',
                          f'The {label} argument {pid!r} is not a valid person ID. '
-                         'P-ids look like P-de957bcda1.')
+                         'p-ids look like p-de957bcda1.')
     pa, pb = normalize_id(person_a), normalize_id(person_b)
     if pa == pb:
         return _fail(result, 'same-person',
@@ -882,7 +882,7 @@ def run_confirm_cooccur(
                      f'Use one of: {", ".join(SOCIAL_SUBTYPES)}.')
     if not (is_valid_id(source_id) and id_type_of(source_id) == 'S'):
         return _fail(result, 'invalid-id',
-                     f'--source {source_id!r} is not a valid source ID. S-ids look like S-fa1234567b.')
+                     f'--source {source_id!r} is not a valid source ID. s-ids look like s-fa1234567b.')
 
     result.data['person_a'] = fmt_id_display(pa)
     result.data['person_b'] = fmt_id_display(pb)
@@ -1114,7 +1114,7 @@ def run_dismiss(
         if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
             return _fail(result, 'invalid-id',
                          f'The {label} argument {pid!r} is not a valid person ID. '
-                         'P-ids look like P-de957bcda1.')
+                         'p-ids look like p-de957bcda1.')
     pa, pb = normalize_id(person_a), normalize_id(person_b)
     if pa == pb:
         return _fail(result, 'same-person', 'Pass two different P-ids to dismiss a pair.')
@@ -1203,7 +1203,7 @@ def run_confirm_place(
     for cid in claim_ids:
         if not (is_valid_id(cid) and id_type_of(cid) == 'C'):
             return _fail(result, 'invalid-id',
-                         f'{cid!r} is not a valid claim ID. C-ids look like C-fd0000001a.')
+                         f'{cid!r} is not a valid claim ID. c-ids look like c-fd0000001a.')
         norm_claims.append(normalize_id(cid))
 
     # --into (relink to an existing place) and --name/--hierarchy (mint a new
@@ -1217,7 +1217,7 @@ def run_confirm_place(
     if into is not None:
         if not (is_valid_id(into) and id_type_of(into) == 'L'):
             return _fail(result, 'invalid-id',
-                         f'--into {into!r} is not a valid place ID. L-ids look like L-7c1a9f4e22.')
+                         f'--into {into!r} is not a valid place ID. l-ids look like l-7c1a9f4e22.')
         place_id = normalize_id(into)
         if not _place_exists(archive_root, place_id):
             return _notfound(result,
@@ -1417,8 +1417,8 @@ def run_add_discovery(
     for ref in (refs or []):
         if not is_valid_id(ref):
             return _fail(result, 'invalid-id',
-                         f'{ref!r} is not a valid archive ID. Refs are S-/P-/C-/L-/H- ids, '
-                         'e.g. S-fa1234567b or P-de957bcda1.')
+                         f'{ref!r} is not a valid archive ID. Refs are s-/p-/c-/l-/h- ids, '
+                         'e.g. s-fa1234567b or p-de957bcda1.')
         norm_refs.append(normalize_id(ref))
         ref_tokens.append(f'[{fmt_id_display(normalize_id(ref))}]')
 
@@ -1484,7 +1484,7 @@ def run_accept_draft(
 
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         return _fail(result, 'invalid-id',
-                     f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f.')
+                     f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f.')
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
@@ -2685,7 +2685,7 @@ def run_confirm_merge(
         if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
             return _fail(result, 'invalid-id',
                          f'The {label} argument {pid!r} is not a valid person ID. '
-                         'P-ids look like P-de957bcda1.')
+                         'p-ids look like p-de957bcda1.')
     pm, ps = normalize_id(person_merged), normalize_id(into)
     pm_disp, ps_disp = fmt_id_display(pm), fmt_id_display(ps)
     result.data['merged'] = pm_disp
@@ -3413,8 +3413,8 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
             p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
 
     xref_p = subs.add_parser('xref', help='Confirm an xref pair: write corroborates/contradicts links')
-    xref_p.add_argument('claim_a', metavar='C-id-a', help='First claim (e.g. C-fd0000001a).')
-    xref_p.add_argument('claim_b', metavar='C-id-b', help='Second claim.')
+    xref_p.add_argument('claim_a', metavar='c-id-a', help='First claim (e.g. c-fd0000001a).')
+    xref_p.add_argument('claim_b', metavar='c-id-b', help='Second claim.')
     xref_p.add_argument('--as', dest='relation', required=True, choices=XREF_RELATIONS,
                         help='The link to write between the two claims.')
     xref_p.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -3423,9 +3423,9 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     xref_p.set_defaults(func=_cmd_xref)
 
     co_p = subs.add_parser('cooccur', help='Confirm a co-occurrence pair: mint a relationship claim')
-    co_p.add_argument('person_a', metavar='P-id-a', help='First person.')
-    co_p.add_argument('person_b', metavar='P-id-b', help='Second person.')
-    co_p.add_argument('--source', metavar='S-id', required=True,
+    co_p.add_argument('person_a', metavar='p-id-a', help='First person.')
+    co_p.add_argument('person_b', metavar='p-id-b', help='Second person.')
+    co_p.add_argument('--source', metavar='s-id', required=True,
                       help='The source that supports this connection (cited on the claim).')
     co_p.add_argument('--subtype', required=True, choices=SOCIAL_SUBTYPES,
                       help='The social relationship subtype.')
@@ -3439,18 +3439,18 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     co_p.set_defaults(func=_cmd_cooccur)
 
     dis_p = subs.add_parser('dismiss', help='Dismiss a co-occurrence pair (tombstone, not re-proposed)')
-    dis_p.add_argument('person_a', metavar='P-id-a', help='First person.')
-    dis_p.add_argument('person_b', metavar='P-id-b', help='Second person.')
+    dis_p.add_argument('person_a', metavar='p-id-a', help='First person.')
+    dis_p.add_argument('person_b', metavar='p-id-b', help='Second person.')
     dis_p.add_argument('--dry-run', action='store_true', dest='dry_run',
                        help='Preview the change without writing.')
     root_arg(dis_p)
     dis_p.set_defaults(func=_cmd_dismiss)
 
     pl_p = subs.add_parser('place', help='Register a place-text cluster and relink its claims')
-    pl_p.add_argument('claim_ids', metavar='C-id', nargs='+', help='Claim(s) to relink to the place.')
+    pl_p.add_argument('claim_ids', metavar='c-id', nargs='+', help='Claim(s) to relink to the place.')
     pl_p.add_argument('--name', metavar='NAME', help='Name for a new place (required unless --into).')
     pl_p.add_argument('--hierarchy', metavar='TEXT', help='Optional hierarchy, e.g. "Topeka, Kansas, USA".')
-    pl_p.add_argument('--into', metavar='L-id', help='Merge into this existing place instead of minting.')
+    pl_p.add_argument('--into', metavar='l-id', help='Merge into this existing place instead of minting.')
     pl_p.add_argument('--dry-run', action='store_true', dest='dry_run',
                       help='Preview the change without writing.')
     root_arg(pl_p)
@@ -3465,7 +3465,7 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     dv_p.set_defaults(func=_cmd_discovery)
 
     dr_p = subs.add_parser('draft', help='Accept AI-DRAFT prose markers in a person profile')
-    dr_p.add_argument('person_id', metavar='P-id', help='The person whose profile to accept drafts in.')
+    dr_p.add_argument('person_id', metavar='p-id', help='The person whose profile to accept drafts in.')
     dr_p.add_argument('--dry-run', action='store_true', dest='dry_run',
                       help='Preview the change without writing.')
     root_arg(dr_p)
@@ -3474,9 +3474,9 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     mg_p = subs.add_parser(
         'merge',
         help='Enact a human-confirmed identity merge: tombstone + rename + fold + relink (SPEC §9)')
-    mg_p.add_argument('person_merged', metavar='P-merged',
+    mg_p.add_argument('person_merged', metavar='p-merged',
                       help='The duplicate record that becomes the tombstone.')
-    mg_p.add_argument('--into', metavar='P-survivor', required=True,
+    mg_p.add_argument('--into', metavar='p-survivor', required=True,
                       help='The record that keeps the canonical home.')
     mg_p.add_argument('--reason', metavar='TEXT', required=True,
                       help='Why these are one person; stored as merge_reason: on the tombstone.')
@@ -3490,16 +3490,16 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
 _CLI_DESCRIPTION = """\
 Write down a suggestion you've decided to accept.
 
-  fha confirm xref <C-a> <C-b> --as corroborates|contradicts
-  fha confirm cooccur <P-a> <P-b> --source <S-id> --subtype friend|associate|neighbor
-  fha confirm dismiss <P-a> <P-b>
-  fha confirm place <C-id...> (--name NAME | --into <L-id>)
+  fha confirm xref <c-a> <c-b> --as corroborates|contradicts
+  fha confirm cooccur <p-a> <p-b> --source <s-id> --subtype friend|associate|neighbor
+  fha confirm dismiss <p-a> <p-b>
+  fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
-  fha confirm draft <P-id>
-  fha confirm merge <P-merged> --into <P-survivor> --reason "<why>"
+  fha confirm draft <p-id>
+  fha confirm merge <p-merged> --into <p-survivor> --reason "<why>"
 
-Each verb turns one kind of decision you have made - a link, a connection, a
-place, a note, a draft, an identity merge - into the records. Every verb
+Each verb writes one kind of decision you have made into the records: a
+link, a connection, a place, a note, a draft, or an identity merge. Every verb
 previews with --dry-run first."""
 
 

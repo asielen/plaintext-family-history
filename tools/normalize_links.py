@@ -2,7 +2,7 @@
 """
 normalize_links.py - fha normalize-links: settle citations to their canonical form.
 
-  fha normalize-links            Preview the rewrites (dry run - writes nothing)
+  fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --dry-run  The same preview, named explicitly (the flag the
                                  operating instructions tell agents to always pass)
   fha normalize-links --write    Apply them, showing the same diff
@@ -691,7 +691,7 @@ Tidy the citations and cross-links in your prose to the archive's [[ ]] form,
 and write each source's people:/places: and each claim's persons: one per line
 with the name beside the ID, so a record says who it is about.
 
-  fha normalize-links            Preview the rewrites (dry run - writes nothing)
+  fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
 
 Runs as a preview by default; a real write needs --write. Your original names
