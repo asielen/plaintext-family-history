@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "25acda72089a295906adeefaaccfaecba474a16d126c4810607795c0c03bc8fd",
+      "sha256": "5987a81b164d62e5640836129a8c47edf100796a9668417f2b6e9005774a939f",
       "spec_version": "2.7",
       "src": "tools/capture.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "70f1b580d274cf9cd8881cc596e415c9f08a6d1efaac9c66fba32735f6cdb8ad",
+      "sha256": "ec097f7f6413c11cee5cad68edd0b3ccce32b444ffbc1a5d3c31cec484e0cfac",
       "spec_version": "2.7",
       "src": "tools/gedcom_import.py"
     },

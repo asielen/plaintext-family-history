@@ -64,7 +64,7 @@ Search results, record pages and memorials show **🌳** on records already atta
 
 ## Your privacy
 
-- **Seen It has no server.** What it knows stays in your browser's own storage on this computer. The only things that leave it are the small Chrome Sync summary below (which goes to your own Google account) and the backups and data-folder files you choose to save.
+- **Seen It has no server.** What it knows stays in your browser's own storage on this computer. The only things that leave it are the small Chrome Sync summary below (which goes to your own Google account), the backups you choose to save, and, in Advanced mode, the data-folder file Seen It writes on its own at startup and every 15 minutes.
 - **Your browser history is read once,** when the add-on is installed, and only for Newspapers.com page addresses. It is read again when the add-on or Chrome is updated, or when you press **Re-import browser history**; a visit already counted is never counted twice. It never reads the rest of your history.
 - **On the sites, it reads only pages you open yourself,** in your own signed-in session, plus your own Newspapers.com clippings list and a tree person's source list (the same lists the sites show you). It never clicks, saves or changes anything there.
 - **Chrome Sync carries a small summary** (look counts, last-look dates and your marks, by page number; no titles, no searches) to your other computers if you are signed in to Chrome with sync on. That is Chrome's own sync to your own Google account; turn off "Extensions" in Chrome's sync settings to stop it.
@@ -128,10 +128,10 @@ To read more folders (old scans that are not in the archive yet, say), put a `kn
 
 ## The data folder
 
-In Advanced mode each computer keeps its data in a file called `seen-it-<device>.json` in the data folder, and merges in the files other computers left there. Because the files are a record of everything you looked at, the helper refuses to put the data folder in any of these places, so your browsing history can never be filed or shared by accident:
+In Advanced mode each computer keeps its data in a file called `seen-it-<device>.json` in the data folder, and merges in the files other computers left there. Because the files are a record of everything you looked at, the helper refuses to put the data folder in any of these places, so your browsing history can never be committed, filed or shared by accident:
 
 - inside the add-on's own folder;
-- inside a copy of a code project kept with git;
+- inside any folder kept with git;
 - inside the archive, or any of its photos, documents or inbox folders (wherever they live);
 - inside the capture add-on's download folder.
 

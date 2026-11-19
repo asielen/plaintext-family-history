@@ -97,7 +97,7 @@ If you can reach an image-viewer page where the download URL returns something s
 
 ## Test 5: other pages are untouched (regression)
 
-Open a record page on a site with no site reader (a library catalogue entry or a county records page with an image) and confirm:
+Open a record page on a site with no site reader (a county records page with an image; avoid library catalogues, which often serve IIIF images the add-on fetches on its own) and confirm:
 
 - No green Ancestry note appears.
 - The "File address on the page" box shows and pre-fills with the detected image/PDF (placeholder *"image or PDF address"*).

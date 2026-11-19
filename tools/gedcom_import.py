@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gedcom_import.py - fha gedcom import: the Ancestry on-ramp (TOOLING §13a2).
+gedcom_import.py - fha gedcom import: import a family tree file such as an Ancestry export (TOOLING §13a2).
 
   fha gedcom import <file.ged> [--root PATH]              Dry-run: print the import plan
   fha gedcom import <file.ged> --apply [--root PATH]      Write the records
