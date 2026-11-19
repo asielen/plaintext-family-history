@@ -78,6 +78,24 @@ test('fagMemorialFrom: Seen It\'s badges are never read as the memorial (TI-067)
   assert.doesNotMatch(JSON.stringify(info), /Seen 2|Not in archive/);
 });
 
+test('fagMemorialFrom: with Seen It running, family names and every other field are the memorial\'s own (#357)', () => {
+  // Seen It's pills sit inside each family member's linked name; its page
+  // badge and mark buttons at the end of the page.
+  const badged = readMemorial(sample('findagrave-memorial-seen-it'));
+  assert.ok(badged.ok, badged.error);
+  assert.deepStrictEqual(badged.record.family.map((f) => [f.relation, f.memorialId, f.name, f.dates]), [
+    ['Parents', '900000004', 'Thomas Hartley', '1810–1880'],
+    ['Spouse', '900000002', 'Harriet Frances Hartley', '1846–1915'],
+    ['Children', '900000003', 'Warren Calvin Hartley', '1870–1951'],
+  ]);
+  // Every field reads as it does on the same page without Seen It.
+  assert.deepStrictEqual(badged, readMemorial());
+  for (const badge of ['Seen 1×', 'Seen 3×', 'Opened 2×', 'Index in archive', 'In archive', 'Captured, not filed',
+    'Not ours', 'Later', 'S-7k2m9x4q1p', 'S-3n8v5c2w0r', '🌳', '📑', '📚', '📥']) {
+    assert.ok(!JSON.stringify(badged).includes(badge), 'Seen It text leaked: ' + badge);
+  }
+});
+
 test('fagMemorialFrom: a page with no memorial says it may have been removed or merged, and what to do', () => {
   const info = readMemorial('<html><body><h1>Memorial has been removed</h1></body></html>');
   assert.strictEqual(info.ok, false);

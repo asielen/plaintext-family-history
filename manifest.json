@@ -370,7 +370,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "0b7355153a410299198e5f7ba5744680030875ed4407bfde8a12e60dbfd1e740",
+      "sha256": "d75b842dd83045533f5492025d7703ccbd3d6fa61087612af2633174aaa54acc",
       "spec_version": "2.6",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -405,7 +405,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "606ec06110f803e46dc56d65a4773b75970c6c271b9391810f608143612b6702",
+      "sha256": "ef5e5ccfa10474f0d5b3062a7733245dc14b03c1b549c3f1d2be12622e8389c2",
       "spec_version": "2.6",
       "src": "browser-companion/manifest.json"
     },
@@ -426,7 +426,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "83df968a9c2bc891e577c39f4a6da6577991db35fb42edf8a46617080ee4b83b",
+      "sha256": "52ad40dfcf0b4e5346afe3bdc6604df75aeddbf50e3ebd77b8664476dd4b8bb4",
       "spec_version": "2.6",
       "src": "browser-companion/src/content.js"
     },
@@ -727,7 +727,7 @@
     {
       "path": ".fha/tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "ca003adb8dad088d757419e822ddf5b0024a3c4b26e3687bee99400f841b4c0f",
+      "sha256": "c34f4c5563e79962a39ec8446a1029b93a805d62e80854644b1e16c03d1651c1",
       "spec_version": "2.6",
       "src": "tools/capture_recipes/_common.py"
     },
@@ -755,7 +755,7 @@
     {
       "path": ".fha/tools/capture_recipes/newspapers.py",
       "category": "operating",
-      "sha256": "5d087eb0cecabb8ad7820c29bb24228713316cc9acdf9deed28e25dd69786d03",
+      "sha256": "88f7135f90771f39f42855be6420073d601449ffd14c0e23e0d573e1299da72d",
       "spec_version": "2.6",
       "src": "tools/capture_recipes/newspapers.py"
     },
