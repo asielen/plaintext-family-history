@@ -2541,7 +2541,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'doctor' onto the main fha parser."""
     p = subparsers.add_parser(
         'doctor',
-        help='Archive health check - what is wrong with this archive?',
+        help='Archive health check: what is wrong with this archive?',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

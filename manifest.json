@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "a1a33db9ae7f8eb5089b8ad996155fc3afd9472ebe13f9f0961f46fc5fcb1340",
+      "sha256": "89d4721682e1ba0ae614bb39c20cd923991e5dc83854bf9dd0a647d539da801e",
       "spec_version": "2.7",
       "src": "tools/_lib.py"
     },
@@ -660,14 +660,14 @@
     {
       "path": ".fha/tools/backup.py",
       "category": "operating",
-      "sha256": "fe06c3d4bfb8f13e490b00f5ff818a918117f6b2db17a4137b396506a038b37a",
+      "sha256": "37aba484fc92c1389a2f99b2b69bfaa4354a20245eaf0caf3945998fe46f98b9",
       "spec_version": "2.7",
       "src": "tools/backup.py"
     },
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "5987a81b164d62e5640836129a8c47edf100796a9668417f2b6e9005774a939f",
+      "sha256": "b4cd421be8496f0c5553b275fe3ad811e18d1140c02cde8ed4a161d8e5a5f182",
       "spec_version": "2.7",
       "src": "tools/capture.py"
     },
@@ -716,35 +716,35 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "f7dbbcb8e6ee37ab18fdbf5f553196931616b94c684e2f4a28c5c4ab253adb7c",
+      "sha256": "aadb7f473153f217ac1c7473e8e0f65c841cb0be13a6c5ec81550a6ec364312f",
       "spec_version": "2.7",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "d730e94826353267d4bc713412356d143b5839574107dc904a310a76e7199f96",
+      "sha256": "b6f49510d62b2c34f71b1a15f28e55278b9a69688332202b06479f0814a0e1b9",
       "spec_version": "2.7",
       "src": "tools/confirm.py"
     },
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "5661bb8a619be0f7d4af510fb56b5673330d3197a99ad990432440054776e62a",
+      "sha256": "174fa9d434f9acdd087d61354a7b2b6524169d75cbbde9a61bc7ec0b7f04c97d",
       "spec_version": "2.7",
       "src": "tools/convert_mining.py"
     },
     {
       "path": ".fha/tools/cooccur.py",
       "category": "operating",
-      "sha256": "7c94fe5e96503ad8234e400cf9299f9931131d334da6605d68a6d7fc5e061f11",
+      "sha256": "948c83646f70e4dfededa4ce3116d47ec3a4547ebd306d82acd5612b3b2af907",
       "spec_version": "2.7",
       "src": "tools/cooccur.py"
     },
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "25d6c54ca91ece6b5a7f756abd3653500cdd86d2cade7fe81dbbd0ae985701ac",
+      "sha256": "aab328eebd48421d6fff1f8d9d2ddd0edfa233577e3f96c0bb8551917b871c2c",
       "spec_version": "2.7",
       "src": "tools/doctor.py"
     },
@@ -758,35 +758,35 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "c815e0dfe6c72d6cf994963d091c45081d20427f24b4af2bdcce5e9281eae4dd",
+      "sha256": "c7a56d5fdddbfeb387412f640091ff0e800ab18b3b23b194e1985e1422a21b1f",
       "spec_version": "2.7",
       "src": "tools/find.py"
     },
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "b7245bf306016e7739e813c4c97519b05cdd8aab2d2a9baa158507ed37da6397",
+      "sha256": "7090faa3eaad78fd550c074bb1361d64d5b8cb41affdb462b2d77e8051b40016",
       "spec_version": "2.7",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "ec097f7f6413c11cee5cad68edd0b3ccce32b444ffbc1a5d3c31cec484e0cfac",
+      "sha256": "1232562f0335b0b8bd44a37ebc99702c15559e3862c98f7a232095e3b6e9f5fc",
       "spec_version": "2.7",
       "src": "tools/gedcom_import.py"
     },
     {
       "path": ".fha/tools/id.py",
       "category": "operating",
-      "sha256": "0e95e59bde45c76ce5851b63a8eaf8b5dbe7e8158132f7744a7cc1525659b1cf",
+      "sha256": "ac2b127ddfa69c0a32b10188777506a3acf261e9c727d2e0db2d5bbed6882fe4",
       "spec_version": "2.7",
       "src": "tools/id.py"
     },
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "ca950eb6d8046b699dd4089dc663b0efa59b3dc54998d99d035f64301031e476",
+      "sha256": "15382bb9258fb09b0a44a12002034aed0b74e3673065c414836e1e719de7dc12",
       "spec_version": "2.7",
       "src": "tools/index.py"
     },
@@ -800,56 +800,56 @@
     {
       "path": ".fha/tools/media.py",
       "category": "operating",
-      "sha256": "f5954f35bbc5d6559f52f7c2b6c85f87e0951131c8e4edef4932ab74028f39f1",
+      "sha256": "b108673ed67aef898b7b2c81499021f2778215cc6a4fca96ae24cf2fd3625369",
       "spec_version": "2.7",
       "src": "tools/media.py"
     },
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
-      "sha256": "4caa34252568b1e4a32e00f9d10e4079c31b70d186f41f848c7f71035a7d1ed0",
+      "sha256": "95eed9594a96ca5f825741304f5b789b80564ce501e5766f490d231b9dbbb8a8",
       "spec_version": "2.7",
       "src": "tools/metrics.py"
     },
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "b6c65f5860f2fe8b9e901310531fe468418ccfb4deec35b997dff32f4aa9b183",
+      "sha256": "a4cfa14a86c207bda8998c629b66fb93e2dddc868c128dbac8b93777129da09e",
       "spec_version": "2.7",
       "src": "tools/normalize_links.py"
     },
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "2e9b89f31e4e49c49eac8709a0a550cb91ce68f7bdf32139d745b0bc20ed9879",
+      "sha256": "088b56789eca21d0624e9c241dcfdac2248a3a2a928377f78178e3be23a6af14",
       "spec_version": "2.7",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "94270eefdaca66fee9c167e7d03653ff9faae6e73de1cee46c39d08477a8d5c3",
+      "sha256": "2f679a88a68fae773690639389c6a37c50a6a9cd29211e15eb6da18829741ce2",
       "spec_version": "2.7",
       "src": "tools/person.py"
     },
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
-      "sha256": "a17e2bf55e04f1823b0179048878d9928c0e8d90742f874d36f65db9c693d05d",
+      "sha256": "f81e4f393ca1576c57fc0d91b5a4b3e2a2937bdc9a0944dd8698bc0e23400719",
       "spec_version": "2.7",
       "src": "tools/photoindex.py"
     },
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "0787c627a5f055533386bb96131f9a453cdaf07bf490bc0f4e180136b6ce7135",
+      "sha256": "065bc30d8b30e1f7a0e4cce89cd3847b121dba4cf9f21227acbf0c2786be878a",
       "spec_version": "2.7",
       "src": "tools/places.py"
     },
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "ef563eec3174be0cbf2b6648ef0a963fd2c121849af89a0554ec0fa514d5693b",
+      "sha256": "a0abd7532af55584259064c78aafbcb937eaa6778ae66a6e147f6d25b2458db0",
       "spec_version": "2.7",
       "src": "tools/process.py"
     },
@@ -870,14 +870,14 @@
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
-      "sha256": "da070a7065f96275314f91ee1c8d93703ae2270a436fce7fded1c43c75f81fa1",
+      "sha256": "f25fb336dd0c142e7f8ef4ee28834c1317e0e7cd7cc6b94cd354ae31a3029576",
       "spec_version": "2.7",
       "src": "tools/reorganize.py"
     },
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "9a1f8d570d548a218a34afd263e02030908f7538bc5429b8bfcbe22527f0a1c8",
+      "sha256": "4e22cfe9d10ed885ec4d233d37a01d733a866c99b089d6e6dc11b43cab90683a",
       "spec_version": "2.7",
       "src": "tools/report.py"
     },
@@ -891,35 +891,35 @@
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
-      "sha256": "7715b5ea65580ac8799988264da611bd244801aae5079e748c9df4d7dd2008bc",
+      "sha256": "804a6b9d994fb95550d3305aeeda393eefc44eaff15a755807bb60d477d77a5d",
       "spec_version": "2.7",
       "src": "tools/scaffold.py"
     },
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "c44a88dc1c3d96a132fda6a4363c76f6777a7aad65994d805f0da6f05c0638b2",
+      "sha256": "9f3a75a63db299425f73807fa66fb030b4f2890e3c002e0458a82817d0213507",
       "spec_version": "2.7",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "42e5135469da985efda0106a6fbcd89af87b8c763cc689324d3a5d9770c3383e",
+      "sha256": "fb9ce96b6e810e6ae45637dc340d5a361a74f260f5392ba3c15fc83619b16a03",
       "spec_version": "2.7",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "a8919bf16f5461c1ea176a2ccc9ebad0e0c9ef82647f92868146e4d3b62a0765",
+      "sha256": "7bdf65e0fb1b3d3f62e682f02cf5610034aef6d2a91d7b3391db04c7554e8fc2",
       "spec_version": "2.7",
       "src": "tools/source.py"
     },
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
-      "sha256": "72a27fa5641a1dc487ced57f8b1096400e126dacea3ef0fe98a31ceb159f3999",
+      "sha256": "58040b72cef27ccec405ba07985a3cdb5cfe4c7544af50fb9283602642146662",
       "spec_version": "2.7",
       "src": "tools/stubs.py"
     },
@@ -1052,14 +1052,14 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "49b83ac07b9ad2413eaa78cba9e8cb6bd809577087fbc2d3edc0703fdea5206a",
+      "sha256": "dd0b4469dbbe97ceb2c2f8ec0e188c0c47e82572a36585ffb8f58ea281ab3f97",
       "spec_version": "2.7",
       "src": "tools/views.py"
     },
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
-      "sha256": "3d1ebbd6a237b21f677226c8763920845500418ccb5b9195fa1f97163c759d93",
+      "sha256": "6537701ae09a60d8d8a0ef5877b20778cb2ca84ac4f481c575a14520f0867934",
       "spec_version": "2.7",
       "src": "tools/wikitree.py"
     },
@@ -1126,7 +1126,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "90db14105930839f55bbb1e944c7777df14484fae13ac5ccbd2af9166df79c0e",
+      "sha256": "279a57dad5c834819945ecfd6d053e402b24805af0773c8068c0d765223b0989",
       "spec_version": "2.7"
     },
     {

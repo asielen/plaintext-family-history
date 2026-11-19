@@ -4,17 +4,17 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
 
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
                  [--birth DATE] [--death DATE] [--dry-run] [--root PATH]
-  fha person promote <P-id> [--into FOLDER] [--dry-run] [--root PATH]
-  fha person rename <P-id> "New Name" [--keep-variant] [--surname TEXT]
+  fha person promote <p-id> [--into FOLDER] [--dry-run] [--root PATH]
+  fha person rename <p-id> "New Name" [--keep-variant] [--surname TEXT]
                      [--dry-run] [--root PATH]
-  fha person set-living <P-id> true|false|unknown [--dry-run] [--root PATH]
+  fha person set-living <p-id> true|false|unknown [--dry-run] [--root PATH]
   fha person set-sex <P-id> M|F|intersex|unknown [--dry-run] [--root PATH]
-  fha person relate <P-id> (--parent|--child|--sibling|--spouse) <P-id2>
+  fha person relate <p-id> (--parent|--child|--sibling|--spouse) <p-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
-  fha person estimate <P-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
-  fha person edit <P-id> --section biography|stories|research
+  fha person estimate <p-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
+  fha person edit <p-id> --section biography|stories|research
                    (--text TEXT | --file PATH) [--append] [--dry-run]
-  fha person note <P-id> --section stories|research --text TEXT [--dry-run]
+  fha person note <p-id> --section stories|research --text TEXT [--dry-run]
 
 The `living:` flag is the switch every privacy decision hangs on: `fha site`,
 `fha gedcom`, and `fha packet` all redact (or refuse) around it, and `unknown`
@@ -402,8 +402,8 @@ def run_set_profile_photo(
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         return _refuse(
             'refused',
-            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
-            '- a P followed by a dash and 10 characters from the archive alphabet.')
+            f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f: '
+            'a p, a dash and 10 characters from the archive alphabet.')
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
@@ -605,8 +605,8 @@ def run_set_sex(
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         return _refuse(
             'refused',
-            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
-            '- a P followed by a dash and 10 characters from the archive alphabet.')
+            f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f: '
+            'a p, a dash and 10 characters from the archive alphabet.')
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
@@ -841,8 +841,8 @@ def _locate_person(
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         _refuse_result(
             result, 'refused',
-            f'{person_id!r} is not a valid person ID. P-ids look like P-2b3c4d5e6f '
-            '- a P followed by a dash and 10 characters from the archive alphabet.')
+            f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f: '
+            'a p, a dash and 10 characters from the archive alphabet.')
         return None
     pid = normalize_id(person_id)
 
@@ -1049,7 +1049,7 @@ def run_new(
     stubs_dir = archive_root / 'people' / 'stubs'
     if person_id:
         if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
-            return _refuse_result(result, 'refused', f'{person_id!r} is not a valid P-id.')
+            return _refuse_result(result, 'refused', f'{person_id!r} is not a valid p-id. p-ids look like p-2b3c4d5e6f.')
         pid = normalize_id(person_id)
         # Reuse is refused only when a person RECORD already carries this id -
         # not on any textual mention of it. The workbench's claim-reference
@@ -1131,7 +1131,7 @@ def run_new(
                        'birth/death claim supersedes it.')
         result.add('info',
                    f'Next: `fha person relate {fmt_id_display(pid)} '
-                   '--parent|--child|--sibling|--spouse <P-id2>` to tie '
+                   '--parent|--child|--sibling|--spouse <p-id2>` to tie '
                    f'{clean_name} to family.')
         result.add('info',
                    f'Next: `fha find {fmt_id_display(pid)}` to confirm the new record.',
@@ -1368,8 +1368,8 @@ def run_new_from_file(
         result.note_changed(target)
         result.add('info', f"Created {fmt_id_display(pid)} ({r['name']}) - "
                            f'people/stubs/{target.name}.', path=target)
-    result.add('info', f'Next: `fha index`, then `fha person relate <P-id> '
-                       '--parent|--child|--sibling|--spouse <P-id2>` to tie them to family.',
+    result.add('info', f'Next: `fha index`, then `fha person relate <p-id> '
+                       '--parent|--child|--sibling|--spouse <p-id2>` to tie them to family.',
                next_step='fha index')
     return result
 
@@ -2736,8 +2736,8 @@ def run_relate(
     if not (is_valid_id(target_id) and id_type_of(target_id) == 'P'):
         return _refuse_result(
             result, 'refused',
-            f'{target_id!r} is not a valid person ID. P-ids look like '
-            'P-2b3c4d5e6f - a P followed by a dash and 10 characters from '
+            f'{target_id!r} is not a valid person ID. p-ids look like '
+            'p-2b3c4d5e6f: a p, a dash and 10 characters from '
             'the archive alphabet.')
     tid_check = normalize_id(target_id)
     if tid_check == pid:
@@ -3802,17 +3802,17 @@ def _make_group_help(parser: argparse.ArgumentParser):
 
 # User-facing --help text (the module docstring stays developer-facing).
 _CLI_DESCRIPTION = """\
-Update a person's record directly - the deterministic person-field write-backs.
+Update a person's record directly, one field or section at a time.
 
   fha person new "Full Name" [--sex M|F|intersex|unknown] [--gender TEXT]
-  fha person promote <P-id> [--into FOLDER]
-  fha person rename <P-id> "New Name" [--keep-variant]
-  fha person set-living <P-id> true|false|unknown
-  fha person relate <P-id> --parent|--child|--sibling|--spouse <P-id2>
-  fha person estimate <P-id> --birth DATE --death DATE
-  fha person edit <P-id> --section biography|stories|research --text TEXT
-  fha person note <P-id> --section stories|research --text TEXT
-  fha person edit-note <P-id> --section stories|research --old-text TEXT --text TEXT
+  fha person promote <p-id> [--into FOLDER]
+  fha person rename <p-id> "New Name" [--keep-variant]
+  fha person set-living <p-id> true|false|unknown
+  fha person relate <p-id> --parent|--child|--sibling|--spouse <p-id2>
+  fha person estimate <p-id> --birth DATE --death DATE
+  fha person edit <p-id> --section biography|stories|research --text TEXT
+  fha person note <p-id> --section stories|research --text TEXT
+  fha person edit-note <p-id> --section stories|research --old-text TEXT --text TEXT
 
 new mints a brand-new person and writes their stub record. promote graduates
 a direct-line stub to curated (tier flip, couple-folder filing, research
@@ -3825,17 +3825,17 @@ prose in the curated profile's Biography, Stories, and Research Notes
 sections."""
 
 _NEW_DESCRIPTION = """\
-Mint a brand-new person - the one-command "+ add person" mint.
+Mint a brand-new person in one command.
 
   fha person new "Jane Doe"
   fha person new "Jane Doe" --sex F --birth 1870 --death 1940
   fha person new "Cortez" --gender "two-spirit"
   fha person new "Maria Garcia Lopez" --surname "Garcia Lopez"
 
-Mints one P-id, writes a stub under people/stubs/, and reports where it
+Mints one p-id, writes a stub under people/stubs/, and reports where it
 landed. --sex accepts M, F, intersex, or unknown (case-insensitive for M/F).
---gender is free text - omit it unless there is something to record.
---birth/--death record PROVISIONAL, unsourced estimates: the archive's exact
+--gender is free text; omit it unless there is something to record.
+--birth/--death record provisional, unsourced estimates: the archive's exact
 date form (1870, 1870-06) or plain words ("circa 1870", "before 1940") -
 loose wording is translated for you. A generational suffix (Jr, Sr, II, III,
 IV, V, Esq) in the name is recognised automatically and never taken as the
@@ -3846,8 +3846,8 @@ surnames, particles like "van der", surname-first conventions), and
 A regnal number VI-XXX in capitals ("Henry VII", "Louis XIV") is read as a
 suffix too, not a surname, unless the whole name is in capitals. A surname
 that is written in capitals and looks like one ("Jinping XI", "Thi VI")
-needs --surname XI to be filed under it. name: is written exactly as given either way. A name that already has a record
-(same spelling, ignoring case and accents) is refused so the same person is
+needs --surname XI to be filed under it. name: is written exactly as given
+either way. A name that already has a record (same spelling, ignoring case and accents) is refused so the same person is
 never filed twice; add --force when it really is someone else who shares
 the name. Use `fha person relate` next to tie the new person to family, and
 `fha find` to confirm the record.
@@ -3856,15 +3856,15 @@ the name. Use `fha person relate` next to tie the new person to family, and
 
 mints a whole list at once: one person per line, tab-separated columns name,
 sex (optional) and surname override (optional; - for no surname), a header
-row "name sex surname" allowed. Every row is checked first - one bad row and
-nothing is minted - and the duplicate-name check covers the whole list."""
+row "name sex surname" allowed. Every row is checked first, so one bad row
+means nothing is minted, and the duplicate-name check covers the whole list."""
 
 _SET_LIVING_DESCRIPTION = """\
-Mark one person as living, passed away, or unknown - the privacy switch.
+Mark one person as living, passed away, or unknown, which decides what exports show.
 
-  fha person set-living P-2b3c4d5e6f false    Passed away - exports may include them
-  fha person set-living P-2b3c4d5e6f true     Living - redacted from every export
-  fha person set-living P-2b3c4d5e6f unknown  Not sure - treated as living (safe default)
+  fha person set-living p-2b3c4d5e6f false    Passed away: exports may include them
+  fha person set-living p-2b3c4d5e6f true     Living: redacted from every export
+  fha person set-living p-2b3c4d5e6f unknown  Not sure: treated as living (safe default)
 
 Changes exactly one line of the person's record and touches nothing else.
 Preview the change first with --dry-run."""
@@ -3885,7 +3885,7 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
                          'line, columns name, sex (optional), surname override (optional; '
                          '- for no surname). A bad row refuses the whole file.')
     nw.add_argument('--surname', metavar='TEXT',
-                    help='Override the filename\'s surname split - for names no '
+                    help='Override the filename\'s surname split, for names no '
                          'automatic split can be expected to get right (Spanish '
                          'double surnames, particles like "van der", surname-first '
                          'conventions). --surname "" means no surname at all (the file '
@@ -3897,7 +3897,7 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
     nw.add_argument('--sex', metavar='M|F|intersex|unknown',
                     help='Birth-assigned sex, if known (case-insensitive for M/F).')
     nw.add_argument('--gender', metavar='TEXT',
-                    help='Free-text gender/identity - omit unless there is something to record.')
+                    help='Free-text gender/identity; omit unless there is something to record.')
     nw.add_argument('--birth', metavar='DATE',
                     help='A provisional, unsourced birth date or estimate.')
     nw.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
@@ -3907,7 +3907,7 @@ def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
     nw.add_argument('--death-place', metavar='PLACE', dest='death_place',
                     help='A provisional, unsourced death place (free text).')
     nw.add_argument('--force', action='store_true',
-                    help='Mint even when this name already has a record - for two '
+                    help='Mint even when this name already has a record, for two '
                          'different people who share a name (a father and son).')
     nw.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
@@ -3920,12 +3920,12 @@ def _add_set_living_arguments(sub: argparse._SubParsersAction) -> None:
     """Register the set-living verb on a group subparser (shared by both mains)."""
     sl = sub.add_parser(
         'set-living',
-        help="Set a person's living flag (true/false/unknown) - drives export privacy.",
+        help="Set a person's living flag (true/false/unknown), which decides export privacy.",
         description=_SET_LIVING_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sl.add_argument('person_id', metavar='P-id',
-                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sl.add_argument('person_id', metavar='p-id',
+                    help='The person to update (e.g. p-2b3c4d5e6f).')
     sl.add_argument('value', metavar='true|false|unknown', type=str.lower,
                     choices=LIVING_VALUES,
                     help='The new value. unknown is treated as living (the safe default).')
@@ -3941,13 +3941,13 @@ def _add_set_profile_photo_arguments(sub: argparse._SubParsersAction) -> None:
     sp = sub.add_parser(
         'set-profile-photo',
         help="Set the portrait shown on a person's page and in the tree.",
-        description='Set a person\'s profile_photo: field - a filename, path, or S-id, '
+        description='Set a person\'s profile_photo: field (a filename, path, or s-id), '
                     'resolved leniently against the photo catalog when the site is built.',
     )
-    sp.add_argument('person_id', metavar='P-id',
-                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('person_id', metavar='p-id',
+                    help='The person to update (e.g. p-2b3c4d5e6f).')
     sp.add_argument('value', metavar='PHOTO',
-                    help='A filename, path, or S-id identifying the photo.')
+                    help='A filename, path, or s-id identifying the photo.')
     sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
     sp.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -3960,15 +3960,15 @@ def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
     sp = sub.add_parser(
         'set-sex',
         help="Set or correct a person's sex: (M | F | intersex | unknown).",
-        description='Set a person\'s sex: field - the one fact the Ahnentafel '
-                    'derivation reads to place a parent in the father or mother slot. '
+        description='Set a person\'s sex: field. The numbered family-tree folders '
+                    '(Ahnentafel numbering) read it to place a parent in the father or mother slot. '
                     'A change ends with the reminder to run `fha index`, then '
                     '`fha views brackets` (`--realign` applies any folder-number '
-                    'shift) - brackets reads the placement out of the index, so '
+                    'shift). brackets reads the placement out of the index, so '
                     'the rebuild comes first.',
     )
-    sp.add_argument('person_id', metavar='P-id',
-                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    sp.add_argument('person_id', metavar='p-id',
+                    help='The person to update (e.g. p-2b3c4d5e6f).')
     sp.add_argument('value', metavar='SEX',
                     help='M, F, intersex, or unknown (case-insensitive).')
     sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -3979,24 +3979,25 @@ def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _PROMOTE_DESCRIPTION = """\
-Graduate a stub to a curated person - tier flip and filing in one step.
+Graduate a stub to a curated person: tier flip and filing in one step.
 
-  fha person promote P-2b3c4d5e6f
-  fha person promote P-2b3c4d5e6f --dry-run
-  fha person promote P-2b3c4d5e6f --into "040 Thomas Hartley + Margaret Cole"
-  fha person promote P-2b3c4d5e6f --into connections/
+  fha person promote p-2b3c4d5e6f
+  fha person promote p-2b3c4d5e6f --dry-run
+  fha person promote p-2b3c4d5e6f --into "040 Thomas Hartley + Margaret Cole"
+  fha person promote p-2b3c4d5e6f --into connections/
 
-Flips the record's tier to curated and backfills any #16 body sections it is
-still missing. A direct-line ancestor moves out of people/stubs/ into their
+Flips the record's tier to curated and adds any of the standard profile
+sections it is still missing. A direct-line ancestor moves out of people/stubs/ into their
 Ahnentafel couple folder (derived from root_person in fha.yaml; the folder is
-created if it does not exist yet). Anyone with no derived position - siblings,
-in-laws, the FAN club - is not stuck: --into connections/ files them flat in
+created if it does not exist yet). Anyone with no derived position (siblings,
+in-laws, friends, associates and neighbors) can still be promoted: --into
+connections/ files them flat in
 people/connections/ instead (SPEC §12.3), no numbering. Call with no --into at
 all and a non-direct person is refused plainly, naming that command (their
 stub is a legitimate resting state either way). --into overrides the
 destination for a direct-line person only, and still names a folder under
 people/, never stubs/. An existing research companion travels with the record;
-none is ever scaffolded fresh (#76). Requires a fresh index (`fha index`).
+none is ever scaffolded fresh. Requires a fresh index (`fha index`).
 Preview everything first with --dry-run; a failed write rolls itself back."""
 
 
@@ -4008,11 +4009,11 @@ def _add_promote_arguments(sub: argparse._SubParsersAction) -> None:
         description=_PROMOTE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    pr.add_argument('person_id', metavar='P-id',
-                    help='The stub to promote (e.g. P-2b3c4d5e6f).')
+    pr.add_argument('person_id', metavar='p-id',
+                    help='The stub to promote (e.g. p-2b3c4d5e6f).')
     pr.add_argument('--into', metavar='FOLDER',
                     help='File the record in this folder under people/ instead '
-                         'of the derived couple folder - a couple-folder name, '
+                         'of the derived couple folder: a couple-folder name, '
                          'or "connections/" for a non-direct person (SPEC §12.3).')
     pr.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
                     help='Archive root (auto-detected if omitted).')
@@ -4028,16 +4029,16 @@ Correct a person's name everywhere it is mechanically derivable.
   fha person rename P-2b3c4d5e6f "Betty Marsh Kelly" --keep-variant
   fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
 
-Rewrites name: (and, with --keep-variant, files the OLD name into
-name_variants: rather than losing it), renames the profile and research
+Rewrites name: (and, with --keep-variant, files the old name into
+name_variants: rather than losing it), and renames the profile and research
 files to match (SPEC §13's filename grammar, the same deriver `fha person
-new` uses), deletes any stale-named GENERATED companion (timeline,
-draft-queue, and a per-person sources-index file if this record still has
-one from before #76 - regenerate with `fha views timeline|sources-index|
-draft-queue <P-id>` or `fha views refresh`; a current record's ## Sources
-is an inline region that travels with the rename automatically), and -
-only when the OLD name appears as exactly one unambiguous partner-name
-segment of the couple folder's own text - renames that folder to match too.
+new` uses). It deletes any stale-named generated companion (timeline,
+draft-queue, and an older per-person sources-index file); regenerate them
+with `fha views timeline|sources-index|draft-queue <p-id>` or `fha views
+refresh`. A record's ## Sources section is an inline region and travels with
+the rename. When the old name appears as exactly one unambiguous
+partner-name segment of the couple folder's own text, the couple folder is
+renamed to match too.
 The couple-folder step is the one part that can fail on its own (a program
 sitting inside the folder blocks a Windows rename); everything else has
 already landed if it does, and the warning names the exact retry. --surname
@@ -4061,7 +4062,7 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
     rn.add_argument('--keep-variant', action='store_true', dest='keep_variant',
                     help='File the OLD name into name_variants: instead of losing it.')
     rn.add_argument('--surname', metavar='TEXT',
-                    help='Override the renamed filename\'s surname split - for names no '
+                    help='Override the renamed filename\'s surname split, for names no '
                          'automatic split can be expected to get right (Spanish double '
                          'surnames, particles like "van der", surname-first conventions). '
                          '--surname "" means no surname at all.')
@@ -4073,12 +4074,12 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _RELATE_DESCRIPTION = """\
-Jot an unsourced family-tie belief - always recorded as a hypothesis.
+Jot an unsourced family-tie belief, always recorded as a hypothesis.
 
-  fha person relate P-2b3c4d5e6f --parent P-de957bcda1
-  fha person relate P-2b3c4d5e6f --spouse P-cd795c61e0 --reciprocal
-  fha person relate P-2b3c4d5e6f --child P-c4b26bb4bc --subtype adoptive
-  fha person relate P-2b3c4d5e6f --parent P-de957bcda1 --working-answer h-4f20aa91c3
+  fha person relate p-2b3c4d5e6f --parent p-de957bcda1
+  fha person relate p-2b3c4d5e6f --spouse p-cd795c61e0 --reciprocal
+  fha person relate p-2b3c4d5e6f --child p-c4b26bb4bc --subtype adoptive
+  fha person relate p-2b3c4d5e6f --parent p-de957bcda1 --working-answer h-4f20aa91c3
 
 Appends one entry to the first person's relationships: list, naming the
 second person and the role (parent/child/sibling/spouse). --subtype names
@@ -4087,7 +4088,7 @@ adoptive, step, foster, guardian, and more). --reciprocal also writes the
 mirrored entry on the second person (parent<->child flips; sibling/spouse
 mirror as themselves). --working-answer names the question entry that says
 why the guess is believed and what would settle it. This is always an
-unsourced belief - a sourced tie comes from an accepted relationship claim,
+unsourced belief; a sourced tie comes from an accepted relationship claim,
 filed with `fha claim`."""
 
 
@@ -4099,23 +4100,23 @@ def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
         description=_RELATE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    rl.add_argument('person_id', metavar='P-id',
+    rl.add_argument('person_id', metavar='p-id',
                     help='The person whose relationships: entry gets the new tie.')
     group = rl.add_mutually_exclusive_group(required=True)
-    group.add_argument('--parent', metavar='P-id2',
-                       help='P-id2 is this person\'s parent.')
-    group.add_argument('--child', metavar='P-id2',
-                       help='P-id2 is this person\'s child.')
-    group.add_argument('--sibling', metavar='P-id2',
-                       help='P-id2 is this person\'s sibling.')
-    group.add_argument('--spouse', metavar='P-id2',
-                       help='P-id2 is this person\'s spouse.')
+    group.add_argument('--parent', metavar='p-id2',
+                       help='p-id2 is this person\'s parent.')
+    group.add_argument('--child', metavar='p-id2',
+                       help='p-id2 is this person\'s child.')
+    group.add_argument('--sibling', metavar='p-id2',
+                       help='p-id2 is this person\'s sibling.')
+    group.add_argument('--spouse', metavar='p-id2',
+                       help='p-id2 is this person\'s spouse.')
     rl.add_argument('--subtype', metavar='WORD',
                     help='The nature of the bond (SPEC §8.2), e.g. biological '
                          '(default), adoptive, step, foster, guardian.')
     rl.add_argument('--reciprocal', action='store_true',
-                    help="Also write the mirrored entry on P-id2's record.")
-    rl.add_argument('--working-answer', metavar='H-id', dest='working_answer',
+                    help="Also write the mirrored entry on p-id2's record.")
+    rl.add_argument('--working-answer', metavar='h-id', dest='working_answer',
                     help='The working answer this guess rests on (the h- id of its '
                          'question entry); written as the entry\'s hypothesis: line.')
     rl.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -4126,17 +4127,17 @@ def _add_relate_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _ESTIMATE_DESCRIPTION = """\
-Write a provisional, unsourced birth/death estimate - a starting guess for
+Write a provisional, unsourced birth/death estimate: a starting guess for
 the when, the where, or both.
 
-  fha person estimate P-2b3c4d5e6f --birth 1870
-  fha person estimate P-2b3c4d5e6f --birth "circa 1870" --death "before 1940"
-  fha person estimate P-2b3c4d5e6f --birth-place "Kansas"   Place only - no date needed
-  fha person estimate P-2b3c4d5e6f --birth -             Clear the birth estimate
+  fha person estimate p-2b3c4d5e6f --birth 1870
+  fha person estimate p-2b3c4d5e6f --birth "circa 1870" --death "before 1940"
+  fha person estimate p-2b3c4d5e6f --birth-place "Kansas"   Place only, no date needed
+  fha person estimate p-2b3c4d5e6f --birth -             Clear the birth estimate
 
 DATE accepts the archive's exact date form (1870, 1870-06, 188X for "the
-1880s") or plain words ("circa 1870", "before 1940", "the 1880s") - loose
-wording is translated for you. --birth-place/--death-place record the WHERE
+1880s") or plain words ("circa 1870", "before 1940", "the 1880s"); loose
+wording is translated for you. --birth-place/--death-place record the where
 as free text ("born in Kansas, no idea when" is real family knowledge), with
 or without a date. Use - by itself to clear any field. A sourced birth/death
 claim always supersedes this estimate; run `fha claim` once you have a
@@ -4152,8 +4153,8 @@ def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
         description=_ESTIMATE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    es.add_argument('person_id', metavar='P-id',
-                    help='The person to update (e.g. P-2b3c4d5e6f).')
+    es.add_argument('person_id', metavar='p-id',
+                    help='The person to update (e.g. p-2b3c4d5e6f).')
     es.add_argument('--birth', metavar='DATE',
                     help='A birth date/estimate, or - to clear it.')
     es.add_argument('--birth-place', metavar='PLACE', dest='birth_place',
@@ -4172,12 +4173,12 @@ def _add_estimate_arguments(sub: argparse._SubParsersAction) -> None:
 _EDIT_DESCRIPTION = """\
 Replace (or append to) one prose section of a curated profile.
 
-  fha person edit P-2b3c4d5e6f --section biography --text "..."
-  fha person edit P-2b3c4d5e6f --section stories --file story.txt --append
+  fha person edit p-2b3c4d5e6f --section biography --text "..."
+  fha person edit p-2b3c4d5e6f --section stories --file story.txt --append
 
 --section picks the section: biography (## Biography), stories
 (## Stories), or research (## Research Notes). Give the text with --text or
---file (exactly one - no reading from standard input). Replaces the whole
+--file (exactly one; no reading from standard input). Replaces the whole
 section by default; --append adds the text as a new paragraph at the end
 instead. The section is created if it does not exist yet. Frontmatter and
 every other section are left byte-for-byte alone."""
@@ -4191,7 +4192,7 @@ def _add_edit_arguments(sub: argparse._SubParsersAction) -> None:
         description=_EDIT_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ed.add_argument('person_id', metavar='P-id',
+    ed.add_argument('person_id', metavar='p-id',
                     help='The person whose profile gets edited.')
     ed.add_argument('--section', required=True,
                     choices=('biography', 'stories', 'research'),
@@ -4209,12 +4210,12 @@ def _add_edit_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _NOTE_DESCRIPTION = """\
-Append a quick note to Stories or Research Notes - never replaces anything.
+Append a quick note to Stories or Research Notes. Nothing is replaced.
 
-  fha person note P-2b3c4d5e6f --section research --text "Check the 1880 census."
+  fha person note p-2b3c4d5e6f --section research --text "Check the 1880 census."
 
 Adds TEXT as a new paragraph at the end of the section (creating it if
-missing). Plain markdown, human-written - existing text is never rewritten
+missing). Plain markdown, human-written; existing text is never rewritten
 or removed. Refuses if the section's <!-- private --> fencing is left
 unclosed, since it could not tell which side of it the new text belongs on."""
 
@@ -4227,7 +4228,7 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
         description=_NOTE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    nt.add_argument('person_id', metavar='P-id',
+    nt.add_argument('person_id', metavar='p-id',
                     help='The person whose profile gets the note.')
     nt.add_argument('--section', required=True, choices=('stories', 'research'),
                     help='Which section to append to.')
@@ -4240,16 +4241,16 @@ def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _EDIT_NOTE_DESCRIPTION = """\
-Rewrite ONE existing entry of Stories or Research Notes - the rest is untouched.
+Rewrite one existing entry of Stories or Research Notes; the rest is untouched.
 
-  fha person edit-note P-2b3c4d5e6f --section research \\
-      --old-text "Check the 1880 census." --text "Checked the 1880 census - nothing."
+  fha person edit-note p-2b3c4d5e6f --section research \\
+      --old-text "Check the 1880 census." --text "Checked the 1880 census: nothing."
 
 The entry is named by its exact current text (--old-text): give the whole
-paragraph, word for word - one sentence of it is not enough. If --old-text is
+paragraph, word for word; one sentence of it is not enough. If --old-text is
 only part of an entry, is not found, or appears more than once, nothing is
-written and the message says which. Deleting an entry stays a hand edit to
-the record file - this only rewrites."""
+written and the message says which. This command only rewrites; deleting an
+entry stays a hand edit to the record file."""
 
 
 def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
@@ -4260,12 +4261,12 @@ def _add_edit_note_arguments(sub: argparse._SubParsersAction) -> None:
         description=_EDIT_NOTE_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    en.add_argument('person_id', metavar='P-id',
+    en.add_argument('person_id', metavar='p-id',
                     help='The person whose entry is being corrected.')
     en.add_argument('--section', required=True, choices=('stories', 'research'),
                     help='Which section the entry lives in.')
     en.add_argument('--old-text', metavar='TEXT', required=True, dest='old_text',
-                    help="The entry's current text - the whole paragraph, exactly as it stands.")
+                    help="The entry's current text: the whole paragraph, exactly as it stands.")
     en.add_argument('--text', metavar='TEXT', required=True,
                     help='The corrected entry text.')
     en.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -4279,7 +4280,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'person' onto the main fha parser."""
     p = subs.add_parser(
         'person',
-        help='Person-record write-backs: new, promote, rename, set-living, '
+        help='Change a person record: new, promote, rename, set-living, '
              'set-profile-photo, set-sex, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,

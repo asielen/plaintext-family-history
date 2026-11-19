@@ -2,7 +2,7 @@
 """
 packet.py - fha packet: build a person data-export packet.
 
-  fha packet <P-id> [-o out/] [--include-research] [--include-restricted]
+  fha packet <p-id> [-o out/] [--include-research] [--include-restricted]
                      [--include-dna] [--no-photos] [--dry-run] [--overwrite]
                      [--root PATH]
 
@@ -1623,7 +1623,7 @@ def _redact_asset_path(raw: str) -> str:
     and was the actual bug - `WindowsPath('/Users/name/secret.pdf').is_absolute()`
     is `False` (Windows "absolute" requires a drive or UNC root), so a
     POSIX-style absolute path leaked through whole on an archive owner's
-    Windows machine; `~andrew_sielen/Documents/secret.pdf` (shell home-
+    Windows machine; `~jane_doe/Documents/secret.pdf` (shell home-
     directory shorthand, which nothing here ever expands) leaked a literal
     username through the exact same gap, on any OS, since `pathlib` never
     treats `~` as meaningful on its own. `Path(raw).is_absolute()` is kept
@@ -1652,10 +1652,10 @@ def _redact_asset_path(raw: str) -> str:
 
     A hand-edited entry can also be a genuine absolute path - no `~`
     involved at all - that happens to END at a directory named after the
-    owner's username: `/Users/andrew_sielen/` or `C:\\Users\\andrew_sielen\\`
+    owner's username: `/Users/jane_doe/` or `C:\\Users\\jane_doe\\`
     (Codex review, round-7 audit). Neither starts with `~`, so the round-6
     bare-shorthand check above never sees them, and `PureWindowsPath(...).name`
-    still returns `'andrew_sielen'` - the last PATH COMPONENT, which here is
+    still returns `'jane_doe'` - the last PATH COMPONENT, which here is
     a directory (in fact the username itself), not a file. The general
     invariant is checked directly, before basename extraction, by
     `_is_bare_directory_reference`: see its docstring for the two
@@ -1705,10 +1705,10 @@ def _redact_asset_path(raw: str) -> str:
     # `Path.is_absolute()`, the leading-character checks just below, and
     # `PureWindowsPath`'s own separator handling all recognize ONLY the two
     # real ASCII separators, so a homoglyph-separated path collapses to far
-    # fewer "parts" than it actually has - `/Users⁄andrew_sielen⁄
+    # fewer "parts" than it actually has - `/Users⁄jane_doe⁄
     # secret.pdf` looks foreign correctly (it still starts with a real `/`),
     # but its basename then extracts as the entire remainder,
-    # `Users⁄andrew_sielen⁄secret.pdf` - the owner's username and
+    # `Users⁄jane_doe⁄secret.pdf` - the owner's username and
     # full directory structure, not a redacted basename. Normalizing first
     # closes this uniformly for `_is_bare_directory_reference` and the
     # basename extraction below alike; the ORIGINAL `raw` is still what gets
@@ -1774,7 +1774,7 @@ def _redact_asset_path(raw: str) -> str:
     # trailing slash either - that shape is caught by
     # `_is_bare_directory_reference` above) has nothing real for
     # PureWindowsPath to extract, so `.name` returns the shorthand ITSELF
-    # unchanged (Codex review, round-6 audit): `~andrew_sielen` -> the same
+    # unchanged (Codex review, round-6 audit): `~jane_doe` -> the same
     # string back. That still ships the username straight into README.txt.
     # Checking the EXTRACTED name for a leading `~` (rather than the raw
     # string, which an earlier version of this fix did and which missed the
@@ -1798,10 +1798,10 @@ def _is_bare_directory_reference(raw: str) -> bool:
 
     - A trailing separator. Whatever follows the LAST separator in a path
       that ENDS with one is empty by definition - there is no trailing file
-      component at all, only a directory. `/Users/andrew_sielen/` and
-      `C:\\Users\\andrew_sielen\\` are exactly this shape. This also
+      component at all, only a directory. `/Users/jane_doe/` and
+      `C:\\Users\\jane_doe\\` are exactly this shape. This also
       subsumes the bare-tilde-with-trailing-slash case the round-6 fix
-      handled as a special case of its own (`~andrew_sielen/`), so that
+      handled as a special case of its own (`~jane_doe/`), so that
       variant no longer needs separate handling.
     - An absolute path that ends EXACTLY at a directory OS convention
       guarantees is never a file - `/Users/<name>`, `/home/<name>`,
@@ -1810,23 +1810,23 @@ def _is_bare_directory_reference(raw: str) -> bool:
       appears here, and a mount point cannot itself be a file) - with
       nothing after it and no trailing separator either. Dropping the
       trailing slash from the shapes above reaches the identical leak
-      (`PureWindowsPath('/Users/andrew_sielen').name` is still
-      `'andrew_sielen'`) without tripping the check above, so it is
+      (`PureWindowsPath('/Users/jane_doe').name` is still
+      `'jane_doe'`) without tripping the check above, so it is
       recognized on its own terms: `PureWindowsPath(raw).parts` has exactly
       three components (the anchor, the convention name, and whatever comes
       after it) only when the path stops immediately there. A real file
-      living somewhere under one of these (`/Users/andrew_sielen/secret.pdf`,
+      living somewhere under one of these (`/Users/jane_doe/secret.pdf`,
       or anything deeper) has a fourth part and is unaffected - only the
       bare root itself redacts.
 
-    A bare `~user` with no separator anywhere (`~andrew_sielen`, one part,
+    A bare `~user` with no separator anywhere (`~jane_doe`, one part,
     neither shape above) is NOT covered here - `_redact_asset_path` still
     catches it separately, since the leading `~` is itself the tell.
 
     Deliberately NOT attempted (adversarial review, round 8 audit): a
     personal-storage path with no OS-guaranteed directory marker at all -
-    `/srv/backups/andrew_sielen`, `D:\\Backups\\andrew_sielen`,
-    `/mnt/nas/family-shares/andrew_sielen` - still shows its trailing
+    `/srv/backups/jane_doe`, `D:\\Backups\\jane_doe`,
+    `/mnt/nas/family-shares/jane_doe` - still shows its trailing
     segment as a "basename" even when that segment happens to look like a
     username. `Backups`/`srv`/an arbitrary NAS share name carries no OS
     guarantee the way `Users`/`Volumes` does - the identical shape
@@ -3495,8 +3495,8 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 _CLI_DESCRIPTION = """\
 Bundle everything about one person into a zip to share with family.
 
-  fha packet <P-id>              Build the packet (profile, timeline, sources, photos)
-  fha packet <P-id> --dry-run    Preview what's included and what's withheld
+  fha packet <p-id>              Build the packet (profile, timeline, sources, photos)
+  fha packet <p-id> --dry-run    Preview what's included and what's withheld
 
 A private family export, not a public website. Living people and restricted
 material are withheld by default; opt in per export with the --include flags."""
@@ -3508,7 +3508,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help='Build a person export packet (profile, timeline, sources, files, photos) and zip it.',
         description=_CLI_DESCRIPTION,
     )
-    p.add_argument('person_id', metavar='P-id', help='Curated person to export.')
+    p.add_argument('person_id', metavar='p-id', help='Curated person to export.')
     p.add_argument('-o', '--out', metavar='PATH', dest='out',
                     help="Output directory (default: 'out/' under the archive root).")
     p.add_argument('--include-research', action='store_true',
@@ -3533,7 +3533,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         prog='fha packet', description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('person_id', metavar='P-id', help='Curated person to export.')
+    parser.add_argument('person_id', metavar='p-id', help='Curated person to export.')
     parser.add_argument('-o', '--out', metavar='PATH', dest='out',
                         help="Output directory (default: 'out/' under the archive root).")
     parser.add_argument('--include-research', action='store_true')

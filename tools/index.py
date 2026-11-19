@@ -2743,7 +2743,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument('--root', metavar='PATH', help='Archive root')
     p.add_argument(
-        '--source', metavar='S-ID',
+        '--source', metavar='s-id',
         help='Upsert only this source (incremental mode)',
     )
     p.add_argument('-v', '--verbose', action='store_true',
@@ -2785,7 +2785,7 @@ def _run_index(args: argparse.Namespace) -> int:
         )
         if status == 'invalid_id':
             print(
-                f'ERROR: {args.source!r} is not a valid S- source ID.',
+                f'ERROR: {args.source!r} is not a valid source ID. s-ids look like s-2b3c4d5e6f.',
                 file=sys.stderr,
             )
             return EXIT_FAILURE
@@ -2853,7 +2853,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument('--root', metavar='PATH')
-    parser.add_argument('--source', metavar='S-ID')
+    parser.add_argument('--source', metavar='s-id')
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args(argv)
     return _run_index(args)

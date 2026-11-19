@@ -90,10 +90,10 @@ class PhotoindexTests(unittest.TestCase):
 
     def test_normalize_subtree_arg_accepts_relative_alias_and_windows_forms(self) -> None:
         norm = photoindex._normalize_subtree_arg
-        self.assertEqual(norm('Woodbury/1950s'), 'photos/Woodbury/1950s')
-        self.assertEqual(norm('photos/Woodbury'), 'photos/Woodbury')
-        self.assertEqual(norm('Woodbury\\1950s'), 'photos/Woodbury/1950s')
-        self.assertEqual(norm('./Woodbury/'), 'photos/Woodbury')
+        self.assertEqual(norm('Easton/1950s'), 'photos/Easton/1950s')
+        self.assertEqual(norm('photos/Easton'), 'photos/Easton')
+        self.assertEqual(norm('Easton\\1950s'), 'photos/Easton/1950s')
+        self.assertEqual(norm('./Easton/'), 'photos/Easton')
         self.assertEqual(norm('photos'), 'photos')
         with self.assertRaises(ValueError):
             norm('/')
@@ -150,7 +150,7 @@ class PhotoindexTests(unittest.TestCase):
         # excludes one, on find and triage alike.
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
-            old_dir = archive / 'photos' / 'Woodbury'
+            old_dir = archive / 'photos' / 'Easton'
             new_dir = archive / 'photos' / 'Bulk Export'
             old_dir.mkdir()
             new_dir.mkdir()
@@ -167,10 +167,10 @@ class PhotoindexTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
             photoindex.run_scan(archive, cfg)
 
-            hits = photoindex.run_find(archive, cfg, text='farm', under='Woodbury')
+            hits = photoindex.run_find(archive, cfg, text='farm', under='Easton')
             self.assertEqual(
                 [r['path'] for r in hits['rows']],
-                ['photos/Woodbury/ancestor_portrait.jpg'])
+                ['photos/Easton/ancestor_portrait.jpg'])
 
             hits = photoindex.run_find(
                 archive, cfg, text='farm', not_under='Bulk Export')
@@ -178,19 +178,19 @@ class PhotoindexTests(unittest.TestCase):
                 'photos/Bulk Export/recent_snap.jpg',
                 [r['path'] for r in hits['rows']])
             self.assertIn(
-                'photos/Woodbury/ancestor_portrait.jpg',
+                'photos/Easton/ancestor_portrait.jpg',
                 [r['path'] for r in hits['rows']])
 
             # --under with no other filter is a valid filter on its own.
-            hits = photoindex.run_find(archive, cfg, under='Woodbury')
+            hits = photoindex.run_find(archive, cfg, under='Easton')
             self.assertEqual(
                 [r['path'] for r in hits['rows']],
-                ['photos/Woodbury/ancestor_portrait.jpg'])
+                ['photos/Easton/ancestor_portrait.jpg'])
 
-            res = photoindex.run_triage(archive, cfg, top=10, under='Woodbury')
+            res = photoindex.run_triage(archive, cfg, top=10, under='Easton')
             self.assertEqual(
                 [c['path'] for c in res['candidates']],
-                ['photos/Woodbury/ancestor_portrait.jpg'])
+                ['photos/Easton/ancestor_portrait.jpg'])
             res = photoindex.run_triage(archive, cfg, top=10, not_under='Bulk Export')
             self.assertNotIn(
                 'photos/Bulk Export/recent_snap.jpg',
@@ -775,19 +775,19 @@ class PhotoindexTests(unittest.TestCase):
         rows = self._group([('box/210409-box-florence-044.tif', None),
                             ('box/210409-box-florence-044-back.tif', None),
                             ('box/210409-box-florence-044-cover.tif', None),
-                            ('w/woodbury-harry-034.tif', None),
-                            ('w/woodbury-harry-034-envelope.tif', None),
-                            ('w/woodbury-harry-034-envelope-back.tif', None),
-                            ('w/woodbury-harry-034-note-2-crop.tif', None)])
+                            ('b/bradford-harry-034.tif', None),
+                            ('b/bradford-harry-034-envelope.tif', None),
+                            ('b/bradford-harry-034-envelope-back.tif', None),
+                            ('b/bradford-harry-034-note-2-crop.tif', None)])
         florence = [n for n in rows if 'florence' in n]
         self.assertEqual(len({rows[n][0] for n in florence}), 1, rows)
         self.assertEqual(rows['box/210409-box-florence-044.tif'][1], 1)
         self.assertEqual(rows['box/210409-box-florence-044-cover.tif'][3], 'cover')
         harry = [n for n in rows if 'harry' in n]
         self.assertEqual(len({rows[n][0] for n in harry}), 1, rows)
-        self.assertEqual(rows['w/woodbury-harry-034.tif'][1], 1)
-        self.assertEqual(rows['w/woodbury-harry-034-envelope-back.tif'][3], 'envelope-back')
-        self.assertEqual(rows['w/woodbury-harry-034-note-2-crop.tif'][3], 'note-2-crop')
+        self.assertEqual(rows['b/bradford-harry-034.tif'][1], 1)
+        self.assertEqual(rows['b/bradford-harry-034-envelope-back.tif'][3], 'envelope-back')
+        self.assertEqual(rows['b/bradford-harry-034-note-2-crop.tif'][3], 'note-2-crop')
 
     def test_an_attached_object_is_never_main_image_or_the_photos_back(self) -> None:
         # #306: with no plain scan, the photo's own back still beats the
@@ -4153,11 +4153,11 @@ class PhotoindexTests(unittest.TestCase):
         of its own. Both carry the 'tintype' keyword so a filter can select
         them without depending on the subtree logic being tested.
         """
-        woodbury = archive / 'photos' / 'Woodbury'
-        woodbury.mkdir()
+        easton = archive / 'photos' / 'Easton'
+        easton.mkdir()
         elsewhere = archive / 'photos' / 'Elsewhere'
         elsewhere.mkdir()
-        for path in (woodbury / 'attic_scan.jpg', woodbury / 'lone_print.jpg',
+        for path in (easton / 'attic_scan.jpg', easton / 'lone_print.jpg',
                      elsewhere / 'shoebox_scan.jpg'):
             path.write_bytes(b'x')
 
@@ -4171,13 +4171,13 @@ class PhotoindexTests(unittest.TestCase):
         ]
         photoindex.run_scan(archive, cfg)
 
-        (woodbury / 'attic_scan.jpg').unlink()
-        (woodbury / 'lone_print.jpg').unlink()
+        (easton / 'attic_scan.jpg').unlink()
+        (easton / 'lone_print.jpg').unlink()
         result = photoindex.run_reconcile(archive, cfg)
         self.assertEqual(
             sorted(result['missing']),
-            ['MISSING:photos/Woodbury/attic_scan.jpg',
-             'MISSING:photos/Woodbury/lone_print.jpg'],
+            ['MISSING:photos/Easton/attic_scan.jpg',
+             'MISSING:photos/Easton/lone_print.jpg'],
         )
 
     def test_under_filter_matches_a_reconciled_missing_photo(self) -> None:
@@ -4192,17 +4192,17 @@ class PhotoindexTests(unittest.TestCase):
             cfg = {'roots': {'photos': 'photos'}}
             self._stage_missing_photos(archive, cfg)
 
-            res = photoindex.run_find(archive, cfg, keyword='tintype', under='Woodbury')
+            res = photoindex.run_find(archive, cfg, keyword='tintype', under='Easton')
             self.assertEqual(
                 [r['path'] for r in res['rows']],
-                ['MISSING:photos/Woodbury/lone_print.jpg',
+                ['MISSING:photos/Easton/lone_print.jpg',
                  'photos/Elsewhere/shoebox_scan.jpg'],
             )
 
             # --files lists the vanished variant itself, not just its group.
             res = photoindex.run_find(
-                archive, cfg, keyword='tintype', under='Woodbury', files=True)
-            self.assertIn('MISSING:photos/Woodbury/attic_scan.jpg',
+                archive, cfg, keyword='tintype', under='Easton', files=True)
+            self.assertIn('MISSING:photos/Easton/attic_scan.jpg',
                           [r['path'] for r in res['rows']])
 
     def test_not_under_filter_excludes_a_reconciled_missing_photos_group(self) -> None:
@@ -4215,17 +4215,17 @@ class PhotoindexTests(unittest.TestCase):
             self._stage_missing_photos(archive, cfg)
 
             res = photoindex.run_find(
-                archive, cfg, keyword='tintype', not_under='Woodbury')
+                archive, cfg, keyword='tintype', not_under='Easton')
             self.assertEqual([r['path'] for r in res['rows']], [])
 
             # And the exclusion is genuinely about the folder, not about
             # missing rows in general: excluding the other folder leaves the
-            # Woodbury-only group behind.
+            # Easton-only group behind.
             res = photoindex.run_find(
                 archive, cfg, keyword='tintype', not_under='Elsewhere')
             self.assertEqual(
                 [r['path'] for r in res['rows']],
-                ['MISSING:photos/Woodbury/lone_print.jpg'],
+                ['MISSING:photos/Easton/lone_print.jpg'],
             )
 
     def test_scan_keeps_a_missing_variant_grouped_with_its_living_siblings(self) -> None:

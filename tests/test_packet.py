@@ -2219,7 +2219,7 @@ class PacketTests(unittest.TestCase):
         meaningful on its own, and nothing here expands it (adversarial
         review, round-4 audit)."""
         self.assertEqual(
-            packet._redact_asset_path('~andrew_sielen/Documents/secret.pdf'),
+            packet._redact_asset_path('~jane_doe/Documents/secret.pdf'),
             'secret.pdf')
         self.assertEqual(
             packet._redact_asset_path('~/Documents/secret.pdf'),
@@ -2231,8 +2231,8 @@ class PacketTests(unittest.TestCase):
         returns the shorthand itself unchanged, so it still leaked the
         username even after the round-5 fix above handled `~user/...`
         (Codex review, round-6 audit)."""
-        self.assertEqual(packet._redact_asset_path('~andrew_sielen'), '(unnamed path)')
-        self.assertEqual(packet._redact_asset_path('~andrew_sielen/'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~jane_doe'), '(unnamed path)')
+        self.assertEqual(packet._redact_asset_path('~jane_doe/'), '(unnamed path)')
         self.assertEqual(packet._redact_asset_path('~/'), '(unnamed path)')
 
     def test_redact_asset_path_basenames_posix_absolute_path_on_windows(self):
@@ -2242,7 +2242,7 @@ class PacketTests(unittest.TestCase):
         `_redact_asset_path` whole and unredacted on a Windows archive
         owner's machine (adversarial review, round-4 audit)."""
         self.assertEqual(
-            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            packet._redact_asset_path('/Users/jane_doe/Documents/secret.pdf'),
             'secret.pdf')
 
     def test_redact_asset_path_basenames_windows_backslash_leading_separator(self):
@@ -2250,27 +2250,27 @@ class PacketTests(unittest.TestCase):
         drive-relative-to-current-drive) is also foreign to a portable
         alias and must not pass through unredacted."""
         self.assertEqual(
-            packet._redact_asset_path('\\Users\\andrew_sielen\\secret.pdf'),
+            packet._redact_asset_path('\\Users\\jane_doe\\secret.pdf'),
             'secret.pdf')
 
     def test_redact_asset_path_basenames_trailing_separator_home_directory(self):
         """A genuine absolute path (no `~` anywhere) that ends AT a home
         directory, with a trailing separator and nothing after it, has no
-        real file component - `PureWindowsPath('/Users/andrew_sielen/').name`
-        still returns `'andrew_sielen'`, the username, because whatever
+        real file component - `PureWindowsPath('/Users/jane_doe/').name`
+        still returns `'jane_doe'`, the username, because whatever
         follows the last separator in a path ending WITH one is empty by
         definition. Neither of these starts with `~`, so the round-6
         bare-shorthand check never saw them (Codex review, round-7 audit,
         issue #170 finding 1)."""
         self.assertEqual(
-            packet._redact_asset_path('/Users/andrew_sielen/'), '(unnamed path)')
+            packet._redact_asset_path('/Users/jane_doe/'), '(unnamed path)')
         self.assertEqual(
-            packet._redact_asset_path('C:\\Users\\andrew_sielen\\'), '(unnamed path)')
+            packet._redact_asset_path('C:\\Users\\jane_doe\\'), '(unnamed path)')
 
     def test_redact_asset_path_basenames_home_directory_no_trailing_separator(self):
         """The same leak as the trailing-separator shape above, reached by
-        simply dropping the trailing slash: `/Users/andrew_sielen` and
-        `C:\\Users\\andrew_sielen` still end EXACTLY at the home directory,
+        simply dropping the trailing slash: `/Users/jane_doe` and
+        `C:\\Users\\jane_doe` still end EXACTLY at the home directory,
         with nothing real after it, so `.name` is still just the username.
         This is not literally what Codex's finding quoted, but it is the
         same bug one keystroke away, and there is no `~` sigil here either
@@ -2278,11 +2278,11 @@ class PacketTests(unittest.TestCase):
         directly by checking that the path stops exactly at a `Users`/`home`
         child of its root, with nothing beyond it (round-7 audit)."""
         self.assertEqual(
-            packet._redact_asset_path('/Users/andrew_sielen'), '(unnamed path)')
+            packet._redact_asset_path('/Users/jane_doe'), '(unnamed path)')
         self.assertEqual(
-            packet._redact_asset_path(r'C:\Users\andrew_sielen'), '(unnamed path)')
+            packet._redact_asset_path(r'C:\Users\jane_doe'), '(unnamed path)')
         self.assertEqual(
-            packet._redact_asset_path('/home/andrew_sielen'), '(unnamed path)')
+            packet._redact_asset_path('/home/jane_doe'), '(unnamed path)')
 
     def test_redact_asset_path_home_directory_check_does_not_over_redact(self):
         """The home-directory-root check must not fire on a real file that
@@ -2291,10 +2291,10 @@ class PacketTests(unittest.TestCase):
         have a `Users`- or `home`-named directory somewhere in its middle
         (not immediately under the root, and not the last component)."""
         self.assertEqual(
-            packet._redact_asset_path('/Users/andrew_sielen/Documents/secret.pdf'),
+            packet._redact_asset_path('/Users/jane_doe/Documents/secret.pdf'),
             'secret.pdf')
         self.assertEqual(
-            packet._redact_asset_path(r'C:\Users\andrew_sielen\Documents\secret.pdf'),
+            packet._redact_asset_path(r'C:\Users\jane_doe\Documents\secret.pdf'),
             'secret.pdf')
         self.assertEqual(
             packet._redact_asset_path('/data/home/report.pdf'), 'report.pdf')
@@ -2306,9 +2306,9 @@ class PacketTests(unittest.TestCase):
         audit: this shape used to fall through to the ordinary basename
         extraction, showing the volume's own name as if it were a file."""
         self.assertEqual(
-            packet._redact_asset_path('/Volumes/andrew_sielen'), '(unnamed path)')
+            packet._redact_asset_path('/Volumes/jane_doe'), '(unnamed path)')
         self.assertEqual(
-            packet._redact_asset_path('/Volumes/andrew_sielen/'), '(unnamed path)')
+            packet._redact_asset_path('/Volumes/jane_doe/'), '(unnamed path)')
         # A real file living ON a mounted volume is unaffected - still just
         # a normal, useful basename.
         self.assertEqual(
@@ -2326,13 +2326,13 @@ class PacketTests(unittest.TestCase):
         specifically in how much of the path counts as the "basename" once
         the homoglyph separators inside it are (or aren't) recognized."""
         self.assertEqual(
-            packet._redact_asset_path('/Users⁄andrew_sielen⁄secret.pdf'),
+            packet._redact_asset_path('/Users⁄jane_doe⁄secret.pdf'),
             'secret.pdf')
         self.assertEqual(
-            packet._redact_asset_path('/Users／andrew_sielen／secret.pdf'),
+            packet._redact_asset_path('/Users／jane_doe／secret.pdf'),
             'secret.pdf')
         self.assertEqual(
-            packet._redact_asset_path('/Users∕andrew_sielen∕secret.pdf'),
+            packet._redact_asset_path('/Users∕jane_doe∕secret.pdf'),
             'secret.pdf')
 
     def test_redact_asset_path_unicode_separator_lookalike_as_the_very_first_character(self):
@@ -2342,7 +2342,7 @@ class PacketTests(unittest.TestCase):
         normalizing first, so the whole thing used to pass through
         completely unredacted rather than merely under-redacted."""
         self.assertEqual(
-            packet._redact_asset_path('⁄Users⁄andrew_sielen⁄secret.pdf'),
+            packet._redact_asset_path('⁄Users⁄jane_doe⁄secret.pdf'),
             'secret.pdf')
 
     def test_redact_asset_path_unicode_lookalike_in_an_ordinary_alias_is_untouched(self):
@@ -2375,23 +2375,23 @@ class PacketTests(unittest.TestCase):
         layout included - through unredacted (post-merge Codex review of
         #176, round-9 audit, issue #170 finding 1 follow-up)."""
         self.assertEqual(
-            packet._redact_asset_path(' /Users/andrew_sielen/Secret/scan.pdf'),
+            packet._redact_asset_path(' /Users/jane_doe/Secret/scan.pdf'),
             'scan.pdf')
         self.assertEqual(
-            packet._redact_asset_path('\t/Users/andrew_sielen/Secret/scan.pdf'),
+            packet._redact_asset_path('\t/Users/jane_doe/Secret/scan.pdf'),
             'scan.pdf')
         self.assertEqual(
-            packet._redact_asset_path('  C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif  '),
+            packet._redact_asset_path('  C:\\Users\\jane_doe\\Secret Folder\\private-scan.tif  '),
             'private-scan.tif')
         self.assertEqual(
-            packet._redact_asset_path(' ~andrew_sielen/Documents/secret.pdf'),
+            packet._redact_asset_path(' ~jane_doe/Documents/secret.pdf'),
             'secret.pdf')
         # Whitespace-padded bare-directory and lookalike-separator shapes
         # must still be recognized once stripped, not just the plain case.
         self.assertEqual(
-            packet._redact_asset_path(' /Users/andrew_sielen/'), '(unnamed path)')
+            packet._redact_asset_path(' /Users/jane_doe/'), '(unnamed path)')
         self.assertEqual(
-            packet._redact_asset_path(' /Users⁄andrew_sielen⁄secret.pdf'),
+            packet._redact_asset_path(' /Users⁄jane_doe⁄secret.pdf'),
             'secret.pdf')
 
     def test_redact_asset_path_preserves_whitespace_on_a_genuine_alias(self):
@@ -2637,7 +2637,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '  - file: C:\\Users\\jane_doe\\Secret Folder\\private-scan.tif\n'
             '    is_primary: true\n'
             '    original_filename: private-scan.tif\n'
             '---\n'
@@ -2651,7 +2651,7 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('Secret Folder', copied)
         self.assertNotIn('C:\\Users', copied)
         # The record is still a real, useful record: everything else about
@@ -2661,7 +2661,7 @@ class PacketTests(unittest.TestCase):
         self.assertIn('original_filename: private-scan.tif', copied)
         self.assertIn('A note about the letter.', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_non_portable_files_entry_redacted_alongside_claim_redaction(self):
@@ -2678,7 +2678,7 @@ class PacketTests(unittest.TestCase):
             'title: Restricted Source\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
+            '  - file: /Users/jane_doe/Documents/private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n'
@@ -2697,7 +2697,7 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('suicide', copied)   # the restricted claim is still cut too
         self.assertIn('file: private-scan.tif', copied)
         self.assertIn('is_primary: true', copied)
@@ -2735,7 +2735,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: |\n'
-            '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '      /Users/jane_doe/Secret Folder/private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -2752,7 +2752,7 @@ class PacketTests(unittest.TestCase):
             'could not be safely rewritten' in m for m in result['messages']
         ))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_source_record_unreadable_at_copy_time_is_left_out_not_byte_copied(self):
@@ -2781,7 +2781,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '  - file: C:\\Users\\jane_doe\\Secret Folder\\private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -2809,7 +2809,7 @@ class PacketTests(unittest.TestCase):
         # so only the copy step sees the simulated corruption.
         self.assertTrue(any('could not read' in m for m in result['messages']))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_source_record_unreadable_at_copy_time_alongside_claim_redaction(self):
@@ -2827,7 +2827,7 @@ class PacketTests(unittest.TestCase):
             'title: Restricted Source\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: /Users/andrew_sielen/Documents/private-scan.tif\n'
+            '  - file: /Users/jane_doe/Documents/private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n'
@@ -2881,7 +2881,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  file: /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '  file: /Users/jane_doe/Secret Folder/private-scan.tif\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -2897,7 +2897,7 @@ class PacketTests(unittest.TestCase):
             'could not be safely rewritten' in m for m in result['messages']
         ))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_file_uri_files_entry_redacted_to_basename(self):
@@ -2918,7 +2918,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: file:///Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '  - file: file:///Users/jane_doe/Secret Folder/private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -2930,12 +2930,12 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('Secret Folder', copied)
         self.assertNotIn('file://', copied)
         self.assertIn('file: private-scan.tif', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_redact_asset_path_recognizes_file_uri_scheme(self):
@@ -2945,11 +2945,11 @@ class PacketTests(unittest.TestCase):
         form. Neither the scheme name nor any host component ever survives
         into the returned basename."""
         self.assertEqual(
-            packet._redact_asset_path('file:///Users/andrew_sielen/Secret/private.pdf'),
+            packet._redact_asset_path('file:///Users/jane_doe/Secret/private.pdf'),
             'private.pdf',
         )
         self.assertEqual(
-            packet._redact_asset_path('FILE:///Users/andrew_sielen/Secret/private.pdf'),
+            packet._redact_asset_path('FILE:///Users/jane_doe/Secret/private.pdf'),
             'private.pdf',
         )
         self.assertEqual(
@@ -2957,7 +2957,7 @@ class PacketTests(unittest.TestCase):
             'private.pdf',
         )
         self.assertEqual(
-            packet._redact_asset_path('file:///Users/andrew_sielen/'),
+            packet._redact_asset_path('file:///Users/jane_doe/'),
             '(unnamed path)',
         )
 
@@ -2980,7 +2980,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '  - file: /Users/jane_doe/Secret Folder/private-scan.tif\n'
             '    is_primary: true\n'
             '    notes: |\n'
             '      file: this line also matches file: syntax\n'
@@ -2996,7 +2996,7 @@ class PacketTests(unittest.TestCase):
         sources_dir = result['packet_dir'] / 'sources'
         self.assertEqual(list(sources_dir.glob('*.md')) if sources_dir.exists() else [], [])
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_leading_zero_width_space_does_not_defeat_classification(self):
@@ -3018,7 +3018,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            f'  - file: "{zwsp}/Users/andrew_sielen/Secret Folder/private-scan.tif"\n'
+            f'  - file: "{zwsp}/Users/jane_doe/Secret Folder/private-scan.tif"\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -3030,11 +3030,11 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('Secret Folder', copied)
         self.assertIn('file: private-scan.tif', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_redact_asset_path_strips_invisible_format_chars_before_classifying(self):
@@ -3048,15 +3048,15 @@ class PacketTests(unittest.TestCase):
         bom = chr(0xfeff)       # BYTE ORDER MARK / ZERO WIDTH NO-BREAK SPACE
         ltr_mark = chr(0x200e)  # LEFT-TO-RIGHT MARK
         self.assertEqual(
-            packet._redact_asset_path(f'{zwsp}/Users/andrew_sielen/secret.pdf'),
+            packet._redact_asset_path(f'{zwsp}/Users/jane_doe/secret.pdf'),
             'secret.pdf',
         )
         self.assertEqual(
-            packet._redact_asset_path(f'{bom}/Users/andrew_sielen/secret.pdf'),
+            packet._redact_asset_path(f'{bom}/Users/jane_doe/secret.pdf'),
             'secret.pdf',
         )
         self.assertEqual(
-            packet._redact_asset_path(f'{ltr_mark}/Users/andrew_sielen/secret.pdf'),
+            packet._redact_asset_path(f'{ltr_mark}/Users/jane_doe/secret.pdf'),
             'secret.pdf',
         )
         ordinary = f'documents/receipts/1{zwsp}dividend.pdf'
@@ -3094,7 +3094,7 @@ class PacketTests(unittest.TestCase):
             'source_type: letter\n'
             'files:\n'
             '  - file: |2-\n'
-            '      /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '      /Users/jane_doe/Secret Folder/private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -3111,7 +3111,7 @@ class PacketTests(unittest.TestCase):
             'could not be safely rewritten' in m for m in result['messages']
         ))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_files_entry_bare_scalar_in_list_is_left_out_not_skipped(self):
@@ -3134,7 +3134,7 @@ class PacketTests(unittest.TestCase):
             'id: s-1111111111\n'
             'title: Ordinary Title\n'
             'source_type: letter\n'
-            'files: [/Users/andrew_sielen/Secret Folder/private-scan.tif]\n'
+            'files: [/Users/jane_doe/Secret Folder/private-scan.tif]\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3150,7 +3150,7 @@ class PacketTests(unittest.TestCase):
             'could not be safely rewritten' in m for m in result['messages']
         ))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_files_entry_bare_scalar_block_list_is_left_out_not_skipped(self):
@@ -3167,7 +3167,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - /Users/andrew_sielen/Secret Folder/private-scan.tif\n'
+            '  - /Users/jane_doe/Secret Folder/private-scan.tif\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3183,7 +3183,7 @@ class PacketTests(unittest.TestCase):
             'could not be safely rewritten' in m for m in result['messages']
         ))
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_redact_asset_path_file_uri_directory_reference_without_trailing_slash(self):
@@ -3204,11 +3204,11 @@ class PacketTests(unittest.TestCase):
         to work), which is exactly why this narrower no-trailing-slash
         case slipped through review until now."""
         self.assertEqual(
-            packet._redact_asset_path('file:///Users/andrew_sielen'),
+            packet._redact_asset_path('file:///Users/jane_doe'),
             '(unnamed path)',
         )
         self.assertEqual(
-            packet._redact_asset_path('file:///home/andrew_sielen'),
+            packet._redact_asset_path('file:///home/jane_doe'),
             '(unnamed path)',
         )
         # The two-slash host-relative form, and an ordinary file living
@@ -3219,7 +3219,7 @@ class PacketTests(unittest.TestCase):
             'private.pdf',
         )
         self.assertEqual(
-            packet._redact_asset_path('file:///Users/andrew_sielen/secret.pdf'),
+            packet._redact_asset_path('file:///Users/jane_doe/secret.pdf'),
             'secret.pdf',
         )
 
@@ -3236,7 +3236,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             'files:\n'
-            '  - file: file:///Users/andrew_sielen\n'
+            '  - file: file:///Users/jane_doe\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -3248,10 +3248,10 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertIn('file: (unnamed path)', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
 
     def test_quoted_files_key_frontmatter_still_redacted(self):
         """Finding 4: a hand edit that spells the frontmatter key
@@ -3273,7 +3273,7 @@ class PacketTests(unittest.TestCase):
             'title: Ordinary Title\n'
             'source_type: letter\n'
             '"files":\n'
-            '  - file: C:\\Users\\andrew_sielen\\Secret Folder\\private-scan.tif\n'
+            '  - file: C:\\Users\\jane_doe\\Secret Folder\\private-scan.tif\n'
             '    is_primary: true\n'
             '---\n'
             '## Claims\n```yaml\n```\n',
@@ -3285,11 +3285,11 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('Secret Folder', copied)
         self.assertIn('file: private-scan.tif', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_quoted_files_key_inline_flow_still_redacted(self):
@@ -3304,7 +3304,7 @@ class PacketTests(unittest.TestCase):
             'id: s-1111111111\n'
             'title: Ordinary Title\n'
             'source_type: letter\n'
-            "'files': [{file: /Users/andrew_sielen/Secret Folder/private-scan.tif, is_primary: true}]\n"
+            "'files': [{file: /Users/jane_doe/Secret Folder/private-scan.tif, is_primary: true}]\n"
             '---\n'
             '## Claims\n```yaml\n```\n',
             encoding='utf-8',
@@ -3315,10 +3315,10 @@ class PacketTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'ok')
         copied = next((result['packet_dir'] / 'sources').glob('*.md')).read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', copied)
+        self.assertNotIn('jane_doe', copied)
         self.assertNotIn('Secret Folder', copied)
         readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
-        self.assertNotIn('andrew_sielen', readme)
+        self.assertNotIn('jane_doe', readme)
         self.assertNotIn('Secret Folder', readme)
 
     def test_pre_75_source_with_no_purpose_block_ships_unchanged(self):

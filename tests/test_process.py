@@ -3128,7 +3128,7 @@ class ProcessTestCase(unittest.TestCase):
             rc = self._run([str(photo), '--people', 'NotAnId'])
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertIn('NotAnId', err.getvalue())
-        self.assertIn('P-id', err.getvalue())
+        self.assertIn('p-id', err.getvalue())
         self.assertEqual(store.read(photo), [])  # no writes attempted
 
     def test_photo_people_unknown_valid_pid_rejected_before_writes(self) -> None:

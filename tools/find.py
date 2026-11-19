@@ -3062,7 +3062,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     mode.add_argument(
         '--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID',
-        help='Neighborhood of an ID - people/places/sources adjacent. '
+        help='Neighborhood of an ID: the people, places and sources next to it. '
              'Combine with --date for a time slice, or pass --related --date EDTF alone '
              'for the standalone time-slice neighborhood.',
     )
@@ -3086,9 +3086,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         '--kind', metavar='KIND[,KIND...]',
-        help='With --json: only these result kinds - person, source, place, hypothesis, '
+        help='With --json: only these result kinds (person, source, place, hypothesis, '
              'claim, text (comma list; photo-source = only sources that have photo '
-             'files). Default: every kind.',
+             'files)). Default: every kind.',
     )
     p.add_argument(
         '--limit', type=int, default=20, metavar='N',
@@ -3111,7 +3111,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     s = subparsers.add_parser(
         'search',
         help='Search everything for a word or phrase (same as `fha find --text`)',
-        description='Search everything for a word or phrase - records, notes, '
+        description='Search everything for a word or phrase: records, notes, '
                     'transcripts, photo captions.\n\n'
                     'Examples:\n'
                     '  fha search rose hartley\n'

@@ -1533,21 +1533,21 @@ _CLI_DESCRIPTION = (
     "and give a source with many files its own subfolder. Every source's "
     "files: entry is updated in the same step as the physical move, so "
     "nothing ever points at the wrong place.\n\n"
-    "SAFETY - read this before running with --apply: a file already sitting "
-    "inside ANY folder a human created by hand - even a shallow one - is "
-    "never touched, never even proposed as a candidate. Only material still "
+    "Safety, read this before running with --apply: a file inside any folder "
+    "a person made by hand, however shallow, is never moved and never even "
+    "proposed as a candidate. Only material still "
     "sitting exactly where `fha process` originally filed it (flat at the "
     "documents root, or one level down in its own type folder) is eligible. "
     "If you (or anyone) moved something by hand, this tool leaves it alone "
-    "on purpose - moving a person's deliberately-organized file would be far "
-    "worse than leaving something merely untidy.\n\n"
+    "on purpose: moving a file someone organized deliberately would be far "
+    "worse than leaving something untidy.\n\n"
     "Always previews first: run with no flags (or --dry-run) to see the "
     "full plan and change nothing. Add --apply to actually move files, in "
-    "bounded batches, re-checked with fha reconcile after each one - if "
+    "bounded batches, re-checked with fha reconcile after each one. If "
     "anything looks wrong afterward, the run stops right there and reports "
     "it, without touching anything further. Photos are out of scope: SPEC "
     "identifies a photo by its embedded keyword, never by its path, so "
-    "there is no folder to tidy - fha reconcile's own photo pass already "
+    "there is no folder to tidy; fha reconcile's own photo pass already "
     "re-verifies photo identity after any move you make by hand."
 )
 
@@ -1644,7 +1644,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'folder)')
     p.add_argument('--limit', type=int, default=None, metavar='N',
                    help='Only plan/apply the first N eligible files this run, whole '
-                        'records only - a record whose own files would cross N is '
+                        'records only: a record whose own files would cross N is '
                         'skipped, never split (default: no cap)')
     p.set_defaults(func=_cmd_reorganize)
 
