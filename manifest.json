@@ -174,7 +174,7 @@
     {
       "path": ".agents/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "3fe6b266a3403a0a0d5d1073bef6587802aee5fd8de769082f074e26a459b3aa",
+      "sha256": "0cd9072e42194b861bab486edd141ec564049d03f08feec125f3229a43712209",
       "spec_version": "2.7",
       "src": ".claude/skills/write-biography/SKILL.md"
     },
@@ -325,7 +325,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "3fe6b266a3403a0a0d5d1073bef6587802aee5fd8de769082f074e26a459b3aa",
+      "sha256": "0cd9072e42194b861bab486edd141ec564049d03f08feec125f3229a43712209",
       "spec_version": "2.7"
     },
     {
