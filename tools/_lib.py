@@ -107,6 +107,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    files_carry_searchable_text - a source's files: block -> any text at all?
 #    file_entry_is_searched_copy - a page copy or site data: searched, not the words
 #    file_entry_is_page_copy   - a saved .html/.htm/.xhtml page copy
+#    site_data_says_image_unsaved - a capture's data: the record image was not saved
+#    unsaved_image_checker(_for_index) - that check, for files_carry_searchable_text
 #    PageTextParser            - one stdlib pass over HTML: title / h1 / meta / visible text
 #    read_searchable_text      - a file's words as the text search reads them
 #    PageTextCache             - each saved page's visible text, parsed once (.cache/)
@@ -8886,7 +8888,9 @@ def _entry_suffix(path: str) -> str:
     return PurePosixPath(str(path or '').replace('\\', '/')).suffix.lower()
 
 
-def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool:
+def files_carry_searchable_text(
+    file_entries: Iterable[tuple[str, str]], image_unsaved=None,
+) -> bool:
     """True when at least one of a source's files holds text a search can read.
 
     `file_entries` is an iterable of `(role, path)` pairs - the shape both
@@ -8905,12 +8909,86 @@ def files_carry_searchable_text(file_entries: Iterable[tuple[str, str]]) -> bool
     A page filed beside a record image does not count - the image still holds
     words nobody has written out - and site data alone never does: it is the
     site's reading, never a transcript.
+
+    Nor does a page whose capture could not save the record's image. Capture
+    files the page in place of the image when the download fails, and its
+    data says so; without this the missing record image would drop out of
+    W124 and be forgotten. `image_unsaved(role, path)` answers that from a
+    site-data file (`unsaved_image_checker`); without it the data is not read.
     """
     entries = list(file_entries)
     if any(file_entry_carries_text(role, path) for role, path in entries):
         return True
-    return (any(file_entry_is_page_copy(role, path) for role, path in entries)
-            and all(file_entry_is_searched_copy(role, path) for role, path in entries))
+    page_only = (any(file_entry_is_page_copy(role, path) for role, path in entries)
+                 and all(file_entry_is_searched_copy(role, path)
+                         for role, path in entries))
+    if not page_only:
+        return False
+    return image_unsaved is None or not any(
+        image_unsaved(role, path) for role, path in entries)
+
+
+def site_data_says_image_unsaved(path: Path) -> bool:
+    """Does a capture's site-data file say the record has an image it did not save?
+
+    Positive evidence only: the Ancestry and FamilySearch readers write
+    `record.imageId` (the image the record links to) and `record.imageSaved`;
+    the Find a Grave reader lists the memorial's `photos`, each with the
+    `file` it was saved as, or `same_image_as` when it is already filed. A
+    file that cannot be read, is not JSON, or does not carry those fields
+    proves nothing, and an obituary or memorial page with no image is not
+    reported.
+    """
+    try:
+        data = json.loads(_decode_text_file(Path(path).read_bytes()))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    rec = data.get('record')
+    if (isinstance(rec, dict) and rec.get('imageSaved') is False
+            and rec.get('imageId')):
+        return True
+    photos = data.get('photos')
+    return isinstance(photos, list) and any(
+        isinstance(p, dict) and not p.get('file') and not p.get('same_image_as')
+        for p in photos)
+
+
+def unsaved_image_checker(archive_root: Path, fha_config: dict):
+    """An `image_unsaved(role, path)` for files_carry_searchable_text.
+
+    Reads a `.json` entry (resolved through the archive's roots) only when
+    asked, and only once.
+    """
+    seen: dict[str, bool] = {}
+
+    def image_unsaved(role: str, path: str) -> bool:
+        if _entry_suffix(path) != '.json':
+            return False
+        if path not in seen:
+            seen[path] = site_data_says_image_unsaved(
+                resolve_path(path, fha_config, archive_root))
+        return seen[path]
+
+    return image_unsaved
+
+
+def unsaved_image_checker_for_index(conn: sqlite3.Connection):
+    """The same checker for a caller that holds only the index connection.
+
+    The archive is the folder above the index's `.cache/`. Returns None for an
+    index that is not an archive's (an in-memory or test database).
+    """
+    try:
+        rows = conn.execute('PRAGMA database_list').fetchall()
+    except sqlite3.Error:
+        return None
+    main = next((r[2] for r in rows if r[1] == 'main' and r[2]), None)
+    if not main or Path(main).parent.name != '.cache':
+        return None
+    archive_root = Path(main).parent.parent
+    return unsaved_image_checker(archive_root, load_fha_yaml(archive_root))
 
 
 class PageTextParser(HTMLParser):
@@ -14911,7 +14989,9 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
     for r in conn.execute('SELECT source_id, role, path FROM source_files'):
         files.setdefault(r['source_id'], []).append((r['role'] or '', r['path'] or ''))
     with_files = [sid for sid in ctx['source_types'] if files.get(sid)]
-    with_text = [sid for sid in with_files if files_carry_searchable_text(files[sid])]
+    image_unsaved = unsaved_image_checker_for_index(conn)
+    with_text = [sid for sid in with_files
+                 if files_carry_searchable_text(files[sid], image_unsaved)]
 
     thinnest: list[dict] = []
     if direct_line:

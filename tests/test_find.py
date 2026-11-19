@@ -2016,6 +2016,24 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
             self._search('Quenby')
         self.assertNotIn('Reading', err.getvalue())
 
+    def test_a_page_whose_record_image_was_not_saved_counts_as_unread(self) -> None:
+        # Same rule as lint W124: the page stands in for an image the capture
+        # could not download, and the data says so.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/census/c-webpage_S-2h4k6m8p0r.html', 'webpage')
+        self._add_file(_MUTE_SID, 'documents/census/c-record-data_S-2h4k6m8p0r.json',
+                       'site-data')
+        self.conn.commit()
+        self._write('documents/census/c-webpage_S-2h4k6m8p0r.html',
+                    '<html><body>Census</body></html>')
+        data = 'documents/census/c-record-data_S-2h4k6m8p0r.json'
+        self._write(data, json.dumps({'record': {'imageId': 'x1', 'imageSaved': False}}))
+        _, out = self._search('Harkness')
+        self.assertIn('no searchable text for 1 of its 2 sources', out)
+        self._write(data, json.dumps({'record': {'name': 'An obituary'}}))
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
+
     def _damaged_cache_is_replaced(self, damage) -> None:
         page = 'documents/census/census-webpage_S-4k6m8p0r2t.html'
         self._write(page, '<html><body><p>Tobias Quenby</p></body></html>')

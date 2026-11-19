@@ -33,6 +33,7 @@ CLI, so the checks run over a fresh in-memory registry with no prior `fha index`
 
 import datetime
 import io
+import json
 import os
 import re
 import subprocess
@@ -2700,6 +2701,39 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertEqual(len(found), 1, [f.message for f in found])
         self.assertNotIn('scan, photograph', found[0].message)
         self.assertIn("website's data", found[0].message)
+
+    def _page_and_data(self, data: dict) -> None:
+        page = f'documents/charts/harkness-chart-webpage_{_W124_SID}.html'
+        record_data = f'documents/charts/harkness-chart-record-data_{_W124_SID}.json'
+        self._write_source([(page, 'webpage'), (record_data, 'site-data')])
+        (self.root / record_data).write_text(json.dumps(data), encoding='utf-8')
+
+    def test_a_record_image_that_failed_to_download_is_not_forgotten(self) -> None:
+        # When the record image cannot be downloaded, capture files the page
+        # in its place and the data says so. The missing image must stay on
+        # the list, with the way to fetch it.
+        self._page_and_data({'record': {'imageId': '4194580_00123',
+                                        'imageSaved': False}})
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertIn('image was not saved', found[0].message)
+        self.assertIn('--more <the-image-file> record', found[0].message)
+
+    def test_unsaved_memorial_photos_are_not_forgotten(self) -> None:
+        self._page_and_data({'photos': [{'role': 'grave-1', 'file': None,
+                                         'error': 'no answer'}]})
+        self.assertEqual(len(self._codes()), 1)
+
+    def test_an_obituary_page_with_its_data_is_not_flagged(self) -> None:
+        # No image field at all: nothing says an image exists.
+        self._page_and_data({'record': {'name': 'Rose Harkness'},
+                             'citation': 'An obituary'})
+        self.assertEqual(self._codes(), [])
+
+    def test_a_record_whose_image_was_saved_elsewhere_is_judged_by_its_files(self) -> None:
+        self._page_and_data({'record': {'imageId': '4194580_00123',
+                                        'imageSaved': True}})
+        self.assertEqual(self._codes(), [])
 
 
 _E011_SID = 'S-5n7q9s1t3v'

@@ -113,6 +113,7 @@ from _lib import (
     resolve_path,
     resolve_root_arg,
     transcript_text_is_unchecked,
+    unsaved_image_checker_for_index,
     unreadable_dir_recorder,
     walk_files,
 )
@@ -862,8 +863,9 @@ def _count_sources_without_text(
                 with_index_text.add(sid)
         # The source-level rule lint and metrics share: a .ged counts, and so
         # does a source whose files are only saved web pages.
+        image_unsaved = unsaved_image_checker_for_index(conn)
         with_text = {sid for sid, entries in on_disk.items()
-                     if files_carry_searchable_text(entries)}
+                     if files_carry_searchable_text(entries, image_unsaved)}
         for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
             if row[0]:
                 with_text.add(row[0])
