@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "327a7e03331bb1e3f440523012a2001f0ac945f7e82d9bcca3a0b46e1f51d7ab",
+      "sha256": "48b17e8f2fd8d8e35180ced46ea1a9d3e1aeceb676960fd3a48ccbf650db0f2c",
       "spec_version": "2.8",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
@@ -271,7 +271,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "327a7e03331bb1e3f440523012a2001f0ac945f7e82d9bcca3a0b46e1f51d7ab",
+      "sha256": "48b17e8f2fd8d8e35180ced46ea1a9d3e1aeceb676960fd3a48ccbf650db0f2c",
       "spec_version": "2.8"
     },
     {
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "2f679a88a68fae773690639389c6a37c50a6a9cd29211e15eb6da18829741ce2",
+      "sha256": "ea2b55c0690d6586c80ec85ac6da509c10a17347b95a08a0dcd342ad02a54d0b",
       "spec_version": "2.8",
       "src": "tools/person.py"
     },
@@ -1126,7 +1126,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "279a57dad5c834819945ecfd6d053e402b24805af0773c8068c0d765223b0989",
+      "sha256": "0efd64ce97d4faa6310b453d6773a5e5171fbed58d6b2b67a39ee7008e620e54",
       "spec_version": "2.8"
     },
     {
