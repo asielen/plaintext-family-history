@@ -1,57 +1,47 @@
-# Plaintext Family History - Documentation Index
+# Plaintext Family History: the manual
 
-> Lost? Start at [`GETTING_STARTED.md`](GETTING_STARTED.md), in this folder. It and
-> [`CHEATSHEET.md`](CHEATSHEET.md) are the two docs you need on day one. The rest of this
-> folder is the manual - the pages you reach for when you have a specific question. (Someone
-> opening the archive with no tools at all starts one folder up, at `START_HERE.md`.)
+> New here? Start with [`GETTING_STARTED.md`](GETTING_STARTED.md) and [`CHEATSHEET.md`](CHEATSHEET.md), both in this folder; they're the two you need on day one. The rest of this folder is for when you have a specific question. (Someone opening the archive with no tools at all should start one folder up, at `START_HERE.md`.)
 
 ---
 
-## The two for day one
+## For your first day
 
-| Document | Who it's for |
+| Document | Read it for |
 |---|---|
-| [GETTING_STARTED.md](GETTING_STARTED.md) | Your first day: install Python/exiftool/the AI assistant, make your archive, file your first document |
-| [CHEATSHEET.md](CHEATSHEET.md) | One printable page: the daily loop, the few commands, how to write an uncertain date, where things live |
+| [GETTING_STARTED.md](GETTING_STARTED.md) | Your first day: install Python, exiftool and the AI assistant, make your archive, file your first document. |
+| [CHEATSHEET.md](CHEATSHEET.md) | One printable page: the daily loop, the commands, how to write an uncertain date, where things live. |
 
-## For genealogists and archive users
+## For genealogists and archive owners
 
-| Document | Who it's for |
+| Document | Read it for |
 |---|---|
-| [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) | The git-free path - you got a zip, no GitHub account, set it up from a folder |
-| [UPDATING.md](UPDATING.md) | A newer version came out - the two-minute update ritual, and the one rule that prevents lost work |
-| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Something went wrong - symptom → cause → exact fix for the edge cases |
-| [FILING_CABINET.md](FILING_CABINET.md) | The system explained as the paper filing cabinet you already know |
-| [CUSTOMIZING_SITE.md](CUSTOMIZING_SITE.md) | Making the generated site your own - name, homepage welcome, hero, styling - by editing source, not the HTML |
-| [CONTRIBUTING_SOURCES.md](CONTRIBUTING_SOURCES.md) | Someone the owner sent documents to - how to hand them over |
-| [GLOSSARY.md](GLOSSARY.md) | Every term, ID type, and record type defined |
-| [FAQ.md](FAQ.md) | Why files? Why not a database? Why AI? How durable is this really? |
+| [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) | Setting up from a zip download, with no GitHub account and no git. |
+| [UPDATING.md](UPDATING.md) | Taking a newer version of the tools into your archive. |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Something went wrong: each common problem, its cause and its fix. |
+| [FILING_CABINET.md](FILING_CABINET.md) | The archive explained as the paper filing cabinet you already know. |
+| [USING_WITH_OBSIDIAN.md](USING_WITH_OBSIDIAN.md) | Opening and working in the archive with the Obsidian note-taking app. |
+| [CUSTOMIZING_SITE.md](CUSTOMIZING_SITE.md) | Making the family website your own: its name, homepage welcome, banner and styling. |
+| [CONTRIBUTING_SOURCES.md](CONTRIBUTING_SOURCES.md) | For a relative you've asked for documents: how to send them. |
+| [GLOSSARY.md](GLOSSARY.md) | Every term, ID type and record type, defined. |
+| [FAQ.md](FAQ.md) | Why files, why not a database, why AI, and how long it lasts. |
+| [COMMANDS.md](COMMANDS.md) | Every `fha` command and its options. |
+| [DESIGN_RATIONALE.md](DESIGN_RATIONALE.md) | Why the archive is shaped the way it is, and what was considered and rejected. |
+
+## The rules
+
+| Document | Read it for |
+|---|---|
+| `SPEC.md` (in this folder) | The full rules: the kinds of record, how they're written on disk, and what every tool must do. |
+| `TOOLING.md` (in this folder) | How each `fha` tool works. |
+| [../AGENTS.md](../AGENTS.md) | What the AI assistant may and may not do inside the archive. |
 
 ## For developers
 
-The build order (TOOLING.md §15) and per-layer implementation design
-(`TOOLING*.md`, `AGENTS_TOOLING.md`) live in the project repo on GitHub
-([plaintext-family-history](https://github.com/asielen/plaintext-family-history))
-and are **not** shipped into an archive - extending the tools is a workshop-clone
-activity. Two design references *do* ship, because they govern what the archive renders:
+The build order (TOOLING.md §15), the detailed design of each part of the tools (the other `TOOLING*.md` files and `AGENTS_TOOLING.md`), the privacy policy and the release checklist are in the project repo on GitHub ([plaintext-family-history](https://github.com/asielen/plaintext-family-history)). They aren't copied into an archive, because changing the tools happens in your copy of the project, not in the archive.
 
-| Document | Who it's for |
+| Document | Read it for |
 |---|---|
-| [DESIGN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/DESIGN.md) | The visual language for everything the archive renders as HTML - tokens, typography, components |
-| [SITE_PLAN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/SITE_PLAN.md) | Roadmap for homepage / navigation / customization: the source-first model, the customization layers, and the build phases |
-| [tools/README.md](https://github.com/asielen/plaintext-family-history/blob/master/tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
+| [DESIGN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/DESIGN.md) | The visual design of everything the archive shows as a web page: colours, type, components. (A copy ships in the archive's hidden `.fha/docs/` folder.) |
+| [tools/README.md](https://github.com/asielen/plaintext-family-history/blob/master/tools/README.md) | What each tool supports: flags, error codes, test coverage. |
 
-*(Linked to GitHub rather than by relative path: an installed archive keeps the tools
-themselves in a hidden `.fha/tools/` folder, so `../tools/…` would not resolve there.)*
-
-## Spec and governance
-
-| Document | Who it's for |
-|---|---|
-| `SPEC.md` (in this folder) | The law: data model, physical format, what every tool must do |
-| `TOOLING.md` (in this folder) | How each `fha` tool works |
-| [../AGENTS.md](../AGENTS.md) | What an AI agent may and may not do inside the archive |
-
-The public-repo governance docs (privacy policy, release checklist, and the
-tool-building / code-review supplements) live on
-[GitHub](https://github.com/asielen/plaintext-family-history).
+*(These link to GitHub because an installed archive keeps the tools in a hidden `.fha/` folder, so a relative link like `../tools/…` wouldn't work there.)*

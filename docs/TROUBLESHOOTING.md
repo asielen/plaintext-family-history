@@ -1,303 +1,179 @@
-# Something Went Wrong - Get Unstuck
+# Something Went Wrong
 
-Nothing here is a disaster. Your archive is plain files, you have backups, and most fixes are one
-command or one sentence to the assistant. Find your symptom, read the plain cause, do the fix.
+Nothing here is a disaster. Your archive is plain files, you have backups, and most fixes are one command or one sentence to the assistant. Find your problem, read the cause, do the fix.
 
-> **First move, almost always:** ask the assistant to **run `fha doctor`** (or run
-> `fha doctor --root my-family-archive` yourself). It's the archive's health
-> check - it inspects the things below and tells you which one is wrong, so you rarely have to
-> guess. Start there whenever something feels off.
+> **Start with `fha doctor`.** Ask the assistant to run it, or run it yourself. It's the archive's health check: it looks at the things on this page and tells you which one is wrong.
 >
-> *Typing it:* `fha` is a launcher file in your archive folder, and the current folder is not on
-> your PATH by default — so on **macOS or Linux** type `./fha doctor`, in Windows **PowerShell**
-> `.\fha doctor`, and in the Windows **Command Prompt** a bare `fha doctor`. Commands on this
-> page are written bare; add the `./` or `.\` your shell needs. ([CHEATSHEET.md](CHEATSHEET.md)
-> has the same table.)
+> Commands on this page are written bare and run from inside your archive folder. On macOS or Linux type `./fha doctor`, in Windows PowerShell `.\fha doctor`, and in the Command Prompt `fha doctor`. The [cheat sheet](CHEATSHEET.md#typing-fha) has the table.
 
 ---
 
-## Search or the timeline looks wrong, stale, or missing things
+## Search or the timeline looks wrong, stale or incomplete
 
-**What happened.** Search, trees, and reports are powered by a *cache* - a throwaway copy the
-tools build from your files. If you edited records by hand or added a lot at once, the cache can
-fall behind what's actually on disk.
+**What happened.** Search, trees and reports read from an *index*, a copy the tools build from your files. If you edited records by hand or added a lot at once, the index can fall behind.
 
-**Fix.** Ask: *"Rebuild the index."* (Or run `fha index --root my-family-archive`.)
-The cache is regenerated from your files; nothing real is ever lost by doing this - you can
-rebuild it as often as you like. `fha doctor` will tell you when the cache is stale.
+**Fix.** Ask: *"Rebuild the index."* (Or run `fha index`.) The index is rebuilt from your files, so nothing is lost and you can do it as often as you like. `fha doctor` tells you when the index is out of date.
 
 ---
 
 ## I renamed or moved a photo and now it seems disconnected
 
-**What happened.** A photo's identity lives in *hidden metadata inside the file* (a keyword), not
-in its filename or folder - exactly so you can reorganize your library safely. After a big move,
-the cache just needs to find the files in their new spots.
+**What happened.** A photo's ID is stored inside the file as a keyword, not in its name or folder, so you can reorganize your library. After a big move, the photo index needs to find the files in their new places.
 
-**Fix.** Ask: *"Reconcile the photo index."* (Or run
-`fha photoindex reconcile --root my-family-archive`.) It re-matches a moved file when
-exactly one photo has its name and carries its embedded ID, and a renamed one when its picture
-is unchanged. A different file carrying the same ID, such as an `-Edit` copy, is listed as a
-possible match and is never re-matched on its own. Any file it genuinely can't find is flagged so you can point it out. If a photo
-won't reconnect, it may have been re-saved by an editor that stripped the metadata - tell the
-assistant and it'll re-tag it. (`fha doctor` checks whether the photo index has fallen behind the
-photos folder, so it'll often catch this for you first.)
+**Fix.** Ask: *"Reconcile the photo index."* (Or run `fha photoindex reconcile`.) It re-finds a moved photo when exactly one photo has its name and carries its ID, and a renamed one when the picture itself is unchanged. A different file carrying the same ID, such as an `-Edit` copy, is listed as a possible match and never re-linked on its own. Any file it can't find is listed so you can point it out. If a photo still won't reconnect, it may have been saved by an editor that stripped the hidden information; tell the assistant and it will tag it again. (`fha doctor` checks whether the photo index has fallen behind the photos folder, so it often catches this first.)
+
+If source records now point at photos or documents that moved, see [I reorganized my documents or photos folder](#i-reorganized-my-documents-or-photos-folder) below.
 
 ---
 
-## I filed something in the wrong drawer
+## I filed something in the wrong place
 
-You processed a scan as a document but it really belongs in your photo library -
-or a photo turned out to be a record. Don't drag it across yourself; the record
-(and, for photos, the catalog) needs updating along with it. One command does
-the whole correction:
+**What happened.** You processed a scan as a document but it belongs in your photo library, or a photo turned out to be a record. Don't drag it across yourself: the source record (and, for photos, your photo program's catalog) needs updating with it.
 
-    fha process refile S-xxxxxxxxxx --to photos --dest 1880s --dry-run
-    fha process refile S-xxxxxxxxxx --to photos --dest 1880s
+**Fix.** One command does the whole correction. Preview it first:
 
-`--dest` names the folder in your photo library where it belongs - that choice
-is always yours. Going the other way (`--to documents`) it asks first, because
-your photo tool (Lightroom) will show the photo as missing afterward - remove
-it from the catalog yourself; the tools never touch it. Either way the file is
-renamed the way its new home expects, the source record is updated, and a dated
-note records the move. Afterward run `fha index` and `fha photoindex`. Moving
-files around WITHIN the documents or photos folder is a different thing - do
-that freely and run `fha reconcile`.
+```
+fha process refile s-xxxxxxxxxx --to photos --dest 1880s --dry-run
+fha process refile s-xxxxxxxxxx --to photos --dest 1880s
+```
+
+`--dest` names the folder in your photo library where it belongs; that choice is always yours. Going the other way (`--to documents`), it asks first, because your photo program (Lightroom, say) will show the photo as missing afterward. Remove it from the catalog yourself; the tools never touch the catalog. Either way the file is renamed the way its new place expects, the source record is updated, and a dated note records the move. Afterward, run `fha index` and `fha photoindex`.
+
+Moving files around within the documents or photos folder is a different thing: do that freely and see [I reorganized my documents or photos folder](#i-reorganized-my-documents-or-photos-folder).
 
 ---
 
 ## I edited a record and now something's broken (bad YAML)
 
-**What happened.** The top of each record is structured text (called YAML). A stray quote, a tab,
-or a missing colon can make a record unreadable. Easy to do, easy to undo.
+**What happened.** The top of each record is structured text called YAML. A stray quote, a tab or a missing colon can make a record unreadable. It's easy to do and easy to undo.
 
-**Fix.** Ask: *"Lint my archive and help me fix the errors."* (Or run
-`fha lint --root my-family-archive`.) The linter points at the exact file and line.
-Open that file in a plain text editor, fix the spot it names, save. (`fha doctor` includes a lint
-summary, so it flags this too.) If you can't see what's wrong, paste the error to the assistant - it reads YAML for a living. Still stuck? **Undo your edit** (see
-the git / no-git entries at the bottom) to get back to the last good version.
+**Fix.** Ask: *"Lint my archive and help me fix the errors."* (Or run `fha lint`.) It names the exact file and line. Open that file in a plain text editor, fix the spot it names and save. (`fha doctor` includes a lint summary, so it flags this too.) If you can't see what's wrong, paste the error to the assistant. Still stuck? Undo your edit from a backup or with git; see [Undoing a change](#undoing-a-change).
 
 ---
 
-## A date won't take / it gets rejected
+## A date won't take, or it gets rejected
 
-**What happened.** Dates are stored in a format that can hold *uncertainty* (so "about 1880" is a
-real, valid date). A typo - like `18800` or `March 1871` written longhand - falls outside that
-format.
+**What happened.** Dates are written in a form that can hold uncertainty, so "about 1880" is a valid date (`1880~`). A typo like `18800`, or `March 1871` written out in words, doesn't fit that form.
 
-**Fix.** Just say the date in plain words to the assistant - *"about 1880," "the 1880s," "February
-or March 1871"* - and let it write the formal version. The translation table is on the
-[cheat sheet](CHEATSHEET.md#how-to-write-an-uncertain-date). You never have to learn the codes.
+**Fix.** Tell the assistant the date in plain words (*"about 1880," "the 1880s," "February or March 1871"*) and let it write the formal version. The table is on the [cheat sheet](CHEATSHEET.md#how-to-write-an-uncertain-date). You never have to learn the codes.
 
 ---
 
 ## The AI misread a document
 
-**What happened.** The assistant *drafts* facts; sometimes it misreads faded handwriting or a bad
-scan. This is expected, and it's exactly why nothing it produces is a fact until you approve it.
+**What happened.** The assistant *drafts* facts, and sometimes it misreads faded handwriting or a poor scan. That's expected, and it's why nothing it produces is a fact until you approve it.
 
-**Fix.** Just tell it: *"That birth year is wrong - it's 1898, not 1893,"* or *"reject that place,
-the document doesn't say that."* Corrected facts stay properly sourced; rejected ones are marked
-rejected, not deleted, so there's a record of the call. Nothing it got wrong ever silently became
-truth.
+**Fix.** Tell it: *"That birth year is wrong, it's 1898, not 1893,"* or *"reject that place, the document doesn't say that."* A corrected fact keeps its source. A rejected one is marked rejected rather than deleted, so there's a record of the decision.
 
 ---
 
-## I accepted a claim by mistake - undo it
+## I accepted a claim by mistake
 
 **What happened.** You marked a suggested fact as **accepted**, but it shouldn't be.
 
-**Fix.** Tell the assistant: *"Undo that claim - I'm not sure about it yet"* (it goes back to suggested, dated today), or *"reject the
-death-date claim on that source."* A claim has a review status that can move backward; it doesn't
-have to be erased. If you'd rather wipe the edit entirely and start over, **undo the change** using
-git or the no-git method below.
+**Fix.** Tell the assistant: *"Undo that claim, I'm not sure about it yet"* (it goes back to suggested, dated today), or *"reject the death-date claim on that source."* A claim's review status can move backward; it doesn't have to be erased. To throw away the whole edit instead, see [Undoing a change](#undoing-a-change).
 
 ---
 
-## Two records turned out to be the same person - merge them
+## Two records turned out to be the same person
 
-**What happened.** You researched "John Hartley" twice before realizing they're one man, and now he
-has two `P-…` records.
+**What happened.** You researched "John Hartley" twice before realizing they're one man, and now he has two `p-` records.
 
-**Fix.** Tell the assistant: *"These two people are the same - merge them,"* and name the two
-records. It walks the **merge** workflow: one record is kept, the other's claims, sources, and
-relationships are moved onto it, and the old ID is left as a redirect so nothing that pointed at it
-breaks. Review the result before you accept it. (This is deliberate and careful work - let the
-assistant drive it rather than hand-editing two files.)
+**Fix.** Tell the assistant: *"These two people are the same, merge them,"* and name the two records. It walks you through the merge: one record is kept, the other's claims, sources and relationships move onto it, and the old ID is left pointing at the new one so nothing that linked to it breaks. Review the result before you accept it. Let the assistant do this rather than editing the two files by hand.
 
 ---
 
-## My GEDCOM won't import, or the imported tree "isn't showing up"
+## My GEDCOM won't import, or the imported tree isn't showing up
 
-**What happened - it refuses the file.** `fha gedcom import` reads modern (UTF-8) GEDCOM files.
-If it says the file is **ANSEL** or **UTF-16** encoded, it's an export from an older program:
-open the file in your genealogy program and re-export/save it as UTF-8 (Ancestry's downloads
-already are), then re-run. If it says the file was **already imported**, that's the guard doing
-its job - importing the same file twice would duplicate every person. Downloaded a *newer* export
-since? Import that file; it's different and goes through cleanly.
+**It refuses the file.** `fha gedcom import` reads modern (UTF-8) GEDCOM files. If it says the file is **ANSEL** or **UTF-16**, it came from an older program: open the file in that program, export or save it again as UTF-8 (Ancestry's downloads already are), and run the import again. If it says the file was **already imported**, it's stopping you from creating every person twice. If you've downloaded a newer export since, import that file; it's a different file and goes through.
 
-**What happened - it imported, but trees and timelines look empty.** That's by design, not a
-failure. Everything from a GEDCOM arrives as *suggested* facts - leads, not proven facts - and
-the family tree, timelines, and exports only show facts you've accepted. Your people are all
-there (look in `people/stubs/`, each with the birth/death dates your tree carried), and the
-statements wait in the review queue (`fha report` shows them). Review them a family at a time -
-*"review the claims about Grandma Rose"* - and the tree fills in as you accept. You never need
-to review them all at once, or ever.
+**It imported, but trees and timelines look empty.** Everything from a GEDCOM arrives as *suggested* facts, and the family tree, timelines and exports only show facts you've accepted. Your people are all there (look in `people/stubs/`, each with the birth and death dates your tree carried), and the statements wait in the review queue (`fha report` shows them). Review them a family at a time (*"review the claims about Grandma Rose"*) and the tree fills in as you accept. You never have to review them all.
 
 ---
 
-## My photos/documents drive is offline
+## My photos or documents drive is offline
 
-**What happened.** Your `fha.yaml` points the archive at an external drive (or a network folder)
-that isn't plugged in or mounted right now. The text records are fine; the tools just can't reach
-the *files* they describe.
+**What happened.** Your `fha.yaml` points the archive at an external drive or a network folder that isn't plugged in or connected. The text records are fine; the tools just can't reach the files they describe.
 
-**Fix.** Plug the drive back in (on a Mac, make sure it shows under `/Volumes`; on Windows, that it
-has its usual drive letter). Run `fha doctor` - it checks that every mapped root is reachable and
-tells you which one isn't. If the drive's letter or path changed, update the path in `fha.yaml` to
-match (always forward slashes, even on Windows). Your records never lived on that drive, so nothing
-was lost - only temporarily out of reach.
+**Fix.** Plug the drive back in (on a Mac, check that it shows under `/Volumes`; on Windows, that it has its usual drive letter). Run `fha doctor`: it checks that every folder named in `fha.yaml` can be reached and tells you which one can't. If the drive's letter or path changed, update the path in `fha.yaml` to match, always with forward slashes, even on Windows. Your records were never on that drive, so nothing was lost.
 
 ---
 
-## "Building the website failed" or the site has no photos
+## Building the website failed, or the site has no photos
 
-**What happened.** Making the family website (`fha site`) needs one extra free program called
-Jinja2, and - just for photos in the shareable version - a second one called Pillow. If a message
-says the site needs Jinja2, that program isn't installed yet. If the site builds but no photos show
-up in the standalone (shareable) version, Pillow is the missing piece.
+**What happened.** Building the family website (`fha site`) needs a free helper called Jinja2, and photos in the shareable version need a second one called Pillow. If a message says the site needs Jinja2, it isn't installed. If the site builds but no photos show up in the shareable version, Pillow is missing.
 
-**Fix.** Run `fha doctor` - near the top it now reports both, with the exact install command. To
-build the site at all, install Jinja2: `python -m pip install jinja2`. For photos in the shareable
-snapshot, also install Pillow: `python -m pip install pillow` (both are listed in the tools'
-`requirements.txt`, so `python -m pip install -r .fha/tools/requirements.txt` from inside your
-archive does it in one go - use `tools/requirements.txt` instead if you're in your workshop copy
-of the project, or in an older archive that still keeps `tools/` at its root). The website is rebuildable
-any time from your records - nothing about your archive changed. Note that the *shareable*
-(`--standalone`) site leaves photos out rather than copying originals when Pillow is missing, on
-purpose: it never lets a photo's hidden location data slip into something you hand to a relative.
-
----
-
-## Setting up the tools, or "install says it's already installed"
-
-**What happened.** `fha install` is the *first-time* setup - it copies the tools, the rulebooks,
-and the docs into a brand-new archive folder and stamps it. Run a second time on the same folder,
-it stops on purpose ("already has the plaintext tools installed") so it can't quietly overwrite an
-archive you've been working in.
-
-**Fix.** If you're starting fresh, point `install` at a folder that doesn't exist yet (it creates
-it): `fha install my-family-archive --repo .`, run from your copy of the tools.
-If you already have an archive and just want the *newest* tools, that's a different command -
-`fha update-tools` (next entry). If `install` says Python is too old, install Python 3.10 or later
-from python.org; if it warns that exiftool is missing, that's only a heads-up - install still
-finishes, and photo features start working once you add exiftool from exiftool.org. The download
-also works from an unzipped folder, no GitHub required - just point `--repo` at the folder that
-contains `manifest.json`.
-
----
-
-## After updating the tools, there's a ".plaintext-backup" folder
-
-**What happened.** `fha update-tools` pulls in improved tools without ever overwriting your work.
-If you'd edited one of the tool or rulebook files, it tucked *your* version into
-`.plaintext-backup/{date}/` before laying down the new one, and told you so. A file that was
-retired upstream goes there too. Nothing is deleted - the backup folder is just the safety net.
-
-**Fix.** Nothing is required; the new tools are already in place and working. When you have a
-moment, open the backed-up file alongside the current one, copy over any change of yours worth
-keeping, then delete the `.plaintext-backup` folder - you're the only one who decides when it goes.
-`fha doctor` reminds you it's there until you do. (`fha.yaml` and your `places.yaml` are *never*
-touched by an update - your photo locations and place list stay exactly as you left them.) If
-`update-tools` says it can't find your tools, add `--repo PATH` pointing at the folder that holds
-`manifest.json`; if it says "this does not look like an archive," run it from inside your archive
-folder. The full update ritual - preview, apply, review, health-check, and the one rule that
-prevents lost work - is [UPDATING.md](UPDATING.md).
-
----
-
-## I reorganized my documents or photos folder and now the checker complains
-
-**What happened.** You moved filed documents or photos into new folders (which is fine - the
-drawers are yours to arrange), but each evidence folder remembers where its files were, so
-`fha lint` now reports files it can't find ("Inventory file not found on disk").
-
-**Fix.** One command re-ties them:
+**Fix.** Run `fha doctor`; near the top it reports both, with the exact install command. Both are in the tools' requirements file, so this installs them in one go from inside your archive folder:
 
 ```
-fha reconcile --dry-run --with-exif   # preview what will be re-tied
+python -m pip install -r .fha/tools/requirements.txt
+```
+
+(In your copy of the project, the file is `tools/requirements.txt`.) The website is rebuilt from your records each time, so nothing in your archive changed. Without Pillow the shareable site leaves photos out rather than copying the originals, so a photo's hidden location data never ends up in something you give a relative.
+
+---
+
+## The install says the archive already has the tools
+
+**What happened.** `fha install` is the first-time setup: it copies the tools, the rule documents and the manual into a new archive folder and stamps it. Run a second time on the same folder, it stops ("already has the plaintext tools installed") so it can't overwrite an archive you've been working in.
+
+**Fix.** To start fresh, run `fha install` from your copy of the project and name a folder that doesn't exist yet; it creates it. To get the newest tools into an archive you already have, use `fha update-tools` instead (next section). If `install` says Python is too old, install Python 3.10 or later from python.org. If it warns that exiftool is missing, install still finishes, and the photo features work once you add exiftool from exiftool.org. Install works from an unzipped download too, with no GitHub account; use `--repo` to name the folder that contains `manifest.json`.
+
+---
+
+## After updating the tools, there's a .plaintext-backup folder
+
+**What happened.** `fha update-tools` brings in new tools without overwriting your work. If you had edited one of the tool or rule files, it moved *your* version into `.plaintext-backup/{date}/` before putting in the new one, and told you so. A file the project retired goes there too. Nothing is deleted.
+
+**Fix.** Nothing is required; the new tools are already working. When you have a moment, open the backed-up file beside the current one, copy over any change of yours you want to keep, then delete the `.plaintext-backup` folder. `fha doctor` reminds you it's there until you do. (`fha.yaml` and `places.yaml` are never touched by an update, so your photo locations and place list stay as you left them.) If `update-tools` says it can't find your tools, add `--repo PATH` naming the folder that holds `manifest.json`. If it says "this does not look like an archive," run it from inside your archive folder. The full steps are in [UPDATING.md](UPDATING.md).
+
+---
+
+## I reorganized my documents or photos folder
+
+**What happened.** You moved filed documents or photos into new folders, which is fine. Each source record remembers where its files were, so `fha lint` reports files it can't find ("Inventory file not found on disk").
+
+**Fix.** One command re-links them. Preview first:
+
+```
+fha reconcile --dry-run --with-exif   # preview what will be re-linked
 fha reconcile --with-exif             # apply, then run fha index and fha photoindex
 ```
 
-A filed document carries its ID tag in its name, so it is found wherever you put it.
-A photo is re-tied only when the answer is certain: exactly one photo with the same file
-name, carrying the source ID the system wrote inside it when you processed it.
-`--with-exif` lets reconcile read that ID out of photos the photo catalog has not seen
-yet; it needs exiftool (`fha doctor` checks). If you ran `fha photoindex` after moving
-the photos, plain `fha reconcile` is enough. The checker's message tells you which one
-applies to your archive.
+A filed document carries its ID in its file name, so it's found wherever you put it. A photo is re-linked only when the match is certain: exactly one photo with the same file name, carrying the source ID written inside it when it was processed. `--with-exif` lets reconcile read that ID out of photos the photo index hasn't seen yet; it needs exiftool (`fha doctor` checks). If you ran `fha photoindex` after moving the photos, plain `fha reconcile` is enough. The checker's message tells you which applies to your archive.
 
-Anything less certain is reported, never guessed - for example two copies with the same
-name, or a photo that was renamed on the way:
+Anything less certain is listed rather than guessed, for example two copies with the same name, or a photo renamed along the way:
 
 ```
 portrait.md: 'photos/portrait.jpg' is missing from disk and was not re-tied.
 Possible matches, most likely first: ... Edit the `file: photos/portrait.jpg` line ...
 ```
 
-Look at the photos it lists, then edit that `file:` line to point at the right one. If it
-finds no candidate, the photo left the photos folder (or sits in a folder `photos_ignore:`
-skips) - bring it back, or note in the record that it's lost. For documents, "in more
-than one place" means two copies of the same file: move or rename the extra one and
-re-run.
+Look at the photos it lists, then edit that `file:` line to point at the right one. If it finds no candidate, the photo has left the photos folder (or sits in a folder `photos_ignore:` skips): bring it back, or note in the record that it's lost. For documents, "in more than one place" means two copies of the same file: move or rename the extra one and run it again.
 
 ---
 
-## A change I made (or the assistant made) seems to have vanished
+## A change I made (or the assistant made) has vanished
 
-**What happened.** Nothing in the tools takes a lock, so they assume one editor at a time - you,
-or an assistant acting for you, but never both at once. If your archive folder syncs continuously
-(Dropbox, iCloud Drive, OneDrive) and a sync happened mid-save, or an assistant was working the
-archive at the same moment you were hand-editing the same files, whichever write landed last quietly
-overwrote the other - with no warning from either side. Nothing is corrupted (it's still plain text
-you can open and read), but the earlier edit itself is gone. This is unlikely with just you at one
-keyboard, and far more likely the moment a syncing folder or a second, concurrent editor is in the
-picture.
+**What happened.** The tools don't lock files, so they assume one editor at a time: you, or an assistant working for you, never both at once. If your archive folder syncs continuously (Dropbox, iCloud Drive, OneDrive) and a sync happened in the middle of a save, or an assistant was working while you hand-edited the same files, whichever save came last replaced the other without warning. Nothing is damaged (it's still plain text you can open), but the earlier edit is gone. With one person at one keyboard this is unlikely; with a syncing folder or a second editor working at the same time it's much more likely.
 
-**Fix.** Restore the missing edit from your most recent `fha backup` zip, or from git history if you
-use it (see "I don't have git - how do I undo?" and the git note below), then redo it. Going forward,
-avoid the collision rather than the cleanup: finish one session - yours or the assistant's - before
-starting the next against the same archive, and if the folder lives in Dropbox/iCloud/OneDrive, pause
-syncing (or don't open the folder on a second device) while work is actively happening. There is no
-daemon watching for this and warning you, by design (`TOOLING.md`'s "no daemons, watchers, or
-schedulers" principle) - the fix is procedural, not a setting to turn on.
+**Fix.** Restore the missing edit from your latest `fha backup` zip or from git (see [Undoing a change](#undoing-a-change)), then make it again. To prevent it, finish one session, yours or the assistant's, before starting the next, and if the folder is in Dropbox, iCloud or OneDrive, pause syncing (or don't open the folder on a second device) while you work. Nothing watches for this in the background, so the habit is the protection.
 
 ---
 
-## "I don't have git - how do I undo?"
+## Undoing a change
 
-**What happened.** You don't use GitHub, so there's no commit history to roll back to - but you can
-still undo, because your archive is plain files and you keep backups.
+**Without git.** Restore the file (or the whole folder) from your latest backup zip, the one `fha backup` writes into the folder beside your archive (and that [SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-without-git) suggests you also copy to a separate drive or cloud folder). Unzip it somewhere handy and copy the good version over the broken one. Run `fha backup` before any big editing session and you'll always have a version to go back to; `fha doctor` tells you how long it's been.
 
-**Fix.** Restore the affected file (or the whole folder) from your most recent backup zip - the one
-`fha backup` writes into the folder beside your archive (and that
-[SETUP_FROM_ZIP](SETUP_FROM_ZIP.md#keeping-up-to-date-still-no-git) recommends you also keep on a
-separate drive or cloud folder). Unzip it somewhere handy and copy the good version back over the
-broken one. *This is the whole reason for the backup habit:* a plain copy of plain files is a
-complete undo. Going forward, run `fha backup` before any big editing session and you'll always
-have a point to fall back to - `fha doctor` tells you how long it's been.
+**With git.** Ask the assistant to "show me what changed and undo my last edit," or run `git restore <file>` to drop changes you haven't committed (or `git revert` a bad commit). Git keeps the full history, so any earlier version can be recovered.
 
 ---
 
-## "fha backup" refused the folder I pointed it at
+## fha backup refused the folder I pointed it at
 
-**What happened.** The backup was aimed at a folder *inside* your archive (or inside your photo or
-document folders). A zip stored inside the archive would be swept into the next backup - backups
-of backups, growing forever - so the command refuses rather than quietly doing that.
+**What happened.** The backup was aimed at a folder *inside* your archive (or inside your photo or document folders). A zip stored there would be swept into the next backup, and the backups would keep growing, so the command refuses.
 
-**Fix.** Point it somewhere outside: `fha backup --to D:/ArchiveBackups`, or just drop `--to` and
-let it use the default folder it creates beside your archive. To make a choice permanent, put it in
-`fha.yaml`:
+**Fix.** Point it somewhere outside: `fha backup --to D:/ArchiveBackups`, or leave out `--to` and let it use the folder it creates beside your archive. To make your choice permanent, put it in `fha.yaml`:
 
 ```yaml
 backup:
@@ -308,20 +184,10 @@ backup:
 
 ## A backup failed partway
 
-**What happened.** `fha backup` couldn't finish writing the zip, or the finished zip failed its
-integrity check (a full disk and a locked file are the usual causes). The half-written file was
-already deleted for you - a backup that might be corrupt is worse than no backup - so there is
-nothing to clean up.
+**What happened.** `fha backup` couldn't finish writing the zip, or the finished zip failed its check. A full disk or a file another program has open are the usual causes. The half-written zip has already been deleted, so there's nothing to clean up.
 
-**Fix.** Read the message: it names the cause. Free up disk space (or close the program holding a
-file open, or pick a different `--to` folder), then run `fha backup` again. Your archive itself was
-never touched - backup only reads it.
-
-> **If you *do* use git:** ask the assistant to "show me what changed and undo my last edit," or
-> run `git restore <file>` to drop uncommitted changes (or `git revert` a bad commit). Git keeps a
-> full history, so any past state is recoverable.
+**Fix.** Read the message; it names the cause. Free up disk space (or close the program holding a file open, or pick a different `--to` folder), then run `fha backup` again. Backup only reads your archive, so the archive itself wasn't touched.
 
 ---
 
-*Still stuck after `fha doctor`? Paste its full output to the assistant - it's written to be read
-and acted on. Nothing in a plain-file archive is ever truly lost; it's just waiting to be found.*
+*Still stuck after `fha doctor`? Paste its full output to the assistant; it's written for the assistant to read and act on.*

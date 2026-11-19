@@ -1,53 +1,53 @@
 ---
-# A PERSON page - one per individual you're writing about. Copy this file, fill
+# A PERSON page: one per individual you're writing about. Copy this file, fill
 # it in, and rename the copy to:   surname__given_p-yourcode.md
-# (note the DOUBLE underscore between surname and given, e.g.
+# (note the DOUBLE underscore between surname and given, for example
 #  hartley__thomas_edward_p-de957bcda1.md). You can't break anything.
 # No surname? (a mononym, a single given name, a foundling) Start the filename with the
 # double underscore: __caesar_p-yourcode.md. Two surnames or surname-first? Put the name you
 # want to sort by before the __, and write the full name in the "name" field below.
 
-id: p-__________   # OPTIONAL - LINT WILL CREATE FOR YOU LATER IF MISSING: Make up a 10-character
-                   # code: digits and a-z, but NOT i, l, o, or u (e.g. p-de957bcda1). Pick at
-                   # random; just don't reuse one. A tool can also generate one for you later.
-aliases:           # OPTIONAL - the code, repeated, so [[p-...]] and [[name]] links resolve
+id: p-__________   # OPTIONAL. Leave it blank and `fha lint` fills it in. To make one yourself:
+                   # p- and 10 characters, digits and a-z except i, l, o and u (e.g. p-de957bcda1).
+aliases:           # OPTIONAL: the same code again, so [[p-...]] and [[name]] links both work
   - p-__________   # paste the same code here too
 
-name: Full Name Here       # display name. CONVENTION: use their name AT BIRTH, so the record
+name: Full Name Here       # display name. Usually their name AT BIRTH, so the record
                            #   files under the birth surname (a tool can still show a married name).
-                           #   Set it to whatever reads best, though - it's your call.
-# name_variants: [T. E. Hartley]   # OPTIONAL - other ways the name is written
-# name_at_birth: Margaret Cole     # OPTIONAL - birth / maiden name, if different from `name`
-# married_name: Margaret Hartley   # OPTIONAL - married / later name
-# also_known_as:                   # OPTIONAL - nicknames, alternate spellings, other names;
-#   - Peggy                        #   these become aliases, so [[Peggy]] resolves to this person
+                           #   Use whatever reads best, though; it's your call.
+# name_variants: [T. E. Hartley]   # OPTIONAL: other ways the name is written
+# name_at_birth: Margaret Cole     # OPTIONAL: birth or maiden name, if different from `name`
+# married_name: Margaret Hartley   # OPTIONAL: married or later name
+# also_known_as:                   # OPTIONAL: nicknames, other spellings, other names;
+#   - Peggy                        #   these become aliases, so [[Peggy]] leads to this person
 #   - Maggie Cole
-# profile_photo: margaret-portrait.jpg   # OPTIONAL - their main portrait (a photo file name)
-sex: M                     # M / F / intersex / unknown - used only for grammar in generated text
-living: false              # true / false / unknown - WHEN UNSURE, write unknown. Living people
-                           # are kept private in any public output.
+# profile_photo: margaret-portrait.jpg   # OPTIONAL: their main portrait (a photo file name)
+sex: M                     # M / F / intersex / unknown. Sets pronouns in drafted text (unless gender
+                           # is set), and which side of a couple a lone known parent is numbered on.
+living: false              # true / false / unknown. When unsure, write unknown. Living people
+                           # are kept private in anything you share.
 
-# OPTIONAL provisional dates - an honest guess is fine here; a tool will remind
+# OPTIONAL provisional dates: a guess is fine here; a tool will remind
 # you to add a source later. Uncomment and fill in what you know:
-# birth: 1840              # a year, "about 1840", or 184X for "the 1840s"
+# birth: 1840              # 1840, 1840~ for "about 1840", or 184X for "the 1840s"
 # death: 1909
 
-# tags: [brick-wall, priority]   # OPTIONAL - your own labels for finding / grouping people
-                           # (research status, a project). NOT for facts - a job or a war record is
+# tags: [brick-wall, priority]   # OPTIONAL: your own labels for finding or grouping people
+                           # (research status, a project). NOT for facts: a job or a war record is
                            # a claim in a source, not a tag. ("tier: stub" below is one such label.)
-# restricted: by-request   # OPTIONAL - keep this person out of anything you share. Plain
-                           # "restricted: true" can be re-included in a family packet on purpose;
+# restricted: by-request   # OPTIONAL: keep this person out of anything you share. Plain
+                           # "restricted: true" can be put back into a family packet on purpose;
                            # "by-request" is left out everywhere, no exceptions.
 
-# OPTIONAL relationships - who this person connects to, and how. List parents,
+# OPTIONAL relationships: who this person connects to, and how. List parents,
 # spouse, children, even non-family ties. Type [[ and pick a name. Note the NATURE
-# with "subtype" when it matters (an adopted vs. a birth parent); leave it off for
+# with "subtype" when it matters (an adoptive vs. a birth parent); leave it off for
 # an ordinary birth parent. Link the source that proves it, or mark it as a guess.
 # relationships:
 #   - to: "[[Caleb Hartley]]"     # the other person, by name
 #     type: parent                # parent / child / spouse / sibling
 #     source: "[[s-__________]]"  # the source that backs it (optional; a tool reminds you later)
-#   - to: "[[Robert Hartley]]"    # a second, equally-real parent of a different nature
+#   - to: "[[Robert Hartley]]"    # a second, equally real parent of a different nature
 #     type: parent
 #     subtype: adoptive           # the nature: biological (default), adoptive, step, foster, guardian, ...
 #   - to: "[[Walter Doe]]"        # a guess you are building on before you can prove it:
@@ -55,9 +55,9 @@ living: false              # true / false / unknown - WHEN UNSURE, write unknown
 #     status: hypothesis
 
 created: 2026-01-01        # the date you added this (any date is fine)
-tier: stub                 # stub (a placeholder) -> curated (you've written them up). stub is fine.
+tier: stub                 # stub (a placeholder), then curated once you've written them up. stub is fine.
 
-# gender: woman            # OPTIONAL - identity, in plain words. Use it only if you want to;
+# gender: woman            # OPTIONAL: identity, in plain words. Use it only if you want to;
                            # "sex" above is enough for most records.
 ---
 
@@ -73,17 +73,17 @@ tier: stub                 # stub (a placeholder) -> curated (you've written the
 <!-- The summary lines (Born, Died, Married, Parents, Children) go here.
      `fha views summary` writes them from your accepted claims between two
      marker lines and keeps them up to date. To write them yourself
-     instead, type them here with no markers - each label in bold, each fact
-     followed by its source code in double brackets - and the tools will
+     instead, type them here with no markers (each label in bold, each fact
+     followed by its source code in double brackets) and the tools will
      leave them alone. -->
 
 <!-- Recording a job, home, school, military service, immigration, or a church /
-     lodge / tribe membership? Those are CLAIMS - add them in the source that
+     lodge / tribe membership? Those are CLAIMS: add them in the source that
      proves them (see the source template's "## Claims"), and mention them in the
      Biography below. -->
 
 ## Sources
-<!-- Generated by a tool (`fha views sources-index`), not written by hand - it
+<!-- Generated by a tool (`fha views sources-index`), not written by hand. It
      lists every source that names this person. Leave this section for the tool
      to fill in once you have an id and some sources; nothing to do here now. -->
 
