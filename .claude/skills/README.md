@@ -1,16 +1,10 @@
 # .claude/skills/ — the workflow skills
 
-The AI-interface layer: portable `SKILL.md` files that turn the deterministic `fha` tools into a
-genealogy-aware research assistant. Each skill is **instructions + `fha` invocations only** — no harness
-APIs, no Python — so the harness choice stays reversible (the SKILL.md standard works beyond Claude Code).
+The AI-interface layer: portable `SKILL.md` files that turn the deterministic `fha` tools into a genealogy-aware research assistant. Each skill is **instructions + `fha` invocations only** — no harness APIs, no Python — so the harness choice stays reversible (the SKILL.md standard works beyond Claude Code).
 
-**Start here:** [`_STANDARD.md`](_STANDARD.md) is the authoring contract every skill conforms to.
-[`today/`](today/SKILL.md) is the reference skill — copy its shape. Design lives in
-[`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build order in
-[`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15.
+**Start here:** [`_STANDARD.md`](_STANDARD.md) is the authoring contract every skill conforms to. [`today/`](today/SKILL.md) is the reference skill — copy its shape. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md); the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15.
 
-The governing split: **deterministic work is in `fha` tools; judgment is in skills; the human is the only
-gate to `accepted`.**
+The governing split: **deterministic work is in `fha` tools; judgment is in skills; the human is the only gate to `accepted`.**
 
 ## The skills
 
@@ -35,25 +29,11 @@ gate to `accepted`.**
 | [`transcribe-source`](transcribe-source/SKILL.md) | **authored** | The image-only on-ramp: a source whose files are all scans puts no text in the archive, so a text search answers for what one earlier pass wrote into a claim value while looking like a search of the evidence. Reads the images and writes a `[Page N]`-labeled `role: transcript` companion (`fha process --more`), marked `<!-- AI-DRAFT … -->` until a human checks it — the image stays the evidence of record. Runs from `process-source` (Stage A½, before claims are drafted) or standalone in bounded backfill batches. Drafts no claims; a contradiction with an accepted claim becomes a `## Q:` block. Its one blocked gap is in [`transcribe-source/GAP.md`](transcribe-source/GAP.md). | Opus |
 | [`setup-interview`](setup-interview/SKILL.md) | **authored** | The first-run on-ramp: right after `fha install`, ask the researcher who he is, how he wants the tree numbered (`root_generation: self` or `children`), and his immediate family — firsthand testimony from the one informant the archive is guaranteed to have. Mints his own person record directly (`sex:`, `living:`); writes one `source_class: authored` interview source and drafts `relationship`/`marriage` claims naming everyone with explicit `roles:` (never `birth` claims), all `status: suggested`; hands off to `review-claims`. Normally runs once per archive. | Opus |
 
-Statuses: **authored** = the SKILL.md exists and was
-verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session
-check** against `example-archive/` (capture the transcript).
+Statuses: **authored** = the SKILL.md exists and was verified against the shipped tools + the lint invariant; the remaining gate is a **behavioral session check** against `example-archive/` (capture the transcript).
 
 ## Conventions (all skills)
 
 - One folder per skill: `.claude/skills/{name}/SKILL.md`.
-- Every skill obeys [`_STANDARD.md`](_STANDARD.md): suggested-only claims; `accepted` only via `fha claim`
-  with a human decision; every AI pass recorded in the source's `ai_passes:` list; AI-DRAFT markers for
-  prose; never edit below a GENERATED header or overwrite human text.
-- No skill imports another; the only cross-skill links are the documented hand-offs into `review-claims`
-  (from `process-source` whenever it drafted claims — its zero-claims exit skips review — and from
-  `mine-transcript` when the human reviews right away), `import-notes`' hand-off of evidence into
-  `process-source` (its inbox items enter the normal intake path), `transcribe-source`'s two —
-  called from `process-source`'s Stage A½ when an item is image-only, and handing the text it wrote to
-  `mine-transcript` for the facts no claim covers — and `today`'s one next-action hand-off, into
-  `review-claims`, `process-source`, or (when §6b's largest unlinked place-text cluster outsizes the
-  review backlog) `place-research`, plus its pointer to `on-this-day` when the human wants more than the
-  report's week — hand-offs, not code dependencies.
-- Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes,
-  graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings
-  (`_STANDARD.md` §9).
+- Every skill obeys [`_STANDARD.md`](_STANDARD.md): suggested-only claims; `accepted` only via `fha claim` with a human decision; every AI pass recorded in the source's `ai_passes:` list; AI-DRAFT markers for prose; never edit below a GENERATED header or overwrite human text.
+- No skill imports another; the only cross-skill links are the documented hand-offs into `review-claims` (from `process-source` whenever it drafted claims — its zero-claims exit skips review — and from `mine-transcript` when the human reviews right away), `import-notes`' hand-off of evidence into `process-source` (its inbox items enter the normal intake path), `transcribe-source`'s two — called from `process-source`'s Stage A½ when an item is image-only, and handing the text it wrote to `mine-transcript` for the facts no claim covers — and `today`'s one next-action hand-off, into `review-claims`, `process-source`, or (when §6b's largest unlinked place-text cluster outsizes the review backlog) `place-research`, plus its pointer to `on-this-day` when the human wants more than the report's week — hand-offs, not code dependencies.
+- Verification is behavioral — run the skill against `example-archive/` and confirm the documented writes, graceful degradation, and that `fha lint` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9).
