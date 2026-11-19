@@ -1583,8 +1583,9 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
             aside = 'it can simply be deleted'
         else:
             aside = 'it can simply be deleted, or moved into notes: to keep it'
+        read = f'Only {hit["kept"]!r} {shown}' if hit['kept'] else f'Nothing {shown}'
         findings.append(Finding('W', 'W156', path,
-            f'{who}\'s {key}: stops at the "#". Only {hit["kept"]!r} {shown}; '
+            f'{who}\'s {key}: stops at the "#". {read}; '
             f'"{hit["dropped"]}" is read as a hidden comment and dropped. If it is all '
             f'part of the {key}, {fix}. If the part after # is a real comment, {aside}.'))
 
@@ -1622,8 +1623,9 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
         else:
             what = f'{owner}{key}:'
             what = what[0].upper() + what[1:] if owner else what
-        hand = (f'`- {yaml_inline(whole)}`' if hit['item'] and '.' not in field
-                else f'`{key}: {yaml_inline(whole)}`')
+        # A real comment after the text stays on the fixed line.
+        hand = (f'`- {yaml_inline(whole)}{hit["aside"]}`' if hit['item'] and '.' not in field
+                else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
         where = 'places.yaml' if record == 'place' else 'the record file'
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
         if rid and flag and not any(ch in whole for ch in '$`"'):
@@ -1631,9 +1633,11 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
+        read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
+                'and the site show' if hit['kept'] else
+                'Nothing is read, so every page, the index and the site show it empty')
         findings.append(Finding('W', 'W157', path,
-            f'{what} stops at the "#". Only {hit["kept"]!r} is read, so that is what '
-            f'every page, the index and the site show; "{hit["dropped"]}" is read as a '
+            f'{what} stops at the "#". {read}; "{hit["dropped"]}" is read as a '
             f'hidden comment and dropped. If it is all part of the {key}, {fix}. If the '
             'part after # is a note to yourself, it can simply be deleted, or kept by '
             'leaving two spaces before the # and one after it.'))

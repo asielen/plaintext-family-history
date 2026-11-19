@@ -6297,6 +6297,22 @@ class ClaimTextCutByHashW156Tests(unittest.TestCase):
         (w,) = codes.get('W156', [])
         self.assertIn('can simply be deleted', w.message)
 
+    def test_a_value_that_starts_with_a_hash_is_lost_whole(self) -> None:
+        # #367 review: `value: #4 Main St` reads as no value at all.
+        codes, _p, _t = self._run(self._claim('', value='#4 Main St'))
+        (w,) = codes.get('W156', [])
+        self.assertIn('Nothing reaches the index', w.message)
+        self.assertIn('fha claim c-7dddddddd2 --value "#4 Main St"', w.message)
+        self.assertIn("`value: '#4 Main St'`", w.message)
+
+    def test_a_block_that_is_not_a_claim_list_is_left_to_e010(self) -> None:
+        import _lib
+        not_a_list = '## Claims\n```yaml\nvalue: Lot #4 of block 2\nid: c-7dddddddd2\n```\n'
+        self.assertEqual(_lib.claim_fields_cut_by_hash(not_a_list), [])
+        nested = ('## Claims\n```yaml\n- value: Deed\n  id: c-7dddddddd2\n'
+                  '  notes:\n    - Lot #4\n  place_text:\n    value: Lot #4\n```\n')
+        self.assertEqual(_lib.claim_fields_cut_by_hash(nested), [])
+
     def test_value_org_says_only_what_is_read(self) -> None:
         # No tool shows value_org, so "reaches the index, timelines and the
         # site" would be untrue for it.
@@ -6453,8 +6469,27 @@ class FrontmatterTextCutByHashW157Tests(unittest.TestCase):
     def test_an_aligned_comment_after_lost_text_stays_a_comment(self) -> None:
         codes, _r = self._run(source_fm='title: Lot #4 deed   # from Aunt Ruth\n')
         (w,) = codes.get('W157', [])
-        self.assertIn("`title: 'Lot #4 deed'`", w.message)
+        # The fixed line keeps the owner's own comment after the text.
+        self.assertIn("`title: 'Lot #4 deed'   # from Aunt Ruth`", w.message)
         self.assertIn('"#4 deed" is read as a hidden comment', w.message)
+
+    def test_a_value_that_starts_with_a_hash_is_lost_whole(self) -> None:
+        # #367 review: `title: #4 Main Street deed` reads as no title at all.
+        codes, _r = self._run(
+            source_fm='title: #4 Main Street deed\n',
+            person_fm='name: Ann Doe\ntags: #brickwall\nname_variants:\n  - #2 son\n')
+        msgs = {m.message.split(' stops at', 1)[0]: m.message for m in codes.get('W157', [])}
+        self.assertEqual(sorted(msgs), ['An entry of name_variants:', 'tags:', 'title:'])
+        self.assertIn("`title: '#4 Main Street deed'`", msgs['title:'])
+        self.assertIn('Nothing is read', msgs['title:'])
+        self.assertIn("`- '#2 son'`", msgs['An entry of name_variants:'])
+        self.assertIn("`tags: '#brickwall'`", msgs['tags:'])
+
+    def test_an_empty_field_with_a_comment_is_quiet(self) -> None:
+        codes, _r = self._run(
+            source_fm='title: A deed\nrepository:   # where it lives\nsubtype: # later\n',
+            person_fm='name: Ann Doe\ngender:\n')
+        self.assertNotIn('W157', codes)
 
     def test_places_yaml_names_the_place(self) -> None:
         codes, _r = self._run(places=(

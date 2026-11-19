@@ -5340,6 +5340,7 @@ def read_record(path: str | Path, on_decode_error=None) -> dict:
     except OSError as e:
         return {
             'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'frontmatter': '',
             'unfenced_claims': False, 'undecodable': False,
             'parse_errors': [('E010', f'Cannot read file: {e}')],
         }
@@ -5353,6 +5354,7 @@ def read_record(path: str | Path, on_decode_error=None) -> dict:
         # The caller asked for this shape and reads `undecodable` to skip it.
         return {
             'meta': {}, 'claims': [], 'stories': None, 'body': '',
+            'frontmatter': '',
             'unfenced_claims': False, 'undecodable': True,
             'parse_errors': [],
         }
@@ -11665,46 +11667,63 @@ def _scalar_cut_by_hash(block: str, node, *, aligned_comments: bool) -> dict | N
     """What a ` #` cut from one plain scalar of `block`, or None.
 
     `node` is a composed YAML scalar whose marks index into `block`. A quoted
-    or block scalar keeps its `#`, an empty value lost nothing, and a bare
-    `#` at the end of the line drops nothing. With `aligned_comments`, a `#`
-    two or more spaces (or a Tab) past the text and followed by a space is a
-    deliberate comment, not lost text: frontmatter carries such comments on
-    purpose (the templates, SPEC's examples, and the `surname:` and estimate
-    lines the tools write as `   # note`), while a typed `Lot #4` has the one
-    space and `Jr.  #2` has text right after the `#`."""
-    if node.style is not None or not node.value:
+    or block scalar keeps its `#`, and a bare `#` at the end of the line
+    drops nothing. With `aligned_comments`, a `#` two or more spaces (or a
+    Tab) past the text and followed by a space is a deliberate comment, not
+    lost text: frontmatter carries such comments on purpose (the templates,
+    SPEC's examples, and the `surname:` and estimate lines the tools write as
+    `   # note`), while a typed `Lot #4` has the one space and `Jr.  #2` has
+    text right after the `#`. That later aside is returned as `aside`, so a
+    fixed line keeps it.
+
+    A value that STARTS with `#` (`title: #4 Main Street deed`, `- #2 son`)
+    reads as empty: the whole text is lost. It counts when text follows the
+    `#` directly; `key: # note` on an empty field is a comment."""
+    if node.style is not None:
         return None
     end = node.end_mark.index
     eol = block.find('\n', end)
     rest = block[end:eol if eol != -1 else len(block)].rstrip('\r')
+    if not node.value:
+        rest = rest[1:] if rest.startswith(':') else rest
+        if not re.match(r'[ \t]+#\S', rest):
+            return None
     m = re.match(r'([ \t]+)#', rest)
     if not m:
         return None
+    aside = ''
     if aligned_comments:
-        if _ALIGNED_COMMENT_RE.match(rest):
+        if node.value and _ALIGNED_COMMENT_RE.match(rest):
             return None
         # A real comment after the lost text (`Box #2   # from Aunt Ruth`)
         # stays a comment: the text the person meant ends before it.
-        aside = _ALIGNED_COMMENT_RE.search(rest, m.end())
-        if aside:
-            rest = rest[:aside.start()]
+        found = _ALIGNED_COMMENT_RE.search(rest, m.end())
+        if found:
+            aside = rest[found.start():].rstrip()
+            rest = rest[:found.start()]
     dropped = rest.strip()
     if not dropped[1:].strip():
         return None
-    return {'kept': node.value, 'dropped': dropped,
-            'whole': node.value + rest.rstrip()}
+    whole = (node.value + rest.rstrip()) if node.value else dropped
+    return {'kept': node.value, 'dropped': dropped, 'whole': whole, 'aside': aside}
 
 
 def _walk_text_fields(block: str, node, spec, key: str, field: str, item: bool,
                       record_id: str, aligned_comments: bool,
-                      hits: list[dict]) -> None:
-    """Collect the cut scalars under `node`, as `spec` names them."""
+                      hits: list[dict], nested: bool = True) -> None:
+    """Collect the cut scalars under `node`, as `spec` names them. With
+    `nested` False only a field's own scalar counts (a claim's `value:`),
+    never list entries or a `{value: ...}` mapping under it."""
     if isinstance(node, yaml.SequenceNode):
+        if not nested:
+            return
         for child in node.value:
             _walk_text_fields(block, child, spec, key, field, True, record_id,
                               aligned_comments, hits)
         return
     if isinstance(node, yaml.MappingNode):
+        if not nested:
+            return
         inner = {'value': TEXT} if spec == TEXT else spec
         for key_node, val_node in node.value:
             k = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
@@ -11720,7 +11739,8 @@ def _walk_text_fields(block: str, node, spec, key: str, field: str, item: bool,
 
 
 def text_fields_cut_by_hash(block: str, fields: dict, *,
-                            aligned_comments: bool = True) -> list[dict]:
+                            aligned_comments: bool = True,
+                            claims: bool = False) -> list[dict]:
     """The free-text fields of a raw YAML `block` that a ` #` cuts short.
 
     A genealogist types `title: Deed to Lot #4 of block 2`. YAML reads
@@ -11733,11 +11753,13 @@ def text_fields_cut_by_hash(block: str, fields: dict, *,
     record's frontmatter) or a list of mappings (a `## Claims` block,
     `places.yaml`). `fields` names the text keys (`PERSON_FREE_TEXT_FIELDS`
     and its siblings). Each hit is `{'record_id', 'key', 'field', 'item',
-    'kept', 'dropped', 'whole'}`: the `id:` of the mapping it sits in, the
-    key and its dotted path (`files.note`), whether it is a list entry, what
-    the reader keeps, the lost text from the `#` on, and the line as the
-    person most likely meant it. A block that does not parse gives no hits
-    (E010 already reports it).
+    'kept', 'dropped', 'whole', 'aside'}`: the `id:` of the mapping it sits
+    in, the key and its dotted path (`files.note`), whether it is a list
+    entry, what the reader keeps, the lost text from the `#` on, the text as
+    the person most likely meant it, and any real comment after it. A block
+    that does not parse gives no hits (E010 already reports it); so does a
+    `claims` block that is not a list, and there only each claim's own
+    scalars count.
 
     Cheap on a whole archive: the YAML is composed only when a line that is
     not wholly a comment could hold a hit, so commented examples (and, with
@@ -11755,6 +11777,8 @@ def text_fields_cut_by_hash(block: str, fields: dict, *,
         root = yaml.compose(block, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
         return []
+    if claims and not isinstance(root, yaml.SequenceNode):
+        return []
     records = root.value if isinstance(root, yaml.SequenceNode) else [root]
     hits: list[dict] = []
     for rec in records:
@@ -11769,8 +11793,34 @@ def text_fields_cut_by_hash(block: str, fields: dict, *,
             k = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
             if k in fields:
                 _walk_text_fields(block, val_node, fields[k], k, k, False,
-                                  record_id, aligned_comments, hits)
+                                  record_id, aligned_comments, hits,
+                                  nested=not claims)
     return hits
+
+
+def scalar_line_comment(line: str) -> str:
+    """The real comment after a one-line `key: value` (with the gap before
+    it), or '' when there is none.
+
+    For a writer that rewrites the value and keeps the owner's note: the
+    YAML reader says where the value ends, so a `#` inside quotes
+    (`name: 'Mary Lot #2 Smith'`) stays part of the value. A line that does
+    not read as one key keeps its first space-then-`#` on when it holds no
+    quotes (where a comment can only start), and nothing otherwise."""
+    if yaml is None:
+        return ''
+    try:
+        root = yaml.compose(line, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        if "'" in line or '"' in line:
+            return ''
+        m = re.search(r'[ \t]+#.*', line)
+        return m.group(0).rstrip() if m else ''
+    if not isinstance(root, yaml.MappingNode) or len(root.value) != 1:
+        return ''
+    rest = line[root.value[0][1].end_mark.index:]
+    m = re.match(r'[ \t]+#.*', rest)
+    return m.group(0).rstrip() if m else ''
 
 
 def claim_fields_cut_by_hash(text: str) -> list[dict]:
@@ -11788,10 +11838,10 @@ def claim_fields_cut_by_hash(text: str) -> list[dict]:
         return []
     hits = text_fields_cut_by_hash(
         cm.group(1), {k: TEXT for k in CLAIM_FREE_TEXT_FIELDS},
-        aligned_comments=False)
+        aligned_comments=False, claims=True)
     return [{'claim_id': h['record_id'], 'key': h['key'], 'kept': h['kept'],
              'dropped': h['dropped'], 'whole': h['whole']}
-            for h in hits if not h['item']]
+            for h in hits]
 
 
 def claim_in_text(text: str, claim_id: str) -> dict | None:
