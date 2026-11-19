@@ -317,6 +317,34 @@ class MoreNamingTests(InboxFilingTestCase):
             f'orrin-pell-memorial-grave-3_{sid}.jpg',
         ]))
 
+    def test_a_refiled_photo_keeps_its_whole_name_for_the_next_file(self) -> None:
+        # A photo titled "Store front", refiled into the documents, keeps the
+        # record's bare name (`store-front_S.jpg`) with role `front`. Its back
+        # is `store-front-back_S`: the word "front" is the title's, not a role
+        # tail to drop.
+        photo = self._put(self.inbox / 'IMG_0500.jpg', JPEG)
+        rc, _out, err = self._run(str(photo), '--title', 'Store front')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        record = next((self.archive / 'sources' / 'photos').glob('store-front_s-*.md'))
+        sid = record.stem.split('_')[-1]
+        text = record.read_text(encoding='utf-8')
+        self.assertIn('    is_primary: true\n', text)
+        record.write_text(text.replace('    is_primary: true\n',
+                                       '    role: front\n    is_primary: true\n', 1), encoding='utf-8')
+        rc, _out, err = self._run('refile', sid, '--to', 'documents', '--type', 'photo', '--yes')
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        record = next((self.archive / 'sources').rglob(f'store-front_{sid}.md'))
+        main = next(e for e in self._files_entries(record) if e.get('is_primary'))
+        self.assertTrue(main['file'].endswith(f'/store-front_{sid}.jpg'), main)
+        self.assertEqual(main.get('role'), 'front')
+        scan = self._put(self.inbox / 'scan.tif', TIFF)
+
+        rc, _out, err = self._run(str(self.docs / main['file'].split('/', 1)[1]), '--more', str(scan), 'back')
+
+        self.assertEqual(rc, EXIT_CLEAN, err)
+        self.assertTrue(self._files_entries(record)[-1]['file'].endswith(f'/store-front-back_{sid}.tif'),
+                        self._files_entries(record))
+
     def test_a_main_file_named_by_its_s_id_alone_lends_the_records_slug(self) -> None:
         # #356: a main file with no slug in its name (`_s-….pdf`) has none
         # to share, so the record's name is used, never the word 'source'.

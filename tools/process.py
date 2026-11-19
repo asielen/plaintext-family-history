@@ -4394,8 +4394,8 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
     so the pages of one item sort together and carry the item's name. The
     slug is the one the source's primary document already carries (its stem
-    without `_{S-id}` and without the `-{copy}-{role}` its own `files:` entry
-    names), or the record's own slug when the primary is a photo (photos are
+    without `_{S-id}`, and without the `-{copy}-{role}` its own `files:` entry
+    names when that tail follows the record's slug), or the record's own slug when the primary is a photo (photos are
     never renamed, so their name is no guide) or is named by its S-id alone.
     The scan's real name is not lost: it is recorded as `original_filename:`.
 
@@ -4420,24 +4420,30 @@ def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
     Everything else takes the source's slug - a scanner's `scan-0412-p3`,
     and a short name like `postcard` that merely begins the slug.
     """
+    record_slug = _strip_sid_suffix(record_path.stem, sid)
     slug = None
     for entry in meta.get('files') or []:
         if (files_entry_is_main(entry)
                 and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
             stem = PurePosixPath(str(entry['file'])).stem
             if _names_something(stem, sid):
-                # A main file can carry its own `-{copy}-{role}` (a Find a
-                # Grave memorial's main file is `{slug}-grave-1_…`). That
-                # tail names that one file, not the source, so the next
-                # file attached never inherits it.
-                slug = _strip_suffix_tail(_strip_sid_suffix(stem, sid), '',
-                                          str(entry.get('role') or ''),
+                slug = _strip_sid_suffix(stem, sid)
+                # A main file can carry its own `-{copy}-{role}` after the
+                # record's slug (a Find a Grave memorial's main file is
+                # `{slug}-grave-1_…`). That tail names that one file, not the
+                # source, so the next file attached never inherits it. It is
+                # dropped only when what is left is the record's own slug: a
+                # main file named the bare slug (a refiled photo's
+                # `store-front_…` with role `front`) has no tail to drop.
+                bare = _strip_suffix_tail(slug, '', str(entry.get('role') or ''),
                                           str(entry.get('copy') or '') or None)
+                if bare != slug and bare == record_slug:
+                    slug = bare
             break
     if not slug:
         # A main file named by its S-id alone (`_s-….pdf`) has no slug to
         # share; the record's own name does.
-        slug = _strip_sid_suffix(record_path.stem, sid)
+        slug = record_slug
     own = _slugify(more_file.stem)
     prefixes = [slug]
     for media_suffix in SESSION_MEDIA_SUFFIXES:
