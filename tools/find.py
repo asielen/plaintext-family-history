@@ -82,6 +82,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     TEXT_SEARCH_SUFFIXES,
+    TRANSCRIPT_TEXT_SUFFIXES,
     FhaConfigError,
     Result,
     configure_utf8_stdout,
@@ -808,10 +809,15 @@ def _print_unseen_folders(
 
 def _count_sources_without_text(
     conn: sqlite3.Connection,
-) -> tuple[int, int] | None:
+) -> tuple[int, int, int] | None:
     """How many of the sources this search covered hold no text at all?
 
-    Returns `(unreadable, total)`, or None when the index cannot answer.
+    Returns `(unreadable, not_in_index, total)`, or None when the index cannot
+    answer. `unreadable` is for the CLI text search, which also reads the
+    documents folder and so sees a family tree export (`.ged`); `not_in_index`
+    is for a search that reads only the index (`fha find --json`, the
+    workbench), which never holds a tree export (#316). Both come from one pass
+    so neither surface pays twice.
 
     A source whose files are all scans, photographs, PDFs or recordings puts
     nothing into the archive as text. A text search over it returns nothing and
@@ -838,6 +844,7 @@ def _count_sources_without_text(
         total = conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0]
         with_files: set[str] = set()
         with_text: set[str] = set()
+        with_index_text: set[str] = set()
         for sid, role, path, exists in conn.execute(
             'SELECT source_id, role, path, exists_on_disk FROM source_files'
         ):
@@ -848,19 +855,25 @@ def _count_sources_without_text(
                 continue
             if file_entry_carries_text(role or '', path or ''):
                 with_text.add(sid)
+            if file_entry_carries_text(role or '', path or '',
+                                       TRANSCRIPT_TEXT_SUFFIXES):
+                with_index_text.add(sid)
         for row in conn.execute('SELECT DISTINCT source_id FROM transcripts_fts'):
             if row[0]:
                 with_text.add(row[0])
+                with_index_text.add(row[0])
     except sqlite3.Error:
         # An old-schema or damaged index: the rest of the search still works off
         # whatever tables it does have, and the caller says plainly that the
         # coverage question went unanswered rather than implying full coverage.
         return None
-    return len(with_files - with_text), int(total)
+    return (len(with_files - with_text), len(with_files - with_index_text),
+            int(total))
 
 
 def _searchable_text_note(
     conn: sqlite3.Connection | None, *, found_something: bool,
+    index_only: bool = False,
 ) -> str | None:
     """The line that tells the reader how much of the archive this search read.
 
@@ -875,6 +888,11 @@ def _searchable_text_note(
     The named next steps are the ones that exist today: `fha source extract`
     for a PDF carrying its own text layer, and reading the file. Naming a verb
     the tools do not have would be a promise this program cannot keep.
+
+    `index_only` is for a surface that searches the index alone (`--json`, the
+    workbench). The index never holds a family tree export, so those sources
+    are counted as unread there and named, with `fha find --text` as the way to
+    search them (#316).
     """
     if conn is None:
         return ('Note: could not check which sources have no searchable text - '
@@ -885,9 +903,11 @@ def _searchable_text_note(
         return ('Note: could not check which sources have no searchable text - '
                 'the search index is out of date. Run `fha index`, then search '
                 'again.')
-    unreadable, total = counted
+    no_words, not_in_index, total = counted
+    unreadable = not_in_index if index_only else no_words
     if not unreadable:
         return None
+    trees = (not_in_index - no_words) if index_only else 0
     lead = ('These results are not the whole picture'
             if found_something else
             'Nothing was found, but this search could not look everywhere')
@@ -900,6 +920,9 @@ def _searchable_text_note(
         'searchable when it carries its own text layer; a scan or a photograph '
         'has to be read and typed out. `fha find <S-id>` lists what files a '
         'source has.'
+        + (f' {trees} of them are a family tree export or another plain-text '
+           'file this search does not read; `fha find --text "<words>"` '
+           'searches those.' if trees else '')
     )
 
 
@@ -1082,7 +1105,7 @@ def _find_text(
                 # A saved page is read by what it shows and a site's data by
                 # its values (_lib.read_searchable_text), so a search never
                 # matches a tag, a script or a field name.
-                text = read_searchable_text(p)
+                text = read_searchable_text(p, query=query)
                 m = pattern.search(text)
                 if m:
                     context = _match_context(text, m)
@@ -2667,7 +2690,8 @@ def search_json_with_coverage(
         hits = _ranked_search(conn, query, kinds, limit)
         if kinds is not None:
             return hits, None
-        return hits, _searchable_text_note(conn, found_something=bool(hits))
+        return hits, _searchable_text_note(
+            conn, found_something=bool(hits), index_only=True)
     except sqlite3.OperationalError:
         # Mirrors _related_dispatch's belt-and-braces catch: open_index_db's
         # table probe confirms the required tables EXIST, not that every
@@ -2744,7 +2768,7 @@ def run_find_json(
         try:
             results = _ranked_search(conn, query, kinds, limit)
             coverage_note = _searchable_text_note(
-                conn, found_something=bool(results))
+                conn, found_something=bool(results), index_only=True)
         except sqlite3.OperationalError:
             return Result(ok=False, exit_code=EXIT_FAILURE).add(
                 'error',

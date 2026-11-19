@@ -2310,7 +2310,9 @@ EVIDENCE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES | {'.ged'}
 #   (by what they show, not their markup - read_searchable_text) but never count
 #   as the source's words.
 TEXT_SEARCH_SUFFIXES: frozenset[str] = EVIDENCE_TEXT_SUFFIXES | {
-    '.html', '.htm', '.json', '.csv', '.xml'}
+    '.html', '.htm', '.xhtml', '.json', '.csv', '.xml'}
+# The kinds read by what they show rather than as they stand.
+_MARKUP_TEXT_SUFFIXES: frozenset[str] = frozenset({'.html', '.htm', '.xhtml', '.xml'})
 # The older name, kept so a vendored script that imports it keeps working; it
 # always meant the transcript gate.
 SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES
@@ -8723,7 +8725,9 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
 
 # ── Which sources a text search can see inside (#46) ─────────────────────────
 
-def file_entry_carries_text(role: str, path: str) -> bool:
+def file_entry_carries_text(
+    role: str, path: str, suffixes: frozenset[str] | None = None,
+) -> bool:
     """Does one `files:` entry put the source's words into the archive as text?
 
     Two ways it can, and they are the only two: the entry is tagged with a role
@@ -8741,10 +8745,16 @@ def file_entry_carries_text(role: str, path: str) -> bool:
 
     The role is what decides, not the extension, because a role-tagged companion
     is a promise about the file's content that outranks any guess from its name.
+
+    `suffixes` narrows the plain-text kinds for a surface that reads less than
+    the whole set: the workbench's ranked search reads only the index, which
+    never holds a tree export, so its coverage count passes
+    TRANSCRIPT_TEXT_SUFFIXES and a GEDCOM-only source counts as unread there.
     """
     if str(role or '').strip().lower() in TEXT_COMPANION_ROLES:
         return True
-    return _entry_suffix(path) in EVIDENCE_TEXT_SUFFIXES
+    return _entry_suffix(path) in (
+        EVIDENCE_TEXT_SUFFIXES if suffixes is None else suffixes)
 
 
 def file_entry_is_searched_copy(role: str, path: str) -> bool:
@@ -8834,6 +8844,12 @@ class PageTextParser(HTMLParser):
             self._in_h1 = False
             self._h1_done = True
 
+    def unknown_decl(self, data: str) -> None:
+        # `<![CDATA[ ... ]]>` in an XHTML page or an XML file is text the page
+        # shows; HTMLParser hands it here rather than to handle_data.
+        if data.startswith('CDATA['):
+            self.handle_data(data[len('CDATA['):])
+
     def handle_data(self, data: str) -> None:
         if self._skip_depth > 0:
             return
@@ -8863,14 +8879,19 @@ def _decode_text_file(raw: bytes) -> str:
     """Bytes to text the way the search needs it: never refuse a file.
 
     A GEDCOM from an older program can be UTF-16 (with its byte-order mark),
-    ANSI or ANSEL. A UTF-16 file read as UTF-8 loses every name to the zero
-    bytes between its letters, so the mark is honoured; anything else is read
-    as UTF-8 with undecodable bytes dropped, which keeps every plain-ASCII
-    name findable.
+    ANSI or ANSEL, and an older saved page is often Windows ANSI. A UTF-16 file
+    read as UTF-8 loses every name to the zero bytes between its letters, so
+    the mark is honoured. A file that is not valid UTF-8 is read as Windows
+    ANSI (cp1252), so "Müller" stays "Müller" rather than becoming "Mller";
+    an ANSEL accent then shows as a stray letter beside its base letter, which
+    still leaves the name findable.
     """
     if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
         return raw.decode('utf-16', errors='ignore')
-    return raw.decode('utf-8-sig', errors='ignore')
+    try:
+        return raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        return raw.decode('cp1252', errors='ignore')
 
 
 def _json_leaf_text(value: Any, out: list[str]) -> None:
@@ -8884,19 +8905,42 @@ def _json_leaf_text(value: Any, out: list[str]) -> None:
         out.append(str(value))
 
 
-def read_searchable_text(path: Path) -> str:
+def _markup_could_contain(raw_text: str, query: str) -> bool:
+    """Could a page's visible text contain `query`? A cheap check before parsing.
+
+    Parsing a large saved page costs far more than reading it, and a search
+    reads every page on every query. The parsed text only ever joins the
+    page's own text runs with spaces, so each word of the query must appear,
+    whole, somewhere in the page as written (entities decoded). A page missing
+    any word cannot match and is not parsed. Case is ignored, as the search
+    ignores it. A query with no words is never filtered.
+    """
+    words = query.lower().split()
+    if not words:
+        return True
+    haystack = html.unescape(raw_text).lower()
+    return all(w in haystack for w in words)
+
+
+def read_searchable_text(path: Path, *, query: str | None = None) -> str:
     """A file's words as `fha find --text` reads them. Raises OSError.
 
-    A saved web page (`.html`, `.htm`) and an `.xml` file are read by what they
-    show, not their markup: a search for a word must not match a tag name or a
-    page's script. A `.json` data file is read by its values, not its field
+    With `query` (a literal, matched ignoring case), a page or XML file that
+    cannot contain it is not parsed and comes back empty; the caller is only
+    asking whether it matches.
+
+    A saved web page (`.html`, `.htm`, `.xhtml`) and an `.xml` file are read by
+    what they show, not their markup: a search for a word must not match a tag
+    name or a page's script. A `.json` data file is read by its values, not its field
     names, so a search for "name" does not match every record a site saved;
     a file that does not parse as JSON is read as it stands. Everything else
     (`.md`, `.txt`, `.ged`, `.csv`) is read as it stands.
     """
     text = _decode_text_file(Path(path).read_bytes())
     suffix = Path(path).suffix.lower()
-    if suffix in ('.html', '.htm', '.xml'):
+    if suffix in _MARKUP_TEXT_SUFFIXES:
+        if query is not None and not _markup_could_contain(text, query):
+            return ''
         parser = PageTextParser()
         try:
             parser.feed(text)

@@ -2682,6 +2682,15 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertNotIn('scan, photograph', found[0].message)
         self.assertIn("website's saved copy", found[0].message)
 
+    def test_an_xhtml_page_copy_gets_the_page_copy_wording(self) -> None:
+        self._write_source([
+            (f'documents/charts/harkness-chart-webpage_{_W124_SID}.xhtml', 'webpage'),
+        ])
+        found = self._codes()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        self.assertNotIn('scan, photograph', found[0].message)
+        self.assertIn("website's saved copy", found[0].message)
+
 
 _E011_SID = 'S-5n7q9s1t3v'
 _E011_SOURCE = '''---

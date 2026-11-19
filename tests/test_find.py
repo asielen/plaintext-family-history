@@ -1933,6 +1933,49 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         _, out = self._search('Harkness')
         self.assertIn('no searchable text for 1 of its 2 sources', out)
 
+    def test_an_ansi_tree_export_keeps_its_accents(self) -> None:
+        # Older programs save a tree in Windows ANSI. Read as UTF-8 with bad
+        # bytes dropped, "Müller" became "Mller" and a search for it failed.
+        self._write('documents/trees/ansi-tree_S-4k6m8p0r2t.ged',
+                    '0 HEAD\n1 CHAR ANSI\n0 @I1@ INDI\n1 NAME Anna /Müller/\n'
+                    .encode('cp1252'))
+        _, out = self._search('Müller')
+        self.assertIn('ansi-tree_S-4k6m8p0r2t.ged', out)
+
+    def test_cdata_in_a_saved_page_is_searched(self) -> None:
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.xhtml',
+                    '<html><body><p><![CDATA[Tobias Quenby, farmer]]></p>'
+                    '</body></html>')
+        _, out = self._search('Quenby')
+        self.assertIn('census-webpage_S-4k6m8p0r2t.xhtml', out)
+
+    def test_a_page_that_cannot_match_is_never_parsed(self) -> None:
+        # Two hundred large saved pages made one search take half a minute,
+        # because every page was parsed on every query. A page that does not
+        # contain every word of the query, as written, cannot match.
+        import _lib
+        made = []
+        real = _lib.PageTextParser
+
+        class Counting(real):
+            def __init__(self) -> None:
+                made.append(1)
+                super().__init__()
+
+        self._write('documents/census/other-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Ellen Marsh, widow</p></body></html>')
+        self._write('documents/census/census-webpage_S-4k6m8p0r2t.html',
+                    '<html><body><p>Tobias <b>Quenby</b> &amp; family</p>'
+                    '</body></html>')
+        _lib.PageTextParser = Counting
+        try:
+            _, out = self._search('tobias QUENBY')
+        finally:
+            _lib.PageTextParser = real
+        self.assertIn('census-webpage_S-4k6m8p0r2t.html', out)
+        self.assertNotIn('other-webpage', out)
+        self.assertEqual(len(made), 1)
+
 
 # Four transcripts of the same kind of evidence, in the four states the
 # transcribe-source marker contract defines.
@@ -2238,6 +2281,23 @@ class JsonCoverageNoteTests(unittest.TestCase):
         self.assertTrue(hits)
         self.assertIn('no searchable text for 1 of its 2 sources', note)
         self.assertEqual(hits, find.search_json(self.archive_root, {}, 'Harkness'))
+
+    def test_the_index_only_search_counts_a_tree_export_as_unread(self) -> None:
+        # The workbench and --json search only the index, and the index never
+        # holds a tree export. A name only in the tree comes back empty there,
+        # so the caveat must count the tree as unread and say where to look,
+        # not shrink as though the tree had been searched.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        tree = self.archive_root / 'documents/trees/family-tree_S-2h4k6m8p0r.ged'
+        tree.parent.mkdir(parents=True, exist_ok=True)
+        tree.write_text('0 @I1@ INDI\n1 NAME Tobias /Quenby/\n', encoding='utf-8')
+        hits, note = find.search_json_with_coverage(self.archive_root, {}, 'Quenby')
+        self.assertEqual(hits, [])
+        self.assertIn('no searchable text for 1 of its 2 sources', note)
+        self.assertIn('fha find --text', note)
+        self.assertIn('family tree export', note)
 
     def test_a_kind_filtered_search_is_not_charged_for_the_count(self) -> None:
         # A --kind lookup is "which record do you mean", not "what does this
