@@ -328,7 +328,8 @@ def fields_date_of(fields):
 # toggles on the site's own rows (nsi-ruled-out, nsi-was-seen, nsi-has-clip)
 # are NOT here: those rows are the record. Same list as the companion's
 # ANC_SEEN_IT_CLASSES (browser-companion/src/lib/ancestry-record.js). Used by
-# every recipe whose site Seen It marks (Ancestry, FamilySearch).
+# every recipe whose site Seen It marks (Ancestry, FamilySearch, Find a Grave,
+# Newspapers.com).
 _SEEN_IT_CLASSES = frozenset({'nsi-pills', 'nsi-pill', 'nsi-marks', 'nsi-mark', 'nsi-node-chip'})
 _VOID_TAGS = frozenset({'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
                         'meta', 'param', 'source', 'track', 'wbr'})
