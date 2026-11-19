@@ -33,12 +33,11 @@ The build order (TOOLING.md §15) and per-layer implementation design
 (`TOOLING*.md`, `AGENTS_TOOLING.md`) live in the project repo on GitHub
 ([plaintext-family-history](https://github.com/asielen/plaintext-family-history))
 and are **not** shipped into an archive - extending the tools is a workshop-clone
-activity. Two design references *do* ship, because they govern what the archive renders:
+activity. The design reference *does* ship, because it governs what the archive renders:
 
 | Document | Who it's for |
 |---|---|
 | [DESIGN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/DESIGN.md) | The visual language for everything the archive renders as HTML - tokens, typography, components |
-| [SITE_PLAN.md](https://github.com/asielen/plaintext-family-history/blob/master/docs/SITE_PLAN.md) | Roadmap for homepage / navigation / customization: the source-first model, the customization layers, and the build phases |
 | [tools/README.md](https://github.com/asielen/plaintext-family-history/blob/master/tools/README.md) | Per-tool implementation status tables (flags, error codes, test coverage) |
 
 *(Linked to GitHub rather than by relative path: an installed archive keeps the tools
