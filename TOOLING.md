@@ -1306,11 +1306,12 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 
 ## 13a. `fha gedcom` - relationship exchange export
 
-`fha gedcom <p-id> [--mode descendants|ancestors|connected] [--generations N] [--include-living]` or `--all` writes a GEDCOM 5.5.1 `.ged`; never stored or re-imported (foreign files: §13a2).
+`fha gedcom <p-id> [--mode descendants|ancestors|connected] [--generations N] [--include-living] [--basic]` or `--all` writes a GEDCOM 5.5.1 `.ged`; never stored or re-imported (foreign files: §13a2).
 
 - INDI: name, sex, birth/death from accepted dated vitals (§12 life-date pick). FAM: from spouse and child edges.
 - A marriage claim's date/place go on the FAM of the couple it marries, scoped by `roles:` via `_lib.spouse_parties`, never by position. One it cannot place (`roles: spouse:` naming 3+) is named in the messages beside redaction counts.
 - Each fact's `[[s-id]]` becomes a SOUR note. `1891~/1893~` exports as `BET 1891 AND 1893`.
+- `--basic` is the export for a DNA site, which only compares matches: the same people, families and redaction, but no SOUR records, no SOUR citations under events and no REFN archive ids, so a source title naming a living relative cannot leave with it. These are never written rather than filtered out afterwards, so no pointer dangles. A birth or death with neither date nor place is left out; a marriage is kept as a bare `1 MARR`, since that alone tells a match the two married. The header keeps its `1 SOUR fha` and do-not-re-import NOTE.
 - Privacy: living/unknown names withheld unless `--include-living`. `restricted` sources are not fact sources, `restricted` claims are withheld, a `restricted` person becomes `/Restricted/` (links kept), a restricted name shows the unrestricted display name. `by-request` has no override.
 - **Fails closed:** a present file whose `restricted:` marker cannot be read (not UTF-8, no frontmatter, bad YAML, not a mapping) is withheld under every flag (`_lib.read_restriction_marker`, shared with wikitree, site, packet). Each such file touching the export is named with its reason and the fix (`fha lint`, then `fha index`); exit 1. A source whose claims block alone fails keeps its record and loses its claims. An absent file reads as unmarked.
 
@@ -1757,7 +1758,7 @@ Organized by how often *you* touch it - the skills are the real working surface;
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + one entry appended to `notes/research-log.md` in the SPEC §17c shape → `fha process`. The main intake on-ramp. `fha capture --ingest [DIR]` sweeps the add-on's `capture_staging:` folder. `fha capture --path PATH [--note TEXT]` is a distinct mode - register a file (a photo still living in someone else's library) that must never move; no HTML read, no asset copy, one pointer stub only. |
 | `fha media dedupe FILE [FILE...] [--json PATH]` (T C) | "Is this recording already filed?" Before `fha process`ing a phone-app export - content-hashes each incoming file against everything already filed (§6a). Read-only; its own exit-code ladder (0 clean, 1 usage error, 2 duplicate found, 3 coverage incomplete). |
 | `fha media probe FILE` (T C) | "When was this really recorded?" Reads the container's true duration + `creation_time` and derives the local start time, timezone provenance stated plainly (§6a). Read-only; ordinary 0/1/2/3 ladder. |
-| `fha gedcom <p-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
+| `fha gedcom <p-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. `--basic` for a DNA site: names, dates, places and links only. |
 | `fha gedcom import <file.ged> [--apply] [--plan-out FILE]` (T C) | Coming FROM Ancestry (or any GEDCOM): file the tree as one source + person stubs + suggested claims. Dry-run plan by default; one-shot re-run guard; everything enters `suggested` (§13a2). |
 | `fha views tree <p-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/dot; html is refused with a pointer to `fha site`). |
 
