@@ -6417,13 +6417,38 @@ class FrontmatterTextCutByHashW157Tests(unittest.TestCase):
     def test_quoted_block_aligned_comment_and_other_keys_are_quiet(self) -> None:
         codes, _r = self._run(
             source_fm=("title: 'Deed to Lot #4'\nrepository: unknown        # where it lives\n"
-                       'citation: >\n  Deed book #3, folded\nsubtype: plat\t# tabbed note\n'
+                       'citation: >\n  Deed book #3, folded\nsubtype: plat  #\n'
+                       'provenance: Box 4  #\n'
                        'source_date: 1880  # an estimate\nprovider: Lot#4\n'),
             person_fm=('name: Ann Doe   # the name at birth\n'
                        'surname: Doe   # set by hand: the file name sorts under this surname\n'
                        'birth_place: "Lot #4, Easton"   # unsourced, goes with the birth estimate\n'
                        'sex: F # per the census\n'))
         self.assertNotIn('W157', codes)
+        self.assertNotIn('E010', codes)   # both headers read, so every line was checked
+
+    def test_a_wide_gap_before_text_after_the_hash_is_still_a_cut(self) -> None:
+        # Review of #367: two spaces or a Tab before `#2` is not a comment
+        # anyone writes on purpose; only `  # note` (a space after the #, or
+        # a bare # ending the line) is.
+        for gap in ('  ', '    '):
+            with self.subTest(gap=repr(gap)):
+                codes, _r = self._run(
+                    person_fm=f'name: John Smith Jr.{gap}#2 of that name\n')
+                (w,) = codes.get('W157', [])
+                self.assertIn("Only 'John Smith Jr.' is read", w.message)
+                self.assertIn('"#2 of that name" is read as a hidden comment', w.message)
+        # A Tab before the # is not cut silently: the YAML reader refuses
+        # the whole header, and lint already says so (E010).
+        codes, _r = self._run(person_fm='name: John Smith Jr.\t#2 of that name\n')
+        self.assertIn('E010', codes)
+        self.assertNotIn('W157', codes)
+
+    def test_a_wide_gap_hash_line_forces_the_parse(self) -> None:
+        import _lib
+        fm = 'name: John Smith Jr.  #2 of that name\n'
+        self.assertEqual([h['kept'] for h in _lib.text_fields_cut_by_hash(
+            fm, _lib.PERSON_FREE_TEXT_FIELDS)], ['John Smith Jr.'])
 
     def test_an_aligned_comment_after_lost_text_stays_a_comment(self) -> None:
         codes, _r = self._run(source_fm='title: Lot #4 deed   # from Aunt Ruth\n')

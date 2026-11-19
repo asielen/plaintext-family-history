@@ -1606,10 +1606,10 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     (`_lib.text_fields_cut_by_hash` on the raw block) with the same fix
     rules: a command only when one rewrites just that field and the text
     survives being pasted (no `$`, backtick or `"`), else the hand-quoted
-    line. A `#` two spaces or more past the text is a comment written on
-    purpose, as the templates do, and is left alone. `record` is `person`,
-    `source` or `place`; for `places.yaml` the hit names its place. Nothing
-    here edits a record."""
+    line. A `#` two spaces or more past the text, with a space after it, is
+    a comment written on purpose, as the templates do, and is left alone.
+    `record` is `person`, `source` or `place`; for `places.yaml` the hit
+    names its place. Nothing here edits a record."""
     for hit in text_fields_cut_by_hash(block, fields):
         key, field, whole, rid = hit['key'], hit['field'], hit['whole'], hit['record_id']
         owner = ''
@@ -1636,7 +1636,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
             f'every page, the index and the site show; "{hit["dropped"]}" is read as a '
             f'hidden comment and dropped. If it is all part of the {key}, {fix}. If the '
             'part after # is a note to yourself, it can simply be deleted, or kept by '
-            'leaving two spaces before the #.'))
+            'leaving two spaces before the # and one after it.'))
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:

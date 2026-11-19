@@ -11626,9 +11626,13 @@ CLAIM_FREE_TEXT_FIELDS = ('value', 'notes', 'place_text', 'anchor', 'value_org')
 
 # A space or Tab, then `#`: where YAML starts a comment inside a plain scalar.
 _SPACE_HASH_RE = re.compile(r'[ \t]#')
-# Text, then ONE space, then `#`: the only shape a frontmatter hit can take
-# (`_scalar_cut_by_hash`'s aligned-comment allowance).
-_TEXT_SPACE_HASH_RE = re.compile(r'[^ \t] #')
+# The shapes a frontmatter hit can take (`_scalar_cut_by_hash`'s aligned-
+# comment allowance): text, ONE space, then `#`; or any gap before a `#`
+# with text right after it (`  #2`).
+_TEXT_SPACE_HASH_RE = re.compile(r'[^ \t] #|[ \t]#\S')
+# A comment written on purpose: two or more spaces (or a Tab) before the
+# `#`, and a space after it or nothing (`   # note`).
+_ALIGNED_COMMENT_RE = re.compile(r'(?: {2,}|\t)[ \t]*#(?=\s|$)')
 
 # The frontmatter keys a person types display text into (SPEC §9, §14,
 # Appendix A.6-A.8), and the `places.yaml` keys (SPEC §15, A.9). Each maps
@@ -11663,10 +11667,11 @@ def _scalar_cut_by_hash(block: str, node, *, aligned_comments: bool) -> dict | N
     `node` is a composed YAML scalar whose marks index into `block`. A quoted
     or block scalar keeps its `#`, an empty value lost nothing, and a bare
     `#` at the end of the line drops nothing. With `aligned_comments`, a `#`
-    two or more spaces (or a Tab) past the text is a deliberate comment, not
-    lost text: frontmatter carries such comments on purpose (the templates,
-    SPEC's examples, and the `surname:` and estimate lines the tools write),
-    while a typed `Lot #4` has the one space."""
+    two or more spaces (or a Tab) past the text and followed by a space is a
+    deliberate comment, not lost text: frontmatter carries such comments on
+    purpose (the templates, SPEC's examples, and the `surname:` and estimate
+    lines the tools write as `   # note`), while a typed `Lot #4` has the one
+    space and `Jr.  #2` has text right after the `#`."""
     if node.style is not None or not node.value:
         return None
     end = node.end_mark.index
@@ -11676,13 +11681,13 @@ def _scalar_cut_by_hash(block: str, node, *, aligned_comments: bool) -> dict | N
     if not m:
         return None
     if aligned_comments:
-        if m.group(1) != ' ':
+        if _ALIGNED_COMMENT_RE.match(rest):
             return None
         # A real comment after the lost text (`Box #2   # from Aunt Ruth`)
         # stays a comment: the text the person meant ends before it.
-        aside = re.search(r'(?: {2,}|	)[ 	]*#', rest[m.end():])
+        aside = _ALIGNED_COMMENT_RE.search(rest, m.end())
         if aside:
-            rest = rest[:m.end() + aside.start()]
+            rest = rest[:aside.start()]
     dropped = rest.strip()
     if not dropped[1:].strip():
         return None
