@@ -203,3 +203,9 @@ Not fixes. Recorded here until one earns a design section in `TOOLING.md`.
 audit's "deferred / needs-a-decision" findings and the rest of that audit was
 fixed inline; item 3 came later, from the adversarial review of PR #89
 (`fha site`'s #68 follow-through).*
+
+---
+
+## 7. Code cleanup
+
+- **The legacy dismissal file.** `_lib.load_cooccur_dismissed` still reads `.cache/cooccur_dismissed.json` beside `notes/cooccur_dismissed.json` and migrates it. TOOLING §14a2 names only the `notes/` file, so once no archive carries the old one, the `.cache/` read can go.

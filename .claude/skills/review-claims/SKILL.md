@@ -74,7 +74,7 @@ its claims to the people asked about and leave the rest for later sessions.
    - the claim as a **sentence** ("Thomas Hartley, occupation bookkeeper, Plains Junction Railroad,
      about 1880"),
    - for a birth, baptism, death, burial, marriage or divorce, **whose event it is**, by name and
-     separately from who else it names: "this records the DEATH of Beverly Knipscheer; it also names
+     separately from who else it names: "this records the DEATH of Thomas Edward Hartley; it also names
      her son Alan Sielen (as a survivor)". A record put on the wrong person - a mother's obituary
      filed under her living son - is caught here, before it becomes fact,
    - for **any other claim naming several people** (a residence, an occupation, an event, a note)

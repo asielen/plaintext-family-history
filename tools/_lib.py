@@ -16600,7 +16600,7 @@ def shell_quote(word: str) -> str:
     carry a literal `"` (a free-text field can; a `sys.executable` path
     cannot). `claim.py` (issue #54) hit exactly that shape of bug from the
     other direction: Windows PowerShell 5.1 silently dropped the embedded
-    `"` from `Robert Justin "Bob" Knipscheer` before the tool ever saw the
+    `"` from `Calvin "Cal" Hartley` before the tool ever saw the
     argument. `subprocess.list2cmdline` implements the MSVCRT argv-escaping
     algorithm Python itself relies on to launch a Windows subprocess
     correctly (backslash-escaping embedded quotes rather than dropping

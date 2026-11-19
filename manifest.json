@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.7",
-  "generated": "2026-11-18",
+  "generated": "2026-11-19",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -132,7 +132,7 @@
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "dcf07d56292870be1f02f5919818c61a8689e456824d780ec8c45262d8e8b9c0",
+      "sha256": "416547422a769ae05a923a14334a484a8390675572d39462e6d2670aeb87ecfe",
       "spec_version": "2.7",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
@@ -310,7 +310,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "dcf07d56292870be1f02f5919818c61a8689e456824d780ec8c45262d8e8b9c0",
+      "sha256": "416547422a769ae05a923a14334a484a8390675572d39462e6d2670aeb87ecfe",
       "spec_version": "2.7"
     },
     {
@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "20a35e61880aca12a7699b3a361ee94152be6e6d1efbf903bfd39c714bca406a",
+      "sha256": "a1a33db9ae7f8eb5089b8ad996155fc3afd9472ebe13f9f0961f46fc5fcb1340",
       "spec_version": "2.7",
       "src": "tools/_lib.py"
     },
@@ -762,7 +762,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "0e80c7268a3eec9d36fa2168397ad89a28e2f3532b642f31db957d476acd021c",
+      "sha256": "f7dbbcb8e6ee37ab18fdbf5f553196931616b94c684e2f4a28c5c4ab253adb7c",
       "spec_version": "2.7",
       "src": "tools/claim.py"
     },
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "3626e367b5b13a55c251f98afe99340706f132604d46ac62c980a47e83d0d41d",
+      "sha256": "4f788c8c1beffcb4a4720bf3d0b7ccfe512b6909138af4fd80e7bece166475d8",
       "spec_version": "2.7",
       "src": "TOOLING.md"
     },

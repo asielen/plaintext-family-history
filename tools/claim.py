@@ -89,8 +89,8 @@ never touches status or reviewed.
 only "value updated" / "place_text updated" - identical whether the value
 written was the one intended or a corrupted one (the concrete repro: on
 Windows PowerShell 5.1 a single-quoted string loses embedded double quotes
-before the tool ever sees the argument, so `Robert Justin "Bob" Knipscheer`
-silently arrives as `Robert Justin Bob Knipscheer`; `--dry-run` showed this in
+before the tool ever sees the argument, so `Calvin "Cal" Hartley`
+silently arrives as `Calvin Cal Hartley`; `--dry-run` showed this in
 its diff, a live run did not show it at all). Every free-text/vocabulary field
 this verb (and `fha claim new`) can write now echoes the value it actually
 wrote as an extra `field: value` line on success - cheap insurance against any
@@ -1606,7 +1606,7 @@ def _accept_refusal(archive_root: Path, claim: dict, *,
 
 
 def _event_reading_line(archive_root: Path, claim: dict) -> str | None:
-    """'c-… records the DEATH of Beverly Knipscheer (p-…).' - said on every
+    """'c-… records the DEATH of Thomas Edward Hartley (p-…).' - said on every
     accept of an event claim, so whoever accepts reads in plain words whose
     event they just made a fact."""
     found = _event_subjects(claim)
