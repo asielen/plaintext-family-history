@@ -227,6 +227,14 @@ class BirthCheckTests(_Base):
             {'type': 'burial', 'persons': [KID], 'date': '1881-01-01'}])
         self.assertEqual(self.a.check(KID, 'birth')['state'], 'partial')
 
+    def test_a_vaguely_dated_baptism_beside_a_burial_stays_a_later_reading(self):
+        # "1800/1850" starts a year before the burial, but it could be an
+        # adult baptism read off the register decades later.
+        self.a.source('vital-record', [
+            {'type': 'baptism', 'persons': [KID], 'date': '1800/1850'},
+            {'type': 'burial', 'persons': [KID], 'date': '1801'}])
+        self.assertEqual(self.a.check(KID, 'birth')['state'], 'partial')
+
     def test_information_primary_overrides_the_death_record_rule(self):
         self.a.source('vital-record', [
             {'type': 'death', 'persons': [KID], 'date': '1940-02-01'},
@@ -565,6 +573,37 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertEqual((c['missing'], c['state']), ([1880], 'missing'))
 
+    def test_a_foreign_place_sharing_a_state_name_never_fills_a_us_year(self):
+        # Florida (Uruguay), Maine (France), Montana (Bulgaria) and Maryland
+        # (Liberia) with the country left off: never a U.S. census year.
+        for i, hier in enumerate(('Sarandi Grande, Florida', 'Le Mans, Maine',
+                                  'Berkovitsa, Montana', 'Harper, Maryland')):
+            with self.subTest(hier=hier):
+                a = _Archive()
+                try:
+                    a.person(KID, 'Kid')
+                    lid = 'L-ffffffffff'
+                    reg = a.root / 'places' / 'places.yaml'
+                    reg.write_text(reg.read_text(encoding='utf-8')
+                                   + f'- id: {lid}\n  name: X\n  hierarchy: {hier}\n',
+                                   encoding='utf-8')
+                    a.source('vital-record', [_birth(KID, '1845', lid),
+                                              {'type': 'death', 'persons': [KID],
+                                               'date': '1875', 'place': US}])
+                    a.source('census', [{'type': 'census', 'persons': [KID],
+                                         'date': '1860', 'place': lid}])
+                    a.source('census', [{'type': 'census', 'persons': [KID],
+                                         'date': '1870', 'place': US}])
+                    c = a.check(KID, 'census')
+                    self.assertNotIn(1860, c['found'])
+                finally:
+                    a.cleanup()
+
+    def test_every_left_out_state_name_is_really_left_out(self):
+        import _lib
+        for name in _lib._CENSUS_STATE_NAMES_LEFT_OUT:
+            self.assertIsNone(_lib.census_country_key(name), name)
+
     def test_an_exact_death_outranks_an_approximate_one(self):
         # Died 19 Jan 1941 by the certificate; a recollection says "funeral
         # about 1940" (read as 1939 to 1941). The exact date decides, so the
@@ -844,6 +883,21 @@ class EndOfLifeCheckTests(_Base):
         self.a.source('census', [_birth(KID, '1900')])
         self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'na')
 
+    def test_births_far_apart_keep_the_death_gap_visible(self):
+        # 1850 and 1900 are not one birth read two ways (a merged record, a
+        # typo): the earlier decides, so the death is still asked.
+        self.a.source('vital-record', [_birth(KID, '1850')])
+        self.a.source('census', [_birth(KID, '1900')])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
+    def test_two_baptisms_are_two_events_and_the_earlier_decides(self):
+        # Christened 1850, baptised again as an adult in 1900: born by 1850.
+        self.a.source('vital-record', [{'type': 'baptism', 'persons': [KID],
+                                        'date': '1850-05-01'}])
+        self.a.source('vital-record', [{'type': 'baptism', 'persons': [KID],
+                                        'date': '1900-05-01'}])
+        self.assertEqual(self.a.check(KID, 'end-of-life')['state'], 'missing')
+
     def test_disagreeing_births_both_past_130_years_still_ask(self):
         self.a.source('vital-record', [_birth(KID, '1880')])
         self.a.source('census', [_birth(KID, '1890')])
@@ -989,6 +1043,14 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(r.data['error'], 'ambiguous-name')
         self.assertEqual(sorted(r.data['candidates']), sorted([DAD.lower(), OTHER.lower()]))
         self.assertIn(fmt_id_display(OTHER.lower()), r.messages[0].text)
+
+    def test_a_name_written_with_two_spaces_is_found_with_one(self):
+        self.a.person(OTHER, 'Jose  Smith', sex='M')
+        self.a.build()
+        for typed in ('Jose Smith', 'Jose  Smith', 'jose   SMITH'):
+            r = self._run(person=typed)
+            self.assertEqual(r.exit_code, EXIT_CLEAN, typed)
+            self.assertEqual(r.data['person']['person'], OTHER.lower())
 
     def test_unknown_person_is_not_found_exit_1(self):
         self.assertEqual(self._run(person='p-0000000000').exit_code, EXIT_WARNINGS)

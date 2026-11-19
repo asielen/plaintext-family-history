@@ -9500,13 +9500,23 @@ def persons_named(conn: sqlite3.Connection, text: str) -> list[dict]:
     key = ' '.join(strip_link_wrapper(str(text)).lower().split())
     if not key:
         return []
+    # Spacing is compared collapsed on both sides, so "Jose  Smith" written
+    # with two spaces is found by the name typed with one, and the other
+    # way round. The LIKE narrows the rows (each space may stand for any
+    # run of characters); the exact comparison is the collapsed one below.
+    escaped = key.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
     rows = conn.execute(
-        "SELECT DISTINCT p.id, p.name, p.birth, p.death FROM aliases a "
+        "SELECT a.alias, p.id, p.name, p.birth, p.death FROM aliases a "
         "JOIN persons p ON p.id = a.canonical_id "
-        "WHERE a.alias = ? AND COALESCE(p.status, 'active') != 'merged'", (key,)).fetchall()
-    out = [{'id': r[0], 'name': r[1] or '', 'birth': r[2] or '', 'death': r[3] or ''}
-           for r in rows if id_type_of(str(r[0])) == 'P']
-    return sorted(out, key=lambda m: (m['name'], m['id']))
+        "WHERE a.alias LIKE ? ESCAPE '\\' "
+        "AND COALESCE(p.status, 'active') != 'merged'",
+        ('%' + escaped.replace(' ', '%') + '%',)).fetchall()
+    found: dict[str, dict] = {}
+    for alias, pid, name, birth, death in rows:
+        if id_type_of(str(pid)) == 'P' and ' '.join(str(alias).lower().split()) == key:
+            found[pid] = {'id': pid, 'name': name or '', 'birth': birth or '',
+                          'death': death or ''}
+    return sorted(found.values(), key=lambda m: (m['name'], m['id']))
 
 
 def person_name_refusal(text: str, matches: list[dict], example: str) -> str:
@@ -13218,18 +13228,17 @@ _CENSUS_COUNTRY_NAMES: dict[str, str] = {
 
 # A hand-registered or GEDCOM-derived place often stops at the state or
 # province ("Elm Creek, Kansas"). These full names stand for their country,
-# so such a census still counts toward that country's years. Two are left
-# out on purpose, because counting them could fill a census year nobody
-# found: Georgia is also a country, and Newfoundland was not part of Canada
-# until 1949, after most of Canada's table. A place ending in either still
+# so such a census still counts toward that country's years. A name that is
+# also somewhere else a census could have been taken is left out (see
+# _CENSUS_STATE_NAMES_LEFT_OUT), because counting it could credit a foreign
+# census as a U.S. or Canadian year; a place ending in one of those still
 # needs its country written.
 _CENSUS_STATE_NAMES: dict[str, tuple[str, ...]] = {
     'United States': (
         'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
-        'connecticut', 'delaware', 'district of columbia', 'florida', 'hawaii',
-        'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana',
-        'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota',
-        'mississippi', 'missouri', 'montana', 'nebraska', 'nevada',
+        'connecticut', 'delaware', 'district of columbia', 'idaho', 'illinois',
+        'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'massachusetts',
+        'michigan', 'minnesota', 'mississippi', 'missouri', 'nebraska', 'nevada',
         'new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina',
         'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania',
         'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas',
@@ -13239,6 +13248,18 @@ _CENSUS_STATE_NAMES: dict[str, tuple[str, ...]] = {
         'alberta', 'british columbia', 'manitoba', 'new brunswick',
         'northwest territories', 'nova scotia', 'nunavut', 'ontario',
         'prince edward island', 'quebec', 'québec', 'saskatchewan', 'yukon'),
+}
+# Left out on purpose, each with the reason. Not read by the code: kept so
+# the next person to touch the list sees why these are missing.
+_CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
+    'georgia': 'also a country',
+    'florida': 'also a department of Uruguay',
+    'maine': 'also a historic province of France',
+    'maryland': 'also a county of Liberia',
+    'montana': 'also a province of Bulgaria',
+    'hawaii': 'a kingdom and republic with its own censuses until 1898',
+    'newfoundland': 'not part of Canada until 1949, after most of its table',
+    'newfoundland and labrador': 'not part of Canada until 1949, after most of its table',
 }
 _CENSUS_COUNTRY_NAMES.update(
     {state: country for country, states in _CENSUS_STATE_NAMES.items() for state in states})
@@ -13433,9 +13454,11 @@ INFANT_REGISTER_YEARS = 2
 
 def _infant_register_baptism(c: dict, deaths: list[dict]) -> bool:
     """Is this baptism dated within INFANT_REGISTER_YEARS of every death or
-    burial of the same person on the same register? Both ends must be
-    dated: an undated entry could be an adult's baptism read decades later."""
-    if c['type'] != 'baptism' or c['y_lo'] is None:
+    burial of the same person on the same register? Both must be dated, the
+    baptism to within that many years too: an undated entry, or one dated
+    only "1800/1850", could be an adult's baptism read decades later."""
+    if (c['type'] != 'baptism' or c['y_lo'] is None or c['y_hi'] is None
+            or c['y_hi'] - c['y_lo'] > INFANT_REGISTER_YEARS):
         return False
     for d in deaths:
         if d['y_hi'] is None or not 0 <= d['y_hi'] - c['y_lo'] <= INFANT_REGISTER_YEARS:
@@ -13632,11 +13655,11 @@ def _birth_by_years(ctx: dict, pid: str,
     estimate on their record, else, birth unknown, every record of them (a
     person in an 1850 census was born by 1850).
 
-    The flag says which: True for birth evidence, where each year is one
-    reading of the same birth and they may disagree (so the latest of them
-    is the latest possible birth); False for the every-record fallback,
-    where each year is a separate fact the person was born by (so the
-    earliest of them is)."""
+    The flag says which: True for birth claims and the provisional
+    estimate, where each year is one reading of the same birth and they may
+    disagree; False for baptisms and the every-record fallback, where each
+    year is a separate event the person was born by (two baptisms are two
+    events, and the earlier one bounds the birth)."""
     # Same order as `_person_years`: birth claims, then the provisional
     # estimate, and only then a baptism (an adult baptism says little of age).
     births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('birth',))
@@ -13646,13 +13669,21 @@ def _birth_by_years(ctx: dict, pid: str,
         lo, hi = edtf_bounds(str(provisional))
         hi_year = _claim_year(lo, hi, provisional)[1]
         births = [hi_year] if hi_year is not None else []
-    if not births:
-        births = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('baptism',))
-                  if c['y_hi'] is not None]
     if births:
         return births, True
+    baptisms = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, statuses, ('baptism',))
+                if c['y_hi'] is not None]
+    if baptisms:
+        return baptisms, False
     return [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, statuses)
             if c['y_hi'] is not None], False
+
+
+# Birth claims this close together are readings of one birth (a census age
+# off by a few years), so the latest of them is the latest possible birth.
+# Further apart, they may be two people merged into one record, and the
+# earlier one keeps the death gap visible.
+BIRTH_READINGS_AGREE_YEARS = 10
 
 
 def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int) -> dict:
@@ -14013,17 +14044,23 @@ def _check_end_of_life(ctx: dict, pid: str, statuses: tuple[str, ...], this_year
                        likely wrong and the check says so
 
     "Born over 130 years ago" reads the latest year they can have been born
-    (`_birth_by_years`): a birth of `189X` could be 1899, and when two birth
-    records disagree (1890 and 1900) the later one decides, since someone
-    who may have been born 126 years ago may still be living. Birth unknown,
-    their first record stands in: they were born by then."""
+    (`_birth_by_years`): a birth of `189X` could be 1899, and when birth
+    claims disagree by up to BIRTH_READINGS_AGREE_YEARS (1890 and 1900) the
+    later one decides, since someone who may have been born 126 years ago
+    may still be living. Claims further apart (1850 and 1900) are not one
+    birth read two ways, so the earlier decides and the gap stays visible.
+    Birth unknown, their first baptism, or else their first record, stands
+    in: they were born by then."""
     own = _own_vital_claims(ctx, pid, statuses, ('death', 'burial'))
     if own:
         return {'check': 'end-of-life', 'state': 'met', 'claims': [cid for cid, _c in own],
                 'detail': 'death or burial on file'}
     living = str(ctx['persons'].get(pid, {}).get('living') or 'unknown').lower()
-    births, from_birth = _birth_by_years(ctx, pid, statuses)
-    born_by = (max(births) if from_birth else min(births)) if births else None
+    births, readings = _birth_by_years(ctx, pid, statuses)
+    born_by = None
+    if births:
+        agree = max(births) - min(births) <= BIRTH_READINGS_AGREE_YEARS
+        born_by = max(births) if readings and agree else min(births)
     very_old = born_by is not None and this_year - born_by > END_OF_LIFE_YEARS
     if living == 'false':
         return {'check': 'end-of-life', 'state': 'missing', 'claims': [],
