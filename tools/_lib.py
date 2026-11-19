@@ -2322,9 +2322,6 @@ TEXT_SEARCH_SUFFIXES: frozenset[str] = EVIDENCE_TEXT_SUFFIXES | {
     '.html', '.htm', '.xhtml', '.json', '.csv', '.xml'}
 # The kinds read by what they show rather than as they stand.
 _MARKUP_TEXT_SUFFIXES: frozenset[str] = frozenset({'.html', '.htm', '.xhtml', '.xml'})
-# The older name, kept so a vendored script that imports it keeps working; it
-# always meant the transcript gate.
-SEARCHABLE_TEXT_SUFFIXES: frozenset[str] = TRANSCRIPT_TEXT_SUFFIXES
 
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
@@ -8932,8 +8929,9 @@ def site_data_says_image_unsaved(path: Path) -> bool:
     """Does a capture's site-data file say the record has an image it did not save?
 
     Positive evidence only: the Ancestry and FamilySearch readers write
-    `record.imageId` (the image the record links to) and `record.imageSaved`;
-    the Find a Grave reader lists the memorial's `photos`, each with the
+    `record.imageId` (the image the record links to) and `record.imageSaved`,
+    with `record.same_image_as` when the image is already filed with another
+    capture (a census household's later members); the Find a Grave reader lists the memorial's `photos`, each with the
     `file` it was saved as, or `same_image_as` when it is already filed. A
     file that cannot be read, is not JSON, or does not carry those fields
     proves nothing, and an obituary or memorial page with no image is not
@@ -8946,8 +8944,10 @@ def site_data_says_image_unsaved(path: Path) -> bool:
     if not isinstance(data, dict):
         return False
     rec = data.get('record')
+    # `same_image_as` marks a household member whose census page is already
+    # filed with the first member's capture: its image is not missing.
     if (isinstance(rec, dict) and rec.get('imageSaved') is False
-            and rec.get('imageId')):
+            and rec.get('imageId') and not rec.get('same_image_as')):
         return True
     photos = data.get('photos')
     return isinstance(photos, list) and any(
@@ -9094,6 +9094,14 @@ def _decode_text_file(raw: bytes) -> str:
         return raw.decode('utf-16', errors='ignore')
     if raw.startswith(b'\xef\xbb\xbf'):
         raw = raw[3:]
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        pass
+    # No UTF-8 letter anywhere: a file saved in ANSI throughout, read in one
+    # pass (the per-byte handler costs seconds on a large tree export).
+    if _UTF8_MULTIBYTE.search(raw) is None:
+        return raw.decode('cp1252', errors='ignore')
     return raw.decode('utf-8', errors=_CP1252_FALLBACK)
 
 
@@ -9102,6 +9110,7 @@ def _cp1252_for_bad_bytes(err: UnicodeDecodeError) -> tuple[str, int]:
     return err.object[err.start:err.end].decode('cp1252', errors='ignore'), err.end
 
 
+_UTF8_MULTIBYTE = re.compile(rb'[\xc2-\xf4][\x80-\xbf]')
 _CP1252_FALLBACK = 'fha-cp1252-fallback'
 codecs.register_error(_CP1252_FALLBACK, _cp1252_for_bad_bytes)
 
@@ -9286,8 +9295,10 @@ def warm_page_text_cache(
 ) -> int:
     """Read every new or changed saved page into the page cache. Returns how many.
 
-    `fha index` runs this, and it runs after every capture and filing, so the
-    first search after a batch of captured records is as fast as the next one
+    The `fha index` command runs this (`fha serve` and `fha report` rebuild
+    through build_index and do not), and the capture and filing skills run
+    `fha index` afterwards, so the first search after a batch of captured
+    records is as fast as the next one
     rather than spending half a minute reading the new pages while the person
     at the keyboard wonders whether it has hung. Pages no longer in the
     documents folder are dropped from the cache. Quiet, and never a failure:

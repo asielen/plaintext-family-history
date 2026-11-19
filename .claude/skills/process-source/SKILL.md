@@ -96,7 +96,11 @@ sweep. Works one item at a time; for a full inbox, triage and confirm each with 
    record image whose only text beside it is the website's saved page (`.html`) or its data
    (`.json`): the search reads those, but they are the site's copy, not a transcript of the image. A
    source that is only a saved page (with or without its data) is not image-only: there is no picture
-   to transcribe (`_lib.files_carry_searchable_text`).
+   to transcribe (`_lib.files_carry_searchable_text`). The exception is a capture whose record image
+   failed to download: its data says so (`record.imageSaved: false` with an `imageId` and no
+   `same_image_as`, or a memorial photo with no `file`). Tell the human the image is missing and how
+   to fetch it (download it from the site and drop it into the capture panel, or attach it with
+   `fha process <one of its files> --more <the-image-file> record`); do not treat the page as enough.
 
    **If it is image-only, run [`transcribe-source`](../transcribe-source/SKILL.md) now, before step 4.**
    Not after, and not "if there's time". The transcript exists *first* so the claims you draft in

@@ -987,6 +987,30 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(a['sources_by_type'], {'census': 1, 'vital-record': 1})
         self.assertEqual(a['searchable_text'], {'sources_with_files': 2, 'sources_with_text': 1})
 
+    def test_a_page_whose_record_image_was_not_saved_counts_without_text(self):
+        # Same rule as lint W124: a page filed in place of a record image
+        # capture could not download is not the record's words. A census
+        # household member whose image is filed with another member is.
+        import json as _json
+        page = 'documents/census/d-webpage.html'
+        data = 'documents/census/d-record-data.json'
+        self.a.source('census', [{'type': 'census', 'persons': [MOM], 'date': '1880'}],
+                      files=[{'file': page, 'role': 'webpage'},
+                             {'file': data, 'role': 'site-data'}])
+        self.a.build()
+        on_disk = self.a.root / data
+        on_disk.parent.mkdir(parents=True, exist_ok=True)
+        on_disk.write_text(_json.dumps(
+            {'record': {'imageId': 'x1', 'imageSaved': False}}), encoding='utf-8')
+        a = self._run().data['archive']
+        self.assertEqual(a['searchable_text'], {'sources_with_files': 3, 'sources_with_text': 1})
+        on_disk.write_text(_json.dumps(
+            {'record': {'imageId': 'x1', 'imageSaved': False,
+                        'same_image_as': {'where': 'archive', 'source': 'S-2h4k6m8p0r'}}}),
+            encoding='utf-8')
+        a = self._run().data['archive']
+        self.assertEqual(a['searchable_text'], {'sources_with_files': 3, 'sources_with_text': 2})
+
     def test_a_source_naming_someone_in_people_counts_without_claims(self):
         # A photo filed about Kid, nothing extracted yet: still one of his sources.
         folder = self.a.root / 'sources' / 'photos'

@@ -2719,6 +2719,18 @@ class UntranscribedEvidenceTests(unittest.TestCase):
         self.assertIn('image was not saved', found[0].message)
         self.assertIn('--more <the-image-file> record', found[0].message)
 
+    def test_a_household_member_whose_page_is_already_filed_is_not_flagged(self) -> None:
+        # Every member of a census household after the first links the same
+        # image, already filed with the first capture. Telling the owner to
+        # download it again would re-file the same page.
+        for same in ({'record': 'S-2h4k6m8p0r', 'url': 'https://example.org/r/1',
+                      'name': 'Rose Harkness'},
+                     {'where': 'archive', 'source': 'S-2h4k6m8p0r'}):
+            self._page_and_data({'record': {'imageId': '4194580_00123',
+                                            'imageSaved': False,
+                                            'same_image_as': same}})
+            self.assertEqual(self._codes(), [], same)
+
     def test_unsaved_memorial_photos_are_not_forgotten(self) -> None:
         self._page_and_data({'photos': [{'role': 'grave-1', 'file': None,
                                          'error': 'no answer'}]})

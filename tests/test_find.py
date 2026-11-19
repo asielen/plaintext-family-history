@@ -2030,6 +2030,12 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
         self._write(data, json.dumps({'record': {'imageId': 'x1', 'imageSaved': False}}))
         _, out = self._search('Harkness')
         self.assertIn('no searchable text for 1 of its 2 sources', out)
+        # A census household's later member: its page is already filed.
+        self._write(data, json.dumps({'record': {
+            'imageId': 'x1', 'imageSaved': False,
+            'same_image_as': {'where': 'archive', 'source': 'S-3j5n7q9s1t'}}}))
+        _, out = self._search('Harkness')
+        self.assertNotIn('no searchable text', out)
         self._write(data, json.dumps({'record': {'name': 'An obituary'}}))
         _, out = self._search('Harkness')
         self.assertNotIn('no searchable text', out)
@@ -2056,6 +2062,24 @@ class TextSearchCoverageNoteTests(unittest.TestCase):
             data = cache.read_bytes()
             cache.write_bytes(data[:len(data) // 2 + 100])
         self._damaged_cache_is_replaced(truncate)
+
+    def test_an_all_ansi_file_is_read_in_one_pass(self) -> None:
+        # A large tree export saved in ANSI throughout is decoded in one pass,
+        # not byte by byte, and still reads right.
+        import _lib
+        raw = '1 NAME Anna /Müller/ of Zürich\n'.encode('cp1252')
+        calls = []
+        real = _lib._cp1252_for_bad_bytes
+        _lib.codecs.register_error(_lib._CP1252_FALLBACK,
+                                   lambda e: (calls.append(1), real(e))[1])
+        try:
+            self.assertEqual(_lib._decode_text_file(raw), raw.decode('cp1252'))
+            self.assertEqual(calls, [])
+            mixed = 'Äbersold '.encode('utf-8') + b'\x92' + ' Wäckerlin'.encode('utf-8')
+            self.assertEqual(_lib._decode_text_file(mixed), 'Äbersold \u2019 Wäckerlin')
+            self.assertEqual(calls, [1])
+        finally:
+            _lib.codecs.register_error(_lib._CP1252_FALLBACK, real)
 
     def test_a_stray_windows_byte_keeps_the_accents_on_its_own_line(self) -> None:
         self._write('documents/letters/letter-transcript_S-4k6m8p0r2t.md',
@@ -2410,6 +2434,17 @@ class JsonCoverageNoteTests(unittest.TestCase):
         self.assertEqual(hits, [])
         self.assertIn('no searchable text for 1 of its 2 sources', note)
         self.assertIn('fha find --text', note)
+        self.assertIn('family tree export', note)
+
+    def test_run_find_json_counts_a_tree_export_as_unread(self) -> None:
+        # `fha find --json` goes through run_find_json, not the engine above;
+        # it reads only the index too, so it must give the same answer.
+        self.conn.execute('DELETE FROM source_files WHERE source_id=?', (_MUTE_SID,))
+        self._add_file(_MUTE_SID, 'documents/trees/family-tree_S-2h4k6m8p0r.ged', '')
+        self.conn.commit()
+        result = find.run_find_json(self.archive_root, {}, query='Quenby')
+        note = result.data['coverage_note']
+        self.assertIn('no searchable text for 1 of its 2 sources', note)
         self.assertIn('family tree export', note)
 
     def test_a_kind_filtered_search_is_not_charged_for_the_count(self) -> None:

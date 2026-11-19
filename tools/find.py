@@ -1175,12 +1175,7 @@ def _find_text(
                 text = places_path.read_text(encoding='utf-8', errors='ignore')
                 m = pattern.search(text)
                 if m:
-                    line_start = text.rfind('\n', 0, m.start()) + 1
-                    line_end = text.find('\n', m.end())
-                    if line_end == -1:
-                        line_end = len(text)
-                    context = text[line_start:line_end].strip()[:120]
-                    hits.append((rel, context, False))
+                    hits.append((rel, _match_context(text, m), False))
                     seen_paths.add(rel)
             except OSError:
                 pass

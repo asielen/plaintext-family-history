@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "298cef682e960f5022dece1427e24047ec36b95975995dfec5de2cba5b321054",
+      "sha256": "95ccd8e729bd1da86ff93d87709c2d2ebe7dda39bb9c2aff1b0a71712480e95a",
       "spec_version": "2.6",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -188,7 +188,7 @@
     {
       "path": ".agents/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "34549b112b3580ac24eb0f0507eb7a9497f5b0a5b223637e777c6d7870573391",
+      "sha256": "2d09e5f1720f35274237321210e8251db95c7285d0be236102c6ac7cc2192929",
       "spec_version": "2.6",
       "src": ".claude/skills/transcribe-source/SKILL.md"
     },
@@ -292,7 +292,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "298cef682e960f5022dece1427e24047ec36b95975995dfec5de2cba5b321054",
+      "sha256": "95ccd8e729bd1da86ff93d87709c2d2ebe7dda39bb9c2aff1b0a71712480e95a",
       "spec_version": "2.6"
     },
     {
@@ -358,7 +358,7 @@
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "34549b112b3580ac24eb0f0507eb7a9497f5b0a5b223637e777c6d7870573391",
+      "sha256": "2d09e5f1720f35274237321210e8251db95c7285d0be236102c6ac7cc2192929",
       "spec_version": "2.6"
     },
     {
@@ -692,7 +692,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "099df87cbb32bc5d70974dabaf62c40d7b5229245d1cfd54d0a9485170c0b045",
+      "sha256": "0506750972612aa83000d1d8b29c19a7d4651f2ba10b97fed2a0ff900c573b7c",
       "spec_version": "2.6",
       "src": "tools/_lib.py"
     },
@@ -804,7 +804,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "de39d06a29789847155cb5e9cc3280090a8f5ac37cc66e967c5aa9d12b080eff",
+      "sha256": "c815e0dfe6c72d6cf994963d091c45081d20427f24b4af2bdcce5e9281eae4dd",
       "spec_version": "2.6",
       "src": "tools/find.py"
     },
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "e0d6852d0028e84b9ef1c23e2fa10019fd55580a00ef34f4a5b4546957544c58",
+      "sha256": "4d96d930b7786f35bae36afbc1139f98110e6e0e9eb6c2e61999f03b44cdb6fd",
       "spec_version": "2.6",
       "src": "TOOLING.md"
     },
