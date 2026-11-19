@@ -4025,9 +4025,9 @@ def _add_promote_arguments(sub: argparse._SubParsersAction) -> None:
 _RENAME_DESCRIPTION = """\
 Correct a person's name everywhere it is mechanically derivable.
 
-  fha person rename P-2b3c4d5e6f "Betty Marsh Kelly"
-  fha person rename P-2b3c4d5e6f "Betty Marsh Kelly" --keep-variant
-  fha person rename P-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
+  fha person rename p-2b3c4d5e6f "Betty Marsh Vance"
+  fha person rename p-2b3c4d5e6f "Betty Marsh Vance" --keep-variant
+  fha person rename p-2b3c4d5e6f "Maria Garcia Lopez" --surname "Garcia Lopez"
 
 Rewrites name: (and, with --keep-variant, files the old name into
 name_variants: rather than losing it), and renames the profile and research
@@ -4058,7 +4058,7 @@ def _add_rename_arguments(sub: argparse._SubParsersAction) -> None:
     rn.add_argument('person_id', metavar='P-id',
                     help='The person to rename (e.g. P-2b3c4d5e6f).')
     rn.add_argument('new_name', metavar='NAME',
-                    help='The corrected full name, e.g. "Betty Marsh Kelly".')
+                    help='The corrected full name, e.g. "Betty Marsh Vance".')
     rn.add_argument('--keep-variant', action='store_true', dest='keep_variant',
                     help='File the OLD name into name_variants: instead of losing it.')
     rn.add_argument('--surname', metavar='TEXT',

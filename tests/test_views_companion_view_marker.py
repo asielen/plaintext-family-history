@@ -17,7 +17,7 @@ These tests pin three things directly, rather than assuming them from the
 code read:
   1. `_out_path_for`'s literal output shape for all three generated kinds.
   2. The actual sort order of the five companion-family filenames, including
-     the issue's own `kelly__mary_*` example.
+     the issue's own `vance__mary_*` example.
   3. `fha views clean` still sweeps an old-style (pre-#77) generated
      companion with no parser change - proving the issue's migration claim
      ("clean, then regenerate is a complete migration") rather than assuming
@@ -103,14 +103,14 @@ class CompanionFamilySortOrderTests(unittest.TestCase):
         ])
 
     def test_the_issues_own_five_file_example_sorts_as_proposed(self) -> None:
-        # kelly__mary_* from the GitHub issue body itself (#77), reproduced
+        # vance__mary_* from the GitHub issue body itself (#77), reproduced
         # exactly - including the issue's own "draft-queue sorts first" bug
         # being fixed and its proposed desired order.
         pid = 'P-ah07m3282y'
-        stem = 'kelly__mary'
+        stem = 'vance__mary'
         profile = f'{stem}_{pid}.md'
         research = f'{stem}_research_{pid}.md'
-        profile_path = Path('people') / '004 Kelly' / profile
+        profile_path = Path('people') / '004 Vance' / profile
         generated = [
             views._out_path_for(profile_path, kind, pid).name
             for kind in ('draft-queue', 'sources-index', 'timeline')
