@@ -1,11 +1,10 @@
 ---
-# The RESEARCH file - an OPTIONAL escape valve for a person's research once it
-# outgrows the "## Research Notes" section already on their own record (the
-# profile is the "hand this to grandma" half; this is your desk, for when one
-# section isn't enough room). Most people never need this file - fha person
-# new/promote no longer create it automatically. Copy it beside a person's
-# profile and rename it to:   surname__given_research_p-yourcode.md
-# (double underscore, same as the profile).
+# The RESEARCH file: an OPTIONAL extra file for a person whose research has
+# outgrown the "## Research Notes" section on their own record. The record is
+# the part you'd hand to a relative; this file is your working space. Most people
+# never need one. Copy it beside a person's record and rename it to:
+#   surname__given_research_p-yourcode.md
+# (double underscore, same as the record).
 id: p-__________   # the person's code, same as on their profile
 created: 2026-01-01
 ---

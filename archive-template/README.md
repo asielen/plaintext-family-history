@@ -1,72 +1,41 @@
 # Archive Template
 
-Copy this folder's contents to start your own family archive.
-This is the skeleton a real archive grows from - `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`, plus empty `photos/` and `documents/` folders the default settings already point at.
+This folder is the empty starting archive: `inbox/` for new material, `sources/` for evidence records, `people/` for person records, `places/places.yaml`, `notes/`, and empty `photos/` and `documents/` folders that the default settings point at.
 
-## Record templates (copy, fill in, done)
+**To start an archive, don't copy this folder.** From your copy of the project, run `fha install` with the name of a new folder (`./fha install ../my-family-archive` on macOS or Linux, `.\fha install ..\my-family-archive` in Windows PowerShell). It builds this same skeleton and adds the tools, the manual and the assistant's instructions. [`docs/GETTING_STARTED.md`](../docs/GETTING_STARTED.md) walks through it.
 
-Each record folder ships a `_TEMPLATE.*` file you can copy by hand - no tools needed:
+## Building an archive by hand
 
-- `people/_TEMPLATE.person.md` - a person record, whether you're jotting down someone you only
-  need to reference or writing up a fully curated profile: it's the same file shape either way
-  (it defaults to `tier: stub`; flip it to `curated` once you've written them up)
-- `sources/_TEMPLATE.source.md` - an evidence record with its claims
-- `places/places.yaml` - a commented `_TEMPLATE` place entry at the top
-- `inbox/_TEMPLATE.notes.md` - a note to drop beside new material
+If you want an archive with no tools at all, copy this folder, rename the copy, and delete this `README.md` from it (an archive's front page is `START_HERE.md`). Then fill in records with any text editor.
 
-A stub and a curated person are the same file shape, so `_TEMPLATE.person.md` serves for
-both: a plain copy of it is a stub (`tier: stub`).
+Each record folder has a template to copy:
 
-Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`), fill it in, and you're done. **You link records by name:** in any profile or note, cite a source or cross-link a person by writing its name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works too. **Don't worry about making an ID:** the templates leave that to the tools. If you ever run `fha lint`, it assigns the IDs, keeps your filename as an alias so your `[[name]]` links keep working, and tidies everything. IDs are just sturdier for the long haul - filenames change and can repeat - but you never have to create one.
+- `people/_TEMPLATE.person.md`: a person record. It's the same file whether you're noting someone you only need to mention or writing a full profile. It starts as `tier: stub`; change that to `curated` once you've written them up.
+- `sources/_TEMPLATE.source.md`: an evidence record with its claims.
+- `places/places.yaml`: a commented `_TEMPLATE` place entry at the top.
+- `inbox/_TEMPLATE.notes.md`: a note to put beside new material.
 
-**Your archive is a separate, private repository** - never commit real family data to the public spec repo.
-See `docs/GETTING_STARTED.md` ("Your archive and the project are two separate things") for how the public spec/tools and your private archive relate.
+Copy a template, give the file a sensible name (`hartley-thomas.md`, `grandpas-letter.md`) and fill it in. **Link records by name:** in any profile or note, cite a source or point at a person by writing its name in double brackets, like `[[Grandpa Joe]]` or `[[Hartley family bible]]`; a nickname works too. **You don't need to make IDs.** `fha lint --fix-ids` adds them and keeps your filename as an alias so your `[[name]]` links keep working; plain `fha lint` only checks.
 
-After copying:
-1. Bring in the **operating layer** first, BEFORE editing anything. `fha install` refuses an
-   archive whose skeleton files have already been changed - that refusal is what stops it
-   overwriting work in progress - so editing `fha.yaml` first is exactly what makes the assisted
-   route stop working. Configure in step 2, once the tools are in.
+**Your archive is private.** Never put real family data in the public project's repository. `docs/GETTING_STARTED.md` ("Your archive and the project are separate") explains how the two relate.
 
-   The machinery that makes `fha` commands work comes from the public repo. The assisted way is
-   best: run `fha install` against a **fresh, empty** folder
-   name (not a copy of this template - the installer builds the skeleton itself). It lays an
-   installed archive out cleanly, so the root reads as your genealogy: the machinery (`tools/`
-   and `design/`) is tucked into a hidden `.fha/` folder, and what's left at the archive root is
-   `START_HERE.md` (the page that explains the archive to anyone who opens it), your
-   `fha.yaml`, the agent rulebooks `AGENTS.md` and `CLAUDE.md`, the launchers (`fha`,
-   `fha.cmd`, `serve.cmd`), the `.claude/skills/` folder, the data folders, and `docs/` - which
-   holds everything else to read: `GETTING_STARTED.md`, `CHEATSHEET.md`, `SPEC.md`,
-   `TOOLING.md` and the rest of the manual. (There is deliberately no `README.md` at an
-   installed archive's root: the project one is repo-facing, and `START_HERE.md` is the
-   entry point in its place - so delete this file once you have copied the folder.) See
-   `docs/SETUP_FROM_ZIP.md`.
-   *(Already copied this template by hand? You can still point `fha install` at that copy: it
-   accepts skeleton files that are already there as long as they are untouched stock, so a
-   pristine copy of this template installs cleanly and gets the version stamp with it. It stops
-   only if you have started editing — `fha.yaml` filled in, records added — so that it can never
-   overwrite work in progress. If it does stop, copy the operating layer in by hand instead: the
-   `tools/` and `design/` folders go into a `.fha/` folder here; the `docs/` folder, with
-   `SPEC.md` and `TOOLING.md` copied into it; and `AGENTS.md`, `CLAUDE.md`, the `fha`,
-   `fha.cmd` and `serve.cmd` launchers, and the `.claude/skills/` folder go into the archive
-   root.)*
-   Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
-   you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
-   (TOOLING.md §13c).
-2. Edit `fha.yaml` to point at where your photos and documents live (see the worked examples
-   below). Now that the tools are installed, this is safe - updates never touch `fha.yaml`.
-3. Open in your AI agent and start processing `inbox/` items.
+## Adding the tools to a hand-built copy later
+
+`fha install` accepts a copy of this folder as long as you haven't changed anything in it yet; then it adds the tools as usual. Once you've started filling the copy in (edited `fha.yaml`, added records), `fha install` stops, so it can never overwrite your work. In that case, copy the tools in by hand from your copy of the project:
+
+- the `tools/` and `design/` folders, into a new `.fha/` folder in the archive;
+- the `docs/` folder, plus `SPEC.md` and `TOOLING.md` copied into it;
+- `AGENTS.md`, `CLAUDE.md`, the launchers `fha`, `fha.cmd` and `serve.cmd`, and the `.claude/skills/` and `.agents/skills/` folders, into the archive's top folder.
+
+After that, `fha update-tools --repo PATH-TO-PROJECT` brings in newer versions. It backs up anything you've changed, never deletes, and never touches your `fha.yaml` or `places.yaml`.
 
 ## Where your photos and documents live
 
-`fha.yaml` has one job: tell the tools where to find your files. The first segment of any record
-path (like `photos/1955/…`) is looked up here. Open `fha.yaml` in a plain text editor and use
-whichever block below matches your setup - copy it in, edit the path, save.
+`fha.yaml` tells the tools where to find your files. The first part of any file path in a record (like `photos/1955/…`) is looked up here. Open `fha.yaml` in a plain text editor and use whichever block below matches your setup: copy it in, edit the path, save.
 
-**Starting with nothing yet?** Leave `fha.yaml` exactly as it ships. The defaults below work, and
-you can point it at a real library later without redoing anything.
+**Starting with nothing yet?** Leave `fha.yaml` as it is. The defaults below work, and you can point it at a real library later without redoing anything.
 
-**1. Plain folders inside this archive** (the default - keeps everything in one place):
+**1. Plain folders inside the archive** (the default, which keeps everything in one place):
 
 ```yaml
 roots:
@@ -74,8 +43,7 @@ roots:
   documents: documents
 ```
 
-**2. An external drive** (your photos live on a USB or backup drive). Use the drive's own path -
-a drive letter on Windows, `/Volumes/…` on Mac:
+**2. An external drive** (your photos are on a USB or backup drive). Use the drive's own path: a drive letter on Windows, `/Volumes/…` on a Mac.
 
 ```yaml
 roots:
@@ -89,8 +57,7 @@ roots:
   documents: documents
 ```
 
-**3. An existing photo library** (e.g. a Lightroom or Photos folder you already keep). Leave it
-exactly where it is and point at it - the archive reads from it and never reorganizes it:
+**3. An existing photo library** (for example a Lightroom or Photos folder you already keep). Leave it where it is and point at it; the archive reads from it and never reorganizes it.
 
 ```yaml
 roots:
@@ -104,11 +71,8 @@ roots:
   documents: documents
 ```
 
-Notes that save trouble:
+A few things to know:
 
-- **Always use forward slashes** (`/`), even on Windows. `D:/FamilyPhotos`, never `D:\FamilyPhotos`.
-- **`documents:`** works the same way - point it at an external drive or a scans folder if yours
-  doesn't live inside the archive. If your documents *are* inside the archive, leave it as
-  `documents`.
-- Photos under the photos root are **never renamed** - your existing folder structure and
-  filenames stay untouched, so connecting a library you already curate is safe.
+- **Always use forward slashes** (`/`), even on Windows: `D:/FamilyPhotos`, never `D:\FamilyPhotos`.
+- **`documents:`** works the same way. Point it at an external drive or a scans folder if yours isn't inside the archive. If your documents *are* inside the archive, leave it as `documents`.
+- Photos under the photos folder are **never renamed**. Your folder structure and filenames stay as they are, so connecting a library you already keep in order is safe.

@@ -436,7 +436,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "96864f8288b8dba84cdddd20041a460bab8d3b57edcefdee50ae8c1e5af91e4e",
+      "sha256": "976ece592f730e3ae80739ab6d5d6671af441fc30e8eb36aace6e512ff501b3a",
       "spec_version": "2.7",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "28da713f636cd0023ff6cc57e0e47faf8ee049d6eebfd87e57e52beaa29231e9",
+      "sha256": "064228f8e0c5e5fa743a20fb6f46f2a7188116b3f97d21e335d7eb4014459fab",
       "spec_version": "2.7"
     },
     {
@@ -1113,14 +1113,14 @@
     {
       "path": "START_HERE.md",
       "category": "skeleton",
-      "sha256": "86c29a696143cf7ff5b70f6241a673ca782d2089d27aa2adfdf4f2c03b3d35a5",
+      "sha256": "1b7c0c7e72ef2de9ac58b10e8405d8c28c2f8d89a14415bc5dc5780e5f73c4f6",
       "spec_version": "2.7",
       "src": "archive-template/START_HERE.md"
     },
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "10f24b512f85ad7c162482a6f85fab2275bbb28534eae301b80346dbb81f3e0d",
+      "sha256": "1c5c1b224fd971684cef8800ee3fa22288710f6d0769aba3a4029d6b9b412c95",
       "spec_version": "2.7"
     },
     {
@@ -1132,13 +1132,13 @@
     {
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
-      "sha256": "d06a812c6a3ac3dfabd6499300fac934313685303ca5a8bff6313646e6b16926",
+      "sha256": "9278028f192891e5326c995c7dd121655e2c16ba6d0860c467763c7ee4390501",
       "spec_version": "2.7"
     },
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "25ed30ffd9b957034f35b683f53f439789f2f8cfec346d60a06c5a3e0443752e",
+      "sha256": "620c22122f3cf7af1f808cd7318aba189538a520e954e8ce57999788af0f87e1",
       "spec_version": "2.7"
     },
     {
@@ -1150,37 +1150,37 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "71976295b727d0210e7c7e583680478e6d263d2af8a838124aaf44980b346104",
+      "sha256": "b59439c6b72cb4e6dc0239915c8a7bc7301bb1b4fed387ca5faec8287d66583e",
       "spec_version": "2.7"
     },
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
-      "sha256": "c3d1c07572944fad75b61008ac107430848fe09a134f22bda7db836886b0abcc",
+      "sha256": "e9b74850c6b390ae120951043fb4b7b16363af889a21aa0b801cc4872b70b347",
       "spec_version": "2.7"
     },
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "9ecbf802a4a0a5f4fa0ad19b2fcffe8dc9e0b4812a5104017ae1bd80999d4be9",
+      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
       "spec_version": "2.7"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "be26972bc984ec79a267cc91a56085108285ca4fcbf7eea1acc24d163db6dfa3",
+      "sha256": "7362e921df20f9cd7070ea24a38b688906a0e2087e1545826895da3d46330554",
       "spec_version": "2.7"
     },
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "27604b4aef2cbb0386e12b02e9868a2d8b99df946422b7c5e6380ed8e6374978",
+      "sha256": "08b0c04cf044c63d76fb4801dbd6b11e8aa46f7fee926b5809c430324edb8220",
       "spec_version": "2.7"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "727a2aee66a099bdff9b3757f6d6abf04730c6607cfc5239e355ad2883b2ed8c",
+      "sha256": "ffade4453d9f7f6f887c83e9861a9dd773a3950667d0bc93574ab4b4b3078910",
       "spec_version": "2.7"
     },
     {
@@ -1200,19 +1200,19 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "99b5f8c83f286af2e121169ae15062f26b14abfa42415844fcbef09f9d03e0d9",
+      "sha256": "d5b7354732758c8dda8cfddbd51c8054089473a3f352c594d55ddb389c8d2a91",
       "spec_version": "2.7"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "cdd6cefe639a741624e6c8ace9a48704f28fd548f023cfdf7e26d266fff1fb31",
+      "sha256": "918b8e01d82fbf464b4efd686fdc620757b037c2e63a93d8c54912ad6e2a1e47",
       "spec_version": "2.7"
     },
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "f24762667d309ab0c8955871f5ab7228447e3bc283e74d69afe3519dff103246",
+      "sha256": "752568030f5e659c1ad1fcbe99a5104a38aef83e3e0e048bb401b5c2aad17cb5",
       "spec_version": "2.7"
     },
     {
@@ -1251,7 +1251,7 @@
     {
       "path": "inbox/_TEMPLATE.notes.md",
       "category": "skeleton",
-      "sha256": "79400550bb625bd2d2efec131562bda5716929877c4160a9ff8d9697cf2b652a",
+      "sha256": "6a0145ed0c2f1156ce1ce1f5fefff3448eeb046896fabe8d220e2cf79d2e1d99",
       "spec_version": "2.7",
       "src": "archive-template/inbox/_TEMPLATE.notes.md"
     },
@@ -1265,14 +1265,14 @@
     {
       "path": "notes/home.md",
       "category": "skeleton",
-      "sha256": "d12147343331de942810abc66be3f9c673c02add5cab06fe677afe240ec098ae",
+      "sha256": "b9af518b9b16489454704afdb460985839d856934e28564d891f83d136343ba9",
       "spec_version": "2.7",
       "src": "archive-template/notes/home.md"
     },
     {
       "path": "notes/questions.md",
       "category": "skeleton",
-      "sha256": "03b7d41e5e43d4ad4c146883c76f372488b30e61d758fc952e59a4b25b8da00b",
+      "sha256": "5c9941bdf734b6bc9cb1e4b76bc18015b1339cc621b75011b79427c11061403b",
       "spec_version": "2.7",
       "src": "archive-template/notes/questions.md"
     },
@@ -1286,14 +1286,14 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "93b94fb07fdc8183e50526549e7d77ec84c1bb0750494b5b4879b769a453fdc0",
+      "sha256": "857adc48d1cf0d8212163e64b2af8563473c3b363a3eeda6434ee143793131a9",
       "spec_version": "2.7",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
     {
       "path": "people/_TEMPLATE.research.md",
       "category": "skeleton",
-      "sha256": "fa8f21637034113db82d7aaf7410c1d9c3ca510692a1cea2ba0fa5f15bea8e5e",
+      "sha256": "b27c23617ed6afa16d1ceba8c56090cf2ba6dd3859272e9516932a1422b83875",
       "spec_version": "2.7",
       "src": "archive-template/people/_TEMPLATE.research.md"
     },
@@ -1341,7 +1341,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "b39f0e86a96881edd06d0d6028ebb8ec5074e1b29d4f07f80dd01a6c0dda2b87",
+      "sha256": "ee22d287cdcba846b1311c9c362cb63894d145f188bf6c0a09af2ff1807a9aa0",
       "spec_version": "2.7",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
