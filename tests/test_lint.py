@@ -6280,6 +6280,43 @@ class ClaimTextCutByHashW156Tests(unittest.TestCase):
             value='"Lot #4 of block 2"'))
         self.assertNotIn('W156', codes)
 
+    def test_text_a_shell_would_mangle_gets_only_the_hand_fix(self) -> None:
+        # PowerShell 5.1 eats `$5` and splits on `\"`, so a pasted command
+        # would save different words than the archive holds. Hand-quoting
+        # in the file is the only advice given.
+        for notes in ('Paid $5 for lot #4; it\'s "cheap"', 'lot #4 of the `old` plat',
+                      'lot #4, "the corner one"'):
+            with self.subTest(notes=notes):
+                codes, _p, _t = self._run(self._claim(f'  notes: {notes}\n'))
+                (w,) = codes.get('W156', [])
+                self.assertNotIn('fha claim', w.message)
+                self.assertIn('put quotes around it by hand', w.message)
+
+    def test_a_real_comment_can_simply_be_deleted(self) -> None:
+        codes, _p, _t = self._run(self._claim('', value='Lot #4 of block 2'))
+        (w,) = codes.get('W156', [])
+        self.assertIn('can simply be deleted', w.message)
+
+    def test_value_org_says_only_what_is_read(self) -> None:
+        # No tool shows value_org, so "reaches the index, timelines and the
+        # site" would be untrue for it.
+        codes, _p, _t = self._run(self._claim('  value_org: Lodge #12 of the order\n'))
+        (w,) = codes.get('W156', [])
+        self.assertIn("Only 'Lodge' is read", w.message)
+        self.assertNotIn('timelines', w.message)
+
+    def test_a_block_whose_only_hashes_are_comment_lines_skips_the_parse(self) -> None:
+        import _lib
+        block = ('## Claims\n```yaml\n- value: Deed\n  id: c-7dddddddd2\n'
+                 '  # place_text: Fairview   # the place as written\n'
+                 '# A RELATIONSHIP claim  # example\n```\n')
+        with unittest.mock.patch.object(_lib.yaml, 'compose',
+                                        side_effect=AssertionError('parsed')) as compose:
+            self.assertEqual(_lib.claim_fields_cut_by_hash(block), [])
+            compose.assert_not_called()
+        hit = block.replace('- value: Deed', '- value: Lot #4')
+        self.assertEqual([h['kept'] for h in _lib.claim_fields_cut_by_hash(hit)], ['Lot'])
+
 
 if __name__ == '__main__':
     unittest.main()

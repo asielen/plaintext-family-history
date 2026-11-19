@@ -11494,14 +11494,17 @@ def claim_fields_cut_by_hash(text: str) -> list[dict]:
     (unquoted, non-block) scalars of `CLAIM_FREE_TEXT_FIELDS` count: a quoted
     value or a `notes: >` block keeps its `#`. A block that does not parse
     gives no hits (E010 already reports it). Cheap on a whole archive: the
-    YAML is composed only when the block holds a space-then-`#` at all."""
+    YAML is composed only when a line that is not wholly a comment holds a
+    space-then-`#` (every real hit is on such a line), so a template's
+    commented examples never force the slow parse."""
     if yaml is None:
         return []
     cm = CLAIMS_RE.search(text)
     if cm is None:
         return []
     block = cm.group(1)
-    if not _SPACE_HASH_RE.search(block):
+    if not any(_SPACE_HASH_RE.search(line) for line in block.split('\n')
+               if not line.lstrip().startswith('#')):
         return []
     try:
         # The pure-Python composer, so marks are character offsets into
