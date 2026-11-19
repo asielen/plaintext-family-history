@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules - spec authors, implementers, and anyone checking whether a tool or record conforms. If you just want to use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.6 - 2026-11-18**
+**Version 2.7 - 2026-11-18**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format.
 Its companion, **`TOOLING.md`**, is the design document for every supporting script - deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together.
@@ -655,7 +655,7 @@ The deliberate style difference - person files underscored, source files hyphena
 
 `{slug}[-{copy}][-{role}]_{s-id}.{ext}` - the *source's* ID, shared by all versions. Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions - "text from alternate version" tags - so any copy reveals the others.)
 
-**Photos-root files are never renamed *by us*** (§12.1). Another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (TOOLING §9) when files move.
+**Photos-root files are never renamed *by us*** (§12.1). Another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha reconcile` (which runs `fha photoindex reconcile` for the photo catalog, TOOLING §9) when files move. A photo gone from its recorded path is re-tied, on its source record and in the photo catalog alike, only to the one photo under the photos root with its exact filename, and only when that photo carries the source's `SOURCE:` keyword and no other source's; a same-named photo carrying only another source's keyword is not a candidate. Anything else - a keyword match under another name (an edited copy, a back scan, an export), several candidates, keywords not yet read - is reported for the owner to decide, and the record is left as it is. The photo catalog alone may still re-tie its own entry when exactly one new file under the photos root holds the vanished photo's picture data byte for byte (its content fingerprint) and no other catalogued photo holds that picture; for a source's photo, only under `--with-exif` and only to a file carrying the same source.
 
 **Refile exception (§12.1).** When `fha process refile` carries a file across the roots, the rename happens **at the crossing**, before the file becomes a file of its destination root. A document entering the photos root sheds its `_{s-id}` name (the recorded `original_filename` restored when known), the last legal rename it will ever get; a photo entering the documents root is renamed **into** this grammar at the same moment. Neither case renames a file within its root.
 
