@@ -306,7 +306,7 @@ Other limits:
 **Rejected.**
 
 - **Linking on the first part alone.** "Springfield" names a dozen towns; the other parts are what tell them apart.
-- **"County" optional in the first part too.** A county and its seat often share a name, so "Los Angeles, California" would fit both the city and the county and link neither, and "Lafayette County, Missouri" would link to the town of Lafayette.
+- **"County" optional in the first part too.** A county and its seat often share a name, so "Breton, Kansas" would fit both the town and Breton County and link neither, and "Breton County, Kansas" would link to the town.
 - **Breaking a tie by population or by the family's other places.** A confident wrong link is worse than an unlinked text the report keeps showing.
 - **Rewriting `place_text` to the registered name.** It records what the source says, which is evidence; the link is the interpretation.
 - **Downloading GeoNames data during `--register`.** It stays a quick, offline review; `fha places geocode` is the command that fetches and asks.

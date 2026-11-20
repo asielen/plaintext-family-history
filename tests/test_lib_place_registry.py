@@ -378,9 +378,9 @@ class HierarchyRuleTests(unittest.TestCase):
             '  hierarchy: Springfield, Sangamon County, Illinois, USA\n'
             '- id: L-cccccccccc\n  name: Springfield\n'
             '  hierarchy: Springfield, Greene County, Missouri, USA\n'
-            '- id: L-dddddddddd\n  name: Sierki\n'
-            '  alt_names: [Sierki Wielkie]\n'
-            '  hierarchy: Sierki, gmina Tykwin, powiat białostocki, podlaskie, Poland\n')
+            '- id: L-dddddddddd\n  name: Kowalin\n'
+            '  alt_names: [Kowalin Wielki]\n'
+            '  hierarchy: Kowalin, gmina Tykwin, powiat białostocki, podlaskie, Poland\n')
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -433,8 +433,8 @@ class HierarchyRuleTests(unittest.TestCase):
                          'l-cccccccccc')
 
     def test_division_words_and_accents_fold(self) -> None:
-        for text in ('Sierki, parafia Tykwin, podlaskie', 'Sierki, powiat bialostocki',
-                     'Sierki Wielkie, Tykwin, Poland'):
+        for text in ('Kowalin, parafia Tykwin, podlaskie', 'Kowalin, powiat bialostocki',
+                     'Kowalin Wielki, Tykwin, Poland'):
             with self.subTest(text=text):
                 self.assertEqual(self.match(text)['place_id'], 'l-dddddddddd')
 

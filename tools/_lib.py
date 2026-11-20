@@ -8809,7 +8809,7 @@ def _place_first_key(text: str) -> str:
     names the place itself: case, accents and punctuation folded, "Co."
     read as "County", and every word kept. A division word here says what
     kind of place it is, so "Cook County" never names a town called Cook
-    and "Los Angeles" never names Los Angeles County."""
+    and "Breton" never names Breton County."""
     return ' '.join('county' if w == 'co' else w for w in fold_place_words(text))
 
 
