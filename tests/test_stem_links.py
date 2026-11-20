@@ -468,6 +468,36 @@ class ClaimFormCitationTests(unittest.TestCase):
             self.assertEqual(res['status'], 'restricted-sources', form)
             self.assertNotIn('Lodge', res.get('text') or '', form)
 
+    def test_wikitree_refuses_a_restricted_source_link_naming_another_sources_claim(self):
+        # The link names the restricted roster but shows a claim of the public
+        # marriage notice. Either reading could be what was meant, so the
+        # privacy check takes both and refuses.
+        for form, link in (
+                ('mismatch-id', '[[s-3m7k9n2p4q#Claims|c-60730c8524]]'),
+                ('mismatch-stem', '[[hartley-lodge-roster_s-3m7k9n2p4q#Claims|c-60730c8524]]')):
+            root = _example_with(self.tmp, form, [
+                RESTRICT_ROSTER, (TOM_PROFILE, '[[s-3m7k9n2p4q]]', link)])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                res = wikitree.run_wikitree(root, TOM).data
+            self.assertEqual(res['status'], 'restricted-sources', form)
+            self.assertNotIn('Lodge', res.get('text') or '', form)
+
+    def test_lint_reports_a_source_link_naming_another_sources_claim(self):
+        root = _example_with(self.tmp, 'mismatch-lint', [
+            (TOM_PROFILE, MARRIAGE_CITE, 'there early in 1871 [[s-4f5f215e60#Claims|c-60730c8524]]')])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            findings, _ = lint._run_lint_core(root, {})
+        hits = [f for f in findings if f.code == 'E004' and 'c-60730c8524' in f.message]
+        self.assertEqual(len(hits), 1, [f.message for f in findings if f.code == 'E004'])
+        self.assertIn('s-4f5f215e60', hits[0].message)
+        self.assertIn('s-ea61339378', hits[0].message)
+        # A claim link on its own source is fine.
+        root = _example_with(self.tmp, 'match-lint', [
+            (TOM_PROFILE, MARRIAGE_CITE, 'there early in 1871 [[s-ea61339378#Claims|c-60730c8524]]')])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            findings, _ = lint._run_lint_core(root, {})
+        self.assertEqual([f for f in findings if 'c-60730c8524' in f.message], [])
+
     def _wikitree_line(self, name: str, link: str) -> str:
         root = _example_with(self.tmp, name, [
             (TOM_PROFILE, MARRIAGE_CITE, f'there early in 1871 {link}')])

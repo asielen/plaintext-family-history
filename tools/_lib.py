@@ -10257,17 +10257,24 @@ def token_source_id(tid: str, named_source: str | None,
     return None
 
 
-def cited_source_ids(text: str, claim_source: Callable[[str], str | None]) -> list[str]:
+def cited_source_ids(text: str, claim_source: Callable[[str], str | None],
+                     *, for_gate: bool = False) -> list[str]:
     """The source IDs this text cites, one per citation, in document order.
     A claim link (`[[c-…]]`, `[[source_stem#Claims|c-…]]`) cites the source
     holding the claim, so a reader asking "is this source cited?" counts it.
     `claim_source` maps a claim ID to its source ID (`claim_source_lookup`
-    over the index, or a dict's `.get`)."""
+    over the index, or a dict's `.get`).
+
+    `for_gate=True` is for privacy checks: a source link shown as another
+    source's claim (`[[s-A#Claims|c-of-B]]`) gives BOTH sources, so a
+    restriction on either one refuses. Rendering keeps the claim's source."""
     out: list[str] = []
     for tid, _d, _f, _span, named in extract_link_tokens(text):
         sid = token_source_id(tid, named, claim_source)
         if sid:
             out.append(sid)
+        if for_gate and named and named != sid:
+            out.append(named)
     return out
 
 

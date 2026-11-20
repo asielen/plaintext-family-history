@@ -572,7 +572,10 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     extra_sids, _ = _resolve_wikilink_ids(conn, text)
     # A claim link cites the source holding the claim, so a restricted
     # source cited as `[[c-…]]` or `[[source#Claims|c-…]]` is caught too.
-    source_ids = sorted(set(cited_source_ids(text, claim_source_lookup(conn))) | extra_sids)
+    # A source link shown as another source's claim counts as both, so a
+    # restriction on either refuses (`for_gate`).
+    source_ids = sorted(set(cited_source_ids(text, claim_source_lookup(conn), for_gate=True))
+                        | extra_sids)
     if not source_ids:
         return []
     placeholders = ','.join('?' * len(source_ids))
