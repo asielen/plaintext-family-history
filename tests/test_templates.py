@@ -58,6 +58,41 @@ def _fill(text: str, **codes: str) -> str:
     return text
 
 
+def _hard_wrapped_lines(text: str) -> list[str]:
+    """Prose lines that run straight on into another prose line: a paragraph
+    (or a blockquote paragraph) broken across lines instead of written as one.
+    Frontmatter, fenced code, HTML comments, headings, lists and tables are
+    skipped, since their line breaks carry meaning."""
+    lines = text.split('\n')
+    if lines and lines[0].strip() == '---':
+        end = lines.index('---', 1)
+        lines = lines[end + 1:]
+    kinds: list[str | None] = []
+    in_code = in_comment = False
+    for line in lines:
+        s = line.strip()
+        if in_code:
+            in_code = not s.startswith('```')
+            kinds.append(None)
+        elif in_comment:
+            in_comment = '-->' not in line
+            kinds.append(None)
+        elif s.startswith('```'):
+            in_code = True
+            kinds.append(None)
+        elif s.startswith('<!--'):
+            in_comment = '-->' not in line
+            kinds.append(None)
+        elif not s or s.startswith(('#', '|', '- ', '* ')) or re.match(r'\d+\. ', s):
+            kinds.append(None)
+        elif s.startswith('>'):
+            kinds.append('quote')
+        else:
+            kinds.append('prose')
+    return [lines[i] for i in range(len(lines) - 1)
+            if kinds[i] is not None and kinds[i] == kinds[i + 1]]
+
+
 class _ArchiveBase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -239,6 +274,27 @@ class ScaffoldParityTests(unittest.TestCase):
         self.assertIn("record - yours to write", tmpl_text)
         self.assertIn("record - yours to write", rendered)
 
+    def test_scaffolded_prose_is_one_line_per_paragraph(self):
+        # Every record starts from these words, and he edits them by hand: a
+        # paragraph broken at a column has to be re-flowed to add a sentence,
+        # and new records copy the pattern. Lists, headings, tables and HTML
+        # comments keep their own line breaks.
+        from _lib import (PERSON_PURPOSE_BLOCK, RESEARCH_PURPOSE_BLOCK,
+                          SOURCE_PURPOSE_BLOCK)
+        texts = {
+            'person scaffold': render_person_body_scaffold('Jane Doe'),
+            'research fallback': RESEARCH_TEMPLATE_FALLBACK,
+            'person purpose block': PERSON_PURPOSE_BLOCK,
+            'research purpose block': RESEARCH_PURPOSE_BLOCK,
+            'source purpose block': SOURCE_PURPOSE_BLOCK,
+        }
+        for name in ('people/_TEMPLATE.person.md', 'people/_TEMPLATE.research.md',
+                     'sources/_TEMPLATE.source.md'):
+            texts[name] = (TEMPLATES / name).read_text(encoding='utf-8')
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                self.assertEqual(_hard_wrapped_lines(text), [])
+
     def test_new_profiles_carry_no_sample_private_note(self):
         # Plan 19 4b / O12: every new profile used to contain a live
         # `<!-- private -->` block holding example prose ("A hunch you're not
@@ -376,6 +432,29 @@ class PersonSectionIsUnfilledTests(unittest.TestCase):
             "Write their story in plain sentences. Uncited prose is welcome - it's story and\n"
             "context, never treated as proven fact. Mark anything you mean to back up later\n"
             "with `(TODO: import source)` and a tool will keep it on a gentle to-do list."))
+
+    def test_current_one_line_placeholders_are_unfilled(self):
+        for heading, content in PERSON_BODY_SECTIONS:
+            with self.subTest(heading=heading):
+                self.assertTrue(person_section_is_unfilled(heading, content))
+
+    def test_older_hard_wrapped_placeholders_still_read_as_unfilled(self):
+        # Records scaffolded before the placeholders went one line per
+        # paragraph carry the same words wrapped at about 80 columns. A
+        # profile he never filled in must still stay off the site and out of
+        # a packet, whichever form it has.
+        self.assertTrue(person_section_is_unfilled(
+            'Friends & Family',
+            "People connected to them who aren't blood relatives - neighbors, business\n"
+            "partners, the family they boarded with. Type [[ and pick a name to link."))
+        self.assertTrue(person_section_is_unfilled(
+            'Research Notes',
+            "Open questions, hunches, and brick walls - where to look next. (Delete this line\n"
+            "as you add your own.) This section is public by default.\n"
+            "<!-- To keep one note out of anything you share, put it between two marker\n"
+            "     lines: before it, the word private inside marks like the ones around this\n"
+            "     note; after it, /private the same way. START_HERE.md shows both lines.\n"
+            "     The note stays in your own archive and your local preview. -->"))
 
     def test_placeholder_tolerates_surrounding_whitespace(self):
         # content is read via _extract_section, which already strips - but
