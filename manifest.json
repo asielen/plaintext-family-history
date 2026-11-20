@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "5a4e0e732466510eea5efe87fede4650ad4e2d72717529a140b875af72594734",
+      "sha256": "b5bb3111af18b37be6fd975121453f285487a76a5736be5d2b8a7a23103bdfd1",
       "spec_version": "2.8",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
@@ -271,7 +271,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "5a4e0e732466510eea5efe87fede4650ad4e2d72717529a140b875af72594734",
+      "sha256": "b5bb3111af18b37be6fd975121453f285487a76a5736be5d2b8a7a23103bdfd1",
       "spec_version": "2.8"
     },
     {
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "77b4b3e5877a3bfdef438241faf95489904fc341329a97dc0b587da00f53a5ae",
+      "sha256": "51d3b4e2af4844d6065511379ee3e930ddfee9dc70a00df189c96255dacbad39",
       "spec_version": "2.8",
       "src": "tools/lint.py"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "7da5c306020f502c5ebd63846f21c006aec38490c744fab3ced317d6e4552f67",
+      "sha256": "73c6fb777bf7985cc057660e45a1d8f5abcc433dc01be558f2f808486c585119",
       "spec_version": "2.8"
     },
     {
@@ -1120,13 +1120,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "1c5c1b224fd971684cef8800ee3fa22288710f6d0769aba3a4029d6b9b412c95",
+      "sha256": "caf2f035548ef325a68393cb95f913f50f8db901073310db960136eba6c0d1d3",
       "spec_version": "2.8"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "0efd64ce97d4faa6310b453d6773a5e5171fbed58d6b2b67a39ee7008e620e54",
+      "sha256": "edf6d3e4358352650b5c0e66a6442191a9e291bedfeb1f5d25b94802bff85701",
       "spec_version": "2.8"
     },
     {
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "2fb228a620abe6977657fdd1caa45a7460fea56cfac002b8658befd672b9e40b",
+      "sha256": "c3c9faf36e918e83ae8a9951a4dbc66f65279da2d8de7f215f7f5102fbc5f074",
       "spec_version": "2.8",
       "src": "TOOLING.md"
     },

@@ -6,6 +6,9 @@ lint.py - fha lint: verify the archive against the spec.
   fha lint --with-exif               Also verify embedded SOURCE: keywords, and stray
                                      documents-root person keywords (W131) (slow)
   fha lint --json                    Machine-readable JSON output
+  fha lint --changed [REF]           Report only on files changed since git REF
+                                     (default HEAD) and the records they link to
+  fha lint --timings                 Print seconds per group of checks (stderr)
   fha lint --format-check            Check formatting without fixing
   fha lint --format-write            Apply the formatter: key order, lowercase IDs, value first, blank lines, section order
   fha lint --mint-stubs              Create missing person stubs (E005 set)
@@ -53,8 +56,10 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -254,6 +259,7 @@ configure_utf8_stdout()
 #                                   (report-only lead; brackets --fix-promote applies)
 #
 #  Relationship reconciliation (W115, W116)
+#    _kin_claims_by_person       : accepted kin claims per person, read once (reverse W115)
 #    _check_relationships_reconciliation - sourced relationships: entry vs claim
 #    _check_reciprocity          - W116: a sourced edge unmirrored on the other person
 #    _claim_by_id / _role_pids / _claim_backs_edge - claim lookup + role matching
@@ -320,6 +326,10 @@ configure_utf8_stdout()
 #    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
 #
 #  Main entry / CLI
+#    _git_changed_files          : files differing from a git ref, plus new ones (--changed)
+#    _texts_at_ref               : those files' text at the ref, in one git call (removed IDs)
+#    _changed_scope / _in_changed_scope: the files a --changed report keeps
+#                                   (changed ones and the records they link to or from)
 #    run_lint                    - orchestrates both passes; returns a Result
 #    _cmd_lint                   - render a lint Result (human text or --json) → exit code
 #    register                    - attach 'lint' to the main fha parser
@@ -478,6 +488,21 @@ class Registry:
         # Pass 2 see the same resolution the checks did. Empty during Pass 1.
         self.alias_map: dict[str, str] = {}
 
+        # Seconds spent per check family, in the order the families ran, for
+        # `fha lint --timings`. `lap` closes the family that just finished.
+        self.timings: dict[str, float] = {}
+        self._lap_mark = time.perf_counter()
+
+    def lap(self, family: str) -> None:
+        """Charge the time since the last lap to `family` (`--timings`).
+
+        Called once after each group of checks, so a slow family shows up by
+        name instead of hiding inside one total. A family charged at two
+        points (the unreadable-file check runs twice) adds up."""
+        now = time.perf_counter()
+        self.timings[family] = self.timings.get(family, 0.0) + (now - self._lap_mark)
+        self._lap_mark = now
+
     def all_known_ids(self) -> set[str]:
         """All IDs that have a defining record in the archive."""
         ids: set[str] = set()
@@ -569,11 +594,72 @@ def _mapped_root(alias: str, registry: Registry) -> Path:
     return resolve_path(alias, registry.fha_config, registry.archive_root)
 
 
+def _resolved_root(alias: str, registry: Registry) -> Path:
+    """The asset root for `alias` with links followed, worked out once per run.
+
+    Every document file and every `files:` entry is compared against these
+    roots, and resolving a root again for each one took seconds on a large
+    archive. `fha.yaml` does not change during a run, so one answer serves."""
+    cache = registry.__dict__.setdefault('_resolved_roots', {})
+    if alias not in cache:
+        cache[alias] = _mapped_root(alias, registry).resolve()
+    return cache[alias]
+
+
+def _entry_may_redirect(entry: os.DirEntry) -> bool:
+    """Whether resolving this folder entry could lead somewhere else.
+
+    A symlink does, and so does a Windows junction, which Python 3.12 and
+    later no longer report as a symlink (`is_junction`). Any other Windows
+    reparse point is treated the same way to be safe; the folder listing
+    already carries its attributes, so asking costs nothing. A `files:` entry
+    naming a junction that leads out of the archive must still be E011."""
+    if entry.is_symlink() or getattr(entry, 'is_junction', lambda: False)():
+        return True
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    try:
+        attrs = getattr(entry.stat(follow_symlinks=False), 'st_file_attributes', 0)
+    except OSError:
+        return True
+    return bool(reparse and attrs & reparse)
+
+
+def _resolve_in_folder(path: Path, registry: Registry) -> Path:
+    """`path.resolve()`, resolving each folder only once per run.
+
+    Lint resolves every asset file it compares with a root (each `files:`
+    entry, each file in the documents root), and on Windows each resolve is a
+    slow system call: twenty thousand of them took over ten seconds. A file
+    that is not itself a link resolves to its folder's resolved path plus its
+    own name, and an archive keeps many files in each folder, so the folder's
+    answer is kept and reused, together with the names of the links in it
+    (one folder listing tells both). A name that is a link of any kind
+    (`_entry_may_redirect`: a symlink, a Windows junction, any reparse
+    point), a name such as `..`, or a file in a folder that cannot be listed
+    still goes through the full resolve."""
+    if path.name in ('', '.', '..'):
+        return path.resolve()
+    cache = registry.__dict__.setdefault('_resolved_folders', {})
+    folder = str(path.parent)
+    if folder not in cache:
+        try:
+            with os.scandir(path.parent) as entries:
+                links = {os.path.normcase(e.name) for e in entries
+                         if _entry_may_redirect(e)}
+            cache[folder] = (path.parent.resolve(), links)
+        except (OSError, RuntimeError):
+            cache[folder] = None
+    known = cache[folder]
+    if known is None or os.path.normcase(path.name) in known[1]:
+        return path.resolve()
+    return known[0] / path.name
+
+
 def _path_to_alias(path: Path, alias: str, registry: Registry) -> str | None:
     """Convert a resolved asset path back to its stable alias/path spelling."""
-    root = _mapped_root(alias, registry).resolve()
+    root = _resolved_root(alias, registry)
     try:
-        rel = path.resolve().relative_to(root)
+        rel = _resolve_in_folder(path, registry).relative_to(root)
     except ValueError:
         return None
     return f'{alias}/{rel.as_posix()}'
@@ -592,12 +678,20 @@ def _resolved_within_asset_roots(resolved: Path, registry: Registry) -> bool:
     an entry that resolves to a real file OUTSIDE the archive: the packet
     warning that names this problem points here (`fha lint`), and this is
     what makes that pointer true rather than a dead end.
+
+    Each root is resolved once per run (`_resolved_root`) and each folder
+    once (`_resolve_in_folder`): every `files:` entry in the archive passes
+    through here.
     """
+    try:
+        target = _resolve_in_folder(resolved, registry)
+    except (OSError, RuntimeError):
+        return False
     for alias in ('documents', 'photos'):
         try:
-            resolved.resolve().relative_to(_mapped_root(alias, registry).resolve())
-            return True
-        except (ValueError, OSError, RuntimeError):
+            if target.is_relative_to(_resolved_root(alias, registry)):
+                return True
+        except (OSError, RuntimeError):
             continue
     return False
 
@@ -3275,6 +3369,42 @@ def _check_relationship_guesses(
                     f'but {detail}'))
 
 
+def _kin_claims_by_person(
+    registry: Registry, alias_map: dict[str, str],
+) -> dict[str, list[tuple[str, str]]]:
+    """P-id -> [(C-id, entry type)] for every accepted kin claim naming that
+    person, in archive order: the reverse half of W115, read once.
+
+    The reverse check asks, for each person with a `relationships:` block,
+    which accepted kin claims name them. Walking every claim in the archive
+    once per such person took minutes on a large archive. A claim can only
+    name people listed in its `persons:` or its `roles:`, so each claim is
+    read once here, labelled for each of those people by
+    `_person_reconcilable_role_label` (the same rule as before) and filed
+    under them. Each list keeps the order the claims sit in the archive, so
+    the findings come out in the order they always did."""
+    by_person: dict[str, list[tuple[str, str]]] = {}
+    for claims in registry.source_claims.values():
+        for claim in claims:
+            if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
+                continue
+            if str(claim.get('type', '')) not in ('relationship', 'marriage', 'birth'):
+                continue
+            cid = normalize_id(str(claim.get('id', '')))
+            if not cid:
+                continue
+            named = dict.fromkeys(_claim_person_ids(claim, alias_map))
+            roles = claim.get('roles')
+            if isinstance(roles, dict):
+                for role_name in roles:
+                    named.update(dict.fromkeys(sorted(_role_pids(claim, role_name, alias_map))))
+            for pid in named:
+                label = _person_reconcilable_role_label(claim, pid, alias_map)
+                if label is not None:
+                    by_person.setdefault(pid, []).append((cid, label))
+    return by_person
+
+
 def _check_relationships_reconciliation(
     registry: Registry, findings: list[Finding], alias_map: dict[str, str],
 ) -> None:
@@ -3298,6 +3428,7 @@ def _check_relationships_reconciliation(
     omits "they did not marry" is complete. An entry that cites one anyway gets
     its own wording, because the claim is not the thing that needs fixing."""
     survivors = getattr(alias_map, 'survivors', None) or {}
+    kin_claims_by_person: dict[str, list[tuple[str, str]]] | None = None   # built on first use
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
         if not isinstance(block, list) or not block:
@@ -3384,22 +3515,15 @@ def _check_relationships_reconciliation(
                 _check_reciprocity(registry, findings, pid, other_pid, role, matched_claims, alias_map)
 
         # Reverse: an opted-in block should apply every accepted kin claim that names this person.
-        for claims in registry.source_claims.values():
-            for claim in claims:
-                if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
-                    continue
-                if str(claim.get('type', '')) not in ('relationship', 'marriage', 'birth'):
-                    continue
-                cid = normalize_id(str(claim.get('id', '')))
-                if not cid or cid in referenced_cids:
-                    continue
-                label = _person_reconcilable_role_label(claim, pid, alias_map)
-                if label is None:
-                    continue
-                findings.append(Finding('W', 'W115', profile_path,
-                    f"{fmt_id_display(pid)} has a relationships: block but accepted claim "
-                    f"{fmt_id_display(cid)} (a {label} edge naming them) isn't applied in it - add the "
-                    f"entry and link the claim, or remove the block if it's not meant to be complete."))
+        if kin_claims_by_person is None:
+            kin_claims_by_person = _kin_claims_by_person(registry, alias_map)
+        for cid, label in kin_claims_by_person.get(pid, []):
+            if cid in referenced_cids:
+                continue
+            findings.append(Finding('W', 'W115', profile_path,
+                f"{fmt_id_display(pid)} has a relationships: block but accepted claim "
+                f"{fmt_id_display(cid)} (a {label} edge naming them) isn't applied in it - add the "
+                f"entry and link the claim, or remove the block if it's not meant to be complete."))
 
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
@@ -3431,6 +3555,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # Alias-layer maintenance + integrity (self-alias, name/stem clashes).
     _alias_checks(registry, findings)
+    registry.lap('names and aliases')
 
     # W115/W116: reconcile each person-doc relationships: block against claims,
     # and check reciprocity. The alias map resolves a forgiving `to:` to a P-id.
@@ -3439,6 +3564,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W155: relationship guesses left beside the evidence that settled them,
     # or resting on a working answer no question entry defines.
     _check_relationship_guesses(registry, findings, alias_map)
+    registry.lap('relationships blocks')
 
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
@@ -3485,6 +3611,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 findings.append(Finding('E', 'E005', ref_path,
                     f'P-id {token_id} referenced at line {ref_line} but no person record exists - '
                     'create a stub with `fha stubs`, or fix the ID.'))
+
+    registry.lap('links between records')
 
     # E005: persons referenced in claim `persons:` fields must have a record.
     # References resolve through the alias map first (TOOLING §3 E004): a
@@ -4129,6 +4257,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {cid} contradicts {tid} but no open question records the conflict - '
                             'run `fha lint --spawn-questions` to open one, or add a `## Q:` block to notes/questions.md.'))
 
+    registry.lap('claims (people, roles, places, contradictions)')
+
     # E013: summary block drift for curated profiles
     children_of = _build_children_of(registry)   # parent_pid → {child_pids}
     for pid, paths in registry.person_profile_paths.items():
@@ -4243,6 +4373,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 '- SPEC §16 gives every curated record the same section set; add the '
                 'heading(s) by hand (or with `fha person edit --section ...`) when ready.'))
 
+    registry.lap('curated people (summaries, vitals, sections)')
+
     # W106: accepted claims missing Mills analysis fields
     for sid, claims in registry.source_claims.items():
         src_path = registry.source_paths.get(sid, Path(sid))
@@ -4266,6 +4398,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_died_but_living(registry, findings, alias_map)
     _check_file_name_surnames(registry, findings)
 
+    registry.lap('accepted claims (evidence and analysis)')
+
     # W107 (claims): a claim still naming a merged person. Once an error
     # (E016, retired): SPEC §9 has the tools count such a claim for the
     # survivor everywhere - timelines, the tree, pages, exports - so nothing
@@ -4276,36 +4410,44 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     survivors = _registry_merge_survivors(registry)
     raw_map = dict(alias_map)   # names as written, not read through survivors
     _check_merge_pointers(registry, findings, survivors)
+    # Who each claim names, worked out once rather than once per merged
+    # record: an archive with many merges otherwise re-reads every claim for
+    # each of them.
+    claims_naming: list[tuple[Path, dict, set[str]]] | None = None
     for pid, meta in registry.person_meta.items():
         if not merge_pointer(meta.get('status'), meta.get('merged_into')):
             continue
         shown = fmt_id_display(pid)
         target = survivors.get(pid)
-        for sid, claims in registry.source_claims.items():
-            src_path = registry.source_paths.get(sid, Path(sid))
-            for claim in claims:
-                if not isinstance(claim, dict):
-                    continue
-                named = set(_claim_person_ids(claim, raw_map))
-                roles = claim.get('roles')
-                if isinstance(roles, dict):
-                    for role in roles:
-                        named |= _role_pids(claim, role, raw_map)
-                if pid not in named:
-                    continue
-                if target:
-                    t = fmt_id_display(target)
-                    msg = (f'Claim {claim.get("id","?")} names {shown}, a record merged into '
-                           f'{t}. It already counts for {t} on timelines, the tree and '
-                           f'exports; when convenient, change {shown} to {t} in its '
-                           'persons:/roles: for gradual cleanup')
-                else:
-                    msg = (f'Claim {claim.get("id","?")} names {shown}, a merged record whose '
-                           'merged_into: does not lead to a person (see E020), so this claim '
-                           f'still counts only for {shown} and is missing from everyone '
-                           'else\'s timeline and tree. Fix the merge first, then change '
-                           f'{shown} here to the surviving person\'s id')
-                findings.append(Finding('W', 'W107', src_path, msg))
+        if claims_naming is None:
+            claims_naming = []
+            for sid, claims in registry.source_claims.items():
+                src_path = registry.source_paths.get(sid, Path(sid))
+                for claim in claims:
+                    if not isinstance(claim, dict):
+                        continue
+                    named = set(_claim_person_ids(claim, raw_map))
+                    roles = claim.get('roles')
+                    if isinstance(roles, dict):
+                        for role in roles:
+                            named |= _role_pids(claim, role, raw_map)
+                    claims_naming.append((src_path, claim, named))
+        for src_path, claim, named in claims_naming:
+            if pid not in named:
+                continue
+            if target:
+                t = fmt_id_display(target)
+                msg = (f'Claim {claim.get("id","?")} names {shown}, a record merged into '
+                       f'{t}. It already counts for {t} on timelines, the tree and '
+                       f'exports; when convenient, change {shown} to {t} in its '
+                       'persons:/roles: for gradual cleanup')
+            else:
+                msg = (f'Claim {claim.get("id","?")} names {shown}, a merged record whose '
+                       'merged_into: does not lead to a person (see E020), so this claim '
+                       f'still counts only for {shown} and is missing from everyone '
+                       'else\'s timeline and tree. Fix the merge first, then change '
+                       f'{shown} here to the surviving person\'s id')
+            findings.append(Finding('W', 'W107', src_path, msg))
 
     # W107: direct [token] references to merged persons (gradual cleanup)
     for pid, meta in registry.person_meta.items():
@@ -4318,6 +4460,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         f'[{display_pid}] at line {ref_line} references merged person '
                         f'(merged into {target}); update to the survivor P-id'))
 
+    registry.lap('merged records')
+
     # W103: stale folder bracket lists
     _check_bracket_lists(registry, findings)
 
@@ -4325,6 +4469,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W119: direct-line ancestor still filed as a stub (reads W110's derived map)
     pid_to_pos = _check_ahnentafel_placement(registry, findings)
     _check_direct_line_stubs(registry, findings, pid_to_pos)
+
+    registry.lap('family folders and numbering')
 
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
@@ -4339,6 +4485,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # The run_lint caller emits a single informational note in data['wc_note'].
     if not registry.is_working_copy:
         _check_reverse_inventory(registry, findings, with_exif)
+
+    registry.lap('generated pages and asset files')
 
     # W123: a record folder Pass 1 could not open. Last, so it reads as the
     # caveat on everything above it rather than as one more finding among many.
@@ -5220,12 +5368,20 @@ def _has_question_for(cid1: str, cid2: str, registry: Registry) -> bool:
     within the same block. Checks questions.md and person research files.
     Requiring co-occurrence within one block avoids false passes where the two
     IDs happen to appear in separate, unrelated questions.
-    """
-    all_blocks: list[str] = _question_blocks(registry.questions_content)
-    for content in registry.research_content.values():
-        all_blocks.extend(_question_blocks(content))
 
-    return any(cid1 in block.lower() and cid2 in block.lower() for block in all_blocks)
+    The blocks are split and lowercased once per run and kept on the
+    registry: re-splitting every research file for each contradicting claim
+    cost tens of seconds on a large archive. The files are read in Pass 1 and
+    do not change while the checks run.
+    """
+    all_blocks = getattr(registry, '_question_blocks_lower', None)
+    if all_blocks is None:
+        all_blocks = [block.lower() for block in _question_blocks(registry.questions_content)]
+        for content in registry.research_content.values():
+            all_blocks.extend(block.lower() for block in _question_blocks(content))
+        registry._question_blocks_lower = all_blocks
+
+    return any(cid1 in block and cid2 in block for block in all_blocks)
 
 
 def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
@@ -5242,16 +5398,26 @@ def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
     merged into this person counts for them too, as it does on the timeline
     the index builds; otherwise W101 would ask for a birth the survivor's
     own timeline already shows.
+
+    The answer for every person is worked out in one pass over the claims and
+    kept on the registry: E013 and W101 ask once per curated person, and a
+    fresh walk of every claim for each of them was a large share of a long
+    lint. Pass 2 only calls this once the alias map is built, and the claims
+    do not change after Pass 1, so the kept answer stays right for the run.
     """
-    survivors = _registry_merge_survivors(registry)
-    result = []
-    for sid, claims in registry.source_claims.items():
-        for claim in claims:
-            if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
-                continue
-            if pid in {survivors.get(q, q) for q in _claim_person_ids(claim, registry.alias_map)}:
-                result.append({**claim, '_source_id': sid})
-    return result
+    by_person = getattr(registry, '_accepted_claims_by_person', None)
+    if by_person is None:
+        survivors = _registry_merge_survivors(registry)
+        by_person = {}
+        for sid, claims in registry.source_claims.items():
+            for claim in claims:
+                if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
+                    continue
+                named = {survivors.get(q, q) for q in _claim_person_ids(claim, registry.alias_map)}
+                for q in named:
+                    by_person.setdefault(q, []).append({**claim, '_source_id': sid})
+        registry._accepted_claims_by_person = by_person
+    return list(by_person.get(pid, []))
 
 
 def _check_summary_line(
@@ -6176,14 +6342,19 @@ def _run_lint_core(
     findings: list[Finding] = []
     registry = Registry(archive_root, fha_config)
     _check_roots_change(archive_root, fha_config, findings)
+    registry.lap('asset folder settings')
     _walk_archive(archive_root, registry, findings)
+    registry.lap('reading records (one-file checks)')
     _cross_file_checks(registry, findings, with_exif=with_exif)
+    registry.lap('unreadable folders')
     # E021/W147 say the rule a claim breaks; W125/W126/W132, where they also
     # fire, say what that costs (an edge missing from the tree, a vital no one
     # owns). Both stay: fixing the roles clears them together.
     _check_event_roles(registry, findings)
+    registry.lap('event roles')
     _check_agent_drift(archive_root, findings,
                        on_decode_error=registry.note_undecodable)
+    registry.lap('AGENTS.md commands')
     # W128 (#68) is raised here, over every read the CORE pass made, so no
     # caller of `_run_lint_core` can lose it by forgetting to ask: `fha
     # report` (report.py) and `fha doctor` (`run_lint_silent`) both consume
@@ -6193,7 +6364,218 @@ def _run_lint_core(
     # pass, which reads more files than this function does; the emitter only
     # reports paths it has not reported yet, so that costs nothing here.
     _check_undecodable_files(registry, findings)
+    registry.lap('unreadable files')
     return findings, registry
+
+
+# Findings `--changed` always keeps, whatever changed. Each one depends on
+# something git cannot see as changed, so no edited file would bring it in:
+#   W123, W128  lint could not read a folder or a file; a narrowed report
+#               must still say so, or it reads as clean over unread records.
+#   E011        a `files:` entry against the scans and photos on disk, which
+#               an archive keeps out of git (a deleted or moved scan).
+#   E012, W131  keywords embedded in those files (`--with-exif`).
+#   W137        prose naming a file that is really on disk and unowned.
+_ALWAYS_KEPT_WITH_CHANGED = frozenset(
+    {'W123', 'W128', 'E011', 'E012', 'W131', 'W137'})
+
+# Files that hold no record but that records anywhere depend on: a change to
+# one can change findings on records git does not see as changed (a mistyped
+# roots: path, a place taken out of the registry), so `--changed` reports the
+# whole archive when one of them changed.
+_WHOLE_ARCHIVE_FILES = (
+    ('fha.yaml', 'a settings change can affect every record'),
+    ('places/places.yaml', 'records anywhere can name its places'),
+)
+
+
+def _git_changed_files(
+    archive_root: Path, ref: str,
+) -> tuple[list[Path] | None, str, dict[Path, str]]:
+    """The files under the archive that differ from git `ref`, plus new ones.
+
+    Returns (paths, '', old texts) or, when git cannot answer, (None, a
+    one-line note saying why and that the whole archive was checked instead,
+    {}). "Changed" means anything `git diff REF` lists (staged or not,
+    deleted files included, since a deleted record can break links elsewhere)
+    and every untracked file git does not ignore. Renames count as a delete
+    and an add, so both names are checked. Paths come back absolute.
+
+    The old texts are each changed record file as it stood at `ref`
+    (`_texts_at_ref`), so the scope can follow the IDs an edit removed: a
+    deleted question block leaves its contradiction unrecorded, and the
+    claims it named are where that shows.
+
+    A ref that starts with `-` is refused rather than handed to git, where it
+    would read as an option."""
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(['git', '-C', str(archive_root), *args],
+                              capture_output=True, text=True,
+                              encoding='utf-8', errors='replace')
+
+    full = 'This run checked the whole archive instead.'
+    try:
+        top = git('rev-parse', '--show-toplevel')
+    except OSError:
+        return None, f'--changed needs git, which is not installed here. {full}', {}
+    if top.returncode != 0:
+        return None, (f'--changed needs git, and this archive is not kept in a git '
+                      f'repository. {full}'), {}
+    if ref.startswith('-') or git('rev-parse', '--verify', '--quiet',
+                                   f'{ref}^{{commit}}').returncode != 0:
+        return None, (f'git has no commit called {ref!r} (check the spelling, or '
+                      f'make a first commit). {full}'), {}
+    diff = git('diff', '--name-only', '--no-renames', '-z', ref, '--', '.')
+    new = git('ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', '.')
+    if diff.returncode != 0 or new.returncode != 0:
+        return None, f'git could not list the changed files. {full}', {}
+    toplevel = Path(top.stdout.strip())
+    tracked = [n for n in diff.stdout.split('\0') if n]
+    names = tracked + [n for n in new.stdout.split('\0') if n]
+    old = _texts_at_ref(archive_root, ref, tracked)
+    return ([toplevel / n for n in dict.fromkeys(names)], '',
+            {toplevel / n: text for n, text in old.items()})
+
+
+def _texts_at_ref(archive_root: Path, ref: str, names: list[str]) -> dict[str, str]:
+    """The text each named record file had at `ref`, read in one git call.
+
+    Only `.md` and `.yaml` files are asked for (the files that carry IDs),
+    through a single `git cat-file --batch`, so following removed IDs costs
+    one process however many files changed. A file new since `ref` has no
+    old text and is left out. Names are relative to the repository's top
+    folder, as `git diff` gives them. Any git trouble gives an empty answer:
+    the scope then follows the current text only, as it did before."""
+    wanted = [n for n in names
+              if n.lower().endswith(('.md', '.yaml', '.yml')) and '\n' not in n]
+    if not wanted:
+        return {}
+    request = ''.join(f'{ref}:{n}\n' for n in wanted).encode('utf-8')
+    try:
+        proc = subprocess.run(['git', '-C', str(archive_root), 'cat-file', '--batch'],
+                              input=request, capture_output=True)
+    except OSError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out, pos, texts = proc.stdout, 0, {}
+    try:
+        for name in wanted:
+            end = out.index(b'\n', pos)
+            header = out[pos:end].split()
+            pos = end + 1
+            if len(header) == 3 and header[1] == b'blob':
+                size = int(header[2])
+                texts[name] = out[pos:pos + size].decode('utf-8', errors='replace')
+                pos += size + 1
+    except (ValueError, IndexError):
+        return texts
+    return texts
+
+
+def _path_key(path: Path | str) -> str:
+    """One spelling of a path for comparing: absolute, and case-folded where
+    the file system ignores case (Windows)."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _changed_scope(archive_root: Path, registry: Registry,
+                   changed_files: list[Path],
+                   old_texts: dict[Path, str] | None = None) -> set[str]:
+    """The files `--changed` reports on, as `_path_key` spellings.
+
+    That is the changed files themselves, the files of every record their text
+    names by ID (a person a changed source's claim names, say), and every
+    record file whose text names a record the changed files hold (the sources
+    whose claims name a changed person, say). A deleted file's ID is read
+    from its name, so the records still linking to it are reported. An ID the
+    edit removed (in `old_texts`, the files as they stood at the ref, but no
+    longer in them) is followed both ways too: deleting a question block
+    brings in the claims it named, and deleting a claim brings in the records
+    still naming it. Links are
+    found by ID; a link written only as a name (`[[Ada Hartley]]`) is not
+    followed, which is one reason a full lint stays the check before a
+    release.
+
+    Reading every record's text again costs a second or two on a large
+    archive, against the minutes a missed broken link would cost later."""
+    scope = {_path_key(p) for p in changed_files}
+
+    def ids_in(path: Path) -> set[str]:
+        try:
+            text = path.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return set()
+        return {normalize_id(m.group(0)) for m in ID_RE.finditer(text)}
+
+    # Records the changed files hold.
+    held: set[str] = set()
+    for path in changed_files:
+        parsed = parse_filename(path)
+        if parsed:
+            held.add(normalize_id(parsed['id_str']))
+    for table in (registry.person_profile_paths, registry.person_companion_paths):
+        for pid, paths in table.items():
+            if any(_path_key(p) in scope for p in paths):
+                held.add(pid)
+    for sid, path in registry.source_paths.items():
+        if _path_key(path) in scope:
+            held.add(sid)
+            for claim in registry.source_claims.get(sid, []):
+                if isinstance(claim, dict) and claim.get('id'):
+                    held.add(normalize_id(str(claim['id'])))
+
+    # Records the changed files name, now or (for an ID the edit removed)
+    # at the ref: add the files that hold them.
+    named: set[str] = set()
+    for path in changed_files:
+        now = ids_in(path) if path.is_file() else set()
+        named |= now
+        old = (old_texts or {}).get(path)
+        if old:
+            removed = {normalize_id(m.group(0)) for m in ID_RE.finditer(old)} - now
+            named |= removed
+            held |= removed
+    places_path = archive_root / 'places' / 'places.yaml'
+    for rid in named:
+        for p in (registry.person_profile_paths.get(rid, [])
+                  + registry.person_companion_paths.get(rid, [])):
+            scope.add(_path_key(p))
+        sid = registry.claim_ids.get(rid, rid)
+        if sid in registry.source_paths:
+            scope.add(_path_key(registry.source_paths[sid]))
+        if rid in registry.place_ids:
+            scope.add(_path_key(places_path))
+
+    # Record files that name what the changed files hold.
+    if held:
+        on_error = unreadable_dir_recorder([])
+        for folder in ('people', 'sources', 'notes'):
+            root = archive_root / folder
+            if not root.is_dir():
+                continue
+            for path in walk_files(root, suffix='.md', on_error=on_error):
+                if ids_in(path) & held:
+                    scope.add(_path_key(path))
+    return scope
+
+
+def _in_changed_scope(path: Path | str, archive_root: Path, scope: set[str]) -> bool:
+    """Whether `--changed` keeps a finding on `path`.
+
+    A finding on a record file is kept when the file is in scope, and one on
+    a folder of records (a couple folder's bracket list, say) when the folder
+    holds a file in scope. Findings about the archive as a whole (fha.yaml,
+    places.yaml, AGENTS.md) are always kept: there are few of them and any
+    change can cause one."""
+    key = _path_key(path)
+    for folder in ('people', 'sources', 'notes'):
+        top = _path_key(archive_root / folder)
+        if key == top or key.startswith(top + os.sep):
+            if key in scope:
+                return True
+            return any(k.startswith(key + os.sep) for k in scope)
+    return True
 
 
 def run_lint(
@@ -6210,9 +6592,21 @@ def run_lint(
     fix_reciprocal: bool = False,
     fix_surnames: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
+    changed_ref: str | None = None,
 ) -> Result:
     """
     Run all lint checks against archive_root and return a structured `Result`.
+
+    With `changed_ref` (`--changed`), every check still runs over the whole
+    archive, because the cross-record checks need every record to be right,
+    but the report keeps only the findings on files changed since that git
+    ref (plus new files) and on the records those files link to or are linked
+    from (`_changed_scope`), plus every finding about the scans and photos on
+    disk that git does not track (`_ALWAYS_KEPT_WITH_CHANGED`). The
+    needs-sourcing worklist, which is about the whole archive, is left out.
+    When fha.yaml or places.yaml changed (`_WHOLE_ARCHIVE_FILES`), outside a
+    git repository, or for a ref git does not know, the full report is
+    returned with a note saying why.
 
     The reference implementation of the structured-result contract (_lib.py): this
     function computes findings and performs the mutating fix modes (their file
@@ -6229,6 +6623,10 @@ def run_lint(
       - data.config_missing: set when there is no fha.yaml (a special early case
         whose output `_cmd_lint` renders differently - compact JSON, absolute path).
       - changed: files actually created/written by the fix modes (empty on dry-run).
+      - data.timings: [(check family, seconds)] in the order they ran, for
+        `--timings`.
+      - data.changed_note: the one line `--changed` prints above the report
+        (what it checked, or why it checked everything); None without it.
     """
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
@@ -6264,6 +6662,7 @@ def run_lint(
                 if format_write:
                     _fix_format(path, progress, changed, dry_run=dry_run,
                                 archive_root=archive_root)
+        registry.lap('formatting')
 
     # Fix modes (each respects --dry-run via its own parameter)
     if mint_stubs:
@@ -6283,6 +6682,8 @@ def run_lint(
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_surnames:
         _fix_surnames(registry, archive_root, progress, changed, dry_run=dry_run)
+    if mint_stubs or spawn_questions or fix_claims_fence or fix_ids or fix_reciprocal or fix_surnames:
+        registry.lap('fixes')
 
     # W128: files this run could not decode as UTF-8 (#68). `_run_lint_core`
     # already reported the ones ITS passes hit; this second call picks up the
@@ -6291,6 +6692,44 @@ def run_lint(
     # already named, so nothing is reported twice. Last of the two "read less
     # than the archive holds" caveats (see W123 above).
     _check_undecodable_files(registry, findings)
+    registry.lap('unreadable files')
+
+    # --changed: keep the findings about what changed and its neighbours.
+    changed_note: str | None = None
+    scoped = False
+    idless_records = registry.idless_records
+    if changed_ref is not None:
+        changed_files, why_not, old_texts = _git_changed_files(archive_root, changed_ref)
+        changed_keys = {_path_key(p) for p in changed_files or []}
+        whole = next(((name, why) for name, why in _WHOLE_ARCHIVE_FILES
+                      if _path_key(archive_root / name) in changed_keys), None)
+        if changed_files is None:
+            changed_note = why_not
+        elif whole:
+            changed_note = (f'{whole[0]} has changed since {changed_ref}, and {whole[1]}, '
+                            'so this run reports the whole archive.')
+        else:
+            scoped = True
+            scope = _changed_scope(archive_root, registry, changed_files, old_texts)
+            findings = [f for f in findings
+                        if f.code in _ALWAYS_KEPT_WITH_CHANGED
+                        or _in_changed_scope(f.path, archive_root, scope)]
+            idless_records = [(p, k) for p, k in idless_records
+                              if _in_changed_scope(p, archive_root, scope)]
+            if changed_files:
+                what = (f'Reporting on the {len(changed_files)} file(s) changed since '
+                        f'{changed_ref} and the records they link to, plus every '
+                        'finding about scans and photos on disk, which git does not '
+                        'track.')
+            elif findings:
+                what = (f'No record has changed since {changed_ref}; the findings below '
+                        'are about scans and photos on disk, which git does not track, '
+                        'or about the archive as a whole.')
+            else:
+                what = f'No file has changed since {changed_ref}.'
+            changed_note = (f'{what} Before a release or after `fha update-tools`, '
+                            'run `fha lint` without --changed.')
+        registry.lap('finding what changed')
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
@@ -6306,15 +6745,17 @@ def run_lint(
 
     # Informational needs-sourcing worklist - deliberately NOT a finding, so it
     # never moves the exit code off its documented level (it is a worklist, like
-    # the suggested-claim backlog, not a gate).
-    backlog = _needs_sourcing_backlog(registry)
+    # the suggested-claim backlog, not a gate). It is about the whole archive,
+    # so `--changed` leaves it out.
+    backlog = [] if scoped else _needs_sourcing_backlog(registry)
+    registry.lap('needs-sourcing list')
 
     # Hand-authored id-less records: reported as auto-mintable (not E002/E010), so
     # a human's pre-machine record is surfaced and completable, never silently lost.
     # A record still carrying the template's placeholder id gets its own wording -
     # "no ID yet" would read as a lie next to a visible `id: P-__________` line.
     mintable = []
-    for path, _kind in registry.idless_records:
+    for path, _kind in idless_records:
         rel = path.relative_to(archive_root)
         if path in registry.placeholder_id_paths:
             mintable.append(
@@ -6331,20 +6772,23 @@ def run_lint(
         ok=(n_errors == 0),
         exit_code=exit_code,
         data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress,
-              'wc_note': wc_note, 'backlog': backlog, 'mintable': mintable},
+              'wc_note': wc_note, 'backlog': backlog, 'mintable': mintable,
+              'changed_note': changed_note, 'timings': list(registry.timings.items())},
         messages=[finding_to_message(f) for f in findings],
         changed=changed,
     )
 
 
-def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int:
+def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False,
+              show_timings: bool = False) -> int:
     """Render a lint Result to stdout and return the process exit code.
 
     The only layer that prints lint's report.  Reproduces the historical output
     byte-for-byte: progress lines first (fix-mode operations, both modes), then
     either the indented `--json` payload or the relative-path findings list plus
     the summary line.  The no-fha.yaml case keeps its distinct format (compact
-    JSON, absolute path, "Summary: 1 error(s)").
+    JSON, absolute path, "Summary: 1 error(s)"). `show_timings` adds the
+    seconds per group of checks on stderr at the very end (`--timings`).
     """
     data = result.data
 
@@ -6366,6 +6810,10 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
     # Suppressed under --json so stdout stays a valid JSON document.
     if data.get('wc_note') and not use_json:
         print(data['wc_note'])
+    # What --changed checked (or why it checked everything): above the
+    # report, on stderr under --json so stdout stays one JSON document.
+    if data.get('changed_note'):
+        print(data['changed_note'], file=sys.stderr if use_json else sys.stdout)
 
     messages = result.messages
 
@@ -6414,6 +6862,15 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
             print('\nNeeds sourcing (worklist - informational, not errors):')
             for line in backlog:
                 print(f'  - {line}')
+
+    # --timings: once, after everything, on stderr so it never mixes into
+    # the report or the JSON document.
+    if show_timings:
+        timings = data.get('timings') or []
+        print('\nSeconds per group of checks:', file=sys.stderr)
+        for family, seconds in timings:
+            print(f'  {seconds:7.2f}  {family}', file=sys.stderr)
+        print(f'  {sum(s for _f, s in timings):7.2f}  total', file=sys.stderr)
 
     return result.exit_code
 
@@ -7801,10 +8258,14 @@ Check the archive for problems and report them (a spell-check for your data).
   fha check               The same command, plainer name
   fha lint --fix-ids      Give IDs to records you named in plain English
   fha lint --mint-stubs   Create placeholder records for people named but not filed
+  fha lint --changed      Quick check before a commit: report only on files
+                          changed since the last commit and the records they
+                          link to
 
 Catches broken links, missing dates, contradictions, and people referenced but
-never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
-2 errors, 3 tool failure."""
+never filed. Run it any time something feels off. A full `fha lint` (without
+--changed) is still the check before a release and after `fha update-tools`.
+Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -7824,6 +8285,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'documents-root person keywords (W131) via exiftool (slow)')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
+    p.add_argument('--changed', nargs='?', const='HEAD', default=None, metavar='REF',
+                   help='Report only on files changed since the git commit REF '
+                        '(default HEAD, so: since the last commit) and new files, '
+                        'plus the records they link to. Every check still runs, '
+                        'findings about scans and photos on disk are always shown, '
+                        'and a change to fha.yaml or places.yaml reports the '
+                        'whole archive. '
+                        'Before a release or after `fha update-tools`, run a '
+                        'full lint without it')
+    p.add_argument('--timings', action='store_true',
+                   help='After the report, print how many seconds each group of '
+                        'checks took (to stderr)')
     p.add_argument('--format-check', action='store_true',
                    help='Check formatting only (no fixes)')
     p.add_argument('--format-write', action='store_true',
@@ -7867,6 +8340,24 @@ def _run_lint(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     spec_root = getattr(args, 'spec_root', None)
 
+    changed_ref = getattr(args, 'changed', None)
+    fixing = [flag for flag, on in (
+        ('--format-write', getattr(args, 'format_write', False)),
+        ('--mint-stubs', getattr(args, 'mint_stubs', False)),
+        ('--spawn-questions', getattr(args, 'spawn_questions', False)),
+        ('--fix-claims-fence', getattr(args, 'fix_claims_fence', False)),
+        ('--fix-ids', getattr(args, 'fix_ids', False)),
+        ('--fix-reciprocal', getattr(args, 'fix_reciprocal', False)),
+        ('--fix-surnames', getattr(args, 'fix_surnames', False)),
+    ) if on]
+    if changed_ref is not None and fixing:
+        # A fix works on the whole archive; pairing it with a report narrowed
+        # to the changed files would hide most of what it touched.
+        print(f'ERROR: --changed narrows the report and cannot be used with '
+              f'{", ".join(fixing)}, which works on the whole archive. Run '
+              f'`fha lint {" ".join(fixing)}` on its own.', file=sys.stderr)
+        return EXIT_ERRORS
+
     result = run_lint(
         archive_root=archive_root,
         fha_config=fha_config,
@@ -7881,8 +8372,10 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
         fix_surnames=getattr(args, 'fix_surnames', False),
         spec_root=Path(spec_root) if spec_root else None,
+        changed_ref=changed_ref,
     )
-    return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
+    return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False),
+                     show_timings=getattr(args, 'timings', False))
 
 
 # ── Standalone ────────────────────────────────────────────────────────────────
@@ -7897,6 +8390,8 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--spec-root', metavar='PATH')
     parser.add_argument('--with-exif', action='store_true')
     parser.add_argument('--json', action='store_true', dest='use_json')
+    parser.add_argument('--changed', nargs='?', const='HEAD', default=None, metavar='REF')
+    parser.add_argument('--timings', action='store_true')
     parser.add_argument('--format-check', action='store_true')
     parser.add_argument('--format-write', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
