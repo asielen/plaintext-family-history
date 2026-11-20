@@ -326,6 +326,9 @@ from _lib import (
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
+    convert_written_links,
+    yaml_list_link_text,
+    link_writer,
     format_edtf_error,
     id_type_of,
     is_merged_meta,
@@ -1427,7 +1430,7 @@ def _apply_claim_review(
                 except yaml.YAMLError:
                     continue
                 target = strip_link_wrapper(str(entry)) if not isinstance(entry, list) \
-                    else strip_link_wrapper('[[' + ' '.join(map(str, entry)) + ']]')
+                    else strip_link_wrapper(yaml_list_link_text(entry))
                 if is_valid_id(target):
                     written[normalize_id(target)] = (written_link_display(entry), comment)
         if persons_idx is not None:
@@ -1959,6 +1962,11 @@ def _apply_relationships(
         plan = plan_relationship_removals(uncited, people)
     if not plan['edits'] and not plan['problems']:
         return
+    # The entries name people and claims as links: in the file-name form
+    # when fha.yaml says links: obsidian (SPEC §18).
+    links = link_writer(archive_root)
+    for edit in plan['edits'].values():
+        edit['after'] = convert_written_links(edit['before'], edit['after'], links)
     failed: set[Path] = set()
     if not dry_run:
         for path, edit in plan['edits'].items():

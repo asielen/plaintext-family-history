@@ -290,6 +290,8 @@ from _lib import (
     variant_role,
     write_embedded_keywords,
     write_text_exact_atomic,
+    convert_written_links,
+    link_writer,
     safe_load_yaml,
     yaml_inline,)
 
@@ -417,6 +419,8 @@ def run_source_note(
     new_lines, _created, _old_content = append_paragraph_to_section(
         lines, body_start, 'Notes', paragraph, cr)
     new_text = '\n'.join(new_lines)
+    # A link in the note is written in the archive's link form (SPEC §18).
+    new_text = convert_written_links(text_in, new_text, link_writer(archive_root))
 
     # Belt-and-braces (see module docstring): the insertion is bounded to the
     # Notes section by construction, so this should never fire - but a
@@ -543,6 +547,8 @@ def run_source_edit_note(
         result.data['reason'] = reason
         return _refuse('refused', err)
     new_text = '\n'.join(new_lines)
+    # A link in the note is written in the archive's link form (SPEC §18).
+    new_text = convert_written_links(text_in, new_text, link_writer(archive_root))
 
     before_problem = claims_edit_problem(text_in)
     after_problem = claims_edit_problem(new_text)
@@ -2770,6 +2776,10 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
             f"the claims could not be put into {keeper_path.name}'s ## Claims block safely, "
             'so nothing was written. Run `fha lint --format-write` to tidy both records, then run the '
             'merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format-write')
+    # People, places and notes the merge adds link in the archive's link
+    # form (SPEC §18); the claims block keeps the ID form.
+    new_text = convert_written_links(keeper_text, new_text,
+                                     link_writer(archive_root, fha_config))
 
     # ── The preview: the same lines for --dry-run and for the real run ──
     result.data['files'] = [{'from': p['alias'], 'to': p['new_alias']} for p in plans]

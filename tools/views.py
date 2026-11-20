@@ -195,6 +195,9 @@ from _lib import (
     strip_generated_region,  # cut one named region out of a profile body,
     SUMMARY_REGION,       # that region's name,
     humanize_edtf,        # an EDTF date as a reader says it ('3 March 1840'),
+    link_writer,          # the archive's link form (SPEC §18 link mode)
+    LinkWriter,
+    rewrite_record_links_to_stems,
     link_entry,           # `[[p-…|Name]]` - the one written form of a person link,
     write_text_exact_atomic,  # atomic record writer: temp file + fsync + os.replace,
 )
@@ -391,8 +394,26 @@ def _purpose_block_html(subcommand: str) -> str:
     return f'<blockquote>{bolded}</blockquote>\n'
 
 
-def _write_view_file(out_path: Path, content: str) -> Path:
+# One link writer per views run (SPEC §18 link mode): it reads the file names
+# once, not once per person. Each run_* clears it first, so a long-lived front
+# door (fha serve) never writes a file name a rename has since changed.
+_VIEW_LINKS: dict[Path, LinkWriter] = {}
+
+
+def _view_links(archive_root: Path) -> LinkWriter:
+    """The run's `LinkWriter` for this archive (see `_VIEW_LINKS`)."""
+    key = Path(archive_root)
+    if key not in _VIEW_LINKS:
+        _VIEW_LINKS[key] = link_writer(key)
+    return _VIEW_LINKS[key]
+
+
+def _write_view_file(out_path: Path, content: str, links: LinkWriter | None = None) -> Path:
     """Write a generated view file, refusing to clobber hand-written content.
+
+    `links` (the markdown views only) writes the view's person, source and
+    claim links in the archive's link form (SPEC §18): the file-name form
+    when fha.yaml says `links: obsidian`, unchanged otherwise.
 
     Thin wrapper over the shared _lib.write_generated_file guard (the ownership
     rule lives there so views and the photoindex gallery cannot drift): raises
@@ -400,6 +421,8 @@ def _write_view_file(out_path: Path, content: str) -> Path:
     non-blank line is not the views GENERATED marker. The narrower views prefix
     keeps another tool's GENERATED file protected from a views overwrite.
     """
+    if links is not None:
+        content = rewrite_record_links_to_stems(content, links)[0]
     return write_generated_file(out_path, content, _GEN_MARKER)
 
 
@@ -1187,7 +1210,7 @@ def _generate_timeline(
         parts.append('\n'.join(f'- {_timeline_claim_line(r, conn)}' for r in suggested_rows))
         parts.append('\n')
 
-    return _write_view_file(out_path, ''.join(parts))
+    return _write_view_file(out_path, ''.join(parts), _view_links(archive_root))
 
 
 # ── Sources-index ─────────────────────────────────────────────────────────────
@@ -1304,6 +1327,8 @@ def _generate_sources_index_person(
     source_ids = _source_ids_for_persons(conn, [person_id])
     by_type = _source_rows_by_type(conn, source_ids)
     body = _sources_index_region_body(by_type)
+    # The region's citations in the archive's link form (SPEC §18).
+    body = _view_links(archive_root).convert(body)
 
     try:
         text = read_text_exact(profile_p)
@@ -1577,7 +1602,7 @@ def _generate_summary_person(
               ' - skipped.', file=sys.stderr)
         return None
     new_text, status = write_summary_region(
-        text, _summary_region_body(conn, person_id),
+        text, _view_links(archive_root).convert(_summary_region_body(conn, person_id)),
         extra=_summary_records_line(completeness, person_id))
     if status == 'damaged':
         print(f'WARNING: {profile_p.name} has a "GENERATED-BEGIN summary" marker with no '
@@ -1716,7 +1741,7 @@ def _generate_draft_queue(
                     + '<p>All accepted claims are cited in the profile.</p>\n'),
             )
         lines.append('\nAll accepted claims are cited in the profile.\n')
-        return _write_view_file(out_path, ''.join(lines))
+        return _write_view_file(out_path, ''.join(lines), _view_links(archive_root))
 
     # Fetch source metadata for uncited sources
     placeholders = ','.join('?' * len(uncited_sids))
@@ -1778,7 +1803,7 @@ def _generate_draft_queue(
             date_str = f'({date_edtf})' if date_edtf else '(undated)'
             lines.append(f'  - {claim_row["type"]}: {claim_row["value"]} {date_str}\n')
 
-    return _write_view_file(out_path, ''.join(lines))
+    return _write_view_file(out_path, ''.join(lines), _view_links(archive_root))
 
 
 # ── Brackets ─────────────────────────────────────────────────────────────────
@@ -3925,6 +3950,7 @@ def run_timeline(
     single-person path returns for the same condition - a partly written batch
     must never read as clean.
     """
+    _VIEW_LINKS.clear()   # file names may have changed since the last run
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
@@ -4031,6 +4057,7 @@ def run_sources_index(
     A batch that skipped anything exits 1 with `data['skipped']` (see
     `_batch_view_result`).
     """
+    _VIEW_LINKS.clear()   # file names may have changed since the last run
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
@@ -4144,6 +4171,7 @@ def run_summary(
     `fha views` call does not find it stale. A profile whose summary lines a
     human wrote by hand is left alone.
     """
+    _VIEW_LINKS.clear()   # file names may have changed since the last run
     conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -4218,6 +4246,7 @@ def run_draft_queue(
     A batch that skipped anything exits 1 with `data['skipped']` (see
     `_batch_view_result`).
     """
+    _VIEW_LINKS.clear()   # file names may have changed since the last run
     precheck = _format_precheck(fmt, ('md', 'html'))
     if precheck is not None:
         return precheck
@@ -4521,6 +4550,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     `_batch_view_result`): regenerating every view is the point of the verb, so
     a partial pass must not report success.
     """
+    _VIEW_LINKS.clear()   # file names may have changed since the last run
     precheck = _format_precheck(fmt, ('md', 'html', 'both'))
     if precheck is not None:
         return precheck

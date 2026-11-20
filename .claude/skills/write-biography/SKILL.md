@@ -90,7 +90,7 @@ Extending an existing biography keeps the register already on the page unless th
    fha views draft-queue <p-id>
    ```
 
-7. **Lint.**
+7. **Lint.** In an archive whose `fha.yaml` says `links: obsidian`, first point the new links at their files with `fha normalize-links --write` (_STANDARD.md §11).
    ```
    fha lint
    ```

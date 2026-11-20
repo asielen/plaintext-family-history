@@ -1863,9 +1863,14 @@ with the name beside the ID, so a record says who it is about.
 
   fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
+  fha normalize-links --obsidian --write
+                                 Also point each person, source and claim link
+                                 at the record's file, so Obsidian can follow it
 
 Runs as a preview by default; a real write needs --write. Your original names
-are kept as aliases, so the shortened links still resolve.
+are kept as aliases, so the shortened links still resolve. With links: obsidian
+in fha.yaml, every run also does what --obsidian does. Place links keep their
+ID form: places have no files of their own yet.
 ```
 
 | Argument | What it does |
@@ -1874,6 +1879,7 @@ are kept as aliases, so the shortened links still resolve.
 | `--write` | Apply the rewrites (default is a dry-run preview) |
 | `--dry-run` | Preview without writing (already the default; accepted so the always-preview habit works here too) |
 | `--quiet` | Suppress the per-file diff (show only the summary) |
+| `--obsidian` | Point each person, source and claim link at the record's file (Obsidian link mode); already on when fha.yaml says links: obsidian |
 
 ## `fha backup`
 

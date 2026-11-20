@@ -96,6 +96,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     link_list_lines,
+    link_writer,
+    LinkWriter,
     record_display_names,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -869,8 +871,11 @@ def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[st
     return lines
 
 
-def _render_source_record(source: _Source, names: dict[str, str] | None = None) -> str:
-    """Render a source record's full text (frontmatter + claims + notes + stories)."""
+def _render_source_record(source: _Source, names: dict[str, str] | None = None,
+                          links: LinkWriter | None = None) -> str:
+    """Render a source record's full text (frontmatter + claims + notes + stories).
+    `links` writes `people:` in the archive's link form (SPEC §18); the
+    claims' `persons:` keep the ID form, as in every claims block."""
     lines = [
         '---',
         f'id: {source.sid}',
@@ -880,7 +885,7 @@ def _render_source_record(source: _Source, names: dict[str, str] | None = None) 
         'repository: family interview',
         'citation: >',
         f'  {source.title} (oral-history interview; imported from legacy mining {source.legacy_id}).',
-        *(link_list_lines('people', source.people, names) if source.people
+        *(link_list_lines('people', source.people, names, links=links) if source.people
           else ['people: []']),
     ]
     if source.transcript_src.is_file():
@@ -1060,10 +1065,14 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
             )
 
         # 2) Transcripts → documents/interviews/, and 3) source records.
+        # The link writer reads file names on first use, so it is made after
+        # the stubs above exist and their people: links can name their files.
+        links = link_writer(root, fha_config)
         for s in plan.sources:
             if s.transcript_src.is_file():
                 copy_new(s.transcript_src, s.doc_dest_path)
-            write_new(_record_path(root, s), _render_source_record(s, plan.person_names))
+            write_new(_record_path(root, s),
+                      _render_source_record(s, plan.person_names, links))
 
         # 4) Questions appended to notes/questions.md.
         if plan.questions:

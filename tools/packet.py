@@ -237,6 +237,7 @@ from _lib import (
     apply_private_fence,
     configure_utf8_stdout,
     extract_tokens,
+    links_to_id_form,
     count_private_fences,
     extract_wikilinks,
     has_unfenced_draft_text,
@@ -1103,6 +1104,57 @@ def _purpose_block_prefix_end(body: str) -> int:
 _SOURCES_REGION_RE = re.compile(r'^## Sources\r?\n.*?(?=^## |\Z)', re.M | re.S)
 
 
+class _WithheldLinkNames:
+    """`get(p-id)`: the name of a person this packet withholds, else None.
+
+    The Obsidian link mode writes a bare person link with the name filled in
+    (`[[stem|Ada Jane Hartley]]`); reading it back for the copy drops that
+    name for these people, so the packet says no more about them than an
+    `id`-mode archive's packet would. "Withheld" is the packet's own rule for
+    people, asked person by person as links turn up: counted as living
+    (`person_is_living`, which follows a merge both ways), or restricted in
+    their own record in a way this build's flags do not open
+    (`_record_restriction` / `_restricted_included`, the subject's test). A
+    record whose marker cannot be read counts as restricted."""
+
+    def __init__(self, conn=None, archive_root: Path | None = None, *,
+                 include_restricted: bool = False, include_dna: bool = False):
+        self.conn = conn
+        self.archive_root = archive_root
+        self.include_restricted = include_restricted
+        self.include_dna = include_dna
+        self._cache: dict[str, str | None] = {}
+
+    def get(self, pid: str) -> str | None:
+        if self.conn is None:
+            return None
+        pid = normalize_id(pid)
+        if pid not in self._cache:
+            self._cache[pid] = self._withheld_name(pid)
+        return self._cache[pid]
+
+    def _withheld_name(self, pid: str) -> str | None:
+        row = self.conn.execute(
+            'SELECT name, path FROM persons WHERE id = ?', (pid,)).fetchone()
+        if row is None or not row[0]:
+            return None
+        name = ' '.join(str(row[0]).split())
+        if person_is_living(self.conn, pid):
+            return name
+        if not row[1] or self.archive_root is None:
+            return name                 # no record to read the marker from
+        marker, trouble = _record_restriction(self.archive_root / row[1])
+        if trouble is not None or not _restricted_included(
+                marker, include_restricted=self.include_restricted,
+                include_dna=self.include_dna):
+            return name
+        return None
+
+
+# The withheld-name rule for the packet being built (set when a build starts).
+_LIVING_LINK_NAMES = _WithheldLinkNames()
+
+
 def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     """Remove #75's visible purpose block - and, for a person profile, #76's
     `## Sources` region plus any §16 section still holding only the record
@@ -1152,6 +1204,10 @@ def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     their Biography (a quoted obituary, letter, or inscription is common
     genealogical prose, and looks identical in shape to this block).
     """
+    # A file-name link (SPEC §18 `links: obsidian`) carries the record's name
+    # in the target; the copy reads every link in the ID form, as an `id`-mode
+    # archive writes it, so the mode never changes what a packet holds back.
+    text = links_to_id_form(text, drop_names=_LIVING_LINK_NAMES)
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
@@ -2756,6 +2812,10 @@ def _packet_payload(
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=True)
     if conn is None:
         return {'status': 'no-index', 'packet_dir': None, 'zip_path': None, 'messages': messages}
+
+    global _LIVING_LINK_NAMES
+    _LIVING_LINK_NAMES = _WithheldLinkNames(
+        conn, archive_root, include_restricted=include_restricted, include_dna=include_dna)
 
     try:
         person = _curated_person(conn, pid)
