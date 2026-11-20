@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "3fd80cb8a2b3209cd8eae08ca03e6fbaa1c7669a6db5ca763b39f484f72e82c5",
+      "sha256": "0bccfca71923ca3dcbaaa016861b1c5a82f65fd427e3598dee94c92801ec182b",
       "spec_version": "2.12",
       "src": "tools/_lib.py"
     },
@@ -1144,7 +1144,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "f8f06d800fd3e54dcbc58276f1a56c185d75eaaceffa536bfac8165178ba5f70",
+      "sha256": "e388d88081161d97a119c9654bdc3c9a14a7e757ed8b0f8ff0f5820ab5340740",
       "spec_version": "2.12"
     },
     {
@@ -1186,7 +1186,7 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "e16e1db0d20233dbbada8e7639a19b9c292c7d916e930f0654aa540c2effe65b",
+      "sha256": "85862d552d08e7ab5a5d62871ecf84430be0c3ee37c0b6e244df3cca7f4bc7b8",
       "spec_version": "2.12",
       "src": "SPEC.md"
     },
