@@ -840,8 +840,10 @@ def _place_label(place_text: str | None, place_id: str | None,
     Return a place display string for a claim line.
 
     A generated view is markdown (not the bare claims YAML), so this is one of
-    the few surfaces where a claim's place can actually be clickable in Obsidian:
-    a registered `place_id` renders as `[[L-…|label]]` (ID load-bearing, the
+    the few surfaces where a claim's place is written as a link: a registered
+    `place_id` renders as `[[L-…|label]]`, which the fha tools and the site
+    follow (Obsidian follows links by file name only, and places have no
+    files, so it shows this one as unresolved) (ID load-bearing, the
     as-written text preserved as display); a claim with only free `place_text`
     and no L-id stays plain. Prefers place_text over the registry name for the label.
     """

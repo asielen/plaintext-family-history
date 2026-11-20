@@ -2099,7 +2099,9 @@ def run_rename(
 
       1. Frontmatter: `name:` is replaced; `name_variants:` gains the OLD name
          when `--keep-variant` is given (a genuine append - an existing
-         variant is never dropped).
+         variant is never dropped). `aliases:` gains the new name and keeps
+         the old one, so `[[Old Name]]` links keep resolving; nothing is
+         removed from it but a restricted variant (SPEC §9).
       2. The profile file is renamed to the SPEC §13 filename the NEW name
          derives (`_lib.stub_filename` - the same deriver `fha person new`
          and `fha stubs` already use, so a renamed record's filename is
@@ -2251,11 +2253,11 @@ def run_rename(
         changed_keys.add('surname')
 
     new_text = '\n'.join(new_lines)
-    # aliases: follows the name (SPEC §9): the new name joins it, and the old
-    # one leaves it unless --keep-variant kept it as a variant, so Obsidian's
-    # [[ suggestions offer the person by the names the record now carries.
-    new_text, aliases_added, aliases_removed = sync_person_aliases(
-        new_text, drop=[old_name] if old_name and not keep_variant else [])
+    # aliases: follows the name (SPEC §9): the new name joins it so Obsidian's
+    # [[ suggestions offer it, and the old name stays so a [[Old Name]] link
+    # written before the rename keeps resolving. Only a restricted variant is
+    # ever taken out (the shared privacy rule).
+    new_text, aliases_added, aliases_removed = sync_person_aliases(new_text)
     if aliases_added or aliases_removed:
         changed_keys.add('aliases')
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
@@ -2347,7 +2349,8 @@ def run_rename(
     if aliases_added:
         steps.append('add ' + ', '.join(repr(a) for a in aliases_added) + ' to aliases:')
     if aliases_removed:
-        steps.append('take ' + ', '.join(repr(a) for a in aliases_removed) + ' out of aliases:')
+        # Counted, never named: these are private names.
+        steps.append(f'take {len(aliases_removed)} restricted name(s) out of aliases:')
     if renaming_file:
         steps.append(f'rename {path.name} -> {new_filename}')
     if renaming_research:

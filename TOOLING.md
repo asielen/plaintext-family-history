@@ -236,7 +236,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W108 | W | A README.md older than the last SPEC.md change. | §20 |
 | W109 | W | Non-vital or low-confidence claim with no `notes:` context. Also the catch-all for an unrecognized `source_type` and for what `--format-check` finds (line endings, final newline, key order, ID case, claim `value` first, blank lines, section order). | §8.4, §14 |
 | W110 | W | Ahnentafel placement (needs `root_person`): a direct-line couple folder's number differs from the derived number, or a person's files are in the wrong couple folder. Fix: `fha views brackets --fix`. If `root_person` names no record, one W110 on `fha.yaml` explains that placement checks are skipped. | §12.2 |
-| W111 | W | A record with an `aliases:` list omits its own ID, or (a person) lacks the `name:` or a public `name_variants:` entry or holds a restricted variant as plain text. A merged tombstone is not checked. Fix: `--fix-aliases`. | §9, §14, §18 |
+| W111 | W | A record with an `aliases:` list omits its own ID, or (a person) lacks the `name:` or a public `name_variants:` entry or holds a restricted variant as plain text. A merged tombstone is checked for its own ID only, since its list holds just the bare ID (SPEC §9). Fix: `--fix-aliases`. | §9, §14, §18 |
 | W112 | W | Latent alias clash: one alias names two or more records, nothing links by it yet. | §18 |
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
@@ -309,7 +309,7 @@ E016 is retired: a claim naming a merged person counts for the survivor and is W
 - `--fix-reciprocal` (W116): append the missing mirror entry, one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable, or change any field but `relationships:`, is refused with the entry to add by hand; the refusal says which. `--dry-run` runs the same fold and check, so it prints the refusal a live run would give.
 - `--fix-applied` (W115, an accepted kin claim an opted-in block leaves out): write the entry the claim owes that person, citing it, by the same rule and writer `fha claim` uses on accept (§3b). An entry for the same tie gains the claim in its `claims:` list; a guess is left as written and the sourced entry goes beside it. Only the people the W115 names are touched, so no record is given a block. The same header check and refusals as `--fix-reciprocal`; `--dry-run` prints them.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
-- `--fix-aliases` (W111): bring `aliases:` into step with the shared mirror rule (`_lib.sync_person_aliases`, the same one every name-writing verb uses): the own ID first, then a person's `name:` and public `name_variants:`; a restricted variant's value is taken out. Entries a human added stay, and existing entries keep their text. A list the surgery cannot edit (a flow list over several lines) is named for a hand edit.
+- `--fix-aliases` (W111): bring `aliases:` into step with the shared mirror rule (`_lib.sync_person_aliases`, the same one every name-writing verb uses): the own ID first, then a person's `name:` and public `name_variants:`; a restricted variant's value is taken out, the only removal. Entries a human added (and old names) stay, and existing entries keep their text. A list the surgery cannot edit (a flow list over several lines) is named for a hand edit.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.
 
@@ -530,7 +530,7 @@ Mints a p-id and writes a stub under `people/stubs/` (the "+ add person" button)
 
 ### `rename`
 
-1. Replace `name:`; `--keep-variant` appends the old name to `name_variants:`. `aliases:` follows (SPEC §9): the new name is added, and the old one is taken out unless `--keep-variant` kept it as a variant.
+1. Replace `name:`; `--keep-variant` appends the old name to `name_variants:`. `aliases:` follows (SPEC §9): the new name is added and the old one stays, so a link written under it keeps resolving. A rename never removes an alias; only a restricted variant's value is taken out, the same privacy rule as `--fix-aliases`.
 2. Rename the profile to the filename the new name derives (§13, honouring `--surname`).
 3. Rename a research companion alongside, if any.
 4. Delete generated companions (timeline/sources-index/draft-queue, identified by generated header, never by name) at the old filename and regenerate via `fha views … <p-id>`. A non-generated look-alike is left and named.

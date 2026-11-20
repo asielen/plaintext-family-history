@@ -446,6 +446,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #  Alias resolution / publication guards
 #    person_alias_mirror       : the names a person's aliases: carries: name + public variants
 #    yaml_alias_entry          : one aliases: entry quoted for a YAML flow list
+#    flow_list_close           : where a one-line YAML flow list closes (not in a comment)
 #    merge_aliases_into_frontmatter: append missing entries to an aliases: list, in place
 #    sync_person_aliases       : keep a person's aliases: in step with name/name_variants
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
@@ -11289,14 +11290,76 @@ def yaml_alias_entry(value: str) -> str:
     unquoted inside `[...]`, so anything but a plain ID-or-stem token is
     rendered by the YAML emitter in flow context, which quotes exactly when
     needed. Accented letters stay as written (`allow_unicode`), so the file
-    still reads "Guðrún" rather than an escape code."""
+    still reads "Guðrún" rather than an escape code.
+
+    A plain token is written bare only when YAML reads it back as that same
+    string: a surname like "No" or "On" reads as a boolean, "123" as a
+    number and "1923-01-02" as a date, so those go through the emitter and
+    come out quoted."""
     if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_\-]*', value):
-        return value
+        try:
+            if yaml.safe_load(value) == value:
+                return value
+        except yaml.YAMLError:
+            pass
     rendered = yaml.safe_dump([value], default_flow_style=True,
                               allow_unicode=True, width=10 ** 9).strip()
     if rendered.startswith('[') and rendered.endswith(']'):
         return rendered[1:-1]
     return json.dumps(value, ensure_ascii=False)
+
+
+def flow_list_close(line: str, open_at: int) -> int:
+    """Index of the `]` that closes the YAML flow list opening at `open_at`
+    on this one line, or -1 when the list does not close on it.
+
+    The last `]` on the line is not the answer: a hand comment after the
+    list (`aliases: [p-…, Tom]  # Tom [his old note]`) has its own. So the
+    line is read the way YAML reads it: nested `[`/`{` pairs (an unquoted
+    `[[wikilink]]` entry) are counted, quoted text is skipped (a quote opens
+    only at the start of an entry, so the apostrophe in O'Brien is a
+    letter), and a ` #` outside quotes starts a comment, which ends the
+    search."""
+    depth = 0
+    quote = None
+    token_start = True
+    i = open_at
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if quote == "'" and ch == "'":
+                if line[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                quote = None
+            elif quote == '"' and ch == '\\':
+                i += 2
+                continue
+            elif quote == '"' and ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in '[{':
+            depth += 1
+            token_start = True
+        elif ch in ']}':
+            depth -= 1
+            if depth == 0:
+                return i if ch == ']' else -1
+            token_start = False
+        elif ch == ',':
+            token_start = True
+        elif ch == '#' and i > 0 and line[i - 1] in ' \t':
+            return -1
+        elif ch in ' \t':
+            pass
+        elif ch in '\'"' and token_start:
+            quote = ch
+            token_start = False
+        else:
+            token_start = False
+        i += 1
+    return -1
 
 
 def merge_aliases_into_frontmatter(
@@ -11357,10 +11420,10 @@ def merge_aliases_into_frontmatter(
     line_end = m.start() + len(head_line)
     flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
     if flow_open:
-        # Splice before the list's CLOSING bracket, found as the LAST `]` on the
-        # line: a first-`]` split stops inside an embedded `[[wikilink]]` alias
-        # and mangles both the old entry and the new one.
-        close = head_line.rfind(']')
+        # Splice before the list's own closing bracket (`flow_list_close`):
+        # not the first `]`, which may sit inside an embedded `[[wikilink]]`
+        # entry, and not the last, which may sit in a trailing comment.
+        close = flow_list_close(head_line, flow_open.end() - 1)
         if close >= flow_open.end():
             open_part = head_line[:flow_open.end()]     # 'aliases: ['
             body = head_line[flow_open.end():close]      # existing entries verbatim
@@ -11416,8 +11479,8 @@ def merge_aliases_into_frontmatter(
 def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
     """Remove the `aliases:` entries whose value (lowercased) is in `drop`.
 
-    Used only for names this tool knows it put there: a name a rename replaced
-    without `--keep-variant`, or a variant that is now restricted. A one-line
+    Used only for the privacy rule: a name variant that is restricted never
+    sits in `aliases:` as plain text. A one-line
     flow list is rewritten when every entry reads as plain text; a block list
     loses just the matching item lines, so comments on the others stay. A
     shape this cannot read safely (a flow list over several lines, an entry
@@ -11429,7 +11492,7 @@ def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str,
     line_end = m.start() + len(head_line)
     flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
     if flow_open:
-        close = head_line.rfind(']')
+        close = flow_list_close(head_line, flow_open.end() - 1)
         if close < flow_open.end():
             return fm_text, []
         try:
@@ -11480,15 +11543,14 @@ def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str,
     return out, removed
 
 
-def sync_person_aliases(text: str, *, drop: Iterable[str] = ()) -> tuple[str, list[str], list[str]]:
+def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
     """Bring a person record's `aliases:` in step with its name fields.
 
     The rule (SPEC §9, §18): the ID first, then `name:`, then each public
-    `name_variants:` entry. Missing ones are added; nothing a human added
-    (a stem, a nickname, an old file name) is removed. Two things are taken
-    out: any name in `drop` (the old name a rename replaced without keeping
-    it as a variant) unless it is still the name or a public variant, and
-    the value of any restricted variant, so a private name never sits in
+    `name_variants:` entry. Missing ones are added, and nothing else is
+    removed: a stem, a nickname or an old name (one a rename replaced) stays,
+    so a link written under it keeps resolving. The one thing taken out is
+    the value of a restricted variant, so a private name never sits in
     `aliases:` as plain text.
 
     Left alone: a record with no frontmatter, no `id:`, no `aliases:` key (it
@@ -11512,8 +11574,7 @@ def sync_person_aliases(text: str, *, drop: Iterable[str] = ()) -> tuple[str, li
     inner = fm.group(1)
     mirror = person_alias_mirror(meta)
     wanted = {v.lower() for v in mirror}
-    drop_keys = {str(d).strip().lower() for d in drop if d} - wanted
-    drop_keys |= _restricted_variant_values(meta) - wanted
+    drop_keys = _restricted_variant_values(meta) - wanted
     drop_keys.discard(normalize_id(pid))
     inner, removed = _remove_aliases_from_frontmatter(inner, drop_keys)
     inner, added = merge_aliases_into_frontmatter(inner, pid, mirror, nl, id_first=True)

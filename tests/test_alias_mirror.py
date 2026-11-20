@@ -25,6 +25,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+
+import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,7 @@ from _lib import (
     read_record,
     render_stub_content,
     sync_person_aliases,
+    yaml_alias_entry,
 )
 
 PID = 'p-de957bcda1'
@@ -115,12 +118,40 @@ class MirrorRuleTests(unittest.TestCase):
         self.assertEqual(removed, ['Quenby Talbot'])
         self.assertEqual(_aliases(new), [PID, 'Thomas Edward Hartley'])
 
-    def test_sync_drops_a_named_old_name_but_never_a_current_one(self):
+    def test_sync_never_removes_an_old_name(self):
+        # An old name stays, so a [[Thomas Hartly]] link written under it
+        # keeps resolving; only a restricted variant is ever taken out.
         text = _person(f'aliases: [{PID}, Thomas Hartly, grandpa-tom]\n')
-        new, _, removed = sync_person_aliases(text, drop=['Thomas Hartly',
-                                                          'Thomas Edward Hartley'])
-        self.assertEqual(removed, ['Thomas Hartly'])
-        self.assertEqual(_aliases(new), [PID, 'grandpa-tom', 'Thomas Edward Hartley'])
+        new, _, removed = sync_person_aliases(text)
+        self.assertEqual(removed, [])
+        self.assertEqual(_aliases(new),
+                         [PID, 'Thomas Hartly', 'grandpa-tom', 'Thomas Edward Hartley'])
+
+    def test_bracket_in_a_trailing_comment_is_not_the_lists_end(self):
+        line = f'aliases: [{PID}, Tom]  # Tom [his old vault note]\n'
+        new, added, _ = sync_person_aliases(_person(line))
+        self.assertEqual(added, ['Thomas Edward Hartley'])
+        self.assertEqual(_aliases(new), [PID, 'Tom', 'Thomas Edward Hartley'])
+        self.assertIn('  # Tom [his old vault note]\n', new)
+        self.assertEqual(sync_person_aliases(new), (new, [], []))   # settled
+
+    def test_removing_a_restricted_alias_keeps_a_bracketed_comment(self):
+        line = f'aliases: [{PID}, Thomas Edward Hartley, Wren]  # Wren was [a stage name]\n'
+        text = _person(line, extra='name_variants:\n  - {value: Wren, restricted: true}\n')
+        new, _, removed = sync_person_aliases(text)
+        self.assertEqual(removed, ['Wren'])
+        self.assertEqual(_aliases(new), [PID, 'Thomas Edward Hartley'])
+        self.assertIn('  # Wren was [a stage name]\n', new)
+
+    def test_names_yaml_would_read_as_another_type_are_quoted(self):
+        for name in ('No', 'yes', 'On', 'null', '123', '1923-01-02', '0x1F', '1e3'):
+            with self.subTest(name=name):
+                entry = yaml_alias_entry(name)
+                self.assertEqual(yaml.safe_load(f'[{entry}]'), [name])
+                text = _person(f'aliases: [{PID}]\n', name=yaml.safe_dump(name).split('\n')[0])
+                new, _, _ = sync_person_aliases(text)
+                self.assertEqual(_aliases(new), [PID, name])
+                self.assertEqual(sync_person_aliases(new), (new, [], []))
 
     def test_sync_leaves_alone_records_outside_the_alias_layer(self):
         no_key = _person('')
@@ -165,11 +196,17 @@ class NameWritingVerbTests(unittest.TestCase):
     def _renamed(self):
         return read_record(next(self.root.rglob(f'*_{PID}.md')))['meta']
 
-    def test_rename_swaps_the_old_name_for_the_new(self):
+    def test_rename_adds_the_new_name_and_keeps_the_old(self):
+        # The old name stays in aliases: so [[Thomas Hartly]] links keep
+        # resolving; without --keep-variant it leaves name_variants: alone.
         self._rename_fixture()
         res = person.run_rename(self.root, PID, 'Thomas Hartley')
         self.assertEqual(res.exit_code, 0, res.messages)
-        self.assertEqual(self._renamed()['aliases'], [PID, 'Thomas Hartley'])
+        meta = self._renamed()
+        self.assertEqual(meta['aliases'], [PID, 'Thomas Hartly', 'Thomas Hartley'])
+        self.assertNotIn('name_variants', meta)
+        res = lint.run_lint(self.root, {})
+        self.assertEqual([m for m in res.messages if m.code == 'W111'], [])
 
     def test_rename_keep_variant_keeps_the_old_name(self):
         self._rename_fixture()
@@ -186,7 +223,7 @@ class NameWritingVerbTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding='utf-8'), before)
         shown = ' '.join(m.text for m in res.messages)
         self.assertIn("'Thomas Hartley' to aliases:", shown)
-        self.assertIn("'Thomas Hartly' out of aliases:", shown)
+        self.assertNotIn('out of aliases:', shown)
 
     def test_gedcom_import_stub_lists_name_and_variants(self):
         stub = gedcom_import._PersonStub.__new__(gedcom_import._PersonStub)
