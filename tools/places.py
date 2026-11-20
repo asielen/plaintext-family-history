@@ -2247,7 +2247,9 @@ def _register_table(new_places: list[dict], joins: list[dict]) -> list[str]:
         if p.get('alt_names'):
             bits.append('also known as ' + ', '.join(p['alt_names']))
         lines.append(f'  New place "{p["name"]}" ({_plural(n, "claim")}): ' + '; '.join(bits))
-        for g in p['groups'][1:]:
+        for g in p['groups']:
+            if g['label'] == p['name']:
+                continue
             lines.append(f'    with "{g["label"]}" ({_plural(len(g["claim_ids"]), "claim")})')
     for j in joins:
         lines.append(f'  "{j["label"]}" ({_plural(len(j["claim_ids"]), "claim")}) links to '

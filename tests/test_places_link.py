@@ -508,6 +508,15 @@ class RegisterSpellingsTests(_ArchiveCase):
         self.assertEqual(names, ['Fairview, Breton County, Kansas'])
         self.assertEqual(result['linked'], 7)
 
+    def test_list_names_the_other_spelling_it_takes_in(self):
+        for name, sid, claims in self._two_spellings(4, 3):
+            self.source(name, sid, claims)
+        self.build()
+        text = '\n'.join(places.run_register_candidates(self.root, {}, dry_run=True)['messages'])
+        self.assertIn('New place "Fairview, Breton County, Kansas" (7 claims)', text)
+        self.assertIn('    with "Fairview, Kansas" (4 claims)', text)
+        self.assertNotIn('with "Fairview, Breton County, Kansas"', text)
+
     def test_long_spelling_in_the_bigger_cluster(self):
         result, names = self.run_register(self._two_spellings(3, 4))
         self.assertEqual(names, ['Fairview, Breton County, Kansas'])
