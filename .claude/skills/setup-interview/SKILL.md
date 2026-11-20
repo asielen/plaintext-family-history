@@ -207,6 +207,7 @@ Say plainly what happens next: *"That's everything. I've drafted N facts from wh
 - Any record ID written into prose (the source's `## Notes`, the hand-off sentence) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only inside the claims-block YAML, frontmatter lists, and tool arguments (_STANDARD.md §11).
 - Runs once per archive in the ordinary case; if `root_person` is already set, this skill confirms with him before minting or writing anything else.
 - The step 0 place-backlog offer fires at most **once per run**, only past the 20-claim bar, only on an explicit yes, and is never repeated once declined or ignored in the same session, the same discipline `process-source`'s own place-registration offer uses. A registered cluster is written **only** via `fha confirm place`, exactly as `process-source`/`place-research` write one, never by hand-editing `places.yaml`.
+- Prose written into the source's `## Notes` or the family part of `START_HERE.md` keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

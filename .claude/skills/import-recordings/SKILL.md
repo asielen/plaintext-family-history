@@ -259,6 +259,7 @@ True acoustic diarization (`pyannote.audio`) is the only route to speaker identi
 - **Never narrow the duplicate check to get a clean answer.** `new` means the gate examined everything it claims to have examined: every configured root, every folder inside it, every same-size candidate, and the batch against itself. Pointing the check at the part that happens to be readable, or carrying on past an `UNCHECKED` line, keeps the confidence while removing what it rests on.
 - Nothing mines silently. In interactive mode this skill drafts zero claims and hands off.
 - Only `fha` and this skill's own `scripts/` (whisper, speaker-label transfer) are run from here. The dedupe hash and container probe are `fha media dedupe`/`fha media probe`; a further missing capability is a halt-and-report, not an improvisation (_STANDARD.md §6).
+- Prose written into the session source's `## Notes` keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

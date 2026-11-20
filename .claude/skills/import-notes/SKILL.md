@@ -80,6 +80,7 @@ Intake for legacy notes. The archive has a home for every kind of research paper
 - No computed gap is filed as a question (SPEC §17b).
 - Any record ID written into prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured slots (a `refs:` list, tool arguments), per _STANDARD.md §11. A stub sidecar's `people:` holds names, never p-ids (a stub is pre-source).
 - `source_type:` hints come from the controlled vocabulary (`letter`, `interview`, `book`, `website`, `artifact`, `other`, …). `fha process` refuses an out-of-vocabulary hint, so a mistyped type would stall the hand-off to `process-source`.
+- Prose written into `notes/research/`, a question's context or a working answer keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

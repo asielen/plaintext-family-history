@@ -1045,6 +1045,14 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn(f'[{SOURCE.lower()}]', text)
         self.assertIn(f'[{PERSON_1.lower()}]', text)
 
+    def test_discovery_long_text_stays_on_one_line(self) -> None:
+        # The win he logs is read and edited by hand later, so a long
+        # sentence goes in as one line and the editor does the wrapping.
+        long_text = ' '.join(['Found the marriage notice for Thomas Hartley and Margaret Cole.'] * 4)
+        confirm.run_add_discovery(self.root, text=long_text, refs=[SOURCE])
+        text = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
+        self.assertIn(long_text, text)
+
     def test_discovery_dry_run_writes_nothing(self) -> None:
         before = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
         result = confirm.run_add_discovery(self.root, text='Nope', dry_run=True)
