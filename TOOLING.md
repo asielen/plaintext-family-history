@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.10, 2026-11-20 · companion to SPEC.md v2.10 (versions track the SPEC)**
+**Version 2.12, 2026-11-20 · companion to SPEC.md v2.12 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -230,7 +230,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W104 | W | A summary line with no supporting accepted claim. | §16 |
 | W105 | W | Hand edits under a GENERATED header. Not implemented (needs mtime tracking); a no-op. | §16 |
 | W106 | W | Accepted claim missing Mills analysis fields. Informational. | §8.5 |
-| W107 | W | Reference to a merged record: a prose `[[p-…]]` link or a claim `persons:` entry naming a merged person (counted for the survivor meanwhile), or a `[[s-…]]` link to an ID that is only an alias of another source. Gradual cleanup. | §9, §14 |
+| W107 | W | Reference to a merged record: a prose `[[p-…]]` link or a claim `persons:` entry naming a merged person (counted for the survivor meanwhile), or a `[[s-…]]` link to an ID that is only an alias of another source. Every such link is listed, at its line in the file. Gradual cleanup. | §9, §14 |
 | W108 | W | A README.md older than the last SPEC.md change. | §20 |
 | W109 | W | Non-vital or low-confidence claim with no `notes:` context. Also the catch-all for an unrecognized `source_type` and for what `--format-check` finds (line endings, final newline, key order, ID case, claim `value` first, blank lines, section order). | §8.4, §14 |
 | W110 | W | Ahnentafel placement (needs `root_person`): a direct-line couple folder's number differs from the derived number, or a person's files are in the wrong couple folder. Fix: `fha views brackets --fix`. If `root_person` names no record, one W110 on `fha.yaml` explains that placement checks are skipped. | §12.2 |
@@ -238,7 +238,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W112 | W | Latent alias clash: one alias names two or more records, nothing links by it yet. | §18 |
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
-| W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim with no entry, or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. | §9 |
+| W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim missing any entry it owes (each checked on its own; an empty `relationships: []` is still a kept list), or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. Fix for an accepted claim with no entry: `--fix-applied`. | §9 |
 | W116 | W | A relationship edge recorded on one person without its mirror on the other. A `status: hypothesis` entry on the other side is not a mirror of a sourced edge: the message says the fix adds the sourced entry beside the guess and leaves the guess for the owner. Fix: `--fix-reciprocal`. | §9 |
 | W117 | W | A person filename with no `__` sort separator. A prompt to confirm or rename, never an error. | §13 |
 | W118 | W | A claim whose `persons:` resolves to nobody (every entry an unresolved plain name). Suppressed when an entry is already an E005. | §8.4 |
@@ -305,6 +305,7 @@ E016 is retired: a claim naming a merged person counts for the survivor and is W
 - `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a yaml fence.
 - `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases. A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
 - `--fix-reciprocal` (W116): append the missing mirror entry, one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable, or change any field but `relationships:`, is refused with the entry to add by hand; the refusal says which. `--dry-run` runs the same fold and check, so it prints the refusal a live run would give.
+- `--fix-applied` (W115, an accepted kin claim an opted-in block leaves out): write the entry the claim owes that person, citing it, by the same rule and writer `fha claim` uses on accept (§3b). An entry for the same tie gains the claim in its `claims:` list; a guess is left as written and the sourced entry goes beside it. Only the people the W115 names are touched, so no record is given a block. The same header check and refusals as `--fix-reciprocal`; `--dry-run` prints them.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.
@@ -452,6 +453,17 @@ fha claim new --source s-id --type TYPE --value "…" [--date DATE]
 
 Moving an accepted death/burial claim out of `accepted`, or editing it so it stops naming someone as deceased, never reverts the flag; it warns for each such person still `living: false`, with `fha person set-living <p-id> unknown`. A newly named person is not marked (W136 reports them).
 
+### Accepting a kin claim writes the relationships: entries
+
+A `relationship`, `marriage` or `birth` claim (with child and parent roles) that the command moves into `accepted` (one claim, a batch, or `claim new --status accepted`) is applied to the person records it connects (SPEC §9), one plain line per record changed ("Thomas Hartley's record now lists Margaret Cole as a parent (claim c-…).").
+
+- Which entries, and on whom, is the rule lint W115 reads (`_lib.claim_owed_relationship_entries`): the couple a marriage's `spouse:` role names; the child and parents a birth or relationship claim names, a `parent` entry on the child and a `child` entry on each parent. Negated claims, social ties and other claim types owe nothing. Each owed entry is judged on its own (`_lib.relationship_entry_applies`): it is already applied when an entry for that person and role cites the claim, or cites the claim's source with `source:` and no `claims:`. An entry whose `to:` name no record answers to counts when it reaches the claim either way, as lint reads it by the owner's side alone. W115 reads the same test, so a birth claim cited on the father's entry still asks for the mother's.
+- Only a record that already has a `relationships:` list is written (a `relationships: []` counts, and opens into block form). The list is opt-in, and once there lint asks it to hold every tie, so a record without one is left alone; when its other side was written, one line says so (lint then reports the missing mirror as W116, `--fix-reciprocal` adds it).
+- The one entry for that person and role gains the claim in its `claims:` list: any entry naming them in that type whose nature lint would not call a mismatch (a parent or child entry with no subtype is biological, so it never joins an adoptive claim, nor an adoptive entry a biological one; a spouse entry or claim with no subtype matches any), with the claim's subtype written onto it when it had none (a `civil` marriage onto a plain spouse entry). Otherwise a new entry citing the claim is added. A guess (`status: hypothesis`) is never rewritten, and a bare `source:` entry for another source is not joined: the new entry goes beside it (W155 names the guess).
+- Moving a claim to `disputed`, `rejected` or `superseded`, or from `accepted` back to `suggested`, takes it out of every `claims:` list on a person record, dropping the `claims:` key once its list is empty, unless the owner typed a comment on it or inside it: then it stays as `claims: []` with the comment (own-line comments above it), which every reader takes as no claims. No entry is ever removed, since a plain `to:`/`type:` entry carries nothing that says whether the owner typed it; an entry left with no claims, no `source:` and no `status: hypothesis` gets one line ("Margaret Cole's record still lists John Hartley as a spouse, with no evidence now; remove that entry by hand if it is wrong."). A hand-written `relationships: []` is still a kept list: lint asks for the person's ties, and `fha claim`, `--fix-applied` and `fha person relate` write into it.
+- Every person edit is worked out and checked in memory before any person record is written (the header must still read, nothing but `relationships:` may change), each record is written once, atomically, and `--dry-run` prints the same lines. A record that cannot be edited safely (a `relationships: [...]` flow list, say) is a warning naming the entry to add by hand; the claim's own change stands and the exit code is unaffected. `fha lint --fix-applied` writes any entries still missing.
+- `fha serve` rebuilds the index in full after such a change.
+
 ### `fha claim new`
 
 Mints a claim onto a source's `## Claims`: the workbench "add a claim" button and the by-hand alternative to AI drafting. `fha.py` intercepts `claim new` before the review parser.
@@ -556,7 +568,7 @@ After a move the index is updated in place (rows moved, tier applied), so batche
 
 ## 3d. `fha source`: source-field write-backs
 
-Write-backs to a source's own text and files, not its claims. Five verbs; all locate the record by scanning `sources/`.
+Write-backs to a source's own text and files. Six verbs; all locate the record by scanning `sources/`.
 
 ```
 fha source note <s-id> --text TEXT [--dry-run] [--root PATH]
@@ -564,6 +576,7 @@ fha source extract <s-id> [--pages RANGES] [--copy LABEL] [--dry-run] [--root PA
 fha source edit-note <s-id> --old-text TEXT --text TEXT [--dry-run] [--root PATH]
 fha source clear-keyword <s-id> --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
 fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
+fha source merge <keeper> <retiree> [--dry-run] [--root PATH]
 ```
 
 **`note`.** Appends a paragraph to `## Notes` (SPEC §14), adding the heading at the end if missing. Append-only, no AI marker. Refuses if the `## Claims` block was sound before and not after (Claims-less sources are fine), or on several `## Notes` headings. Superseded sources are not refused.
@@ -596,7 +609,15 @@ fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 
 Refuses, nothing written: `--file` matches none, several, or a non-photos-root entry; one-line list or entry form; 2+ other files already marked main; current main file not a photo; result without exactly one `is_primary: true`. The new text must parse to the planned list with all else unchanged before the atomic write (CRLF kept); then it is re-read and restored if wrong. `--dry-run` previews in words plus a diff; rerun is `already`.
 
-**Exit codes (all five):** 0 written/already/dry-run · 1 s-id or asset not found (with `fha reconcile`/`fha find`) · 3 bad id; blank `--text`/`--old-text`/`--keyword`; file error; multi-heading record; ambiguous or absent documents-root file; keyword absent; entry-match refusals; Claims regression. `changed[]` names the record (for `clear-keyword`, the asset).
+**`merge`.** Makes two records of one piece of evidence into one (SPEC §9 "Merged sources"): the retiree folds into the keeper and its record file is removed.
+- **Files.** Documents-root files are renamed beside where they are into the keeper's grammar, `{slug}[-{copy}][-{role}]_{keeper}.{ext}`, by `--more`'s naming rule (`_lib.attachment_base`); `original_filename:` keeps the entry's own, else the name the file had. Photos-root files are never renamed. A file whose role and copy label the keeper already has takes the next free copy letter (`b`, `c`, ...); the retiree's main file is no longer main. Every file that holds keywords gets `SOURCE: {keeper}` in place of the retiree's, through the one keyword writer (§6 Keywords). Files are compared as the file on disk they name (resolved path, letter case folded where the filesystem folds it), not as typed, and a new name carries the keeper's id once, at its end.
+- **Record.** Claims move into the keeper's `## Claims`, ids unchanged, re-indented to its items. `aliases:` gains the retiree's id and its aliases; `people:`, `places:`, `external_links:` (by URL) and `ai_passes:` gain what is new; `files:` gains the moved entries; `merged_from:` gains one entry (SPEC §14). Notes gains a dated paragraph naming the merge, listing each other field the retiree held that the keeper does not share (`title`, `citation`, `source_date`, `repository`, ...), and every comment written in the retiree's frontmatter (whole-line or after a value). The retiree's `## Notes`, `## Stories` and any other section are appended to the keeper's section of that name; prose above its first section goes to Notes, less the purpose block (matched by its signature; any other `>` quote is kept). A `<!-- private -->` fence that crosses a `##` heading, or is never closed, is moved whole, opener to closer, into Notes (an unclosed one gets its closer, and its `##` headings become `###`, so it starts no section and later Notes land after its closer), so a section split never lets fenced text out.
+- **Refusals, before any write and the same under `--dry-run`:** an invalid or repeated id; an id that is not a source (persons merge with `fha confirm merge`); either record missing (exit 1) or unreadable; a working copy; both records holding accepted claims whose named people (`persons:` and `roles:`, a merged person counted as its survivor, read from the person files) do not overlap at all, naming them; the two records protected differently from shared output (the `restricted:` value, where `true`, `dna` and `by-request` all differ; `source_type: dna`; `rights: publication_ok: false`), naming both sets of markers and asking the owner to choose one protection and write it on both records; a retiree with no marker merges into a marked keeper, and identical markers merge; a claim id on both, or a claim with no id; a file listed on both, or twice on the retiree, outside both asset roots, or missing from disk (`fha reconcile`); a file carrying a third source's `SOURCE:` keyword; a photo whose keywords cannot be read (exiftool missing). A document whose keywords cannot be read is renamed with a warning, its old keyword still resolving through `aliases:`.
+- **Transaction.** The keeper's new text is built and re-parsed first: its frontmatter must read back as exactly the planned values and its claims as the keeper's followed by the retiree's. Then renames, keyword writes, the keeper's atomic write and the retiree's removal, each with an undo step (a document's bytes are put back from a private copy; a photo gets the inverse keyword write); any failure undoes them in reverse and says plainly what could not be put back. Ctrl+C part-way runs the same undo (printing what could not be put back, as a failure does), then stops: a merge left between files would have some named for one source and some for the other. The plan is printed in the future tense before the writes (`The merge will: ...`), and `Merged ...` only after every write has succeeded.
+- Next steps printed: `fha index`, then `fha photoindex` when photos were re-keyworded; lint W107 lists links still naming the retiree.
+- Exit codes: 0 merged or previewed · 1 a record not found · 2 refused · 3 a read or write failed (rolled back).
+
+**Exit codes (the other five):** 0 written/already/dry-run · 1 s-id or asset not found (with `fha reconcile`/`fha find`) · 3 bad id; blank `--text`/`--old-text`/`--keyword`; file error; multi-heading record; ambiguous or absent documents-root file; keyword absent; entry-match refusals; Claims regression. `changed[]` names the record (for `clear-keyword`, the asset).
 
 ## 4. `fha id`: minting
 
@@ -616,7 +637,7 @@ Refuses, nothing written: `--file` matches none, several, or a non-photos-root e
 
 | ID | Output |
 |---|---|
-| s-id | record; every asset file (via `fha.yaml`; documents by filename, photos by inventory + keyword); citation sites; claim count by status |
+| s-id | record; every asset file (via `fha.yaml`; documents by filename, photos by inventory + keyword); citation sites; claim count by status. An s-id merged into another (in that record's `aliases:`, SPEC §9) says so and shows the kept record, here, under `--related`, and in `--json` (and so in the workbench pickers) |
 | p-id | person file, couple folder, claims naming them, photo count (§9), citation sites |
 | c-id | source record and line, status, links in and out |
 | l-id / h-id | record and every reference |
@@ -1652,7 +1673,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
 | 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_anniversaries`, `test_find`, `test_doctor` |
-| 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
+| 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary, merge), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
 | 7 | Research report | `report` | §15a | `test_report` |
@@ -1738,6 +1759,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 - `--information`/`--evidence`/`--anchor`/`--notes` correct the Mills fields and context note surgically; every free-text field write echoes what it wrote.
 - `--clear FIELD` removes an optional field whole; empty values are refused, never written as `key: ''`.
 - Several c-ids apply one status move to each (status-only: field edits take exactly one c-id; every id validated before any write; duplicates deduped with a note). `--dry-run`.
+- Accepting a relationship, marriage or birth claim writes the matching `relationships:` entries on the people it connects whose records already keep that list; disputing, rejecting, superseding or un-accepting one takes it out of those lists (§3b). No hand-editing of `relationships:` after a review.
 
 | Surface | What it is / when |
 |---|---|
@@ -1778,6 +1800,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 |---|---|
 | `fha source edit-note <s-id> --old-text … --text …` (T C) | Rewrite ONE existing `## Notes` paragraph, named by its exact current text (§3d): the source-page twin of `person edit-note`. `--dry-run`. |
 | `fha source set-primary <s-id> --file NAME` (T C) | Make the named photo a source record's main image (§3d) by moving `is_primary: true` to its `files:` entry (and `is_primary: false` onto the old one): the fix `fha doctor` names when a record calls a photo's back its main image. Edits only the record's `files:` list; no photo is renamed. `--dry-run`. |
+| `fha source merge <keeper> <retiree>` (T C) | Make two source records of one piece of evidence into one (§3d): an index entry and the document it indexes, or one record saved from two sites. The retiree's files are re-keyed to the keeper (documents renamed, photos keyword only), its claims move with their ids, its notes and links are added, and its record is removed; its id stays in the keeper's `aliases:`. Refused when the two records' accepted claims are about different people. `--dry-run`. |
 | `fha source clear-keyword <s-id> --keyword … [--replace-with …]` (T C) | Clear or correct one embedded keyword on a source's documents-root file (§3d): the tool-mediated fix for a stray keyword `fha lint --with-exif` (W131) finds. Removes the EXACT on-file value (case-insensitive match against `--keyword`) from every keyword field; `--replace-with` corrects it (into every keyword field the file takes) instead of just clearing it. `--dry-run`. |
 | `fha lint` (T C) | After any batch of edits; the done-gate. Alias: **`fha check`**. Flags: `--with-exif`, fix modes (diff-previewed), `--timings`. Before a commit, `fha lint --changed` reports only on what changed since the last commit and the records it links to; a full `fha lint` stays the check before a release and after `fha update-tools`. |
 | `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |

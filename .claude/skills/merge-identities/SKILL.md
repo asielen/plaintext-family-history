@@ -16,6 +16,8 @@ Genealogy keeps asking "are these two records the same human?" or "is this one r
 
 "Are these the same person?", "this looks like two people", "the report flagged a possible duplicate", "did Thomas Hartley and Thos. Hartley get entered twice?"
 
+Two *source* records that are one piece of evidence (an index entry and the document it indexes, one record saved from two sites) are not this skill. They merge with `fha source merge <keep> <other>`: run it with `--dry-run`, show the human what moves, and run it for real only on his yes. It refuses when the two sources' accepted claims are about different people.
+
 ## The contract for this skill (state it before you start)
 
 - **Human-confirmed only.** No `merged_into` is ever written without an explicit human decision, naming the specific survivor and the specific merge, stated *this session*. The skill lays out evidence, proposes, and stops until the human confirms.
@@ -58,7 +60,7 @@ Genealogy keeps asking "are these two records the same human?" or "is this one r
    Loose *prose* `[[p-old]]` mentions are left on purpose. They resolve *through* `merged_into` and appear on lint's W107 gradual-cleanup list, which is expected and not an error. **Read the verb's warnings and judge each one; don't suppress them:**
    - an *external-id conflict* (exit 1) means the two records point at different WikiTree/Ancestry profiles: the survivor's value was kept and the tombstone keeps the other. Bring the conflict back to the human;
    - an *existing relationship edge between the two* is evidence they may be two different people. The tool warns and proceeds (the decision was the human's), but reopen the conversation if he didn't know about the edge;
-   - a *W115 heads-up* means the survivor's opted-in `relationships:` block should take the relinked accepted kin claims. Add those entries with the human. **Never create a new claim on the merged p-id** (that is exactly what W107 reports).
+   - a *W115 heads-up* means the survivor's opted-in `relationships:` block should take the relinked accepted kin claims. Show him `fha lint --fix-applied --dry-run`, and on his yes run `fha lint --fix-applied` to write those entries. **Never create a new claim on the merged p-id** (that is exactly what W107 reports).
 
 4b. **On a confirmed SPLIT (conflation), reassign deliberately (SPEC §9).** Splitting an identity is research judgment, so it stays guided:
    - mint the new person: `fha id mint p` (then scaffold a stub or record for them);

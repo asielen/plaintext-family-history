@@ -19,7 +19,8 @@ Contents:
 9. Capture: one record, on the user's click
 10. Working in Obsidian
 11. Geocoding: one table, one yes
-12. Linking place text: the hierarchy rule
+12. Merging two sources
+13. Linking place text: the hierarchy rule
 
 ---
 
@@ -98,6 +99,7 @@ Family trees are never stored. They are drawn from accepted relationship claims 
 - **Two true parents are not a conflict.** Without a nature field, an adoptive father and a biological father are both just "parent". The only way to relate two such claims would be `contradicts`, which calls two true things a conflict. The same problem hits misattributed parentage (a DNA father and the father who raised the child, both real), donor conception and surrogacy. With `subtype`, each is a separate, equally valid edge.
 - **Most of what you know starts as a guess.** A name an aunt mentioned, a father a DNA match implies: you know these long before you find a record. The person's `relationships:` list lets you write that down honestly, marked as a guess, and it graduates when the source turns up. This is the same pattern as the provisional `birth:` and `death:` dates on a person record.
 - **Tools never rewrite a guess.** A guess is your own lines, often with a comment or a note on why you believed it. When a source proves the tie, the tools add the sourced entry beside the guess and leave the guess alone. Lint then names the leftover guess, and you fold it in yourself: delete the guess, move anything you want to keep onto the sourced entry, and keep its `hypothesis: h-…` line as the record of which working answer was settled.
+- **Accepting a claim fills in the list, but only where a list is kept.** Writing the same tie by hand on two records per claim is exactly the edit that goes wrong, so `fha claim` writes the entries when you accept a relationship, marriage or birth claim, and takes the claim back out when you reject it. It never starts a list on a record that has none: once a record has a list, the linter expects it to hold every tie, so starting one would turn a single accept into a page of warnings about ties you never chose to write down.
 - **The claim is the unit of traceability.** Supersession, corroboration, contradiction and the index all hang off claims. Keeping relationships as claims keeps them traceable to evidence.
 - **Roles are a fixed list, kept in the spec.** Tools build tree edges only from a closed list of roles, plus six kin synonyms (`mother` and `father` read as `parent`, and so on). Any other word (`sibling`, `godparent`, `witness`) is valid and places the person on the claim, but builds no edge. The list is not configurable per archive: a meaning stored in one archive's settings would be lost the moment a record left that archive.
 
@@ -297,7 +299,21 @@ Other limits:
 
 ---
 
-## 12. Linking place text: the hierarchy rule
+## 12. Merging two sources
+
+**The rule.** When two source records prove to be one piece of evidence, `fha source merge` folds one into the other. The kept record takes the other's files, claims (ids unchanged), notes and links, keeps its id in `aliases:`, and records what moved in `merged_from:`; the other record file is removed. The merge is refused when both records hold accepted claims and no person is named in both.
+
+**Why.** An index entry and the document it indexes are one source, and so are two captures of one record, so a merge is a routine step. By hand it means clearing embedded keywords and staging files under neutral names, which loses the original filename. The `merged_from:` entry exists because a merge with no record of what moved cannot be undone. The people check uses the claims a human has already accepted: two records whose confirmed facts share no one are almost always two records, and a wrong merge is far harder to see than a refusal.
+
+**Rejected.**
+
+- **A tombstone record for the merged source**, as persons have. A merged source's files all move to the survivor, so nothing would be left for the tombstone to describe; the alias and `merged_from:` carry what it would.
+- **Guessing "different people" from names or dates in the text.** The accepted claims already say who each record is about; anything looser would grow exceptions.
+- **An `unmerge` verb now.** `merged_from:` makes an undo possible by hand; a verb waits until one is needed.
+
+---
+
+## 13. Linking place text: the hierarchy rule
 
 **The rule.** A claim's place text links to a registered place when it fits exactly one: it equals a name or alt name, or its first part names the place and every other part is in the place's hierarchy, "County" and the country optional after the first part. The same rule runs when a claim is written, over claims written earlier (`fha places link`, a dry run until `--apply`), and when a backlog of recurring place texts is registered at once (`fha places candidates --register`, one list and one yes). The place text itself is never changed.
 
