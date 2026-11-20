@@ -14,11 +14,38 @@ When you want the tools to do something (add IDs, check the archive, build a web
 
 ## Links the tools write
 
-The tools write links with the record's ID inside: `[[p-de957bcda1|Thomas Edward Hartley]]` for a person, `[[s-b237895f31]]` for a citation, `[[c-…]]` for a single claim. The ID is what keeps the link right when a file is renamed, and every `fha` tool, the family website and the exports follow it.
+Out of the box the tools write links with the record's ID inside: `[[p-de957bcda1|Thomas Edward Hartley]]` for a person, `[[s-b237895f31]]` for a citation, `[[c-…]]` for a single claim. The ID is what keeps the link right when a file is renamed, and every `fha` tool, the family website and the exports follow it.
 
-Obsidian follows a link by file name only, so it shows an ID link as unresolved and leaves it out of the graph. Clicking one makes a new, empty note named after the ID; delete that note. To get to the record, search the ID instead: every record's file name ends in its ID, so Obsidian's quick switcher (Ctrl+O, or Cmd+O on a Mac) finds it at once. A claim is not a note of its own and its ID is in no file name, so put a `c-` ID into Obsidian's search (Ctrl+Shift+F, or Cmd+Shift+F on a Mac) to find the source file that holds the claim.
+Obsidian follows a link by file name only, so it shows an ID link as unresolved and leaves it out of the graph. Clicking one makes a new, empty note named after the ID; delete that note. To get to the record, search the ID instead: every record's file name ends in its ID, so Obsidian's quick switcher (Ctrl+O, or Cmd+O on a Mac) finds it at once. A claim is not a note of its own and its ID is in no file name, so put a `c-` ID into Obsidian's search (Ctrl+Shift+F, or Cmd+Shift+F on a Mac) to find the source file that holds the claim. If you work in Obsidian every day, turn on Obsidian link mode (below) and the links connect.
 
 A link you type by name without picking from the list, like `[[Grandpa Joe]]`, is unresolved in Obsidian too unless a file has that name. The `fha` tools still read it as a link to the person.
+
+## Turn on Obsidian link mode
+
+Obsidian link mode makes the tools write every link by file name, so Obsidian follows it, draws it in the graph and lists it under backlinks:
+
+- a person: `[[hartley__thomas_edward_p-de957bcda1|Thomas Edward Hartley]]`
+- a source: `[[1880-census-fairview-hartley-household_s-4f5f215e60|s-4f5f215e60]]` (the ID stays the words you see, so a citation still reads as one)
+- a claim: `[[1880-census-fairview-hartley-household_s-4f5f215e60#Claims|c-bdfbce2a11]]`, which opens the source at its Claims section
+
+The file name ends in the record's ID, so every `fha` tool, the family website and the exports read these links exactly as they read the ID form, and what the exports leave out for privacy is the same in both modes.
+
+To turn it on:
+
+1. Open `fha.yaml` and add the line `links: obsidian`.
+2. Preview the change to the links already in your records: `fha normalize-links --obsidian`. It lists every file it would change and what each link becomes. Words you wrote after the `|` stay as they are.
+3. Write it: `fha normalize-links --obsidian --write`.
+4. Run `fha index`, then `fha views refresh`, so the generated pages and the `## Sources` lists use the new links too.
+
+From then on, every tool that writes a link writes it by file name. `fha lint` reports any link Obsidian cannot follow (warning W161): an ID link typed by hand, or a file name a rename has since changed. The fix it names is the same command, `fha normalize-links --obsidian --write`.
+
+A few links stay as they are in this mode:
+
+- **Places** keep the ID form, `[[l-…|Fairview]]`: every place lives in one `places/places.yaml` file, so there is no file name to point at yet.
+- **Claims blocks** keep the ID form. Obsidian does not follow a link inside a fenced block, so there is nothing to gain there.
+- **A claim link with its own words**, like `[[c-…|the census line]]`: Obsidian's form needs the claim ID as the words, so the tools leave it and lint names it. Rewrite it as `[[source file name#Claims|c-…]]` and put the words beside it.
+
+When a tool renames a record (a person's name corrected, two people merged), links written with the old file name still work in every `fha` tool, because only the ID at the end is read; lint W161 names them and `fha normalize-links --obsidian --write` brings them up to date. To go back to ID links, remove the `links:` line: the tools write ID links again, and the file-name links already written keep working.
 
 ## Searching your archive
 

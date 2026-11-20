@@ -141,6 +141,19 @@
 # biography:
 #   style: chronicle    # chronicle (era-by-era, fact-forward - the default) | narrative (story-driven)
 
+# ── Links Obsidian can follow (optional) ──
+#   If you open this archive as an Obsidian vault, links that name a record's
+#   ID ([[p-de957bcda1|Thomas Edward Hartley]]) do not connect there, because
+#   Obsidian finds a note by its file name. Turn this on and the tools write
+#   links by file name instead ([[hartley__thomas_edward_p-de957bcda1|Thomas
+#   Edward Hartley]]); the file name ends in the ID, so every fha tool still
+#   reads it. After turning it on, run `fha normalize-links --obsidian --write`
+#   once to rewrite the links already in your records. Place links keep the
+#   ID form: places have no files of their own yet. docs/USING_WITH_OBSIDIAN.md
+#   has the whole story.
+#
+# links: id         # id (the default) | obsidian
+
 # ── Promotion nudges (optional) ──
 #   When a not-yet-curated person accumulates this many accepted facts, the
 #   report and review sessions start suggesting a real profile for them.
