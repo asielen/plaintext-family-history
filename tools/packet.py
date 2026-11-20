@@ -236,7 +236,7 @@ from _lib import (
     Result,
     apply_private_fence,
     configure_utf8_stdout,
-    TOKEN_RE,
+    extract_tokens,
     count_private_fences,
     extract_wikilinks,
     has_unfenced_draft_text,
@@ -1475,7 +1475,7 @@ def _linked_ids(text: str, alias_map: dict[str, str]) -> set[str]:
     (`[[P-…]]`, `[P-…]`) plus name/stem wikilinks (`[[Cousin Ruth]]`) that the
     alias map resolves. Mirrors `index._index_citations_for_file`, so the
     caution reads a copy the way the index reads the original."""
-    out = {m.group(1).lower() for m in TOKEN_RE.finditer(text)}
+    out = {tid for tid, _disp, _frag, _span in extract_tokens(text)}
     for target, _disp, _frag, _span in extract_wikilinks(text):
         if id_type_of(target):
             continue

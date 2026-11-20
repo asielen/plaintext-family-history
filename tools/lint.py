@@ -134,7 +134,7 @@ from _lib import (
     PERSON_SEX_VALUES,
     SOURCE_CLASS_VALUES,
     mint_ids,
-    TOKEN_RE,
+    extract_tokens,
     VITAL_TYPES,
     Finding,
     Result,
@@ -178,6 +178,7 @@ from _lib import (
     extract_wikilinks,
     link_field_refs,
     resolve_ref,
+    alias_key_text,
     strip_link_wrapper,
     is_merged_meta,
     strip_generated_region,   # cut the generated summary region out before E013 reads
@@ -1047,8 +1048,7 @@ def _collect_token_refs(text: str, path: Path, registry: Registry,
     `line_offset` is added to each line number when `text` is a record body,
     so the number is the file's own."""
     for lineno, line in enumerate(text.splitlines(), start=1 + line_offset):
-        for m in TOKEN_RE.finditer(line):
-            tid = normalize_id(m.group(1))
+        for tid, _disp, _frag, _span in extract_tokens(line):
             registry.token_refs.setdefault(tid, []).append((path, lineno))
         for target, _disp, _frag, _span in extract_wikilinks(line):
             if id_type_of(target):
@@ -3003,7 +3003,7 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
     if not aliases:
         return True
     entries = aliases if isinstance(aliases, list) else [aliases]
-    present = {strip_link_wrapper(str(a)).lower() for a in entries}
+    present = {alias_key_text(str(a)).lower() for a in entries}
     return normalize_id(cid) in present
 
 
@@ -3022,7 +3022,7 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
         return [], False
     if not isinstance(aliases, list) or is_merged_meta(meta):
         return ([] if _self_alias_ok(meta, pid) else [fmt_id_display(pid)]), False
-    present = {strip_link_wrapper(str(a)).strip().lower() for a in aliases if a is not None}
+    present = {alias_key_text(str(a)).strip().lower() for a in aliases if a is not None}
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
     public = {v.lower() for v in person_alias_mirror(meta)}

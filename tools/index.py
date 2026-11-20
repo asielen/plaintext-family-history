@@ -64,7 +64,7 @@ from _lib import (
     ID_RE,
     INDEX_SCHEMA_VERSION,
     TEXT_COMPANION_ROLES,
-    TOKEN_RE,
+    extract_tokens,
     TRANSCRIPT_TEXT_SUFFIXES,
     FhaConfigError,
     Message,
@@ -104,6 +104,7 @@ from _lib import (
     sqlite_cache_schema_status,
     person_surname,
     recorded_surname,
+    alias_key_text,
     strip_link_wrapper,
     undecodable_file_recorder,
     unreadable_dir_recorder,
@@ -611,7 +612,7 @@ def _insert_record_aliases(
     seen: set[str] = set()
 
     def add(value: str, kind: str) -> None:
-        key = strip_link_wrapper(str(value)).lower()
+        key = alias_key_text(str(value)).lower()
         if not key or key in seen:
             return
         seen.add(key)
@@ -1875,7 +1876,6 @@ def _index_citations(
     drops every `[[S-…]]` written inside it and `fha find --related` quietly
     shows fewer connections than the archive really holds.
     """
-    from _lib import TOKEN_RE
     # archive_root/out/ is fha packet's default, gitignored output directory
     # (TOOLING §8) - disposable export copies, not archive truth, so they
     # must not become citation sites in the index. Only the root-level out/
@@ -1906,7 +1906,6 @@ def _index_citations_for_file(
     - ID tokens and resolved name/stem wikilinks - identically. The caller turns
     the returned C-ids into on-demand source aliases via
     `_register_cited_claim_aliases`."""
-    from _lib import TOKEN_RE
     if is_template_file(path):
         return set()   # `_TEMPLATE.*` placeholder tokens are not citations
     try:
@@ -1916,8 +1915,7 @@ def _index_citations_for_file(
     rel = str(path.relative_to(archive_root))
     cited_cids: set[str] = set()
     for lineno, line in enumerate(lines, start=1):
-        for m in TOKEN_RE.finditer(line):
-            token = m.group(1).lower()
+        for token, _disp, _frag, _span in extract_tokens(line):
             kind = token[0].upper()
             if kind == 'C':
                 cited_cids.add(token)
@@ -1926,8 +1924,9 @@ def _index_citations_for_file(
                 (token, kind, rel, lineno),
             )
         # Name/stem wikilinks resolve through the alias map to the record's
-        # canonical ID. ID-shaped targets are skipped here - already handled by
-        # the TOKEN_RE pass above - so `[[S-…]]` is never double-counted.
+        # canonical ID. ID-shaped targets (a file-stem target reads as its ID)
+        # are skipped here, already handled by the token pass above, so
+        # `[[S-…]]` is never double-counted.
         if alias_map:
             for target, _disp, _frag, _span in extract_wikilinks(line):
                 if id_type_of(target):

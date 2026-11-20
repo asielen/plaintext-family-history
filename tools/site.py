@@ -335,6 +335,7 @@ from _lib import (
     Result,
     site_picture_job,
     split_log_entries,
+    link_parts,
     strip_link_wrapper,
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
@@ -939,8 +940,11 @@ def _inline_html(text: str, render_token) -> str:
         # from THAT (see this function's docstring for why: the rendered
         # HTML is the only thing that can't disagree with itself).
         if m.group('wtarget') is not None:
-            scrubbed_wdisp = _scrub_internal_encoding(m.group('wdisp'))
-            rendered = render_token(m.group('wtarget').strip(), scrubbed_wdisp)
+            # A file-stem target reads as its ID, and `[[source_stem|c-…]]`
+            # as the claim, before the label is scrubbed (`link_parts`).
+            target, wdisp = link_parts(m.group('wtarget'), m.group('wdisp'))
+            scrubbed_wdisp = _scrub_internal_encoding(wdisp) if wdisp is not None else None
+            rendered = render_token(target, scrubbed_wdisp)
         elif m.group('token'):
             rendered = render_token(m.group('token'))
         elif m.group('ltext') is not None:
@@ -1755,7 +1759,7 @@ def _prose_to_html(text: str, render_token, render_embed=None, *, drop_private: 
         if render_embed is not None:
             emb = _EMBED_RE.match(line)
             if emb:
-                fig = render_embed(emb.group(1).strip(), (emb.group(2) or '').strip())
+                fig = render_embed(link_parts(emb.group(1))[0], (emb.group(2) or '').strip())
                 if fig:
                     blocks.append(fig)
                 i += 1

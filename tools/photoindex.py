@@ -224,6 +224,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    strip_link_wrapper,
     PNG_SIGNATURE as _PNG_SIGNATURE,
     jpeg_picture_hash as _jpeg_picture_hash,
     png_picture_hash as _png_picture_hash,
@@ -1210,10 +1211,9 @@ def _load_source_people(
         for p in (rec.get('meta') or {}).get('people') or []:
             if not p:
                 continue
-            raw = str(p).strip()
-            # Support bare P-ids and [[P-id]] / [[Person Name]] wikilink forms.
-            if raw.startswith('[[') and raw.endswith(']]'):
-                raw = raw[2:-2].split('|')[0].strip()
+            # Bare P-ids and the [[P-id]] / [[Person Name]] / file-stem
+            # wikilink forms all reduce to their target.
+            raw = strip_link_wrapper(str(p))
             if id_type_of(raw) == 'P':
                 pids.append(normalize_id(raw))
             else:

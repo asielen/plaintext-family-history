@@ -150,6 +150,7 @@ from _lib import (
     couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
     couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None,
     couple_folder_prefix,    # position → the even couple-folder number,
+    link_parts,
     extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
     fmt_id_display,       # the one ID form tools write and show: all lowercase,
@@ -639,7 +640,8 @@ def _md_inline_to_html(text: str) -> str:
     escaped = html_escape(text)
 
     def _token(m: re.Match) -> str:
-        target, display = m.group(1), m.group(2)
+        # A file-stem target shows as its ID, the same as the ID form.
+        target, display = link_parts(m.group(1).split('#', 1)[0], m.group(2))
         if display:
             return f'<span class="cite" title="{target}">{display}</span>'
         return f'<span class="cite">{target}</span>'

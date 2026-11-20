@@ -117,6 +117,7 @@ from _lib import (
     edtf_bounds,
     extract_token_ids,
     extract_tokens,
+    link_parts,
     fmt_id_display,
     id_type_of,
     is_valid_id,
@@ -480,7 +481,9 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
             # Drop an Obsidian #heading / #^block fragment before lookup: the
             # alias table stores names without it, so `[[Restricted Person#bio]]`
             # would otherwise miss the lookup and slip past the privacy scan.
-            target = raw.split('#', 1)[0].strip()
+            # A file-stem target reads as its ID (`link_parts`), which
+            # extract_token_ids already handles.
+            target = link_parts(raw.split('#', 1)[0])[0]
             if not target or is_valid_id(target):
                 continue  # blank, or an ID already handled by extract_token_ids
             for row in conn.execute(
