@@ -1,6 +1,6 @@
 ---
 id: p-6f7g8h9jka
-aliases: [p-6f7g8h9jka]
+aliases: [p-6f7g8h9jka, Warren Calvin Hartley]
 name: Warren Calvin Hartley
 sex: M
 living: false

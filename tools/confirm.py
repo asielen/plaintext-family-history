@@ -198,6 +198,7 @@ from _lib import (
     result_fail,
     resolve_typed_ref,
     strip_link_wrapper,
+    sync_person_aliases,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
@@ -2871,9 +2872,8 @@ def run_confirm_merge(
         folded['aliases'] += 1
     if fold_alias_items and not survivor_has_aliases:
         # The fold is about to CREATE the survivor's aliases: list. A
-        # non-empty aliases: list must carry the record's own ID (lint W111 -
-        # the line that makes [[P-...]] click through in Obsidian), so the
-        # merge writes it first rather than minting an instant warning. Not
+        # non-empty aliases: list must carry the record's own ID (lint W111),
+        # so the merge writes it first rather than minting a warning. Not
         # counted in folded['aliases']: it is the survivor's own id, nothing
         # folded from the merged record.
         fold_alias_items.insert(0, ps_disp)
@@ -2962,6 +2962,10 @@ def run_confirm_merge(
         survivor_text = _fold_fm_list(survivor_text, 'name_variants', fold_variant_items)
         survivor_text = _fold_fm_list(survivor_text, 'aliases', fold_alias_items,
                                       insert_after=('name_variants', 'name', 'id'))
+        # The survivor's own name and every public variant it now carries are
+        # in its aliases: too (SPEC §9), even on a record written before the
+        # mirror was kept, so the merged names show up in Obsidian's [[ list.
+        survivor_text, _, _ = sync_person_aliases(survivor_text)
         survivor_text = _fold_external_ids(survivor_text, fold_ext_pairs)
         survivor_text = _fold_relationship_entries(survivor_text, fold_rel_entries)
         survivor_text, _merged = collapse_relationship_entries(

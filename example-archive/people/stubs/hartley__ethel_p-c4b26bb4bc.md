@@ -1,6 +1,6 @@
 ---
 id: p-c4b26bb4bc
-aliases: [p-c4b26bb4bc]
+aliases: [p-c4b26bb4bc, Ethel Hartley]
 name: Ethel Hartley
 profile_photo: ethel-hartley-portrait.jpg
 sex: F

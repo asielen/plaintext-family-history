@@ -27,6 +27,7 @@ citation: >                # OPTIONAL: a sentence saying exactly what this is, i
 # WHO and WHERE this source is about: these links make your family graph.
 # In Obsidian, type [[ and pick the name: it links them and shows up in your graph.
 # `fha normalize-links` later adds the IDs to these links; you never need to type one.
+# (Obsidian follows a link by file name, so it shows the ID form as unresolved.)
 people:
   - "[[Ken Smith]]"        # type [[ and pick the person; later it becomes [[p-...|Ken Smith]]
 places:                    # OPTIONAL: where this source is set

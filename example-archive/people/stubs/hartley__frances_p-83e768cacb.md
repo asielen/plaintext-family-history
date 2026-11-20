@@ -1,6 +1,6 @@
 ---
 id: p-83e768cacb
-aliases: [p-83e768cacb]
+aliases: [p-83e768cacb, Frances Hartley]
 name: Frances Hartley
 profile_photo: frances-hartley-winter.jpg
 sex: F

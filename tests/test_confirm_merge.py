@@ -783,6 +783,26 @@ class MergeArchiveTests(unittest.TestCase):
         import lint
         self.assertTrue(lint._self_alias_ok(smeta, SURVIVOR))
 
+    def test_survivor_written_before_the_mirror_gets_its_own_names_too(self) -> None:
+        # A survivor whose aliases: holds only its ID (written before the tools
+        # mirrored names) ends the merge with its own name and every public
+        # variant listed (SPEC §9), the ID still first, so Obsidian's [[ list
+        # finds the survivor by all of them.
+        id_only = SURVIVOR_FILE.replace(
+            'aliases: [P-aaaaaaaaaa, Thomas Edward Hartley, T. E. Hartley]\n',
+            'aliases: [P-aaaaaaaaaa]\n')
+        self.survivor_path.write_text(id_only, encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = read_record(self.survivor_path)['meta']
+        entries = [str(a).strip() for a in smeta['aliases']]
+        self.assertEqual(normalize_id(entries[0]), SURVIVOR.lower())
+        for name in ('Thomas Edward Hartley', 'T. E. Hartley', 'Thos. Hartley'):
+            self.assertIn(name, entries)
+        self.assertNotIn('Tommy Hartley', entries)   # restricted: never mirrored
+        import lint
+        self.assertEqual(lint._person_alias_gaps(smeta, SURVIVOR), ([], False))
+
     def test_accept_draft_refuses_a_merged_tombstone_naming_survivor(self) -> None:
         run_merge(self.root)
         # Give the tombstone an AI-DRAFT marker and a hand-edited status

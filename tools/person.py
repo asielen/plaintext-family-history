@@ -329,6 +329,7 @@ from _lib import (
     stub_filename,
     recorded_surname,
     set_surname_line,
+    sync_person_aliases,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -2250,6 +2251,13 @@ def run_rename(
         changed_keys.add('surname')
 
     new_text = '\n'.join(new_lines)
+    # aliases: follows the name (SPEC §9): the new name joins it, and the old
+    # one leaves it unless --keep-variant kept it as a variant, so Obsidian's
+    # [[ suggestions offer the person by the names the record now carries.
+    new_text, aliases_added, aliases_removed = sync_person_aliases(
+        new_text, drop=[old_name] if old_name and not keep_variant else [])
+    if aliases_added or aliases_removed:
+        changed_keys.add('aliases')
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
     if problem is not None:
         return _refuse_result(
@@ -2336,6 +2344,10 @@ def run_rename(
                          f'automatically ({variant_note}) - add it by hand')
         elif old_name:
             steps.append(f'{old_name!r} is already in name_variants: - left as is')
+    if aliases_added:
+        steps.append('add ' + ', '.join(repr(a) for a in aliases_added) + ' to aliases:')
+    if aliases_removed:
+        steps.append('take ' + ', '.join(repr(a) for a in aliases_removed) + ' out of aliases:')
     if renaming_file:
         steps.append(f'rename {path.name} -> {new_filename}')
     if renaming_research:

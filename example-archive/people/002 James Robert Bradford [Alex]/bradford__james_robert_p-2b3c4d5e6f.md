@@ -1,6 +1,6 @@
 ---
 id: p-2b3c4d5e6f
-aliases: [p-2b3c4d5e6f]
+aliases: [p-2b3c4d5e6f, James Robert Bradford, Jim Bradford]
 name: James Robert Bradford
 name_variants: [Jim Bradford]
 sex: M

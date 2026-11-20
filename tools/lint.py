@@ -16,6 +16,7 @@ lint.py - fha lint: verify the archive against the spec.
                                      count as missing and are replaced in place
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
   fha lint --fix-surnames            Record the surname: each W138 file name implies
+  fha lint --fix-aliases             Bring each W111 record's aliases: into step
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
 SPEC §16, TOOLING §3.
@@ -122,6 +123,10 @@ from _lib import (
     nonbirth_bracket_label,
     normalize_living,
     public_name_variants,
+    merge_aliases_into_frontmatter,
+    person_alias_mirror,
+    sync_person_aliases,
+    yaml_alias_entry,
     reconcile_bracket_entries,
     parentage_parties,
     photos_ignore_matcher,
@@ -142,6 +147,7 @@ from _lib import (
     link_field_refs,
     resolve_ref,
     strip_link_wrapper,
+    is_merged_meta,
     strip_generated_region,   # cut the generated summary region out before E013 reads
     SUMMARY_REGION,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
@@ -306,7 +312,6 @@ configure_utf8_stdout()
 #                                   (byte-preserving IO itself is _lib's
 #                                    read_text_exact / write_text_exact_atomic)
 #    _wrap_unfenced_claims / _fix_claims_fence - verified ```yaml wrap for W114
-#    _merge_aliases_into_frontmatter - add slug/stem aliases to an existing block
 #    _fix_mint_ids               - complete id-less records: mint + rename + alias
 #    _claim_id_missing           - absent/blank/placeholder claim id = mintable
 #    _fix_mint_claim_ids         - complete id-less claims: mint id, stamp reviewed
@@ -317,6 +322,7 @@ configure_utf8_stdout()
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
 #    _check_file_name_surnames   - W138: the file name sorts under a surname the record does not read
 #    _fix_surnames               - write the surname: line W138 suggests (--fix-surnames)
+#    _fix_aliases                : bring W111 records' aliases: into step (--fix-aliases)
 #    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
 #
 #  Main entry / CLI
@@ -427,6 +433,8 @@ class Registry:
         self.missing_mirrors: list[dict] = []
         # W138: (profile path, surname to record) for `--fix-surnames`.
         self.surname_fixes: list[tuple[Path, str]] = []
+        # W111: record files whose aliases: `--fix-aliases` brings into step.
+        self.alias_fixes: list[Path] = []
 
         # Record folders Pass 1 could not list (W123). A lint that reports
         # "0 errors" is a certificate, and it must not be issued over records
@@ -2713,11 +2721,11 @@ def _alias_records(registry: Registry) -> list[dict]:
 
 def _self_alias_ok(meta: dict, cid: str) -> bool:
     """True if a record either declares no `aliases:` (hasn't opted into the
-    layer - not nagged) or its `aliases:` already includes its own canonical ID.
+    layer, so it is not nagged) or its `aliases:` already includes its own ID.
 
     Scoped this way on purpose: pre-alias records simply have no `aliases:` field
     and are left alone (forgiving, AGENTS.md), while a record that DID add aliases
-    must carry the self-ID - the one line that makes `[[S-…]]` click through."""
+    carries the self-ID the tools write first in every one."""
     aliases = meta.get('aliases')
     if not aliases:
         return True
@@ -2726,10 +2734,36 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
     return normalize_id(cid) in present
 
 
+def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
+    """What a person's `aliases:` lacks against SPEC §9's mirror, and whether
+    it holds a restricted name variant as plain text.
+
+    Returns (missing, holds_restricted): `missing` is the own ID and then each
+    of `name:` and the public `name_variants:` not yet listed. Only a record
+    that opted into the alias layer with an `aliases:` list is checked (the
+    same scoping as the self-ID check), and a merged tombstone never is: its
+    list holds only its bare ID by design (SPEC §9)."""
+    aliases = meta.get('aliases')
+    if not isinstance(aliases, list) or not aliases or is_merged_meta(meta):
+        return [], False
+    present = {strip_link_wrapper(str(a)).strip().lower() for a in aliases if a is not None}
+    missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
+    missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
+    public = {v.lower() for v in person_alias_mirror(meta)}
+    restricted = set()
+    for v in meta.get('name_variants') or []:
+        if isinstance(v, dict) and v.get('value') and _is_restricted(v.get('restricted')):
+            restricted.add(str(v['value']).strip().lower())
+    return missing, bool((restricted - public) & present)
+
+
 def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
     """The alias-layer maintenance + integrity checks (Pass 2).
 
-      - W111 self-alias: a record that uses `aliases:` but omits its own ID.
+      - W111 alias mirror: a record that uses `aliases:` but omits its own ID,
+        or a person whose `aliases:` lacks their `name:` or a public name
+        variant (SPEC §9, §18), or holds a restricted variant as plain text.
+        `fha lint --fix-aliases` brings each one into step.
       - W112 latent clash: one string names ≥2 records, but nothing links by it
         yet - normal in genealogy (same-name people), just a heads-up.
       - W113 active clash: a real `[[John Smith]]` (prose) or `people: [[John
@@ -2737,19 +2771,35 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
         ID. The system never guesses which record; the human (or `fha
         normalize-links`) chooses.
     """
-    # W111 - self-alias present where the record opted into the alias layer.
+    # W111: the alias mirror, where the record opted into the alias layer.
     for pid, meta in registry.person_meta.items():
-        if not _self_alias_ok(meta, pid):
-            path = registry.person_profile_paths.get(pid, [Path(pid)])[0]
-            findings.append(Finding('W', 'W111', path,
-                f"aliases: is missing this record's own ID {fmt_id_display(pid)} - add it so "
-                f'[[{fmt_id_display(pid)}]] resolves in Obsidian (run `fha normalize-links`)'))
+        missing, holds_restricted = _person_alias_gaps(meta, pid)
+        if not missing and not holds_restricted:
+            continue
+        path = registry.person_profile_paths.get(pid, [Path(pid)])[0]
+        parts = []
+        own = fmt_id_display(pid)
+        if own in missing:
+            parts.append(f"aliases: is missing this record's own ID {own}")
+        names = [m for m in missing if m != own]
+        if names:
+            which = 'that name' if len(names) == 1 else 'those names'
+            parts.append(f'aliases: does not list {", ".join(names)} from name: and '
+                         f'name_variants:, so typing [[ in Obsidian does not suggest '
+                         f'this person by {which}')
+        if holds_restricted:
+            parts.append('aliases: holds a restricted name variant as plain text, '
+                         'where nothing marks it private')
+        registry.alias_fixes.append(path)
+        findings.append(Finding('W', 'W111', path,
+            '; '.join(parts) + '. Run `fha lint --fix-aliases` (add --dry-run to preview).'))
     for sid, meta in registry.source_meta.items():
         if not _self_alias_ok(meta, sid):
             path = registry.source_paths.get(sid, Path(sid))
+            registry.alias_fixes.append(path)
             findings.append(Finding('W', 'W111', path,
-                f"aliases: is missing this record's own ID {fmt_id_display(sid)} - add it so "
-                f'[[{fmt_id_display(sid)}]] resolves in Obsidian (run `fha normalize-links`)'))
+                f"aliases: is missing this record's own ID {fmt_id_display(sid)}. Run "
+                '`fha lint --fix-aliases` (add --dry-run to preview).'))
 
     # W112 / W113 - name/stem clashes.
     clashes = alias_clashes(_alias_records(registry))
@@ -4490,6 +4540,59 @@ def _fix_surnames(
         progress.append(f'Added `{line}` to {rel}')
 
 
+def _fix_aliases(
+    registry: Registry, archive_root: Path, progress: list[str], changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """W111 fix: bring each listed record's `aliases:` into step.
+
+    A person gets the shared `_lib.sync_person_aliases` rule every name-writing
+    verb uses (own ID first, then `name:` and the public `name_variants:`; a
+    restricted variant taken out), so a backfilled record ends up exactly as
+    a freshly written one would. A source gets its own ID at the head of the
+    list. Only the `aliases:` lines change; anything a human added stays.
+    Previewed under --dry-run, and a record the surgery cannot edit safely (a
+    flow list over several lines) is named for a hand edit."""
+    for path in registry.alias_fixes:
+        rel = path.relative_to(archive_root) if path.is_absolute() else path
+        try:
+            text = read_text_exact(path)
+        except (OSError, UnicodeDecodeError):
+            progress.append(f'--fix-aliases: could not read {rel}; skipped.')
+            continue
+        fm = FRONT_RE.match(text)
+        try:
+            meta = safe_load_yaml(fm.group(1)) if fm else None
+        except yaml.YAMLError:
+            meta = None
+        rid = str(meta.get('id') or '') if isinstance(meta, dict) else ''
+        if id_type_of(rid) == 'P':
+            new_text, added, removed = sync_person_aliases(text)
+        elif rid:
+            inner, added = merge_aliases_into_frontmatter(
+                fm.group(1), fmt_id_display(rid), [], _file_newline(text), id_first=True)
+            removed = []
+            new_text = text[:fm.start(1)] + inner + text[fm.end(1):] if added else text
+        else:
+            added, removed, new_text = [], [], text
+        if not added and not removed:
+            progress.append(f'--fix-aliases: {rel} has an aliases: list this fix cannot '
+                            'edit safely; add the entries the warning names by hand.')
+            continue
+        bits = []
+        if added:
+            bits.append('add ' + ', '.join(added))
+        if removed:
+            bits.append(f'take out {len(removed)} restricted name(s)')
+        summary = ' and '.join(bits)
+        if dry_run:
+            progress.append(f'--fix-aliases dry-run: would {summary} in {rel}')
+            continue
+        write_text_exact_atomic(path, new_text)
+        changed.append(str(path))
+        progress.append(f'aliases: in {rel}: {summary}')
+
+
 def _check_untranscribed_evidence(
     registry: Registry, findings: list[Finding],
 ) -> None:
@@ -6209,6 +6312,7 @@ def run_lint(
     fix_ids: bool = False,
     fix_reciprocal: bool = False,
     fix_surnames: bool = False,
+    fix_aliases: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
 ) -> Result:
     """
@@ -6283,6 +6387,8 @@ def run_lint(
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_surnames:
         _fix_surnames(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_aliases:
+        _fix_aliases(registry, archive_root, progress, changed, dry_run=dry_run)
 
     # W128: files this run could not decode as UTF-8 (#68). `_run_lint_core`
     # already reported the ones ITS passes hit; this second call picks up the
@@ -6770,114 +6876,6 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     return (seg or 'unknown'), 'unknown'
 
 
-def _yaml_alias_entry(value: str) -> str:
-    """One alias, quoted for a YAML flow list when it isn't a plain-safe token.
-
-    A verbatim filename stem ("Sam Rivera", "1950 census - Brooks household",
-    or one containing a comma) would split or misparse unquoted inside
-    `aliases: [...]`; JSON string quoting is valid YAML and escapes everything."""
-    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_\-]*', value):
-        return value
-    return json.dumps(value)
-
-
-def _merge_aliases_into_frontmatter(
-    fm_text: str, new_id: str, aliases: list[str], nl: str,
-) -> tuple[str, int]:
-    """Append missing alias entries to an EXISTING `aliases:` block, in place.
-
-    Shipped templates SHIP an `aliases:` block (the placeholder-id teaching
-    form), and hand authors write their own - so "a block already exists" must
-    mean MERGE, never skip: skipping loses the old-filename aliases and every
-    `[[old name]]` link dies on the §13 rename. Handles the two shapes a hand
-    file uses: a block list (`- entry` item lines; new entries are appended
-    after the last item at the same dash indent) and a flow list
-    (`aliases: [a, b]`; new entries are spliced in before the `]`). Entries
-    already present are not duplicated (compared lowercased, the way the
-    resolve map compares). Any shape it does not recognize is left untouched.
-
-    Returns (new_fm_text, n_entries_added) - the caller's "(old name kept as
-    an alias)" note prints only when n > 0, so the message can never lie.
-    """
-    try:
-        parsed = safe_load_yaml(fm_text)
-    except yaml.YAMLError:
-        return fm_text, 0
-    if not isinstance(parsed, dict):
-        return fm_text, 0
-    raw = parsed.get('aliases')
-    if isinstance(raw, list):
-        existing = [str(a) for a in raw if a is not None]
-    elif raw is None:
-        existing = []
-    else:
-        return fm_text, 0   # a scalar aliases: value - a hand form; leave it alone
-    have = {a.strip().lower() for a in existing}
-    have.add(normalize_id(new_id))
-    to_add = [a for a in aliases if a.strip().lower() not in have]
-    if not to_add:
-        return fm_text, 0
-    entries = [_yaml_alias_entry(a) for a in to_add]
-
-    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
-    if not m:
-        return fm_text, 0
-    head_line = m.group(0)
-    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
-    if flow_open:
-        # Splice before the list's CLOSING bracket, located as the LAST `]` on
-        # the line - not the first. A first-`]` split (an earlier `[^\]]*` group)
-        # stopped inside an embedded `[[wikilink]]` alias, mangling both the old
-        # entry and the new one. rfind finds the real close even past `]]`.
-        close = head_line.rfind(']')
-        if close >= flow_open.end():
-            open_part = head_line[:flow_open.end()]     # 'aliases: ['
-            body = head_line[flow_open.end():close]      # existing entries verbatim
-            suffix = head_line[close:]                   # '] ...trailing'
-            joined = ', '.join(entries)
-            new_body = f'{body}, {joined}' if body.strip() else joined
-            new_line = open_part + new_body + suffix
-            return fm_text[:m.start()] + new_line + fm_text[m.end():], len(to_add)
-    if '[' in head_line:
-        # A flow list whose `]` sits on a later line - a shape this surgery
-        # does not edit. Leave the hand form alone rather than risk splicing
-        # a block item into the middle of a flow list.
-        return fm_text, 0
-
-    # Block-list form: consume the contiguous `- item` lines after the head
-    # and insert the new entries after the last one, copying its dash indent.
-    # (match(pos) anchors at pos by itself - a leading ^ would only match at
-    # position 0 without re.M and stop the walk after the first item.)
-    pos = m.end()
-    if pos < len(fm_text) and fm_text[pos] == '\n':
-        pos += 1
-    body = fm_text[pos:]
-    # `[ \t]*` (not `[ \t]+`): a valid block list may sit at zero indent under
-    # the key (`aliases:\n- old`). Requiring leading whitespace missed those,
-    # then defaulted item_prefix to two spaces and inserted an indent-2 item
-    # ahead of the indent-0 ones - mixed-indent frontmatter YAML rejects. Now we
-    # copy whatever dash indent the existing items use (including none).
-    item_re = re.compile(r'[ \t]*-[ \t]+[^\r\n]*\r?\n?')
-    consumed = 0
-    item_prefix = None
-    while True:
-        im = item_re.match(body, consumed)
-        if not im:
-            break
-        if item_prefix is None:
-            item_prefix = re.match(r'[ \t]*-[ \t]+', im.group(0)).group(0)
-        consumed = im.end()
-    insert_at = pos + consumed
-    if item_prefix is None:
-        item_prefix = '  - '
-    if insert_at == len(fm_text) and not fm_text.endswith('\n'):
-        # The block is the last thing in the frontmatter and its final line has
-        # no newline (FRONT_RE's group excludes the one before ---): open one.
-        return fm_text + ''.join(f'{nl}{item_prefix}{e}' for e in entries), len(to_add)
-    new_lines = ''.join(f'{item_prefix}{e}{nl}' for e in entries)
-    return fm_text[:insert_at] + new_lines + fm_text[insert_at:], len(to_add)
-
-
 def _insert_id_and_aliases(
     text: str, new_id: str, aliases: list[str], nl: str = '\n',
 ) -> tuple[str, bool]:
@@ -6907,7 +6905,7 @@ def _insert_id_and_aliases(
     `nl` is the file's own newline convention (from _file_newline): every line
     this surgery writes copies it, so an LF archive edited on Windows stays LF.
     """
-    entries = ', '.join([new_id] + [_yaml_alias_entry(a) for a in aliases])
+    entries = ', '.join([new_id] + [yaml_alias_entry(a) for a in aliases])
     alias_line = f'aliases: [{entries}]'
     fm = FRONT_RE.match(text)
     has_aliases = bool(fm) and re.search(r'^aliases:', fm.group(1), re.M)
@@ -6925,8 +6923,8 @@ def _insert_id_and_aliases(
             rf'(?<![A-Za-z0-9_]){re.escape(new_id[0])}-_{{4,}}(?![A-Za-z0-9_])', re.I)
         inner = placeholder_re.sub(new_id, inner)
         if has_aliases:
-            inner, n_added = _merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
-            kept = n_added > 0
+            inner, added = merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
+            kept = bool(added)
         else:
             inner = f'{alias_line}{nl}' + inner
             kept = True
@@ -6937,8 +6935,8 @@ def _insert_id_and_aliases(
         # fresh alias line is added right under the id.
         inner = fm.group(1)
         if has_aliases:
-            inner, n_added = _merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
-            kept = n_added > 0
+            inner, added = merge_aliases_into_frontmatter(inner, new_id, aliases, nl)
+            kept = bool(added)
             inner = f'id: {new_id}{nl}' + inner
         else:
             inner = f'id: {new_id}{nl}{alias_line}{nl}' + inner
@@ -7030,6 +7028,11 @@ def _fix_mint_ids(
             else:
                 surname, given = _person_filename_parts(name, path.stem)
             new_name = f'{surname}__{given}_{new_id}.md'
+            # The person's name and public variants lead the list, ahead of the
+            # old file name, as every other person writer orders them (SPEC §9).
+            mirrored = person_alias_mirror(meta)
+            known = {a.lower() for a in mirrored}
+            aliases = mirrored + [a for a in aliases if a.lower() not in known]
         else:
             new_name = f'{slug}_{new_id}.md'
         new_path = path.with_name(new_name)
@@ -7845,6 +7848,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                    help='Write the surname: line each W138 file name implies, so the record '
                         'keeps the surname its file name was sorted under (with --dry-run '
                         'to preview)')
+    p.add_argument('--fix-aliases', action='store_true',
+                   help="Bring each W111 record's aliases: into step: its own ID, and for a "
+                        "person their name and public name variants, so typing [[ in "
+                        'Obsidian finds them by name (with --dry-run to preview)')
     # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
     # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
     # flag: one owner per mutation, and E011's message names the tool.
@@ -7880,6 +7887,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_ids=getattr(args, 'fix_ids', False),
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
         fix_surnames=getattr(args, 'fix_surnames', False),
+        fix_aliases=getattr(args, 'fix_aliases', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
     return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
@@ -7906,6 +7914,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-reciprocal', action='store_true')
     parser.add_argument('--fix-surnames', action='store_true')
+    parser.add_argument('--fix-aliases', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)
 

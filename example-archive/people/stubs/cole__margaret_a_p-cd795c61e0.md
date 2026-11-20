@@ -1,6 +1,6 @@
 ---
 id: p-cd795c61e0
-aliases: [p-cd795c61e0]
+aliases: [p-cd795c61e0, Margaret A. Cole]
 name: Margaret A. Cole
 married_name: Margaret Hartley
 profile_photo: margaret-cole-portrait.jpg

@@ -10,7 +10,7 @@
 id: p-__________   # OPTIONAL. Leave it blank; `fha lint --fix-ids` fills it in. To make one yourself:
                    # p- and 10 characters, digits and a-z except i, l, o and u (e.g. p-de957bcda1).
                    # Pick at random, and never reuse a code another record already has.
-aliases:           # OPTIONAL: the same code again, so [[p-...]] and [[name]] links both work
+aliases:           # OPTIONAL: the same code again (the tools add the name below it)
   - p-__________   # paste the same code here too
 
 name: Full Name Here       # display name. Usually their name AT BIRTH, so the record
@@ -20,7 +20,7 @@ name: Full Name Here       # display name. Usually their name AT BIRTH, so the r
 # name_at_birth: Margaret Cole     # OPTIONAL: birth or maiden name, if different from `name`
 # married_name: Margaret Hartley   # OPTIONAL: married or later name
 # also_known_as:                   # OPTIONAL: nicknames, other spellings, other names;
-#   - Peggy                        #   these become aliases, so [[Peggy]] leads to this person
+#   - Peggy                        #   the tools read these too, so a [[Peggy]] link leads to this person
 #   - Maggie Cole
 # profile_photo: margaret-portrait.jpg   # OPTIONAL: their main portrait (a photo file name)
 sex: M                     # M / F / intersex / unknown. Sets pronouns in drafted text (unless gender

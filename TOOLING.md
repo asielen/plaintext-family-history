@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.8, 2026-11-19 · companion to SPEC.md v2.8 (versions track the SPEC)**
+**Version 2.9, 2026-11-20 · companion to SPEC.md v2.9 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -234,7 +234,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W108 | W | A README.md older than the last SPEC.md change. | §20 |
 | W109 | W | Non-vital or low-confidence claim with no `notes:` context. Also the catch-all for an unrecognized `source_type` and for what `--format-check` finds (line endings, final newline, key order, ID case, claim `value` first, blank lines, section order). | §8.4, §14 |
 | W110 | W | Ahnentafel placement (needs `root_person`): a direct-line couple folder's number differs from the derived number, or a person's files are in the wrong couple folder. Fix: `fha views brackets --fix`. If `root_person` names no record, one W110 on `fha.yaml` explains that placement checks are skipped. | §12.2 |
-| W111 | W | A record with `aliases:` omits its own ID. Fix: `fha normalize-links`. | §14 |
+| W111 | W | A record with an `aliases:` list omits its own ID, or (a person) lacks the `name:` or a public `name_variants:` entry or holds a restricted variant as plain text. A merged tombstone is not checked. Fix: `--fix-aliases`. | §9, §14, §18 |
 | W112 | W | Latent alias clash: one alias names two or more records, nothing links by it yet. | §18 |
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
@@ -303,9 +303,10 @@ E016 is retired: a claim naming a merged person counts for the survivor and is W
 - `--mint-stubs` (E005): create stubs in `people/stubs/`.
 - `--spawn-questions` (E009): append a question entry to `notes/questions.md`.
 - `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a yaml fence.
-- `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases. A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
+- `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases (after a person's name and public variants). A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
 - `--fix-reciprocal` (W116): append the missing mirror entry, one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable, or change any field but `relationships:`, is refused with the entry to add by hand; the refusal says which. `--dry-run` runs the same fold and check, so it prints the refusal a live run would give.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
+- `--fix-aliases` (W111): bring `aliases:` into step with the shared mirror rule (`_lib.sync_person_aliases`, the same one every name-writing verb uses): the own ID first, then a person's `name:` and public `name_variants:`; a restricted variant's value is taken out. Entries a human added stay, and existing entries keep their text. A list the surgery cannot edit (a flow list over several lines) is named for a hand edit.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.
 
@@ -494,6 +495,7 @@ fha person promote <p-id> [--into FOLDER] [--dry-run] [--root PATH]
 ### `new`
 
 Mints a p-id and writes a stub under `people/stubs/` (the "+ add person" button), rendered by the same code as `fha stubs` (which mints for names already referenced in claims).
+- `aliases:` lists the p-id, then the name (SPEC §9); an `unknown` stub lists only the p-id.
 - `--sex`/`--gender`/vitals validate as §9; `--birth`/`--death` are provisional, strict EDTF or loose wording (normalized with a gloss).
 - All input is validated before minting, so a bad flag burns no id. `--dry-run` draws a real id but writes nothing.
 - `--from-file PEOPLE.tsv` mints a batch; column 3 is a per-name `--surname`. An unclosed or multi-line quote refuses before minting.
@@ -508,7 +510,7 @@ Mints a p-id and writes a stub under `people/stubs/` (the "+ add person" button)
 
 ### `rename`
 
-1. Replace `name:`; `--keep-variant` appends the old name to `name_variants:`.
+1. Replace `name:`; `--keep-variant` appends the old name to `name_variants:`. `aliases:` follows (SPEC §9): the new name is added, and the old one is taken out unless `--keep-variant` kept it as a variant.
 2. Rename the profile to the filename the new name derives (§13, honouring `--surname`).
 3. Rename a research companion alongside, if any.
 4. Delete generated companions (timeline/sources-index/draft-queue, identified by generated header, never by name) at the old filename and regenerate via `fha views … <p-id>`. A non-generated look-alike is left and named.
@@ -1341,7 +1343,7 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 
 `fha gedcom import <file.ged> [--apply] [--plan-out FILE] [--root PATH]` imports a foreign GEDCOM; a file stamped `HEAD SOUR fha` is refused. Routed by a dispatcher intercept in `fha.py` (§4a).
 
-**Writes:** the `.ged` copied into `documents/gedcom/` as one source (`sources/other/`, `source_type: other`, `subtype: gedcom`, `source_class: derivative`); each individual a stub in `people/stubs/` (provisional `birth:`/`death:`, extra NAMEs as `name_variants:`); each assertion a `suggested` claim, `confidence: low` (`medium` with a GEDCOM citation), `anchor: "line N"`.
+**Writes:** the `.ged` copied into `documents/gedcom/` as one source (`sources/other/`, `source_type: other`, `subtype: gedcom`, `source_class: derivative`); each individual a stub in `people/stubs/` (provisional `birth:`/`death:`, extra NAMEs as `name_variants:`, the name and variants mirrored into `aliases:`); each assertion a `suggested` claim, `confidence: low` (`medium` with a GEDCOM citation), `anchor: "line N"`.
 
 `SOUR` titles go to claim `notes:` and the record's `## Notes`, never minted. `PLAC` → `place_text:` only. Nothing is `accepted`.
 
@@ -1564,7 +1566,7 @@ The detectors only read; `fha confirm` writes what the human picks, from any cal
 | `confirm merge <p-merged> --into <p-survivor> --reason "<why>"` | Enact a human-confirmed SPEC §9 merge; see below. |
 
 **`confirm merge`** is planned in memory and applied with an undo journal; any failure rolls everything back.
-- Folds `name`/`name_variants` (restricted mappings kept), `external_ids:` and `relationships:` (deduped by to+type+subtype: a tie both records list keeps one entry whose `claims:` gains the other's claims; self-edges skipped with a warning) into the survivor. An `external_ids` key conflict keeps the survivor's value, warns naming both, exits 1; the tombstone keeps the other.
+- Folds `name`/`name_variants` (restricted mappings kept; the public names join the survivor's `aliases:`, SPEC §9), `external_ids:` and `relationships:` (deduped by to+type+subtype: a tie both records list keeps one entry whose `claims:` gains the other's claims; self-edges skipped with a warning) into the survivor. An `external_ids` key conflict keeps the survivor's value, warns naming both, exits 1; the tombstone keeps the other.
 - Tombstone: `status: merged`, `merged_into:`, `merge_reason:`, `merged_date:`; folded fields and `tier:` stripped; `aliases:` reduced to the bare id; generated views deleted (GENERATED header verified, lookalikes kept with a warning); file renamed to `MERGED-INTO-p-survivor__<original>` last, never deleted.
 - Privacy: on a tombstone whose `living:` is `unknown` or missing, writes `living: false` when the survivor is `living: false`, so the merged record never hides a dead ancestor (§1 Restriction). Never copies `true`; a tombstone's own `living: true` or `restricted:` stays and keeps governing the survivor.
 - Relinks `persons:`/`roles:` in claims of every status (bare, `[[p-id]]`, `[[p-id|Name]]`, resolving names; deduped), profiles' `relationships:` (an entry repointed onto a person the record already lists in that role folds into that entry), and source `people:`. A file that cannot be rewritten safely refuses the merge with zero writes. Prose mentions are left for lint W107 (counted). A `relationships:` entry whose `to:` still names the tombstone reads through the survivor, so it is the edge the index derives, not a W115.

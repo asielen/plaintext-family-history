@@ -256,17 +256,17 @@ Two narrow exceptions fire only on the owner's own Capture click, one record at 
 
 ## 10. Working in Obsidian
 
-**The rule.** An archive is an Obsidian vault as it stands: Markdown files, YAML frontmatter, and `[[ ]]` links. Point Obsidian at the folder and it opens, with no import. Links are written `[[id|Name]]`: the double brackets make a live link in any wiki-style editor, the ID inside keeps the link stable across renames, and the name after the bar is only for display. Each record lists its ID and names in `aliases:`, so a link by name (`[[Thomas Edward Hartley]]`) resolves too.
+**The rule.** An archive is an Obsidian vault as it stands: Markdown files, YAML frontmatter, and `[[ ]]` links. Point Obsidian at the folder and it opens, with no import. Links are written `[[id|Name]]`: the double brackets mark a link in any editor, the ID inside keeps the link stable across renames, and the name after the bar is only for display. The tools resolve a link by ID or by name through each record's `aliases:`. Obsidian resolves a link by file name only, so it shows an ID link as unresolved; the file name ends in the ID, so searching the ID finds the record. Each person's `aliases:` lists their ID, name and public name variants, which Obsidian offers while you type `[[`; picking one writes a link to the file, which Obsidian follows.
 
 Claims sit in a fenced YAML block under `## Claims` in their source's record.
 
 **Why the fence.** A claim belongs beside the evidence it rests on, in that source's own file. An unfenced YAML list renders as garbled Markdown, so the claims block is fenced to stay readable in any viewer.
 
-**What the fence costs.** Obsidian's query plugins (Dataview, Bases) read frontmatter, not the inside of a fenced block, so they cannot query claims. Claims are queried through the `fha` tools and the index instead. The person record's frontmatter (vitals, the `relationships:` list, flags) is ordinary frontmatter and answers the common questions ("everyone with no death date"). A link to a single claim lands on its source's file, not the claim itself.
+**What the fence costs.** Obsidian's query plugins (Dataview, Bases) read frontmatter, not the inside of a fenced block, so they cannot query claims. Claims are queried through the `fha` tools and the index instead. The person record's frontmatter (vitals, the `relationships:` list, flags) is ordinary frontmatter and answers the common questions ("everyone with no death date"). In the tools a link to a single claim resolves to its source's record, not the claim itself.
 
 Other limits:
 
-- Obsidian silently picks one of two notes that share an alias. `fha lint` reports the clash; a shared name is then pinned to its ID.
+- Two people with the same name both appear in Obsidian's `[[` list under that name, told apart only by their file names. `fha lint` reports the clash; a shared name is then pinned to its ID.
 - With a couple of thousand people, the global graph is an unreadable tangle, as in any large vault. The useful view is the local graph around one person.
 - The privacy flags protect what the tools export. Publishing or syncing the raw vault to a public place bypasses them.
 - On a phone the archive is for reading and jotting. Processing happens at the desk.

@@ -1,6 +1,6 @@
 ---
 id: p-075114a0f8
-aliases: [p-075114a0f8]
+aliases: [p-075114a0f8, Caleb Comstock Hartley]
 name: Caleb Comstock Hartley
 profile_photo: caleb-chastina-hartley.jpg
 sex: M

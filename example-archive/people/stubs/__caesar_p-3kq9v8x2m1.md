@@ -1,6 +1,6 @@
 ---
 id: p-3kq9v8x2m1
-aliases: [p-3kq9v8x2m1]
+aliases: [p-3kq9v8x2m1, Caesar]
 name: Caesar
 surname: ""   # set by hand: no surname, the file name leads with __
 sex: M

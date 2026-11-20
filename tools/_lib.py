@@ -430,6 +430,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forwards registry_error from the read above
 #
 #  Alias resolution / publication guards
+#    person_alias_mirror       : the names a person's aliases: carries: name + public variants
+#    yaml_alias_entry          : one aliases: entry quoted for a YAML flow list
+#    merge_aliases_into_frontmatter: append missing entries to an aliases: list, in place
+#    sync_person_aliases       : keep a person's aliases: in step with name/name_variants
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
 #    merge_pointer             - status: merged + merged_into -> the id claims move to
@@ -9501,10 +9505,12 @@ def extract_bare_ids(text: str) -> list[str]:
 # ── Alias resolution layer ────────────────────────────────────────────────────
 #
 # The `aliases:` field on every record is the universal resolution surface: it
-# carries the record's own canonical ID (so a bare `[[S-…]]` clicks through in
-# Obsidian), any human stem the owner typed (`grandmas-album`), on-demand C-ids,
-# and - for people and places - the display `name` and its variants, so a
-# hand-typed `[[Ken Smith]]` or `[[Fairview]]` resolves to the right record.
+# carries the record's own canonical ID, any human stem the owner typed
+# (`grandmas-album`), on-demand C-ids, and (for people and places) the
+# display `name` and its variants, so a hand-typed `[[Ken Smith]]` or
+# `[[Fairview]]` resolves to the right record in every fha reader. (Obsidian
+# resolves a link by file name only; it reads `aliases:` just to suggest
+# notes while typing `[[`.)
 #
 # These helpers are the read-time, NON-mutating resolver every front door shares.
 # Resolution order is: exact canonical ID → alias string → unresolved (None). An
@@ -10089,6 +10095,294 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
     if not key:
         return None
     return alias_map.get(key)
+
+
+# ── A person's aliases: mirror (SPEC §9, §18) ─────────────────────────────────
+#
+# Obsidian reads a note's frontmatter `aliases:` to offer the note while the
+# owner types `[[`: type "Tom" and Thomas Edward Hartley's record is offered,
+# and picking it writes a link to the file. The index already reads `name:` and
+# `name_variants:` directly, so this mirror is what makes the same names work in
+# an editor that reads only the file. Every verb that writes a person's name
+# keeps the mirror in step through `sync_person_aliases`, and `fha lint
+# --fix-aliases` brings older records up to date.
+
+
+def person_alias_mirror(meta: dict) -> list[str]:
+    """The names a person's `aliases:` carries besides the ID: `name:`, then
+    each public `name_variants:` entry, in that order, without repeats.
+
+    A restricted variant (`{value:, restricted: true}`, a private prior name)
+    is left out. It still resolves inside the archive, because the index reads
+    it from `name_variants:` where its restricted marker sits; copied into
+    `aliases:` it would be plain text with no marker, which every reader of the
+    file (an editor, a packet copy) would take as public. A `name:` of
+    `unknown` (an unnamed stub) is not a name and is left out too."""
+    out: list[str] = []
+    seen: set[str] = set()
+    name = meta.get('name')
+    candidates = [str(name).strip()] if name else []
+    candidates += [str(v).strip() for v in public_name_variants(meta.get('name_variants'))]
+    for value in candidates:
+        key = value.lower()
+        if not value or key == 'unknown' or key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _restricted_variant_values(meta: dict) -> set[str]:
+    """Lowercased values of a person's restricted `name_variants:` entries."""
+    out: set[str] = set()
+    raw = meta.get('name_variants')
+    for v in (raw if isinstance(raw, list) else []):
+        if isinstance(v, dict) and v.get('value') and \
+                v.get('restricted') not in (None, False, '', 'false'):
+            out.add(str(v['value']).strip().lower())
+    return out
+
+
+def yaml_alias_entry(value: str) -> str:
+    """One alias, written so it reads back as the same string inside a YAML
+    flow list (`aliases: [a, b]`) as well as a block list item.
+
+    A name like "Hartley, Thomas" or "Lot #4" would split or lose its tail
+    unquoted inside `[...]`, so anything but a plain ID-or-stem token is
+    rendered by the YAML emitter in flow context, which quotes exactly when
+    needed. Accented letters stay as written (`allow_unicode`), so the file
+    still reads "Guðrún" rather than an escape code."""
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_\-]*', value):
+        return value
+    rendered = yaml.safe_dump([value], default_flow_style=True,
+                              allow_unicode=True, width=10 ** 9).strip()
+    if rendered.startswith('[') and rendered.endswith(']'):
+        return rendered[1:-1]
+    return json.dumps(value, ensure_ascii=False)
+
+
+def merge_aliases_into_frontmatter(
+    fm_text: str, new_id: str, aliases: list[str], nl: str, *,
+    id_first: bool = False,
+) -> tuple[str, list[str]]:
+    """Add missing alias entries to an EXISTING `aliases:` block, in place.
+
+    Shipped templates ship an `aliases:` block (the placeholder-id teaching
+    form), and hand authors write their own, so "a block already exists" must
+    mean merge, never skip. Handles the two shapes a hand file uses: a block
+    list (`- entry` item lines; new entries go after the last item at the same
+    dash indent) and a one-line flow list (`aliases: [a, b]`; new entries are
+    spliced in before the `]`). Entries already present are not repeated
+    (compared lowercased, the way the resolve map compares), and existing
+    entries keep their text, quoting and comments byte for byte. Any other
+    shape is left untouched.
+
+    `id_first` puts `new_id` at the head of the list when it is missing, so a
+    record's own ID reads first however late it was added; every other entry
+    is appended in the order given.
+
+    Returns (new_fm_text, entries_added), so a caller's note about what it
+    added prints only when something was."""
+    try:
+        parsed = safe_load_yaml(fm_text)
+    except yaml.YAMLError:
+        return fm_text, []
+    if not isinstance(parsed, dict):
+        return fm_text, []
+    raw = parsed.get('aliases')
+    if isinstance(raw, list):
+        existing = [str(a) for a in raw if a is not None]
+    elif raw is None:
+        existing = []
+    else:
+        return fm_text, []   # a scalar aliases: value is a hand form; leave it alone
+    have = {strip_link_wrapper(a).strip().lower() for a in existing}
+    head: list[str] = []
+    if id_first and normalize_id(new_id) not in have:
+        head = [new_id]
+    have.add(normalize_id(new_id))
+    tail: list[str] = []
+    for a in aliases:
+        key = a.strip().lower()
+        if key and key not in have:
+            have.add(key)
+            tail.append(a)
+    if not head and not tail:
+        return fm_text, []
+    head_entries = [yaml_alias_entry(a) for a in head]
+    tail_entries = [yaml_alias_entry(a) for a in tail]
+
+    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
+    if not m:
+        return fm_text, []
+    head_line = m.group(0).rstrip('\r')
+    line_end = m.start() + len(head_line)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        # Splice before the list's CLOSING bracket, found as the LAST `]` on the
+        # line: a first-`]` split stops inside an embedded `[[wikilink]]` alias
+        # and mangles both the old entry and the new one.
+        close = head_line.rfind(']')
+        if close >= flow_open.end():
+            open_part = head_line[:flow_open.end()]     # 'aliases: ['
+            body = head_line[flow_open.end():close]      # existing entries verbatim
+            suffix = head_line[close:]                   # '] ...trailing'
+            parts = head_entries + ([body.strip()] if body.strip() else []) + tail_entries
+            new_line = open_part + ', '.join(parts) + suffix
+            return fm_text[:m.start()] + new_line + fm_text[line_end:], head + tail
+    if '[' in head_line:
+        # A flow list whose `]` sits on a later line: a shape this surgery does
+        # not edit, rather than risk splicing into the middle of it.
+        return fm_text, []
+    if head_line.split('#', 1)[0].strip() != 'aliases:':
+        return fm_text, []   # `aliases: value` was ruled out above; be safe anyway
+
+    # Block-list form: walk the contiguous `- item` lines after the key and
+    # insert after the last one (or before the first, for the ID), copying the
+    # dash indent the existing items use, including none (`aliases:` then `- old`).
+    # The text is given a closing newline while it is edited (the frontmatter
+    # group a caller passes usually ends without one) and handed back without.
+    work = fm_text
+    closed = not work.endswith('\n')
+    if closed:
+        work += nl
+    # A comment line between items (`# kept from the old file name`) belongs
+    # to the list, so the walk steps over it to the items after.
+    pos = m.end() + 1                       # just past the key line's newline
+    line_re = re.compile(r'[ \t]*(?:(-[ \t]+)[^\r\n]*|#[^\r\n]*)\r?\n')
+    consumed = pos
+    cursor = pos
+    item_prefix = None
+    while True:
+        im = line_re.match(work, cursor)
+        if not im:
+            break
+        cursor = im.end()
+        if im.group(1) is None:
+            continue                        # a comment line
+        if item_prefix is None:
+            item_prefix = re.match(r'[ \t]*-[ \t]+', im.group(0)).group(0)
+        consumed = im.end()
+    if item_prefix is None:
+        item_prefix = '  - '
+    work = (work[:pos]
+            + ''.join(f'{item_prefix}{e}{nl}' for e in head_entries)
+            + work[pos:consumed]
+            + ''.join(f'{item_prefix}{e}{nl}' for e in tail_entries)
+            + work[consumed:])
+    if closed:
+        work = work[:-len(nl)]
+    return work, head + tail
+
+
+def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
+    """Remove the `aliases:` entries whose value (lowercased) is in `drop`.
+
+    Used only for names this tool knows it put there: a name a rename replaced
+    without `--keep-variant`, or a variant that is now restricted. A one-line
+    flow list is rewritten when every entry reads as plain text; a block list
+    loses just the matching item lines, so comments on the others stay. A
+    shape this cannot read safely (a flow list over several lines, an entry
+    that is itself a list) is left as it is. Returns (new_text, removed)."""
+    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
+    if not m or not drop:
+        return fm_text, []
+    head_line = m.group(0).rstrip('\r')
+    line_end = m.start() + len(head_line)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        close = head_line.rfind(']')
+        if close < flow_open.end():
+            return fm_text, []
+        try:
+            items = safe_load_yaml(head_line[flow_open.end() - 1:close + 1])
+        except yaml.YAMLError:
+            return fm_text, []
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            return fm_text, []
+        keep = [i for i in items if i.strip().lower() not in drop]
+        removed = [i for i in items if i.strip().lower() in drop]
+        if not removed:
+            return fm_text, []
+        new_line = (head_line[:flow_open.end()]
+                    + ', '.join(yaml_alias_entry(i) for i in keep)
+                    + head_line[close:])
+        return fm_text[:m.start()] + new_line + fm_text[line_end:], removed
+    pos = m.end()
+    if pos < len(fm_text) and fm_text[pos] == '\n':
+        pos += 1
+    line_re = re.compile(r'[ \t]*(?:(-[ \t]+)([^\r\n]*)|#[^\r\n]*)\r?\n?')
+    out_parts: list[str] = []
+    removed: list[str] = []
+    cursor = pos
+    while True:
+        im = line_re.match(fm_text, cursor)
+        if not im or im.end() == cursor:
+            break
+        if im.group(1) is None:             # a comment line between items stays
+            out_parts.append(im.group(0))
+            cursor = im.end()
+            continue
+        try:
+            value = safe_load_yaml(im.group(2))
+        except yaml.YAMLError:
+            value = None
+        if isinstance(value, str) and value.strip().lower() in drop:
+            removed.append(value)
+        else:
+            out_parts.append(im.group(0))
+        cursor = im.end()
+    if not removed:
+        return fm_text, []
+    out = fm_text[:pos] + ''.join(out_parts) + fm_text[cursor:]
+    if not fm_text.endswith('\n') and out.endswith('\n'):
+        # The removed item ended the text with no newline; the one now last
+        # keeps its own, which would leave a blank line before the fence.
+        out = out[:-2] if out.endswith('\r\n') else out[:-1]
+    return out, removed
+
+
+def sync_person_aliases(text: str, *, drop: Iterable[str] = ()) -> tuple[str, list[str], list[str]]:
+    """Bring a person record's `aliases:` in step with its name fields.
+
+    The rule (SPEC §9, §18): the ID first, then `name:`, then each public
+    `name_variants:` entry. Missing ones are added; nothing a human added
+    (a stem, a nickname, an old file name) is removed. Two things are taken
+    out: any name in `drop` (the old name a rename replaced without keeping
+    it as a variant) unless it is still the name or a public variant, and
+    the value of any restricted variant, so a private name never sits in
+    `aliases:` as plain text.
+
+    Left alone: a record with no frontmatter, no `id:`, no `aliases:` key (it
+    never opted into the alias layer, the same scoping as lint W111), a
+    scalar or unreadable `aliases:`, and a merged tombstone (its `aliases:`
+    holds only its bare ID by design, SPEC §9). Returns (new_text, added,
+    removed); new_text is `text` itself when nothing changed."""
+    fm = FRONT_RE.match(text)
+    if not fm:
+        return text, [], []
+    try:
+        meta = safe_load_yaml(fm.group(1))
+    except yaml.YAMLError:
+        return text, [], []
+    if not isinstance(meta, dict) or not meta.get('id') or is_merged_meta(meta):
+        return text, [], []
+    if not isinstance(meta.get('aliases'), list):
+        return text, [], []
+    pid = fmt_id_display(str(meta['id']))
+    nl = '\r\n' if '\r\n' in fm.group(0) else '\n'
+    inner = fm.group(1)
+    mirror = person_alias_mirror(meta)
+    wanted = {v.lower() for v in mirror}
+    drop_keys = {str(d).strip().lower() for d in drop if d} - wanted
+    drop_keys |= _restricted_variant_values(meta) - wanted
+    drop_keys.discard(normalize_id(pid))
+    inner, removed = _remove_aliases_from_frontmatter(inner, drop_keys)
+    inner, added = merge_aliases_into_frontmatter(inner, pid, mirror, nl, id_first=True)
+    if not removed and not added:
+        return text, [], []
+    new_text = text[:fm.start(1)] + inner + text[fm.end(1):]
+    return new_text, added, removed
 
 
 def persons_named(conn: sqlite3.Connection, text: str) -> list[dict]:
@@ -13187,10 +13481,10 @@ def render_stub_content(
     way regardless of which tool wrote it; `tests/test_templates.py` checks it
     against `archive-template/people/stubs/_TEMPLATE.stub.md`.
 
-    `aliases:` carries the P-id from birth - the line that makes a bare
-    `[[P-…]]` cite click through in Obsidian. The display name registers as an
-    alias automatically (the index reads it from `name:`), so a hand-typed
-    `[[Name]]` resolves once the stub is promoted to a real name.
+    `aliases:` carries the P-id and then the name (SPEC §9's mirror, the
+    same list `sync_person_aliases` keeps up afterwards), so typing `[[` and
+    part of the name in Obsidian offers this record. An `unknown` stub lists
+    only its ID until it is given a real name.
 
     `sex`/`gender` are omitted entirely (not written as blank/null) when not
     given - most stubs never carry either, and an absent key is friendlier to
@@ -13217,10 +13511,12 @@ def render_stub_content(
         raise ValueError(format_person_sex_error(sex))
 
     display_name = name if name and name.lower() != 'unknown' else 'unknown'
+    alias_entries = [pid] + [yaml_alias_entry(a)
+                             for a in person_alias_mirror({'name': display_name})]
     lines = [
         '---',
         f'id: {pid}',
-        f'aliases: [{pid}]',
+        f'aliases: [{", ".join(alias_entries)}]',
         f'name: {yaml_inline(display_name)}',
     ]
     if surname is not None:

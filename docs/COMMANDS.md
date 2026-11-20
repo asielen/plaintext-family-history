@@ -149,6 +149,7 @@ never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
 | `--fix-ids` | Mint IDs for hand-authored id-less records (rename, keep the old name as an alias) and for id-less claims inside sources (with --dry-run to preview) |
 | `--fix-reciprocal` | Add the missing mirror edge for each W116 (with --dry-run to preview) |
 | `--fix-surnames` | Write the surname: line each W138 file name implies, so the record keeps the surname its file name was sorted under (with --dry-run to preview) |
+| `--fix-aliases` | Bring each W111 record's aliases: into step: its own ID, and for a person their name and public name variants, so typing [[ in Obsidian finds them by name (with --dry-run to preview) |
 
 ## `fha stubs`
 
