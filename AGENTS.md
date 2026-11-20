@@ -216,6 +216,10 @@ fha source clear-keyword <s-id> --keyword … [--replace-with …]   clear or co
 fha source set-primary <s-id> --file NAME          make the named photo the source's main
                             image (the fix `fha doctor` names when a record calls a
                             photo's back its main image; record-only, nothing renamed)
+fha places geocode (--place <l-id> | --all) [--dry-run]   coordinates, missing county/
+                            state/country and spellings from GeoNames (downloaded once);
+                            one table, one [y/N] the human answers; ambiguous places
+                            list a `places set --coords` command per candidate
 fha places set <l-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <l-id> --text …                    append a dated research note to a place

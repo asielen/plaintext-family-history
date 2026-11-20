@@ -35,15 +35,20 @@ right after a fresh `fha gedcom import` (which mints everything as
 geotagged photos (`.cache/photos.sqlite`) that have no known place within
 ~150m of them.
 
-`fha places geocode` (TOOLING §10) backfills `coords` (and proposes alt-names)
-for registry places that lack coordinates, using a one-time **offline GeoNames**
-dump (`cities15000.txt`, downloaded into `.cache/geonames/` unless `--offline`):
-no live API. A place's `name` + `hierarchy` tokens are matched against the
-gazetteer; only a *single* high-confidence candidate is proposed (place identity
-is a research judgment, not a string match - ambiguous matches are skipped, not
-guessed), and **every write requires interactive `[y/N]` confirmation**. Writes
-edit `places/places.yaml` surgically (the matched block only) so the file's hand
-comments and unrelated entries are preserved without needing `ruamel.yaml`.
+`fha places geocode` (TOOLING §10) fills in `coords` for registry places that
+lack them, plus a missing county, state or country in `hierarchy` and GeoNames'
+spellings as `alt_names`, from the **GeoNames** export saved in
+`.cache/geonames/`: the country/state/county name files and one dump per
+country the registry names, downloaded once (never with `--offline`), filtered
+to towns and divisions and cached as SQLite. No live API. A place's name is
+looked up in its countries and every other part of its hierarchy must be the
+candidate's commune, county, state or country; only a *single* fitting
+candidate is proposed (place identity is a research judgment, not a string
+match). Every proposal is shown in one table with one `[y/N]`; a yes writes
+them all in one atomic rewrite. Places with several candidates list each with
+its `fha places set --coords` command. Writes edit `places/places.yaml`
+surgically (the matched blocks only) so hand comments and unrelated entries
+survive without needing `ruamel.yaml`.
 
 `fha places set` / `fha places note` are the human-directed registry edits the
 workbench place page drives: coordinates, the also-known-as list, the dated
@@ -67,13 +72,21 @@ CODE MAP
     run_candidates
 
   Geocode
-    _US_STATE_CODES, _country_code_of      - hierarchy-token → code helpers
-    GeoRow, _load_gazetteer                - parse the GeoNames dump
-    _download_gazetteer                    - one-time offline-dump fetch
-    _match_place                           - name+hierarchy → unique hit / ambiguous / none
-    _locate_place_block                    - one `- id:` block's line span (shared grammar)
-    _apply_geocode_to_yaml                 - surgical places.yaml block edit
-    run_geocode                            - gather candidates, match, (confirm) write
+    _fold, _geo_key, _hierarchy_parts      : name comparison forms; hierarchy split
+    GeoRow, _feature_rank                  : one GeoNames feature and its level
+    _fetch_url                             : the one network call (download to .part, rename)
+    _read_country_info, _open_gazetteer_db,
+    _import_admin_codes, _import_country   : GeoNames files to .cache/geonames/gazetteer.sqlite
+    _Gazetteer                             : lookups: names, divisions, labels, descriptions
+    _place_name_and_context, _place_countries : what to look up, and in which countries
+    _says_division, _skipped_levels        : tie-break helpers
+    _match_place                           : name+hierarchy to hit / ambiguous / partial / none
+    _filled_hierarchy, _proposed_alt_names : what a hit adds besides coordinates
+    _locate_place_block                    : one `- id:` block's line span (shared grammar)
+    _apply_geocode_to_yaml                 : surgical places.yaml block edit
+    _prepare_gazetteer                     : download/import what the places need
+    _registry_country_spellings            : write the country the registry's way
+    _proposal_table, run_geocode           : one table, one yes, one atomic write
 
   Registry write-backs (set / note)
     _key_span, _set_block_key              - one key's span within a block; replace/insert
@@ -94,9 +107,12 @@ import argparse
 import datetime
 import difflib
 import io
+import os
 import re
+import shutil
 import sqlite3
 import sys
+import unicodedata
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -140,6 +156,7 @@ from _lib import (
     write_text_exact_atomic,
     yaml_inline,
     safe_load_yaml,
+    shell_quote,
 )
 
 configure_utf8_stdout()
@@ -597,163 +614,614 @@ def run_candidates(
 
 
 # ── Geocode ─────────────────────────────────────────────────────────────────────
+# The gazetteer is GeoNames' free export (download.geonames.org/export/dump/):
+#
+#   countryInfo.txt       every country's name and two-letter code
+#   admin1CodesASCII.txt  every state/province name, keyed "US.IL"
+#   admin2Codes.txt       every county-level name, keyed "US.IL.031"
+#   {CC}.zip              one country's every feature, of which geocode keeps
+#                         the populated places (class P: cities, towns,
+#                         villages) and the administrative divisions (class A:
+#                         states, counties, communes, and the country itself)
+#
+# The three name files are fetched once; a country's dump is fetched only when
+# a place in the registry names that country (or a state only it has). Each
+# dump is read once, filtered to classes P and A while streaming, and stored
+# in `.cache/geonames/gazetteer.sqlite`, so later runs look names up instead of
+# re-reading a 300 MB text file. Everything in `.cache/` is disposable: delete
+# the folder and the next run fetches it again.
 
-_GEONAMES_URL = 'https://download.geonames.org/export/dump/cities15000.zip'
-_GEONAMES_MEMBER = 'cities15000.txt'
+_GEONAMES_BASE_URL = 'https://download.geonames.org/export/dump/'
+_GEONAMES_NAME_FILES = ('countryInfo.txt', 'admin1CodesASCII.txt', 'admin2Codes.txt')
+_GAZETTEER_DB = 'gazetteer.sqlite'
+# Bump when the gazetteer tables change shape: an older cache is then rebuilt
+# from the dumps already on disk, never trusted.
+_GAZETTEER_SCHEMA = '1'
+_DOWNLOAD_TIMEOUT_S = 60
+_KEPT_FEATURE_CLASSES = ('P', 'A')
 
-# US state name → GeoNames admin1 code (the two-letter postal code used in the
-# cities dump). Lets "Fairview, Kansas" narrow to admin1 KS when several
-# Fairviews share a name - without this, multi-state name collisions stay
-# (correctly) ambiguous and are skipped rather than guessed.
-_US_STATE_CODES = {
-    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
-    'california': 'CA', 'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE',
-    'florida': 'FL', 'georgia': 'GA', 'hawaii': 'HI', 'idaho': 'ID',
-    'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA', 'kansas': 'KS',
-    'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
-    'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN', 'mississippi': 'MS',
-    'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE', 'nevada': 'NV',
-    'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
-    'north carolina': 'NC', 'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK',
-    'oregon': 'OR', 'pennsylvania': 'PA', 'rhode island': 'RI',
-    'south carolina': 'SC', 'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX',
-    'utah': 'UT', 'vermont': 'VT', 'virginia': 'VA', 'washington': 'WA',
-    'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
+# Country spellings genealogy hierarchies use that countryInfo.txt does not
+# carry (it has "United States", "United Kingdom", "Poland", "France", ...).
+# Two-letter and three-letter codes are deliberately absent apart from USA/US/
+# UK: as the last part of a hierarchy, "IL" or "Ind." is a state, not Israel
+# or India.
+_COUNTRY_EXTRA_NAMES = {
+    'usa': 'US', 'us': 'US', 'u s a': 'US', 'u s': 'US',
+    'united states of america': 'US', 'america': 'US',
+    'england': 'GB', 'scotland': 'GB', 'wales': 'GB', 'northern ireland': 'GB',
+    'great britain': 'GB', 'britain': 'GB', 'uk': 'GB', 'u k': 'GB',
+    'holland': 'NL', 'polska': 'PL', 'deutschland': 'DE', 'czech republic': 'CZ',
 }
 
-_COUNTRY_CODES = {
-    'usa': 'US', 'us': 'US', 'u.s.a.': 'US', 'u.s.': 'US',
-    'united states': 'US', 'united states of america': 'US',
-    'canada': 'CA', 'mexico': 'MX', 'england': 'GB', 'scotland': 'GB',
-    'wales': 'GB', 'united kingdom': 'GB', 'uk': 'GB', 'great britain': 'GB',
-    'ireland': 'IE', 'germany': 'DE', 'france': 'FR', 'italy': 'IT',
-    'australia': 'AU',
-}
+# Words that name a kind of division rather than the division itself, so
+# "Cook County", "Cook Co." and "Cook" read alike, and so do "powiat
+# białostocki" and GeoNames' "Powiat białostocki". Only the first and last
+# word of a part are dropped, and never the part's only word.
+_ADMIN_WORDS = frozenset({
+    'county', 'co', 'parish', 'parafia', 'powiat', 'gmina', 'wojewodztwo',
+    'voivodeship', 'province', 'department', 'departement', 'state',
+})
+
+# Letters that Unicode decomposition leaves alone but a person typing on an
+# English keyboard writes plainly ("Lodz" for "Łódź").
+_FOLD_LETTERS = str.maketrans({
+    'ł': 'l', 'ø': 'o', 'đ': 'd', 'æ': 'ae', 'œ': 'oe', 'ı': 'i', 'þ': 'th',
+})
+
+# GeoNames feature codes for a neighbourhood, an abandoned, destroyed or
+# historical settlement. When a living town of the same name also fits, these
+# step aside so "Chicago" is the city, not a ghost town or a district of it.
+_NOT_CURRENT_CODES = frozenset({'PPLX', 'PPLQ', 'PPLW', 'PPLH', 'PPLCH'})
+
+# Hierarchy ranks, smallest place first: the place itself, then its
+# commune/township, county, state, country.
+_RANK_SELF, _RANK_ADMIN3, _RANK_ADMIN2, _RANK_ADMIN1, _RANK_COUNTRY = 4, 3, 2, 1, 0
+_MAX_CANDIDATES_SHOWN = 3
 
 
-def _country_code_of(tokens: list[str]) -> str | None:
-    for tok in tokens:
-        if tok in _COUNTRY_CODES:
-            return _COUNTRY_CODES[tok]
-    return None
+def _fold(text: str | None) -> list[str]:
+    """A name's words with case and accents folded and punctuation dropped:
+    "Wola Mała" and "WOLA MALA" fold alike."""
+    s = unicodedata.normalize('NFKD', str(text or '').casefold().translate(_FOLD_LETTERS))
+    s = ''.join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r'[\W_]+', ' ', s).split()
+
+
+def _geo_key(text: str | None) -> str:
+    """The comparison form of one place name: case and accents folded,
+    punctuation turned to spaces, and a leading or trailing division word
+    ("County", "Co.", "powiat") dropped.
+
+    Every name on both sides (the registry's and GeoNames') goes through
+    this one function, so "Białystok", "Bialystok" and "BIALYSTOK" are the
+    same key, as are "Cook County", "Cook Co." and "Cook"."""
+    tokens = _fold(text)
+    while len(tokens) > 1 and tokens[0] in _ADMIN_WORDS:
+        tokens.pop(0)
+    while len(tokens) > 1 and tokens[-1] in _ADMIN_WORDS:
+        tokens.pop()
+    return ' '.join(tokens)
+
+
+def _hierarchy_parts(hierarchy: str | None) -> list[str]:
+    """A hierarchy string split on its commas, blanks dropped."""
+    return [p.strip() for p in str(hierarchy or '').split(',') if p.strip()]
 
 
 @dataclass(frozen=True)
 class GeoRow:
+    """One GeoNames feature: a town or village (class P) or an administrative
+    division (class A: a state, a county, a commune, a country). `admin1`,
+    `admin2`, `admin3` are GeoNames' codes for the divisions it sits in."""
+    gid: int
     name: str
     asciiname: str
-    altnames: frozenset[str]
     lat: float
     lon: float
+    fclass: str
+    fcode: str
     country: str
     admin1: str
+    admin2: str
+    admin3: str
     population: int
 
 
-def _load_gazetteer(path: Path) -> list[GeoRow]:
-    """Parse a GeoNames cities dump (tab-separated) into GeoRow records.
+def _feature_rank(geo: GeoRow) -> int:
+    """Where a feature sits in a hierarchy: a country, a state, a county, a
+    commune, or (for a town and anything else) the place itself. A division
+    is never its own context: "New York" the state does not count the state
+    of New York among the divisions it sits in."""
+    code = geo.fcode or ''
+    if geo.fclass == 'A':
+        if code.startswith('PCL'):
+            return _RANK_COUNTRY
+        if code.startswith('ADM1'):
+            return _RANK_ADMIN1
+        if code.startswith('ADM2'):
+            return _RANK_ADMIN2
+        if code.startswith('ADM3'):
+            return _RANK_ADMIN3
+    return _RANK_SELF
 
-    Malformed lines (short column count, non-numeric coords) are skipped rather
-    than aborting the load - the dump is a disposable cache, not archive truth.
-    """
-    rows: list[GeoRow] = []
+
+def _fetch_url(url: str, dest: Path) -> str | None:
+    """Download `url` to `dest` (via a `.part` file renamed into place, so an
+    interrupted download never leaves a half file that looks complete).
+
+    The only network access in the tools. Returns None on success or a plain
+    reason on any failure; no exception escapes, so a missing connection
+    reads as one sentence, not a traceback."""
+    part = dest.with_name(dest.name + '.part')
     try:
-        text = path.read_text(encoding='utf-8')
-    except OSError:
-        return rows
-    for line in text.splitlines():
-        cols = line.split('\t')
-        if len(cols) < 15:
-            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_S) as resp, \
+                open(part, 'wb') as out:
+            shutil.copyfileobj(resp, out, 1024 * 1024)
+        os.replace(part, dest)
+    except Exception as e:  # urllib, ssl, socket and disk errors are many and platform-varied
         try:
-            lat = float(cols[4])
-            lon = float(cols[5])
-        except ValueError:
-            continue
-        try:
-            population = int(cols[14])
-        except ValueError:
-            population = 0
-        alt = frozenset(
-            a.strip().lower() for a in cols[3].split(',') if a.strip()
-        )
-        rows.append(GeoRow(
-            name=cols[1], asciiname=cols[2], altnames=alt,
-            lat=lat, lon=lon, country=cols[8], admin1=cols[10],
-            population=population,
-        ))
-    return rows
-
-
-def _download_gazetteer(dest_dir: Path) -> tuple[Path | None, str | None]:
-    """Download + unzip the GeoNames cities dump into dest_dir.
-
-    Returns (path, None) on success or (None, error_message) on any failure -
-    no exception escapes, so an offline run or a network hiccup degrades to a
-    clear message instead of a traceback.
-    """
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    out_path = dest_dir / _GEONAMES_MEMBER
-    try:
-        with urllib.request.urlopen(_GEONAMES_URL, timeout=60) as resp:
-            data = resp.read()
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            with zf.open(_GEONAMES_MEMBER) as member:
-                out_path.write_bytes(member.read())
-    except Exception as e:  # urllib/ssl/zip errors are many and platform-varied
-        return None, f'could not download GeoNames dump: {e}'
-    return out_path, None
-
-
-def _match_place(name: str, hierarchy: str | None, gazetteer: list[GeoRow]):
-    """Match a registry place against the gazetteer.
-
-    Returns:
-      GeoRow       - a single high-confidence hit, OK to propose
-      'ambiguous'  - more than one plausible hit; a human must decide
-      None         - no plausible hit
-    """
-    name_norm = normalize_place_text(name)
-    if not name_norm:
-        return None
-
-    candidates = [
-        g for g in gazetteer
-        if name_norm in (g.name.lower(), g.asciiname.lower()) or name_norm in g.altnames
-    ]
-    if not candidates:
-        return None
-
-    tokens = [normalize_place_text(t) for t in (hierarchy or '').split(',')]
-    tokens = [t for t in tokens if t and t != name_norm]
-
-    country = _country_code_of(tokens)
-    if country:
-        narrowed = [g for g in candidates if g.country == country]
-        if narrowed:
-            candidates = narrowed
-
-    state = next((_US_STATE_CODES[t] for t in tokens if t in _US_STATE_CODES), None)
-    if state and len(candidates) > 1:
-        narrowed = [g for g in candidates if g.admin1.upper() == state]
-        if narrowed:
-            candidates = narrowed
-
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        return 'ambiguous'
+            part.unlink()
+        except OSError:
+            pass
+        return str(e) or e.__class__.__name__
     return None
 
 
-def _proposed_alt_names(geo: GeoRow, current_name: str, existing_alts: set[str]) -> list[str]:
+def _read_country_info(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """countryInfo.txt -> ({name key: country code}, {code: country name}).
+
+    The name map also carries `_COUNTRY_EXTRA_NAMES`. Comment lines start
+    with '#'; a short or malformed line is skipped."""
+    names: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    with open(path, encoding='utf-8') as fh:
+        for line in fh:
+            if line.startswith('#'):
+                continue
+            cols = line.rstrip('\r\n').split('\t')
+            if len(cols) < 5 or len(cols[0]) != 2 or not cols[4].strip():
+                continue
+            cc, label = cols[0].upper(), cols[4].strip()
+            labels[cc] = label
+            key = _geo_key(label)
+            if key:
+                names.setdefault(key, cc)
+    for raw, cc in _COUNTRY_EXTRA_NAMES.items():
+        names.setdefault(_geo_key(raw), cc)
+    return names, labels
+
+
+_GAZETTEER_DDL = """
+CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS loaded(cc TEXT PRIMARY KEY, features INTEGER);
+CREATE TABLE IF NOT EXISTS features(
+    gid INTEGER PRIMARY KEY, cc TEXT, name TEXT, asciiname TEXT, lat REAL, lon REAL,
+    fclass TEXT, fcode TEXT, a1 TEXT, a2 TEXT, a3 TEXT, population INTEGER);
+CREATE TABLE IF NOT EXISTS names(key TEXT, cc TEXT, gid INTEGER);
+CREATE INDEX IF NOT EXISTS names_key ON names(key, cc);
+CREATE TABLE IF NOT EXISTS admin_keys(cc TEXT, level INTEGER, code TEXT, key TEXT);
+CREATE INDEX IF NOT EXISTS admin_keys_code ON admin_keys(cc, level, code);
+CREATE INDEX IF NOT EXISTS admin_keys_key ON admin_keys(key, level);
+CREATE TABLE IF NOT EXISTS admin_labels(
+    cc TEXT, level INTEGER, code TEXT, label TEXT, PRIMARY KEY(cc, level, code));
+"""
+
+
+def _open_gazetteer_db(path: Path) -> sqlite3.Connection:
+    """Open (or create) the gazetteer cache; a cache from another schema
+    version, or one SQLite cannot read, is deleted and started fresh, since
+    it is rebuilt from the dumps on disk."""
+    for _attempt in range(2):
+        conn = None
+        try:
+            conn = sqlite3.connect(str(path))
+            # A disposable cache rebuilt from the dumps: speed over durability.
+            conn.execute('PRAGMA synchronous = OFF')
+            conn.executescript(_GAZETTEER_DDL)
+            row = conn.execute("SELECT v FROM meta WHERE k = 'schema'").fetchone()
+            if row is None:
+                conn.execute("INSERT INTO meta(k, v) VALUES ('schema', ?)", (_GAZETTEER_SCHEMA,))
+                conn.commit()
+                return conn
+            if row[0] == _GAZETTEER_SCHEMA:
+                return conn
+        except sqlite3.DatabaseError:
+            pass
+        if conn is not None:
+            conn.close()
+        path.unlink(missing_ok=True)
+    raise sqlite3.DatabaseError(f'cannot create {path}')
+
+
+def _import_admin_codes(conn: sqlite3.Connection, gdir: Path) -> None:
+    """Load admin1CodesASCII.txt and admin2Codes.txt (every country's states
+    and counties) into the cache, once. Their names are the labels a filled-in
+    hierarchy uses ("Illinois", "Cook County")."""
+    if conn.execute("SELECT 1 FROM meta WHERE k = 'admin_codes'").fetchone():
+        return
+    for level, fname in ((1, 'admin1CodesASCII.txt'), (2, 'admin2Codes.txt')):
+        with open(gdir / fname, encoding='utf-8') as fh:
+            for line in fh:
+                cols = line.rstrip('\r\n').split('\t')
+                if len(cols) < 3 or '.' not in cols[0]:
+                    continue
+                cc, _, code = cols[0].partition('.')
+                cc = cc.upper()
+                conn.execute('INSERT OR REPLACE INTO admin_labels VALUES (?,?,?,?)',
+                             (cc, level, code, cols[1]))
+                for key in {_geo_key(cols[1]), _geo_key(cols[2])} - {''}:
+                    conn.execute('INSERT INTO admin_keys VALUES (?,?,?,?)', (cc, level, code, key))
+    conn.execute("INSERT OR REPLACE INTO meta(k, v) VALUES ('admin_codes', '1')")
+    conn.commit()
+
+
+def _import_country(conn: sqlite3.Connection, zip_path: Path, cc: str) -> str | None:
+    """Read one country's dump ({CC}.zip holding {CC}.txt) into the cache.
+
+    Streams the text out of the zip and keeps only towns/villages (class P)
+    and divisions (class A): for the United States that is about 250,000 of
+    2.2 million lines, read in seconds without holding the file in memory.
+    A division also files its names under its code, so a town's county and
+    state can be matched by any spelling GeoNames knows. One transaction: a
+    failed import leaves the country unloaded, never half loaded. Returns
+    None or a plain reason."""
+    member = f'{cc}.txt'
+    count = 0
+    try:
+        with zipfile.ZipFile(zip_path) as zf, zf.open(member) as raw:
+            conn.execute('DELETE FROM names WHERE cc = ?', (cc,))
+            conn.execute('DELETE FROM admin_keys WHERE cc = ? AND level = 3', (cc,))
+            conn.execute('DELETE FROM features WHERE cc = ?', (cc,))
+            for line in io.TextIOWrapper(raw, encoding='utf-8'):
+                cols = line.rstrip('\r\n').split('\t')
+                if len(cols) < 15 or cols[6] not in _KEPT_FEATURE_CLASSES:
+                    continue
+                try:
+                    gid, lat, lon = int(cols[0]), float(cols[4]), float(cols[5])
+                except ValueError:
+                    continue
+                try:
+                    population = int(cols[14] or 0)
+                except ValueError:
+                    population = 0
+                fcode = cols[7]
+                a1, a2, a3 = cols[10], cols[11], cols[12]
+                conn.execute('INSERT OR REPLACE INTO features VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                             (gid, cc, cols[1], cols[2], lat, lon, cols[6], fcode,
+                              a1, a2, a3, population))
+                keys = {_geo_key(cols[1]), _geo_key(cols[2])}
+                keys.update(_geo_key(a) for a in cols[3].split(','))
+                keys.discard('')
+                conn.executemany('INSERT INTO names VALUES (?,?,?)',
+                                 [(k, cc, gid) for k in keys])
+                level = {'ADM1': 1, 'ADM2': 2, 'ADM3': 3}.get(fcode)
+                if level:
+                    code = '.'.join((a1, a2, a3)[:level])
+                    conn.execute('INSERT OR IGNORE INTO admin_labels VALUES (?,?,?,?)',
+                                 (cc, level, code, cols[1]))
+                    conn.executemany('INSERT INTO admin_keys VALUES (?,?,?,?)',
+                                     [(cc, level, code, k) for k in keys])
+                count += 1
+            conn.execute('INSERT OR REPLACE INTO loaded VALUES (?,?)', (cc, count))
+            conn.commit()
+    except (OSError, KeyError, zipfile.BadZipFile, UnicodeDecodeError, sqlite3.DatabaseError) as e:
+        conn.rollback()
+        return f'{zip_path.name} could not be read ({e})'
+    return None
+
+
+class _Gazetteer:
+    """The cached GeoNames data one geocode run matches against.
+
+    `country_names` maps a country-name key to its code (from countryInfo.txt
+    plus `_COUNTRY_EXTRA_NAMES`); `country_labels` maps a code to the name a
+    filled-in hierarchy writes, preferring the spelling the registry already
+    uses most for that country ("USA") over GeoNames' ("United States")."""
+
+    def __init__(self, conn: sqlite3.Connection, country_names: dict[str, str],
+                 country_labels: dict[str, str]):
+        self.conn = conn
+        self.country_names = country_names
+        self.country_labels = dict(country_labels)
+        self.loaded = {r[0] for r in conn.execute('SELECT cc FROM loaded')}
+        self._ctx_cache: dict[tuple[str, int, str], set[str]] = {}
+
+    def country_keys(self, cc: str) -> set[str]:
+        return {k for k, c in self.country_names.items() if c == cc}
+
+    def admin1_countries(self, key: str) -> set[str]:
+        """Countries with a state/province spelled `key`, from the all-country
+        code file and from every dump already loaded."""
+        return {r[0] for r in self.conn.execute(
+            'SELECT DISTINCT cc FROM admin_keys WHERE key = ? AND level = 1', (key,))}
+
+    def features_named(self, key: str, countries: list[str]) -> list[GeoRow]:
+        if not countries:
+            return []
+        marks = ','.join('?' * len(countries))
+        rows = self.conn.execute(
+            'SELECT DISTINCT f.* FROM names n JOIN features f ON f.gid = n.gid '
+            f'WHERE n.key = ? AND n.cc IN ({marks})', [key, *countries]).fetchall()
+        return [_georow(r) for r in rows]
+
+    def admin_keys(self, cc: str, level: int, code: str) -> set[str]:
+        ck = (cc, level, code)
+        if ck not in self._ctx_cache:
+            self._ctx_cache[ck] = {r[0] for r in self.conn.execute(
+                'SELECT key FROM admin_keys WHERE cc = ? AND level = ? AND code = ?', ck)}
+        return self._ctx_cache[ck]
+
+    def admin_label(self, cc: str, level: int, code: str) -> str | None:
+        row = self.conn.execute(
+            'SELECT label FROM admin_labels WHERE cc = ? AND level = ? AND code = ?',
+            (cc, level, code)).fetchone()
+        return row[0] if row else None
+
+    def context(self, geo: GeoRow) -> dict[str, set[int]]:
+        """Every spelling of the divisions `geo` sits in, each mapped to the
+        ranks it names: its commune, county, state and country. A division
+        lists only the ones above it."""
+        own = _feature_rank(geo)
+        out: dict[str, set[int]] = {}
+        codes = (geo.admin1, geo.admin2, geo.admin3)
+        for level, rank in ((1, _RANK_ADMIN1), (2, _RANK_ADMIN2), (3, _RANK_ADMIN3)):
+            if rank >= own or not all(c and c != '00' for c in codes[:level]):
+                continue
+            for key in self.admin_keys(geo.country, level, '.'.join(codes[:level])):
+                out.setdefault(key, set()).add(rank)
+        if own > _RANK_COUNTRY:
+            for key in self.country_keys(geo.country):
+                out.setdefault(key, set()).add(_RANK_COUNTRY)
+        return out
+
+    def describe(self, geo: GeoRow) -> str:
+        """"Name, county, state, country" for a candidate line."""
+        bits = [geo.name]
+        own = _feature_rank(geo)
+        for level, rank in ((2, _RANK_ADMIN2), (1, _RANK_ADMIN1)):
+            codes = (geo.admin1, geo.admin2)[:level]
+            if rank < own and all(codes):
+                label = self.admin_label(geo.country, level, '.'.join(codes))
+                if label and label not in bits:
+                    bits.append(label)
+        country = self.country_labels.get(geo.country, geo.country)
+        if own > _RANK_COUNTRY and country not in bits:
+            bits.append(country)
+        return ', '.join(bits)
+
+
+def _georow(row) -> GeoRow:
+    return GeoRow(gid=row[0], country=row[1], name=row[2], asciiname=row[3],
+                  lat=row[4], lon=row[5], fclass=row[6], fcode=row[7],
+                  admin1=row[8] or '', admin2=row[9] or '', admin3=row[10] or '',
+                  population=row[11] or 0)
+
+
+@dataclass
+class _PlaceMatch:
+    """What the gazetteer says about one registry place.
+
+    status: 'hit' (one feature fits every part of the hierarchy),
+    'ambiguous' (several fit), 'partial' (the name is known but some part of
+    the hierarchy fits none of them), 'none' (no feature has the name),
+    'no-data' (the countries it names could not be loaded).
+    `countries` are the countries searched; `unmatched` the hierarchy parts
+    the best candidates did not fit."""
+    status: str
+    hit: GeoRow | None = None
+    candidates: list[GeoRow] = None
+    unmatched: list[str] = None
+    part_ranks: list[set[int]] = None
+    countries: list[str] = None
+
+
+def _place_name_and_context(name: str, hierarchy: str | None) -> tuple[str, list[str], list[str]]:
+    """(lookup name, hierarchy parts, the parts above the place).
+
+    A name written with commas ("Weston, Missouri") is looked up by its first
+    part. The hierarchy normally starts with the place itself ("Chicago, Cook
+    County, Illinois, USA"); that first part is not context. A hierarchy that
+    lists only the places above ("Cook County, Illinois") is context whole."""
+    lookup = (str(name or '').split(',')[0]).strip() or str(name or '').strip()
+    parts = _hierarchy_parts(hierarchy)
+    if parts and _geo_key(parts[0]) == _geo_key(lookup):
+        return lookup, parts, parts[1:]
+    return lookup, parts, parts
+
+
+def _place_countries(name_key: str, context: list[str], gaz: _Gazetteer) -> set[str]:
+    """The countries a place's hierarchy points at, loaded or not.
+
+    Read from the hierarchy's last part: a country name ("Poland", "USA",
+    "England"), or a state or province only one country has ("Illinois" is
+    the US; "podlaskie" is Poland once Poland is loaded). Both readings
+    count, so "Atlanta, Georgia" searches the country Georgia and the US
+    state alike, and the hierarchy check keeps the one that fits. A place
+    that is itself a country ("Poland" with no parents) names its own."""
+    found: set[str] = set()
+    if context:
+        last = _geo_key(context[-1])
+        cc = gaz.country_names.get(last)
+        if cc:
+            found.add(cc)
+        owners = gaz.admin1_countries(last)
+        if len(owners) == 1:
+            found |= owners
+    elif name_key in gaz.country_names:
+        found.add(gaz.country_names[name_key])
+    return found
+
+
+def _says_division(name: str) -> bool:
+    """Whether a name itself says it is a division: "Cook County", "Gmina
+    Tykocin", "Powiat białostocki"."""
+    return any(t in _ADMIN_WORDS for t in _fold(name))
+
+
+def _skipped_levels(geo: GeoRow, part_ranks: list[set[int]]) -> int:
+    """How many of the divisions `geo` sits in (commune, county, state) the
+    hierarchy leaves out. "Illinois, USA" leaves out nothing for the state
+    of Illinois but two levels for a town that happens to be called
+    Illinois, so the state is the closer reading."""
+    present = set().union(*part_ranks) if part_ranks else set()
+    own = _feature_rank(geo)
+    codes = (geo.admin1, geo.admin2, geo.admin3)
+    skipped = 0
+    for level, rank in ((1, _RANK_ADMIN1), (2, _RANK_ADMIN2), (3, _RANK_ADMIN3)):
+        if rank < own and all(c and c != '00' for c in codes[:level]) and rank not in present:
+            skipped += 1
+    return skipped
+
+
+def _match_place(name: str, hierarchy: str | None, gaz: _Gazetteer) -> _PlaceMatch:
+    """Match one registry place against the gazetteer.
+
+    The place's name is looked up among the towns, villages and divisions of
+    the countries its hierarchy names (all loaded countries when it names
+    none). A candidate fits when every other part of the hierarchy is the
+    name of its commune, county, state or country. Only a single fitting
+    candidate is a hit: place identity is a research judgment, so two
+    fitting Fairviews stay a question for the human, never a guess.
+
+    When several fit, four tie-breaks, in order, keep the obvious answer
+    from reading as ambiguous: a living town outranks a neighbourhood, ghost
+    town or historical entry of the same name; an entry whose own name is
+    the place's name outranks one that lists it only among its other
+    spellings ("Yakima" is Yakima, not the town once called Yakima); a
+    town outranks a division named after it ("Ventura" is the city, not
+    Ventura County; the commune of Reims is the town) unless the place's
+    own name says "County", "Gmina" and the like; and the candidate whose
+    divisions the hierarchy names most completely wins ("Mississippi, USA"
+    is the state, not a town in some county of another state)."""
+    lookup, _parts, context = _place_name_and_context(name, hierarchy)
+    name_key = _geo_key(lookup)
+    if not name_key:
+        return _PlaceMatch('none', candidates=[], unmatched=[], countries=[])
+    named = _place_countries(name_key, context, gaz)
+    countries = sorted(named & gaz.loaded) if named else sorted(gaz.loaded)
+    if not countries:
+        return _PlaceMatch('no-data', candidates=[], unmatched=[], countries=sorted(named))
+
+    feats = gaz.features_named(name_key, countries)
+    if not context and name_key in gaz.country_names:
+        # "France" or "Wales" on its own is the country (or the nation
+        # within one), not a village that happens to share the name.
+        feats = [g for g in feats if _feature_rank(g) <= _RANK_ADMIN1] or feats
+    if not feats:
+        return _PlaceMatch('none', candidates=[], unmatched=[], countries=countries)
+
+    scored = []
+    for geo in feats:
+        ctx = gaz.context(geo)
+        ranks = [ctx.get(_geo_key(p), set()) for p in context]
+        missing = [p for p, r in zip(context, ranks) if not r]
+        scored.append((geo, ranks, missing))
+
+    fitting = [s for s in scored if not s[2]]
+    if len(fitting) > 1:
+        current = [s for s in fitting if s[0].fcode not in _NOT_CURRENT_CODES
+                   and not (s[0].fclass == 'A' and s[0].fcode.endswith('H'))]
+        fitting = current or fitting
+    if len(fitting) > 1:
+        # Whole words compared, division words included: "New York County"
+        # is not named "New York".
+        folded = _fold(lookup)
+        own_name = [s for s in fitting
+                    if folded in (_fold(s[0].name), _fold(s[0].asciiname))]
+        fitting = own_name or fitting
+    if len(fitting) > 1:
+        towns = [s for s in fitting if s[0].fclass == 'P']
+        divisions = [s for s in fitting if s[0].fclass == 'A']
+        if _says_division(lookup) and divisions:
+            fitting = divisions
+        elif towns:
+            fitting = towns + [s for s in divisions if _feature_rank(s[0]) < _RANK_ADMIN3
+                               and not _says_division(s[0].name)]
+    if len(fitting) > 1 and context:
+        fewest = min(_skipped_levels(s[0], s[1]) for s in fitting)
+        fitting = [s for s in fitting if _skipped_levels(s[0], s[1]) == fewest]
+    if len(fitting) == 1:
+        geo, ranks, _ = fitting[0]
+        return _PlaceMatch('hit', hit=geo, candidates=[geo], unmatched=[],
+                           part_ranks=ranks, countries=countries)
+
+    def _rank_key(s):
+        return (len(s[2]), -s[0].population)
+
+    if fitting:
+        best = sorted(fitting, key=_rank_key)[:_MAX_CANDIDATES_SHOWN]
+        return _PlaceMatch('ambiguous', candidates=[s[0] for s in best], unmatched=[],
+                           countries=countries)
+    best = sorted(scored, key=_rank_key)[:_MAX_CANDIDATES_SHOWN]
+    return _PlaceMatch('partial', candidates=[s[0] for s in best],
+                       unmatched=best[0][2], countries=countries)
+
+
+def _filled_hierarchy(name: str, hierarchy: str | None, match: _PlaceMatch,
+                      gaz: _Gazetteer) -> str | None:
+    """The hierarchy with the county, state and country GeoNames gives added
+    where it has none, or None when nothing is missing.
+
+    Existing parts are kept word for word and in order; a missing level is
+    slotted in where it belongs ("Chicago, Illinois" becomes "Chicago, Cook
+    County, Illinois, USA"). A part that could be two levels ("New York" is
+    both a county and a state of New York City) counts as both, so nothing
+    that might repeat it is added. A hierarchy whose parts run out of order
+    is left alone."""
+    geo = match.hit
+    lookup, parts, context = _place_name_and_context(name, hierarchy)
+    if not parts:
+        items = [(_RANK_SELF, lookup)]
+    elif context is not parts:
+        items = [(_RANK_SELF, parts[0])]
+    else:
+        items = []
+    present: set[int] = set()
+    prev = _RANK_SELF
+    for text, ranks in zip(context, match.part_ranks or []):
+        lower = [r for r in ranks if r < prev]
+        if not lower:
+            return None
+        prev = max(lower)
+        present |= ranks
+        items.append((prev, text))
+
+    own = _feature_rank(geo)
+    added = False
+    for level, rank in ((2, _RANK_ADMIN2), (1, _RANK_ADMIN1)):
+        codes = (geo.admin1, geo.admin2)[:level]
+        if rank >= own or rank in present or not all(c and c != '00' for c in codes):
+            continue
+        label = gaz.admin_label(geo.country, level, '.'.join(codes))
+        if label:
+            items.append((rank, label))
+            added = True
+    if own > _RANK_COUNTRY and _RANK_COUNTRY not in present:
+        label = gaz.country_labels.get(geo.country)
+        if label:
+            items.append((_RANK_COUNTRY, label))
+            added = True
+    if not added:
+        return None
+    items.sort(key=lambda it: -it[0])   # stable: existing parts keep their order
+    return ', '.join(text for _, text in items)
+
+
+def _proposed_alt_names(geo: GeoRow, current_name: str, existing_alts: set[str],
+                        taken: set[str] | None = None) -> list[str]:
     """Alt-name spellings worth adding: the gazetteer's name/asciiname when they
-    differ from what the registry already records (case-folded comparison)."""
+    differ from what the registry already records (case-folded comparison).
+
+    `taken` holds the names and alt names of every OTHER place: a spelling
+    another place already answers to is not added, since two places sharing
+    a name is exactly what `fha places lint` warns about (PL002) and what
+    keeps a claim's place text from linking."""
     have = {normalize_place_text(current_name)} | {normalize_place_text(a) for a in existing_alts}
     out: list[str] = []
     for cand in (geo.name, geo.asciiname):
         key = normalize_place_text(cand)
-        if key and key not in have:
+        if key and key not in have and key not in (taken or set()):
             have.add(key)
             out.append(cand)
     return out
@@ -800,13 +1268,17 @@ def _locate_place_block(lines: list[str], place_id: str) -> tuple[int, int] | No
 
 def _apply_geocode_to_yaml(
     text: str, place_id: str, lat: float, lon: float, alt_names: list[str],
+    hierarchy: str | None = None,
 ) -> tuple[str, bool]:
-    """Surgically set `coords:` (and add `alt_names:` when absent) on one place
-    block, preserving every other line and comment. Returns (new_text, changed).
+    """Surgically set `coords:` (and add `alt_names:` when absent, and set a
+    filled-in `hierarchy:` when given) on one place block, preserving every
+    other line and comment. Returns (new_text, changed).
 
     Only the block whose `- id:` matches `place_id` (case-insensitive) is touched.
     An existing `coords:` line in that block is replaced; `alt_names:` is added
     only when the block has none (a human-curated list is never clobbered).
+    `hierarchy` is the old hierarchy with missing levels added
+    (`_filled_hierarchy`), so replacing the key loses none of its words.
 
     Block bounds come from `_locate_place_block` (shared with the set/note
     write-backs): the block ends at the next list item at the SAME or a
@@ -837,6 +1309,10 @@ def _apply_geocode_to_yaml(
     else:
         block.insert(1, coords_line)  # right after the `- id:` line
 
+    if hierarchy:
+        _set_block_key(block, 'hierarchy', indent,
+                       [f'{indent}hierarchy: {yaml_inline(hierarchy)}'])
+
     if alt_names and not has_alt:
         # The block may carry trailing blank line(s) that visually separate it
         # from the next entry; appending after them would detach alt_names from
@@ -844,12 +1320,129 @@ def _apply_geocode_to_yaml(
         insert_at = len(block)
         while insert_at > 0 and not block[insert_at - 1].strip():
             insert_at -= 1
-        formatted = ', '.join(alt_names)
-        block.insert(insert_at, f'{indent}alt_names: [{formatted}]')
+        block.insert(insert_at, f'{indent}alt_names: {yaml_inline(list(alt_names))}')
 
     new_lines = lines[:start] + block + lines[end:]
     trailing_nl = '\n' if text.endswith('\n') else ''
     return '\n'.join(new_lines) + trailing_nl, True
+
+
+def _prepare_gazetteer(
+    archive_root: Path, rows: list, *, offline: bool, progress,
+) -> tuple[_Gazetteer | None, list[str]]:
+    """Make sure the name files and every needed country are in the cache.
+
+    Downloads (unless `offline`) the three name files when missing, then the
+    dump of each country the places point at (`_place_countries`) that is not
+    loaded yet, importing each into the SQLite cache. A place that points at
+    no country searches the countries already loaded; nothing is fetched for
+    it. Returns (gazetteer, notes) or (None, notes) when there is nothing to
+    match against. A failed download is one plain note, never a traceback,
+    and the other countries carry on."""
+    gdir = archive_root / '.cache' / 'geonames'
+    notes: list[str] = []
+    missing = [f for f in _GEONAMES_NAME_FILES if not (gdir / f).is_file()]
+    if missing:
+        if offline:
+            notes.append(
+                'No GeoNames place-name data is saved yet, and --offline says not '
+                'to fetch it. Run `fha places geocode --all` without --offline once '
+                'to download it.')
+            return None, notes
+        progress('Downloading the GeoNames country, state and county names (one time)...')
+        for fname in missing:
+            err = _fetch_url(_GEONAMES_BASE_URL + fname, gdir / fname)
+            if err:
+                notes.append(
+                    f'Could not download {fname} from GeoNames ({err}). Check the '
+                    'internet connection and run the same command again.')
+                return None, notes
+    try:
+        country_names, country_labels = _read_country_info(gdir / 'countryInfo.txt')
+        conn = _open_gazetteer_db(gdir / _GAZETTEER_DB)
+        _import_admin_codes(conn, gdir)
+    except (OSError, UnicodeDecodeError, sqlite3.DatabaseError) as e:
+        notes.append(
+            f'The saved GeoNames data in {gdir} could not be read ({e}). Delete that '
+            'folder and run the command again to fetch it fresh.')
+        return None, notes
+    gaz = _Gazetteer(conn, country_names, country_labels)
+
+    wanted: set[str] = set()
+    for r in rows:
+        lookup, _parts, context = _place_name_and_context(r['name'], r['hierarchy'])
+        wanted |= _place_countries(_geo_key(lookup), context, gaz)
+    for cc in sorted(wanted - gaz.loaded):
+        label = country_labels.get(cc, cc)
+        zip_path = gdir / f'{cc}.zip'
+        if not zip_path.is_file():
+            if offline:
+                notes.append(f'No GeoNames data saved for {label}; --offline skips '
+                             'fetching it, so its places are not matched.')
+                continue
+            progress(f'Downloading the GeoNames places of {label} (one time; a large '
+                     'country takes a few minutes)...')
+            err = _fetch_url(f'{_GEONAMES_BASE_URL}{cc}.zip', zip_path)
+            if err:
+                notes.append(f'Could not download the GeoNames places of {label} ({err}); '
+                             'its places are not matched this time. Run the command '
+                             'again to retry.')
+                continue
+        progress(f'Reading the GeoNames places of {label}...')
+        err = _import_country(conn, zip_path, cc)
+        if err:
+            notes.append(f'{err}. Delete it and run the command again to fetch it fresh.')
+            continue
+        gaz.loaded.add(cc)
+    if not gaz.loaded:
+        notes.append('None of the countries these places name could be loaded from '
+                     'GeoNames, so nothing was matched.')
+        conn.close()
+        return None, notes
+    return gaz, notes
+
+
+def _registry_country_spellings(rows: list, gaz: _Gazetteer) -> None:
+    """Prefer the registry's own way of writing a country in filled-in
+    hierarchies: if most places end "USA", an added country reads "USA", not
+    GeoNames' "United States". A spelling that is also one of the country's
+    states ("England" for the United Kingdom) is not a name for the whole
+    country, so it never stands in for one."""
+    counts: dict[str, dict[str, int]] = {}
+    for r in rows:
+        parts = _hierarchy_parts(r['hierarchy'])
+        if len(parts) < 2:
+            continue
+        key = _geo_key(parts[-1])
+        cc = gaz.country_names.get(key)
+        if cc and cc not in gaz.admin1_countries(key):
+            spelled = counts.setdefault(cc, {})
+            spelled[parts[-1]] = spelled.get(parts[-1], 0) + 1
+    for cc, spelled in counts.items():
+        gaz.country_labels[cc] = max(sorted(spelled), key=lambda s: spelled[s])
+
+
+def _fmt_coord(value: float) -> str:
+    return f'{value:.5f}'.rstrip('0').rstrip('.')
+
+
+def _proposal_table(proposals: list[dict]) -> list[str]:
+    """The one table the human reviews: place, coordinates, and what else is
+    added (hierarchy, also-known-as names), one line per place."""
+    width = min(max([len(p['name']) for p in proposals] + [5]), 30)
+    lines = [f'  {"Place":<13} {"Name":<{width}}  {"Coordinates":<22} Also adds']
+    for p in proposals:
+        adds = []
+        if p['hierarchy']:
+            adds.append(f'hierarchy "{p["hierarchy"]}"')
+        if p['alt_names']:
+            adds.append('also known as ' + ', '.join(p['alt_names']))
+        if p['replaces']:
+            adds.append(f'(replaces {p["replaces"]})')
+        name = p['name'] if len(p['name']) <= width else p['name'][:width - 1] + '…'
+        lines.append(f'  {p["place_id"]:<13} {name:<{width}}  {p["coords"]:<22} '
+                     + ('; '.join(adds) or '-'))
+    return lines
 
 
 def run_geocode(
@@ -860,40 +1453,55 @@ def run_geocode(
     offline: bool = False,
     dry_run: bool = False,
     confirm=None,
+    progress=None,
 ) -> Result:
     """
-    Backfill coords/alt-names for registry places lacking coordinates.
+    Fill in coordinates (and missing county/state/country, and GeoNames'
+    spellings as also-known-as names) for registry places, from the saved
+    GeoNames data, after ONE yes from the human for the whole batch.
 
-    `confirm` is a callable `(prompt: str) -> bool` gating each write (defaults
-    to an interactive `[y/N]` reader); injected by tests to exercise the
-    accept/decline paths without real stdin.  That interactive prompt seam is
-    left exactly as-is (a deferred Phase-3 concern); only the return is
-    standardized here.
+    Every place without coordinates (or the one `place_id`) is matched
+    (`_match_place`). The hits become one table, shown once with one
+    question; a yes writes them all in one atomic rewrite of places.yaml, so
+    the registry holds either every change or none. The AGENTS.md rule that
+    coordinates are never written without the human's confirmation is that
+    one question. Places with several fitting candidates are listed after,
+    each candidate with the exact `fha places set --coords` command that
+    settles it; places with no fit say why.
+
+    `confirm` is a callable `(prompt: str) -> bool` (an interactive `[y/N]`
+    reader by default; tests inject one). `progress` is a callable taking one
+    line, for download progress while the run is under way (the CLI prints
+    it to stderr). Network access happens only here, only for missing data,
+    and never with `offline`.
 
     Returns a `Result` whose `data` is {'status': 'ok'|'failed'|'no-gazetteer'|
-    'not-found', 'written': int, 'messages': [str, ...]}, with `changed` listing
-    `places.yaml` when any coordinate block is edited.  Result exposes dict-style
-    access (_lib.py), so callers keep reading `result['status']` / `result['written']`.
+    'not-found', 'written': int, 'messages': [str, ...], 'proposals': [...],
+    'ambiguous': [...], 'unmatched': [...]}, with `changed` listing
+    `places.yaml` when it is written. `written` counts places written (or, in
+    a dry run, that would be).
     """
-    # status -> process exit code: a 'failed' geocode is a hard error; the soft
-    # outcomes (no gazetteer, place not found) are warnings; 'ok' is clean.
     _exit_for = {
         'failed': EXIT_FAILURE, 'not-found': EXIT_WARNINGS,
         'no-gazetteer': EXIT_WARNINGS, 'ok': EXIT_CLEAN,
     }
+    report: dict = {'proposals': [], 'ambiguous': [], 'unmatched': []}
 
     def _geo_result(status: str, written: int, msgs: list[str],
                     changed: list[str] | None = None) -> Result:
         return Result(
             ok=(status == 'ok'),
             exit_code=_exit_for.get(status, EXIT_FAILURE),
-            data={'status': status, 'written': written, 'messages': msgs},
+            data={'status': status, 'written': written, 'messages': msgs, **report},
             changed=changed or [],
         )
 
     messages: list[str] = []
     if confirm is None:
         confirm = _interactive_confirm
+    if progress is None:
+        def progress(_line: str) -> None:
+            return None
 
     conn = open_index_db(archive_root, _GEOCODE_REQUIRED_TABLES, strict=True)
     if conn is None:
@@ -908,16 +1516,23 @@ def run_geocode(
             if not rows:
                 return _geo_result(
                     'not-found', 0,
-                    [f'{fmt_id_display(pid)} not found in the place registry.'])
+                    [f'{fmt_id_display(pid)} is not in the place registry. Check the id '
+                     f'with `fha find {fmt_id_display(pid)}`.'])
         else:
             rows = conn.execute(
                 'SELECT id, name, hierarchy, lat, lon FROM places '
                 'WHERE lat IS NULL OR lon IS NULL ORDER BY id'
             ).fetchall()
+        all_rows = conn.execute('SELECT id, name, hierarchy FROM places').fetchall()
 
         alts_by_place: dict[str, set[str]] = {}
+        # Every name and alt name in the registry -> the places answering to it.
+        names_in_use: dict[str, set[str]] = {}
+        for r in all_rows:
+            names_in_use.setdefault(normalize_place_text(r['name']), set()).add(r['id'])
         for r in conn.execute('SELECT place_id, alt_name FROM place_names'):
             alts_by_place.setdefault(r['place_id'], set()).add(r['alt_name'])
+            names_in_use.setdefault(normalize_place_text(r['alt_name']), set()).add(r['place_id'])
     except sqlite3.OperationalError:
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
@@ -932,97 +1547,132 @@ def run_geocode(
         messages.append('No places need geocoding (all have coordinates).')
         return _geo_result('ok', 0, messages)
 
-    # Gazetteer: cached dump, or download once (unless offline).
-    geonames_dir = archive_root / '.cache' / 'geonames'
-    gaz_path = geonames_dir / _GEONAMES_MEMBER
-    if not gaz_path.exists():
-        if offline:
-            messages.append(
-                'No GeoNames data cached and --offline set - nothing to match against. '
-                'Re-run without --offline to download the gazetteer once.'
-            )
-            return _geo_result('no-gazetteer', 0, messages)
-        messages.append(f'Downloading GeoNames dump to {geonames_dir} (one time)...')
-        downloaded, err = _download_gazetteer(geonames_dir)
-        if downloaded is None:
-            messages.append(err or 'gazetteer download failed.')
-            return _geo_result('no-gazetteer', 0, messages)
-
-    gazetteer = _load_gazetteer(gaz_path)
-    if not gazetteer:
-        messages.append(f'GeoNames dump at {gaz_path} is empty or unreadable.')
+    gaz, notes = _prepare_gazetteer(archive_root, rows, offline=offline, progress=progress)
+    messages.extend(notes)
+    if gaz is None:
         return _geo_result('no-gazetteer', 0, messages)
 
+    try:
+        _registry_country_spellings(all_rows, gaz)
+        for r in rows:
+            pid_disp = fmt_id_display(r['id'])
+            match = _match_place(r['name'], r['hierarchy'], gaz)
+            where = r['hierarchy'] or r['name']
+            if match.status == 'hit':
+                geo = match.hit
+                existing_alts = alts_by_place.get(r['id'], set())
+                taken = {k for k, ids in names_in_use.items() if ids - {r['id']}}
+                alt_names = ([] if existing_alts else
+                             _proposed_alt_names(geo, r['name'], set(), taken))
+                for alt in alt_names:
+                    names_in_use.setdefault(normalize_place_text(alt), set()).add(r['id'])
+                report['proposals'].append({
+                    'place_id': pid_disp, 'name': r['name'],
+                    'lat': geo.lat, 'lon': geo.lon,
+                    'coords': f'{_fmt_coord(geo.lat)}, {_fmt_coord(geo.lon)}',
+                    'hierarchy': _filled_hierarchy(r['name'], r['hierarchy'], match, gaz),
+                    # A curated alt_names list is never extended or rewritten.
+                    'alt_names': alt_names,
+                    'replaces': (f'{_fmt_coord(r["lat"])}, {_fmt_coord(r["lon"])}'
+                                 if r['lat'] is not None and r['lon'] is not None else None),
+                    'match': gaz.describe(geo),
+                })
+            elif match.status in ('ambiguous', 'partial'):
+                report['ambiguous'].append({
+                    'place_id': pid_disp, 'name': r['name'], 'where': where,
+                    'unmatched': match.unmatched,
+                    'candidates': [{
+                        'describe': gaz.describe(g),
+                        'coords': f'{_fmt_coord(g.lat)}, {_fmt_coord(g.lon)}',
+                        'command': (f'fha places set {pid_disp} --coords '
+                                    + shell_quote(f'{_fmt_coord(g.lat)}, {_fmt_coord(g.lon)}')),
+                    } for g in match.candidates],
+                })
+            else:
+                searched = ', '.join(gaz.country_labels.get(c, c) for c in match.countries)
+                report['unmatched'].append({
+                    'place_id': pid_disp, 'name': r['name'], 'where': where,
+                    'reason': (f'no GeoNames data loaded for {searched}'
+                               if match.status == 'no-data' else
+                               f'no place of that name in {searched}' if searched else
+                               'no place of that name'),
+                })
+    finally:
+        gaz.conn.close()
+
+    proposals = report['proposals']
     places_yaml = archive_root / 'places' / 'places.yaml'
     changed: list[str] = []
     written = 0
-    for r in rows:
-        pid = r['id']
-        result = _match_place(r['name'], r['hierarchy'], gazetteer)
-        if result is None:
-            messages.append(f'{fmt_id_display(pid)} ({r["name"]}): no gazetteer match - skipped.')
-            continue
-        if result == 'ambiguous':
-            messages.append(
-                f'{fmt_id_display(pid)} ({r["name"]}): multiple gazetteer candidates - '
-                'skipped (resolve by hand).'
-            )
-            continue
-
-        geo = result
-        alt_names = _proposed_alt_names(geo, r['name'], alts_by_place.get(pid, set()))
-        prompt = (
-            f'\n{fmt_id_display(pid)} {r["name"]} '
-            f'[{r["hierarchy"] or "no hierarchy"}]\n'
-            f'  GeoNames: {geo.name} ({geo.admin1}, {geo.country}) '
-            f'pop {geo.population}\n'
-            f'  Propose coords: [{geo.lat}, {geo.lon}]'
-            + (f'; alt_names: {alt_names}' if alt_names else '')
-            + '\n  Write this to places.yaml?'
-        )
-        if dry_run:
-            messages.append(
-                f'{fmt_id_display(pid)}: would write coords [{geo.lat}, {geo.lon}]'
-                + (f'; alt_names: {alt_names}' if alt_names else '') + '.'
-            )
-            written += 1
-            continue
-        if not confirm(prompt):
-            messages.append(f'{fmt_id_display(pid)}: declined - not written.')
-            continue
-
+    if proposals:
+        # Preflight the whole batch before asking: read the registry once and
+        # apply every edit in memory, so the question is only asked about
+        # changes that can all land, and the write is one atomic rewrite.
         try:
-            # Byte-faithful IO, same as the other registry editors: the plain
-            # read/write pair translates newlines, so geocoding one place in a
-            # CRLF-authored registry would rewrite every line ending in the file.
             text = read_text_exact(places_yaml)
         except OSError as e:
-            messages.append(f'ERROR: cannot read {places_yaml}: {e}')
-            return _geo_result('failed', written, messages, changed)
-        new_text, block_changed = _apply_geocode_to_yaml(text, pid, geo.lat, geo.lon, alt_names)
-        if not block_changed:
-            messages.append(
-                f'{fmt_id_display(pid)}: block not found in places.yaml - skipped.'
-            )
-            continue
-        try:
-            # One place per loop pass, but the whole registry is rewritten each
-            # time. A torn write here loses every place, and the loop reports
-            # 'coords written' for the ones it already did - so the surviving
-            # file must be all-old-or-all-new.
-            write_text_exact_atomic(places_yaml, reapply_newline(new_text, text))
-        except OSError as e:
-            messages.append(f'ERROR: cannot write {places_yaml}: {e}')
-            return _geo_result('failed', written, messages, changed)
-        written += 1
-        if str(places_yaml) not in changed:
-            changed.append(str(places_yaml))
-        messages.append(f'{fmt_id_display(pid)}: coords written.')
+            messages.append(f'ERROR: cannot read {places_yaml}: {e}. Check the file '
+                            'exists and is not open elsewhere, then retry.')
+            return _geo_result('failed', 0, messages)
+        new_text = text
+        kept = []
+        for p in proposals:
+            new_text, block_changed = _apply_geocode_to_yaml(
+                new_text, p['place_id'], p['lat'], p['lon'], p['alt_names'], p['hierarchy'])
+            if block_changed:
+                kept.append(p)
+            else:
+                messages.append(f'{p["place_id"]} ({p["name"]}) is in the index but not in '
+                                'places.yaml; run `fha index` and try again.')
+        report['proposals'] = proposals = kept
 
-    if written:
-        messages.append(
-            'Reminder: re-run `fha index` so the new coordinates enter the query surface.'
-        )
+    if proposals:
+        n = len(proposals)
+        noun = 'place' if n == 1 else 'places'
+        table = [f'GeoNames found a match for {n} {noun}:', *_proposal_table(proposals)]
+        if dry_run:
+            messages.extend(table)
+            messages.append(f'[dry-run] Would write coordinates for these {n} {noun}. '
+                            'Nothing written; run without --dry-run to review and apply.')
+            written = n
+        elif confirm('\n'.join(table) + f'\nWrite coordinates for these {n} {noun}?'):
+            try:
+                # The registry for every place in the archive, rewritten whole:
+                # atomic, so the file holds either all of these changes or none.
+                write_text_exact_atomic(places_yaml, reapply_newline(new_text, text))
+            except OSError as e:
+                messages.append(f'ERROR: cannot write {places_yaml}: {e}. Nothing was '
+                                'changed; check the file is not open elsewhere and retry.')
+                return _geo_result('failed', 0, messages)
+            written = n
+            changed.append(str(places_yaml))
+            messages.append(f'Wrote coordinates for {n} {noun} to places/places.yaml.')
+        else:
+            messages.append('Nothing written.')
+
+    if report['ambiguous']:
+        messages.append('')
+        messages.append('Not written: more than one GeoNames entry could be these places. '
+                        'If you know which, run its command:')
+        for a in report['ambiguous']:
+            head = f'  {a["place_id"]} {a["name"]} ({a["where"]})'
+            if a['unmatched']:
+                head += (': no entry fits "' + '", "'.join(a['unmatched'])
+                         + '" in its hierarchy')
+            messages.append(head)
+            for c in a['candidates']:
+                messages.append(f'    {c["describe"]} ({c["coords"]})')
+                messages.append(f'      {c["command"]}')
+    if report['unmatched']:
+        messages.append('')
+        messages.append('Not found in GeoNames (check the spelling, or add the country '
+                        'to the hierarchy):')
+        for u in report['unmatched']:
+            messages.append(f'  {u["place_id"]} {u["name"]} ({u["where"]}): {u["reason"]}')
+
+    if written and not dry_run:
+        messages.append('Next: run `fha index` so maps and place pages show the new '
+                        'coordinates.')
     return _geo_result('ok', written, messages, changed)
 
 
@@ -1550,6 +2200,7 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
         place_id=place_id,
         offline=getattr(args, 'offline', False),
         dry_run=getattr(args, 'dry_run', False),
+        progress=lambda line: print(line, file=sys.stderr, flush=True),
     )
     for m in result['messages']:
         print(m)
@@ -1620,7 +2271,7 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Place text that recurs often enough for a registry entry
-  fha places geocode (--place l-id | --all)  Fill in coordinates (offline, confirmed one by one)
+  fha places geocode (--place l-id | --all)  Fill in coordinates from GeoNames (one table, one yes)
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text "..."  Append a dated research note to the place
   fha places edit-note l-id --old-text "..." --text "..."  Rewrite one existing note
@@ -1656,14 +2307,21 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                                     'a fresh `fha gedcom import`, not the everyday view.')
     candidates_p.set_defaults(func=_cmd_places_candidates)
 
-    geocode_p = deferred.add_parser('geocode', help='Backfill coords/alt-names from the offline GeoNames dump')
+    geocode_p = deferred.add_parser(
+        'geocode', help='Fill in coordinates, missing county/state/country and spellings from GeoNames',
+        description=('Match places without coordinates against GeoNames, the free world '
+                     'gazetteer: towns, villages, counties, states and countries. The data '
+                     'is downloaded once into .cache/geonames/ (only the countries your '
+                     'places name). Every match is shown in one table and nothing is '
+                     'written until you answer yes. Places that could be more than one '
+                     'GeoNames entry are listed with the command that settles each.'))
     geocode_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (auto-detected if omitted).')
     geocode_p.add_argument('--place', metavar='l-id', help='Geocode only this place.')
     geocode_p.add_argument('--all', action='store_true', help='Geocode every registry place lacking coordinates.')
     geocode_p.add_argument('--offline', action='store_true',
-                           help='Never download; match only against an already-cached GeoNames dump.')
+                           help='Never download; match only against GeoNames data already saved.')
     geocode_p.add_argument('--dry-run', action='store_true', dest='dry_run',
-                           help='Preview proposed changes without writing.')
+                           help='Show the same table without asking or writing.')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
     set_p = deferred.add_parser(
