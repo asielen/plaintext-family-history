@@ -197,6 +197,8 @@ from _lib import (
     resolve_root_arg,
     result_fail,
     resolve_typed_ref,
+    alias_key_text,
+    link_parts,
     strip_link_wrapper,
     sync_person_aliases,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
@@ -1747,7 +1749,8 @@ def _rewrite_ref_item(item: str, token_re: re.Pattern, survivor_disp: str) -> st
     core = _unquote(item.strip()).strip()
     m = _WIKI_PARTS_RE.match(core)
     if m:
-        display = (m.group('display') or m.group('target')).strip()
+        target, display = link_parts(m.group('target'), m.group('display'))
+        display = display or target
     else:
         display = core
     # `display` came from the item's OWN existing text (a hand-typed alias
@@ -2850,7 +2853,7 @@ def run_confirm_merge(
     # marker from a name someone no longer uses; it resolves through the
     # folded `{value:, restricted: true}` mapping instead (SPEC §18).
     def _alias_strings(meta: dict) -> list[str]:
-        return [strip_link_wrapper(str(a)).strip() for a in (meta.get('aliases') or [])]
+        return [alias_key_text(str(a)).strip() for a in (meta.get("aliases") or [])]
 
     def _is_restricted_variant(variant) -> bool:
         return isinstance(variant, dict) and \

@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.14, 2026-11-20 · companion to SPEC.md v2.14 (versions track the SPEC)**
+**Version 2.15, 2026-11-20 · companion to SPEC.md v2.15 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -49,8 +49,9 @@ FRONT_RE = re.compile(r'\A---\r?\n(.*?)\r?\n---\r?\n', re.S)
 CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 ```
 
-- `TOKEN_RE` is the one ID chokepoint (`[[ID]]`, `[[ID|text]]`, `[[ID#frag]]`; group 1 = ID). `WIKILINK_RE` matches `[[name/stem]]` for the citation indexer and `fha normalize-links`; `LEGACY_TOKEN_RE` finds single-bracket `[ID]` for `normalize-links` to upgrade.
-- Links resolve through the alias map (`build_alias_map`/`resolve_ref`); a non-ID `[[stem]]` that no record claims as an alias is an inert note-link.
+- `TOKEN_RE` is the one ID chokepoint (`[[ID]]`, `[[ID|text]]`, `[[ID#frag]]`, and a file-stem target `[[{stem}_{ID}…]]`; group 1 = ID). `WIKILINK_RE` matches `[[name/stem]]` for the citation indexer and `fha normalize-links`; `LEGACY_TOKEN_RE` finds single-bracket `[ID]` for `normalize-links` to upgrade.
+- `link_parts(target, display)` is the one link resolver every reader goes through (`extract_tokens`, `extract_wikilinks`, `strip_link_wrapper` and the site, views and WikiTree renderers call it). A file-stem target reads as the ID it ends in, whatever its leading part says, so a stem left stale by a rename still resolves. A source target whose display is exactly a claim ID (`[[source_stem#Claims|c-…]]`) reads as that claim with no display. The `#fragment` never changes resolution. A reader asking which sources a text cites uses `cited_source_ids`, which counts a claim link as the source holding the claim (falling back to the source a `[[source_stem|c-…]]` link names when the claim is unknown): the WikiTree restricted-source gate, its citations and dates, the draft queue, the report backlog and the lint summary check. Its `for_gate=True` mode, used by the WikiTree gate, also counts the source a link names when that differs from the claim's own source, so a restriction on either one refuses. `ID_RE` treats an underscore as an edge, so the ID at the end of a stem is found by every bare-ID scan.
+- Other links resolve through the alias map (`build_alias_map`/`resolve_ref`); a non-ID `[[stem]]` that no record claims as an alias is an inert note-link. Alias keys are the `aliases:` text as written (`alias_key_text`), never read down to an ID.
 - `read_record(path)` → `{meta, claims, stories, body}` + `parse_errors`; never raises. YAML booleans/dates become canonical strings (`living`: `'true'|'false'|'unknown'`; ISO dates).
 - Person companions (`_research`, `_view_timeline`, `_view_draft-queue`) link via `person_files`. The kind word counts only immediately before `_{p-id}` (`parse_filename`, SPEC §13).
 - An unparseable claims block is a lint error, never a crash. All IO is UTF-8.
@@ -210,7 +211,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | E001 | E | Duplicate ID. A non-person ID in two records is an error. A person's profile and its companion files (`_research`, `_timeline`, `_draft-queue`) share the `p-` id; two profile files with one id is the error. | §13 |
 | E002 | E | Malformed ID or filename: fails the §13 grammar or the ID pattern. A filename leading with `__` (no surname) is valid; a person filename with no `__` gets W117 instead. | §13 |
 | E003 | E | The ID in the filename differs from the frontmatter `id`. | §13 |
-| E004 | E | Orphan reference: a link, `persons:`, `place:`, `corroborates:` or `contradicts:` target not found after resolving through the alias map. A well-formed dangling `[[s-…]]` is an error; an unresolved non-ID `[[stem]]` is an inert note-link and is not reported. | §18 |
+| E004 | E | Orphan reference: a link, `persons:`, `place:`, `corroborates:` or `contradicts:` target not found after resolving through the alias map. A well-formed dangling `[[s-…]]` is an error; an unresolved non-ID `[[stem]]` is an inert note-link and is not reported. Also a source link shown as a claim of another source (`[[s-A#Claims|c-of-B]]`): the claim is found, but not where the link says. | §18 |
 | E005 | E | A person ID is referenced but no person record has it. Fix: `--mint-stubs`. | §9 |
 | E006 | E | An `accepted` claim has no `reviewed:` date. (Other settled verdicts: W139.) | §8.4 |
 | E007 | E | Claim `type` outside the §8.2 vocabulary. | §8.2 |
@@ -1304,7 +1305,7 @@ Exit codes: 0 written/dry-run; 1 unknown l-id or missing registry (with `fha fin
 
 Builds the archive as a website in `generated/site/` (or `--out`): relative links, no CDN, works from `file://`. The packet embeds a one-person slice.
 
-**Data:** structured data from `.cache/index.sqlite` (never the `fha views` files); biography and Stories prose from the person file. Jinja2 templates in `tools/templates/`; a minimal stdlib Markdown converter; PIL for images. `[[ID]]` becomes a relative link labelled by `|display` or the record name; a name/stem resolves through the alias map (so a living person is redacted however named); an unresolved stem is plain text; an unresolved ID renders highlighted.
+**Data:** structured data from `.cache/index.sqlite` (never the `fha views` files); biography and Stories prose from the person file. Jinja2 templates in `tools/templates/`; a minimal stdlib Markdown converter; PIL for images. `[[ID]]` (or its file-stem form) becomes a relative link labelled by `|display` or the record name; a name/stem resolves through the alias map (so a living person is redacted however named); an unresolved stem is plain text; an unresolved ID renders highlighted.
 
 ### Pages
 - **Home**: ancestor pedigree (below) seeded on `site.home_person` else `root_person`, depth `site.home_pedigree_generations` (default 5, max 8); surname A-Z index; recent discoveries; **Sources** grouped by decade of `date_min`, alphabetical within, undated last.
@@ -1851,7 +1852,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 
 | Command | When |
 |---|---|
-| `fha normalize-links [--dry-run \| --write]` (T C) | Tidy citations/cross-links to the standard form: single-bracket `[s-…]` → `[[s-…]]`; a resolved human stem → canonical `[[s-…]]` (keeping the stem in `aliases:`); a source's `people:` / `places:` and a claim's `persons:` → one `- "[[p-…\|Name]]"` line per entry, whatever form they were written in (`p-…  # Name`, a bare ID, `[[Ken Smith]]`). A display a person wrote is kept; the record's name is added only where there is none (bare ID when the record has no usable name; an entry that does not resolve is left as written). A trailing `# note` stays on its line unless it only repeats the person's name. `fha claim --persons` keeps notes and displays the same way. `roles:` and `place:` stay bare. Flags ambiguous name-links (alias clash, W113) rather than guessing. Dry-run by default; returns a `Result`. Sits beside the formatter: deliberately not part of it (the formatter never rewrites prose). |
+| `fha normalize-links [--dry-run \| --write]` (T C) | Tidy citations/cross-links to the standard form: single-bracket `[s-…]` → `[[s-…]]`; a resolved human stem → canonical `[[s-…]]` (keeping the stem in `aliases:`), while a file-stem link is already settled and left as written; a source's `people:` / `places:` and a claim's `persons:` → one `- "[[p-…\|Name]]"` line per entry, whatever form they were written in (`p-…  # Name`, a bare ID, `[[Ken Smith]]`). A display a person wrote is kept; the record's name is added only where there is none (bare ID when the record has no usable name; an entry that does not resolve is left as written). A trailing `# note` stays on its line unless it only repeats the person's name. `fha claim --persons` keeps notes and displays the same way. `roles:` and `place:` stay bare. Flags ambiguous name-links (alias clash, W113) rather than guessing. Dry-run by default; returns a `Result`. Sits beside the formatter: deliberately not part of it (the formatter never rewrites prose). |
 | `fha places geocode` / `places lint` (T C) | Coordinate, hierarchy and spelling backfill from GeoNames (one table, one human yes); registry hygiene. |
 | `fha places link [--apply]` / `fha places candidates --register` (T C) | Linking claims written before their place was registered (dry run first); registering every recurring place text at once (one list, one yes). |
 | `fha places set <l-id> …` / `fha places note <l-id> --text …` / `fha places edit-note <l-id> …` (T C) | Human-directed registry edits (§10): coordinates / also-known-as / names-over-time (each a full per-field replace, dry-run diff first), a dated research note appended to the place's `notes:`, and a per-entry rewrite of one existing note (named by its whole current paragraph). The workbench place page's edit buttons drive exactly these. |

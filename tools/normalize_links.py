@@ -78,6 +78,8 @@ from _lib import (
     strip_link_wrapper,
     yaml_inline,
     is_template_file,
+    link_entry,
+    link_parts,
     load_fha_yaml,
     normalize_id,
     read_record,
@@ -185,16 +187,18 @@ def _rewrite_wikilinks(
     clashes: dict[str, list[str]],
 ) -> tuple[str, int, list[str]]:
     """Rewrite resolved name/stem `[[ ]]` links to the canonical `[[ID|display]]`
-    form. ID-target links are already canonical and left alone; an ambiguous name
-    is collected (for the caller to report) and left exactly as written."""
+    form. ID-target links are already canonical and left alone, and so is a
+    file-stem target (`[[hartley__thomas_edward_p-…|Tom]]`), which carries its
+    ID at the end; an ambiguous name is collected (for the caller to report)
+    and left exactly as written."""
     edits = 0
     ambiguous: list[str] = []
 
     def repl(m: re.Match) -> str:
         nonlocal edits
-        target = m.group(1).strip()
+        target, _display = link_parts(m.group(1), m.group(3))
         if id_type_of(target):
-            return m.group(0)   # already an ID link - canonical, leave it
+            return m.group(0)   # already an ID or file-stem link: leave it
         resolved = resolve_ref(target, alias_map)
         if resolved:
             display = (m.group(3) or target).strip()
@@ -292,6 +296,19 @@ def _resolve_list_item(item, want: str, alias_map: dict[str, str]) -> str | None
     return None
 
 
+def _written_stem(item) -> str | None:
+    """The file stem a `[[stem|…]]` list entry targets, as written, or None
+    when the entry targets an ID or a name."""
+    if not isinstance(item, str):
+        return None
+    m = WIKILINK_RE.fullmatch(item.strip())
+    if not m:
+        return None
+    written = m.group(1).strip()
+    target, _display = link_parts(written)
+    return written if target != written and id_type_of(target) else None
+
+
 def _settle_list_segment(
     seg: list[str], key: str, col: int, head_prefix: str,
     alias_map: dict[str, str], names: dict[str, str],
@@ -332,7 +349,16 @@ def _settle_list_segment(
             # kept; the record's name is added only where there is none.
             written = written_link_display(item)
             name = written or names.get(rid)
-            rendered = yaml_link_item(rid, name)
+            stem = _written_stem(item)
+            if stem:
+                # A file-stem link is already settled: keep the stem the
+                # person (or Obsidian) wrote, adding only a missing name.
+                entry = link_entry(rid, name)
+                shown = entry[2:-2].split('|', 1)[1] if entry.startswith('[[') else ''
+                rendered = json.dumps(f'[[{stem}|{shown}]]' if shown else f'[[{stem}]]',
+                                      ensure_ascii=False)
+            else:
+                rendered = yaml_link_item(rid, name)
         elif isinstance(item, list):
             rendered = json.dumps('[[' + ' '.join(str(x) for x in item) + ']]', ensure_ascii=False)
         elif isinstance(item, str):

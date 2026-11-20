@@ -134,7 +134,8 @@ from _lib import (
     PERSON_SEX_VALUES,
     SOURCE_CLASS_VALUES,
     mint_ids,
-    TOKEN_RE,
+    extract_link_tokens,
+    extract_tokens,
     VITAL_TYPES,
     Finding,
     Result,
@@ -175,9 +176,11 @@ from _lib import (
     VITAL_SUBJECT_ROLES,
     roles_by_person,
     extract_token_ids,
+    cited_source_ids,
     extract_wikilinks,
     link_field_refs,
     resolve_ref,
+    alias_key_text,
     strip_link_wrapper,
     is_merged_meta,
     strip_generated_region,   # cut the generated summary region out before E013 reads
@@ -456,6 +459,10 @@ class Registry:
 
         # All token IDs referenced in prose/frontmatter (value → list of (path, line))
         self.token_refs: dict[str, list[tuple[Path, int]]] = {}
+        # Claim links written against a source (`[[s-…#Claims|c-…]]`):
+        # (claim id, the source the link names, path, line), for the E004
+        # check that the claim belongs to that source.
+        self.claim_link_sources: list[tuple[str, str, Path, int]] = []
 
         # Non-ID name/stem wikilinks in prose (lowercased target → [(path, line)]).
         # `[[Ken Smith]]` lands here, not in token_refs; used to tell a LATENT
@@ -924,7 +931,7 @@ def _near_miss_text(ref: str, near: tuple[str | None, str]) -> str:
     return f'{ref!r} {detail}'
 
 
-def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]]]:
+def _parse_summary_block(body: str, claim_source=None) -> list[tuple[str, str, list[str], list[str]]]:
     """
     Parse the summary block from a curated profile body.
     Handles both multi-line and inline (single-line) summary blocks.
@@ -955,7 +962,8 @@ def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]
         # ignoring any display text. extract_token_ids handles both bracket forms.
         seg_ids = extract_token_ids(segment)
         p_ids = [i for i in seg_ids if id_type_of(i) == 'P']
-        s_ids = [i for i in seg_ids if id_type_of(i) == 'S']
+        # A claim link cites the source holding the claim (`claim_source`).
+        s_ids = cited_source_ids(segment, claim_source or (lambda _cid: None))
         results.append((label, segment, p_ids, s_ids))
 
     return results
@@ -1047,9 +1055,10 @@ def _collect_token_refs(text: str, path: Path, registry: Registry,
     `line_offset` is added to each line number when `text` is a record body,
     so the number is the file's own."""
     for lineno, line in enumerate(text.splitlines(), start=1 + line_offset):
-        for m in TOKEN_RE.finditer(line):
-            tid = normalize_id(m.group(1))
+        for tid, _disp, _frag, _span, named in extract_link_tokens(line):
             registry.token_refs.setdefault(tid, []).append((path, lineno))
+            if named:
+                registry.claim_link_sources.append((tid, named, path, lineno))
         for target, _disp, _frag, _span in extract_wikilinks(line):
             if id_type_of(target):
                 continue   # ID wikilinks are already handled above
@@ -3003,7 +3012,7 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
     if not aliases:
         return True
     entries = aliases if isinstance(aliases, list) else [aliases]
-    present = {strip_link_wrapper(str(a)).lower() for a in entries}
+    present = {alias_key_text(str(a)).lower() for a in entries}
     return normalize_id(cid) in present
 
 
@@ -3022,7 +3031,7 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
         return [], False
     if not isinstance(aliases, list) or is_merged_meta(meta):
         return ([] if _self_alias_ok(meta, pid) else [fmt_id_display(pid)]), False
-    present = {strip_link_wrapper(str(a)).strip().lower() for a in aliases if a is not None}
+    present = {alias_key_text(str(a)).strip().lower() for a in aliases if a is not None}
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
     public = {v.lower() for v in person_alias_mirror(meta)}
@@ -3684,6 +3693,24 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                 findings.append(Finding('E', 'E005', ref_path,
                     f'P-id {token_id} referenced at line {ref_line} but no person record exists - '
                     'create a stub with `fha stubs`, or fix the ID.'))
+
+    # E004: a source link shown as a claim of another source
+    # (`[[s-A#Claims|c-of-B]]`). The tools read it as the claim, so the
+    # citation goes to B while the writer named A; WikiTree treats it as
+    # citing both. An unknown claim is already an orphan above.
+    claim_home = {
+        normalize_id(str(c['id'])): sid
+        for sid, claims in registry.source_claims.items()
+        for c in claims if isinstance(c, dict) and c.get('id')
+    }
+    for cid, named, ref_path, ref_line in registry.claim_link_sources:
+        home = claim_home.get(cid)
+        if home and home != named:
+            findings.append(Finding('E', 'E004', ref_path,
+                f'Link at line {ref_line} names source {fmt_id_display(named)} but shows '
+                f'claim {fmt_id_display(cid)}, which belongs to {fmt_id_display(home)}. '
+                f'Fix the link to cite the source that holds the claim, or the claim '
+                f'that belongs to that source.'))
 
     registry.lap('links between records')
 
@@ -4347,6 +4374,11 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # E013: summary block drift for curated profiles
     children_of = _build_children_of(registry)   # parent_pid → {child_pids}
+    claim_source = {
+        normalize_id(str(c['id'])): sid
+        for sid, claims in registry.source_claims.items()
+        for c in claims if isinstance(c, dict) and c.get('id')
+    }
     for pid, paths in registry.person_profile_paths.items():
         profile_path = paths[0]
         meta = registry.person_meta.get(pid, {})
@@ -4354,7 +4386,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             continue
 
         rec = read_record(profile_path)
-        summary = _parse_summary_block(rec['body'])
+        summary = _parse_summary_block(rec['body'], claim_source.get)
         if not summary:
             continue
 

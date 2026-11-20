@@ -71,7 +71,7 @@ from collections import deque
 from html.parser import HTMLParser
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 try:
     import yaml
@@ -430,6 +430,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 without staling the freshness watermark
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
+#    cited_source_ids          - the source IDs a text cites, a claim link
+#                                 counted as its source (claim_source_lookup)
 #    extract_bare_ids          - all bare IDs from a text block
 #    normalize_place_text      - lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
@@ -516,8 +518,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 # Crockford Base32 alphabet - lowercase, omitting i l o u
 CROCKFORD_ALPHA = '0123456789abcdefghjkmnpqrstvwxyz'
 
-# Matches any bare ID in text (case-insensitive)
-ID_RE = re.compile(r'\b([PSCLH])-([0-9a-hjkmnp-tv-z]{10})\b', re.I)
+# Matches any bare ID in text (case-insensitive). The edges are "no letter or
+# digit", not `\b`: an underscore counts as an edge, so the ID at the end of a
+# file stem (`hartley__thomas_edward_p-de957bcda1`, SPEC §13) is found too.
+ID_RE = re.compile(
+    r'(?<![0-9A-Za-z])([PSCLH])-([0-9a-hjkmnp-tv-z]{10})(?![0-9A-Za-z])', re.I)
 
 # The bare ID sub-pattern shared by every bracketed-token regex below.  Kept in
 # one place so the token grammar and the ID grammar can never drift apart; it is
@@ -532,17 +537,23 @@ _TOKEN_ID = r'[PSCLH]-[0-9a-hjkmnp-tv-z]{10}'
 #   [[P-…|Margaret Cole]]   …with a |display alias (renderer text; ignored here)
 #   [[S-…#Claims]]          …with an Obsidian #heading fragment (parse-only)
 #   [[C-…#^x|note]]         …with a #^block fragment and a display alias
+#   [[hartley__thomas_edward_p-…|Tom]]  a file-stem target (what Obsidian
+#                           writes); the stem always ends in the ID (SPEC §13,
+#                           §18), so the ID is read from its end and a stale
+#                           stem left by a rename still resolves
 #   [S-…]                   legacy single-bracket form (still resolved, forgivingly)
 #
-# Exactly ONE capturing group - the load-bearing ID - so the historical
-# `TOKEN_RE.findall(text)` / `m.group(1)` consumers keep returning the ID and
-# nothing else.  The |display and #fragment are matched but NOT captured here;
-# the renderers that must re-emit display text use `extract_tokens()` instead.
-# The optional second bracket on each side (`\[?` / `\]?`) is what makes the
-# single-bracket legacy form resolve through the same pattern.
+# Exactly ONE capturing group: the ID the target carries. Read links through
+# `extract_tokens()` / `extract_token_ids()`, never `m.group(1)` directly:
+# they also apply the claim rule (`[[source_stem|c-…]]` points at the claim,
+# see `link_parts`). The optional second bracket on each side (`\[?` / `\]?`)
+# is what makes the single-bracket legacy form resolve through the same
+# pattern; a stem lead is read only inside double brackets.
+_TOKEN_STEM_LEAD = r'(?:(?<=\[\[)[^\[\]|#\r\n]*?_)?'
 TOKEN_RE = re.compile(
     r'\[\[?'                # one or two opening brackets
-    rf'({_TOKEN_ID})'       # 1: the ID (the only captured, load-bearing group)
+    + _TOKEN_STEM_LEAD +    # optional file-stem lead ending in `_`
+    rf'({_TOKEN_ID})'       # 1: the ID (the only captured group)
     r'(?:#[^|\]]*)?'        # optional #heading / #^block fragment (parse-only)
     r'(?:\|[^\]]*)?'        # optional |display alias
     r'\]\]?',               # one or two closing brackets
@@ -555,12 +566,17 @@ TOKEN_RE = re.compile(
 # `findall`/`group(1)` contract is untouched.
 _TOKEN_PARTS_RE = re.compile(
     r'\[\[?'
+    + _TOKEN_STEM_LEAD +
     rf'({_TOKEN_ID})'       # 1: ID (load-bearing)
     r'(?:#([^|\]]*))?'      # 2: #fragment (parse-only; no tool ever emits one)
     r'(?:\|([^\]]*))?'      # 3: |display alias
     r'\]\]?',
     re.I,
 )
+
+# A link target that is a record's file stem: anything, an underscore, then
+# the ID at the very end (SPEC §13: every formalized file stem ends `_{id}`).
+_STEM_TARGET_RE = re.compile(rf'^.*_({_TOKEN_ID})$', re.I | re.S)
 
 # The legacy single-bracket form on its own, used by the explicit normalize pass
 # to find `[ID]` tokens worth upgrading to `[[ID]]`.  The lookbehind/lookahead
@@ -10186,17 +10202,80 @@ def extract_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[i
 
     `extract_token_ids` is the simple ID list built on top of this; reach for the
     tuples only when you need the display text or the span.
+
+    A file-stem target (`[[hartley__thomas_edward_p-…|Tom]]`) gives the same
+    tuple as its ID form, and a source link whose display is a claim ID
+    (`[[source_stem#Claims|c-…]]`) gives the claim: see `link_parts`.
     """
-    tokens: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
+    return [tok[:4] for tok in extract_link_tokens(text)]
+
+
+def extract_link_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int], str | None]]:
+    """`extract_tokens`' tuples plus a fifth value: the source ID the link was
+    written against when the claim rule turned it into a claim
+    (`[[source_stem#Claims|c-…]]` → that source), else None."""
+    tokens = []
     for m in _TOKEN_PARTS_RE.finditer(text):
         fragment = m.group(2)
         if fragment is not None:
             fragment = fragment.strip() or None
-        display = m.group(3)
-        if display is not None:
-            display = display.strip() or None
-        tokens.append((m.group(1).lower(), display, fragment, m.span()))
+        written = m.group(1).lower()
+        target, display = link_parts(written, m.group(3))
+        target = target.lower()
+        named_source = written if target != written and written.startswith('s-') else None
+        tokens.append((target, display, fragment, m.span(), named_source))
     return tokens
+
+
+def claim_source_lookup(conn: Any) -> Callable[[str], str | None]:
+    """A cached `c-id → s-id` reader over the index's claims table, for
+    `cited_source_ids` and the renderers. An unknown claim reads as None."""
+    cache: dict[str, str | None] = {}
+
+    def lookup(cid: str) -> str | None:
+        cid = normalize_id(cid)
+        if cid not in cache:
+            try:
+                row = conn.execute('SELECT source_id FROM claims WHERE id = ?', (cid,)).fetchone()
+            except Exception:
+                row = None
+            cache[cid] = normalize_id(str(row[0])) if row and row[0] else None
+        return cache[cid]
+    return lookup
+
+
+def token_source_id(tid: str, named_source: str | None,
+                    claim_source: Callable[[str], str | None]) -> str | None:
+    """The source one citation token cites: a source token is itself; a
+    claim token is the source that holds the claim (SPEC §8.7), or, when that
+    claim is unknown, the source its link was written against."""
+    kind = id_type_of(tid)
+    if kind == 'S':
+        return tid
+    if kind == 'C':
+        return claim_source(tid) or named_source
+    return None
+
+
+def cited_source_ids(text: str, claim_source: Callable[[str], str | None],
+                     *, for_gate: bool = False) -> list[str]:
+    """The source IDs this text cites, one per citation, in document order.
+    A claim link (`[[c-…]]`, `[[source_stem#Claims|c-…]]`) cites the source
+    holding the claim, so a reader asking "is this source cited?" counts it.
+    `claim_source` maps a claim ID to its source ID (`claim_source_lookup`
+    over the index, or a dict's `.get`).
+
+    `for_gate=True` is for privacy checks: a source link shown as another
+    source's claim (`[[s-A#Claims|c-of-B]]`) gives BOTH sources, so a
+    restriction on either one refuses. Rendering keeps the claim's source."""
+    out: list[str] = []
+    for tid, _d, _f, _span, named in extract_link_tokens(text):
+        sid = token_source_id(tid, named, claim_source)
+        if sid:
+            out.append(sid)
+        if for_gate and named and named != sid:
+            out.append(named)
+    return out
 
 
 def extract_token_ids(text: str) -> list[str]:
@@ -10236,23 +10315,72 @@ def extract_bare_ids(text: str) -> list[str]:
 _WIKILINK_WRAP_RE = re.compile(r'^\[\[(?P<inner>.*)\]\]$|^\[(?P<inner1>[^\[\]]*)\]$', re.S)
 
 
-def strip_link_wrapper(ref: str) -> str:
-    """Reduce a reference to its bare target: unwrap `[[ ]]`/`[ ]`, drop any
-    `|display` and `#fragment`, and trim. `[[Ken Smith]]` → `Ken Smith`,
-    `[[P-x|Name]]` → `P-x`, `[[S-x#Claims]]` → `S-x`, `grandmas-album` → itself.
+def link_parts(target: str, display: str | None = None) -> tuple[str, str | None]:
+    """THE link resolver every reader shares: the (target, display) a link
+    means, from the target and display text it was written with.
 
-    The load-bearing target is whatever a human would expect the link to point
-    at; display text and heading anchors are presentation only and never alter
-    resolution (mirrors the `[[ ]]` token grammar's treatment of them)."""
+    - A file-stem target means the ID it ends in (SPEC §13, §18):
+      `hartley__thomas_edward_p-de957bcda1` → `p-de957bcda1`. Only the ID is
+      read, so a stem whose leading part no longer matches the file's name
+      (the record was renamed since) still resolves.
+    - A source link whose display is exactly a claim ID points at that claim
+      (`[[source_stem|c-…]]`, `[[s-…#Claims|c-…]]`): the result is the claim
+      ID with no display, the same as `[[c-…]]`.
+    - Anything else (an ID, a name, a hand stem with no ID) comes back as
+      written, trimmed, for the alias map to resolve.
+
+    The `#fragment` is the caller's to drop before calling: it never alters
+    resolution. Display text is trimmed, and a blank one is None."""
+    t = str(target or '').strip()
+    if '_' in t:
+        m = _STEM_TARGET_RE.match(t)
+        if m:
+            t = m.group(1)
+    d = display.strip() if display is not None else None
+    if not d:
+        d = None
+    if (d is not None and d[:2].lower() == 'c-'
+            and id_type_of(d) == 'C' and id_type_of(t) == 'S'):
+        return d, None
+    return t, d
+
+
+def _split_link(ref: Any) -> tuple[str, str | None]:
+    """A reference's written target and display: unwrap `[[ ]]`/`[ ]`, split
+    off the `|display`, drop the `#fragment`, trim. No resolution."""
     if ref is None:
-        return ''
+        return '', None
     s = str(ref).strip()
     m = _WIKILINK_WRAP_RE.match(s)
     if m:
         s = (m.group('inner') if m.group('inner') is not None else m.group('inner1')).strip()
-    s = s.split('|', 1)[0]          # drop |display
+    display: str | None = None
+    if '|' in s:
+        s, display = s.split('|', 1)
     s = s.split('#', 1)[0]          # drop #fragment / #^block
-    return s.strip()
+    return s.strip(), display
+
+
+def strip_link_wrapper(ref: str) -> str:
+    """Reduce a reference to the target it resolves by: unwrap `[[ ]]`/`[ ]`,
+    drop any `|display` and `#fragment`, and trim. `[[Ken Smith]]` → `Ken
+    Smith`, `[[P-x|Name]]` → `P-x`, `[[S-x#Claims]]` → `S-x`, `grandmas-album`
+    → itself, and a file stem to its ID (`[[hartley__tom_p-x|Tom]]` → `p-x`,
+    `[[a-letter_s-x#Claims|c-y]]` → `c-y`; see `link_parts`).
+
+    The load-bearing target is whatever a human would expect the link to point
+    at; display text and heading anchors are presentation only and never alter
+    resolution (mirrors the `[[ ]]` token grammar's treatment of them)."""
+    target, display = _split_link(ref)
+    return link_parts(target, display)[0]
+
+
+def alias_key_text(ref: Any) -> str:
+    """An `aliases:` entry as written, unwrapped and trimmed. Unlike
+    `strip_link_wrapper` it never reads a stem down to its ID: an alias is a
+    handle in its own right, and a stem alias carrying another record's ID
+    must not register that ID here."""
+    return _split_link(ref)[0]
 
 
 def link_field_refs(value: Any) -> list[str]:
@@ -11716,8 +11844,10 @@ def written_link_display(item: object) -> str | None:
     m = re.match(r'^\[\[([^\]|]*)(?:\|([^\]]*))?\]\]$', item.strip())
     if not m:
         return None
-    display = m.group(2) if m.group(2) is not None else m.group(1).split('#', 1)[0]
-    display = display.strip()
+    written = m.group(1).split('#', 1)[0]
+    target, display = link_parts(written, m.group(2))
+    if display is None and target == written.strip():
+        display = target          # `[[Maggie]]`: the name is the target
     if not display or is_valid_id(display):
         return None
     return _usable_link_name(display)
@@ -11836,7 +11966,7 @@ def _alias_index(records: Any) -> dict[str, set[str]]:
         if not cid:
             continue
         for s in _record_alias_strings(rec):
-            key = strip_link_wrapper(s).lower()
+            key = alias_key_text(s).lower()
             if key:
                 idx.setdefault(key, set()).add(cid)
     return idx
@@ -12050,7 +12180,7 @@ def _merge_aliases_unchecked(
         existing = []
     else:
         return fm_text, []   # a scalar aliases: value is a hand form; leave it alone
-    have = {strip_link_wrapper(a).strip().lower() for a in existing}
+    have = {alias_key_text(a).strip().lower() for a in existing}
     head: list[str] = []
     if id_first and normalize_id(new_id) not in have:
         head = [new_id]
@@ -12578,16 +12708,15 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
     Unlike `extract_tokens` (ID tokens only), this also yields name/stem links
     like `[[Ken Smith]]` whose target is not an ID - the citation indexer and
     `fha normalize-links` resolve those through the alias map. `target` is
-    returned trimmed but with original case (a name lookup lowercases itself)."""
+    returned trimmed but with original case (a name lookup lowercases itself),
+    already read through `link_parts`: a file-stem target comes back as its
+    ID, so every reader that skips ID targets skips it the same way."""
     out: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
     for m in WIKILINK_RE.finditer(text):
-        target = m.group(1).strip()
+        target, disp = link_parts(m.group(1), m.group(3))
         frag = m.group(2)
-        disp = m.group(3)
         if frag is not None:
             frag = frag.strip() or None
-        if disp is not None:
-            disp = disp.strip() or None
         if target:
             out.append((target, disp, frag, m.span()))
     return out

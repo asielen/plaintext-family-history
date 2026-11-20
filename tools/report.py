@@ -142,7 +142,8 @@ from _lib import (
     EXIT_WARNINGS,
     build_ahnentafel_map,
     claim_is_own_vital,
-    extract_token_ids,
+    claim_source_lookup,
+    cited_source_ids,
     calendar_years_ago_phrase,
     family_calendar_week,
     FhaConfigError,
@@ -1406,9 +1407,8 @@ def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) ->
     except OSError:
         return False
     body = rec['body']
-    cited_sids = {
-        tid for tid in extract_token_ids(body) if tid.startswith('s-')
-    }
+    # A claim link counts as the source holding the claim.
+    cited_sids = set(cited_source_ids(body, claim_source_lookup(conn)))
     accepted_sids = {
         normalize_id(r[0]) for r in conn.execute(
             "SELECT DISTINCT c.source_id FROM claim_persons cp "

@@ -98,6 +98,7 @@ from _lib import (
     newest_record_mtime,
     normalize_date,
     normalize_id,
+    strip_link_wrapper,
     fmt_id_display,
     index_merge_survivors,
     normalize_place_text,
@@ -2258,7 +2259,7 @@ def _related_dispatch(
 
     id_norm = None
     if related_id is not None:
-        id_norm = normalize_id(related_id)
+        id_norm = normalize_id(strip_link_wrapper(related_id))
         if not is_valid_id(id_norm):
             print(f'ERROR: {related_id!r} is not a valid archive ID.', file=sys.stderr)
             return EXIT_FAILURE
@@ -2574,7 +2575,8 @@ def _ranked_search(
     if kind_set is not None and 'photo-source' in kind_set:
         gen_kinds = (kind_set - {'photo-source'}) | {'source'}
 
-    id_norm = normalize_id(q)
+    # A pasted link or file stem (`hartley__thomas_edward_p-…`) finds by its ID.
+    id_norm = normalize_id(strip_link_wrapper(q))
     if is_valid_id(id_norm):
         hit = _bare_id_hit(conn, id_norm)
         if hit is None:
@@ -3065,7 +3067,8 @@ def run_find(
         print('ERROR: provide an ID or --text "phrase"', file=sys.stderr)
         return _as_find_result(EXIT_FAILURE)
 
-    id_norm = normalize_id(id_or_text)
+    # A pasted link or file stem (`hartley__thomas_edward_p-…`) finds by its ID.
+    id_norm = normalize_id(strip_link_wrapper(id_or_text))
     if is_valid_id(id_norm):
         return _as_find_result(find_by_id(id_norm, archive_root, fha_config))
 

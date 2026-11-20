@@ -150,7 +150,9 @@ from _lib import (
     couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
     couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None,
     couple_folder_prefix,    # position → the even couple-folder number,
-    extract_token_ids,    # all citation-token IDs ([[X-id]] / legacy [X-id]) in text,
+    link_parts,
+    claim_source_lookup,
+    cited_source_ids,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
     fmt_id_display,       # the one ID form tools write and show: all lowercase,
     bracket_given_name,      # default child token, title-aware - shared with lint W103,
@@ -639,7 +641,8 @@ def _md_inline_to_html(text: str) -> str:
     escaped = html_escape(text)
 
     def _token(m: re.Match) -> str:
-        target, display = m.group(1), m.group(2)
+        # A file-stem target shows as its ID, the same as the ID form.
+        target, display = link_parts(m.group(1).split('#', 1)[0], m.group(2))
         if display:
             return f'<span class="cite" title="{target}">{display}</span>'
         return f'<span class="cite">{target}</span>'
@@ -1634,10 +1637,11 @@ def _generate_draft_queue(
     but the profile body contains no [S-id] citation token for it.
 
     HOW "CITED" IS DETERMINED: we scan the profile body (not the YAML front-
-    matter) for citation tokens via extract_token_ids (new `[[S-…]]` or legacy
-    `[S-…]`).  The body is where the summary block and biography prose live.  If
-    an S-id token appears anywhere in the body, that source is considered cited
-    and omitted from the queue.
+    matter) for citation tokens via cited_source_ids (new `[[S-…]]` or legacy
+    `[S-…]`, and a claim link read as the source holding the claim).  The body
+    is where the summary block and biography prose live.  If a token citing a
+    source appears anywhere in the body, that source is considered cited and
+    omitted from the queue.
 
     HOW THE DIFF WORKS:
       accepted_sids  = {source_ids with ≥1 accepted claim for this person}
@@ -1672,15 +1676,14 @@ def _generate_draft_queue(
               '`fha views draft-queue` again.', file=sys.stderr)
         return None
     body = rec['body']
-    # Citation tokens (new `[[S-…]]` or legacy `[S-…]`); filter to S- sources.
+    # Citation tokens (new `[[S-…]]` or legacy `[S-…]`), read as the sources
+    # they cite: a claim link counts as its source.
     # Scanned with the ## Sources GENERATED region cut out first (#76) - see
     # _body_excluding_sources_region's own docstring for why: that region
     # always lists every source touching this person, so leaving it in would
     # read every listing as a citation and empty the queue on sight.
-    cited_sids: set[str] = {
-        tid for tid in extract_token_ids(_body_excluding_sources_region(body))
-        if tid.startswith('s-')
-    }
+    cited_sids: set[str] = set(cited_source_ids(
+        _body_excluding_sources_region(body), claim_source_lookup(conn)))
 
     accepted_rows = conn.execute(
         """
