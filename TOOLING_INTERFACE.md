@@ -92,7 +92,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 ### 2.2 Judgment-heavy skills
 
 - `merge-identities` ([SKILL.md](.claude/skills/merge-identities/SKILL.md)): the "same person or two people?" decision, run on the frontier tier (§1). Reads both people's neighborhoods (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation, and enacts a confirmed merge with `fha confirm merge` (dry-run first). A `merged_into` person is never directly referenced again (lint W107 lists any left; it counts for the survivor meanwhile, SPEC §9).
-- `place-research` ([SKILL.md](.claude/skills/place-research/SKILL.md)): "fill in this place's history." Drafts dated `history:` entries and place notes (loose citations are acceptable, since place context is not vital fact), links `[[l-…]]`, and proposes registry entries for `fha confirm place` to write.
+- `place-research` ([SKILL.md](.claude/skills/place-research/SKILL.md)): "fill in this place's history." Drafts dated `history:` entries and place notes (loose citations are acceptable, since place context is not vital fact), links `[[l-…]]`, and proposes registry entries for `fha confirm place` to write; for a place without coordinates it previews `fha places geocode --place` and runs it on the human's yes.
 
 ### 2.3 Photos and sharing
 

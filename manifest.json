@@ -6,7 +6,7 @@
     {
       "path": ".agents/skills/README.md",
       "category": "operating",
-      "sha256": "95f8b5aa429e45384b524857ea547b85aae8c3d27033009159667dc7eacdc076",
+      "sha256": "43c3b519bb2bf4656cb4299754df1bbb59cd3fdcc653c2af31fae062e1792e7d",
       "spec_version": "2.9",
       "src": ".claude/skills/README.md"
     },
@@ -83,7 +83,7 @@
     {
       "path": ".agents/skills/place-research/SKILL.md",
       "category": "operating",
-      "sha256": "3c7804f2a618235762d1e1991e586f9e4aec01da5390413dc2a60baac1680f62",
+      "sha256": "1c7fce4107480b1281601773ad9b4899c9a90ee6fd55237328dbc668a3863e2c",
       "spec_version": "2.9",
       "src": ".claude/skills/place-research/SKILL.md"
     },
@@ -181,7 +181,7 @@
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
-      "sha256": "95f8b5aa429e45384b524857ea547b85aae8c3d27033009159667dc7eacdc076",
+      "sha256": "43c3b519bb2bf4656cb4299754df1bbb59cd3fdcc653c2af31fae062e1792e7d",
       "spec_version": "2.9"
     },
     {
@@ -247,7 +247,7 @@
     {
       "path": ".claude/skills/place-research/SKILL.md",
       "category": "operating",
-      "sha256": "3c7804f2a618235762d1e1991e586f9e4aec01da5390413dc2a60baac1680f62",
+      "sha256": "1c7fce4107480b1281601773ad9b4899c9a90ee6fd55237328dbc668a3863e2c",
       "spec_version": "2.9"
     },
     {
@@ -842,7 +842,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "bf434018c8646f6ccc4be78f28e7b57653abde183703b720bd54c967c22ec21e",
+      "sha256": "6199be14bcb008adb316dcc33b9c73ba528bea00ce525f5ebedf29ebc00b45ee",
       "spec_version": "2.9",
       "src": "tools/places.py"
     },
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d7adb334f45dbbbce84779dd8f00da23b74ed4c705d1ce6fbd25385ed0422b94",
+      "sha256": "d8e13602c434691f4f51fc397f52638e5ce7e0930fc0aa7d56958a39b45fd6c3",
       "spec_version": "2.9",
       "src": "TOOLING.md"
     },

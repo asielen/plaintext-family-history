@@ -976,6 +976,17 @@ class GeocodeRunTests(unittest.TestCase):
         entry = yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))[0]
         self.assertEqual(entry['alt_names'], ['Wola'])
 
+    def test_hierarchy_with_a_hand_comment_is_not_rewritten(self):
+        self._registry('- id: L-7c1a9f4e22\n  name: Fairview\n'
+                       '  hierarchy: Fairview, Kansas  # as the 1880 census has it\n')
+        _write_geonames(self.gdir)
+        result, prompts = self._run()
+        self.assertEqual(result['written'], 1)
+        self.assertNotIn('hierarchy "', prompts[0])
+        text = self.yaml_path.read_text(encoding='utf-8')
+        self.assertIn('  hierarchy: Fairview, Kansas  # as the 1880 census has it\n', text)
+        self.assertIn('coords: [39.5631, -95.1216]', text)
+
     def test_alt_name_another_place_answers_to_is_not_added(self):
         # Adding "Wola Mala" to the first place would make two places share
         # a name (lint PL002) and stop claims linking to either.

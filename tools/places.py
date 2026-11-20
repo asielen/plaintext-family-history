@@ -84,6 +84,7 @@ CODE MAP
     _filled_hierarchy, _proposed_alt_names : what a hit adds besides coordinates
     _locate_place_block                    : one `- id:` block's line span (shared grammar)
     _apply_geocode_to_yaml                 : surgical places.yaml block edit
+    _hierarchy_is_one_plain_line           : is a hierarchy safe to rewrite (no comment)
     _prepare_gazetteer                     : download/import what the places need
     _registry_country_spellings            : write the country the registry's way
     _proposal_table, run_geocode           : one table, one yes, one atomic write
@@ -1327,6 +1328,20 @@ def _apply_geocode_to_yaml(
     return '\n'.join(new_lines) + trailing_nl, True
 
 
+def _hierarchy_is_one_plain_line(text: str, place_id: str) -> bool:
+    """Whether the place's `hierarchy:` is absent or a single line with no
+    `#` comment, so replacing it with a filled-in one loses nothing."""
+    lines = text.splitlines()
+    span = _locate_place_block(lines, place_id)
+    if span is None:
+        return False
+    block = lines[span[0]:span[1]]
+    key = _key_span(block, 'hierarchy', _block_indent(lines, *span))
+    if key is None:
+        return True
+    return key[1] - key[0] == 1 and '#' not in block[key[0]]
+
+
 def _prepare_gazetteer(
     archive_root: Path, rows: list, *, offline: bool, progress,
 ) -> tuple[_Gazetteer | None, list[str]]:
@@ -1617,6 +1632,10 @@ def run_geocode(
         new_text = text
         kept = []
         for p in proposals:
+            if p['hierarchy'] and not _hierarchy_is_one_plain_line(new_text, p['place_id']):
+                # A hierarchy carrying a hand comment, or written over several
+                # lines, is not rewritten: the comment would be lost.
+                p['hierarchy'] = None
             new_text, block_changed = _apply_geocode_to_yaml(
                 new_text, p['place_id'], p['lat'], p['lon'], p['alt_names'], p['hierarchy'])
             if block_changed:
