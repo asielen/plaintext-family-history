@@ -424,6 +424,32 @@ class HierarchyRuleTests(unittest.TestCase):
         self.assertEqual(self.match('Ashby Co., Kansas')['place_id'], 'l-bbbbbbbbbb')
         self.assertEqual(self.match('Ashby, Ashby, Kansas')['place_id'], 'l-cccccccccc')
 
+    def test_a_county_part_must_be_a_county_of_the_place(self) -> None:
+        # A part that says "County" names a county: the place's own name, or
+        # its state, never stands in for one. Linking "Jackson, Jackson
+        # County" to the Jackson in Hinds County would put a family in the
+        # wrong county, silently.
+        _write_registry(
+            self.root,
+            '- id: L-aaaaaaaaaa\n  name: Jackson\n'
+            '  hierarchy: Jackson, Hinds County, Mississippi, USA\n'
+            '- id: L-bbbbbbbbbb\n  name: Brooklyn\n'
+            '  hierarchy: Brooklyn, Kings County, New York, USA\n'
+            '- id: L-cccccccccc\n  name: Chicago\n'
+            '  hierarchy: Chicago, Cook, Illinois, USA\n')
+        for text in ('Jackson, Jackson County', 'Jackson, Jackson Co.', 'Jackson, Jackson',
+                     'Brooklyn, New York County', 'Brooklyn, Brooklyn, New York'):
+            with self.subTest(text=text):
+                self.assertIsNone(self.match(text)['tier'])
+        for text, pid in (('Jackson, Hinds County', 'l-aaaaaaaaaa'),
+                          ('Jackson, Hinds, Mississippi', 'l-aaaaaaaaaa'),
+                          ('Brooklyn, Kings Co., New York', 'l-bbbbbbbbbb'),
+                          ('Brooklyn, New York', 'l-bbbbbbbbbb'),
+                          ('Chicago, Cook County, Illinois', 'l-cccccccccc'),
+                          ('Chicago, Cook, Illinois', 'l-cccccccccc')):
+            with self.subTest(text=text):
+                self.assertEqual(self.match(text)['place_id'], pid)
+
     def test_two_places_that_fit_go_to_the_human(self) -> None:
         m = self.match('Springfield, USA')
         self.assertIsNone(m['tier'])

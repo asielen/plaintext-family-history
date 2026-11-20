@@ -45,7 +45,7 @@ by default; `--apply` writes. `fha places candidates --register` registers a
 place for every cluster at once, with coordinates, hierarchy and spellings
 from the GeoNames data already saved, after one yes for the whole list, and
 links the clusters' claims. Both add one `place:` line per claim and nothing
-else (`_lib.add_place_to_claim`), each record rewritten atomically, and a
+else (`_lib.add_places_to_claims`), each record rewritten atomically, and a
 failure partway puts every file back.
 
 `fha places geocode` (TOOLING §10) fills in `coords` for registry places that
@@ -105,9 +105,10 @@ CODE MAP
     _proposal_table, run_geocode           : one table, one yes, one atomic write
 
   Link and register (claims gain place:)
-    _claim_source_paths, _claim_place_text  : where a claim lives; its place text now
-    _plan_claim_links                      : every place: line, planned before any write
-    _write_all_or_nothing                  : per-file atomic writes, every file put back on failure
+    _claim_source_paths                    : where each claim lives (from the index)
+    _plan_claim_links                      : every place: line, planned per record before any write
+    _write_all_or_nothing, _failed_write_message : per-file atomic writes, put back on failure,
+                                             naming any file that could not be put back
     run_link                               : fha places link: the write-time rule over old claims
     _new_place_block, _register_table      : a new places.yaml block; the one list shown
     run_register_candidates                : fha places candidates --register: one list, one yes
@@ -150,14 +151,12 @@ import yaml
 from _lib import (
     PARKED_CLAIM_SQL,
     PLACE_DIVISION_WORDS,
-    _find_claims_block,
-    ClaimEditRefused,
-    add_place_to_claim,
+    add_places_to_claims,
     fold_place_words,
     match_place_text_to_registry,
     mint_ids,
     place_part_key,
-    place_text_fits,
+    place_first_key,
     prepare_place_registry,
     read_places_registry,
     configure_utf8_stdout,
@@ -1927,7 +1926,7 @@ def _interactive_confirm(prompt: str) -> bool:
 # before their place was registered, or before an alt name was added, stay
 # unlinked until `fha places link` applies the same rule to them. `fha places
 # candidates --register` mints the places for the clusters that still have none.
-# Both write the claim side the same way: `_lib.add_place_to_claim` adds one
+# Both write the claim side the same way: `_lib.add_places_to_claims` adds one
 # `place:` line and nothing else, each source record is rewritten whole and
 # atomically, and a failure partway puts every file back as it was.
 
@@ -1956,8 +1955,11 @@ def _plan_claim_links(archive_root: Path, links: dict[str, str], paths: dict[str
     place_text)` says whether the claim's `place_text` as it now stands in
     its record is still the text the link was decided on. Returns ({path:
     (original text, new text)}, [linked claim ids], [skipped: {claim_id,
-    path, reason}]). A claim this cannot link safely is skipped with a plain
-    reason; its file's other claims still go ahead."""
+    path, reason}]). Each record is read once and all of its links are
+    planned together (`_lib.add_places_to_claims`), so a record holding
+    thousands of claims costs the same two parses as one holding one. A
+    claim this cannot link safely is skipped with a plain reason; the
+    record's other claims still go ahead."""
     by_path: dict[Path, list[str]] = {}
     skipped: list[dict] = []
     for cid in sorted(links):
@@ -1967,6 +1969,9 @@ def _plan_claim_links(archive_root: Path, links: dict[str, str], paths: dict[str
                             'reason': 'its source record is not in the index; run `fha index`'})
             continue
         by_path.setdefault(path, []).append(cid)
+
+    def text_ok(cid: str, place_text) -> bool:
+        return isinstance(place_text, str) and accepts(cid, place_text)
 
     plans: dict[Path, tuple[str, str]] = {}
     linked: list[str] = []
@@ -1979,41 +1984,16 @@ def _plan_claim_links(archive_root: Path, links: dict[str, str], paths: dict[str
                 skipped.append({'claim_id': fmt_id_display(cid), 'path': rel,
                                 'reason': f'the record could not be read ({e})'})
             continue
-        text = original
+        new, done, refused = add_places_to_claims(
+            original, {cid: links[cid] for cid in cids}, text_ok)
         for cid in cids:
-            current = _claim_place_text(text, cid)
-            if current is None or not accepts(cid, current):
+            if cid in refused:
                 skipped.append({'claim_id': fmt_id_display(cid), 'path': rel,
-                                'reason': 'its place text changed since `fha index` last ran'})
-                continue
-            try:
-                text = add_place_to_claim(text, cid, links[cid])
-            except ClaimEditRefused as e:
-                skipped.append({'claim_id': fmt_id_display(cid), 'path': rel, 'reason': str(e)})
-                continue
-            linked.append(cid)
-        if text != original:
-            plans[path] = (original, text)
+                                'reason': refused[cid]})
+        linked.extend(done)
+        if new != original:
+            plans[path] = (original, new)
     return plans, linked, skipped
-
-
-def _claim_place_text(text: str, cid: str) -> str | None:
-    """The `place_text` of one claim as its record holds it now, or None."""
-    rec_claims = None
-    lines = [ln[:-1] if ln.endswith('\r') else ln for ln in text.split('\n')]
-    block = _find_claims_block(lines)
-    if block is not None:
-        try:
-            rec_claims = safe_load_yaml('\n'.join(lines[block[0] + 1:block[1]]))
-        except yaml.YAMLError:
-            rec_claims = None
-    if not isinstance(rec_claims, list):
-        return None
-    for c in rec_claims:
-        if isinstance(c, dict) and normalize_id(str(c.get('id') or '')) == cid:
-            value = c.get('place_text')
-            return value if isinstance(value, str) else None
-    return None
 
 
 def _rel_display(path: Path, archive_root: Path) -> str:
@@ -2023,28 +2003,48 @@ def _rel_display(path: Path, archive_root: Path) -> str:
         return str(path)
 
 
-def _write_all_or_nothing(writes: list[tuple[Path, str, str | None]]) -> str | None:
-    """Write each (path, new text, original text or None for a new file) in
-    order, atomically per file. On the first failure every file already
-    written is put back (or removed, if it was new) and the reason is
-    returned; None when everything landed."""
-    done: list[tuple[Path, str | None]] = []
-    for path, new_text, original in writes:
+def _write_all_or_nothing(writes: list[tuple[Path, str, str | None, str]]
+                          ) -> tuple[str | None, list[tuple[Path, str]]]:
+    """Write each (path, new text, original text or None for a new file,
+    what the new text adds) in order, atomically per file.
+
+    On the first failure every file already written is put back (or removed,
+    if this run created it). Returns (None, []) when everything landed, else
+    (the reason, [(path, what it now holds)] for each file that could not be
+    put back), so the message never claims a full rollback that did not
+    happen. Windows can refuse the restore for the same reason it refused
+    the write (another program holding the file)."""
+    done: list[tuple[Path, str | None, str]] = []
+    for path, new_text, original, adds in writes:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            write_text_exact_atomic(path, reapply_newline(new_text, original or ''))
+            write_text_exact_atomic(path, new_text)
         except OSError as e:
-            for back_path, back_text in reversed(done):
+            stuck: list[tuple[Path, str]] = []
+            for back_path, back_text, back_adds in reversed(done):
                 try:
                     if back_text is None:
                         back_path.unlink()
                     else:
                         write_text_exact_atomic(back_path, back_text)
                 except OSError:
-                    pass
-            return f'cannot write {path}: {e}'
-        done.append((path, original))
-    return None
+                    stuck.append((back_path, back_adds))
+            return f'cannot write {path}: {e}', stuck
+        done.append((path, original, adds))
+    return None, []
+
+
+def _failed_write_message(error: str, stuck: list[tuple[Path, str]], archive_root: Path,
+                          *, nothing: str, retry: str) -> str:
+    """The plain message for a failed batch write. `nothing` is the sentence
+    for a clean rollback; when some files could not be put back, each is
+    named with what it now holds, and `retry` is the next step."""
+    if not stuck:
+        return f'{error}. {nothing} Check the file is not open elsewhere and run again.'
+    kept = '; '.join(f'{_rel_display(p, archive_root)} still holds {adds}' for p, adds in stuck)
+    return (f'{error}. Some files could not be put back either, so they keep this run\'s '
+            f'change: {kept}. Close any program holding them, then run `fha index` and '
+            f'{retry} to finish; it picks up where this one stopped.')
 
 
 def _plural(n: int, word: str, many: str | None = None) -> str:
@@ -2196,11 +2196,14 @@ def run_link(archive_root: Path, *, apply: bool = False) -> Result:
                         '`fha places link --apply` to write them.')
         return Result(exit_code=EXIT_CLEAN, data=data)
 
-    error = _write_all_or_nothing([(p, new, old) for p, (old, new) in plans.items()])
+    error, stuck = _write_all_or_nothing(
+        [(p, new, old, 'its new place: lines') for p, (old, new) in plans.items()])
     if error:
         data['linked'] = data['files'] = 0
-        return _failed(f'{error}. Nothing was linked (every record is as it was); check the '
-                       'file is not open elsewhere and run again.')
+        return _failed(_failed_write_message(
+            error, stuck, archive_root,
+            nothing='Nothing was linked (every record is as it was).',
+            retry='`fha places link --apply`'))
     result = Result(exit_code=EXIT_CLEAN, data=data)
     for p in plans:
         result.note_changed(p)
@@ -2252,6 +2255,126 @@ def _register_table(new_places: list[dict], joins: list[dict]) -> list[str]:
     return lines
 
 
+def _cluster_order(g: dict) -> tuple:
+    """Biggest cluster first, then by label: the order every list here uses."""
+    return (-len(g['claim_ids']), g['label'])
+
+
+def _label_parts(label: str) -> tuple[str, frozenset[str]]:
+    """A cluster label as (its first part, the set of its other parts), each
+    folded the way the write-time rule folds them, for comparing spellings."""
+    parts = [p for p in label.split(',') if p.strip()]
+    if not parts:
+        return '', frozenset()
+    rest = frozenset(k for k in (place_part_key(p) for p in parts[1:]) if k)
+    return place_first_key(parts[0]), rest
+
+
+def _spelling_groups(clusters: list[dict]) -> tuple[list[list[dict]], list[tuple[dict, list[dict]]]]:
+    """Which unmatched clusters are spellings of one new place.
+
+    One label is contained in another when both name the same place first
+    and every other part of the first appears in the second: "Fairview,
+    Kansas" is contained in "Fairview, Breton County, Kansas", so the two are
+    one place. Decided from the labels alone, so the answer is the same
+    whichever cluster is bigger. A label contained in two longer labels that
+    disagree ("Fairview, Breton County, Kansas" and "Fairview, Ellis County,
+    Kansas") could be either town: it is returned on its own for the human,
+    and neither place is registered from it.
+
+    Returns ([clusters of one place, biggest first], [(ambiguous cluster,
+    the clusters it could belong to)]), the places biggest first."""
+    keys = [_label_parts(g['label']) for g in clusters]
+    parent = list(range(len(clusters)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def inside(i: int, j: int) -> bool:
+        return keys[i][0] == keys[j][0] and keys[i][1] <= keys[j][1]
+
+    ambiguous: list[tuple[dict, list[dict]]] = []
+    alone: set[int] = set()
+    for i in range(len(clusters)):
+        holders = [j for j in range(len(clusters)) if j != i and inside(i, j)]
+        if any(not inside(a, b) and not inside(b, a) for a in holders for b in holders):
+            ambiguous.append((clusters[i], sorted((clusters[j] for j in holders),
+                                                   key=_cluster_order)))
+            alone.add(i)
+            continue
+        for j in holders:
+            parent[find(i)] = find(j)
+    comps: dict[int, list[dict]] = {}
+    for i, g in enumerate(clusters):
+        if i not in alone:
+            comps.setdefault(find(i), []).append(g)
+    groups = [sorted(c, key=_cluster_order) for c in comps.values()]
+    groups.sort(key=lambda c: (-sum(len(g['claim_ids']) for g in c), c[0]['label']))
+    ambiguous.sort(key=lambda a: _cluster_order(a[0]))
+    return groups, ambiguous
+
+
+def _plan_new_place(clusters: list[dict], gaz, taken: set[str]) -> dict:
+    """One new place for clusters that spell it differently, named with the
+    most specific label (the one naming the most levels; then the biggest
+    cluster). Coordinates, the missing hierarchy levels and GeoNames
+    spellings come from a single fitting GeoNames entry for that label, from
+    the data already saved; `taken` (every name already in use) keeps an
+    added spelling from duplicating another place's."""
+    label = min((g['label'] for g in clusters),
+                key=lambda lb: (-len(_label_parts(lb)[1]),
+                                -max(len(g['claim_ids']) for g in clusters if g['label'] == lb),
+                                lb))
+    match = _match_place(label, None, gaz) if gaz is not None else None
+    hit = match.hit if match is not None and match.status == 'hit' else None
+    plan = {'name': label, 'groups': sorted(clusters, key=_cluster_order), 'lat': None,
+            'lon': None, 'hierarchy': None, 'alt_names': [], 'kind': None, 'gid': None,
+            'pin': 'none'}
+    if match is not None and match.status in ('general', 'ambiguous'):
+        plan['pin'] = match.status
+    if hit is not None:
+        plan.update(pin='hit', lat=hit.lat, lon=hit.lon, gid=hit.gid,
+                    hierarchy=_filled_hierarchy(label, None, match, gaz),
+                    kind=_SITE_KINDS.get(hit.fcode) if _is_site(hit) else None)
+        plan['alt_names'] = _proposed_alt_names(hit, label, set(), taken)
+    taken.add(normalize_place_text(label))
+    taken.update(normalize_place_text(a) for a in plan['alt_names'])
+    return plan
+
+
+def _register_review_lines(review: list[dict], planned_ids: dict[str, str]) -> list[str]:
+    """The clusters `--register` leaves for the human, each with the
+    `fha confirm place` command that settles it. A cluster that could be
+    several of the places this run registers names them by their new ids
+    once `planned_ids` holds them, and by name before."""
+    review_lines: list[str] = []
+    if review:
+        review_lines += ['', 'Not registered: these need you to say which place is meant.']
+        for r in review:
+            head = f'  "{r["label"]}" ({_plural(len(r["claim_ids"]), "claim")})'
+            if r.get('planned'):
+                head += (' could be any of the new places "' + '", "'.join(r['planned'])
+                         + '", so it is not linked')
+                ids = [planned_ids.get(n) for n in r['planned']]
+                if all(ids):
+                    review_lines.append(head + '. If you know which, run its command:')
+                    review_lines.extend(f'    {c}' for c in _confirm_place_commands(
+                        r['claim_ids'], ids))
+                else:
+                    review_lines.append(head + '; once they are registered, this command '
+                                        'names the one to run for each.')
+                continue
+            what = 'is close to' if r['near'] else 'fits'
+            review_lines.append(f'{head} {what} {", ".join(r["place_ids"])}; if one is meant:')
+            review_lines.extend(f'    {c}' for c in _confirm_place_commands(r['claim_ids'],
+                                                                           r['place_ids']))
+
+    return review_lines
+
+
 def run_register_candidates(
     archive_root: Path,
     fha_config: dict,
@@ -2269,9 +2392,10 @@ def run_register_candidates(
 
     - a link to an already-registered place, when its label fits exactly one
       by the write-time rule (`_lib.place_text_fits`);
-    - part of a new place planned earlier in this run, when its label fits
-      that place or GeoNames matched both to the same entry ("Chicago,
-      Illinois" and "Chicago, Cook, Illinois" make one place, not two);
+    - part of one new place with the other spellings of it
+      (`_spelling_groups`, decided from the labels alone, whatever the
+      cluster sizes), or with a group GeoNames matched to the same entry
+      ("Chicago, Illinois" and "Chicago, Cook, Illinois" make one place);
     - a new place named with the cluster's label, carrying the coordinates,
       missing county/state/country and spellings GeoNames gives, read only
       from the GeoNames data already saved in `.cache/geonames/` (nothing is
@@ -2350,52 +2474,42 @@ def run_register_candidates(
         gaz = None
 
     new_places: list[dict] = []
+    pending: list[dict] = []
+    for g in groups:
+        label = g['label']
+        m = match_place_text_to_registry(archive_root, label, registry=(rows, None),
+                                         prepared=prepared)
+        if m['tier'] == 'exact':
+            data['joins'].append({'label': label, 'claim_ids': g['claim_ids'],
+                                  'key': g['key'], 'place_id': m['place_id'],
+                                  'name': (by_id.get(normalize_id(m['place_id'])) or {})
+                                  .get('name') or m['name']})
+        elif m['ambiguous_ids'] or m['tier'] == 'near':
+            data['review'].append({'label': label, 'claim_ids': g['claim_ids'],
+                                   'place_ids': m['ambiguous_ids'] or [m['place_id']],
+                                   'near': m['tier'] == 'near'})
+        else:
+            pending.append(g)
+
+    # Spellings of one place, worked out from the labels alone so the answer
+    # never depends on which cluster happens to be bigger.
+    components, ambiguous = _spelling_groups(pending)
+    for g, containers in ambiguous:
+        data['review'].append({'label': g['label'], 'claim_ids': g['claim_ids'],
+                               'place_ids': [], 'near': False,
+                               'planned': [c['label'] for c in containers]})
+
     try:
-        for g in groups:
-            label = g['label']
-            m = match_place_text_to_registry(archive_root, label, registry=(rows, None),
-                                             prepared=prepared)
-            if m['tier'] == 'exact':
-                data['joins'].append({'label': label, 'claim_ids': g['claim_ids'],
-                                      'key': g['key'], 'place_id': m['place_id'],
-                                      'name': (by_id.get(normalize_id(m['place_id'])) or {})
-                                      .get('name') or m['name']})
+        for comp in components:
+            plan = _plan_new_place(comp, gaz, taken)
+            # GeoNames can tie two spellings the labels could not ("Fairview,
+            # Breton County, Kansas" and "Fairview City, Kansas"): one entry,
+            # one place.
+            twin = next((p for p in new_places
+                         if plan['gid'] is not None and p['gid'] == plan['gid']), None)
+            if twin is not None:
+                twin['groups'] = sorted(twin['groups'] + comp, key=_cluster_order)
                 continue
-            if m['ambiguous_ids'] or m['tier'] == 'near':
-                data['review'].append({'label': label, 'claim_ids': g['claim_ids'],
-                                       'place_ids': m['ambiguous_ids'] or [m['place_id']],
-                                       'near': m['tier'] == 'near'})
-                continue
-
-            match = _match_place(label, None, gaz) if gaz is not None else None
-            hit = match.hit if match is not None and match.status == 'hit' else None
-            owners = [p for p in new_places
-                      if place_text_fits(label, p['prepared']) is not None
-                      or (hit is not None and p.get('gid') == hit.gid)]
-            if len(owners) == 1:
-                owners[0]['groups'].append(g)
-                continue
-            if len(owners) > 1:
-                data['review'].append({'label': label, 'claim_ids': g['claim_ids'],
-                                       'place_ids': [], 'near': False,
-                                       'planned': [p['name'] for p in owners]})
-                continue
-
-            plan = {'name': label, 'groups': [g], 'lat': None, 'lon': None,
-                    'hierarchy': None, 'alt_names': [], 'kind': None, 'gid': None,
-                    'pin': 'none'}
-            if match is not None and match.status in ('general', 'ambiguous'):
-                plan['pin'] = match.status
-            if hit is not None:
-                plan.update(pin='hit', lat=hit.lat, lon=hit.lon, gid=hit.gid,
-                            hierarchy=_filled_hierarchy(label, None, match, gaz),
-                            kind=_SITE_KINDS.get(hit.fcode) if _is_site(hit) else None)
-                plan['alt_names'] = _proposed_alt_names(hit, label, set(), taken)
-            taken.add(normalize_place_text(label))
-            taken.update(normalize_place_text(a) for a in plan['alt_names'])
-            plan['prepared'] = prepare_place_registry([{
-                'id': 'l-0000000000', 'name': label, 'hierarchy': plan['hierarchy'],
-                'alt_names': plan['alt_names']}])[0]
             new_places.append(plan)
     except sqlite3.DatabaseError as e:
         return _failed(f'the saved GeoNames data in .cache/geonames is damaged ({e}). Delete '
@@ -2403,6 +2517,11 @@ def run_register_candidates(
     finally:
         if gaz is not None:
             gaz.conn.close()
+    new_places.sort(key=lambda p: (-sum(len(g['claim_ids']) for g in p['groups']), p['name']))
+    place_of = {g['label']: p['name'] for p in new_places for g in p['groups']}
+    for r in data['review']:
+        if r.get('planned'):
+            r['planned'] = sorted({place_of.get(lb, lb) for lb in r['planned']})
 
     # Plan every claim edit now, against a stand-in id, so the preview names
     # every claim the write would have to skip.
@@ -2425,7 +2544,7 @@ def run_register_candidates(
                                                 _accepts)
 
     def _describe() -> list[dict]:
-        return [{k: v for k, v in p.items() if k not in ('prepared', 'groups')}
+        return [{k: v for k, v in p.items() if k != 'groups'}
                 | {'labels': [g['label'] for g in p['groups']],
                    'claim_ids': [c for g in p['groups'] for c in g['claim_ids']]}
                 for p in new_places]
@@ -2433,21 +2552,12 @@ def run_register_candidates(
     data['new_places'] = _describe()
     data['skipped'] = skipped
 
-    review_lines: list[str] = []
-    if data['review']:
-        review_lines += ['', 'Not registered: these need you to say which place is meant.']
-        for r in data['review']:
-            head = f'  "{r["label"]}" ({_plural(len(r["claim_ids"]), "claim")})'
-            if r.get('planned'):
-                review_lines.append(head + ' fits more than one of the new places above ('
-                                    + '; '.join(r['planned']) + '). To register it on its own:')
-                ids = ' '.join(fmt_id_display(c) for c in r['claim_ids'])
-                review_lines.append(f'    fha confirm place {ids} --name={shell_quote(r["label"])}')
-                continue
-            what = 'is close to' if r['near'] else 'fits'
-            review_lines.append(f'{head} {what} {", ".join(r["place_ids"])}; if one is meant:')
-            review_lines.extend(f'    {c}' for c in _confirm_place_commands(r['claim_ids'],
-                                                                           r['place_ids']))
+    planned_ids: dict[str, str] = {}
+
+    def _review_lines() -> list[str]:
+        return _register_review_lines(data['review'], planned_ids)
+
+    review_lines = _review_lines()
 
     if not new_places and not data['joins']:
         messages.extend(review_lines[1:] if review_lines else [])
@@ -2507,23 +2617,29 @@ def run_register_candidates(
     blocks: list[str] = []
     for pid, p in zip(new_ids, new_places):
         blocks.extend(_new_place_block(pid, p))
-    writes: list[tuple[Path, str, str | None]] = []
+    writes: list[tuple[Path, str, str | None, str]] = []
     if blocks:
-        sep = '' if (not now_text or now_text.endswith('\n')) else '\n'
-        writes.append((places_yaml, now_text + sep + '\n'.join(blocks) + '\n',
-                       now_text if places_yaml.exists() else None))
-    writes.extend((path, new, old) for path, (old, new) in plans.items())
+        # The new blocks take the registry's own line ending, so a places.yaml
+        # saved by a Windows editor stays all CRLF.
+        nl = '\r\n' if '\r\n' in now_text else '\n'
+        sep = '' if (not now_text or now_text.endswith('\n')) else nl
+        writes.append((places_yaml, now_text + sep + nl.join(blocks) + nl,
+                       now_text if places_yaml.exists() else None,
+                       'the newly registered places'))
+    writes.extend((path, new, old, 'its new place: lines') for path, (old, new) in plans.items())
     if not writes:
         messages.append('Nothing written.')
         messages.extend(_skipped_lines(skipped))
         return Result(exit_code=EXIT_CLEAN, data=data)
-    error = _write_all_or_nothing(writes)
+    error, stuck = _write_all_or_nothing(writes)
     if error:
-        return _failed(f'{error}. Nothing was registered or linked (every file is as it was); '
-                       'check the file is not open elsewhere and run again.')
+        return _failed(_failed_write_message(
+            error, stuck, archive_root,
+            nothing='Nothing was registered or linked (every file is as it was).',
+            retry='`fha places candidates --register`'))
 
     result = Result(exit_code=EXIT_CLEAN, data=data)
-    for path, _new, _old in writes:
+    for path, _new, _old, _adds in writes:
         result.note_changed(path)
     data['registered'] = len(new_ids)
     data['linked'] = len(linked)
@@ -2534,7 +2650,8 @@ def run_register_candidates(
                     f'{_plural(len(linked), "claim")}.')
     for pid, p in zip(new_ids, new_places):
         messages.append(f'  {pid} {p["name"]}')
-    messages.extend(review_lines)
+    planned_ids.update({p['name']: pid for pid, p in zip(new_ids, new_places)})
+    messages.extend(_review_lines())
     messages.extend(_skipped_lines(skipped))
     without = sum(1 for p in new_places if p['lat'] is None and p['pin'] != 'general')
     nxt = 'Next: run `fha index` so place pages and maps show them'

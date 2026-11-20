@@ -482,6 +482,154 @@ class RegisterCandidatesTests(_ArchiveCase):
         self.assertEqual(result['registered'], 3)
 
 
+class RegisterSpellingsTests(_ArchiveCase):
+    """Without GeoNames data, two spellings of one town must still make one
+    place, whichever spelling happens to be the bigger cluster."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry('# none yet\n')
+
+    def run_register(self, sources):
+        for name, sid, claims in sources:
+            self.source(name, sid, claims)
+        self.build()
+        result = places.run_register_candidates(self.root, {}, confirm=lambda _p: True)
+        rows = yaml.safe_load((self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        return result, [r['name'] for r in rows or []]
+
+    def _two_spellings(self, short_n, long_n):
+        claims = [(f'c-aaaaaaaa{i:02d}', 'Fairview, Kansas') for i in range(short_n)]
+        claims += [(f'c-bbbbbbbb{i:02d}', 'Fairview, Breton County, Kansas') for i in range(long_n)]
+        return [('one', 's-aaaaaaaaa1', claims)]
+
+    def test_short_spelling_in_the_bigger_cluster(self):
+        result, names = self.run_register(self._two_spellings(4, 3))
+        self.assertEqual(names, ['Fairview, Breton County, Kansas'])
+        self.assertEqual(result['linked'], 7)
+
+    def test_long_spelling_in_the_bigger_cluster(self):
+        result, names = self.run_register(self._two_spellings(3, 4))
+        self.assertEqual(names, ['Fairview, Breton County, Kansas'])
+        self.assertEqual(result['linked'], 7)
+
+    def test_short_spelling_two_longer_ones_disagree_on_goes_to_the_human(self):
+        claims = [(f'c-aaaaaaaa{i:02d}', 'Fairview, Kansas') for i in range(5)]
+        claims += [(f'c-bbbbbbbb{i:02d}', 'Fairview, Breton County, Kansas') for i in range(3)]
+        claims += [(f'c-dddddddd{i:02d}', 'Fairview, Ellis County, Kansas') for i in range(4)]
+        result, names = self.run_register([('one', 's-aaaaaaaaa1', claims)])
+        self.assertEqual(sorted(names), ['Fairview, Breton County, Kansas',
+                                         'Fairview, Ellis County, Kansas'])
+        self.assertEqual(result['linked'], 7)
+        text = '\n'.join(result['messages'])
+        self.assertIn('"Fairview, Kansas" (5 claims)', text)
+        claims_now = {c['id']: c.get('place')
+                      for c in _claims_of(self.root.joinpath(
+                          'sources', 'one_s-aaaaaaaaa1.md').read_text(encoding='utf-8'))}
+        self.assertIsNone(claims_now['c-aaaaaaaa00'])
+
+
+class ManyClaimsInOneRecordTests(_ArchiveCase):
+    """A GEDCOM import files every claim under one source record. Linking
+    them must read that record's claims a fixed number of times, not once
+    per claim (which took minutes at a few hundred claims)."""
+
+    def test_record_is_parsed_a_fixed_number_of_times(self):
+        n = 300
+        path = self.source('big', 's-aaaaaaaaa1',
+                           [(f'c-{i:010d}', 'Fairview, Kansas') for i in range(n)])
+        links = {f'c-{i:010d}': PID for i in range(n)}
+        calls = []
+        real = _lib.safe_load_yaml
+
+        def counting(text, *a, **kw):
+            calls.append(1)
+            return real(text, *a, **kw)
+
+        with mock.patch.object(_lib, 'safe_load_yaml', counting), \
+                mock.patch.object(places, 'safe_load_yaml', counting):
+            plans, linked, skipped = places._plan_claim_links(
+                self.root, links, {c: path for c in links}, lambda _c, _t: True)
+        self.assertEqual((len(linked), skipped), (n, []))
+        self.assertLessEqual(len(calls), 3)
+        new = plans[path][1]
+        self.assertEqual(new.count(f'  place: {PID}\n'), n)
+
+    def test_two_thousand_claims_link_in_one_pass(self):
+        n = 2000
+        text = _source('s-aaaaaaaaa1', [(f'c-{i:010d}', 'Fairview, Kansas') for i in range(n)])
+        new, linked, refused = _lib.add_places_to_claims(
+            text, {f'c-{i:010d}': PID for i in range(n)})
+        self.assertEqual((len(linked), refused), (n, {}))
+        self.assertEqual(len(new.split('\n')), len(text.split('\n')) + n)
+        self.assertTrue(all(c['place'] == PID for c in _claims_of(new)))
+
+
+class FailedRestoreTests(_ArchiveCase):
+    """When a write fails and putting a file back fails too, the message must
+    say which file kept the change; "every record is as it was" would be false."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry(_FAIRVIEW)
+        self.a = self.source('a', 's-aaaaaaaaa1', [('c-aaaaaaaaa1', 'Fairview, Kansas')])
+        self.b = self.source('b', 's-aaaaaaaaa2', [('c-aaaaaaaaa2', 'Fairview, Kansas')])
+        self.build()
+
+    def test_link_names_the_record_it_could_not_put_back(self):
+        real = _lib.write_text_exact_atomic
+        calls = []
+
+        def locked(path, text):
+            calls.append(path)
+            if len(calls) == 1:
+                return real(path, text)
+            raise PermissionError(13, 'in use by another program', str(path))
+
+        with mock.patch.object(places, 'write_text_exact_atomic', locked):
+            result = places.run_link(self.root, apply=True)
+        text = '\n'.join(result['messages'])
+        self.assertEqual(result.exit_code, 3)
+        self.assertNotIn('every record is as it was', text)
+        self.assertIn('a_s-aaaaaaaaa1.md', text)
+        self.assertIn(f'place: {PID}', self.a.read_text(encoding='utf-8'))
+
+    def test_register_names_places_yaml_when_it_cannot_be_put_back(self):
+        self.registry('# none yet\n')
+        self.source('c', 's-aaaaaaaaa3', [(f'c-cccccccc{i:02d}', 'Nowhere Mills')
+                                          for i in range(3)])
+        self.build()
+        real = _lib.write_text_exact_atomic
+        calls = []
+
+        def locked(path, text):
+            calls.append(path)
+            if len(calls) == 1:
+                return real(path, text)
+            raise PermissionError(13, 'in use by another program', str(path))
+
+        with mock.patch.object(places, 'write_text_exact_atomic', locked):
+            result = places.run_register_candidates(self.root, {}, confirm=lambda _p: True)
+        text = '\n'.join(result['messages'])
+        self.assertEqual(result.exit_code, 3)
+        self.assertNotIn('every file is as it was', text)
+        self.assertIn('places.yaml', text)
+
+
+class CrlfRegistryTests(_ArchiveCase):
+
+    def test_new_places_take_the_registry_line_endings(self):
+        (self.root / 'places' / 'places.yaml').write_bytes(
+            b'# my places\r\n- id: l-9e3c1b6a44\r\n  name: Topeka\r\n')
+        self.source('one', 's-aaaaaaaaa1', [(f'c-aaaaaaaa{i:02d}', 'Nowhere Mills')
+                                            for i in range(3)])
+        self.build()
+        places.run_register_candidates(self.root, {}, confirm=lambda _p: True)
+        data = (self.root / 'places' / 'places.yaml').read_bytes()
+        self.assertIn(b'name: Nowhere Mills\r\n', data)
+        self.assertNotIn(b'\n', data.replace(b'\r\n', b''))
+
+
 class LinkCliTests(_ArchiveCase):
 
     def test_dry_run_flag_without_register_is_refused(self):

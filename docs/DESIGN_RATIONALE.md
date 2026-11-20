@@ -322,6 +322,8 @@ Other limits:
 **Rejected.**
 
 - **Linking on the first part alone.** "Springfield" names a dozen towns; the other parts are what tell them apart.
+- **A "County" part matching any level of the hierarchy.** "Jackson, Jackson County" would then fit the Jackson in Hinds County by its own name, and "Brooklyn, New York County" Brooklyn by its state. A part that says it is a county must be the place's county.
+- **Merging spellings in the order the clusters come.** "Fairview, Kansas" joining "Fairview, Breton County, Kansas" only when the longer one happened to be bigger made two places or one by chance; the labels decide alone.
 - **"County" optional in the first part too.** A county and its seat often share a name, so "Breton, Kansas" would fit both the town and Breton County and link neither, and "Breton County, Kansas" would link to the town.
 - **Breaking a tie by population or by the family's other places.** A confident wrong link is worse than an unlinked text the report keeps showing.
 - **Rewriting `place_text` to the registered name.** It records what the source says, which is evidence; the link is the interpretation.

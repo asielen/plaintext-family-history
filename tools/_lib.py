@@ -5799,46 +5799,54 @@ def _claims_list_at(lines: list[str], block: tuple[int, int]) -> list | None:
     return parsed if isinstance(parsed, list) else None
 
 
-def add_place_to_claim(text: str, claim_id: str, place_id: str) -> str:
-    """Add `place: <l-id>` to one claim in a source record's `## Claims`
-    block and return the new text, every other byte unchanged.
+def add_places_to_claims(text: str, links: dict[str, str], accepts=None
+                         ) -> tuple[str, list[str], dict[str, str]]:
+    """Add `place: <l-id>` to several claims in one source record's `## Claims`
+    block; return (new text, linked claim ids, {refused claim id: reason}).
 
-    The link writer `fha places link` and `fha places candidates
-    --register` share. It adds exactly one line, right after the claim's
-    own `place_text:` (and that key's continuation lines), at the claim's
-    own key column; an empty `place:` line the claim already has is filled
-    in instead, keeping its trailing comment. The text is split on `\\n`
-    only, so a CRLF record keeps its `\\r` on every line (the new line gets
-    one too) and no other character is ever read as a line break.
+    The link writer `fha places link` and `fha places candidates --register`
+    share. Each claim gains exactly one line, right after its own
+    `place_text:` (and that key's continuation lines), at the claim's own
+    key column; an empty `place:` line the claim already has is filled in
+    instead, keeping its trailing comment. Every other byte stays: the text
+    is split on `\\n` only, so a CRLF record keeps its `\\r` on every line (a
+    new line gets one too) and no other character is ever read as a line
+    break.
 
-    The claim is found by parsing: the block's k-th list item is the claim
-    whose `id` matches, and its k-th top-level dash line is where it starts.
-    When the dash lines and the parsed items do not line up, or the claim has
-    no `place_text:` key line of its own, or already names a place, this
-    raises `ClaimEditRefused` with a plain reason and the caller writes
-    nothing for that claim. The result is checked by parsing it again: every
-    claim must read back exactly as before, except this one, which gains
-    `place:`. Any other outcome is refused, never written.
+    The block is parsed once and every line is planned against that one
+    reading, then all of them are applied together and the result is parsed
+    once more to check it. A record holding thousands of claims (a GEDCOM
+    import's single source) costs two parses, not two per claim. The check
+    demands that every claim reads back exactly as before, except the linked
+    ones, which gain `place:`. If the batch fails that check, each claim is
+    retried on its own so one odd claim cannot hold back the rest.
+
+    A claim is refused, with a plain reason and nothing written for it, when
+    its id is missing or repeated, when the block's top-level dash lines do
+    not line up with its parsed claims, when it has no `place_text:` line of
+    its own or already names a place, or when `accepts(claim_id,
+    place_text)` (if given) says its place text is no longer the one the
+    link was decided on. Claim ids are matched without regard to case;
+    returned ids are normalized.
     """
-    target = normalize_id(claim_id)
-    pid = fmt_id_display(normalize_id(place_id))
+    wanted = {normalize_id(c): fmt_id_display(normalize_id(p)) for c, p in links.items()}
+    refused: dict[str, str] = {}
     raw = text.split('\n')
     plain = [ln[:-1] if ln.endswith('\r') else ln for ln in raw]
+
+    def refuse_all(reason: str) -> tuple[str, list[str], dict[str, str]]:
+        return text, [], {cid: reason for cid in wanted}
+
     block = _find_claims_block(plain)
     if block is None:
-        raise ClaimEditRefused('this record has no readable ## Claims block.')
+        return refuse_all('this record has no readable ## Claims block.')
     before = _claims_list_at(plain, block)
     if before is None:
-        raise ClaimEditRefused('its ## Claims block does not read as a list of claims.')
-    matches = [k for k, c in enumerate(before)
-               if isinstance(c, dict) and normalize_id(str(c.get('id') or '')) == target]
-    if len(matches) != 1:
-        raise ClaimEditRefused(
-            f'{fmt_id_display(target)} appears {len(matches)} times in its ## Claims block.')
-    k = matches[0]
-    claim = before[k]
-    if claim.get('place') not in (None, ''):
-        raise ClaimEditRefused('it already names a place.')
+        return refuse_all('its ## Claims block does not read as a list of claims.')
+    positions: dict[str, list[int]] = {}
+    for k, c in enumerate(before):
+        if isinstance(c, dict):
+            positions.setdefault(normalize_id(str(c.get('id') or '')), []).append(k)
 
     open_fence, close_fence = block
     dash_lines = [i for i in range(open_fence + 1, close_fence)
@@ -5846,54 +5854,101 @@ def add_place_to_claim(text: str, claim_id: str, place_id: str) -> str:
     base = re.match(r'^(\s*)', plain[dash_lines[0]]).group(1) if dash_lines else ''
     starts = [i for i in dash_lines if re.match(r'^' + re.escape(base) + r'-(\s|$)', plain[i])]
     if len(starts) != len(before):
-        raise ClaimEditRefused(
-            'its ## Claims block is laid out in a way this edit cannot follow safely.')
-    start = starts[k]
-    end = starts[k + 1] if k + 1 < len(starts) else close_fence
-    key_indent = claim_item_key_indent(plain[start:end], base)
-
-    def own_key(i: int, key: str) -> bool:
-        return bool(re.match(r'^' + re.escape(key_indent) + re.escape(key) + r':(\s|$)', plain[i])
-                    or (i == start and re.match(r'^' + re.escape(base) + r'-\s+'
-                                                + re.escape(key) + r':(\s|$)', plain[i])))
+        return refuse_all('its ## Claims block is laid out in a way this edit cannot follow '
+                          'safely.')
 
     def eol(i: int) -> str:
         return '\r' if raw[i].endswith('\r') else ''
 
-    new = list(raw)
-    place_line = next((i for i in range(start, end) if own_key(i, 'place')), None)
-    if place_line is not None:
-        value = plain[place_line].split(':', 1)[1]
-        comment = re.search(r'(\s+#.*)$', value)
-        if value.strip() and not value.strip().startswith('#'):
-            raise ClaimEditRefused('it already has a place: line.')
-        prefix = plain[place_line].split(':', 1)[0]
-        new[place_line] = (f'{prefix}: {pid}' + (comment.group(1) if comment else '')
-                           + eol(place_line))
-    else:
-        text_line = next((i for i in range(start, end) if own_key(i, 'place_text')), None)
-        if text_line is None:
-            raise ClaimEditRefused('it has no place_text: line of its own to link from.')
-        after = text_line
-        for i in range(text_line + 1, end):
-            if not plain[i].strip():
-                continue
-            if len(re.match(r'^(\s*)', plain[i]).group(1)) > len(key_indent):
-                after = i
-                continue
-            break
-        new.insert(after + 1, f'{key_indent}place: {pid}' + eol(after))
+    replace: dict[int, str] = {}
+    insert: list[tuple[int, str]] = []
+    expected = [dict(c) if isinstance(c, dict) else c for c in before]
+    linked: list[str] = []
+    for cid, pid in wanted.items():
+        found = positions.get(cid, [])
+        if len(found) != 1:
+            refused[cid] = (f'{fmt_id_display(cid)} appears {len(found)} times in its '
+                            '## Claims block.')
+            continue
+        k = found[0]
+        claim = before[k]
+        if accepts is not None and not accepts(cid, claim.get('place_text')):
+            refused[cid] = 'its place text changed since `fha index` last ran'
+            continue
+        if claim.get('place') not in (None, ''):
+            refused[cid] = 'it already names a place.'
+            continue
+        start = starts[k]
+        end = starts[k + 1] if k + 1 < len(starts) else close_fence
+        key_indent = claim_item_key_indent(plain[start:end], base)
 
-    result = '\n'.join(new)
+        def own_key(i: int, key: str) -> bool:
+            return bool(re.match(r'^' + re.escape(key_indent) + re.escape(key) + r':(\s|$)',
+                                 plain[i])
+                        or (i == start and re.match(r'^' + re.escape(base) + r'-\s+'
+                                                    + re.escape(key) + r':(\s|$)', plain[i])))
+
+        place_line = next((i for i in range(start, end) if own_key(i, 'place')), None)
+        if place_line is not None:
+            value = plain[place_line].split(':', 1)[1]
+            if value.strip() and not value.strip().startswith('#'):
+                refused[cid] = 'it already has a place: line.'
+                continue
+            comment = re.search(r'(\s+#.*)$', value)
+            prefix = plain[place_line].split(':', 1)[0]
+            replace[place_line] = (f'{prefix}: {pid}' + (comment.group(1) if comment else '')
+                                   + eol(place_line))
+        else:
+            text_line = next((i for i in range(start, end) if own_key(i, 'place_text')), None)
+            if text_line is None:
+                refused[cid] = 'it has no place_text: line of its own to link from.'
+                continue
+            after = text_line
+            for i in range(text_line + 1, end):
+                if not plain[i].strip():
+                    continue
+                if len(re.match(r'^(\s*)', plain[i]).group(1)) > len(key_indent):
+                    after = i
+                    continue
+                break
+            insert.append((after + 1, f'{key_indent}place: {pid}' + eol(after)))
+        expected[k]['place'] = pid
+        linked.append(cid)
+
+    if not linked:
+        return text, [], refused
+    new = list(raw)
+    for i, line in replace.items():
+        new[i] = line
+    for at, line in sorted(insert, reverse=True):
+        new.insert(at, line)
     check = [ln[:-1] if ln.endswith('\r') else ln for ln in new]
     after_block = _find_claims_block(check)
     after_list = _claims_list_at(check, after_block) if after_block else None
-    expected = [dict(c) if isinstance(c, dict) else c for c in before]
-    expected[k]['place'] = pid
-    if after_list != expected:
-        raise ClaimEditRefused(
-            'adding the place: line would change how the claims block reads.')
-    return result
+    if after_list == expected:
+        return '\n'.join(new), linked, refused
+    if len(linked) == 1:
+        refused[linked[0]] = 'adding the place: line would change how the claims block reads.'
+        return text, [], refused
+    # Something in the batch does not read back; find which claim, one at a time.
+    out, done = text, []
+    for cid in linked:
+        out, ok, bad = add_places_to_claims(out, {cid: wanted[cid]}, accepts)
+        done.extend(ok)
+        refused.update(bad)
+    return out, done, refused
+
+
+def add_place_to_claim(text: str, claim_id: str, place_id: str) -> str:
+    """Add `place: <l-id>` to one claim and return the new text, every other
+    byte unchanged (`add_places_to_claims` with one link). Raises
+    `ClaimEditRefused` with the plain reason when the claim cannot be
+    linked safely."""
+    new, linked, refused = add_places_to_claims(text, {claim_id: place_id})
+    if not linked:
+        raise ClaimEditRefused(next(iter(refused.values()),
+                                    'the claim could not be linked.'))
+    return new
 
 
 def is_merged_meta(meta: dict | None) -> bool:
@@ -8818,13 +8873,41 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 
-def _place_first_key(text: str) -> str:
+def place_first_key(text: str) -> str:
     """The comparison form of a place text's first part, the part that
     names the place itself: case, accents and punctuation folded, "Co."
     read as "County", and every word kept. A division word here says what
     kind of place it is, so "Cook County" never names a town called Cook
     and "Breton" never names Breton County."""
     return ' '.join('county' if w == 'co' else w for w in fold_place_words(text))
+
+
+# The division words that make a part name a county-level division ("Hinds
+# County", "parafia Tykwin"). A part carrying one matches only a division of
+# the place, never its own name or its state.
+_COUNTY_WORDS = frozenset({'county', 'co', 'parish', 'parafia', 'powiat', 'gmina'})
+
+
+def _names_a_county(text: str) -> bool:
+    """Whether one part of a place name says it is a county-level division:
+    its first or last word is "County", "Co.", "Parish", "parafia",
+    "powiat" or "gmina", and it has another word besides."""
+    words = fold_place_words(text)
+    return len(words) > 1 and (words[0] in _COUNTY_WORDS or words[-1] in _COUNTY_WORDS)
+
+
+def _place_levels(parts: list[str]) -> list[tuple[str, bool]]:
+    """The divisions above a place, from the parts that follow its own name:
+    (comparison key, is county level). A part is county level when it says
+    so ("Cook County"), or when it comes straight after the place's own name
+    with at least a state and a country after it ("Chicago, Cook, Illinois,
+    USA")."""
+    levels = []
+    for i, part in enumerate(parts):
+        key = place_part_key(part)
+        if key:
+            levels.append((key, _names_a_county(part) or (i == 0 and len(parts) >= 3)))
+    return levels
 
 
 def prepare_place_registry(rows: list[dict]) -> list[dict]:
@@ -8837,9 +8920,11 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
     registered name, or the first alt name when it has none), `exact`
     ({normalized whole name: name as written}, name and alt names), `tokens`
     ({sorted-token-set key: name as written}, for the near tier), `first`
-    (`_place_first_key` of each name's first comma part) and `context`
-    (`place_part_key` of every `hierarchy:` part and of each name's later
-    comma parts)."""
+    (`place_first_key` of each name's first comma part) and `levels`
+    ({key: is county level} for the divisions above the place: its
+    `hierarchy:` after its own name, and each name's later comma parts; see
+    `_place_levels`). A level that appears twice is county level when either
+    reading says so."""
     prepared: list[dict] = []
     for place in rows:
         pid = place.get('id')
@@ -8853,21 +8938,32 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
         exact: dict[str, str] = {}
         tokens: dict[str, str] = {}
         first: set[str] = set()
-        context: set[str] = set()
+        levels: dict[str, bool] = {}
+
+        def add_levels(parts: list[str]) -> None:
+            for key, county in _place_levels(parts):
+                levels[key] = levels.get(key, False) or county
+
         for name in names:
             exact.setdefault(normalize_place_text(name), name)
             tokens.setdefault(place_text_cluster_key(name), name)
             parts = [p for p in name.split(',') if p.strip()]
             if parts:
-                first.add(_place_first_key(parts[0]))
-                context.update(k for k in (place_part_key(p) for p in parts[1:]) if k)
+                first.add(place_first_key(parts[0]))
+                add_levels(parts[1:])
         hierarchy = place.get('hierarchy')
         if isinstance(hierarchy, str):
-            context.update(k for k in (place_part_key(p) for p in hierarchy.split(',')) if k)
+            parts = [p for p in hierarchy.split(',') if p.strip()]
+            # The hierarchy normally starts with the place itself; that part
+            # is its name, not a division above it. A hierarchy that lists
+            # only the divisions above ("Cook County, Illinois") is used whole.
+            if parts and place_first_key(parts[0]) in first:
+                parts = parts[1:]
+            add_levels(parts)
         prepared.append({
             'id': normalize_id(pid),
             'name': names[0] if names else None,
-            'exact': exact, 'tokens': tokens, 'first': first, 'context': context,
+            'exact': exact, 'tokens': tokens, 'first': first, 'levels': levels,
         })
     return prepared
 
@@ -8881,24 +8977,28 @@ def place_text_fits(place_text: str, place: dict) -> str | None:
     case, spacing and punctuation are folded, or when it agrees with the
     place's hierarchy: the text's first comma part names the place (the
     first part of its name or of an alt name, every word counted) and every
-    other part appears in its hierarchy. Those other parts compare through
-    `place_part_key`, so "County" and the like are optional there, and the
-    text need not name every level: "Chicago, Cook, Illinois" fits a place
-    named Chicago whose hierarchy reads "Chicago, Cook County, Illinois,
-    USA", with or without the country. A part the hierarchy does not hold
-    ("Chicago, Ohio") keeps the text from fitting, and so does a first part
-    that names a different kind of place ("Cook County, Illinois" is not
-    Chicago, and not a town called Cook)."""
+    other part names a division above it. A plain part ("Cook") may name
+    any of them, so "Chicago, Cook, Illinois" fits Chicago in Cook County,
+    with or without the country. A part that says "County" (or Co., Parish,
+    parafia, gmina, powiat) must name a county-level division of the place
+    ("Jackson, Jackson County" is not the Jackson in Hinds County, and
+    "Brooklyn, New York County" is not Brooklyn in Kings County, New York).
+    A later part never matches the place's own name."""
     exact = place['exact'].get(normalize_place_text(place_text))
     if exact is not None:
         return exact
     parts = [p for p in place_text.split(',') if p.strip()]
-    if not parts or _place_first_key(parts[0]) not in place['first']:
+    if not parts or place_first_key(parts[0]) not in place['first']:
         return None
-    rest = [k for k in (place_part_key(p) for p in parts[1:]) if k]
-    if all(k in place['context'] for k in rest):
-        return place['name']
-    return None
+    for part in parts[1:]:
+        key = place_part_key(part)
+        if not key:
+            continue
+        if key not in place['levels']:
+            return None
+        if _names_a_county(part) and not place['levels'][key]:
+            return None
+    return place['name']
 
 
 def match_place_text_to_registry(
