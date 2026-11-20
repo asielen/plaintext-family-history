@@ -15,6 +15,10 @@ check which findings the narrowed report keeps:
   - outside git, the whole report comes back with a plain note;
   - a fix flag is refused beside --changed (a fix works on everything);
   - --timings writes its table to stderr only, so --json stays one document.
+
+It also guards the speed of a full lint: the reverse relationships-block
+check (W115) reads each claim once, not once per person with a
+relationships: block, which is what made a large archive take minutes.
 """
 
 from __future__ import annotations
@@ -221,6 +225,61 @@ class InChangedScopeTests(unittest.TestCase):
         for path in (self.root / 'fha.yaml', self.root / 'places' / 'places.yaml',
                      self.root / 'AGENTS.md'):
             self.assertTrue(lint._in_changed_scope(path, self.root, self.scope))
+
+
+class ReverseRelationshipCheckReadsClaimsOnceTests(unittest.TestCase):
+    """Thirty people with a relationships: block and thirty parent-child
+    claims: the reverse W115 check labels each claim for the people it names
+    (sixty calls), where walking every claim per person made 900."""
+
+    N = 30
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('', encoding='utf-8')
+        people = self.root / 'people' / 'stubs'
+        people.mkdir(parents=True)
+        pids = [f'P-{n:02d}00000000' for n in range(self.N + 1)]
+        for n, pid in enumerate(pids):
+            (people / f'hartley__person{n}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: Person {n} Hartley\nliving: false\n'
+                f'relationships:\n  - type: parent\n    to: "{pids[0]}"\n---\n',
+                encoding='utf-8')
+        claims = ''.join(
+            f'- value: child of\n  id: C-{n:02d}00000000\n  type: relationship\n'
+            f'  persons: [{pids[n]}, {pids[0]}]\n'
+            f'  roles:\n    child: {pids[n]}\n    parent: {pids[0]}\n'
+            '  confidence: high\n  status: accepted\n'
+            for n in range(1, self.N + 1))
+        sources = self.root / 'sources' / 'notes'
+        sources.mkdir(parents=True)
+        (sources / 'family_S-0000000000.md').write_text(
+            '---\nid: S-0000000000\ntitle: Family list\nsource_type: other\n---\n\n'
+            f'## Claims\n\n```yaml\n{claims}```\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_each_claim_is_labelled_once_per_named_person(self) -> None:
+        calls = []
+        real = lint._person_reconcilable_role_label
+
+        def counting(claim, pid, alias_map=None):
+            calls.append(pid)
+            return real(claim, pid, alias_map)
+
+        lint._person_reconcilable_role_label = counting
+        try:
+            findings, _registry = lint._run_lint_core(self.root, {})
+        finally:
+            lint._person_reconcilable_role_label = real
+        self.assertLessEqual(len(calls), 2 * self.N)
+        # The check still reports every claim a block leaves out: each child
+        # misses their own claim, and the parent misses all thirty.
+        reverse = [f for f in findings if f.code == 'W115'
+                   and 'has a relationships: block but accepted claim' in f.message]
+        self.assertEqual(len(reverse), 2 * self.N)
 
 
 class TimingsTests(_ArchiveBase):
