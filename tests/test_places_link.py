@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT))
 import _lib  # noqa: E402
 import index  # noqa: E402
 import places  # noqa: E402
-from _lib import ClaimEditRefused, add_place_to_claim  # noqa: E402
+from _lib import ClaimEditRefused, add_place_to_claim, shell_quote  # noqa: E402
 from tests.test_places import _write_geonames  # noqa: E402
 
 PID = 'l-7c1a9f4e22'
@@ -552,14 +552,63 @@ class RegisterSameNameTests(_ArchiveCase):
         rows = yaml.safe_load((self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
         self.assertEqual(sorted(r['name'] for r in rows), ['Chicago', 'Nowhere Mills'])
         text = '\n'.join(result['messages'])
-        self.assertIn('"Chicago, Cook County, Illinois" (3 claims) may be Chicago (l-9e3c1b6a44)',
-                      text)
-        self.assertIn('fha confirm place c-aaaaaaaa00 c-aaaaaaaa01 c-aaaaaaaa02 '
-                      '--into l-9e3c1b6a44', text)
-        self.assertIn('county word or the country', text)
+        self.assertIn('"Chicago, Cook County, Illinois" (3 claims) may be Chicago '
+                      '(Cook, Illinois; l-9e3c1b6a44)', text)
+        self.assertIn('If it is the same place: fha confirm place c-aaaaaaaa00 c-aaaaaaaa01 '
+                      'c-aaaaaaaa02 --into l-9e3c1b6a44', text)
+        self.assertIn('its hierarchy has no county written as "Cook County"', text)
         claims = {c['id']: c.get('place') for c in _claims_of(
             (self.root / 'sources' / 'one_s-aaaaaaaaa1.md').read_text(encoding='utf-8'))}
         self.assertIsNone(claims['c-aaaaaaaa00'])
+
+
+class RegisterMayBeListingTests(_ArchiveCase):
+    """A "may be" line must let the human tell the two towns apart and act
+    either way: the registered place's hierarchy, both commands, and a hint
+    naming what the text has that the hierarchy lacks."""
+
+    def test_different_town_gets_both_commands_and_a_specific_hint(self):
+        self.registry('- id: l-9e3c1b6a44\n  name: Springfield\n'
+                      '  hierarchy: Springfield, Sangamon County, Illinois, USA\n'
+                      '  alt_names: [Springfield City]\n')
+        self.source('one', 's-aaaaaaaaa1',
+                    [(f'c-aaaaaaaa{i:02d}', 'Springfield, Massachusetts') for i in range(3)]
+                    + [(f'c-bbbbbbbb{i:02d}', 'Springfield, Illinois') for i in range(3)]
+                    + [(f'c-cccccccc{i:02d}', 'Salem, Oregon') for i in range(3)])
+        self.build()
+        result = places.run_register_candidates(self.root, {}, dry_run=True)
+        text = '\n'.join(result['messages'])
+        ids = 'c-aaaaaaaa00 c-aaaaaaaa01 c-aaaaaaaa02'
+        self.assertIn('"Springfield, Massachusetts" (3 claims) may be Springfield '
+                      '(Sangamon County, Illinois, USA; l-9e3c1b6a44)', text)
+        self.assertIn(f'If it is the same place: fha confirm place {ids} --into l-9e3c1b6a44',
+                      text)
+        self.assertIn('If it is a different place: fha confirm place '
+                      f'{ids} --name={shell_quote("Springfield, Massachusetts")}', text)
+        self.assertIn('hierarchy has no "Massachusetts"', text)
+        self.assertNotIn('Cook County', text)
+        self.assertIn('New place "Salem, Oregon"', text)
+
+    def test_the_different_place_command_registers_it(self):
+        import confirm
+        self.registry('- id: l-9e3c1b6a44\n  name: Springfield\n'
+                      '  hierarchy: Springfield, Sangamon County, Illinois, USA\n')
+        self.source('one', 's-aaaaaaaaa1',
+                    [(f'c-aaaaaaaa{i:02d}', 'Springfield, Massachusetts') for i in range(3)])
+        self.build()
+        text = '\n'.join(places.run_register_candidates(self.root, {}, dry_run=True)['messages'])
+        line = next(ln for ln in text.splitlines() if 'If it is a different place:' in ln)
+        import shlex
+        command, quoted = line.split(': ', 1)[1].split(' --name=', 1)
+        # shell_quote quotes the POSIX way on Linux and with double quotes on
+        # Windows; read it back the same way the shell would.
+        name = quoted.strip('"') if os.name == 'nt' else shlex.split(quoted)[0]
+        self.assertEqual(name, 'Springfield, Massachusetts')
+        result = confirm.run_confirm_place(
+            self.root, claim_ids=[a for a in command.split() if a.startswith('c-')], name=name)
+        self.assertEqual(result.exit_code, 0, [m.text for m in result.messages])
+        rows = yaml.safe_load((self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        self.assertIn('Springfield, Massachusetts', [r['name'] for r in rows])
 
 
 class ManyClaimsInOneRecordTests(_ArchiveCase):

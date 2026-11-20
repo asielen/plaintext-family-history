@@ -151,6 +151,7 @@ import yaml
 from _lib import (
     PARKED_CLAIM_SQL,
     PLACE_DIVISION_WORDS,
+    _names_a_county,
     add_places_to_claims,
     fold_place_words,
     match_place_text_to_registry,
@@ -2347,6 +2348,37 @@ def _plan_new_place(clusters: list[dict], gaz, taken: set[str]) -> dict:
     return plan
 
 
+def _hierarchy_above(row: dict | None, name: str | None) -> str:
+    """A registered place's hierarchy without its own name in front, for a
+    "may be" line: "Sangamon County, Illinois, USA"."""
+    hierarchy = (row or {}).get('hierarchy')
+    if not isinstance(hierarchy, str):
+        return ''
+    parts = [p.strip() for p in hierarchy.split(',') if p.strip()]
+    if parts and name and place_first_key(parts[0]) == place_first_key(name.split(',')[0]):
+        parts = parts[1:]
+    return ', '.join(parts)
+
+
+def _parts_not_fitting(label: str, place: dict) -> list[str]:
+    """The later parts of a cluster label that keep it from fitting a
+    registered place of the same name, each said plainly: a part the
+    place's hierarchy does not hold ('"Massachusetts"'), or a County part
+    the hierarchy does not write as a county ('a county written as "Cook
+    County"'). These are what the human would add if it is the same place."""
+    lacks = []
+    for part in [p.strip() for p in label.split(',')[1:] if p.strip()]:
+        key = place_part_key(part)
+        if not key:
+            continue
+        if key not in place['levels']:
+            lacks.append(f'"{part}"')
+        elif _names_a_county(part) and not (place['levels'][key] if place['marked']
+                                         else key in place['bare_county']):
+            lacks.append(f'county written as "{part}"')
+    return lacks
+
+
 def _register_review_lines(review: list[dict], planned_ids: dict[str, str]) -> list[str]:
     """The clusters `--register` leaves for the human, each with the
     `fha confirm place` command that settles it. A cluster that could be
@@ -2370,14 +2402,19 @@ def _register_review_lines(review: list[dict], planned_ids: dict[str, str]) -> l
                                         'names the one to run for each.')
                 continue
             if r.get('maybe'):
-                names = ', '.join(f'{n} ({pid})' for pid, n in r['maybe'])
-                review_lines.append(f'{head} may be {names}; it is not registered again. If it '
-                                    'is the same place, run its command:')
-                review_lines.extend(f'    {c}' for c in _confirm_place_commands(
-                    r['claim_ids'], r['place_ids']))
-                review_lines.append('    (Adding the county word or the country to that '
-                                    "place's hierarchy, for example \"Cook County\" or "
-                                    '", USA", lets text like this link to it by itself.)')
+                ids = ' '.join(fmt_id_display(c) for c in r['claim_ids'])
+                for cand in r['maybe']:
+                    where = f'{cand["where"]}; ' if cand['where'] else ''
+                    review_lines.append(f'{head} may be {cand["name"]} ({where}'
+                                        f'{cand["place_id"]}); it is not registered yet.')
+                    review_lines.append(f'    If it is the same place: fha confirm place {ids} '
+                                        f'--into {cand["place_id"]}')
+                    if cand['lacks']:
+                        review_lines.append(
+                            f'      (its hierarchy has no {", ".join(cand["lacks"])}; adding '
+                            'that, if it is the same place, lets text like this link by itself)')
+                review_lines.append(f'    If it is a different place: fha confirm place {ids} '
+                                    f'--name={shell_quote(r["label"])}')
                 continue
             what = 'is close to' if r['near'] else 'fits'
             review_lines.append(f'{head} {what} {", ".join(r["place_ids"])}; if one is meant:')
@@ -2469,6 +2506,7 @@ def run_register_candidates(
 
     prepared = prepare_place_registry(rows)
     by_id = {p['id']: p for p in prepared}
+    rows_by_id = {normalize_id(str(r.get('id'))): r for r in rows}
     taken = {normalize_place_text(n) for r in rows
              for n in [r.get('name'), *(r.get('alt_names') or [])] if isinstance(n, str)}
 
@@ -2509,7 +2547,9 @@ def run_register_candidates(
             if same:
                 data['review'].append({
                     'label': label, 'claim_ids': g['claim_ids'], 'near': False,
-                    'maybe': [(fmt_id_display(p['id']), p['name']) for p in same],
+                    'maybe': [{'place_id': fmt_id_display(p['id']), 'name': p['name'],
+                               'where': _hierarchy_above(rows_by_id.get(p['id']), p['name']),
+                               'lacks': _parts_not_fitting(label, p)} for p in same],
                     'place_ids': [fmt_id_display(p['id']) for p in same]})
             else:
                 pending.append(g)
