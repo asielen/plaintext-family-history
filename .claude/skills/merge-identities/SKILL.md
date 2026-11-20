@@ -83,6 +83,7 @@ Genealogy keeps asking "are these two records the same human?" or "is this one r
 - The merge write belongs to `fha confirm merge` alone (SPEC §9 exactly: tombstone rename, four fields, folds, relinks), always dry-run first. The skill never hand-edits a merge and invents no mechanics.
 - Post-merge lint is clean of **new** W107/W115; merged files are renamed and kept, never deleted.
 - Any record ID written into prose (a split note on a record, a reason narrated into `## Notes`) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).
+- A split note or merge reason written into a record's `## Notes` keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

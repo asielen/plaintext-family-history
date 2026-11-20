@@ -68,6 +68,7 @@ Places carry history (a town is renamed, a county forms, a parish splits), and t
 - Dated `history:` and place notes read as context; a bare fact still carries a source.
 - Extend existing registry entries; never overwrite a human's `hierarchy`/`alt_names`/`notes`.
 - Any record ID written into place notes or history prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured registry fields and tool arguments (_STANDARD.md §11).
+- Place notes and `history:` prose keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 
