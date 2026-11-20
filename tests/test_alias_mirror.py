@@ -269,6 +269,27 @@ class BackfillTests(unittest.TestCase):
             'status: merged\nmerged_into: p-0a1b2c3d4e\nliving: false\n---\n'))
         self.assertEqual(self._w111()[1], [])
 
+    def test_tombstone_is_checked_for_its_own_id_only(self):
+        path = self._write('MERGED-INTO-p-0a1b2c3d4e__hartley__tom_p-1b2c3d4e5f', (
+            '---\nid: p-1b2c3d4e5f\naliases: [grandpa-tom]\nname: Tom Hartley\n'
+            'status: merged\nmerged_into: p-0a1b2c3d4e\nliving: false\n---\n'))
+        _, found = self._w111()
+        self.assertEqual(len(found), 1)
+        self.assertIn("own ID p-1b2c3d4e5f", found[0].text)
+        self.assertNotIn('Tom Hartley', found[0].text)
+        self._w111(fix_aliases=True)
+        self.assertEqual(read_record(path)['meta']['aliases'], ['p-1b2c3d4e5f', 'grandpa-tom'])
+
+    def test_single_value_aliases_missing_the_id_is_named_for_a_hand_edit(self):
+        path = self._write(f'hartley__thomas_edward_{PID}',
+                           _person('aliases: grandpa-tom\n'))
+        before = path.read_text(encoding='utf-8')
+        _, found = self._w111()
+        self.assertEqual(len(found), 1)
+        res, _ = self._w111(fix_aliases=True)
+        self.assertEqual(path.read_text(encoding='utf-8'), before)
+        self.assertTrue(any('by hand' in p for p in res.data['progress']), res.data['progress'])
+
     def test_source_missing_its_own_id_gets_it_first(self):
         src = self.root / 'sources' / 'letters'
         src.mkdir(parents=True)

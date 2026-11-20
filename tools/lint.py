@@ -2740,12 +2740,15 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
 
     Returns (missing, holds_restricted): `missing` is the own ID and then each
     of `name:` and the public `name_variants:` not yet listed. Only a record
-    that opted into the alias layer with an `aliases:` list is checked (the
-    same scoping as the self-ID check), and a merged tombstone never is: its
-    list holds only its bare ID by design (SPEC §9)."""
+    that opted into the alias layer is checked (the same scoping as the
+    self-ID check). A merged tombstone, or an `aliases:` written as a single
+    value rather than a list, is checked for its own ID only: a tombstone's
+    list holds just its bare ID by design (SPEC §9)."""
     aliases = meta.get('aliases')
-    if not isinstance(aliases, list) or not aliases or is_merged_meta(meta):
+    if not aliases:
         return [], False
+    if not isinstance(aliases, list) or is_merged_meta(meta):
+        return ([] if _self_alias_ok(meta, pid) else [fmt_id_display(pid)]), False
     present = {strip_link_wrapper(str(a)).strip().lower() for a in aliases if a is not None}
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
@@ -4549,7 +4552,8 @@ def _fix_aliases(
     A person gets the shared `_lib.sync_person_aliases` rule every name-writing
     verb uses (own ID first, then `name:` and the public `name_variants:`; a
     restricted variant taken out), so a backfilled record ends up exactly as
-    a freshly written one would. A source gets its own ID at the head of the
+    a freshly written one would. A source, or a merged tombstone (whose list
+    holds its bare ID only, SPEC §9), gets its own ID at the head of the
     list. Only the `aliases:` lines change; anything a human added stays.
     Previewed under --dry-run, and a record the surgery cannot edit safely (a
     flow list over several lines) is named for a hand edit."""
@@ -4566,7 +4570,7 @@ def _fix_aliases(
         except yaml.YAMLError:
             meta = None
         rid = str(meta.get('id') or '') if isinstance(meta, dict) else ''
-        if id_type_of(rid) == 'P':
+        if id_type_of(rid) == 'P' and not is_merged_meta(meta):
             new_text, added, removed = sync_person_aliases(text)
         elif rid:
             inner, added = merge_aliases_into_frontmatter(
