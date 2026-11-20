@@ -63,7 +63,7 @@ A folder that holds no `notes.md` is not a bundle: `fha process` treats it as a 
 | `asset_path_absolute` | the same path, resolved | written by `fha capture --path` for a person reading the stub; not copied into the record, since a machine-specific path does not belong in a file that travels |
 | `files` / `roles` | per-file hints, bundle folders only (§1.3) | each file's entry in the record's `files:` inventory |
 
-The fill-in template a person copies by hand is `archive-template/inbox/_TEMPLATE.notes.md`: plain questions, no frontmatter. A notes file must be UTF-8; one saved in another encoding, or with frontmatter that does not parse, is refused with the fix named and nothing changed.
+The fill-in template a person copies by hand is `archive-template/inbox/_TEMPLATE.notes.md`: plain questions, no frontmatter. A notes file must be UTF-8; one saved in another encoding, or with frontmatter that does not parse, is refused with the fix named and nothing changed. A frontmatter value with an unquoted ` #` in it (`title: Deed to Lot #4`) parses but loses everything from the `#` on, so `fha lint` reads the notes files waiting in the inbox and names each one (W157, TOOLING.md §3) while the quotes can still go in.
 
 ### 1.3 Role hints in a bundle
 

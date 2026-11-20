@@ -571,5 +571,54 @@ class UnlistableFolderTests(unittest.TestCase):
         self.assertTrue(any('people/locked' in w for w in warnings), warnings)
 
 
+class PunctuationWordsTests(unittest.TestCase):
+    """An unsure name such as "Mary Smith (?)" or "Mary ?" holds a word that
+    is only punctuation. The file name, the surname every page and export
+    reads, and lint's W138 check must all set that word aside the same way,
+    and a file an earlier version named `unknown__…` for it stays quiet."""
+
+    def test_the_surname_skips_a_punctuation_word(self) -> None:
+        import _lib
+        self.assertEqual(_lib.person_surname('Mary Smith (?)'), 'Smith')
+        self.assertEqual(_lib.person_surname('Mary ?'), '')
+        self.assertEqual(_lib.person_surname('Roy Dodson Jr ?'), 'Dodson')
+        # Unchanged: ordinary names, and a word in another script.
+        self.assertEqual(_lib.person_surname('Mary Smith'), 'Smith')
+        self.assertEqual(_lib.person_surname('Ivan Иванов'), 'Иванов')
+        self.assertEqual(_lib.stub_slug_name('Ivan Иванов'), ('unknown', 'ivan'))
+
+    def test_file_name_and_surname_agree(self) -> None:
+        import _lib
+        for name in ('Mary Smith (?)', 'Mary ?', 'John & Mary Smith', 'John - Smith'):
+            with self.subTest(name=name):
+                slot = _lib.stub_slug_name(name)[0]
+                self.assertEqual(slot, _lib.person_name_slot(_lib.person_surname(name)))
+                stem = _lib.stub_filename(name, 'p-0000000001')[:-3]
+                self.assertIsNone(_lib.file_name_surname_mismatch(stem, {'name': name}))
+
+    def test_a_file_the_old_slugger_named_unknown_stays_quiet(self) -> None:
+        import _lib
+        self.assertIsNone(_lib.file_name_surname_mismatch(
+            'unknown__mary_smith_p-0000000001', {'name': 'Mary Smith (?)'}))
+        self.assertIsNone(_lib.file_name_surname_mismatch(
+            'unknown__mary_p-0000000001', {'name': 'Mary ?'}))
+        # A real mismatch is still reported.
+        self.assertIsNotNone(_lib.file_name_surname_mismatch(
+            'unknown__mary_p-0000000001', {'name': 'Mary Smith'}))
+
+    def test_fix_ids_names_a_person_the_way_person_new_does(self) -> None:
+        import _lib
+        for name in ('Ann Lot 2 Doe', 'John Smith 2nd', 'Ann Lot #2 Doe', 'Mary Smith (?)',
+                     'Roy Eugene Dodson Jr', 'Roy Jr', 'Halina Wiśniewska'):
+            with self.subTest(name=name):
+                self.assertEqual(lint._person_filename_parts(name, 'fallback'),
+                                 _lib.stub_slug_name(name))
+
+    def test_gedcom_import_slot_drops_punctuation_words(self) -> None:
+        self.assertEqual(gedcom_import._name_slot('Ann # Lot'), 'ann_lot')
+        self.assertEqual(gedcom_import._name_slot('Lot 2 -'), 'lot_2')
+        self.assertEqual(gedcom_import._name_slot('#'), 'unknown')
+
+
 if __name__ == '__main__':
     unittest.main()
