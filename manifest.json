@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "0e21244a5ea5401ce5fe1e2004210ec54975bf093102d7f5ad753793a4535652",
+      "sha256": "ff4e99a479dd6c1d2645778b236b8acd95dfcb4d104503d40dd3e45169447934",
       "spec_version": "2.17",
       "src": "tools/_lib.py"
     },
@@ -1052,7 +1052,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "534895f2c0dfc6eaa65d57cd2bf68fec1ab425a4f0eeaaef13b07225ffe645b3",
+      "sha256": "c3bf5d674599f09b9e2b16e43c4ce2a491556b8eae430342e4ade34c08a8b3c2",
       "spec_version": "2.17",
       "src": "tools/views.py"
     },
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "f6b5bd405a681ee4844a2a2cd1b9ea670255b68588b366026ecf2d0a24f64676",
+      "sha256": "064ed7335d0a230a5f506c949c3d1dfc508db0cd68eae0dfc8d033ac52e5b6b2",
       "spec_version": "2.17",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "7e1f69dd6837f57c1722ccd86822e4c946d7f0fb844e3a5890ac986fe6783032",
+      "sha256": "cec37010dd4bda2e80a5413571eb9d636f01109d4b372179e2dc378c1a700964",
       "spec_version": "2.17",
       "src": "TOOLING.md"
     },
@@ -1212,7 +1212,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "f33bbae15dc063aefaedf81330cc99ba119f9c79fd8f1d0a4f311aff0825b931",
+      "sha256": "d40aa21cff7effde2531e54b8070f9ba158b192a5f18bb4240eade35fbb7292d",
       "spec_version": "2.17"
     },
     {
