@@ -211,6 +211,9 @@ from _lib import (
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
     scan_ids_in_tree,
     scan_person_record_ids,
     yaml_inline,
@@ -3202,6 +3205,26 @@ def run_confirm_merge(
     planned = {path: (before, convert_written_links(before, after, links))
                for path, (before, after) in planned.items()}
 
+    # With links: obsidian, every link that names the merged person, by ID
+    # or by the file name the tombstone rename retires, is pointed at the
+    # survivor across the archive (SPEC §18). Folded into `planned`, so the
+    # preview shows it and the undo journal covers it.
+    link_edits = plan_rename_links(
+        archive_root,
+        rename_link_writer(archive_root, None, [pm], stems={pm: dest.stem},
+                           survivors={pm: ps}),
+        pending={path: after for path, (_before, after) in planned.items()})
+    for edit in link_edits:
+        before = planned[edit.path][0] if edit.path in planned else edit.before
+        planned[edit.path] = (before, edit.after)
+        if edit.path != merged_path:
+            prose_refs -= (len(token_re.findall(edit.before))
+                           - len(token_re.findall(edit.after)))
+    prose_refs = max(prose_refs, 0)
+    result.data['prose_refs_remaining'] = prose_refs
+    links_line = rename_links_message(link_edits, dry_run=dry_run,
+                                      target=f"the survivor's file ({ps_disp})")
+
     # ── Dry-run: the complete, honest preview ───────────────────────────────
     if dry_run:
         result.data['status'] = 'ok'
@@ -3221,6 +3244,8 @@ def run_confirm_merge(
                    f'[dry-run] Would relink {relinked_claims} claim(s) and '
                    f'{relinked_profiles} other record(s); {prose_refs} prose '
                    f'mention(s) of {pm_disp} would remain for gradual cleanup (W107).')
+        if links_line:
+            result.add('info', f'[dry-run] {links_line}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         if has_warnings:
             result.exit_code = EXIT_WARNINGS
@@ -3319,6 +3344,8 @@ def run_confirm_merge(
     result.add('info',
                f'Relinked {relinked_claims} claim(s) and {relinked_profiles} '
                f'other record(s) to {ps_disp}.')
+    if links_line:
+        result.add('info', links_line)
     if prose_refs:
         result.add('info',
                    f'{prose_refs} prose mention(s) of {pm_disp} remain - they '

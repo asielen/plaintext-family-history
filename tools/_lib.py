@@ -11954,6 +11954,10 @@ class LinkWriter:
         self._names: dict[str, str | None] = (
             {k: _usable_link_name(v) for k, v in names.items()} if names is not None else {})
         self._names_complete = names is not None
+        # Set by `expect_renamed`: only links to these IDs are rewritten, and
+        # a link written by one of these old file names counts as one.
+        self._only: set[str] | None = None
+        self._old_stems: dict[str, str] = {}
 
     @property
     def obsidian(self) -> bool:
@@ -12076,6 +12080,62 @@ class LinkWriter:
             self._names[pid] = _usable_link_name(name)
         return self._names.get(pid)
 
+    def expect_renamed(self, ids: Iterable[str], *,
+                       stems: dict[str, str] | None = None,
+                       names: dict[str, str] | None = None,
+                       survivors: dict[str, str] | None = None,
+                       claim_sources: dict[str, str] | None = None,
+                       old_stems: dict[str, str] | None = None) -> None:
+        """Make this writer rewrite only the links to records a verb is
+        renaming, as they will stand once the verb is done.
+
+        A verb calls this before it moves anything, so `--dry-run` and the
+        real run plan the same edits: `stems` gives a record's new file stem,
+        `names` a person's new name (the display a link with none gets),
+        `survivors` the record a merged one now counts as, `claim_sources`
+        the source a moved claim now sits in, and `old_stems` an old file
+        name (any case) that a plain `[[old name]]` link followed, for a
+        record that had no ID in its file name. From then on `convert_counted`
+        touches only links that name one of `ids` (or one of the records the
+        other arguments name), by ID or by file stem, and claim links whose
+        claim or source is one of them; every other link is left as written."""
+        if self._stems is None:
+            self._stems = self._scan_stems()
+        if self._survivors is None:
+            self._survivors = self._scan_survivors()
+        only = {normalize_id(str(i)) for i in ids}
+        for rid, stem in (stems or {}).items():
+            self._stems[normalize_id(str(rid))] = stem
+            only.add(normalize_id(str(rid)))
+        for rid, name in (names or {}).items():
+            self._names[normalize_id(str(rid))] = _usable_link_name(name)
+        for rid, target in (survivors or {}).items():
+            self._survivors[normalize_id(str(rid))] = normalize_id(str(target))
+            only.add(normalize_id(str(rid)))
+        for cid, sid in (claim_sources or {}).items():
+            self._claim_sources[normalize_id(str(cid))] = normalize_id(str(sid))
+            only.add(normalize_id(str(cid)))
+        self._old_stems = {}
+        for old, rid in (old_stems or {}).items():
+            self._old_stems[str(old).strip().lower()] = normalize_id(str(rid))
+            only.add(normalize_id(str(rid)))
+        self._only = only
+
+    def _is_expected(self, tid: str, kind: str, written: str) -> bool:
+        """True when a link is one `expect_renamed` asked for (always true
+        when it was not called): its target is one of the IDs, or, for a
+        claim link, the claim's source or the stem it was written with is."""
+        if self._only is None:
+            return True
+        if tid in self._only:
+            return True
+        if kind != 'C':
+            return False
+        if self.claim_source(tid) in self._only:
+            return True
+        written_id, _d = link_parts(written)
+        return id_type_of(written_id) == 'S' and normalize_id(written_id) in self._only
+
     # ── writing ──
 
     def link(self, rid: str, display: str | None = None) -> str:
@@ -12158,9 +12218,18 @@ class LinkWriter:
         written, fragment, raw_display, escaped = _split_written_link(m)
         tid, display = link_parts(written, raw_display)
         kind = id_type_of(tid)
+        if kind is None and written.lower() in self._old_stems:
+            # `[[old name]]`: Obsidian followed it by the file name a verb is
+            # replacing. The words it showed stay as its display.
+            tid = self._old_stems[written.lower()]
+            kind = id_type_of(tid)
+            display = display if display is not None else written
+            raw_display = display
         if kind not in ('P', 'S', 'C'):
             return None
         tid = normalize_id(tid)
+        if not self._is_expected(tid, kind, written):
+            return None
         # In a table, the separator is the escaped one Obsidian writes.
         bar = '\\|' if in_table else '|'
         if kind == 'C':
@@ -12396,10 +12465,12 @@ def links_to_id_form(text: str, drop_names: Any = None) -> str:
     the `id` link mode would have, so switching modes never changes what an
     export holds back. The display is kept, except a source's own ID shown
     as its display and the claim ID of a claim link, which the ID form does
-    not repeat, and a display that is exactly the name `drop_names.get(p-id)`
-    gives for the person (anything with a `get`; the packet passes the
-    people it withholds): the stem form fills in a person's name where the
-    ID form had none, and the copy must not gain it."""
+    not repeat, and a display that is exactly a name `drop_names.get(p-id)`
+    gives for the person (anything with a `get`, returning one name or a set
+    of them; the packet passes the people it withholds, with every name
+    they have carried): the stem form fills in a person's name where the ID
+    form had none, and the copy must not gain it, even after a rename has
+    left the filled-in name an old one."""
     if '_' not in text or '[[' not in text:
         return text
     drop = drop_names if drop_names is not None else {}
@@ -12416,7 +12487,10 @@ def links_to_id_form(text: str, drop_names: Any = None) -> str:
             return f'[[{shown}]]'
         if display is not None and display.lower() == shown:
             display = None
-        if display is not None and ' '.join(display.split()) == drop.get(normalize_id(tid)):
+        withheld = drop.get(normalize_id(tid))
+        if isinstance(withheld, str):
+            withheld = {withheld}
+        if display is not None and withheld and ' '.join(display.split()) in withheld:
             display = None
         bar = '\\|' if escaped else '|'
         return f'[[{shown}{fragment}{bar}{display}]]' if display else f'[[{shown}{fragment}]]'
@@ -12452,6 +12526,150 @@ def convert_written_links(before: str, after: str, links: LinkWriter | None) -> 
     out = [(_convert_link_line(line, kind, links)[0] if mine else line)
            for line, kind, mine in zip(new, kinds, written)]
     return ''.join(out)
+
+
+# ── Renames in Obsidian link mode (SPEC §18) ─────────────────────────────────
+#
+# In `id` mode a rename never breaks a link: the ID never changes. In
+# `obsidian` mode a link names the record's file, so every verb that renames
+# a record file (person rename, the merge tombstone, a source merge, lint
+# --fix-ids) points the links to it at the new name in the same run:
+#
+#   1. `rename_link_writer` builds a `LinkWriter` that knows the state after
+#      the rename (new stems, survivors, moved claims) and touches only the
+#      links to the renamed records. In `id` mode it is None.
+#   2. `plan_rename_links` runs `rewrite_record_links_to_stems`, the same
+#      rewrite `fha normalize-links --obsidian` and lint W161 use, over every
+#      record file, before anything is written, so `--dry-run` shows the
+#      same count the real run writes.
+#   3. The verb writes the planned edits inside its own undo, or with
+#      `write_rename_links`, which puts every file back on a failure.
+
+
+class RenameLinkEdit(NamedTuple):
+    """One record file whose links a rename rewrites: `before` is the text
+    the plan read (the verb's own pending text for a file it is writing
+    anyway), `after` the text with the links rewritten, `count` how many."""
+    path: Path
+    before: str
+    after: str
+    count: int
+
+
+def link_record_files(archive_root: str | Path) -> list[Path]:
+    """Every record file whose prose and frontmatter carry links a person
+    wrote or a tool keeps: `.md` files under people/, sources/ and notes/,
+    without the `_TEMPLATE` teaching files and GENERATED views (`fha views`
+    rebuilds those). The walk `fha normalize-links` and the rename verbs
+    share."""
+    root = Path(archive_root)
+    out: list[Path] = []
+    for sub in ('people', 'sources', 'notes'):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob('*.md')):
+            if is_template_file(path) or is_generated_file(path):
+                continue
+            out.append(path)
+    return out
+
+
+def rename_link_writer(archive_root: str | Path, fha_config: dict | None, ids: Iterable[str], *,
+                       stems: dict[str, str] | None = None,
+                       names: dict[str, str] | None = None,
+                       survivors: dict[str, str] | None = None,
+                       claim_sources: dict[str, str] | None = None,
+                       old_stems: dict[str, str] | None = None) -> LinkWriter | None:
+    """The `LinkWriter` a renaming verb plans its link edits with, or None in
+    `id` mode, where a rename changes no link. See `LinkWriter.expect_renamed`
+    for the arguments: they describe the archive as it will be once the verb
+    has renamed its files."""
+    links = link_writer(archive_root, fha_config)
+    if not links.obsidian:
+        return None
+    links.expect_renamed(ids, stems=stems, names=names, survivors=survivors,
+                         claim_sources=claim_sources, old_stems=old_stems)
+    return links
+
+
+def plan_rename_links(archive_root: str | Path, links: LinkWriter | None, *,
+                      pending: dict[Path, str] | None = None,
+                      gone: Iterable[Path] = ()) -> list[RenameLinkEdit]:
+    """The link edits a rename needs, one per file, computed without
+    writing anything.
+
+    `pending` holds the text a verb is about to write to a file (keyed by
+    the file's path now): the plan reads that text instead of the disk, so
+    the verb writes one combined version. Files in `gone` (a record the verb
+    deletes) are skipped. A file that cannot be read as UTF-8 is skipped
+    too; lint names it (W123, W128). With `links` None (id mode) there is
+    nothing to do."""
+    if links is None or not links.obsidian:
+        return []
+    pending = dict(pending or {})
+    skip = {Path(p) for p in gone}
+    paths = link_record_files(archive_root)
+    seen = set(paths)
+    paths += [p for p in pending if p not in seen]
+    edits: list[RenameLinkEdit] = []
+    for path in paths:
+        if path in skip:
+            continue
+        if path in pending:
+            text = pending[path]
+        else:
+            try:
+                text = read_text_exact(path)
+            except (OSError, UnicodeDecodeError):
+                continue
+        if '[[' not in text:
+            continue
+        new, count, _worded = rewrite_record_links_to_stems(text, links)
+        if count:
+            edits.append(RenameLinkEdit(path, text, new, count))
+    return edits
+
+
+def write_rename_links(edits: Iterable[RenameLinkEdit]) -> list[Path]:
+    """Write planned link edits, each file atomically. On a failure every
+    file this call already wrote is put back as it was and the error is
+    raised again, so the caller's own undo runs on an archive this call
+    left untouched. A file the caller writes itself (one it passed as
+    `pending`) is left out of `edits` by the caller. Returns the files
+    written."""
+    done: list[RenameLinkEdit] = []
+    try:
+        for edit in edits:
+            write_text_exact_atomic(edit.path, edit.after)
+            done.append(edit)
+    except BaseException:
+        for edit in reversed(done):
+            try:
+                write_text_exact_atomic(edit.path, edit.before)
+            except OSError:
+                pass
+        raise
+    return [e.path for e in done]
+
+
+def rename_links_message(edits: Iterable[RenameLinkEdit], *, dry_run: bool,
+                         target: str = "the record's new file name",
+                         step: bool = False) -> str | None:
+    """The line a renaming verb prints about the links it rewrote, or None
+    when there were none: how many links in how many files. Under
+    `--dry-run` it reads "Would point ...", after the write "Pointed ...",
+    and as one `step` of a listed plan "point ..."."""
+    edits = list(edits)
+    if not edits:
+        return None
+    links_n = sum(e.count for e in edits)
+    files_n = len(edits)
+    what = (f'{links_n} link{"s" if links_n != 1 else ""} in {files_n} '
+            f'file{"s" if files_n != 1 else ""}')
+    verb = 'point' if step else 'Would point' if dry_run else 'Pointed'
+    end = '' if step else '.'
+    return f'{verb} {what} at {target}, so Obsidian keeps following them (links: obsidian){end}'
 
 def split_yaml_comment(rest: str) -> tuple[str, str]:
     """`value  # note` -> (`value`, `# note`), read the YAML way: the comment

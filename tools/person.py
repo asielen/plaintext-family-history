@@ -334,6 +334,10 @@ from _lib import (
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
+    write_rename_links,
     yaml_edtf,
     yaml_inline,
     safe_load_yaml,
@@ -2334,6 +2338,26 @@ def run_rename(
         new_folder_name = None
         new_folder = None
 
+    # ── Links that name the old file (links: obsidian, SPEC §18) ─────────────
+    # Planned now, before anything moves, so the preview and the write count
+    # the same links. The profile's own links are folded into its one write;
+    # every other file is written after the renames, inside the same undo.
+    link_edits = []
+    if renaming_file:
+        link_edits = plan_rename_links(
+            archive_root,
+            rename_link_writer(archive_root, None, [pid], stems={pid: new_path.stem},
+                               names={pid: clean_new}),
+            pending={path: new_text})
+    for edit in [e for e in link_edits if e.path == path]:
+        new_text = edit.after
+    moved_files = {path: new_path}
+    if renaming_research:
+        moved_files[old_research_path] = new_research_path
+    other_link_edits = [e._replace(path=moved_files.get(e.path, e.path))
+                        for e in link_edits if e.path != path]
+    links_line = rename_links_message(link_edits, dry_run=dry_run)
+
     # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
     # A re-file (a new --surname on the same name) leaves name: as it is.
     steps = ([f're-file under its corrected file name (name: stays {clean_new})']
@@ -2386,6 +2410,8 @@ def run_rename(
         result.add('info', f'[dry-run] Would rename {label}:')
         for step in steps:
             result.add('info', f'  - {step}')
+        if links_line:
+            result.add('info', f'[dry-run] {links_line}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -2405,6 +2431,10 @@ def run_rename(
             # which stay valid since only the PROFILE file moved above).
             old_research_path.rename(new_research_path)
             moved_research = True
+        # Last: on a failure it puts its own files back before raising, so
+        # the unwind below finds every other file as this run left it.
+        for linked in write_rename_links(other_link_edits):
+            result.note_changed(linked)
     except OSError as e:
         # Unwind what completed, in reverse - the same promise
         # promote_person_record makes for its own multi-step write.
@@ -2474,6 +2504,8 @@ def run_rename(
             f'{len(stale_companions)} stale companion(s) deleted: '
             + ', '.join(s.name for s in stale_companions))
     result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if links_line:
+        result.add('info', links_line)
     if kept_note:
         result.add('info', kept_note[0].upper() + kept_note[1:] + '.', path=final_path)
     if variant_note and keep_variant:

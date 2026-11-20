@@ -241,6 +241,10 @@ from _lib import (
     unreadable_dir_recorder,
     walk_files,
     LinkWriter,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
+    write_rename_links,
     convert_written_links,
     link_mode,
     link_mode_setting,
@@ -7602,6 +7606,9 @@ def _fix_mint_ids(
     completed files."""
     remaining: list[tuple[Path, str]] = []
     minted_sources: list[Path] = []
+    # (new id, new file stem, old file stem) for each record renamed, for
+    # the links that name it (links: obsidian, SPEC §18).
+    renamed: list[tuple[str, str, str]] = []
     for path, kind in registry.idless_records:
         # _never_mintable is re-checked here as defense in depth: a GENERATED
         # view or README must never gain frontmatter/a rename even if a stale
@@ -7657,6 +7664,8 @@ def _fix_mint_ids(
             progress.append(
                 f'--fix-ids dry-run: would mint {new_id} for {rel}{ph_note}, '
                 f'rename → {new_rel}, and keep the old name as an alias')
+            if new_path != path and not new_path.exists():
+                renamed.append((new_id, new_path.stem, path.stem))
             remaining.append((path, kind))
             if kind == 'S':
                 minted_sources.append(path)
@@ -7678,6 +7687,7 @@ def _fix_mint_ids(
             path.rename(new_path)
             changed.append(str(new_path))
             final_path = new_path
+            renamed.append((new_id, new_path.stem, path.stem))
         else:
             new_rel = rel
             changed.append(str(path))
@@ -7690,7 +7700,53 @@ def _fix_mint_ids(
         if kind == 'S':
             minted_sources.append(final_path)
     registry.idless_records = remaining
+    _fix_ids_links(registry, archive_root, renamed, progress, changed, dry_run=dry_run)
     return minted_sources
+
+
+def _fix_ids_links(
+    registry: Registry,
+    archive_root: Path,
+    renamed: list[tuple[str, str, str]],
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """With `links: obsidian`, point the links that name a record
+    `--fix-ids` just renamed at its new file (SPEC §18).
+
+    Before the fix such a record had no ID, so the only links Obsidian
+    followed to it were written by its old file name (`[[grandmas-album]]`).
+    Those become `[[grandmas-album_s-…|grandmas-album]]`, the words they
+    showed kept as the display. One pass covers every record the run
+    renamed, planned the same way under `--dry-run`. A failed write puts
+    every link file back and says how to finish; the records keep their new
+    IDs and names, and their old names stay in `aliases:`, so nothing stops
+    resolving in the tools. Silent in `id` mode."""
+    if not renamed:
+        return
+    links = rename_link_writer(
+        archive_root, registry.fha_config, [rid for rid, _new, _old in renamed],
+        stems={rid: new for rid, new, _old in renamed},
+        old_stems={old: rid for rid, _new, old in renamed})
+    edits = plan_rename_links(archive_root, links)
+    line = rename_links_message(edits, dry_run=dry_run,
+                                target='the new file names')
+    if line is None:
+        return
+    if dry_run:
+        progress.append(f'--fix-ids dry-run: {line[0].lower()}{line[1:]}')
+        return
+    try:
+        written = write_rename_links(edits)
+    except OSError as e:
+        progress.append(
+            f'--fix-ids: the records were given IDs, but the links to them could not '
+            f'be updated ({e}); every link file was put back as it was. Run '
+            '`fha normalize-links --obsidian --write` to point them at the new file names.')
+        return
+    changed.extend(str(p) for p in written)
+    progress.append(f'--fix-ids: {line[0].lower()}{line[1:]}')
 
 
 def _claim_item_spans(text: str, start: int, end: int) -> list[tuple[int, int]] | None:
