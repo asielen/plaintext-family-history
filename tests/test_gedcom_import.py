@@ -1021,7 +1021,8 @@ class ParseGedcomNameTests(unittest.TestCase):
         # `__o'brien` there.
         for raw in ('Roy Eugene Dodson Jr', 'Roy Eugene /Dodson/ Jr',
                     'Roy Eugene Dodson', 'Cher', 'Roy Jr', '/Dodson/',
-                    '/Dodson/ Jr', "O'Brien", 'Bob/Rob'):
+                    '/Dodson/ Jr', "O'Brien", 'Bob/Rob', 'Ann Lot #2 Doe',
+                    'Ann # Doe', 'Ann - Doe'):
             with self.subTest(raw=raw):
                 display, _given, surname = gedcom_import._parse_gedcom_name(raw)
                 self.assertEqual(

@@ -93,6 +93,8 @@ from _lib import (
     PERSON_FREE_TEXT_FIELDS,
     PLACE_FREE_TEXT_FIELDS,
     SOURCE_FREE_TEXT_FIELDS,
+    INBOX_NOTES_FREE_TEXT_FIELDS,
+    INBOX_PROCESSED_DIRNAME,
     text_fields_cut_by_hash,
     claim_is_parked,
     file_name_surname_mismatch,
@@ -104,6 +106,8 @@ from _lib import (
     set_surname_line,
     recorded_surname,
     stub_slug_name,
+    name_words,
+    person_name_slot,
     fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
@@ -261,6 +265,7 @@ configure_utf8_stdout()
 #    _process_person_file        - index one person file + file-level checks
 #                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
+#    _check_inbox_notes          - W157 on the inbox's waiting notes files
 #
 #  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127, W129)
 #    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
@@ -562,13 +567,16 @@ _PERSON_FILENAME_RE = re.compile(
     # Both name slots admit interior hyphens (`smith-jones__anne`,
     # `hartley__mary-jane`) - SPEC §13 never forbids them, and hyphenated
     # surnames/given names are ordinary names, not grammar errors ("forgiving,
-    # not fussy"). A hyphen cannot lead a slot (the first char stays a letter),
-    # and the companion-kind suffix is untouched: kind classification lives in
-    # _lib.parse_filename (an endswith test on `_research`/`_timeline`/
+    # not fussy"). Both slots hold digits too, anywhere, because SPEC §13 says
+    # "letters and digits only": "Ann Lot #2 Doe" files as
+    # `doe__ann_lot_2_p-…` and "2nd Lt" as `2nd_lt`, the names
+    # `_lib.person_name_slot` builds. A hyphen cannot lead a slot, and the companion-kind suffix is untouched: kind classification
+    # lives in _lib.parse_filename (an endswith test on `_research`/`_timeline`/
     # `_sources-index`/`_draft-queue`), which a hyphen inside a NAME slot can
     # never satisfy - the kind needs its own leading underscore.
     r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
-    r'([a-z][a-z_-]*)?__[a-z][a-z_-]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    r'([a-z0-9][a-z0-9_-]*)?__[a-z0-9][a-z0-9_-]*(_[a-z][a-z0-9\-]*)?'
+    r'_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 
 # A copy-paste template's placeholder id value, e.g. `P-__________` (the shipped
@@ -1742,8 +1750,10 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     survives being pasted (no `$`, backtick or `"`), else the hand-quoted
     line. A `#` two spaces or more past the text, with a space after it, is
     a comment written on purpose, as the templates do, and is left alone.
-    `record` is `person`, `source` or `place`; for `places.yaml` the hit
-    names its place. Nothing here edits a record."""
+    `record` is `person`, `source`, `place` or `notes` (an inbox notes
+    file, whose cut value `fha process` would copy into the new source);
+    for `places.yaml` the hit names its place. Nothing here edits a
+    record."""
     for hit in text_fields_cut_by_hash(block, fields):
         key, field, whole, rid = hit['key'], hit['field'], hit['whole'], hit['record_id']
         owner = ''
@@ -1759,21 +1769,60 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
         # A real comment after the text stays on the fixed line.
         hand = (f'`- {yaml_inline(whole)}{hit["aside"]}`' if hit['item'] and '.' not in field
                 else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
-        where = 'places.yaml' if record == 'place' else 'the record file'
+        where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
         if rid and flag and not any(ch in whole for ch in '$`"'):
             fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
-        read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
-                'and the site show' if hit['kept'] else
-                'Nothing is read, so every page, the index and the site show it empty')
+        if record == 'notes':
+            read = (f'Only {hit["kept"]!r} is read, so that is what `fha process` copies '
+                    'into the new source' if hit['kept'] else
+                    'Nothing is read, so `fha process` leaves it out of the new source')
+        else:
+            read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
+                    'and the site show' if hit['kept'] else
+                    'Nothing is read, so every page, the index and the site show it empty')
         findings.append(Finding('W', 'W157', path,
             f'{what} stops at the "#". {read}; "{hit["dropped"]}" is read as a '
             f'hidden comment and dropped. If it is all part of the {key}, {fix}. If the '
             'part after # is a note to yourself, it can simply be deleted, or kept by '
             'leaving two spaces before the # and one after it.'))
+
+
+def _check_inbox_notes(archive_root: Path, fha_config: dict,
+                       findings: list[Finding]) -> None:
+    """W157 for the notes files waiting in the inbox (SPEC §12.1).
+
+    A `{stem}.notes.md` beside a scan, or a bundle folder's `notes.md`, can
+    say `title: Deed to Lot #4 of block 2`. `fha process` copies its title,
+    citation and the rest into the new source, so the cut text would land
+    there too, and the notes file is deleted once it is used. Saying so
+    while the item still waits gives the human the chance to add the quotes
+    first. Only the frontmatter is read: the walk skips `processed/` (the
+    kept originals) and the `_TEMPLATE` copy, and a file that will not open
+    or decode is left to `fha process`, which refuses it with the fix."""
+    inbox = resolve_path('inbox', fha_config, archive_root)
+    if not inbox.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(inbox):
+        if Path(dirpath) == inbox:
+            dirnames[:] = [d for d in dirnames if d.casefold() != INBOX_PROCESSED_DIRNAME]
+        for name in sorted(filenames):
+            low = name.lower()
+            if not (low == 'notes.md' or low.endswith('.notes.md')) or is_template_file(name):
+                continue
+            path = Path(dirpath) / name
+            try:
+                rec = read_record(path, on_decode_error=lambda _p: None)
+            except OSError:
+                continue
+            if rec.get('undecodable'):
+                continue
+            _check_frontmatter_text_cut_by_hash(path, rec.get('frontmatter') or '',
+                                                INBOX_NOTES_FREE_TEXT_FIELDS, findings,
+                                                'notes')
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
@@ -6137,6 +6186,8 @@ def _run_lint_core(
     registry.lap('asset folder settings')
     _walk_archive(archive_root, registry, findings)
     registry.lap('reading records (one-file checks)')
+    _check_inbox_notes(archive_root, fha_config, findings)
+    registry.lap('inbox notes files')
     _cross_file_checks(registry, findings, with_exif=with_exif)
     registry.lap('unreadable folders')
     # E021/W147 say the rule a claim breaks; W125/W126/W132, where they also
@@ -6984,42 +7035,23 @@ def _slugify_segment(text: str) -> str:
 def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     """(surname, given) for the §13 person filename `{surname}__{given}_{P-id}`.
 
-    Derived from the `name:` field - surname is the last word, given the rest -
-    falling back to the hand-filename when there is no usable name. Letters only,
-    so the generated filename matches the strict person grammar and lint won't
-    immediately re-flag it.
+    `--fix-ids` names a hand-made record the way `fha person new` names the
+    same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
+    Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
+    slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
+    a name of two words or more never draws W138 the moment it is named.
 
-    A trailing generational suffix (Jr, Sr, II, III, IV, V) is pulled off
-    first via the shared `_lib.strip_generational_suffix` (issue #53) so
-    `--fix-ids` never mints a hand-authored "Roy Eugene Dodson Jr" as
-    `jr__roy_eugene_dodson` - the suffix rides at the end of the given slug
-    instead, the same rule `_lib.stub_slug_name` applies for `fha person new`
-    and `fha stubs --from-names`, so all three sites file a suffixed name the
-    same way. A leftover single core token after the suffix is stripped ("Roy
-    Jr") gets the same surname-less treatment `stub_slug_name` gives it - the
-    suffix does not promote the one remaining word into a surname. The
-    ORIGINAL single-token-with-no-suffix behaviour just below (surname =
-    that word, given = 'unknown') is untouched - it predates this fix and is
-    not part of it; SPEC §13's actual mononym convention (empty surname) is
-    `stub_slug_name`'s job, not this function's.
-
-    Accented letters fold to their base letters before the letters-only
-    filter (`_lib.fold_accents`, issue #279), the same fold `stub_slug_name`
-    applies, so "Halina Wiśniewska" becomes `wisniewska__halina` here too
-    instead of losing the `ś`."""
-    def letters(word: str) -> str:
-        return re.sub(r'[^a-z]+', '', fold_accents(word).lower())
-    parts = [p for p in str(name).split() if letters(p)]
-    core, suffix = strip_generational_suffix(parts)
-    if len(core) >= 2:
-        given_parts = core[:-1] + ([suffix] if suffix else [])
-        return (letters(core[-1]) or 'unknown',
-                '_'.join(letters(p) for p in given_parts) or 'unknown')
-    if core:
-        if suffix:
-            given = f'{core[0]} {suffix}'
-            return '', '_'.join(letters(p) for p in given.split()) or 'unknown'
-        return letters(core[0]) or 'unknown', 'unknown'
+    One difference is kept on purpose: a one-word name with no suffix
+    ("Cher") files as `cher__unknown` here, the convention this function
+    has always used, where `stub_slug_name` writes SPEC §13's surname-less
+    `__cher`. That file does draw W138, as it always has. With no usable name at all, the slots come from the hand
+    filename."""
+    words = name_words(fold_accents(str(name or '')))
+    core, suffix = strip_generational_suffix(words)
+    if len(core) == 1 and not suffix and person_name_slot(core[0]):
+        return person_name_slot(core[0]), 'unknown'
+    if any(person_name_slot(w) for w in words):
+        return stub_slug_name(str(name))
     seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())
     return (seg or 'unknown'), 'unknown'
 
