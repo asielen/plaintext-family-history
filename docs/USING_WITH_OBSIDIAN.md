@@ -16,7 +16,7 @@ When you want the tools to do something (add IDs, check the archive, build a web
 
 The tools write links with the record's ID inside: `[[p-de957bcda1|Thomas Edward Hartley]]` for a person, `[[s-b237895f31]]` for a citation, `[[c-…]]` for a single claim. The ID is what keeps the link right when a file is renamed, and every `fha` tool, the family website and the exports follow it.
 
-Obsidian follows a link by file name only, so it shows an ID link as unresolved and leaves it out of the graph. Clicking one makes a new, empty note named after the ID; delete that note. To get to the record, search the ID instead: every record's file name ends in its ID, so Obsidian's quick switcher (Ctrl+O, or Cmd+O on a Mac) finds it at once. A claim is not a note of its own, so search a `c-` ID to find the source file that holds the claim.
+Obsidian follows a link by file name only, so it shows an ID link as unresolved and leaves it out of the graph. Clicking one makes a new, empty note named after the ID; delete that note. To get to the record, search the ID instead: every record's file name ends in its ID, so Obsidian's quick switcher (Ctrl+O, or Cmd+O on a Mac) finds it at once. A claim is not a note of its own and its ID is in no file name, so put a `c-` ID into Obsidian's search (Ctrl+Shift+F, or Cmd+Shift+F on a Mac) to find the source file that holds the claim.
 
 A link you type by name without picking from the list, like `[[Grandpa Joe]]`, is unresolved in Obsidian too unless a file has that name. The `fha` tools still read it as a link to the person.
 
