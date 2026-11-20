@@ -1200,6 +1200,38 @@ class RunClaimNewPlaceResolutionTests(unittest.TestCase):
     def _claims(self) -> dict:
         return {c['id']: c for c in read_record(self.source)['claims']}
 
+    def test_text_that_agrees_with_the_hierarchy_attaches_too(self) -> None:
+        # SPEC §15's write-time rule: the first part names the place, every
+        # other part is in its hierarchy, "County" optional, country optional.
+        _write_registry(
+            self.root,
+            '- id: L-baba9801fa\n'
+            '  name: Topeka\n'
+            '  hierarchy: Topeka, Shawnee County, Kansas, USA\n')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Shawnee, Kansas')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        rec = self._claims()[result['claim_id']]
+        self.assertEqual(str(rec['place']), 'l-baba9801fa')
+        self.assertEqual(rec['place_text'], 'Topeka, Shawnee, Kansas')
+
+    def test_county_part_that_is_not_the_places_county_does_not_attach(self) -> None:
+        # The write-time twin of the link rule: "Topeka, Topeka County" names
+        # a county Topeka is not in, so nothing is attached.
+        _write_registry(
+            self.root,
+            '- id: L-baba9801fa\n'
+            '  name: Topeka\n'
+            '  hierarchy: Topeka, Shawnee County, Kansas, USA\n')
+        result = claim.run_claim_new(
+            self.root, source_id='S-1111111111', claim_type='residence',
+            value='Lived in Topeka', persons=['P-aaaaaaaaaa'],
+            place_text='Topeka, Topeka County')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertNotIn('place', self._claims()[result['claim_id']])
+
     def test_exact_match_attaches_place_id_automatically(self) -> None:
         result = claim.run_claim_new(
             self.root, source_id='S-1111111111', claim_type='residence',

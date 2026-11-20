@@ -562,9 +562,13 @@ def _resolve_place_text_for_write(
     malformed registry yields no rows to match against).
 
     Deliberately conservative: this only ever *proposes* an id for the
-    caller to adopt when the tier is `'exact'`. A `'near'` tier is never
-    auto-attached - see the docstring on `match_place_text_to_registry` for
-    why a wrong `place_id` is worse than an unlinked `place_text`.
+    caller to adopt when the tier is `'exact'`, meaning the text fits exactly
+    one registered place by SPEC §15's write-time rule (its name or an alt
+    name, or its first part names the place and every other part is in the
+    place's hierarchy). `fha places link` applies the same rule to claims
+    written earlier. A `'near'` tier is never auto-attached; see the
+    docstring on `match_place_text_to_registry` for why a wrong `place_id`
+    is worse than an unlinked `place_text`.
     """
     if place is not None or not place_text or not place_text.strip():
         return None
@@ -600,8 +604,9 @@ def _place_match_note(cid_display: str, match: dict, *, dry_run: bool = False) -
     if match['tier'] == 'near':
         return (
             f"place_text is close to the registered place {match['name']!r} "
-            f"({match['place_id']}) but did not match exactly after normalizing, "
-            "so it was NOT linked automatically - a wrong place is worse than none. "
+            f"({match['place_id']}) but does not fit it (the words are in another "
+            "order, or abbreviated differently), so it was NOT linked automatically: "
+            "a wrong place is worse than none. "
             f"If this is the same place, link it with `fha confirm place {cid_display} "
             f"--into {match['place_id']}`.")
     return None
