@@ -1,6 +1,6 @@
 ---
 id: p-8h9jkambne
-aliases: [p-8h9jkambne]
+aliases: [p-8h9jkambne, Harriet Frances Webb]
 name: Harriet Frances Webb
 married_name: Harriet Hartley
 sex: F

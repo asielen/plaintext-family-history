@@ -51,12 +51,13 @@ def _meta(text: str) -> dict:
         os.unlink(p)
 
 
-# The exact text `stubs._stub_content` produced before this refactor - the
-# byte-identical-output contract this whole file guards.
+# The exact text `stubs._stub_content` writes for a plain stub: the
+# byte-identical-output contract this whole file guards. `aliases:` lists the
+# P-id, then the name (SPEC §9).
 _OLD_DEFAULT_TEMPLATE = (
     '---\n'
     'id: {pid}\n'
-    'aliases: [{pid}]\n'
+    'aliases: [{pid}, {name}]\n'
     'name: {name}\n'
     'living: unknown\n'
     '# birth:   # an honest guess is fine - a tool will remind you to add a source later\n'

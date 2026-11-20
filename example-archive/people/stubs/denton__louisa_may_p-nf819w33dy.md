@@ -1,6 +1,6 @@
 ---
 id: p-nf819w33dy
-aliases: [p-nf819w33dy]
+aliases: [p-nf819w33dy, Louisa May Denton]
 name: Louisa May Denton
 sex: F
 living: false

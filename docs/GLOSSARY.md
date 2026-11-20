@@ -38,7 +38,7 @@
 
 **Launcher:** the small `fha` file (and `fha.cmd` on Windows) in your archive folder that finds the tools and runs them. See the [cheat sheet](CHEATSHEET.md#typing-fha) for how to type it.
 
-**Link** (`[[ ]]`): how writing connects to records: a name or ID in double brackets, like `[[Grandpa Joe]]` or `[[s-1a2b3c4d5e]]`. It's plain text you can read in any editor and a clickable link in a wiki-style editor like Obsidian, and it always leads to a stable ID underneath. A citation on a fact is a link to its source.
+**Link** (`[[ ]]`): how writing connects to records: a name or ID in double brackets, like `[[Grandpa Joe]]` or `[[s-1a2b3c4d5e]]`. It's plain text you can read in any editor, the tools and the family website follow it, and it always leads to a stable ID underneath. (Obsidian follows a link by file name, so there you link by typing `[[` and picking the record from the list.) A citation on a fact is a link to its source.
 *Example: "born in [[l-7c1a9f4e22|Fairview]]" links the place; "[[s-1a2b3c4d5e]]" after a sentence cites the evidence.*
 
 **Lint:** `fha lint` (also called `fha check`), which checks that every record is shaped correctly and lists anything that needs attention, such as a provisional date still waiting for a source or a hand-made record still waiting for an ID. `fha lint --fix-ids` gives those records their IDs.

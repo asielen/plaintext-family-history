@@ -1,6 +1,6 @@
 ---
 id: p-4d5e6f7g8h
-aliases: [p-4d5e6f7g8h]
+aliases: [p-4d5e6f7g8h, George Arthur Bradford]
 name: George Arthur Bradford
 sex: M
 living: false

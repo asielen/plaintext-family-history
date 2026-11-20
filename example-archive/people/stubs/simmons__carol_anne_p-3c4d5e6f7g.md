@@ -1,6 +1,6 @@
 ---
 id: p-3c4d5e6f7g
-aliases: [p-3c4d5e6f7g]
+aliases: [p-3c4d5e6f7g, Carol Anne Simmons]
 name: Carol Anne Simmons
 married_name: Carol Bradford
 sex: F

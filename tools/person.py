@@ -330,6 +330,7 @@ from _lib import (
     stub_filename,
     recorded_surname,
     set_surname_line,
+    sync_person_aliases,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -2099,7 +2100,9 @@ def run_rename(
 
       1. Frontmatter: `name:` is replaced; `name_variants:` gains the OLD name
          when `--keep-variant` is given (a genuine append - an existing
-         variant is never dropped).
+         variant is never dropped). `aliases:` gains the new name and keeps
+         the old one, so `[[Old Name]]` links keep resolving; nothing is
+         removed from it but a restricted variant (SPEC §9).
       2. The profile file is renamed to the SPEC §13 filename the NEW name
          derives (`_lib.stub_filename` - the same deriver `fha person new`
          and `fha stubs` already use, so a renamed record's filename is
@@ -2251,6 +2254,13 @@ def run_rename(
         changed_keys.add('surname')
 
     new_text = '\n'.join(new_lines)
+    # aliases: follows the name (SPEC §9): the new name joins it so Obsidian's
+    # [[ suggestions offer it, and the old name stays so a [[Old Name]] link
+    # written before the rename keeps resolving. Only a restricted variant is
+    # ever taken out (the shared privacy rule).
+    new_text, aliases_added, aliases_removed = sync_person_aliases(new_text)
+    if aliases_added or aliases_removed:
+        changed_keys.add('aliases')
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
     if problem is not None:
         return _refuse_result(
@@ -2337,6 +2347,27 @@ def run_rename(
                          f'automatically ({variant_note}) - add it by hand')
         elif old_name:
             steps.append(f'{old_name!r} is already in name_variants: - left as is')
+    if aliases_added:
+        steps.append('add ' + ', '.join(repr(a) for a in aliases_added) + ' to aliases:')
+    if aliases_removed:
+        # Counted, never named: these are private names.
+        steps.append(f'take {len(aliases_removed)} restricted name(s) out of aliases:')
+    # The old name stays in aliases: (a rename never removes one), which keeps
+    # [[Old Name]] links working but could later clash with a real person of
+    # that name, so the owner is told once, with the hand fix.
+    kept_note = None
+    if old_name and not refile_only:
+        fm_after = FRONT_RE.match(new_text)
+        try:
+            after_aliases = (safe_load_yaml(fm_after.group(1)) or {}).get('aliases') if fm_after else None
+        except yaml.YAMLError:
+            after_aliases = None
+        if isinstance(after_aliases, list) and old_name.strip().lower() in {
+                str(a).strip().lower() for a in after_aliases if a is not None}:
+            kept_note = (f'{old_name!r} stays in aliases: so links written under the old name '
+                         'keep working; if that name belongs to someone else, remove it from '
+                         'aliases: by hand')
+            steps.append(kept_note)
     if renaming_file:
         steps.append(f'rename {path.name} -> {new_filename}')
     if renaming_research:
@@ -2441,6 +2472,8 @@ def run_rename(
             f'{len(stale_companions)} stale companion(s) deleted: '
             + ', '.join(s.name for s in stale_companions))
     result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if kept_note:
+        result.add('info', kept_note[0].upper() + kept_note[1:] + '.', path=final_path)
     if variant_note and keep_variant:
         result.add('warning',
                    f'--keep-variant: could not add {old_name!r} to name_variants: '

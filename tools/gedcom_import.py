@@ -100,6 +100,8 @@ from _lib import (
     normalize_id,
     stub_slug_name,
     surname_frontmatter_line,
+    person_alias_mirror,
+    yaml_alias_entry,
     person_name_slot,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -1478,11 +1480,17 @@ def _person_stub_text(stub: _PersonStub, today: str) -> str:
     immediately legible - dates show on every stub before any claim is
     reviewed, and the linter's existing needs-a-source tracking is exactly the
     right nudge (SPEC §9, §8.6). No `relationships:` blocks are written: the
-    suggested claims are the durable home and the review path (plan decision)."""
+    suggested claims are the durable home and the review path (plan decision).
+
+    `aliases:` lists the P-id, the name and each name variant (SPEC §9's
+    mirror), so an imported tree is findable by name in Obsidian at once."""
+    mirror = person_alias_mirror({'name': stub.name or 'unknown',
+                                  'name_variants': list(stub.variants or [])})
+    alias_entries = [stub.pid] + [yaml_alias_entry(a) for a in mirror]
     lines = [
         '---',
         f'id: {stub.pid}',
-        f'aliases: [{stub.pid}]',
+        f'aliases: [{", ".join(alias_entries)}]',
         f'name: {_yaml_inline(stub.name or "unknown")}',
     ]
     if stub.recorded_surname is not None:

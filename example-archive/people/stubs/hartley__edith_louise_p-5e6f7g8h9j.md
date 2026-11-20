@@ -1,6 +1,6 @@
 ---
 id: p-5e6f7g8h9j
-aliases: [p-5e6f7g8h9j]
+aliases: [p-5e6f7g8h9j, Edith Louise Hartley]
 name: Edith Louise Hartley
 married_name: Edith Bradford
 sex: F

@@ -601,8 +601,8 @@ def _insert_record_aliases(
     names: tuple[str, ...] = (),
     variants: tuple[str, ...] = (),
 ) -> None:
-    """Insert the alias rows for one record: its own canonical ID (always - the
-    line that makes `[[S-…]]` click through in Obsidian), plus any human stems,
+    """Insert the alias rows for one record: its own canonical ID (always, so a
+    `[[S-…]]` link resolves in every fha reader), plus any human stems,
     display name(s), and name/alt variants. Strings are unwrapped and lowercased;
     blanks and per-record duplicates are skipped."""
     canonical_id = normalize_id(canonical_id)
@@ -804,7 +804,7 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         for alt in alt_names:
             conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt))
         # Register the place's name + alt_names as aliases so a hand-typed
-        # `[[Fairview]]` resolves to its L-id in Obsidian and our tools.
+        # `[[Fairview]]` resolves to its L-id in every fha reader.
         place_name = place.get('name')
         _insert_record_aliases(
             conn, pid,
@@ -1235,13 +1235,13 @@ def _index_person(
         for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
-        # clicks through), any hand-typed `aliases:` stems, the display name, and
+        # resolves), any hand-typed `aliases:` stems, the display name, and
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
         # All variants (including restricted) go into aliases so name-wikilinks
         # to former names still resolve internally; render paths redact the display.
         # `also_known_as`, `name_at_birth`, and `married_name` (SPEC person
         # template) are additional resolution surfaces so `[[Peggy]]` /
-        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all click through to the
+        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all resolve to the
         # same P-id. The template documents them as aliases; the indexer folds
         # them into the alias-insertion path so the promise holds.
         # `name_variants` above unwraps the `{value, restricted}` dict form; the
@@ -1487,7 +1487,7 @@ def _index_source(
     )
 
     # Register the source's own resolution surface: the S-id (so `[[S-…]]`
-    # clicks through) plus any hand-typed `aliases:` stems (`grandmas-album`).
+    # resolves) plus any hand-typed `aliases:` stems (`grandmas-album`).
     _insert_record_aliases(
         conn, sid,
         stems=tuple(str(a) for a in (meta.get('aliases') or [])),

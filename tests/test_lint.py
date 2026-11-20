@@ -2087,8 +2087,10 @@ class AliasMergeTests(unittest.TestCase):
         minted = list((self.root / 'people').glob('bob__grandpa_p-*.md'))
         self.assertEqual(len(minted), 1)
         aliases = read_record(minted[0])['meta'].get('aliases') or []
-        # New entries land AFTER the existing hand entries, keeping their order.
-        self.assertEqual(aliases[1:], ['Bobby', 'grandpa-bob', 'Grandpa Bob'])
+        # New entries land AFTER the existing hand entries, keeping their order:
+        # the person's name first (SPEC §9), then the old file name's slug. The
+        # verbatim stem is the name here, so it is not listed twice.
+        self.assertEqual(aliases[1:], ['Bobby', 'Grandpa Bob', 'grandpa-bob'])
 
     def test_zero_indent_block_list_stays_valid_yaml(self) -> None:
         # A hand-authored zero-indent block list (`aliases:\n- old`) once got a
