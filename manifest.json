@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "247f5d6e49c081f48ca4b78eddddf9285be06439cfcaaa959fe1705ba60fd0ba",
+      "sha256": "08dcac0e0fd00058749ba145bbd95f1198e27d745c5e297a584076d5850f18df",
       "spec_version": "2.9",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
@@ -271,7 +271,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "247f5d6e49c081f48ca4b78eddddf9285be06439cfcaaa959fe1705ba60fd0ba",
+      "sha256": "08dcac0e0fd00058749ba145bbd95f1198e27d745c5e297a584076d5850f18df",
       "spec_version": "2.9"
     },
     {
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "17ad154d5569fc2e75402c89064d85ee158d014584eb302a1a42eee55a7aa1bd",
+      "sha256": "8b185d5e4adb965ebc4d961f7e7ccfbb08e09b59d70f9866925cc57b2ae15b4d",
       "spec_version": "2.9",
       "src": "tools/_lib.py"
     },
@@ -716,7 +716,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "ba2105405ec0e77852d02b6d2fad03938ceb1a378d025c1463680eac117e79ca",
+      "sha256": "2ee75993322a210565cd06eed7a13089dafb107a2aa8b45b42611c7833c9d380",
       "spec_version": "2.9",
       "src": "tools/claim.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "871e0ba1ad90cfb4ebdb3203f50d43178f1698879bc4d5e5a3a9d6f5c20b07d9",
+      "sha256": "f71eb370a9db2503cee4b048708a8f91f407ad356d9a60342b9630bbe8c8fdcd",
       "spec_version": "2.9",
       "src": "tools/lint.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "fff80392f7c63aaada6dab2ea13b5eb3a2ce418374062922c7a2681825525a5a",
+      "sha256": "615d7ba69a0ba9f007a52baea52e896ee312c1ce0a699f1d99d2a23b7cda0d50",
       "spec_version": "2.9",
       "src": "tools/person.py"
     },
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "22001522f68fc85961c7d4223107bac0bff887af0d660bd9cd00a7669823f62f",
+      "sha256": "c15a31e176d82555a999cbac389f885af91436534e44b9191bc042f7c676bfe4",
       "spec_version": "2.9",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "e22d425bddcd08cbe4a815e76640f58605798e2c181728f8e572d7f9e5882835",
+      "sha256": "0316323ac61a112230bb06980a7c9937d62a8b8ff8cb1fd233790bc620be5ba9",
       "spec_version": "2.9",
       "src": "TOOLING.md"
     },
