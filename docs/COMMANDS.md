@@ -128,10 +128,14 @@ Check the archive for problems and report them (a spell-check for your data).
   fha check               The same command, plainer name
   fha lint --fix-ids      Give IDs to records you named in plain English
   fha lint --mint-stubs   Create placeholder records for people named but not filed
+  fha lint --changed      Quick check before a commit: report only on files
+                          changed since the last commit and the records they
+                          link to
 
 Catches broken links, missing dates, contradictions, and people referenced but
-never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
-2 errors, 3 tool failure.
+never filed. Run it any time something feels off. A full `fha lint` (without
+--changed) is still the check before a release and after `fha update-tools`.
+Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure.
 ```
 
 | Argument | What it does |
@@ -140,6 +144,8 @@ never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
 | `--spec-root` `PATH` | Spec docs root (when separate from archive root) |
 | `--with-exif` | Also verify embedded SOURCE: keywords and stray documents-root person keywords (W131) via exiftool (slow) |
 | `--json` | Machine-readable JSON output |
+| `--changed` `[REF]` | Report only on files changed since the git commit REF (default HEAD, so: since the last commit) and new files, plus the records they link to. Every check still runs, findings about scans and photos on disk are always shown, and a change to fha.yaml or places.yaml reports the whole archive. Before a release or after `fha update-tools`, run a full lint without it |
+| `--timings` | After the report, print how many seconds each group of checks took (to stderr) |
 | `--format-check` | Check formatting only (no fixes) |
 | `--format-write` | Apply conservative formatting fixes |
 | `--dry-run` | Preview mutating operations without writing |
@@ -148,6 +154,7 @@ never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
 | `--fix-claims-fence` | Wrap hand-written claims that forgot the ```yaml fence (with --dry-run to preview) |
 | `--fix-ids` | Mint IDs for hand-authored id-less records (rename, keep the old name as an alias) and for id-less claims inside sources (with --dry-run to preview) |
 | `--fix-reciprocal` | Add the missing mirror edge for each W116 (with --dry-run to preview) |
+| `--fix-applied` | Add the relationships: entry each W115 says an accepted claim is missing from, citing the claim (with --dry-run to preview) |
 | `--fix-surnames` | Write the surname: line each W138 file name implies, so the record keeps the surname its file name was sorted under (with --dry-run to preview) |
 | `--fix-aliases` | Bring each W111 record's aliases: into step: its own ID, and for a person their name and public name variants, so typing [[ in Obsidian finds them by name (with --dry-run to preview) |
 
@@ -684,7 +691,7 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Place text that recurs often enough for a registry entry
-  fha places geocode (--place l-id | --all)  Fill in coordinates (offline, confirmed one by one)
+  fha places geocode (--place l-id | --all)  Fill in coordinates from GeoNames (one table, one yes)
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text "..."  Append a dated research note to the place
   fha places edit-note l-id --old-text "..." --text "..."  Rewrite one existing note
@@ -719,15 +726,19 @@ Detect recurring unlinked place_text and GPS clusters
 
 ### `fha places geocode`
 
-Backfill coords/alt-names from the offline GeoNames dump
+Fill in coordinates, missing county/state/country and spellings from GeoNames
+
+```text
+Match places without coordinates against GeoNames, the free world gazetteer: towns, villages, counties, states and countries. The data is downloaded once into .cache/geonames/ (only the countries your places name). Every match is shown in one table and nothing is written until you answer yes. Places that could be more than one GeoNames entry are listed with the command that settles each.
+```
 
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--place` `l-id` | Geocode only this place. |
 | `--all` | Geocode every registry place lacking coordinates. |
-| `--offline` | Never download; match only against an already-cached GeoNames dump. |
-| `--dry-run` | Preview proposed changes without writing. |
+| `--offline` | Never download; match only against GeoNames data already saved. |
+| `--dry-run` | Show the same table without asking or writing. |
 
 ### `fha places set`
 
@@ -1528,16 +1539,18 @@ entry stays a hand edit to the record file.
 
 ## `fha source`
 
-Change a source record: note (append), edit-note (rewrite one), extract (PDF text layer), clear-keyword (fix a stray keyword), set-primary (choose the main image)
+Change a source record: note (append), edit-note (rewrite one), extract (PDF text layer), clear-keyword (fix a stray keyword), set-primary (choose the main image), merge (two records into one)
 
 ```text
-Update a source record directly, one field or section at a time.
+Update a source record directly, one field or section at a time, or merge
+two records of one piece of evidence into one.
 
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
   fha source clear-keyword s-2b3c4d5e6f --keyword "..." [--replace-with "..."]
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
@@ -1546,7 +1559,8 @@ text layer into a derived [Page N]-labeled companion file (needs the pypdf
 helper package); clear-keyword removes (or corrects) one embedded keyword on
 a documents-root file, the tool-mediated fix for a stray tag `fha lint
 --with-exif` (W131) finds; set-primary chooses which photo is a source's main
-image (its front, not its back), the fix `fha doctor` names.
+image (its front, not its back), the fix `fha doctor` names; merge folds the
+second source into the first (files, claims, notes) and removes its record.
 ```
 
 | Argument | What it does |
@@ -1672,6 +1686,36 @@ first with --dry-run.
 | `--file` `NAME` | The photo to make the main image: its filename, or its full files: path when two photos share a name. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the change without writing. |
+
+### `fha source merge`
+
+Make two source records for one piece of evidence into one.
+
+```text
+Make two source records for one piece of evidence into one.
+
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k --dry-run
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
+
+The first id is the record to keep, the second the one folded into it: an
+index entry and the document it indexes, or one record saved from two sites.
+The second record's files join the first (documents are renamed for it,
+photos keep their names), with their SOURCE: keyword changed to match; its
+claims move over with their ids; its notes, people, places, web links and AI
+passes are added; and its record file is removed. Its id stays in the kept
+record's aliases:, so every old link still finds it, and a merged_from:
+entry lists what moved.
+
+Refused, with nothing written, when the two records' accepted claims are
+about different people. Preview first with --dry-run, then run `fha index`.
+```
+
+| Argument | What it does |
+|---|---|
+| `keeper` | The source to keep (e.g. s-2b3c4d5e6f). |
+| `retiree` | The source folded into it and then removed (e.g. s-7q2x9c4m1k). |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the merge without writing. |
 
 ## `fha site`
 

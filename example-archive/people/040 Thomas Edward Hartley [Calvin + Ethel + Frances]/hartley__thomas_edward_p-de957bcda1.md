@@ -74,15 +74,9 @@ tier: curated
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-Thomas Edward Hartley was born about 1840 in New York [[s-4f5f215e60]], the son of
-[[p-075114a0f8|Caleb Comstock Hartley]] and [[p-d00c678c1a|Chastina Augusta Reed]]; in 1850 he
-was living with them in Easton, Washington County, New York [[s-7k2m9q4w1e]] [[s-3p8v6n0d5t]].
+Thomas Edward Hartley was born about 1840 in New York [[s-4f5f215e60]], the son of [[p-075114a0f8|Caleb Comstock Hartley]] and [[p-d00c678c1a|Chastina Augusta Reed]]; in 1850 he was living with them in Easton, Washington County, New York [[s-7k2m9q4w1e]] [[s-3p8v6n0d5t]].
 
-He spent most of his adult life in [[l-7c1a9f4e22|Fairview]], Kansas. He married
-[[p-cd795c61e0|Margaret A. Cole]] there early in 1871 [[s-ea61339378]], and the 1880 census
-records him as a bookkeeper for the Plains Junction Railroad, living with Margaret and their
-daughters Ethel and Frances [[s-4f5f215e60]]. In 1882 he was a member of the Fairview Masonic
-Lodge [[s-3m7k9n2p4q]].
+He spent most of his adult life in [[l-7c1a9f4e22|Fairview]], Kansas. He married [[p-cd795c61e0|Margaret A. Cole]] there early in 1871 [[s-ea61339378]], and the 1880 census records him as a bookkeeper for the Plains Junction Railroad, living with Margaret and their daughters Ethel and Frances [[s-4f5f215e60]]. In 1882 he was a member of the Fairview Masonic Lodge [[s-3m7k9n2p4q]].
 
 ![[caleb-chastina-hartley.jpg|Caleb and Chastina Hartley, Thomas's parents, late in life]]
 
@@ -90,13 +84,10 @@ Lodge [[s-3m7k9n2p4q]].
 *(none yet)*
 
 ## Research Notes
-His death has not been found. The family remembers him living to a great age in
-Fairview; the Breton County probate index is the next place to look.
+His death has not been found. The family remembers him living to a great age in Fairview; the Breton County probate index is the next place to look.
 
 <!-- private -->
-A living cousin mentioned a family story that Thomas left New York after a
-falling-out with a brother; unverified, and it names people who may still be
-living, so keep it out of anything shared until confirmed.
+A living cousin mentioned a family story that Thomas left New York after a falling-out with a brother; unverified, and it names people who may still be living, so keep it out of anything shared until confirmed.
 <!-- /private -->
 
 ## Friends & Family

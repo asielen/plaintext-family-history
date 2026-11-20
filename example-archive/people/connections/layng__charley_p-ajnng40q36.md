@@ -31,10 +31,7 @@ tier: curated
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-Charley Layng appears beside [[p-de957bcda1|Thomas Edward Hartley]] on the 1882 roll of the
-Fairview Masonic Lodge [[s-3m7k9n2p4q]]. No family tie to the Hartleys is known; he is here because
-the people around an ancestor - lodge brothers, neighbours, witnesses - are often how a brick wall
-comes down.
+Charley Layng appears beside [[p-de957bcda1|Thomas Edward Hartley]] on the 1882 roll of the Fairview Masonic Lodge [[s-3m7k9n2p4q]]. No family tie to the Hartleys is known; he is here because the people around an ancestor - lodge brothers, neighbours, witnesses - are often how a brick wall comes down.
 
 ## Stories
 *(none yet)*

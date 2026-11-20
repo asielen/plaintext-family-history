@@ -64,12 +64,7 @@ tier: stub                 # stub (a placeholder), then curated once you've writ
 
 # Full Name Here
 
-> **This person's record - yours to write.** The main page for this person: summary,
-> biography, relationships. The summary lines under this note and the `## Sources`
-> list are generated - `fha views refresh` rewrites them, so never edit them by hand.
-> Everything else here is yours; working notes go in `## Research Notes` below, or in
-> a separate `_research` file if this person's research grows large enough to want one
-> of its own.
+> **This person's record - yours to write.** The main page for this person: summary, biography, relationships. The summary lines under this note and the `## Sources` list are generated - `fha views refresh` rewrites them, so never edit them by hand. Everything else here is yours; working notes go in `## Research Notes` below, or in a separate `_research` file if this person's research grows large enough to want one of its own.
 
 <!-- The summary lines (Born, Died, Married, Parents, Children) go here.
      `fha views summary` writes them from your accepted claims between two
@@ -89,21 +84,17 @@ tier: stub                 # stub (a placeholder), then curated once you've writ
      to fill in once you have an id and some sources; nothing to do here now. -->
 
 ## Biography
-Write their story in plain sentences. Uncited prose is welcome - it's story and
-context, never treated as proven fact. Mark anything you mean to back up later
-with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
+Write their story in plain sentences. Uncited prose is welcome - it's story and context, never treated as proven fact. Mark anything you mean to back up later with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Stories
 *(none yet)*
 
 ## Research Notes
-Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default.
+Open questions, hunches, and brick walls - where to look next. (Delete this line as you add your own.) This section is public by default.
 <!-- To keep one note out of anything you share, put it between two marker
      lines: before it, the word private inside marks like the ones around this
      note; after it, /private the same way. START_HERE.md shows both lines.
      The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
-People connected to them who aren't blood relatives - neighbors, business
-partners, the family they boarded with. Type [[ and pick a name to link.
+People connected to them who aren't blood relatives - neighbors, business partners, the family they boarded with. Type [[ and pick a name to link.

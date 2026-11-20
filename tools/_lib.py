@@ -390,6 +390,20 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    relationship_claims_value - the `claims: ["[[c-…]]", …]` value tools write
 #    collapse_relationship_entries - fold entries for the same tie into one `claims:` list
 #
+#  Applying relationship claims to person records (SPEC §9; lint W115, fha claim)
+#    claim_owed_relationship_entries: every entry an accepted kin claim owes, on whom
+#    claim_backs_relationship_entry / claim_relationship_entry_type: the two
+#                                 directions lint W115 checks, on the same rule
+#    claim_spouse_pids / claim_parentage_pids: the couple / the child and parents
+#    relationship_entry_applies: does an entry already apply one owed entry
+#                                 (cites the claim, or its source)
+#    format_relationship_entry / append_relationship_entry / add_relationship_entry
+#                                 write one entry, folded into one for the same tie
+#    remove_claims_from_relationships: take claims out of every entry's `claims:`
+#    plan_relationship_entries / plan_relationship_removals: the per-record edits,
+#                                 worked out in memory before anything is written
+#    relationship_plan_lines: the plain lines that say which records changed
+#
 #  Ahnentafel derivation + stub promotion (the shared promote engine)
 #    resolve_root_generation   - validate fha.yaml root_generation: 'self'|'children' (#72)
 #    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
@@ -449,6 +463,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    transcript_text_is_unchecked - that state collapsed to the one question a
 #                                 consumer asks (damaged counts as unchecked)
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
+#    generated_marker_date, generated_text_differs - the date in a GENERATED marker
+#                                 means "last changed": a rewrite differing only there is skipped
+#    notes_fts_rowids_by_path, delete_notes_fts_path - drop one file's search rows by rowid
 #
 #  Walking a tree that might not open
 #    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
@@ -9416,6 +9433,214 @@ def append_file_entry_to_record(record_text: str, entry_lines: list[str]) -> str
     return '\n'.join(lines[:block_end] + entry_lines + lines[block_end:])
 
 
+# ── Source file naming and undo steps shared by `fha process` and `fha source merge`
+#
+# A file that joins a source (`fha process --more`) and a file that comes over
+# from a merged source (`fha source merge`) are named by the same SPEC §13
+# grammar, and both runs undo their renames and keyword writes the same way on
+# failure. They lived in process.py until the merge verb needed them, and
+# tools never import tools.
+
+# SPEC §14: the source frontmatter key order tools write, then the Appendix A
+# extensions. `fha lint --format` sorts by it and `fha source merge` places a
+# key it adds by it.
+SOURCE_FRONTMATTER_KEY_ORDER: tuple[str, ...] = (
+    'id', 'aliases', 'title', 'source_type', 'source_date', 'source_class',
+    'subtype', 'original_language', 'repository', 'citation', 'people', 'places',
+    'restricted', 'provenance', 'external_links', 'files', 'ai_passes',
+    'merged_from', 'created',
+    'rights', 'physical_location', 'tested_person', 'provider', 'test_type',
+)
+
+# A filename stem ending in a source's id (SPEC §13: `{slug}…_{s-id}.{ext}`).
+FILENAME_SOURCE_ID_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
+
+
+def slugify(text: str) -> str:
+    """Collapse arbitrary text to a lowercase-hyphenated slug (SPEC §13).
+
+    Slugs are mutable and human-facing; only the trailing `_{S-id}` carries
+    machine meaning. We keep ASCII letters and digits, turn every other run of
+    characters into a single hyphen, and trim hyphens off the ends. An empty
+    result (e.g. a filename of only punctuation) falls back to 'source' so a
+    record is always nameable.
+    """
+    text = (text or '').strip().lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return slug or 'source'
+
+
+def retired_source_ids(meta: dict, sid: str) -> frozenset[str]:
+    """The other S-ids in a source record's `aliases:` (lowercased): the ids
+    of sources merged into it (SPEC §9). Its own id is not among them."""
+    out = set()
+    for ref in link_field_refs(meta.get('aliases')):
+        ref = str(ref).strip()
+        if is_valid_id(ref) and id_type_of(ref) == 'S':
+            out.add(normalize_id(ref))
+    out.discard(sid.lower())
+    return frozenset(out)
+
+
+def without_retired_sid(file_path: Path, retired: frozenset[str]) -> Path:
+    """`file_path` with a trailing `_{S-id}` cut off its stem when that id is
+    one the target source retired, so the new name does not carry it."""
+    m = FILENAME_SOURCE_ID_RE.search(file_path.stem)
+    if m and m.group(1).lower() in retired:
+        return file_path.with_name(file_path.stem[:m.start()] + file_path.suffix)
+    return file_path
+
+
+def attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
+                    role: str, copy: str | None = None) -> str:
+    """The `{slug}` a documents-root file joining a source is named with.
+
+    SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
+    so the pages of one item sort together and carry the item's name. The
+    slug is the one the source's primary document already carries (its stem
+    without `_{S-id}`, and without the `-{copy}-{role}` its own `files:` entry
+    names when that tail follows the record's slug), or the record's own slug
+    when the primary is a photo (photos are never renamed, so their name is no
+    guide) or is named by its S-id alone. The file's real name is not lost:
+    the caller records it as `original_filename:`.
+
+    Two names are kept, both the recording and transcript skills' deliberate
+    conventions:
+
+      * a file whose name starts with the source's slug and a hyphen:
+        `{slug}-farm.m4a` attached as `audio` files as `{slug}-farm-audio_...`
+        (one session, one prefix, the topic in the name).
+      * on a recording source whose slug is `{session}-audio` (or `-video`,
+        `-recording`: `SESSION_MEDIA_SUFFIXES`, the whisper-pass convention),
+        a file named `{session}` or starting with `{session}-`, so
+        `{session}-farm.m4a` keeps its topic too, and every recording of the
+        session gets a name of its own.
+
+    In both, a name that already ends in what the caller will append
+    (`-{copy}-{role}` or `-{role}`) does not get it twice: `{slug}-back.tif`
+    as `back:c` files as `{slug}-c-back_...`, and so does `{slug}-c-back.tif`.
+
+    Everything else takes the source's slug: a scanner's `scan-0412-p3`, and
+    a short name like `postcard` that merely begins the slug.
+    """
+    record_slug = strip_sid_suffix(record_path.stem, sid)
+    slug = None
+    for entry in meta.get('files') or []:
+        if (files_entry_is_main(entry)
+                and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
+            stem = PurePosixPath(str(entry['file'])).stem
+            if _names_something(stem, sid):
+                slug = strip_sid_suffix(stem, sid)
+                # A main file can carry its own `-{copy}-{role}` after the
+                # record's slug (a Find a Grave memorial's main file is
+                # `{slug}-grave-1_…`). That tail names that one file, not the
+                # source, so the next file attached never inherits it. It is
+                # dropped only when what is left is the record's own slug: a
+                # main file named the bare slug (a refiled photo's
+                # `store-front_…` with role `front`) has no tail to drop.
+                bare = _strip_suffix_tail(slug, '', str(entry.get('role') or ''),
+                                          str(entry.get('copy') or '') or None)
+                if bare != slug and bare == record_slug:
+                    slug = bare
+            break
+    if not slug:
+        # A main file named by its S-id alone (`_s-….pdf`) has no slug to
+        # share; the record's own name does.
+        slug = record_slug
+    own = slugify(more_file.stem)
+    prefixes = [slug]
+    for media_suffix in SESSION_MEDIA_SUFFIXES:
+        if slug.endswith(media_suffix) and len(slug) > len(media_suffix):
+            prefixes.append(slug[:-len(media_suffix)])
+    for prefix in prefixes:
+        if own == prefix:
+            return own
+        if own.startswith(prefix + '-'):
+            return _strip_suffix_tail(own, prefix, role, copy)
+    return slug
+
+
+def _strip_suffix_tail(own: str, prefix: str, role: str, copy: str | None) -> str:
+    """`own` without a trailing `-{copy}-{role}` (or `-{role}`) the caller is
+    about to append, so it is never doubled; never cut back past `prefix`."""
+    role_tail = f'-{slugify(role)}' if role else ''
+    tails = [role_tail] if role_tail else []
+    if copy:
+        tails.insert(0, f'-{slugify(copy)}{role_tail}')
+    for tail in tails:
+        if own.endswith(tail) and len(own) - len(tail) >= len(prefix):
+            return own[:-len(tail)]
+    return own
+
+
+def strip_sid_suffix(stem: str, sid: str) -> str:
+    """A filename stem without its trailing `_{S-id}`, slugified."""
+    return slugify(re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE))
+
+
+def _names_something(stem: str, sid: str) -> bool:
+    """Is there a name in `stem` before its `_{S-id}`? Asked before
+    slugifying, since `slugify` turns an empty name into 'source'."""
+    rest = re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE)
+    return re.search(r'[a-z0-9]', rest, re.IGNORECASE) is not None
+
+
+def take_undo_copy(path: Path) -> Path:
+    """Copy `path`'s bytes to a private temp file; return the copy's path.
+
+    Removing a keyword again does not give a PDF its old bytes back (exiftool
+    edits a PDF by appending an update), so a run that writes a keyword into
+    a document keeps this copy and puts it back on rollback.
+    """
+    fd, name = tempfile.mkstemp(prefix='fha-undo-', suffix=path.suffix)
+    os.close(fd)
+    try:
+        shutil.copy2(path, name)
+    except OSError:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def restore_undo_copy(undo_copy: Path, path: Path) -> None:
+    """Put `path` back to the bytes `undo_copy` holds, then drop the copy.
+
+    Raises OSError if the bytes could not be put back; the copy is then KEPT,
+    so the caller's report can name where the original bytes still are.
+    """
+    clear_read_only_bit(path)
+    shutil.copy2(undo_copy, path)
+    undo_copy.unlink(missing_ok=True)
+
+
+def discard_undo_copies(copies) -> None:
+    """Delete undo copies a successful run no longer needs (best-effort)."""
+    for copy in copies:
+        try:
+            Path(copy).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def run_undo_steps(undo: list) -> list[str]:
+    """Run undo steps in reverse, best-effort, and return what could NOT be undone.
+
+    Rollback has to be best-effort (a later step still runs after an earlier
+    one fails) but it must never claim more than it actually did. Each entry
+    is a (description, callable) pair, and the description is written for the
+    archive's owner, so a rollback that cannot finish names exactly what it
+    left behind (a file still renamed, a record still on disk) instead of a
+    silent 'rolled back' that hides a half-undone archive.
+    """
+    failed: list[str] = []
+    for desc, fn in reversed(undo):
+        try:
+            fn()
+        except Exception as undo_exc:
+            failed.append(f'{desc} ({undo_exc})')
+    return failed
+
+
 def is_working_copy(archive_root: str | Path) -> bool:
     """Return True if the archive is in working-copy mode.
 
@@ -9743,6 +9968,41 @@ def _item_with_hypothesis(item: list[str], link: str | None, cr: str) -> list[st
     return list(item) + [f'{key_indent}hypothesis: {yaml_inline(link)}{cr}']
 
 
+def _claims_key_comments(item: list[str]) -> tuple[list[str], str]:
+    """The comments the owner typed on an entry's `claims:` key: the ones on
+    lines of their own inside a block-style list (and any after a list item),
+    and the one at the end of the key line. A writer that rewrites or empties
+    `claims:` keeps them, since they are the owner's text."""
+    own: list[str] = []
+    inline = ''
+    key_col: int | None = None
+    for ln in item:
+        bare = ln.rstrip('\r')
+        if key_col is not None:
+            if bare.strip() and len(bare) - len(bare.lstrip()) > key_col:
+                inner = bare.strip()
+                if inner.startswith('#'):
+                    own.append(inner)
+                else:
+                    value = inner[1:].strip() if inner.startswith('-') else inner
+                    after = split_yaml_comment(value)[1]
+                    if after:
+                        own.append(after)
+                continue
+            key_col = None
+        m = _REL_CLAIM_LINE_RE.match(bare)
+        if not m:
+            continue
+        rest = m.group(4).strip()
+        if rest.startswith('#'):
+            inline = rest
+        elif rest:
+            inline = split_yaml_comment(rest)[1]
+        if not rest or rest.startswith('#'):
+            key_col = len(m.group(1)) + len(m.group(2) or '')
+    return own, inline
+
+
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
     """One entry's lines with its `claims:` key replaced by a `claims:`
     line listing `claim_ids` - written where it stood, else at the end of
@@ -9752,6 +10012,8 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
     dash = re.match(r'^(\s*)-\s+', item[0])
     key_indent = (dash.group(1) + '  ') if dash else '    '
     value = relationship_claims_value(claim_ids)
+    own, inline = _claims_key_comments(item)
+    tail = f'  {inline}' if inline else ''
     out: list[str] = []
     placed = False
     skip_deeper: int | None = None
@@ -9769,11 +10031,16 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
         if m.group(3) == 'claims' and (not rest or rest.startswith('#')):
             skip_deeper = len(m.group(1)) + len(m.group(2) or '')
         if m.group(2):
-            # `- claims: ...` opened the entry: the dash stays on that line.
-            out.append(f'{m.group(1)}{m.group(2)}claims: {value}{cr}')
+            # `- claims: ...` opened the entry: the dash stays on that line,
+            # so comments from inside a block list join the line's own.
+            joined = ' '.join(([inline] if inline else []) + own)
+            out.append(f'{m.group(1)}{m.group(2)}claims: {value}'
+                       f'{"  " + joined if joined else ""}{cr}')
             placed = True
         elif not placed:
-            out.append(f'{m.group(1)}claims: {value}{cr}')
+            # The owner's comments stay: own-line ones above the key.
+            out.extend(f'{m.group(1)}{c}{cr}' for c in own)
+            out.append(f'{m.group(1)}claims: {value}{tail}{cr}')
             placed = True
     if not placed:
         out.append(f'{key_indent}claims: {value}{cr}')
@@ -9864,6 +10131,867 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         new_lines.extend(lines[e:tail_end])
     new_lines.extend(lines[block_end:])
     return '\n'.join(new_lines), removed
+
+
+# ── Applying relationship claims to person records (SPEC §9) ──────────────────
+#
+# An accepted kin claim (a `relationship`, a `marriage`, or a `birth` whose
+# `roles:` name a child and a parent) is a tie in the family tree. A person
+# record that keeps a `relationships:` block lists those ties in plain words,
+# each entry citing the claims behind it. These helpers answer one question
+# for every tool that reads or writes that block: which entries does an
+# accepted claim owe, on whom? `fha lint` asks it to report a block that
+# leaves a claim out (W115) and to check each entry against its claims;
+# `fha claim` asks it to write the entries when the human accepts the claim,
+# and `fha lint --fix-applied` to write the ones still missing. One rule, so
+# the writer never adds an entry the checker then calls wrong.
+#
+# The block is opt-in (SPEC §9): a record with no `relationships:` list is
+# never given one here, because a block, once there, must list every tie the
+# person's accepted claims record.
+
+# Entry `type` (the OTHER person's role) -> (owner's role, other's role) on
+# the claim. A `type: parent` entry on P's record means "the other person is
+# P's parent", so P is the child and the other is the parent on the claim.
+RELATIONSHIP_ENTRY_ROLES = {
+    'parent':   ('child', 'parent'),
+    'child':    ('parent', 'child'),
+    'spouse':   ('spouse', 'spouse'),
+    'enslaver': ('enslaved', 'enslaver'),
+    'enslaved': ('enslaver', 'enslaved'),
+    'employer': ('employee', 'employer'),
+    'employee': ('employer', 'employee'),
+}
+# Entry `type` -> the `type` the mirror entry on the other person uses.
+RECIPROCAL_RELATIONSHIP_TYPE = {
+    'parent': 'child', 'child': 'parent', 'spouse': 'spouse', 'sibling': 'sibling',
+    'enslaver': 'enslaved', 'enslaved': 'enslaver',
+    'employer': 'employee', 'employee': 'employer',
+}
+
+# The claim types a kin tie is derived from (SPEC §8.2, §9).
+KIN_CLAIM_TYPES = ('relationship', 'marriage', 'birth')
+
+
+def claim_person_pids(claim: Any, alias_map: dict[str, str] | None = None) -> list[str]:
+    """A claim's `persons:` as P-ids, in order.
+
+    Entries pass through `link_field_refs` (bare IDs, quoted or unquoted
+    wikilinks) and `resolve_typed_ref(want='P')`, so `persons: ["[[Sam
+    Rivera]]"]` names his record and a merged record reads as its survivor
+    when `alias_map` is a SurvivorAliasMap. An unknown or ambiguous name names
+    nobody. A malformed claim (a bare string) names nobody either."""
+    if not isinstance(claim, dict):
+        return []
+    out: list[str] = []
+    for ref in link_field_refs(claim.get('persons')):
+        pid = resolve_typed_ref(ref, alias_map, want='P')
+        if pid:
+            out.append(pid)
+    return out
+
+
+def claim_role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) -> set[str]:
+    """P-ids filling one `roles:` key exactly as written (scalar or list).
+
+    Values resolve like `persons:` entries. A hand-written `roles:` that is
+    not a mapping (`roles: [parent, child]`, which lint E015 reports) names
+    nobody rather than raising."""
+    roles = claim.get('roles')
+    val = roles.get(role) if isinstance(roles, dict) else None
+    out: set[str] = set()
+    for ref in link_field_refs(val):
+        pid = resolve_typed_ref(ref, alias_map, want='P')
+        if pid:
+            out.add(pid)
+    return out
+
+
+def claim_pids_in_role(claim: dict, meaning: str,
+                       alias_map: dict[str, str] | None = None) -> set[str]:
+    """P-ids the claim lists under ANY key that means `meaning`.
+
+    A transcribed certificate says `mother:` and `father:`, and SPEC §8.3
+    reads both as `parent:` (`role_meaning`), so "who is the parent here"
+    reads all three keys the way `fha index` does."""
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return set()
+    out: set[str] = set()
+    for key in roles:
+        if role_meaning(key) == meaning:
+            out |= claim_role_pids(claim, key, alias_map)
+    return out
+
+
+def relationship_entry_nature(entry: dict) -> str:
+    """The nature a `relationships:` entry states. A parent or child entry
+    with no `subtype:` is `biological` (SPEC §8.2); other types have no
+    default."""
+    st = str(entry.get('subtype', '')).strip().lower()
+    if st:
+        return st
+    role = str(entry.get('type', '')).strip().lower()
+    return 'biological' if role in ('parent', 'child') else ''
+
+
+def claim_relationship_nature(claim: dict) -> str:
+    """A claim's nature, for comparing with an entry's. A claim naming a
+    child and a parent with no `subtype:` is `biological`."""
+    st = str(claim.get('subtype', '')).strip().lower()
+    if st:
+        return st
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return ''
+    meanings = {role_meaning(k) for k, v in roles.items() if v}
+    if {'child', 'parent'} <= meanings:
+        return 'biological'
+    return ''
+
+
+def claim_all_roles_by_person(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> dict[str, list[str]]:
+    """Every role meaning each person carries, in `roles:` order, as
+    `fha index` fills `claim_persons.role`. A person the map does not name is
+    absent."""
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return {}
+    out: dict[str, list[str]] = {}
+    for role_name in roles:
+        norm = role_meaning(role_name)
+        for pid in claim_role_pids(claim, role_name, alias_map):
+            keys = out.setdefault(pid, [])
+            if norm not in keys:
+                keys.append(norm)
+    return out
+
+
+def claim_persons_with_roles(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str | None]]:
+    """The claim's `persons:` paired with every role each carries: one
+    `(pid, role)` pair per role, `(pid, None)` for a person with none. This is
+    the input `spouse_parties` and `parentage_parties` take, built the way
+    `fha index` builds it from `claim_persons`, so only people named in
+    `persons:` can carry a role (a `roles:` entry naming someone else is a
+    broken map, which lint W133 reports)."""
+    all_roles = claim_all_roles_by_person(claim, alias_map)
+    return [(pid, role)
+            for pid in dict.fromkeys(claim_person_pids(claim, alias_map))
+            for role in (all_roles.get(pid) or [None])]
+
+
+def claim_spouse_pids(claim: dict, alias_map: dict[str, str] | None = None) -> set[str]:
+    """Who a marriage or divorce claim says married each other.
+
+    A certificate names the couple and both sets of parents, so only the
+    `spouse:` role (or the two-person fallback in `spouse_parties`, the rule
+    `fha index` and `fha gedcom` share) says which two married. Every role is
+    passed through, because the fallback turns on whether the other person
+    carries an explicit role."""
+    return set(spouse_parties(claim_persons_with_roles(claim, alias_map)))
+
+
+def claim_parentage_pids(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """`(children, parents)` a claim says, both empty unless it answers both
+    halves: `parentage_parties`, the rule `fha index` derives parentage by."""
+    children, parents = parentage_parties(claim_persons_with_roles(claim, alias_map))
+    return set(children), set(parents)
+
+
+def claim_backs_relationship_entry(
+    claim: dict, owner_pid: str, other_pid: str | None, role: str,
+    alias_map: dict[str, str] | None = None,
+) -> bool:
+    """True when `claim` is an accepted kin claim recording the tie an entry
+    of type `role` on `owner_pid`'s record states with `other_pid`.
+
+    `other_pid` None (a `to:` name with no record yet) checks only the
+    owner's side, so a forgiving name never reads as a mismatch. The claim
+    types are the ones `fha index` derives a tie from; a `negated: true` claim
+    records that the tie did NOT hold (SPEC §8.6), so it backs nothing."""
+    if str(claim.get('status', '')) != 'accepted':
+        return False
+    if claim.get('negated') in (True, 'true'):
+        return False
+    ctype = str(claim.get('type', ''))
+    if role == 'spouse' and ctype == 'marriage':
+        persons = claim_spouse_pids(claim, alias_map)
+        return owner_pid in persons and (other_pid is None or other_pid in persons)
+    if role in ('parent', 'child') and ctype == 'birth':
+        children, parents = claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return False
+        # A `type: parent` entry says the owner HAS a parent: the owner is
+        # the child on the claim.
+        owner_side, other_side = ((children, parents) if role == 'parent'
+                                  else (parents, children))
+        return (owner_pid in owner_side
+                and (other_pid is None or other_pid in other_side))
+    pair = RELATIONSHIP_ENTRY_ROLES.get(role)
+    if ctype != 'relationship' or not pair:
+        return False
+    owner_role, other_role = pair
+    if owner_pid not in claim_pids_in_role(claim, owner_role, alias_map):
+        return False
+    if other_pid is not None and other_pid not in claim_pids_in_role(claim, other_role, alias_map):
+        return False
+    return True
+
+
+def claim_relationship_entry_type(
+    claim: dict, pid: str, alias_map: dict[str, str] | None = None,
+) -> str | None:
+    """The entry type (`parent`, `child` or `spouse`) a person's block owes
+    for `claim`, or None when the claim is not a kin tie naming them. Social
+    and power ties (employer, enslaver) are never owed, so an opted-in block
+    is not asked for them. A negated claim owes nothing: it records a tie the
+    research found absent."""
+    if claim.get('negated') in (True, 'true'):
+        return None
+    ctype = str(claim.get('type', ''))
+    if ctype == 'marriage':
+        # Only the couple owes a spouse entry, never a parent on the certificate.
+        return 'spouse' if pid in claim_spouse_pids(claim, alias_map) else None
+    if ctype == 'birth':
+        children, parents = claim_parentage_pids(claim, alias_map)
+        if not (children and parents):
+            return None
+        if pid in children:
+            return 'parent'     # the person was born: their entry names a parent
+        if pid in parents:
+            return 'child'
+        return None
+    if ctype != 'relationship':
+        return None
+    if pid in claim_pids_in_role(claim, 'child', alias_map):
+        return 'parent'
+    if pid in claim_pids_in_role(claim, 'parent', alias_map):
+        return 'child'
+    if pid in claim_pids_in_role(claim, 'spouse', alias_map):
+        return 'spouse'
+    return None
+
+
+def claim_owed_relationship_entries(
+    claim: dict, alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str, str, str]]:
+    """Every `relationships:` entry an accepted kin claim owes, as
+    `(person, entry type, other person, nature)`, in a stable order.
+
+    Each person the claim connects owes entries of the one type
+    `claim_relationship_entry_type` names, one per person on the other side
+    of the tie: a birth claim naming a child and two parents owes the child
+    two `parent` entries and each parent a `child` entry. Every entry listed
+    passes `claim_backs_relationship_entry`, so writing it can never produce
+    a lint W115. A claim that is not accepted, is negated, or names only one
+    side of the tie owes nothing."""
+    if str(claim.get('status', '')).strip().lower() != 'accepted':
+        return []
+    ctype = str(claim.get('type', ''))
+    if ctype not in KIN_CLAIM_TYPES or claim.get('negated') in (True, 'true'):
+        return []
+    if ctype == 'marriage':
+        people = claim_spouse_pids(claim, alias_map)
+    elif ctype == 'birth':
+        children, parents = claim_parentage_pids(claim, alias_map)
+        people = children | parents
+    else:
+        people = set()
+        for meaning in ('child', 'parent', 'spouse'):
+            people |= claim_pids_in_role(claim, meaning, alias_map)
+    nature = claim_relationship_nature(claim)
+    owed: list[tuple[str, str, str, str]] = []
+    for pid in sorted(people):
+        entry_type = claim_relationship_entry_type(claim, pid, alias_map)
+        if entry_type is None:
+            continue
+        other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
+        if ctype == 'marriage':
+            others = people
+        elif ctype == 'birth':
+            others = parents if entry_type == 'parent' else children
+        else:
+            others = claim_pids_in_role(claim, other_role, alias_map)
+        for other in sorted(others - {pid}):
+            if claim_backs_relationship_entry(claim, pid, other, entry_type, alias_map):
+                owed.append((pid, entry_type, other, nature))
+    return owed
+
+
+def format_relationship_entry(
+    to_pid: str, to_name: str, role: str, subtype: str, claim_ids: list[str],
+) -> list[str]:
+    """The YAML list-item lines for a new `relationships:` entry naming
+    `to_pid` in `role`, linked `[[p-…|Name]]` so it reads and resolves, with
+    the subtype left out when there is nothing to say.
+
+    `to_name` is an existing person's `name:`, which a human may have typed
+    a quote into, so it is escaped for the double-quoted scalar it lands in.
+    The subtype is free text and goes through `yaml_inline` for the same
+    reason."""
+    escaped_name = to_name.replace('\\', '\\\\').replace('"', '\\"')
+    lines = [
+        f'  - to: "[[{fmt_id_display(to_pid)}|{escaped_name}]]"',
+        f'    type: {role}',
+    ]
+    if subtype:
+        lines.append(f'    subtype: {yaml_inline(subtype)}')
+    if claim_ids:
+        # One entry per person and role, every backing claim listed (SPEC §9).
+        lines.append(f'    claims: {relationship_claims_value(claim_ids)}')
+    return lines
+
+
+def append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
+    """Insert a `relationships:` list item into a person record's frontmatter.
+
+    Additive text surgery: appends to an existing block (a `relationships:`
+    key followed by indented items) or creates one just before the closing
+    `---`. Returns None when the frontmatter is missing or `relationships:`
+    is written in a form not edited here (an inline `relationships: [...]`),
+    so the caller can report it rather than corrupt the file."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return None
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
+    if close is None:
+        return None
+
+    rel_idx = None
+    for i in range(1, close):
+        if re.match(r'^relationships:\s*(#.*)?$', lines[i]):
+            rel_idx = i
+            break
+        empty = re.match(r'^relationships:\s*\[\s*\]\s*(#.*)?$', lines[i])
+        if empty:
+            # An empty list (`relationships: []`) is still a list the
+            # person keeps: it opens back into block form.
+            lines[i] = 'relationships:' + (f'  {empty.group(1)}' if empty.group(1) else '')
+            rel_idx = i
+            break
+        if re.match(r'^relationships:\s*\S', lines[i]):
+            return None     # inline form: refuse rather than create a duplicate key
+
+    if rel_idx is None:
+        lines[close:close] = ['relationships:'] + list(item_lines)
+    else:
+        end = rel_idx + 1
+        while end < close and (lines[end].startswith(' ') or lines[end].startswith('\t')):
+            end += 1
+        lines[end:end] = list(item_lines)
+
+    result = '\n'.join(lines)
+    if text.endswith('\n'):
+        result += '\n'
+    return result
+
+
+def _strict_meta(text: str) -> dict:
+    """The record's frontmatter as plain YAML reads it, or {}."""
+    fm = FRONT_RE.match(text)
+    try:
+        meta = safe_load_yaml(fm.group(1)) if fm else None
+    except Exception:
+        meta = None
+    return meta if isinstance(meta, dict) else {}
+
+
+def add_relationship_entry(
+    text: str, item_lines: list[str], resolve=None,
+) -> tuple[str | None, str | None]:
+    """Add one entry to a person record's `relationships:` block, folding it
+    into an existing sourced entry for the same tie (same person, type and
+    nature) so the claim joins that entry's `claims:` list instead of
+    sitting beside it (`collapse_relationship_entries`). A `status:
+    hypothesis` guess is never folded into: the sourced entry goes beside it.
+
+    Returns `(new_text, None)`; the text comes back unchanged when an entry
+    for the tie already cites every claim given. `(None, why)` when the
+    block is not a simple list or the rewrite would break the header or
+    change any other field (`frontmatter_edit_problem`). Newlines are the
+    caller's to reapply (`reapply_newline`)."""
+    new_text = append_relationship_entry(text, item_lines)
+    if new_text is None:
+        return None, "its relationships: list is not written as a simple list"
+    new_text, _merged = collapse_relationship_entries(new_text, resolve=resolve)
+    # The append writes LF; compare in the record's own newlines.
+    if reapply_newline(new_text, text) == text:
+        return text, None
+    problem = frontmatter_edit_problem(
+        new_text, before_meta=_strict_meta(text), changed_keys={'relationships'})
+    if problem is not None:
+        return None, problem
+    return new_text, None
+
+
+def _item_without_claims(item: list[str]) -> list[str] | None:
+    """One entry's lines with its `claims:` key (and any block-list items
+    under it) removed. A comment the owner typed on the key or inside its
+    list is never removed: then the key stays as `claims: []` with the key
+    line's comment, and own-line comments above it (`[]` reads as no claims
+    to every reader). None when `claims:` opens the entry (`- claims: …`),
+    where taking the line would take the list dash with it."""
+    own, inline = _claims_key_comments(item)
+    out: list[str] = []
+    skip_deeper: int | None = None
+    for ln in item:
+        bare = ln.rstrip('\r')
+        if skip_deeper is not None:
+            if bare.strip() and len(bare) - len(bare.lstrip()) > skip_deeper:
+                continue
+            skip_deeper = None
+        m = _REL_CLAIM_LINE_RE.match(bare)
+        if not m:
+            out.append(ln)
+            continue
+        if m.group(2):
+            return None
+        rest = m.group(4).strip()
+        if not rest or rest.startswith('#'):
+            skip_deeper = len(m.group(1))
+        if own or inline:
+            cr = '\r' if ln.endswith('\r') else ''
+            out.extend(f'{m.group(1)}{c}{cr}' for c in own)
+            out.append(f'{m.group(1)}claims: []{"  " + inline if inline else ""}{cr}')
+    return out
+
+
+def remove_claims_from_relationships(
+    text: str, claim_ids: Iterable[str],
+) -> tuple[str, list[tuple[dict, str]]] | None:
+    """Take `claim_ids` out of every `claims:` list in a person record's
+    `relationships:` block.
+
+    No entry is ever removed. An entry whose last claim leaves loses its
+    `claims:` key and keeps every other line, because a plain `to:`/`type:`
+    entry carries nothing that says whether the owner typed it. Everything
+    else in the block is kept as written.
+
+    Returns `(new_text, changes)`, where each change is `(entry, what)` and
+    `what` is 'unlinked' (the claim left the list) or 'bare' (the entry is
+    left citing no evidence: no claims, no `source:`, not a guess). `changes` is empty when no entry cited the claims. None when the
+    record has no block in a form edited here (no frontmatter, an inline
+    `relationships: [...]`, the key written twice), so the caller can say so
+    instead of guessing."""
+    drop = {normalize_id(str(c)) for c in claim_ids}
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return None
+    _key, block_end, items = located
+    if not items:
+        return text, []
+    cr = '\r' if lines[0].endswith('\r') else ''
+    changes: list[tuple[dict, str]] = []
+    new_lines = list(lines[:items[0][0]])
+    for n, (s, e) in enumerate(items):
+        tail_end = items[n + 1][0] if n + 1 < len(items) else block_end
+        entry = _relationship_item_entry(lines[s:e])
+        cited = relationship_entry_claim_ids(entry)
+        if not isinstance(entry, dict) or not (set(cited) & drop):
+            new_lines.extend(lines[s:tail_end])
+            continue
+        kept = [c for c in cited if c not in drop]
+        if kept:
+            new_lines.extend(_item_with_claims(lines[s:e], kept, cr))
+            new_lines.extend(lines[e:tail_end])
+            changes.append((entry, 'unlinked'))
+        else:
+            # Never deleted: nothing in a plain `to:`/`type:` entry says
+            # whether the owner typed it. Only the `claims:` key goes, and an
+            # entry left citing no evidence is named for the owner.
+            trimmed = _item_without_claims(lines[s:e])
+            if trimmed is None:
+                return None
+            new_lines.extend(trimmed)
+            new_lines.extend(lines[e:tail_end])
+            bare = not entry.get('source') and not relationship_entry_is_guess(entry)
+            changes.append((entry, 'bare' if bare else 'unlinked'))
+    new_lines.extend(lines[block_end:])
+    return '\n'.join(new_lines), changes
+
+
+def _relationship_item_entry(item: list[str]) -> dict | None:
+    """One `relationships:` item's lines, read as the entry mapping, or None."""
+    indent = re.match(r'^(\s*)', item[0]).group(1) if item else ''
+    chunk = '\n'.join(
+        ln.rstrip('\r')[len(indent):] if ln.startswith(indent) else ln.rstrip('\r')
+        for ln in item)
+    try:
+        data = safe_load_yaml(chunk)
+    except Exception:
+        data = None
+    entry = data[0] if isinstance(data, list) and data else None
+    return entry if isinstance(entry, dict) else None
+
+
+def read_person_records(archive_root: str | Path) -> dict[str, tuple[Path, dict]]:
+    """{P-id: (record path, frontmatter)} for every person record under
+    people/, read from the files (the index may be stale). Generated
+    companions are skipped; a record whose frontmatter does not read is
+    left out."""
+    people_dir = Path(archive_root) / 'people'
+    out: dict[str, tuple[Path, dict]] = {}
+    if not people_dir.is_dir():
+        return out
+    for path in sorted(walk_files(people_dir, suffix='.md')):
+        parsed = parse_filename(path)
+        if not parsed or parsed.get('id_type') != 'P' or parsed.get('is_companion'):
+            continue
+        pid = normalize_id(parsed['id_str'])
+        if pid in out:
+            continue
+        meta = _person_frontmatter_all(path)
+        if meta is not None:
+            out[pid] = (path, meta)
+    return out
+
+
+def person_alias_map(people: dict[str, tuple[Path, dict]]) -> SurvivorAliasMap:
+    """The alias map over person records alone, reading a merged record as
+    its survivor (SPEC §9), so a name-linked or merged `persons:` entry names
+    the person `fha index` and `fha lint` would read."""
+    records = [{'id': pid, 'name': meta.get('name'),
+                'name_variants': meta.get('name_variants') or [],
+                'aliases': meta.get('aliases') or [], 'status': meta.get('status')}
+               for pid, (_path, meta) in people.items()]
+    pointers = {pid: target for pid, (_path, meta) in people.items()
+                for target in [merge_pointer(meta.get('status'), meta.get('merged_into'))]
+                if target}
+    return SurvivorAliasMap(build_alias_map(records),
+                            merge_survivor_map(pointers, set(people)))
+
+
+def _person_label(people: dict[str, tuple[Path, dict]], pid: str) -> str:
+    """A person's name for a plain line, or their id when the record has none."""
+    meta = people.get(pid, (None, {}))[1]
+    name = str(meta.get('name') or '').strip() if isinstance(meta, dict) else ''
+    return name or fmt_id_display(pid)
+
+
+_ENTRY_TYPE_PHRASE = {'parent': 'a parent', 'child': 'a child', 'spouse': 'a spouse'}
+
+
+def relationship_entry_target(entry: Any, alias_map: dict[str, str] | None) -> str | None:
+    """The P-id an entry's `to:` names, read through any merge, or None."""
+    if not isinstance(entry, dict):
+        return None
+    refs = link_field_refs(entry.get('to'))
+    return resolve_typed_ref(refs[0], alias_map, want='P') if refs else None
+
+
+def relationship_entry_applies(
+    entry: Any, claim_id: str, claim_source: str | None,
+    other: str, entry_type: str, alias_map: dict[str, str] | None,
+) -> bool:
+    """Whether one `relationships:` entry already applies an owed entry: a
+    sourced entry (not a guess) naming `other` in `entry_type` that cites the
+    claim, either in its `claims:` list or, with no list, as the `source:`
+    the claim sits in. This is how lint reads a `source:` entry (its claims
+    are the source's own), so the writer and W115 agree on what is applied."""
+    if not isinstance(entry, dict) or relationship_entry_is_guess(entry):
+        return False
+    if str(entry.get('type') or '').strip().lower() != entry_type:
+        return False
+    cited = relationship_entry_claim_ids(entry)
+    source = entry.get('source')
+    if cited:
+        cites = claim_id in cited
+    else:
+        cites = bool(claim_source and source) and normalize_id(
+            strip_link_wrapper(str(source))) == normalize_id(claim_source)
+    if not cites:
+        return False
+    # A `to:` name no record answers to (or two do): lint reads the entry by
+    # its owner's side alone, so the claim it reaches (in `claims:` or
+    # through `source:`) counts as applied.
+    target = relationship_entry_target(entry, alias_map)
+    return target is None or target == other
+
+
+def _entry_can_take(
+    entry: Any, other: str, entry_type: str, nature: str,
+    alias_map: dict[str, str] | None,
+) -> bool:
+    """Whether an existing entry is the one entry for this person and role
+    that a new claim should join: not a guess (SPEC §9: tools never rewrite
+    one), naming `other` in `entry_type`, of a nature lint would not call a
+    mismatch (an entry or claim with no nature matches any), and not a bare
+    `source:` entry, whose backing is its source's claims."""
+    if not isinstance(entry, dict) or relationship_entry_is_guess(entry):
+        return False
+    if str(entry.get('type') or '').strip().lower() != entry_type:
+        return False
+    if relationship_entry_target(entry, alias_map) != other:
+        return False
+    if entry.get('source') and not relationship_entry_claim_ids(entry):
+        return False
+    entry_nature = relationship_entry_nature(entry)
+    return not entry_nature or not nature or entry_nature == nature
+
+
+def _item_with_subtype(item: list[str], subtype: str, cr: str) -> list[str]:
+    """One entry's lines with a `subtype:` line added after its `type:` line
+    (or at the end). Only called for an entry that has none."""
+    dash = re.match(r'^([ \t]*)-([ \t]+)', item[0].rstrip('\r'))
+    key_indent = (dash.group(1) + ' ' + dash.group(2)) if dash else '    '
+    line = f'{key_indent}subtype: {yaml_inline(subtype)}{cr}'
+    for n, ln in enumerate(item):
+        if re.match(r'^\s*(-\s+)?type\s*:', ln):
+            return item[:n + 1] + [line] + item[n + 1:]
+    return list(item) + [line]
+
+
+def _extend_relationship_entry(
+    text: str, other: str, entry_type: str, nature: str, claim_id: str,
+    alias_map: dict[str, str] | None,
+) -> str | None:
+    """Add `claim_id` to the first entry that can take it (`_entry_can_take`),
+    writing the claim's nature onto that entry when the entry stated none.
+    None when no entry can take it, or the block is not edited here."""
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return None
+    _key, _end, items = located
+    cr = '\r' if lines[0].endswith('\r') else ''
+    for s, e in items:
+        entry = _relationship_item_entry(lines[s:e])
+        if not _entry_can_take(entry, other, entry_type, nature, alias_map):
+            continue
+        cited = relationship_entry_claim_ids(entry)
+        item = _item_with_claims(lines[s:e], cited + [claim_id], cr)
+        if nature and not str(entry.get('subtype') or '').strip() \
+                and nature != relationship_entry_nature({'type': entry_type}):
+            item = _item_with_subtype(item, nature, cr)
+        return '\n'.join(lines[:s] + item + lines[e:])
+    return None
+
+
+def plan_relationship_entries(
+    claims: Iterable[dict],
+    people: dict[str, tuple[Path, dict]],
+    alias_map: dict[str, str] | None,
+    *, only: set[tuple[str, str]] | None = None,
+    claim_sources: dict[str, str] | None = None,
+    read_text=None,
+) -> dict:
+    """The `relationships:` edits a set of accepted claims calls for, worked
+    out in memory before anything is written.
+
+    Each entry a claim owes (`claim_owed_relationship_entries`) is judged on
+    its own, on a person whose record keeps a `relationships:` list (an
+    empty `relationships: []` counts):
+      - already applied when an entry for that person and role cites the
+        claim, or cites its source with `source:` (`relationship_entry_applies`);
+      - else the claim joins the one entry for that person and role
+        (`_entry_can_take`), which gains the claim's nature if it stated none;
+      - else a new entry citing the claim is added.
+    People with no list are left alone and listed, because a list, once
+    there, must hold every tie. `only` limits the work to `(person, claim)`
+    pairs (lint's W115 set). `claim_sources` maps a claim id to the source
+    it sits in. `read_text(path)` reads a record exactly (defaults to
+    `read_text_exact`).
+
+    Returns {'edits': {path: {'pid', 'before', 'after', 'lines'}},
+    'problems': [plain text], 'no_list': [(pid, other, type, cid)]}. Every
+    edit has passed `frontmatter_edit_problem`; anything that could not be
+    placed safely is in `problems` with the hand fix, and is not edited."""
+    read_text = read_text or read_text_exact
+    claim_sources = {normalize_id(k): v for k, v in (claim_sources or {}).items()}
+    edits: dict[Path, dict] = {}
+    problems: list[str] = []
+    no_list: list[tuple[str, str, str, str]] = []
+    unreadable: set[Path] = set()
+    resolve = (lambda ref: resolve_ref(ref, alias_map)) if alias_map is not None else None
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        cid = normalize_id(str(claim.get('id', '')))
+        if not cid:
+            continue
+        for pid, entry_type, other, nature in claim_owed_relationship_entries(claim, alias_map):
+            if only is not None and (pid, cid) not in only:
+                continue
+            record = people.get(pid)
+            if record is None:
+                continue        # no record to write to: lint E005 names the id
+            path, meta = record
+            block = meta.get('relationships')
+            if is_merged_meta(meta):
+                continue
+            if not isinstance(block, list):
+                no_list.append((pid, other, entry_type, cid))
+                continue
+            if path in unreadable:
+                continue
+            if path not in edits:
+                try:
+                    before = read_text(path)
+                except (OSError, UnicodeDecodeError):
+                    unreadable.add(path)
+                    problems.append(
+                        f"{_person_label(people, pid)}'s record ({path.name}) could not be "
+                        "read as UTF-8 text, so its relationships: list was not updated. "
+                        "Re-save it as UTF-8, then run `fha lint --fix-applied`.")
+                    continue
+                edits[path] = {'pid': pid, 'before': before, 'after': before, 'lines': []}
+            edit = edits[path]
+            current = (_strict_meta(edit['after']).get('relationships') or [])
+            if any(relationship_entry_applies(e, cid, claim_sources.get(cid), other,
+                                              entry_type, alias_map)
+                   for e in (current if isinstance(current, list) else [])):
+                continue
+            other_name = _person_label(people, other)
+            # Biological is the default nature of a parent or child entry
+            # (SPEC §9), so it is not written out.
+            written_nature = '' if (nature == 'biological'
+                                    and entry_type in ('parent', 'child')) else nature
+            new_text, why = None, None
+            # The claim's own nature decides which entry it joins (an unwritten
+            # biological still never joins an adoptive entry).
+            extended = _extend_relationship_entry(
+                edit['after'], other, entry_type, nature, cid, alias_map)
+            if extended is not None:
+                why = frontmatter_edit_problem(
+                    extended, before_meta=_strict_meta(edit['after']),
+                    changed_keys={'relationships'})
+                new_text = extended if why is None else None
+            else:
+                item = format_relationship_entry(other, other_name, entry_type,
+                                                 written_nature, [cid])
+                new_text, why = add_relationship_entry(edit['after'], item, resolve=resolve)
+            if new_text is None:
+                problems.append(
+                    f"{_person_label(people, pid)}'s record ({path.name}) was not changed: "
+                    f"adding {other_name} as {_ENTRY_TYPE_PHRASE.get(entry_type, entry_type)} "
+                    f"there would go wrong ({why}). Add the entry by hand under "
+                    f"relationships: (to: \"[[{fmt_id_display(other)}|{other_name}]]\", "
+                    f"type: {entry_type}, claims: [\"[[{fmt_id_display(cid)}]]\"]), "
+                    "then run `fha lint`.")
+                continue
+            edit['after'] = new_text
+            edit['lines'].append(
+                (other_name, _ENTRY_TYPE_PHRASE.get(entry_type, entry_type), cid))
+    edits = {p: e for p, e in edits.items() if e['after'] != e['before']}
+    return {'edits': edits, 'problems': problems, 'no_list': no_list}
+
+
+def plan_relationship_removals(
+    claim_ids: Iterable[str],
+    people: dict[str, tuple[Path, dict]],
+    *, read_text=None,
+) -> dict:
+    """The `relationships:` edits that take claims out of every person
+    record citing them (`remove_claims_from_relationships`), worked out in
+    memory before anything is written. Same shape as
+    `plan_relationship_entries`; each line is `(other name, what, cid)` with
+    `what` 'unlinked' or 'bare'."""
+    read_text = read_text or read_text_exact
+    drop = [normalize_id(str(c)) for c in claim_ids]
+    edits: dict[Path, dict] = {}
+    problems: list[str] = []
+    for pid, (path, meta) in people.items():
+        block = meta.get('relationships')
+        if not isinstance(block, list):
+            continue
+        if not any(set(relationship_entry_claim_ids(e)) & set(drop) for e in block):
+            continue
+        try:
+            before = read_text(path)
+        except (OSError, UnicodeDecodeError):
+            problems.append(
+                f"{_person_label(people, pid)}'s record ({path.name}) could not be read as "
+                "UTF-8 text, so the claim was not taken out of its relationships: list. "
+                "Re-save it as UTF-8, then remove the claim there by hand.")
+            continue
+        removed = remove_claims_from_relationships(before, drop)
+        why = None
+        if removed is None:
+            why = "its relationships: list is not written in a form the tools edit"
+        else:
+            after, changes = removed
+            if after != before:
+                why = frontmatter_edit_problem(
+                    after, before_meta=_strict_meta(before), changed_keys={'relationships'})
+        if why is not None:
+            shown = ', '.join(fmt_id_display(c) for c in drop)
+            problems.append(
+                f"{_person_label(people, pid)}'s record ({path.name}) still cites {shown} "
+                f"under relationships:, and it was left alone ({why}). Take the claim out "
+                "of that entry's claims: list by hand, then run `fha lint`.")
+            continue
+        if not changes or after == before:
+            continue
+        lines = []
+        for entry, what in changes:
+            target = entry.get('to')
+            to_refs = link_field_refs(target)
+            to_pid = None
+            if to_refs:
+                ids = extract_bare_ids(to_refs[0])
+                to_pid = normalize_id(ids[0]) if ids else None
+            other_name = (_person_label(people, to_pid) if to_pid
+                          else (to_refs[0] if to_refs else 'someone'))
+            entry_type = str(entry.get('type') or '').strip().lower()
+            cited = [c for c in relationship_entry_claim_ids(entry) if c in drop]
+            lines.append((other_name, _ENTRY_TYPE_PHRASE.get(entry_type, entry_type or 'a tie'),
+                          what, cited[0] if cited else drop[0]))
+        edits[path] = {'pid': pid, 'before': before, 'after': after, 'lines': lines}
+    return {'edits': edits, 'problems': problems}
+
+
+def relationship_plan_lines(
+    plan: dict, people: dict[str, tuple[Path, dict]], *, dry_run: bool = False,
+) -> list[tuple[str, str, Path | None]]:
+    """The plain lines that say which person records a plan changes (or,
+    under `dry_run`, would change), as `(level, text, path)`: one line per
+    tie added or claim taken out, a warning per problem, and, for a tie
+    written on one side only, one line saying the other record has no
+    `relationships:` list and was left alone. Shared by `fha claim` and
+    `fha lint --fix-applied`, so both say it the same way."""
+    out: list[tuple[str, str, Path | None]] = []
+    given_entry: set[str] = set()      # people whose record gains an entry
+    for path, edit in plan.get('edits', {}).items():
+        name = _person_label(people, edit['pid'])
+        for line in edit['lines']:
+            if len(line) == 3:
+                other, phrase, cid = line
+                given_entry.add(edit['pid'])
+                verb = 'would list' if dry_run else 'now lists'
+                out.append(('info', f"{name}'s record {verb} {other} as {phrase} "
+                                    f"(claim {fmt_id_display(cid)}).", path))
+                continue
+            other, phrase, what, cid = line
+            verb = 'would no longer cite' if dry_run else 'no longer cites'
+            out.append(('info', f"{name}'s record {verb} claim {fmt_id_display(cid)} "
+                                f"for {other} ({phrase}).", path))
+            if what == 'bare':
+                still = 'would still list' if dry_run else 'still lists'
+                out.append(('info', f"{name}'s record {still} {other} as {phrase}, with no "
+                                    "evidence now; remove that entry by hand if it is wrong.",
+                            path))
+    for text in plan.get('problems', []):
+        out.append(('warning', text, None))
+    said: set[str] = set()
+    for pid, other, _entry_type, _cid in plan.get('no_list', []):
+        # Said only when the other side gained the entry: that is when lint
+        # starts asking for the mirror here.
+        if other not in given_entry or pid in said:
+            continue
+        said.add(pid)
+        out.append(('info', f"{_person_label(people, pid)}'s record has no relationships: "
+                            "list, so it was left alone. `fha lint` will suggest the matching "
+                            "entry there (W116); `fha lint --fix-reciprocal` adds it if you "
+                            "want that record to list its ties too.",
+                    people.get(pid, (None, {}))[0]))
+    return out
 
 
 # ── Names beside IDs: the written form of people:/places:/persons: ────────────
@@ -10028,11 +11156,12 @@ def _record_alias_strings(rec: dict) -> list[str]:
         out.append(str(rid))
     if is_merged_meta(rec):
         return out
-    for a in rec.get('aliases') or []:
+    # A hand-typed `aliases: 1912` reads as a number, not a list: one value.
+    for a in _alias_items(rec.get('aliases')):
         out.append(str(a))
     if rec.get('name'):
         out.append(str(rec['name']))
-    for v in rec.get('name_variants') or []:
+    for v in _alias_items(rec.get('name_variants')):
         # A name variant may be a plain string or a {value:, restricted: true}
         # mapping (SPEC §18 deadname). Use the value either way; str() on the
         # dict would make the literal repr an alias key, so the real prior name
@@ -10043,9 +11172,18 @@ def _record_alias_strings(rec: dict) -> list[str]:
                 out.append(str(val))
         elif v:
             out.append(str(v))
-    for v in rec.get('alt_names') or []:
+    for v in _alias_items(rec.get('alt_names')):
         out.append(str(v))
     return out
+
+
+def _alias_items(value: Any) -> list:
+    """A list-valued name field as a list: a hand-typed single value (a
+    string, or a bare number such as `aliases: 1912`) is one item, and an
+    empty field none."""
+    if value is None or value == '':
+        return []
+    return list(value) if isinstance(value, list) else [value]
 
 
 def _alias_index(records: Any) -> dict[str, set[str]]:
@@ -11201,12 +12339,56 @@ def write_generated_file(
         # GENERATED file protected from another tool's overwrite.
         if not is_generated_text(existing, prefix=marker_prefix):
             raise GeneratedFileRefused(out_path)
+        # Only the date in the marker would change: leave the file alone, so
+        # its date keeps saying when its content last changed and a quiet
+        # refresh on a new day rewrites nothing. Compared on the exact bytes
+        # (no newline translation, no dropped bytes) so a file that differs
+        # in any other way is still rewritten.
+        try:
+            exact = out_path.read_bytes().decode('utf-8')
+        except (OSError, UnicodeDecodeError):
+            exact = None
+        if exact is not None and not generated_text_differs(exact, content):
+            return out_path
     if not out_path.parent.is_dir():
         if not create_parents:
             raise GeneratedFileParentMissing(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
     write_text_exact_atomic(out_path, content)
     return out_path
+
+
+def generated_marker_date() -> str:
+    """Today's date as a GENERATED marker carries it (YYYY-MM-DD). One home,
+    so a test can move the clock for every marker writer at once."""
+    return datetime.date.today().isoformat()
+
+
+# The date in a GENERATED marker line: the whole-file header
+# (`<!-- GENERATED by fha views timeline on 2026-11-20 ...`), a region's BEGIN
+# marker (`<!-- GENERATED-BEGIN sources-index by sources-index on ...`), and
+# the visible line an HTML view repeats it in. Only lines that START with one
+# of these are masked, so a date inside record text always counts.
+_GENERATED_DATE_RE = re.compile(
+    r'^([ \t]*(?:<!--[ \t]*GENERATED\b|<p class="view-generated">)[^\n]*? on )'
+    r'\d{4}-\d{2}-\d{2}',
+    re.MULTILINE)
+
+
+def generated_text_differs(old: str, new: str) -> bool:
+    """True when `new` says something `old` does not, ignoring the date in
+    every GENERATED marker line.
+
+    The one write test shared by the whole-file writer
+    (`write_generated_file`) and the region writer (`write_generated_region`):
+    a regenerated view whose only difference is today's date is not written.
+    Without it the first refresh of a new day rewrote every view and every
+    profile region by one line, which made the run slow and buried the real
+    changes in a commit of thousands of files. The marker date therefore
+    means "content last changed on", not "last regenerated on"."""
+    if old == new:
+        return False
+    return _GENERATED_DATE_RE.sub(r'\1', old) != _GENERATED_DATE_RE.sub(r'\1', new)
 
 
 # ── GENERATED-BEGIN/END regions (SPEC §21b, #76) ──────────────────────────────
@@ -11272,7 +12454,7 @@ def render_generated_region(
     inside the region, not just a comment framing it.
     """
     begin, end = generated_region_markers(
-        region_name, subcommand, datetime.date.today().isoformat())
+        region_name, subcommand, generated_marker_date())
     if notice is None:
         notice = f'*(Generated by `{subcommand}` - do not edit; regenerate instead.)*'
     parts = [begin, '', notice]
@@ -11302,7 +12484,10 @@ def write_generated_region(
     Uses `replace_section_content` (REPLACE mode, not append): a region is
     rewritten wholesale every time, never accumulated onto. Returns
     `(new_text, created)` - `created` is True only when the heading itself
-    had to be inserted, not merely when the region's content changed.
+    had to be inserted, not merely when the region's content changed. When
+    the only difference is the date in the BEGIN marker, `text` comes back
+    unchanged (`generated_text_differs`), so the caller writes nothing and
+    the date keeps saying when the list last changed.
     """
     lines = text.split('\n')
     bounds = frontmatter_fence_span(lines)
@@ -11311,7 +12496,10 @@ def write_generated_region(
     region_text = render_generated_region(region_name, subcommand, body)
     new_lines, created, _old = replace_section_content(
         lines, body_start, heading, region_text, cr, position='first')
-    return '\n'.join(new_lines), created
+    new_text = '\n'.join(new_lines)
+    if not generated_text_differs(text, new_text):
+        return text, False
+    return new_text, created
 
 
 # ── The profile's summary region (SPEC §16, §21b) ─────────────────────────────
@@ -12333,6 +13521,33 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
         if parsed is not None and parsed['id_type'] == 'P' and parsed['kind'] == 'profile':
             found.add(parsed['id_str'])
     return found
+
+
+def scan_person_merge_survivors(archive_root: str | Path) -> dict[str, str]:
+    """{merged P-id: the person it now counts as}, read from the person files.
+
+    The tree-scan twin of `index_merge_survivors`, for a writer that must not
+    trust a possibly stale index (`fha source merge` asks whether two records
+    are about the same people, and a claim naming a merged record counts for
+    its survivor, SPEC §9). Same rule: `merge_pointer` decides which records
+    are merged, `merge_survivor_map` follows the chain."""
+    root = Path(archive_root)
+    people_dir = root / 'people'
+    if not people_dir.is_dir():
+        return {}
+    pointers: dict[str, str] = {}
+    known: set[str] = set()
+    for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
+        pid = normalize_id(parsed['id_str'])
+        known.add(pid)
+        meta = _person_frontmatter_all(p) or {}
+        target = merge_pointer(meta.get('status'), meta.get('merged_into'))
+        if target:
+            pointers[pid] = target
+    return merge_survivor_map(pointers, known)
 
 
 def find_person_record_path(
@@ -13566,10 +14781,8 @@ def render_stub_content(
 
 SOURCE_PURPOSE_BLOCK = (
     "> **This source's record - yours to write.** The citation and claims for "
-    "one piece\n"
-    "> of evidence. `fha process` scaffolded this file; everything below is "
-    "yours to\n"
-    "> correct and add to."
+    "one piece of evidence. `fha process` scaffolded this file; everything "
+    "below is yours to correct and add to."
 )
 
 # #75's stated scope names the `_research` companion explicitly alongside
@@ -13581,14 +14794,10 @@ SOURCE_PURPOSE_BLOCK = (
 # whichever of those two supplies the body text.
 RESEARCH_PURPOSE_BLOCK = (
     "> **This person's research workspace - yours to write.** An OPTIONAL "
-    "companion\n"
-    "> file for notes that outgrow the `## Research Notes` section on the "
-    "person's own\n"
-    "> record - most people never need one. Open questions, leads, and "
-    "half-proven\n"
-    "> hunches belong here; nothing in this file is a claim until it is "
-    "cited on a\n"
-    "> source record."
+    "companion file for notes that outgrow the `## Research Notes` section on "
+    "the person's own record - most people never need one. Open questions, "
+    "leads, and half-proven hunches belong here; nothing in this file is a "
+    "claim until it is cited on a source record."
 )
 
 # keyed by the `fha views` subcommand that rebuilds each kind - `_gen_header`
@@ -13649,16 +14858,11 @@ VIEW_PURPOSE_BLOCKS: dict[str, str] = {
 
 PERSON_PURPOSE_BLOCK = (
     "> **This person's record - yours to write.** The main page for this person: "
-    "summary,\n"
-    "> biography, relationships. The summary lines under this note and the "
-    "`## Sources`\n"
-    "> list are generated - `fha views refresh` rewrites them, so never edit them "
-    "by hand.\n"
-    "> Everything else here is yours; working notes go in `## Research Notes` "
-    "below, or in\n"
-    "> a separate `_research` file if this person's research grows large enough "
-    "to want one\n"
-    "> of its own."
+    "summary, biography, relationships. The summary lines under this note and "
+    "the `## Sources` list are generated - `fha views refresh` rewrites them, "
+    "so never edit them by hand. Everything else here is yours; working notes "
+    "go in `## Research Notes` below, or in a separate `_research` file if "
+    "this person's research grows large enough to want one of its own."
 )
 
 # The `## Sources` heading's content before the first `fha views sources-index`
@@ -13679,24 +14883,20 @@ PERSON_SOURCES_PLACEHOLDER = (
 # kept verbatim, unchanged from before this constant existed). Cross-checked
 # for byte equality against the template by `tests/test_templates.py`.
 PERSON_BODY_SECTIONS_TEXT = '''## Biography
-Write their story in plain sentences. Uncited prose is welcome - it's story and
-context, never treated as proven fact. Mark anything you mean to back up later
-with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
+Write their story in plain sentences. Uncited prose is welcome - it's story and context, never treated as proven fact. Mark anything you mean to back up later with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Stories
 *(none yet)*
 
 ## Research Notes
-Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default.
+Open questions, hunches, and brick walls - where to look next. (Delete this line as you add your own.) This section is public by default.
 <!-- To keep one note out of anything you share, put it between two marker
      lines: before it, the word private inside marks like the ones around this
      note; after it, /private the same way. START_HERE.md shows both lines.
      The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
-People connected to them who aren't blood relatives - neighbors, business
-partners, the family they boarded with. Type [[ and pick a name to link.
+People connected to them who aren't blood relatives - neighbors, business partners, the family they boarded with. Type [[ and pick a name to link.
 '''
 
 # The Research Notes placeholder profiles were scaffolded with before plan 19
@@ -13709,7 +14909,21 @@ A hunch you're not ready to publish - say, a possible tie to a living relative.
 This block stays in your local `--linked` preview but is dropped from the shared
 (standalone) site.
 <!-- /private -->'''
+# Records scaffolded before the placeholders were written one line per
+# paragraph carry the same words hard-wrapped at about 80 columns; those are
+# scaffolding too, so a profile he never filled in stays unpublished.
 _LEGACY_PERSON_PLACEHOLDERS = (
+    ('Biography', '''Write their story in plain sentences. Uncited prose is welcome - it's story and
+context, never treated as proven fact. Mark anything you mean to back up later
+with `(TODO: import source)` and a tool will keep it on a gentle to-do list.'''),
+    ('Research Notes', '''Open questions, hunches, and brick walls - where to look next. (Delete this line
+as you add your own.) This section is public by default.
+<!-- To keep one note out of anything you share, put it between two marker
+     lines: before it, the word private inside marks like the ones around this
+     note; after it, /private the same way. START_HERE.md shows both lines.
+     The note stays in your own archive and your local preview. -->'''),
+    ('Friends & Family', '''People connected to them who aren't blood relatives - neighbors, business
+partners, the family they boarded with. Type [[ and pick a name to link.'''),
     ('Research Notes', '''Open questions, hunches, and brick walls - where to look next. (Delete this line
 as you add your own.) This section is public by default; to keep a single note out
 of a shared copy, wrap it in a private fence like the example below.
@@ -15776,8 +16990,7 @@ created: 2026-01-01
 
 ## Open Questions
 
-*(what you do not know yet - one `## Q:` entry per question, in the same form as
-`notes/questions.md`; a guess you are working from goes in the same entry)*
+*(what you do not know yet - one `## Q:` entry per question, in the same form as `notes/questions.md`; a guess you are working from goes in the same entry)*
 '''
 
 
@@ -16258,6 +17471,39 @@ def _index_tables_with_path_column(conn: sqlite3.Connection) -> list[str]:
     return out
 
 
+def notes_fts_rowids_by_path(conn: sqlite3.Connection) -> dict[str, list[int]]:
+    """Every `notes_fts` row id, grouped by the file path it holds text for.
+
+    `notes_fts` is an FTS5 table, and FTS5 keeps no index on an ordinary
+    column, so `DELETE ... WHERE path=?` reads the whole table, text and all,
+    every time. On a large archive that one statement, run once per profile,
+    was most of a several-minute `fha views refresh`. Reading the ids once and
+    deleting by rowid (which FTS5 does index) turns each delete into a lookup.
+    Pass the result to `delete_notes_fts_path` for each file.
+
+    The caller must already hold the write lock (`BEGIN IMMEDIATE` inside its
+    `with conn:` block) before calling this. Otherwise an `fha index` rebuild
+    in another process, the workbench beside the CLI for one, can renumber
+    the rows between this read and the deletes, and a stale id would delete
+    another file's search text."""
+    out: dict[str, list[int]] = {}
+    for rowid, path in conn.execute('SELECT rowid, path FROM notes_fts'):
+        out.setdefault(path, []).append(rowid)
+    return out
+
+
+def delete_notes_fts_path(
+    conn: sqlite3.Connection, rowids: dict[str, list[int]], rel: str,
+) -> None:
+    """Delete one file's `notes_fts` rows, found by exact path in `rowids`
+    (from `notes_fts_rowids_by_path`), and forget them there so a second call
+    for the same path in one pass deletes nothing twice. A caller that then
+    inserts the file's new text records the new row id with
+    `rowids.setdefault(rel, []).append(cursor.lastrowid)`."""
+    for rowid in rowids.pop(rel, ()):
+        conn.execute('DELETE FROM notes_fts WHERE rowid=?', (rowid,))
+
+
 def relocate_person_in_index(
     archive_root: Path,
     pid: str,
@@ -16310,6 +17556,9 @@ def relocate_person_in_index(
     manifest_updates: dict[str, float | None] = {}
     try:
         with conn:
+            # Hold the write lock from the start, so the notes_fts row ids
+            # read below cannot be renumbered by another process first.
+            conn.execute('BEGIN IMMEDIATE')
             tables = _index_tables_with_path_column(conn)
             for old, new in moves:
                 old_rel = str(Path(old).relative_to(archive_root))
@@ -16336,7 +17585,7 @@ def relocate_person_in_index(
                     body = read_record(new_research).get('body') or ''
                 except Exception:
                     body = ''
-                conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                delete_notes_fts_path(conn, notes_fts_rowids_by_path(conn), rel)
                 if body.strip():
                     conn.execute(
                         'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
@@ -16472,19 +17721,24 @@ def sync_generated_view_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
+                fts_rowids = notes_fts_rowids_by_path(conn)
                 for rel, _pid, _kind in targets_removed:
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     conn.execute('DELETE FROM person_files WHERE path=?', (rel,))
                 for row in targets_written:
                     rel = row['rel']
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every regeneration.
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     if row['body'].strip():
-                        conn.execute(
+                        cur = conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
                             (rel, row['body']))
+                        fts_rowids.setdefault(rel, []).append(cur.lastrowid)
                     if row['is_person_record']:
                         # Her `person_files` row says 'profile' and must keep
                         # saying it: person_files is keyed by (person_id, kind,
@@ -16565,6 +17819,10 @@ def resync_person_profile_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
+                fts_rowids = notes_fts_rowids_by_path(conn)
                 for path in paths:
                     try:
                         rel = str(path.relative_to(archive_root))
@@ -16592,11 +17850,12 @@ def resync_person_profile_rows(
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every refresh.
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     if body.strip():
-                        conn.execute(
+                        cur = conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
                             (rel, body))
+                        fts_rowids.setdefault(rel, []).append(cur.lastrowid)
                     try:
                         resynced_mtimes[Path(rel).as_posix()] = path.stat().st_mtime
                     except OSError:

@@ -33,10 +33,7 @@ tier: curated
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-Susan Cole lived near the Hartleys in [[l-7c1a9f4e22|Fairview]]. She may have been an older
-sister of [[p-cd795c61e0|Margaret A. Cole]]: Margaret was married "at the residence of the bride's
-sister" [[s-ea61339378]]. No record says so, so the tie is entered on her record as a guess
-(`status: hypothesis`) and followed while it is checked (notes/questions.md).
+Susan Cole lived near the Hartleys in [[l-7c1a9f4e22|Fairview]]. She may have been an older sister of [[p-cd795c61e0|Margaret A. Cole]]: Margaret was married "at the residence of the bride's sister" [[s-ea61339378]]. No record says so, so the tie is entered on her record as a guess (`status: hypothesis`) and followed while it is checked (notes/questions.md).
 
 ## Stories
 *(none yet)*

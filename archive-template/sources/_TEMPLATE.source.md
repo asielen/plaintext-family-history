@@ -46,8 +46,7 @@ files:                     # OPTIONAL: the photo or scan this source points at
 created: 2026-01-01        # the date you added this (any date is fine)
 ---
 
-> **This source's record - yours to write.** The citation and claims for one piece
-> of evidence. Everything below is yours to correct and add to.
+> **This source's record - yours to write.** The citation and claims for one piece of evidence. Everything below is yours to correct and add to.
 
 ## Claims
 <!-- A "claim" is one fact this source states about someone, one block per fact.

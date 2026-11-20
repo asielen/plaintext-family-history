@@ -83,6 +83,14 @@ Moving files around within the documents or photos folder is a different thing: 
 
 ---
 
+## The same document was filed twice
+
+**What happened.** One record became two sources: an index entry and the document it indexes, the same record saved from two websites, or a better scan processed on its own before anyone noticed.
+
+**Fix.** Tell the assistant: *"These two sources are the same record, merge them,"* and say which one to keep. It runs `fha source merge <keep> <other> --dry-run` first and shows you what will move, then merges on your yes. The other source's files join the kept one (documents are renamed for it; photos keep their names and only the hidden source tag inside them changes), its facts and notes move over, and its record file is removed. Its old ID still finds the kept source, so nothing that linked to it breaks, and the kept record notes what was merged and when. If the two sources' accepted facts are about different people, the merge is refused: check that they really are the same record. Afterwards run `fha index`.
+
+---
+
 ## My GEDCOM won't import, or the imported tree isn't showing up
 
 **It refuses the file.** `fha gedcom import` reads modern (UTF-8) GEDCOM files. If it says the file is **ANSEL** or **UTF-16**, it came from an older program: open the file in that program, export or save it again as UTF-8 (Ancestry's downloads already are), and run the import again. If it says the file was **already imported**, it's stopping you from creating every person twice. If you've downloaded a newer export since, import that file; it's a different file and goes through.

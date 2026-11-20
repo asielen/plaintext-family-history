@@ -55,21 +55,17 @@ tier: stub
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-Write their story in plain sentences. Uncited prose is welcome - it's story and
-context, never treated as proven fact. Mark anything you mean to back up later
-with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
+Write their story in plain sentences. Uncited prose is welcome - it's story and context, never treated as proven fact. Mark anything you mean to back up later with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Stories
 *(none yet)*
 
 ## Research Notes
-Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default.
+Open questions, hunches, and brick walls - where to look next. (Delete this line as you add your own.) This section is public by default.
 <!-- To keep one note out of anything you share, put it between two marker
      lines: before it, the word private inside marks like the ones around this
      note; after it, /private the same way. START_HERE.md shows both lines.
      The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
-People connected to them who aren't blood relatives - neighbors, business
-partners, the family they boarded with. Type [[ and pick a name to link.
+People connected to them who aren't blood relatives - neighbors, business partners, the family they boarded with. Type [[ and pick a name to link.

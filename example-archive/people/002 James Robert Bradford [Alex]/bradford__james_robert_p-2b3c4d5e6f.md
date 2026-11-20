@@ -63,14 +63,9 @@ tier: curated
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-James Robert Bradford was born on 15 March 1955 in Fairview, Breton County, Kansas, the son of
-George Arthur Bradford and Edith Louise Bradford, born Hartley [[s-fd4567890e]]. He graduated from
-Kansas State University in 1977 with a degree in history [[s-fe5678901f]].
+James Robert Bradford was born on 15 March 1955 in Fairview, Breton County, Kansas, the son of George Arthur Bradford and Edith Louise Bradford, born Hartley [[s-fd4567890e]]. He graduated from Kansas State University in 1977 with a degree in history [[s-fe5678901f]].
 
-Returning to Fairview, James taught history at Fairview Consolidated High School for twenty years
-and then served as its principal until he retired in 2012 [[s-fe5678901f]]. On 14 June 1979 he
-married Carol Anne Simmons in Fairview [[s-fc3456789d]]; their son Alex was born a few years later
-[[s-fc3456789d]].
+Returning to Fairview, James taught history at Fairview Consolidated High School for twenty years and then served as its principal until he retired in 2012 [[s-fe5678901f]]. On 14 June 1979 he married Carol Anne Simmons in Fairview [[s-fc3456789d]]; their son Alex was born a few years later [[s-fc3456789d]].
 
 He died on 3 November 2015 in Topeka, Kansas [[s-fe5678901f]].
 
