@@ -433,6 +433,7 @@ _COUNTRY_INFO = (
     'PL\tPOL\t616\tPL\tPoland\tWarsaw\n'
     'GE\tGEO\t268\tGG\tGeorgia\tTbilisi\n'
     'IL\tISR\t376\tIS\tIsrael\tJerusalem\n'
+    'DE\tDEU\t276\tGM\tGermany\tBerlin\n'
 )
 _ADMIN1 = (
     'US.KS\tKansas\tKansas\t4273857\n'
@@ -440,6 +441,8 @@ _ADMIN1 = (
     'US.NY\tNew York\tNew York\t5128638\n'
     'US.GA\tGeorgia\tGeorgia\t4197000\n'
     'PL.81\tPodlasie\tPodlasie\t858789\n'
+    'DE.16\tBerlin\tBerlin\t2950157\n'
+    'DE.04\tHamburg\tHamburg\t2911297\n'
 )
 _ADMIN2 = (
     'US.KS.091\tBreton County\tBreton County\t1\n'
@@ -472,6 +475,16 @@ _US_FEATURES = [
     (117, 'Oak Hill Cemetery', 'Oak Hill Cemetery', '', 40.37, -74.05, 'S', 'CMTY', 'NJ', '025', '', 0),
     (118, 'Saint Mary Church', 'Saint Mary Church', '', 39.564, -95.122, 'S', 'CH', 'KS', '091', '', 0),
     (119, 'Fairview Inn', 'Fairview Inn', '', 39.563, -95.121, 'S', 'HTL', 'KS', '091', '', 0),
+    (120, 'Ashby', 'Ashby', '', 39.6, -95.2, 'S', 'CH', 'KS', '091', '', 0),
+    (121, 'Ashby', 'Ashby', '', 39.61, -95.21, 'P', 'PPLH', 'KS', '091', '', 0),
+]
+# Two city-states: each is a state and a city inside it.
+_DE_FEATURES = [
+    (300, 'Federal Republic of Germany', 'Federal Republic of Germany', 'Germany,Deutschland', 51.5, 10.5, 'A', 'PCLI', '00', '', '', 82000000),
+    (301, 'Berlin', 'Berlin', '', 52.5, 13.4, 'A', 'ADM1', '16', '', '', 3400000),
+    (302, 'Berlin', 'Berlin', '', 52.52437, 13.41053, 'P', 'PPLC', '16', '00', '', 3400000),
+    (303, 'Hamburg', 'Hamburg', '', 53.5, 10.0, 'A', 'ADM1', '04', '', '', 1700000),
+    (304, 'Hamburg', 'Hamburg', '', 53.57532, 10.01534, 'P', 'PPLA', '04', '00', '', 1700000),
 ]
 _PL_FEATURES = [
     (200, 'Republic of Poland', 'Republic of Poland', 'Poland,Polska', 52.0, 20.0, 'A', 'PCLI', '00', '', '', 38000000),
@@ -495,7 +508,7 @@ def _dump_lines(rows, cc):
     return '\n'.join(out) + '\n'
 
 
-def _write_geonames(gdir: Path, countries=('US', 'PL')) -> None:
+def _write_geonames(gdir: Path, countries=('US', 'PL', 'DE')) -> None:
     """The three name files plus one {CC}.zip per country, shaped like the
     real GeoNames export."""
     import zipfile
@@ -503,7 +516,7 @@ def _write_geonames(gdir: Path, countries=('US', 'PL')) -> None:
     (gdir / 'countryInfo.txt').write_text(_COUNTRY_INFO, encoding='utf-8')
     (gdir / 'admin1CodesASCII.txt').write_text(_ADMIN1, encoding='utf-8')
     (gdir / 'admin2Codes.txt').write_text(_ADMIN2, encoding='utf-8')
-    rows = {'US': _US_FEATURES, 'PL': _PL_FEATURES}
+    rows = {'US': _US_FEATURES, 'PL': _PL_FEATURES, 'DE': _DE_FEATURES}
     for cc in countries:
         with zipfile.ZipFile(gdir / f'{cc}.zip', 'w') as zf:
             zf.writestr(f'{cc}.txt', _dump_lines(rows[cc], cc))
@@ -522,7 +535,7 @@ class _GazetteerCase(unittest.TestCase):
         self.root = Path(self._tmp.name)
         _write_geonames(self.root / '.cache' / 'geonames')
         rows = [_row('Fairview', 'Fairview, Breton County, Kansas, USA'),
-                _row('Tykwin', 'Tykwin, Poland')]
+                _row('Tykwin', 'Tykwin, Poland'), _row('Berlin', 'Berlin, Germany')]
         self.gaz, notes = places._prepare_gazetteer(
             self.root, rows, offline=True, progress=lambda _l: None)
         self.assertIsNotNone(self.gaz, notes)
@@ -590,9 +603,10 @@ class GeocodeMatchTests(_GazetteerCase):
         self.assertEqual(m.status, 'hit')
         self.assertEqual(m.hit.gid, 109)
 
-    def test_state_reading_when_the_hierarchy_names_only_the_country(self):
-        # The state, so a general place: no coordinates proposed.
-        self.assertEqual(self.match('New York', 'New York, USA').status, 'general')
+    def test_state_with_its_own_city_reads_as_the_city(self):
+        # New York City lies in New York State, so "New York, USA" is the city.
+        m = self.match('New York', 'New York, USA')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 109))
 
     def test_country_written_in_the_name_is_read_like_a_hierarchy(self):
         # "Tykwin, Poland" with no hierarchy is the Polish town, never the
@@ -654,6 +668,29 @@ class GeocodeMatchTests(_GazetteerCase):
         self.assertEqual(m.status, 'hit')
         self.assertEqual(m.hit.gid, 113)
 
+    def test_city_that_is_also_its_state_is_a_town(self):
+        # Berlin, Hamburg and New York are states with a city of the same
+        # name inside them: the city is geocoded.
+        m = self.match('Berlin', 'Berlin, Germany')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 302))
+        m = self.match('Hamburg')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 304))
+        m = self.match('New York')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 109))
+
+    def test_state_with_a_namesake_town_elsewhere_stays_general(self):
+        # The village of Kansas in New Jersey does not make Kansas a town.
+        self.assertEqual(self.match('Kansas', 'Kansas, USA').status, 'general')
+        self.assertNotIn('posen', places._HISTORIC_REGIONS)   # Posen is also a city
+
+    def test_historical_town_outranks_a_church_of_the_same_name(self):
+        m = self.match('Ashby', 'Ashby, Breton County, Kansas, USA')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 121))
+
+    def test_all_fitting_candidates_are_returned(self):
+        m = self.match('Fairview', 'Fairview, USA')
+        self.assertEqual(len(m.candidates), 2)
+
     def test_two_letter_state_code_is_not_a_country(self):
         # "IL" is Illinois to a genealogist, never Israel.
         self.assertNotIn('IL', places._place_countries('fairview', ['IL'], self.gaz))
@@ -691,6 +728,9 @@ class GeocodeFillTests(_GazetteerCase):
     def test_division_gets_only_the_levels_above_it(self):
         self.assertEqual(self.fill('Breton County', 'Breton County, Kansas'),
                          'Breton County, Kansas, United States')
+
+    def test_city_state_does_not_repeat_its_own_name(self):
+        self.assertIsNone(self.fill('Berlin', 'Berlin, Germany'))
 
     def test_cemetery_keeps_its_town_and_gains_the_rest(self):
         self.assertEqual(self.fill('Oak Hill Cemetery', 'Oak Hill Cemetery, Fairview, Kansas'),
@@ -1126,7 +1166,7 @@ class GeocodeRunTests(unittest.TestCase):
 
     def test_general_places_download_no_country(self):
         self._registry('- id: L-7c1a9f4e22\n  name: Poland\n'
-                       '- id: L-8d2b0a5f33\n  name: Kansas\n  hierarchy: Kansas, USA\n')
+                       '- id: L-8d2b0a5f33\n  name: Prussia\n')
         source = self.root / 'source-files'
         _write_geonames(source)
         fetched = []
@@ -1159,6 +1199,71 @@ class GeocodeRunTests(unittest.TestCase):
         self.assertIn('PL.zip', fetched)
         self.assertNotIn('US.zip', fetched)
         self.assertEqual(result['written'], 1)
+
+    def test_edit_made_while_the_data_loads_is_kept(self):
+        # The human edits the place while the dumps are read; the yes must
+        # not write the hierarchy the index had back over it.
+        import yaml
+        self._registry('- id: L-7c1a9f4e22\n  name: Fairview\n  hierarchy: Fairview, Kansas\n')
+        _write_geonames(self.gdir)
+        edited = []
+
+        def progress(line):
+            if not edited:
+                text = self.yaml_path.read_text(encoding='utf-8')
+                text = text.replace('  hierarchy: Fairview, Kansas\n',
+                                    '  hierarchy: Fairview, Breton Co., Kansas Territory, USA\n'
+                                    '  coords: [39.8, -95.6]\n')
+                self.yaml_path.write_text(text, encoding='utf-8')
+                edited.append(line)
+        result = places.run_geocode(self.root, {}, offline=True, confirm=lambda p: True,
+                                    progress=progress)
+        self.assertTrue(edited)
+        entry = yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))[0]
+        self.assertEqual(entry['hierarchy'], 'Fairview, Breton Co., Kansas Territory, USA')
+        self.assertEqual(entry['coords'], [39.8, -95.6])
+        self.assertEqual(result['written'], 0)
+        self.assertIn('l-7c1a9f4e22', '\n'.join(result['messages']))
+
+    def test_church_proposal_says_it_is_a_church(self):
+        self._registry('- id: L-7c1a9f4e22\n  name: Saint Mary Church\n'
+                       '  hierarchy: Saint Mary Church, Fairview, Kansas, USA\n')
+        _write_geonames(self.gdir)
+        result, prompts = self._run(dry_run=True)
+        self.assertEqual(result['written'], 1)
+        self.assertIn('the church', '\n'.join(result['messages']))
+
+    def _many_fairviews(self, n):
+        return [(400 + i, 'Fairview', 'Fairview', '', 30.0 + i, -90.0, 'P', 'PPL', 'NJ',
+                 '025', '', 10 + i) for i in range(n)]
+
+    def test_candidates_beyond_the_shown_ten_are_counted_not_dropped(self):
+        extra = self._many_fairviews(10)   # 12 fitting Fairviews in all
+        _US_FEATURES.extend(extra)
+        try:
+            self._registry('- id: L-9e3c1b6a44\n  name: Fairview\n  hierarchy: Fairview, USA\n')
+            _write_geonames(self.gdir)
+            result, _ = self._run(dry_run=True)
+            out = '\n'.join(result['messages'])
+            self.assertEqual(out.count('fha places set l-9e3c1b6a44'), 10)
+            self.assertIn('and 2 more', out)
+            self.assertIn('fha places geocode --place l-9e3c1b6a44', out)
+            result, _ = self._run(dry_run=True, place_id='l-9e3c1b6a44')
+            out = '\n'.join(result['messages'])
+            self.assertEqual(out.count('fha places set l-9e3c1b6a44'), 12)
+            self.assertNotIn('more; to see them all', out)
+        finally:
+            del _US_FEATURES[-len(extra):]
+
+    def test_place_naming_no_country_with_nothing_saved_says_what_to_add(self):
+        self._registry('- id: L-9e3c1b6a44\n  name: Fairview\n  hierarchy: Fairview, Breton County\n')
+        _write_geonames(self.gdir, countries=())
+        result, _ = self._run(place_id='l-9e3c1b6a44')
+        out = '\n'.join(result['messages'])
+        self.assertIn('name no country', out)
+        self.assertIn('add the country', out)
+        self.assertNotIn('loaded for :', out)
+        self.assertNotIn('loaded for )', out)
 
     def test_hierarchy_with_a_hand_comment_is_not_rewritten(self):
         self._registry('- id: L-7c1a9f4e22\n  name: Fairview\n'
