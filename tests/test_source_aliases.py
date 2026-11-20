@@ -97,6 +97,24 @@ class RetiredSourceLinkLintTests(unittest.TestCase):
         self.assertIn('merged into s-4f5f215e60', out.getvalue())
         self.assertIn('1880-census-fairview-hartley-household', out.getvalue())
 
+    def test_related_and_json_on_the_old_id_find_the_kept_record(self) -> None:
+        import contextlib
+        import io as _io
+        import find
+        self._add_alias()
+        config = load_fha_yaml(self.root)
+        index.build_index(self.root, config)
+        out = _io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = find.run_related(OLD, None, self.root, config)
+        self.assertEqual(rc, EXIT_CLEAN, out.getvalue())
+        self.assertIn('merged into s-4f5f215e60', out.getvalue())
+        self.assertIn("s-4f5f215e60's world", out.getvalue())
+
+        result = find.run_find_json(self.root, config, query=OLD)
+        self.assertEqual([h['id'] for h in result.data['results']], ['s-4f5f215e60'])
+        self.assertIn('merged', result.data['results'][0]['detail'])
+
     def test_link_to_an_unknown_id_is_still_an_orphan(self) -> None:
         codes = [m.code for m in self._findings()]
         self.assertEqual(codes, ['E004'])

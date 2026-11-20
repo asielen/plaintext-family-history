@@ -392,6 +392,32 @@ def _find_person(
     return EXIT_CLEAN
 
 
+def merged_source_holder(conn: sqlite3.Connection, sid: str) -> str | None:
+    """The source a merged-away S-id now belongs to, or None.
+
+    A source merged into another (SPEC §9) has no record of its own: its id
+    lives on in the kept record's `aliases:`, links to it still lead there,
+    and so does every lookup by id here (`fha find`, `--related`, `--json`
+    and the workbench pickers, which share `_bare_id_hit`). None when the id
+    is in no other source's aliases, or in more than one (that is for lint to
+    report, not for a lookup to guess)."""
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT a.canonical_id FROM aliases a JOIN sources s ON s.id = a.canonical_id "
+            "WHERE a.alias = ? AND a.canonical_id != ?",
+            (sid.lower(), sid)).fetchall()
+    except sqlite3.OperationalError:
+        # An index too old to hold the aliases table: no merge to follow.
+        return None
+    return rows[0][0] if len(rows) == 1 else None
+
+
+def _merged_source_line(sid: str, kept: str) -> str:
+    """The one line a lookup prints before showing the kept record."""
+    return (f'{sid} was merged into {kept}: its id is in the aliases: of that record, '
+            'so links to it lead there. Showing the kept record.')
+
+
 def _find_source(
     sid: str,
     conn: sqlite3.Connection,
@@ -411,17 +437,9 @@ def _find_source(
         (sid,)
     ).fetchone()
     if row is None:
-        # A source merged into another (SPEC §9) has no record of its own:
-        # its id lives on in the kept record's `aliases:`, and links to it
-        # still lead there, so the lookup does too.
-        holder = conn.execute(
-            "SELECT DISTINCT a.canonical_id FROM aliases a JOIN sources s ON s.id = a.canonical_id "
-            "WHERE a.alias = ? AND a.canonical_id != ?",
-            (sid.lower(), sid)).fetchall()
-        if len(holder) == 1:
-            kept = holder[0][0]
-            print(f'{sid} was merged into {kept}: its id is in the aliases: of that record, '
-                  'so links to it lead there. Showing the kept record.')
+        kept = merged_source_holder(conn, sid)
+        if kept is not None:
+            print(_merged_source_line(sid, kept))
             return _find_source(kept, conn, archive_root, fha_config)
         print(f'{sid}: not found in index.')
         return EXIT_WARNINGS
@@ -1878,6 +1896,10 @@ def _related_source(
         'SELECT id, title, repository FROM sources WHERE id = ?', (sid,)
     ).fetchone()
     if source is None:
+        kept = merged_source_holder(conn, sid)
+        if kept is not None:
+            print(_merged_source_line(sid, kept))
+            return _related_source(kept, conn, date_bounds)
         print(f'{sid}: not found in index.')
         return EXIT_WARNINGS
 
@@ -2447,6 +2469,16 @@ def _bare_id_hit(conn: sqlite3.Connection, id_norm: str) -> dict | None:
     hit_type = _ID_TYPE_TO_HIT_TYPE.get(id_type_of(id_norm) or '')
     if hit_type in ('person', 'source', 'place'):
         label, detail = _lookup_label_detail(conn, hit_type, id_norm)
+        if label is None and hit_type == 'source':
+            # A source merged into another answers as the kept record, the
+            # one its links lead to, and says so in the detail.
+            kept = merged_source_holder(conn, id_norm)
+            if kept is not None:
+                label, detail = _lookup_label_detail(conn, 'source', kept)
+                if label is not None:
+                    note = f'{id_norm} was merged into this record'
+                    return {'id': kept, 'type': 'source', 'label': label,
+                            'detail': f'{note}; {detail}' if detail else note}
         if label is None:
             return None
         return {'id': id_norm, 'type': hit_type, 'label': label, 'detail': detail}

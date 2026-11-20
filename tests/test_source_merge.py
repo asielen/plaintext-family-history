@@ -505,6 +505,34 @@ class RollbackTests(MergeTestCase):
         self.assertEqual(self._snapshot()['files'], before['files'])
         self.assertTrue(retiree.exists())
 
+    def test_ctrl_c_with_an_undo_that_fails_says_what_was_left(self) -> None:
+        self._letters()
+        real = self.kw.write
+        calls = {'n': 0}
+
+        def write(path, **kw):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise KeyboardInterrupt
+            return real(path, **kw)
+
+        def locked(_copy, _path):
+            raise PermissionError(13, 'the file is open in another program')
+        source._merge_write_keywords = write
+        saved = source.restore_undo_copy
+        source.restore_undo_copy = locked
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(KeyboardInterrupt):
+                    source._standalone_main(['merge', KEEP, RETIRE, '--root', str(self.archive)])
+        finally:
+            source.restore_undo_copy = saved
+        text = err.getvalue()
+        self.assertIn('could not finish', text)
+        self.assertIn('original bytes are kept at', text)
+        self.assertIn('fha doctor', text)
+
     def test_a_failed_run_never_says_it_merged(self) -> None:
         self._letters()
         self.kw.fail_on.add(f'letter-from-aunt-page-2_{KEEP}.jpg')
@@ -560,6 +588,25 @@ class PrivacyMarkerTests(MergeTestCase):
         _keeper, retiree = self._letters()
         self._set(retiree, 'created:', 'rights:\n  publication_ok: false\ncreated:')
         self.assertIn('publication_ok', self._refused())
+
+    def test_a_stricter_keeper_is_refused_without_advice_to_weaken_it(self) -> None:
+        # Keeper `dna`, retiree `true`: the advice must not be "add
+        # `restricted: true` to the keeper", which would replace `dna`.
+        keeper, retiree = self._letters()
+        self._set(keeper, 'created:', 'restricted: dna\ncreated:')
+        self._set(retiree, 'created:', 'restricted: true\ncreated:')
+        err = self._refused()
+        self.assertIn('protected differently', err)
+        self.assertIn('`restricted: dna`', err)
+        self.assertIn('`restricted: true`', err)
+        self.assertNotIn('Add `', err)
+
+    def test_an_unmarked_retiree_takes_the_keepers_protection(self) -> None:
+        keeper, _retiree = self._letters()
+        self._set(keeper, 'created:', 'restricted: by-request\ncreated:')
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        self.assertEqual(read_record(keeper)['meta']['restricted'], 'by-request')
 
     def test_same_markers_on_both_merge(self) -> None:
         keeper, retiree = self._letters()
@@ -657,6 +704,33 @@ class HandWrittenTextTests(MergeTestCase):
         self.assertNotIn(secret, shared)
         self.assertIn('Kept in the blue box.', shared)
         self.assertIn('The move west in 1871.', shared)
+
+    def test_notes_after_a_lifted_fence_stay_visible(self) -> None:
+        # The lifted fence must not start a section of its own: the retiree's
+        # ordinary notes and a later `fha source note` land after its closer.
+        keeper, retiree = self._letters()
+        keeper.write_text(keeper.read_text(encoding='utf-8').replace(
+            '## Notes', '## Stories\nThe move west in 1871.\n\n## Notes', 1), encoding='utf-8')
+        text = retiree.read_text(encoding='utf-8')
+        text = text.replace('\n## Stories\nThe letter mentions the move west.\n', '')
+        text = text.replace('## Notes', '<!-- private -->\n## Stories\nA family secret.\n'
+                                        '<!-- /private -->\n\n## Notes', 1)
+        retiree.write_text(text, encoding='utf-8')
+
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        out2, err2 = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
+            rc2 = source._standalone_main(['note', KEEP, '--text', 'A later note.',
+                                           '--root', str(self.archive)])
+        self.assertEqual(rc2, EXIT_CLEAN, out2.getvalue() + err2.getvalue())
+
+        after = keeper.read_text(encoding='utf-8')
+        shared = apply_private_fence(after, drop=True)
+        self.assertNotIn('A family secret.', shared)
+        self.assertIn('Second scan, better light.', shared)
+        self.assertIn('A later note.', shared)
+        self.assertEqual(after.count('\n## Stories'), 1)
 
     def test_an_unclosed_fence_does_not_hide_the_keepers_later_text(self) -> None:
         keeper, retiree = self._letters()

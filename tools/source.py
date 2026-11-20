@@ -2340,7 +2340,8 @@ def _lift_private_spans(body: str) -> tuple[str, list[str]]:
     heading would be cut in two when the sections are appended one by one,
     and the part without its opener would then show in shared output. So such
     a span, and an opener never closed, is lifted out whole, opener to closer,
-    for the caller to keep in one place. An unclosed one gets a closer: it hid
+    for the caller to keep in one place, with its `## ` headings demoted to
+    `### ` so it stays inside Notes. An unclosed one gets a closer: it hid
     everything after it in its own record, and must not hide the keeper's
     later sections instead. A span inside one section stays where it is and
     moves with its section intact."""
@@ -2354,8 +2355,12 @@ def _lift_private_spans(body: str) -> tuple[str, list[str]]:
             continue
         kept.append(body[pos:start])
         pos = end
-        pieces.append(span.strip('\n') if closed
-                      else span.rstrip('\n') + '\n<!-- /private -->')
+        piece = span.strip('\n') if closed else span.rstrip('\n') + '\n<!-- /private -->'
+        # Its `## ` headings become `### `: in the keeper's Notes a level-2
+        # heading would start a new section inside the fence, and every later
+        # Notes append (the retiree's own notes, a later `fha source note`)
+        # would land inside the fence and be hidden too.
+        pieces.append(_HEADING_LINE_RE.sub(lambda m: '#' + m.group(0), piece))
     kept.append(body[pos:])
     return ''.join(kept), pieces
 
@@ -2444,16 +2449,25 @@ def _privacy_markers(meta: dict) -> dict[str, str]:
     return out
 
 
-def _protection_gap(keeper_meta: dict, retiree_meta: dict) -> tuple[str, str] | None:
-    """The first privacy marker the retiree carries and the keeper does not
-    carry the same way, as (marker, its value), or None when the keeper is at
-    least as protected. Any difference in the `restricted:` value counts:
-    `true`, `dna` and `by-request` open under different export flags."""
+def _protection_gap(keeper_meta: dict, retiree_meta: dict) -> tuple[dict, dict] | None:
+    """The two records' privacy markers, (keeper's, retiree's), when they
+    disagree in a way the merge must not settle; None when it may go ahead.
+
+    It may when the retiree carries no marker (its files only gain the
+    keeper's protection) or when both carry exactly the same ones. Any other
+    difference is the owner's decision: `true`, `dna` and `by-request` open
+    under different export flags, and no tool can tell which of two
+    protections he meant the merged record to have."""
     mine = _privacy_markers(keeper_meta)
-    for marker, value in _privacy_markers(retiree_meta).items():
-        if mine.get(marker) != value:
-            return marker, value
-    return None
+    theirs = _privacy_markers(retiree_meta)
+    if not theirs or mine == theirs:
+        return None
+    return mine, theirs
+
+
+def _markers_shown(markers: dict) -> str:
+    """Privacy markers as the lines a person reads in a record, or 'none'."""
+    return ', '.join(f'`{k}: {v}`' for k, v in markers.items()) or 'none'
 
 
 def _read_merge_record(path: Path, shown: str) -> tuple[str, dict, list]:
@@ -2623,16 +2637,14 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
             next_step='fha claim --help')
     gap = _protection_gap(keeper_meta, retiree_meta)
     if gap is not None:
-        marker, value = gap
-        line = ('rights: {publication_ok: false}' if marker == 'rights: publication_ok'
-                else f'{marker}: {value}')
+        mine, theirs = gap
         raise _MergeRefused(
-            f'{retiree_label} is kept out of shared output by `{marker}: {value}`, and '
-            f'{keeper_label} does not say the same, so merging would put its files and '
-            f'claims where that line keeps them out (or let them out under a different '
-            f'export flag). Add `{line}` to {keeper_path.name} first, or keep '
-            f'{retiree_shown} instead (`fha source merge {retiree_shown} {keeper_shown}`). '
-            'Nothing was written.')
+            f'the two records are protected differently from shared output: '
+            f'{keeper_label} has {_markers_shown(mine)}, and {retiree_label} has '
+            f'{_markers_shown(theirs)}. A merge cannot choose between them for you. Decide '
+            'which protection the merged record should carry, write those same lines on '
+            f'both records ({keeper_path.name} and {retiree_path.name}), then run the merge '
+            'again. Nothing was written.')
     keeper_cids = [normalize_id(str(c.get('id'))) for c in keeper_claims
                    if isinstance(c, dict) and c.get('id')]
     retiree_cids = [normalize_id(str(c.get('id'))) for c in retiree_claims
@@ -2837,8 +2849,15 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     except (KeyboardInterrupt, SystemExit):
         # Ctrl+C part-way is put back too: a merge stopped between files
         # would leave some files named for one source and some for the other.
-        if not run_undo_steps(undo):
+        failed = run_undo_steps(undo)
+        if not failed:
             discard_undo_copies(undo_copies)
+        else:
+            # The exception goes on up, so the Result never reaches the
+            # screen: what could not be put back is said here, in the same
+            # words the ordinary failure uses, or nobody would know.
+            print('ERROR: ' + _undo_failed_text('the merge was stopped (Ctrl+C)', failed),
+                  file=sys.stderr)
         raise
     except Exception as e:
         failed = run_undo_steps(undo)
@@ -2847,12 +2866,9 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         for level, text in backup.drain_messages():
             result.add(level, text)
         if failed:
-            return result_fail(
-                result, 'failed',
-                f'The merge failed ({e}), and putting things back could not finish. Could '
-                'not undo: ' + '; '.join(failed) + '. Run `fha doctor` to see what is off; '
-                '`fha reconcile` re-ties a renamed file to its record.',
-                next_step='fha doctor')
+            return result_fail(result, 'failed', _undo_failed_text(f'the merge failed ({e})',
+                                                                   failed),
+                               next_step='fha doctor')
         return result_fail(
             result, 'failed',
             f'The merge failed ({e}), and everything was put back as it was. Nothing changed.',
@@ -2879,6 +2895,15 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
                'for cleanup when convenient.',
                next_step='fha index')
     return result
+
+
+def _undo_failed_text(what_happened: str, failed: list[str]) -> str:
+    """What a merge says when putting things back could not finish: each step
+    left undone (a document's step names where its original bytes are kept)
+    and the commands that help. One wording for a failure and for Ctrl+C."""
+    return (f'{what_happened[0].upper()}{what_happened[1:]}, and putting things back could '
+            'not finish. Could not undo: ' + '; '.join(failed) + '. Run `fha doctor` to see '
+            'what is off; `fha reconcile` re-ties a renamed file to its record.')
 
 
 def _restore_or_say_where(undo_copy: Path, path: Path) -> None:
