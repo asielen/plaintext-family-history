@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.8, 2026-11-19 · companion to SPEC.md v2.8 (versions track the SPEC)**
+**Version 2.9, 2026-11-20 · companion to SPEC.md v2.9 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -238,7 +238,7 @@ Severity: E = error, W = warning. `--with-exif` marks the slower checks that rea
 | W112 | W | Latent alias clash: one alias names two or more records, nothing links by it yet. | §18 |
 | W113 | W | Active alias clash: a real link uses an ambiguous name. Never auto-resolved; pin it as `[[p-…|Name]]`. | §18 |
 | W114 | W | Claim-shaped YAML under `## Claims` outside a ```` ```yaml ```` fence. Read anyway. Fix: `--fix-claims-fence`. | §8.4 |
-| W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim with no entry, or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. | §9 |
+| W115 | W | Relationship drift: a sourced `relationships:` entry with no matching accepted kin claim, an accepted kin claim with no entry, or a subtype mismatch. Kin claims are those the index derives edges from (`relationship`, `marriage`, `birth` with child and parent roles); negated claims are on neither side, and an entry citing one is told so. Fix for an accepted claim with no entry: `--fix-applied`. | §9 |
 | W116 | W | A relationship edge recorded on one person without its mirror on the other. A `status: hypothesis` entry on the other side is not a mirror of a sourced edge: the message says the fix adds the sourced entry beside the guess and leaves the guess for the owner. Fix: `--fix-reciprocal`. | §9 |
 | W117 | W | A person filename with no `__` sort separator. A prompt to confirm or rename, never an error. | §13 |
 | W118 | W | A claim whose `persons:` resolves to nobody (every entry an unresolved plain name). Suppressed when an entry is already an E005. | §8.4 |
@@ -305,6 +305,7 @@ E016 is retired: a claim naming a merged person counts for the survivor and is W
 - `--fix-claims-fence` (W114): wrap unfenced `## Claims` content in a yaml fence.
 - `--fix-ids`: mint and rename an id-less hand-authored record to the §13 grammar, keeping the slug and old stem as aliases. A template placeholder id (all underscores) counts as missing. GENERATED files and READMEs are never minted. The same pass inserts missing claim `id:`s and stamps `reviewed:` on a hand-written `accepted` claim it mints an id into.
 - `--fix-reciprocal` (W116): append the missing mirror entry, one entry per person and role, its `claims:` listing every claim the other side links (SPEC §9); an existing entry for the same tie absorbs it instead of gaining a twin. A guess for the same tie is never folded or deleted: the sourced entry is added beside it, and W155 names the guess for the owner to remove. The written header is re-read before saving, and a rewrite that would leave it unreadable, or change any field but `relationships:`, is refused with the entry to add by hand; the refusal says which. `--dry-run` runs the same fold and check, so it prints the refusal a live run would give.
+- `--fix-applied` (W115, an accepted kin claim an opted-in block leaves out): write the entry the claim owes that person, citing it, by the same rule and writer `fha claim` uses on accept (§3b). An entry for the same tie gains the claim in its `claims:` list; a guess is left as written and the sourced entry goes beside it. Only the people the W115 names are touched, so no record is given a block. The same header check and refusals as `--fix-reciprocal`; `--dry-run` prints them.
 - `--fix-surnames` (W138): write the implied `surname:` line after `name:`.
 
 E011 has no lint fix mode; `fha reconcile` is the fixer.
@@ -445,6 +446,17 @@ fha claim new --source s-id --type TYPE --value "…" [--date DATE]
 - `--dry-run` previews ("Would mark …"). `--keep-living` skips this; a stopped batch's recovery command carries it. Exit code unaffected.
 
 Moving an accepted death/burial claim out of `accepted`, or editing it so it stops naming someone as deceased, never reverts the flag; it warns for each such person still `living: false`, with `fha person set-living <p-id> unknown`. A newly named person is not marked (W136 reports them).
+
+### Accepting a kin claim writes the relationships: entries
+
+A `relationship`, `marriage` or `birth` claim (with child and parent roles) that the command moves into `accepted` (one claim, a batch, or `claim new --status accepted`) is applied to the person records it connects (SPEC §9), one plain line per record changed ("Thomas Hartley's record now lists Margaret Cole as a parent (claim c-…).").
+
+- Which entries, and on whom, is the rule lint W115 reads (`_lib.claim_owed_relationship_entries`): the couple a marriage's `spouse:` role names; the child and parents a birth or relationship claim names, a `parent` entry on the child and a `child` entry on each parent. Negated claims, social ties and other claim types owe nothing.
+- Only a record that already has a `relationships:` list is written. The list is opt-in, and once there lint asks it to hold every tie, so a record without one is left alone; when its other side was written, one line says so (lint then reports the missing mirror as W116, `--fix-reciprocal` adds it).
+- An entry for the same tie (person, type and nature) gains the claim in its `claims:` list; otherwise a new entry citing the claim is added. A guess (`status: hypothesis`) is never rewritten: the sourced entry goes beside it (W155 names the guess).
+- Moving a claim to `disputed`, `rejected` or `superseded` takes it out of every `claims:` list on a person record; an entry left with no claims and no `source:` is removed, and a guess keeps its entry. Moving to `suggested` leaves the lists alone.
+- Every person edit is worked out and checked in memory before any person record is written (the header must still read, nothing but `relationships:` may change), each record is written once, atomically, and `--dry-run` prints the same lines. A record that cannot be edited safely (a `relationships: [...]` flow list, say) is a warning naming the entry to add by hand; the claim's own change stands and the exit code is unaffected. `fha lint --fix-applied` writes any entries still missing.
+- `fha serve` rebuilds the index in full after such a change.
 
 ### `fha claim new`
 
@@ -1708,6 +1720,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 - `--information`/`--evidence`/`--anchor`/`--notes` correct the Mills fields and context note surgically; every free-text field write echoes what it wrote.
 - `--clear FIELD` removes an optional field whole; empty values are refused, never written as `key: ''`.
 - Several c-ids apply one status move to each (status-only: field edits take exactly one c-id; every id validated before any write; duplicates deduped with a note). `--dry-run`.
+- Accepting a relationship, marriage or birth claim writes the matching `relationships:` entries on the people it connects whose records already keep that list; disputing, rejecting or superseding one takes it out of those lists (§3b). No hand-editing of `relationships:` after a review.
 
 | Surface | What it is / when |
 |---|---|
