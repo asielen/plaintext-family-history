@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "dd78c2785df46ee397a9ed352d1b3b7d4e6e69d5f9c5c7b649e098f5206b6edd",
+      "sha256": "d7179fc6603b26cfdaa596978d2c9ec927fa47bca1a556c8f94ab38f342bc6ca",
       "spec_version": "2.16",
       "src": "tools/_lib.py"
     },
@@ -716,7 +716,7 @@
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
-      "sha256": "5625ea992af6c564c8b3c0041afa25c658103967e2ad880de265b5dc0940b503",
+      "sha256": "29a6b170b0231ea6e892184daea22ee7e47d75a95b3ccf402619119027109c76",
       "spec_version": "2.16",
       "src": "tools/claim.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "5faa00ad2df92e52e9ae2bc6a02f70dc5be653e2b65693dce6e4fc348f951735",
+      "sha256": "860a2a4908b91f792910d862f67846552117e5940b37cc8b1f89aa7dea4d0c6d",
       "spec_version": "2.16",
       "src": "tools/lint.py"
     },
@@ -814,14 +814,14 @@
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
-      "sha256": "7c185e1652ed6dae015241b8ddbf0040167c7b59438fc8fa907509153e4e9900",
+      "sha256": "6697537b69727d71e3be04a032852790062e9f377b199c2bf4e364cf5afd9a69",
       "spec_version": "2.16",
       "src": "tools/normalize_links.py"
     },
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "890f9f9986aac0179b321f35561aa26606c9011cce9238f0b3163a1e5753e932",
+      "sha256": "bb2db6856999626d21fd05bace11301c4a360b9bf819f533ec25bd95de88fde6",
       "spec_version": "2.16",
       "src": "tools/packet.py"
     },
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "a287e23c6acc851faf598c523cfff0fd0d3157698e7ee5ec6a5643ef3ecac879",
+      "sha256": "57f03cd78d47e9a481973fb9f12f4e7e72a82dc28060a8d62da35eb21aa98b93",
       "spec_version": "2.16",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d3fbc92a8d5573e9d1a9d6849ccdf58cbcc741164e3961edd565f62272190207",
+      "sha256": "273c5945687761b3fd95313d30bdfb3b3bff92803d005eaa31e10b214ded8fff",
       "spec_version": "2.16",
       "src": "TOOLING.md"
     },
@@ -1212,7 +1212,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "dd49f1ace02404bdc225a083c07fc097493e843c0d0c2d0727e945c845e21a5a",
+      "sha256": "f8a62869131479970f94fc480328d29183502ac746f4174385de1c040229e529",
       "spec_version": "2.16"
     },
     {
