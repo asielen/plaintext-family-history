@@ -18,6 +18,7 @@ Contents:
 8. The workbench: a local browser page
 9. Capture: one record, on the user's click
 10. Working in Obsidian
+11. Geocoding: one table, one yes
 
 ---
 
@@ -277,3 +278,19 @@ Other limits:
 - **Name-only links.** A link by name breaks when the name changes and is ambiguous when two people share it. The ID inside the brackets fixes both.
 - **A generated "claim mirror" note** that copies claims into queryable frontmatter. It would duplicate every claim and add a file to keep in sync, and the person frontmatter already answers the common questions.
 - **Making Obsidian, or any one editor, required.** It is one good way to read and write the files. The archive works the same in a plain text editor.
+
+---
+
+## 11. Geocoding: one table, one yes
+
+**The rule.** `fha places geocode` fills in coordinates from GeoNames, the free world gazetteer, saved once into `.cache/geonames/` (only the countries the registry names). It proposes a match only when exactly one GeoNames entry fits every part of the place's hierarchy, shows every proposal in one table, and asks once. A yes writes them all in one rewrite of `places.yaml`. A match also fills in a missing county, state or country, but never changes words already in the hierarchy. A place that could be more than one entry is listed with the exact command that settles each candidate. A country, state or historic region gets no coordinates at all: it is specific enough as it is. A state that is also a city (Berlin, Hamburg, New York) is the city. Churches and cemeteries are matched too, but only when their town, county and state agree, and never in place of a town of the same name.
+
+**Why.** Coordinates anchor a place's identity, so a human still says yes before any are written. One question per place made a registry of a few hundred places a few hundred prompts, so it was never run. A table read once and answered once is a real review, and the all-or-nothing write means a refused or failed run leaves the registry as it was. Matching on the whole hierarchy, not the name alone, is what makes the single yes safe: two towns called Fairview stay a question for the human, never a guess. Per-country dumps carry the villages, counties and states a genealogist names, where a list of large cities carries only cities; downloading only the named countries keeps the download small.
+
+**Rejected.**
+
+- **A live geocoding API.** It needs the network on every run, rate limits and accounts, and its answers change over time. A saved dump answers the same way every run, offline.
+- **The worldwide `allCountries` dump.** Hundreds of megabytes to download, and over a gigabyte unpacked, for an archive that names a handful of countries.
+- **Writing coordinates when `fha confirm place` mints a place.** Its yes is about the claims and the name, not coordinates the tool inferred. It names the geocode command to run next, so the coordinates get their own table and yes.
+- **Guessing between candidates** (largest population, nearest to other places). A confident wrong pin is worse than an empty one the human can fill with one command. For the same reason a place that names no country is never a confident match, even when one entry fits.
+- **A pin for every place.** A country or a region like Prussia has no one point that means it; a pin in its middle would look precise and say nothing.
