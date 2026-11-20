@@ -533,6 +533,27 @@ class RollbackTests(MergeTestCase):
         self.assertIn('original bytes are kept at', text)
         self.assertIn('fha doctor', text)
 
+    def test_an_undo_that_fails_names_the_file_as_it_is_now_called(self) -> None:
+        # The bytes could not be put back, but the rename back did run: the
+        # owner must be sent to the name the file has now, not the merge name.
+        self._letters()
+        self.kw.fail_on.add(f'letter-from-aunt-page-2_{KEEP}.jpg')
+
+        def locked(_copy, _path):
+            raise PermissionError(13, 'the file is open in another program')
+        saved = source.restore_undo_copy
+        source.restore_undo_copy = locked
+        try:
+            rc, out, err = self._run(KEEP, RETIRE)
+        finally:
+            source.restore_undo_copy = saved
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue((self.docs / 'letter' / f'aunt-letter-copy_{RETIRE}.pdf').is_file())
+        self.assertIn(f'original bytes of aunt-letter-copy_{RETIRE}.pdf', err)
+        self.assertNotIn(f'letter-from-aunt-b_{KEEP}.pdf', err)
+        self.assertIn('original bytes are kept at', err)
+
     def test_a_failed_run_never_says_it_merged(self) -> None:
         self._letters()
         self.kw.fail_on.add(f'letter-from-aunt-page-2_{KEEP}.jpg')
@@ -731,6 +752,37 @@ class HandWrittenTextTests(MergeTestCase):
         self.assertIn('Second scan, better light.', shared)
         self.assertIn('A later note.', shared)
         self.assertEqual(after.count('\n## Stories'), 1)
+
+    def _nested_fence_case(self, block: str) -> None:
+        """Merge a retiree whose body ends in `block`, add a note afterwards,
+        and check the note shows and every fence in the keeper is closed."""
+        keeper, retiree = self._letters()
+        text = retiree.read_text(encoding='utf-8')
+        text = text.replace('\n## Stories\nThe letter mentions the move west.\n', '')
+        retiree.write_text(text[:text.index('## Notes')] + block, encoding='utf-8')
+
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            source._standalone_main(['note', KEEP, '--text', 'A later note.',
+                                     '--root', str(self.archive)])
+
+        after = keeper.read_text(encoding='utf-8')
+        shared = apply_private_fence(after, drop=True)
+        self.assertNotIn('Secret', shared)
+        self.assertIn('A later note.', shared)
+        self.assertIn('Kept in the blue box.', shared)
+        self.assertEqual(source._open_fence_depth(after), 0, 'a fence is left open')
+
+    def test_an_unclosed_outer_fence_holding_a_closed_one(self) -> None:
+        self._nested_fence_case(
+            '<!-- private -->\nSecret A.\n## Stories\nSecret B.\n\n## Notes\nOld note.\n'
+            '<!-- private -->example<!-- /private -->\n')
+
+    def test_two_openers_never_closed(self) -> None:
+        self._nested_fence_case(
+            '<!-- private -->\nSecret A.\n## Stories\n<!-- private -->\nSecret B.\n\n'
+            '## Notes\nOld note.\n')
 
     def test_an_unclosed_fence_does_not_hide_the_keepers_later_text(self) -> None:
         keeper, retiree = self._letters()

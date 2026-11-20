@@ -2329,7 +2329,20 @@ def _without_purpose_block(preamble: list[str]) -> list[str]:
     return _trimmed(out[:-1])
 
 
-_PRIVATE_CLOSER_AT_END_RE = re.compile(r'<!--\s*/\s*private\s*-->\s*$', re.I)
+_PRIVATE_TOKEN_RE = re.compile(r'<!--\s*(/?)\s*private\s*-->', re.I)
+
+
+def _open_fence_depth(text: str) -> int:
+    """How many `<!-- private -->` openers are still open at the end of
+    `text`, counted as `_lib.private_fence_spans` counts them (a closer with
+    no opener is ignored)."""
+    depth = 0
+    for m in _PRIVATE_TOKEN_RE.finditer(text):
+        if m.group(1):
+            depth = max(depth - 1, 0)
+        else:
+            depth += 1
+    return depth
 _HEADING_LINE_RE = re.compile(r'^##\s+\S', re.M)
 
 
@@ -2350,12 +2363,15 @@ def _lift_private_spans(body: str) -> tuple[str, list[str]]:
     pos = 0
     for start, end in private_fence_spans(body):
         span = body[start:end]
-        closed = _PRIVATE_CLOSER_AT_END_RE.search(span) is not None
-        if closed and not _HEADING_LINE_RE.search(span):
+        still_open = _open_fence_depth(span)
+        if not still_open and not _HEADING_LINE_RE.search(span):
             continue
         kept.append(body[pos:start])
         pos = end
-        piece = span.strip('\n') if closed else span.rstrip('\n') + '\n<!-- /private -->'
+        # One closer for each opener still open, counted the way the fence
+        # reader counts them: an unclosed outer fence holding a closed inner
+        # one, or two openers never closed, end closed in the keeper.
+        piece = span.strip('\n') + '\n<!-- /private -->' * still_open
         # Its `## ` headings become `### `: in the keeper's Notes a level-2
         # heading would start a new section inside the fence, and every later
         # Notes append (the retiree's own notes, a later `fha source note`)
@@ -2811,6 +2827,24 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     keyword_files = [p['dest'] for p in plans if p['add'] or p['remove']]
     if keyword_files:
         backup.announce(keyword_files)
+    # A failed undo step names its file as it is called on disk once the
+    # undo has finished: a later step may already have renamed it back.
+    names: dict[str, tuple[Path, Path]] = {}
+
+    def _file_tag(src: Path, dest: Path) -> str:
+        tag = f'\x00{len(names)}\x00'
+        names[tag] = (src, dest)
+        return tag
+
+    def _named_now(failed: list[str]) -> list[str]:
+        out = []
+        for text in failed:
+            for tag, (src, dest) in names.items():
+                now = dest if dest.exists() or not src.exists() else src
+                text = text.replace(tag, now.name)
+            out.append(text)
+        return out
+
     try:
         for p in plans:
             src, dest = p['src'], p['dest']
@@ -2824,14 +2858,14 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
                     # to a PDF, so removing a keyword is not the inverse).
                     copy = take_undo_copy(dest)
                     undo_copies.append(copy)
-                    undo.append((f'restore the original bytes of {dest.name}',
+                    undo.append((f'restore the original bytes of {_file_tag(src, dest)}',
                                  lambda c=copy, d=dest: _restore_or_say_where(c, d)))
                 else:
                     # A photo's inverse is the opposite keyword write: photos
                     # are never byte-copied aside (they can be very large).
                     # Registered first: undoing a write that never happened
                     # is a no-op.
-                    undo.append((f'put the SOURCE: keyword of {dest.name} back',
+                    undo.append((f'put the SOURCE: keyword of {_file_tag(src, dest)} back',
                                  lambda d=dest, a=p['add'], r=p['remove']:
                                  _raise_on(_merge_write_keywords(d, add=r, remove=a,
                                                                  backup=backup))))
@@ -2849,7 +2883,7 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     except (KeyboardInterrupt, SystemExit):
         # Ctrl+C part-way is put back too: a merge stopped between files
         # would leave some files named for one source and some for the other.
-        failed = run_undo_steps(undo)
+        failed = _named_now(run_undo_steps(undo))
         if not failed:
             discard_undo_copies(undo_copies)
         else:
@@ -2860,7 +2894,7 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
                   file=sys.stderr)
         raise
     except Exception as e:
-        failed = run_undo_steps(undo)
+        failed = _named_now(run_undo_steps(undo))
         if not failed:
             discard_undo_copies(undo_copies)
         for level, text in backup.drain_messages():
