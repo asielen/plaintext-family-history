@@ -306,5 +306,66 @@ class W160Tests(unittest.TestCase):
         self.assertTrue(_codes(findings, 'W155'))
 
 
+class CollapseKeepsTheOwnersTextTests(unittest.TestCase):
+    """A writer folds a later entry for the same tie into the first only when
+    the fold carries everything the later entry says. A note, another key or
+    a comment is the owner's text: the entry stays, and W160 names it."""
+
+    NOTED = (f'  - to: "[[{PARENT}|Bob Kid]]"   # Aunt Ruth says he raised her\n'
+             '    type: parent\n'
+             '    notes: family story, see letter of 1931\n')
+
+    def test_a_later_entry_with_a_note_or_comment_is_kept(self):
+        from _lib import collapse_relationship_entries
+        commented = BARE.replace('type: parent', 'type: parent   # per Mom')
+        for later in (self.NOTED, commented, BARE + '    since: 1920\n'):
+            text = _front(SOURCED + later)
+            self.assertEqual(collapse_relationship_entries(text), (text, 0), later)
+
+    def test_half_and_half_sibling_entries_with_a_note_stay_two(self):
+        from _lib import collapse_relationship_entries
+        sib = (f'  - to: "[[{OTHER}|Cara Kid]]"\n    type: sibling\n'
+               f'    subtype: half-sibling\n    claims: ["[[{CLAIM}]]"]\n'
+               f'  - to: "[[{OTHER}|Cara Kid]]"\n    type: sibling\n    subtype: half\n'
+               '    notes: Mom said they shared a father\n')
+        text = _front(sib)
+        self.assertEqual(collapse_relationship_entries(text), (text, 0))
+
+    def test_plain_later_entries_still_fold(self):
+        from _lib import collapse_relationship_entries
+        out, removed = collapse_relationship_entries(_front(SOURCED + BARE))
+        self.assertEqual((out.lower(), removed), (_front(SOURCED).lower(), 1))
+        other = SOURCED.replace(CLAIM, 'C-eeeeeeeeee')
+        out, removed = collapse_relationship_entries(_front(SOURCED + other))
+        self.assertEqual(removed, 1)
+        self.assertIn('c-eeeeeeeeee', out.lower())
+
+    def test_a_writer_adding_another_tie_leaves_the_noted_entry(self):
+        from _lib import add_relationship_entry
+        text = _front(SOURCED + self.NOTED)
+        item = [f'  - to: "[[{OTHER}|Cara Kid]]"', '    type: spouse',
+                '    claims: ["[[C-eeeeeeeeee]]"]']
+        new, why = add_relationship_entry(text, item)
+        self.assertIsNone(why)
+        self.assertIn('1931', new)
+        self.assertIn('Aunt Ruth', new)
+
+    def test_fix_reciprocal_on_the_record_keeps_the_note_and_w160_names_it(self):
+        rel, text = _rel_source(SOURCE, CLAIM, CHILD, PARENT)
+        files = _people()
+        c_rel, _ = _person(CHILD, 'kid', 'ann')
+        files[c_rel] = _front(SOURCED + self.NOTED)
+        files[rel] = text
+        root = _build(files)
+        lint.run_lint(root, {}, fix_reciprocal=True)
+        lint.run_lint(root, {}, fix_applied=True)
+        after = (root / c_rel).read_text(encoding='utf-8')
+        self.assertIn('1931', after)
+        self.assertIn('Aunt Ruth', after)
+        findings, _ = lint._run_lint_core(root, {})
+        (w,) = _codes(findings, 'W160')
+        self.assertIn('remove it by hand', w.message)
+
+
 if __name__ == '__main__':
     unittest.main()

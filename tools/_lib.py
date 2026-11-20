@@ -10061,6 +10061,20 @@ def claimless_duplicate_entries(block: Any, resolve=None) -> list[int]:
             and relationship_tie_key(e, resolve) in sourced]
 
 
+# The keys `collapse_relationship_entries` carries into the entry it keeps.
+_FOLDABLE_ENTRY_KEYS = frozenset({
+    'to', 'type', 'subtype', 'claims', 'source', 'status', 'hypothesis'})
+
+def _entry_within(entry: Any, kept: Any) -> bool:
+    """Whether every key of one entry, other than the `claims:` and
+    `hypothesis:` a fold carries over, is in the kept entry with the same
+    value. Then folding it loses nothing the owner wrote."""
+    if not isinstance(entry, dict) or not isinstance(kept, dict):
+        return False
+    return all(k in kept and kept[k] == v for k, v in entry.items()
+               if k not in ('claims', 'hypothesis'))
+
+
 # The keys a bare entry is made of. An entry holding anything else (a note, a
 # date, a `claims: []` left with a comment) carries the owner's text.
 _BARE_ENTRY_KEYS = frozenset({'to', 'type', 'subtype'})
@@ -10254,12 +10268,21 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     duplicates is left alone. A guess is never folded into a sourced entry
     (`_relationship_item_key`).
 
+    A tool never removes text the owner typed, so a later entry is folded
+    only when the fold carries everything it says: it holds nothing beyond
+    `to:`, `type:`, `subtype:`, `claims:`, `source:`, `status:` and
+    `hypothesis:`, has no comment, and names no working answer other than the
+    one the kept entry ends up with. A later entry with no comment whose
+    every other key the first already holds with the same value (the same
+    guess written twice, or copied in by a merge) is folded too, since
+    nothing it says is lost. Any
+    other later entry (a note, a date, a
+    comment, a second working answer) stays where it is, beside the first;
+    lint W160 or W155 names it for the owner to fold in by hand.
+
     The working answer is not part of a sourced entry's key, so sourced
-    entries still fold to one per person and role. When the folded entries
-    name different working answers (`hypothesis:`), the first entry's link is
-    kept and the others are dropped; the first entry gains a link from a later
-    one only when it has none. That loses a link only when one tie was proved
-    from two different guesses, which is rare and leaves the evidence intact.
+    entries still fold to one per person and role, and the first entry gains
+    a link from a later one only when it has none.
 
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
@@ -10277,6 +10300,8 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     cr = '\r' if lines[0].endswith('\r') else ''
 
     parsed: list[tuple[tuple | None, list[str]]] = []
+    foldable: list[bool] = []
+    entries: list[Any] = []
     for s, e in items:
         indent = re.match(r'^(\s*)', lines[s]).group(1)
         chunk = '\n'.join(
@@ -10290,6 +10315,9 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         parsed.append((_relationship_item_key(entry, resolve),
                        relationship_entry_claim_ids(entry),
                        relationship_entry_hypothesis(entry)))
+        entries.append(entry)
+        foldable.append(isinstance(entry, dict) and set(entry) <= _FOLDABLE_ENTRY_KEYS
+                        and not _item_has_comment(lines[s:e]))
 
     groups: dict[tuple, list[int]] = {}
     for n, (k, _c, _h) in enumerate(parsed):
@@ -10302,6 +10330,24 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         linked = [o for o in groups if o[:-1] == k[:-1] and o[-1]]
         if len(linked) == 1:
             groups[linked[0]] = sorted(groups[linked[0]] + groups.pop(k))
+    # Only what the fold carries may be folded: a later entry holding the
+    # owner's own text stays beside the first, and lint names it.
+    for k, group in groups.items():
+        kept_link = parsed[group[0]][2]
+        members = [group[0]]
+        for m in group[1:]:
+            link = parsed[m][2]
+            later = lines[items[m][0]:items[m][1]]
+            first = lines[items[group[0]][0]:items[group[0]][1]]
+            carried = (foldable[m]
+                       or [ln.strip() for ln in later] == [ln.strip() for ln in first]
+                       or (not _item_has_comment(later)
+                           and _entry_within(entries[m], entries[group[0]])))
+            if not carried or (link and kept_link and link != kept_link):
+                continue
+            kept_link = kept_link or link
+            members.append(m)
+        groups[k] = members
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
     if not dupes:
         return text, 0
