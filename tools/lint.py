@@ -7039,12 +7039,12 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
     Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
     slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
-    the file never draws W138 the moment it is named.
+    a name of two words or more never draws W138 the moment it is named.
 
     One difference is kept on purpose: a one-word name with no suffix
     ("Cher") files as `cher__unknown` here, the convention this function
     has always used, where `stub_slug_name` writes SPEC §13's surname-less
-    `__cher`. With no usable name at all, the slots come from the hand
+    `__cher`. That file does draw W138, as it always has. With no usable name at all, the slots come from the hand
     filename."""
     words = name_words(fold_accents(str(name or '')))
     core, suffix = strip_generational_suffix(words)
