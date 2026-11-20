@@ -144,6 +144,14 @@ class SourceNoteEditTests(unittest.TestCase):
         after_head = after.split('## Notes')[0]
         self.assertEqual(before_head, after_head)
 
+    def test_long_note_stays_on_one_line(self) -> None:
+        # The source's Notes are his to edit by hand later, so a long
+        # paragraph goes in as one line and the editor does the wrapping.
+        long_note = ' '.join(['The Bible came down through the Hartley side of the family.'] * 4)
+        source.run_source_note(self.root, SID, text=long_note)
+        after = self.record.read_text(encoding='utf-8')
+        self.assertTrue(after.endswith('\n\n' + long_note + '\n'))
+
     def test_creates_heading_when_missing(self) -> None:
         root = _mk_archive(Path(tempfile.mkdtemp()), SOURCE_NO_NOTES)
         record = root / 'sources' / 'other' / f'hartley-bible_{SID}.md'
