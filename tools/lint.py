@@ -883,14 +883,25 @@ def _check_date_value(
 
 # ── Walk and collect ─────────────────────────────────────────────────────────
 
-def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
+def _body_line_offset(rec: dict) -> int:
+    """How many file lines come before a record's body (its frontmatter and
+    two fences), so a line counted in the body is reported as the line the
+    owner sees when he opens the file. FRONT_RE: `---`, the fields, `---`."""
+    fm = rec.get('frontmatter')
+    return fm.count('\n') + 3 if fm else 0
+
+
+def _collect_token_refs(text: str, path: Path, registry: Registry,
+                        line_offset: int = 0) -> None:
     """Index citation tokens in text.
 
     ID tokens (`[[S-…]]`, legacy `[S-…]`) go to `token_refs` for the E004/E005
     resolution checks. Non-ID name/stem wikilinks (`[[Ken Smith]]`) go to
     `name_link_refs` - they are ordinary Obsidian links, never E004 candidates,
-    but a name link is what makes a name clash ACTIVE (must be pinned to an ID)."""
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    but a name link is what makes a name clash ACTIVE (must be pinned to an ID).
+    `line_offset` is added to each line number when `text` is a record body,
+    so the number is the file's own."""
+    for lineno, line in enumerate(text.splitlines(), start=1 + line_offset):
         for m in TOKEN_RE.finditer(line):
             tid = normalize_id(m.group(1))
             registry.token_refs.setdefault(tid, []).append((path, lineno))
@@ -1349,7 +1360,7 @@ def _process_person_file(path: Path, registry: Registry,
                 'the same person in the same role, keep one and list both claims in it.'))
 
     # Collect token refs from body
-    _collect_token_refs(rec['body'], path, registry)
+    _collect_token_refs(rec['body'], path, registry, line_offset=_body_line_offset(rec))
 
     # merged_into: the survivor id counts as a known record (W107 resolves through it)
     merged_into = normalize_id(str(meta.get('merged_into', '')))
@@ -2029,7 +2040,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             f'{len(suggested)} suggested claim(s) awaiting review'))
 
     # Collect token refs
-    _collect_token_refs(rec['body'], path, registry)
+    _collect_token_refs(rec['body'], path, registry, line_offset=_body_line_offset(rec))
 
 
 # ── Bracket and Ahnentafel checks (W103, W110, W119, W120, W127) ─────────────
@@ -3456,7 +3467,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # survivor's `aliases:`, so the link still finds the right record.
             # Gradual cleanup, like a link to a merged person, not an orphan.
             holder = _retired_source_holder(token_id, alias_map, registry)
-            for ref_path, ref_line in refs[:5]:
+            for ref_path, ref_line in refs:
                 findings.append(Finding('W', 'W107', ref_path,
                     f'[{fmt_id_display(token_id)}] at line {ref_line} names a merged '
                     f'source (now {fmt_id_display(holder)}, which lists it in its '
@@ -4314,7 +4325,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             if pid in registry.token_refs:
                 target = meta.get('merged_into', '?')
                 display_pid = fmt_id_display(pid)
-                for ref_path, ref_line in registry.token_refs[pid][:5]:
+                for ref_path, ref_line in registry.token_refs[pid]:
                     findings.append(Finding('W', 'W107', ref_path,
                         f'[{display_pid}] at line {ref_line} references merged person '
                         f'(merged into {target}); update to the survivor P-id'))

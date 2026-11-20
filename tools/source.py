@@ -211,6 +211,7 @@ import copy
 import datetime
 import difflib
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -244,6 +245,8 @@ from _lib import (
     run_undo_steps,
     slugify,
     SOURCE_FRONTMATTER_KEY_ORDER,
+    scan_person_merge_survivors,
+    private_fence_spans,
     take_undo_copy,
     without_retired_sid,
     yaml_inline,
@@ -2030,6 +2033,16 @@ def _merge_claims_text(keeper_lines: list[str], retiree_lines: list[str], cr: st
     return keeper_lines[:insert_at] + [ln + cr for ln in block] + keeper_lines[insert_at:]
 
 
+def _file_key(path: Path) -> str:
+    """One file's identity for comparing two `files:` entries: its resolved
+    path, with letter case folded where the filesystem folds it (Windows)."""
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        resolved = str(path)
+    return os.path.normcase(os.path.normpath(resolved))
+
+
 def _entry_as_dict(entry) -> dict:
     """A `files:` entry as a mapping (a bare string entry names only its file)."""
     if isinstance(entry, dict):
@@ -2096,11 +2109,17 @@ def _plan_merge_files(
     keeper_files = keeper_meta.get('files')
     keeper_entries = ([_entry_as_dict(e) for e in keeper_files]
                       if isinstance(keeper_files, list) else [])
-    listed = {str(e.get('file') or '').replace('\\', '/') for e in keeper_entries}
+    # The same file can be spelled two ways (capitals on Windows, `./`, a
+    # doubled slash), so files are compared as the file on disk they name.
+    listed = {_file_key(resolve_path(str(e.get('file') or ''), fha_config, archive_root))
+              for e in keeper_entries if str(e.get('file') or '').strip()}
+    seen: dict[str, str] = {}
     used = {(files_entry_role(e), str(e.get('copy') or '').strip()) for e in keeper_entries}
     planned_dests: set[str] = set()
     keeper_shown = fmt_id_display(keeper_sid)
-    retired = frozenset({retiree_sid})
+    # Either id at the end of a name is cut before the keeper's is added, so
+    # a new name never carries the keeper's id twice.
+    retired = frozenset({retiree_sid, keeper_sid})
     plans: list[dict] = []
     for raw in entries:
         entry = _entry_as_dict(raw)
@@ -2109,11 +2128,19 @@ def _plan_merge_files(
             raise _MergeRefused(
                 f"{fmt_id_display(retiree_sid)} has a files: entry with no file: line. "
                 'Fix or remove it by hand, then run the merge again. Nothing was written.')
-        if alias in listed:
-            raise _MergeRefused(
-                f'{alias} is listed on both records. Remove it from one of them by hand '
-                '(it belongs on the keeper), then run the merge again. Nothing was written.')
         root_alias = alias.split('/', 1)[0]
+        key = _file_key(resolve_path(alias, fha_config, archive_root))
+        if key in listed:
+            raise _MergeRefused(
+                f'{alias} is listed on both records (perhaps spelled differently). Remove it '
+                f'from {fmt_id_display(retiree_sid)} by hand (it belongs on the keeper), then '
+                'run the merge again. Nothing was written.')
+        if key in seen:
+            raise _MergeRefused(
+                f'{fmt_id_display(retiree_sid)} lists the same file twice ({seen[key]} and '
+                f'{alias}). Remove one of the two entries by hand, then run the merge again. '
+                'Nothing was written.')
+        seen[key] = alias
         role = files_entry_role(entry)
         copy = str(entry.get('copy') or '').strip()
         new_entry = {k: v for k, v in entry.items() if k != 'is_primary'}
@@ -2151,12 +2178,15 @@ def _plan_merge_files(
             for candidate in candidates:
                 base = attachment_base(without_retired_sid(src, retired), keeper_meta,
                                        keeper_path, keeper_shown, role, candidate or None)
+                # The keeper's id is added once, at the end, and nowhere else.
+                base = re.sub(rf'[-_]?{re.escape(keeper_sid)}', '', base,
+                              flags=re.I).strip('-') or 'source'
                 suffix = f'-{slugify(role)}' if role else ''
                 if candidate:
                     suffix = f'-{slugify(candidate)}{suffix}'
                 dest = src.with_name(f'{base}{suffix}_{keeper_shown}{src.suffix}')
-                clash = (str(dest).lower() in planned_dests
-                         or (dest.exists() and dest.resolve() != src.resolve()))
+                clash = (_file_key(dest) in planned_dests
+                         or (dest.exists() and _file_key(dest) != _file_key(src)))
                 if not clash:
                     copy = candidate
                     break
@@ -2166,7 +2196,7 @@ def _plan_merge_files(
                     'another file. Rename one of them by hand, then run the merge '
                     'again. Nothing was written.')
         used.add((role, copy))
-        planned_dests.add(str(dest).lower())
+        planned_dests.add(_file_key(dest))
         if copy:
             new_entry['copy'] = copy
         else:
@@ -2227,10 +2257,13 @@ def _plan_merge_files(
 
 def _merge_notes_paragraph(
     *, retiree_label: str, retiree_shown: str, date: str, n_files: int, n_claims: int,
-    differences: list[tuple[str, object]],
+    differences: list[tuple[str, object]], comments: list[tuple[str, str]] = (),
 ) -> str:
     """The paragraph the keeper's Notes gains, saying what was merged in and
-    keeping whatever the retiree's record said that the keeper's does not."""
+    keeping whatever the retiree's record said that the keeper's does not:
+    fields that differ, and every comment a person wrote in its frontmatter
+    (`comments`, as (the key it followed or '', the comment text)), since the
+    retiree's record file is about to be removed."""
     files = f'{n_files} file' + ('' if n_files == 1 else 's')
     claims = f'{n_claims} claim' + ('' if n_claims == 1 else 's')
     text = (f'Merged in from {retiree_label} on {date} with `fha source merge`: its {files} '
@@ -2243,7 +2276,88 @@ def _merge_notes_paragraph(
             shown = ' '.join(str(value).split()) if isinstance(value, str) else yaml_inline(value)
             lines.append(f'- {key}: {shown}')
         text = '\n'.join(lines)
+    if comments:
+        lines = [text, '', f'Comments written in the record of {retiree_shown}:']
+        for key, comment in comments:
+            lines.append(f'- {key}: {comment}' if key else f'- {comment}')
+        text = '\n'.join(lines)
     return text
+
+
+def _frontmatter_comment_pairs(lines: list[str]) -> list[tuple[str, str]]:
+    """Each comment in a record's frontmatter as (the key on its line or '',
+    the comment without its `#`), in order: the hand-written notes a merge
+    must not lose when it removes the record. Read with the same trailing-
+    comment rule `set-primary` uses to prove it kept them."""
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for line in lines[span[0] + 1:span[1]]:
+        bare = line.rstrip('\r')
+        stripped = bare.strip()
+        if stripped.startswith('#'):
+            text = stripped.lstrip('#').strip()
+            if text:
+                out.append(('', text))
+            continue
+        comment = _trailing_comment(bare).strip().lstrip('#').strip()
+        if comment:
+            out.append((bare.split(':', 1)[0].strip().lstrip('- ').strip(), comment))
+    return out
+
+
+def _is_source_purpose_block(block: list[str]) -> bool:
+    """Is this run of `>` lines the scaffold's purpose block (SPEC §16a)?
+    Matched by its signature, as `_lib` matches the person one; any other
+    blockquote is the human's own and is kept."""
+    return "This source's record" in ' '.join(block)
+
+
+def _without_purpose_block(preamble: list[str]) -> list[str]:
+    """The prose above a record's first section, less the purpose block."""
+    out: list[str] = []
+    run: list[str] = []
+    for ln in preamble + ['']:
+        if ln.lstrip().startswith('>'):
+            run.append(ln)
+            continue
+        if run and not _is_source_purpose_block(run):
+            out.extend(run)
+        run = []
+        out.append(ln)
+    return _trimmed(out[:-1])
+
+
+_PRIVATE_CLOSER_AT_END_RE = re.compile(r'<!--\s*/\s*private\s*-->\s*$', re.I)
+_HEADING_LINE_RE = re.compile(r'^##\s+\S', re.M)
+
+
+def _lift_private_spans(body: str) -> tuple[str, list[str]]:
+    """Take out of a record body every private fence a section split would break.
+
+    A `<!-- private -->` ... `<!-- /private -->` span that crosses a `## `
+    heading would be cut in two when the sections are appended one by one,
+    and the part without its opener would then show in shared output. So such
+    a span, and an opener never closed, is lifted out whole, opener to closer,
+    for the caller to keep in one place. An unclosed one gets a closer: it hid
+    everything after it in its own record, and must not hide the keeper's
+    later sections instead. A span inside one section stays where it is and
+    moves with its section intact."""
+    pieces: list[str] = []
+    kept: list[str] = []
+    pos = 0
+    for start, end in private_fence_spans(body):
+        span = body[start:end]
+        closed = _PRIVATE_CLOSER_AT_END_RE.search(span) is not None
+        if closed and not _HEADING_LINE_RE.search(span):
+            continue
+        kept.append(body[pos:start])
+        pos = end
+        pieces.append(span.strip('\n') if closed
+                      else span.rstrip('\n') + '\n<!-- /private -->')
+    kept.append(body[pos:])
+    return ''.join(kept), pieces
 
 
 def _differing_fields(keeper_meta: dict, retiree_meta: dict) -> list[tuple[str, object]]:
@@ -2297,13 +2411,49 @@ def _as_list(value) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
-def _is_restricted(meta: dict) -> bool:
-    """Does a source record say it is restricted (SPEC §19)? Any value but
-    absent, empty or false counts, as packet and site read it."""
+def _restricted_marker(meta: dict) -> str | None:
+    """A source's `restricted:` value as the exporters read it, or None.
+
+    Absent, empty or false is unrestricted; `true` reads `true`; any other
+    value is its own kind, lowercased (`dna`, `by-request`), as packet and
+    site tell them apart (SPEC §19)."""
     value = meta.get('restricted')
     if value is None or value is False:
-        return False
-    return str(value).strip().lower() not in ('', 'false', 'no', 'none')
+        return None
+    text = 'true' if value is True else str(value).strip().lower()
+    return None if text in ('', 'false', 'no', 'none') else text
+
+
+def _privacy_markers(meta: dict) -> dict[str, str]:
+    """Every marker on a source record that keeps it out of shared output.
+
+    The three the exporters (site, packet, wikitree, gedcom) honour: the
+    `restricted:` value, `source_type: dna` (left out unless asked for even
+    with no `restricted:` line), and `rights: publication_ok: false`. Keyed by
+    the line a person would add to a record, valued by what it says."""
+    out: dict[str, str] = {}
+    restricted = _restricted_marker(meta)
+    if restricted:
+        out['restricted'] = restricted
+    if str(meta.get('source_type') or '').strip().lower() == 'dna':
+        out['source_type'] = 'dna'
+    rights = meta.get('rights')
+    if isinstance(rights, dict) and rights.get('publication_ok') is not None:
+        if str(rights.get('publication_ok')).strip().lower() in ('false', 'no', '0'):
+            out['rights: publication_ok'] = 'false'
+    return out
+
+
+def _protection_gap(keeper_meta: dict, retiree_meta: dict) -> tuple[str, str] | None:
+    """The first privacy marker the retiree carries and the keeper does not
+    carry the same way, as (marker, its value), or None when the keeper is at
+    least as protected. Any difference in the `restricted:` value counts:
+    `true`, `dna` and `by-request` open under different export flags."""
+    mine = _privacy_markers(keeper_meta)
+    for marker, value in _privacy_markers(retiree_meta).items():
+        if mine.get(marker) != value:
+            return marker, value
+    return None
 
 
 def _read_merge_record(path: Path, shown: str) -> tuple[str, dict, list]:
@@ -2368,16 +2518,20 @@ def run_source_merge(
     Refusals (every one before the first write, and the same under
     `--dry-run`): an invalid or repeated id, an id that is not a source,
     either record missing (exit 1) or unreadable, both records holding
-    accepted claims whose people do not overlap at all (likely two different
-    records; the people are named), a restricted retiree going into an
-    unrestricted keeper, a claim id on both, a file listed on both or in
-    neither asset root or missing from disk, a file carrying a third
-    source's keyword, a photo whose keyword cannot be read.
+    accepted claims whose people do not overlap at all (a merged person
+    counts as its survivor; likely two different records, and the people are
+    named), a retiree carrying a privacy marker the keeper does not carry the
+    same way (`_protection_gap`), a claim id on both, a file listed on both,
+    twice on the retiree, in neither asset root or missing from disk, a file
+    carrying a third source's keyword, a photo whose keyword cannot be read.
 
     Transaction: renames, keyword writes, the keeper's rewrite and the
     retiree's removal run in that order, each with its undo step; any
     failure runs the undo steps in reverse and exits 3, saying plainly what
-    (if anything) could not be put back.
+    (if anything) could not be put back. Ctrl+C part-way runs the undo steps
+    too, then re-raises: a merge stopped between two files would leave some
+    named for one source and some for the other. The plan is reported in the
+    future tense, and `Merged ...` is added only once every write succeeded.
 
     `data`: {'status': 'ok'|'dry-run'|'refused'|'not-found'|'failed',
     'keeper', 'retiree', 'keeper_path', 'retiree_path', 'files': [{'from',
@@ -2449,8 +2603,11 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     retiree_label = _source_label(retiree_text, retiree_sid)
 
     # ── Refusals about what the two records say ──
-    keeper_people = _accepted_claim_people(keeper_claims)
-    retiree_people = _accepted_claim_people(retiree_claims)
+    # A claim naming a merged person counts for the survivor (SPEC §9), so a
+    # record citing the old p-id is about the same person as one citing the new.
+    survivors = scan_person_merge_survivors(archive_root)
+    keeper_people = {survivors.get(p, p) for p in _accepted_claim_people(keeper_claims)}
+    retiree_people = {survivors.get(p, p) for p in _accepted_claim_people(retiree_claims)}
     if keeper_people and retiree_people and not (keeper_people & retiree_people):
         names = record_display_names(archive_root, keeper_people | retiree_people)
 
@@ -2464,13 +2621,18 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
             'correct the person on the wrong claims first (`fha claim <c-id> --help` shows '
             'how), then run the merge again. Nothing was written.',
             next_step='fha claim --help')
-    if _is_restricted(retiree_meta) and not _is_restricted(keeper_meta):
+    gap = _protection_gap(keeper_meta, retiree_meta)
+    if gap is not None:
+        marker, value = gap
+        line = ('rights: {publication_ok: false}' if marker == 'rights: publication_ok'
+                else f'{marker}: {value}')
         raise _MergeRefused(
-            f'{retiree_label} is restricted (restricted: '
-            f'{retiree_meta.get("restricted")}) and {keeper_label} is not, so merging would '
-            'put its files and claims into shared output. Add the same `restricted:` line '
-            f'to {keeper_path.name} first, or keep {retiree_shown} instead '
-            f'(`fha source merge {retiree_shown} {keeper_shown}`). Nothing was written.')
+            f'{retiree_label} is kept out of shared output by `{marker}: {value}`, and '
+            f'{keeper_label} does not say the same, so merging would put its files and '
+            f'claims where that line keeps them out (or let them out under a different '
+            f'export flag). Add `{line}` to {keeper_path.name} first, or keep '
+            f'{retiree_shown} instead (`fha source merge {retiree_shown} {keeper_shown}`). '
+            'Nothing was written.')
     keeper_cids = [normalize_id(str(c.get('id'))) for c in keeper_claims
                    if isinstance(c, dict) and c.get('id')]
     retiree_cids = [normalize_id(str(c.get('id'))) for c in retiree_claims
@@ -2531,19 +2693,26 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
 
     span = frontmatter_fence_span(lines)
     body_start = span[1] + 1
-    rspan = frontmatter_fence_span(retiree_text.split('\n'))
-    preamble, sections = _body_sections(retiree_text.split('\n'), rspan[1] + 1)
+    retiree_lines = retiree_text.split('\n')
+    rspan = frontmatter_fence_span(retiree_lines)
+    retiree_body = '\n'.join(ln.rstrip('\r') for ln in retiree_lines[rspan[1] + 1:])
+    # A private fence that a section split would cut in two is kept whole.
+    retiree_body, private_pieces = _lift_private_spans(retiree_body)
+    preamble, sections = _body_sections(retiree_body.split('\n'), 0)
     paragraph = _merge_notes_paragraph(
         retiree_label=retiree_label, retiree_shown=retiree_shown, date=today.isoformat(),
         n_files=len(plans), n_claims=len(retiree_cids),
-        differences=_differing_fields(keeper_meta, retiree_meta))
+        differences=_differing_fields(keeper_meta, retiree_meta),
+        comments=_frontmatter_comment_pairs(retiree_lines))
     lines, _, _ = append_paragraph_to_section(lines, body_start, 'Notes', paragraph, cr)
-    # Prose above the first section that is not the purpose block (a `>` quote
-    # every scaffold writes) is the human's, so it is kept in Notes too.
-    loose = [ln for ln in _trimmed(preamble) if not ln.lstrip().startswith('>')]
+    for piece in private_pieces:
+        lines, _, _ = append_paragraph_to_section(lines, body_start, 'Notes', piece, cr)
+    # Prose above the first section is the human's, except the scaffold's
+    # purpose block, so it is kept in Notes too.
+    loose = _without_purpose_block(preamble)
     if any(ln.strip() for ln in loose):
         lines, _, _ = append_paragraph_to_section(
-            lines, body_start, 'Notes', '\n'.join(_trimmed(loose)), cr)
+            lines, body_start, 'Notes', '\n'.join(loose), cr)
     moved_sections = []
     for heading, content in sections:
         if heading == 'Claims':
@@ -2577,24 +2746,27 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     # ── The preview: the same lines for --dry-run and for the real run ──
     result.data['files'] = [{'from': p['alias'], 'to': p['new_alias']} for p in plans]
     result.data['claims'] = [fmt_id_display(c) for c in retiree_cids]
-    head = (f'[dry-run] Would merge {retiree_label} into {keeper_label}:' if dry_run
-            else f'Merged {retiree_label} into {keeper_label}:')
+    # Future tense: the plan is said before anything is written, so a run
+    # that fails part-way never shows a line claiming it was done.
+    head = (f'[dry-run] Would merge {retiree_label} into {keeper_label}. The merge would:'
+            if dry_run else
+            f'Merging {retiree_label} into {keeper_label}. The merge will:')
     result.add('info', head)
     for p in plans:
-        keyword = (f', its SOURCE: keyword set to {keeper_shown}' if p['add'] or p['remove']
-                   else '')
+        keyword = (f', and set its SOURCE: keyword to {keeper_shown}'
+                   if p['add'] or p['remove'] else '')
         if p['placeholder']:
-            result.add('info', f'  file {p["alias"]} (a placeholder, not on disk) listed '
-                               f'on {keeper_shown}')
+            result.add('info', f'  list {p["alias"]} (a placeholder, not on disk) on '
+                               f'{keeper_shown}')
         elif p['dest'] != p['src']:
-            result.add('info', f'  file {p["alias"]} renamed {p["dest"].name}{keyword}')
+            result.add('info', f'  rename {p["alias"]} to {p["dest"].name}{keyword}')
         elif p['root'] == 'photos':
-            result.add('info', f'  photo {p["alias"]} stays where it is (photos are never '
+            result.add('info', f'  leave photo {p["alias"]} where it is (photos are never '
                                f'renamed){keyword}')
         else:
-            result.add('info', f'  file {p["alias"]} keeps its name{keyword}')
+            result.add('info', f'  keep the name of {p["alias"]}{keyword}')
     if retiree_cids:
-        result.add('info', f'  {len(retiree_cids)} claim(s) moved, ids unchanged: '
+        result.add('info', f'  move {len(retiree_cids)} claim(s), ids unchanged: '
                            + ', '.join(fmt_id_display(c) for c in retiree_cids))
     gained = []
     for key, one, many in (('people', 'person', 'people'), ('places', 'place', 'places'),
@@ -2603,15 +2775,15 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         n = len(additions[key])
         if n:
             gained.append(f'{n} {one if n == 1 else many}')
-    result.add('info', f'  {keeper_shown} keeps {retiree_shown} in its aliases: (old links '
-                       'still find it) and a merged_from: entry'
-                       + (', and gains ' + ', '.join(gained) if gained else ''))
-    result.add('info', f"  {keeper_shown}'s Notes say what was merged"
-                       + (' and keep where the two records differ'
+    result.add('info', f'  keep {retiree_shown} in the aliases: of {keeper_shown} (old links '
+                       'still find it) and add a merged_from: entry'
+                       + (', and add ' + ', '.join(gained) if gained else ''))
+    result.add('info', f"  write in the Notes of {keeper_shown} what was merged"
+                       + (' and where the two records differ'
                           if _differing_fields(keeper_meta, retiree_meta) else '')
-                       + ('; ' + ', '.join(moved_sections) + f' from {retiree_shown} added to '
-                          f"{keeper_shown}'s" if moved_sections else ''))
-    result.add('info', f'  record {retiree_path.name} removed')
+                       + ('; add ' + ', '.join(moved_sections) + f' from {retiree_shown} to '
+                          f'the same sections of {keeper_shown}' if moved_sections else ''))
+    result.add('info', f'  remove the record {retiree_path.name}')
     for text in warnings:
         result.add('warning', text)
     if dry_run:
@@ -2663,7 +2835,10 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         undo.append((f'put {retiree_path.name} back',
                      lambda: write_text_exact_atomic(retiree_path, retiree_text)))
     except (KeyboardInterrupt, SystemExit):
-        discard_undo_copies(undo_copies)
+        # Ctrl+C part-way is put back too: a merge stopped between files
+        # would leave some files named for one source and some for the other.
+        if not run_undo_steps(undo):
+            discard_undo_copies(undo_copies)
         raise
     except Exception as e:
         failed = run_undo_steps(undo)
@@ -2686,6 +2861,10 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     for level, text in backup.drain_messages():
         result.add(level, text)
     result.data['status'] = 'ok'
+    moved = sum(1 for p in plans if p['dest'] != p['src'] or p['add'] or p['remove'])
+    result.add('info', f'Merged {retiree_label} into {keeper_label}: {len(plans)} file(s) '
+                       f'moved over ({moved} renamed or re-keyworded), {len(retiree_cids)} '
+                       f'claim(s) moved, and {retiree_path.name} removed.')
     for p in plans:
         if p['dest'] != p['src'] or p['add'] or p['remove']:
             result.note_changed(p['dest'])

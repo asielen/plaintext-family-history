@@ -68,6 +68,35 @@ class RetiredSourceLinkLintTests(unittest.TestCase):
         codes = [m.code for m in self._findings()]
         self.assertEqual(codes, ['W107'])
 
+    def test_every_link_is_listed_at_the_line_the_owner_sees(self) -> None:
+        # The merge's next step is "lint lists the links still naming the old
+        # id": that list must be complete and point at the real lines.
+        self._add_alias()
+        notice = self.root / NOTICE
+        notice.write_text(notice.read_text(encoding='utf-8')
+                          + ''.join(f'Link {n}: [[{OLD}]].\n' for n in range(7)),
+                          encoding='utf-8')
+        lines = notice.read_text(encoding='utf-8').splitlines()
+        expected = sorted(i for i, ln in enumerate(lines, start=1) if OLD in ln)
+        found = sorted(int(str(m).split(' at line ')[1].split()[0])
+                       for m in self._findings() if m.code == 'W107')
+        self.assertEqual(found, expected)
+        self.assertEqual(len(found), 8)
+
+    def test_find_on_the_old_id_shows_the_kept_record(self) -> None:
+        import contextlib
+        import io as _io
+        import find
+        self._add_alias()
+        config = load_fha_yaml(self.root)
+        index.build_index(self.root, config)
+        out = _io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = find.find_by_id(OLD, self.root, config)
+        self.assertEqual(rc, EXIT_CLEAN, out.getvalue())
+        self.assertIn('merged into s-4f5f215e60', out.getvalue())
+        self.assertIn('1880-census-fairview-hartley-household', out.getvalue())
+
     def test_link_to_an_unknown_id_is_still_an_orphan(self) -> None:
         codes = [m.code for m in self._findings()]
         self.assertEqual(codes, ['E004'])

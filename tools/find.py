@@ -411,6 +411,18 @@ def _find_source(
         (sid,)
     ).fetchone()
     if row is None:
+        # A source merged into another (SPEC §9) has no record of its own:
+        # its id lives on in the kept record's `aliases:`, and links to it
+        # still lead there, so the lookup does too.
+        holder = conn.execute(
+            "SELECT DISTINCT a.canonical_id FROM aliases a JOIN sources s ON s.id = a.canonical_id "
+            "WHERE a.alias = ? AND a.canonical_id != ?",
+            (sid.lower(), sid)).fetchall()
+        if len(holder) == 1:
+            kept = holder[0][0]
+            print(f'{sid} was merged into {kept}: its id is in the aliases: of that record, '
+                  'so links to it lead there. Showing the kept record.')
+            return _find_source(kept, conn, archive_root, fha_config)
         print(f'{sid}: not found in index.')
         return EXIT_WARNINGS
 

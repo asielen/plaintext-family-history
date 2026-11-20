@@ -23,6 +23,7 @@ Run: python -m pytest tests/test_source_merge.py -q   (from the repo root)
 import contextlib
 import datetime
 import io
+import os
 import sys
 import tempfile
 import unittest
@@ -33,7 +34,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import source
 from _lib import (EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS,
-                  ExiftoolUnavailableError, read_record)
+                  ExiftoolUnavailableError, apply_private_fence, read_record)
 
 KEEP = 's-2b3c4d5e6f'
 RETIRE = 's-7q2x9c4m1k'
@@ -482,6 +483,212 @@ class RollbackTests(MergeTestCase):
 
         self.assertEqual(rc, EXIT_FAILURE, out + err)
         self.assertEqual(self._snapshot()['files'], before['files'])
+
+    def test_ctrl_c_part_way_puts_everything_back(self) -> None:
+        # Stopped between two files, a merge would leave some files named for
+        # one source and some for the other; it is undone, then Ctrl+C goes on.
+        _keeper, retiree = self._letters()
+        before = self._snapshot()
+        real = self.kw.write
+        calls = {'n': 0}
+
+        def write(path, **kw):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise KeyboardInterrupt
+            return real(path, **kw)
+        source._merge_write_keywords = write
+
+        with self.assertRaises(KeyboardInterrupt):
+            self._run(KEEP, RETIRE)
+
+        self.assertEqual(self._snapshot()['files'], before['files'])
+        self.assertTrue(retiree.exists())
+
+    def test_a_failed_run_never_says_it_merged(self) -> None:
+        self._letters()
+        self.kw.fail_on.add(f'letter-from-aunt-page-2_{KEEP}.jpg')
+
+        rc, out, err = self._run(KEEP, RETIRE)
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertNotIn('Merged ', out + err)
+        self.assertNotIn('renamed', out)
+        self.assertIn('will', out)
+
+    def test_a_good_run_says_it_merged_after_the_plan(self) -> None:
+        self._letters()
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        self.assertLess(out.index('The merge will:'), out.index('Merged '))
+
+
+class PrivacyMarkerTests(MergeTestCase):
+    """The keeper must keep the retiree's files at least as private as it did."""
+
+    def _set(self, path: Path, old: str, new: str) -> None:
+        path.write_text(path.read_text(encoding='utf-8').replace(old, new, 1),
+                        encoding='utf-8')
+
+    def _refused(self) -> str:
+        before = self._snapshot()
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_ERRORS, out + err)
+        rc2, _out2, err2 = self._run(KEEP, RETIRE, '--dry-run')
+        self.assertEqual((rc2, err2), (rc, err))
+        self.assertEqual(self._snapshot(), before)
+        return err
+
+    def test_dna_retiree_into_plain_restricted_keeper(self) -> None:
+        keeper, retiree = self._letters()
+        self._set(keeper, 'created:', 'restricted: true\ncreated:')
+        self._set(retiree, 'created:', 'restricted: dna\ncreated:')
+        self.assertIn('restricted: dna', self._refused())
+
+    def test_by_request_retiree_into_plain_restricted_keeper(self) -> None:
+        keeper, retiree = self._letters()
+        self._set(keeper, 'created:', 'restricted: true\ncreated:')
+        self._set(retiree, 'created:', 'restricted: by-request\ncreated:')
+        self.assertIn('restricted: by-request', self._refused())
+
+    def test_dna_source_type_without_a_restricted_line(self) -> None:
+        _keeper, retiree = self._letters()
+        self._set(retiree, 'source_type: letter', 'source_type: dna')
+        self.assertIn('source_type: dna', self._refused())
+
+    def test_not_for_publication_retiree(self) -> None:
+        _keeper, retiree = self._letters()
+        self._set(retiree, 'created:', 'rights:\n  publication_ok: false\ncreated:')
+        self.assertIn('publication_ok', self._refused())
+
+    def test_same_markers_on_both_merge(self) -> None:
+        keeper, retiree = self._letters()
+        self._set(keeper, 'created:', 'restricted: dna\ncreated:')
+        self._set(retiree, 'created:', 'restricted: dna\ncreated:')
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+
+
+class FileIdentityTests(MergeTestCase):
+    """One file spelled two ways is still one file."""
+
+    def test_keepers_file_listed_on_the_retiree_in_other_capitals(self) -> None:
+        if os.path.normcase('A') == os.path.normcase('a'):
+            spelled = f'documents/letter/Letter-from-aunt_{KEEP}.pdf'
+        else:
+            spelled = f'documents/letter/./letter-from-aunt_{KEEP}.pdf'
+        _keeper, retiree = self._letters()
+        retiree.write_text(retiree.read_text(encoding='utf-8').replace(
+            'files:\n', f'files:\n  - file: {spelled}\n    role: copy\n', 1), encoding='utf-8')
+        before = self._snapshot()
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_ERRORS, out + err)
+        self.assertIn('listed on both records', err)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_one_file_listed_twice_on_the_retiree_refuses_in_the_dry_run_too(self) -> None:
+        if os.path.normcase('A') == os.path.normcase('a'):
+            spelled = f'documents/letter/Aunt-letter-copy-page-2_{RETIRE}.jpg'
+        else:
+            spelled = f'documents/letter/./aunt-letter-copy-page-2_{RETIRE}.jpg'
+        _keeper, retiree = self._letters()
+        retiree.write_text(retiree.read_text(encoding='utf-8').replace(
+            'files:\n', f'files:\n  - file: {spelled}\n    role: page-2\n', 1), encoding='utf-8')
+        before = self._snapshot()
+        rc, _out, err = self._run(KEEP, RETIRE, '--dry-run')
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('same file twice', err)
+        rc, _out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_a_retiree_file_already_named_for_the_keeper_gets_the_id_once(self) -> None:
+        _keeper, retiree = self._letters()
+        odd = self._put(self.docs / 'letter' / f'stray-scan_{KEEP}.tif', b'II* stray')
+        retiree.write_text(retiree.read_text(encoding='utf-8').replace(
+            'files:\n', f'files:\n  - file: documents/letter/{odd.name}\n    role: page-3\n', 1),
+            encoding='utf-8')
+        rc, out, err = self._run(KEEP, RETIRE)
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        names = [p.name for p in (self.docs / 'letter').iterdir()]
+        self.assertFalse([n for n in names if n.lower().count(KEEP) > 1], names)
+
+
+class HandWrittenTextTests(MergeTestCase):
+    """Nothing a person wrote on the retiree is lost or let out."""
+
+    def test_frontmatter_comments_and_own_blockquote_are_kept(self) -> None:
+        keeper, retiree = self._letters()
+        text = retiree.read_text(encoding='utf-8')
+        text = text.replace('repository: family collection',
+                            'repository: family collection   # original in the cedar chest', 1)
+        text = text.replace('created:', '# Cousin Ruth has the second page\ncreated:', 1)
+        text = text.replace('## Claims', '> Written the week after the funeral.\n\n## Claims', 1)
+        retiree.write_text(text, encoding='utf-8')
+
+        rc, out, err = self._run(KEEP, RETIRE)
+
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        body = keeper.read_text(encoding='utf-8')
+        for kept in ('original in the cedar chest', 'Cousin Ruth has the second page',
+                     'Written the week after the funeral.'):
+            self.assertIn(kept, body)
+        # The scaffold's purpose block is not copied a second time.
+        self.assertEqual(body.count("This source's record"), 1)
+
+    def test_a_private_fence_across_a_heading_stays_whole(self) -> None:
+        secret = 'Uncle Fred was not her father; the family never spoke of it.'
+        keeper, retiree = self._letters()
+        keeper.write_text(keeper.read_text(encoding='utf-8').replace(
+            '## Notes', '## Stories\nThe move west in 1871.\n\n## Notes', 1), encoding='utf-8')
+        text = retiree.read_text(encoding='utf-8')
+        text = text.replace('\n## Stories\nThe letter mentions the move west.\n', '')
+        text = text.replace('## Notes', f'<!-- private -->\n## Stories\n{secret}\n'
+                                        '<!-- /private -->\n\n## Notes', 1)
+        retiree.write_text(text, encoding='utf-8')
+        self.assertNotIn(secret, apply_private_fence(text, drop=True))
+
+        rc, out, err = self._run(KEEP, RETIRE)
+
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        after = keeper.read_text(encoding='utf-8')
+        self.assertIn(secret, after)
+        shared = apply_private_fence(after, drop=True)
+        self.assertNotIn(secret, shared)
+        self.assertIn('Kept in the blue box.', shared)
+        self.assertIn('The move west in 1871.', shared)
+
+    def test_an_unclosed_fence_does_not_hide_the_keepers_later_text(self) -> None:
+        keeper, retiree = self._letters()
+        keeper.write_text(keeper.read_text(encoding='utf-8') + '\n## Sources seen\nThe county index.\n',
+                          encoding='utf-8')
+        retiree.write_text(retiree.read_text(encoding='utf-8').replace(
+            'Second scan, better light.', 'Second scan.\n<!-- private -->\nA hunch.'), encoding='utf-8')
+
+        rc, out, err = self._run(KEEP, RETIRE)
+
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
+        shared = apply_private_fence(keeper.read_text(encoding='utf-8'), drop=True)
+        self.assertNotIn('A hunch.', shared)
+        self.assertIn('The county index.', shared)
+
+
+class MergedPersonTests(MergeTestCase):
+    """A claim naming a merged person counts for the survivor."""
+
+    def test_a_merged_person_id_is_the_same_person_as_its_survivor(self) -> None:
+        old = 'p-bbbbbbbbbb'
+        (self.archive / 'people').mkdir(exist_ok=True)
+        (self.archive / 'people' / f'hartley__thomas_{THOMAS}.md').write_text(
+            f'---\nid: {THOMAS}\nname: Thomas Hartley\n---\n', encoding='utf-8')
+        (self.archive / 'people' / f'MERGED-INTO-{THOMAS}__hartley__thos_{old}.md').write_text(
+            f'---\nid: {old}\nname: Thos. Hartley\nstatus: merged\nmerged_into: {THOMAS}\n---\n',
+            encoding='utf-8')
+        self._letters(keeper_people=(THOMAS,), retiree_people=(old,))
+
+        rc, out, err = self._run(KEEP, RETIRE)
+
+        self.assertEqual(rc, EXIT_CLEAN, out + err)
 
 
 if __name__ == '__main__':

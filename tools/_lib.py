@@ -12249,6 +12249,33 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
     return found
 
 
+def scan_person_merge_survivors(archive_root: str | Path) -> dict[str, str]:
+    """{merged P-id: the person it now counts as}, read from the person files.
+
+    The tree-scan twin of `index_merge_survivors`, for a writer that must not
+    trust a possibly stale index (`fha source merge` asks whether two records
+    are about the same people, and a claim naming a merged record counts for
+    its survivor, SPEC §9). Same rule: `merge_pointer` decides which records
+    are merged, `merge_survivor_map` follows the chain."""
+    root = Path(archive_root)
+    people_dir = root / 'people'
+    if not people_dir.is_dir():
+        return {}
+    pointers: dict[str, str] = {}
+    known: set[str] = set()
+    for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
+        pid = normalize_id(parsed['id_str'])
+        known.add(pid)
+        meta = _person_frontmatter_all(p) or {}
+        target = merge_pointer(meta.get('status'), meta.get('merged_into'))
+        if target:
+            pointers[pid] = target
+    return merge_survivor_map(pointers, known)
+
+
 def find_person_record_path(
     archive_root: str | Path, person_id: str, unreadable: list | None = None,
 ) -> Path | None:
