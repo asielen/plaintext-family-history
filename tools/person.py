@@ -2631,8 +2631,8 @@ def _insert_relationship_entry(text: str, item_lines: list[str]) -> str | None:
         rest = lines[idx].split(':', 1)[1].strip()
         empty = re.match(r'^\[\s*\]\s*(#.*)?$', rest.rstrip('\r'))
         if empty:
-            # An emptied list (`relationships: []`, what `fha claim` leaves
-            # when the last entry goes) opens back into block form.
+            # An empty list (`relationships: []`) is still a list the person
+            # keeps: it opens into block form.
             new_lines[idx] = ('relationships:'
                               + (f'  {empty.group(1)}' if empty.group(1) else '') + cr)
         elif rest and not rest.startswith('#'):

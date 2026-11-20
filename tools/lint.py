@@ -3059,7 +3059,7 @@ def _check_relationships_reconciliation(
     survivors = getattr(alias_map, 'survivors', None) or {}
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
-        # `relationships: []` is a list the person keeps, emptied (SPEC §9):
+        # `relationships: []` is an empty list the person keeps (SPEC §9):
         # still opted in, so the reverse check below still asks for ties.
         if not isinstance(block, list):
             continue

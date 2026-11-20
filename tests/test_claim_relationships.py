@@ -1,28 +1,4 @@
-"""
-test_claim_relationships.py - accepting a kin claim writes the person records'
-`relationships:` entries (SPEC §9), and `fha lint --fix-applied` writes the ones
-still missing.
-
-The rule for which entries an accepted claim owes, and on whom, is shared
-(`_lib.claim_owed_relationship_entries`): `fha lint` W115 reads it to report a
-block that leaves a claim out, and `fha claim` / `--fix-applied` write exactly
-those entries. So every write test ends by asking lint whether the records now
-reconcile.
-
-Covers:
-  * accept (single and batch) adds a citing entry on each person whose record
-    already has a `relationships:` list, and on nobody else;
-  * an entry for the same tie gains the claim in its `claims:` list;
-  * a guess (`status: hypothesis`) is never rewritten: the sourced entry goes
-    beside it;
-  * `--dry-run` writes nothing and says what would change;
-  * the `claims: ["[[c-...]]"]` list format round-trips exactly, CRLF too;
-  * a list the tools do not edit is reported with the hand fix, record untouched;
-  * disputing, rejecting or superseding takes the claim out of every list, and
-    drops an entry left with nothing behind it (never a guess, never a
-    `source:` entry);
-  * `fha lint --fix-applied` (and its dry run) for the W115 set.
-"""
+"""\ntest_claim_relationships.py - accepting a kin claim writes the person records'\n`relationships:` entries (SPEC §9), and `fha lint --fix-applied` writes the ones\nstill missing.\n\nThe rule for which entries an accepted claim owes, and on whom, is shared\n(`_lib.claim_owed_relationship_entries`): `fha lint` W115 reads it to report a\nblock that leaves a claim out, and `fha claim` / `--fix-applied` write exactly\nthose entries. So every write test ends by asking lint whether the records now\nreconcile.\n\nCovers:\n  * accept (single and batch) adds a citing entry on each person whose record\n    already has a `relationships:` list, and on nobody else;\n  * an entry for the same tie gains the claim in its `claims:` list;\n  * a guess (`status: hypothesis`) is never rewritten: the sourced entry goes\n    beside it;\n  * `--dry-run` writes nothing and says what would change;\n  * the `claims: ["[[c-...]]"]` list format round-trips exactly, CRLF too;\n  * a list the tools do not edit is reported with the hand fix, record untouched;\n  * disputing, rejecting or superseding takes the claim out of every list, and\n    drops an entry left with nothing behind it (never a guess, never a\n    `source:` entry);\n  * `fha lint --fix-applied` (and its dry run) for the W115 set.\n"""
 
 import sys
 import tempfile
@@ -279,21 +255,35 @@ class UncitingTests(unittest.TestCase):
         root = _build({thomas: t_text, margaret: m_text, src: s_text})
         return root, thomas, margaret
 
-    def test_reject_drops_an_entry_left_with_no_evidence(self) -> None:
+    def test_reject_never_deletes_an_entry_and_names_one_left_bare(self) -> None:
         root, thomas, margaret = self._setup(
             'relationships:\n' + _entry(JOHN, 'John Hartley', 'spouse')
             + _entry(THOMAS, 'Thomas Hartley', 'child', [REL]),
             'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [OLDER, REL]))
         result = claim.run_claim(root, claim_id=REL, status='rejected')
         m_after = _read(root, margaret)
-        self.assertNotIn('Thomas Hartley', m_after)
-        self.assertIn(_entry(JOHN, 'John Hartley', 'spouse'), m_after)
+        self.assertIn(_entry(JOHN, 'John Hartley', 'spouse')
+                      + _entry(THOMAS, 'Thomas Hartley', 'child') + '---', m_after)
         t_after = _read(root, thomas)
         self.assertIn(f'    claims: ["[[{OLDER}]]"]\n', t_after)
-        self.assertNotIn(REL, t_after)
+        self.assertNotIn(REL, t_after + m_after)
         texts = ' '.join(m.text for m in result.messages)
-        self.assertIn("Margaret Cole's record no longer lists Thomas Hartley as a child", texts)
+        self.assertIn(f"Margaret Cole's record no longer cites claim {REL}", texts)
+        self.assertIn("Margaret Cole's record still lists Thomas Hartley as a child, with no "
+                      "evidence now; remove that entry by hand if it is wrong.", texts)
         self.assertIn(f"Thomas Hartley's record no longer cites claim {REL}", texts)
+        self.assertNotIn("Thomas Hartley's record still lists", texts)
+
+    def test_a_plain_hand_entry_survives_accept_then_reject(self) -> None:
+        block = 'relationships:\n' + _entry(THOMAS, 'Thomas Hartley', 'child')
+        root, _thomas, margaret = self._setup(block, '')
+        before = _read(root, margaret)
+        src = next((root / 'sources').rglob('*.md'))
+        src.write_bytes(_source(_rel_claim())[1].encode('utf-8'))
+        claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertIn(f'claims: ["[[{REL}]]"]', _read(root, margaret))
+        claim.run_claim(root, claim_id=REL, status='rejected')
+        self.assertEqual(_read(root, margaret), before)
 
     def test_a_guess_or_a_source_entry_keeps_its_entry(self) -> None:
         guess = _entry(THOMAS, 'Thomas Hartley', 'child', [REL], extra='    status: hypothesis\n')
@@ -318,8 +308,8 @@ class UncitingTests(unittest.TestCase):
         self.assertEqual(_read(root, thomas), before)
         self.assertTrue(any('would no longer' in m.text for m in preview.messages))
         claim.run_claim_batch(root, claim_ids=[REL, OLDER], status='superseded')
-        self.assertNotIn('Margaret Cole"', _read(root, thomas))
-        self.assertNotIn('Thomas Hartley"', _read(root, margaret))
+        self.assertIn(_entry(MARGARET, 'Margaret Cole', 'parent') + '---', _read(root, thomas))
+        self.assertIn(_entry(THOMAS, 'Thomas Hartley', 'child') + '---', _read(root, margaret))
 
     def test_parking_an_accepted_claim_takes_it_out_of_the_lists(self) -> None:
         block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [OLDER, REL])
@@ -332,7 +322,7 @@ class UncitingTests(unittest.TestCase):
         block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [OLDER, REL])
         root, thomas, _margaret = self._setup('', block)
         claim.run_claim_batch(root, claim_ids=[REL, OLDER], status='suggested')
-        self.assertIn('\nrelationships: []\n', _read(root, thomas))
+        self.assertIn(_entry(MARGARET, 'Margaret Cole', 'parent') + '---', _read(root, thomas))
 
     def test_an_entry_the_owner_wrote_more_into_keeps_its_lines(self) -> None:
         note = '    note: "Mother per the family Bible"  # my own line\n'
@@ -353,23 +343,18 @@ class UncitingTests(unittest.TestCase):
         claim.run_claim(root, claim_id=REL, status='rejected')
         self.assertIn('# Aunt Ruth says so\n    type: parent\n---', _read(root, thomas))
 
-    def test_the_last_entry_going_keeps_an_empty_list(self) -> None:
-        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL])
-        root, thomas, _margaret = self._setup('', block)
-        claim.run_claim(root, claim_id=REL, status='disputed')
-        self.assertIn('\nrelationships: []\n---', _read(root, thomas))
-        # Still opted in: lint asks for the other accepted tie, and accepting
-        # the claim again writes the entry back.
-        self.assertTrue([f for f in _codes(root, 'W115') if OLDER in f.message])
-        claim.run_claim(root, claim_id=REL, status='accepted')
+    def test_an_empty_list_is_still_a_kept_list(self) -> None:
+        root, thomas, _margaret = self._setup('', 'relationships: []\n')
+        # Lint still asks for the accepted ties, and the writers open it up.
+        self.assertTrue([f for f in _codes(root, 'W115') if REL in f.message])
+        lint.run_lint(root, {}, fix_applied=True)
         self.assertIn(f'relationships:\n  - to: "[[{MARGARET}|Margaret Cole]]"\n'
-                      f'    type: parent\n    claims: ["[[{REL}]]"]\n', _read(root, thomas))
+                      f'    type: parent\n    claims: ["[[{REL}]]", "[[{OLDER}]]"]\n',
+                      _read(root, thomas))
 
-    def test_person_relate_writes_into_an_emptied_list(self) -> None:
+    def test_person_relate_writes_into_an_empty_list(self) -> None:
         import person
-        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL])
-        root, thomas, _margaret = self._setup('', block)
-        claim.run_claim(root, claim_id=REL, status='disputed')
+        root, thomas, _margaret = self._setup('', 'relationships: []\n')
         result = person.run_relate(root, THOMAS, 'parent', MARGARET)
         self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
         after = _read(root, thomas)
@@ -432,6 +417,36 @@ class AcceptJudgesEachOwedEntryTests(unittest.TestCase):
         src, s_text = _source(birth)
         root = _build({thomas: t_text, src: s_text})
         self.assertTrue([f for f in _codes(root, 'W115') if birth_id in f.message])
+
+    def test_a_biological_claim_never_joins_an_adoptive_entry(self) -> None:
+        adopt_id, bio_id = 'c-2222222222', 'c-3333333333'
+        adoptive = _entry(MARGARET, 'Margaret Cole', 'parent', [adopt_id],
+                          extra='')
+        adoptive = adoptive.replace('    type: parent\n', '    type: parent\n    subtype: adoptive\n')
+        thomas, t_text = _person('Thomas Hartley', THOMAS, 'relationships:\n' + adoptive)
+        margaret, m_text = _person('Margaret Cole', MARGARET)
+        adopt = _claim(adopt_id, 'relationship', {'child': THOMAS, 'parent': MARGARET},
+                       'accepted').replace('  type: relationship\n',
+                                           '  type: relationship\n  subtype: adoptive\n')
+        src, s_text = _source(adopt, _claim(bio_id, 'relationship',
+                                            {'child': THOMAS, 'parent': MARGARET}))
+        root = _build({thomas: t_text, margaret: m_text, src: s_text})
+        claim.run_claim(root, claim_id=bio_id, status='accepted')
+        t_after = _read(root, thomas)
+        self.assertIn(adoptive, t_after)
+        self.assertIn(f'    type: parent\n    claims: ["[[{bio_id}]]"]\n', t_after)
+        self.assertEqual(_codes(root, 'W115'), [])
+
+    def test_a_source_entry_with_a_name_no_record_answers_to_applies_it(self) -> None:
+        block = ('relationships:\n  - to: "[[Maggie]]"   # what the family called her\n'
+                 f'    type: parent\n    source: "[[{SOURCE}]]"\n')
+        thomas, t_text = _person('Thomas Hartley', THOMAS, block)
+        margaret, m_text = _person('Margaret Cole', MARGARET)
+        src, s_text = _source(_rel_claim())
+        root = _build({thomas: t_text, margaret: m_text, src: s_text})
+        claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertEqual(_read(root, thomas), t_text)
+        self.assertEqual(_codes(root, 'W115'), [])
 
     def test_a_bare_number_alias_does_not_stop_the_accept(self) -> None:
         thomas, t_text = _person('Thomas Hartley', THOMAS,

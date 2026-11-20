@@ -10211,7 +10211,7 @@ def append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
             break
         empty = re.match(r'^relationships:\s*\[\s*\]\s*(#.*)?$', lines[i])
         if empty:
-            # An emptied list (`relationships: []`) is still a list the
+            # An empty list (`relationships: []`) is still a list the
             # person keeps: it opens back into block form.
             lines[i] = 'relationships:' + (f'  {empty.group(1)}' if empty.group(1) else '')
             rel_idx = i
@@ -10301,18 +10301,14 @@ def remove_claims_from_relationships(
     """Take `claim_ids` out of every `claims:` list in a person record's
     `relationships:` block.
 
-    An entry left with no claims is removed only when it says nothing else:
-    no key beyond `to`, `type`, `subtype` and `claims`, and no comment. An
-    entry the owner wrote more into (a note, a `hypothesis:` link, a
-    `source:`, `status: hypothesis`, a comment) keeps everything but its
-    `claims:` line. When the last entry goes, the key stays as
-    `relationships: []`, so the person still keeps a list and a later
-    accept writes into it again. Everything else in the block is kept as
-    written.
+    No entry is ever removed. An entry whose last claim leaves loses its
+    `claims:` key and keeps every other line, because a plain `to:`/`type:`
+    entry carries nothing that says whether the owner typed it. Everything
+    else in the block is kept as written.
 
     Returns `(new_text, changes)`, where each change is `(entry, what)` and
-    `what` is 'unlinked' (the claim left the list) or 'removed' (the entry
-    went). `changes` is empty when no entry cited the claims. None when the
+    `what` is 'unlinked' (the claim left the list) or 'bare' (the entry is
+    left citing no evidence: no claims, no `source:`, not a guess). `changes` is empty when no entry cited the claims. None when the
     record has no block in a form edited here (no frontmatter, an inline
     `relationships: [...]`, the key written twice), so the caller can say so
     instead of guessing."""
@@ -10321,7 +10317,7 @@ def remove_claims_from_relationships(
     located = _relationship_block_items(lines)
     if located is None:
         return None
-    key, block_end, items = located
+    _key, block_end, items = located
     if not items:
         return text, []
     cr = '\r' if lines[0].endswith('\r') else ''
@@ -10339,29 +10335,19 @@ def remove_claims_from_relationships(
             new_lines.extend(_item_with_claims(lines[s:e], kept, cr))
             new_lines.extend(lines[e:tail_end])
             changes.append((entry, 'unlinked'))
-        elif (set(entry) <= _PLAIN_ENTRY_KEYS and not _item_has_comment(lines[s:e])):
-            changes.append((entry, 'removed'))   # the entry goes, with its trailing blanks
         else:
+            # Never deleted: nothing in a plain `to:`/`type:` entry says
+            # whether the owner typed it. Only the `claims:` key goes, and an
+            # entry left citing no evidence is named for the owner.
             trimmed = _item_without_claims(lines[s:e])
             if trimmed is None:
                 return None
             new_lines.extend(trimmed)
             new_lines.extend(lines[e:tail_end])
-            changes.append((entry, 'unlinked'))
-    if sum(1 for _entry, what in changes if what == 'removed') == len(items):
-        # Every entry went: keep the list, empty, so the person stays opted
-        # in (SPEC §9) and a later accept writes into it again.
-        m = re.match(r'^relationships\s*:\s*(#.*)?$', lines[key].rstrip('\r'))
-        comment = f'  {m.group(1)}' if m and m.group(1) else ''
-        new_lines[key] = f'relationships: []{comment}{cr}'
+            bare = not entry.get('source') and not relationship_entry_is_guess(entry)
+            changes.append((entry, 'bare' if bare else 'unlinked'))
     new_lines.extend(lines[block_end:])
     return '\n'.join(new_lines), changes
-
-
-# The keys of an entry that says nothing but the tie and its claims. An
-# entry with anything more (a note, a `hypothesis:` link, a `source:`, a
-# status) holds the owner's own words.
-_PLAIN_ENTRY_KEYS = frozenset({'to', 'type', 'subtype', 'claims'})
 
 
 def _relationship_item_entry(item: list[str]) -> dict | None:
@@ -10376,25 +10362,6 @@ def _relationship_item_entry(item: list[str]) -> dict | None:
         data = None
     entry = data[0] if isinstance(data, list) and data else None
     return entry if isinstance(entry, dict) else None
-
-
-def _item_has_comment(item: list[str]) -> bool:
-    """Whether an entry's lines carry a YAML comment, on a line of its own or
-    after a value (read the YAML way, so a `#` inside a quoted name is not
-    one)."""
-    for ln in item:
-        bare = ln.rstrip('\r').strip()
-        if bare.startswith('-'):
-            bare = bare[1:].strip()
-        if not bare:
-            continue
-        if bare.startswith('#'):
-            return True
-        m = re.match(r'^[A-Za-z_][\w-]*\s*:\s?(.*)$', bare)
-        rest = m.group(1) if m else bare
-        if rest and split_yaml_comment(rest)[1]:
-            return True
-    return False
 
 
 def read_person_records(archive_root: str | Path) -> dict[str, tuple[Path, dict]]:
@@ -10466,18 +10433,19 @@ def relationship_entry_applies(
     if str(entry.get('type') or '').strip().lower() != entry_type:
         return False
     cited = relationship_entry_claim_ids(entry)
-    target = relationship_entry_target(entry, alias_map)
-    if target is None and claim_id in cited:
-        # A `to:` name no record answers to (or two do): lint reads the
-        # entry by its owner's side alone, so the claim it cites counts.
-        return True
-    if target != other:
-        return False
-    if cited:
-        return claim_id in cited
     source = entry.get('source')
-    return bool(claim_source and source) and normalize_id(
-        strip_link_wrapper(str(source))) == normalize_id(claim_source)
+    if cited:
+        cites = claim_id in cited
+    else:
+        cites = bool(claim_source and source) and normalize_id(
+            strip_link_wrapper(str(source))) == normalize_id(claim_source)
+    if not cites:
+        return False
+    # A `to:` name no record answers to (or two do): lint reads the entry by
+    # its owner's side alone, so the claim it reaches (in `claims:` or
+    # through `source:`) counts as applied.
+    target = relationship_entry_target(entry, alias_map)
+    return target is None or target == other
 
 
 def _entry_can_take(
@@ -10619,8 +10587,10 @@ def plan_relationship_entries(
             written_nature = '' if (nature == 'biological'
                                     and entry_type in ('parent', 'child')) else nature
             new_text, why = None, None
+            # The claim's own nature decides which entry it joins (an unwritten
+            # biological still never joins an adoptive entry).
             extended = _extend_relationship_entry(
-                edit['after'], other, entry_type, written_nature, cid, alias_map)
+                edit['after'], other, entry_type, nature, cid, alias_map)
             if extended is not None:
                 why = frontmatter_edit_problem(
                     extended, before_meta=_strict_meta(edit['after']),
@@ -10655,7 +10625,7 @@ def plan_relationship_removals(
     record citing them (`remove_claims_from_relationships`), worked out in
     memory before anything is written. Same shape as
     `plan_relationship_entries`; each line is `(other name, what, cid)` with
-    `what` 'unlinked' or 'removed'."""
+    `what` 'unlinked' or 'bare'."""
     read_text = read_text or read_text_exact
     drop = [normalize_id(str(c)) for c in claim_ids]
     edits: dict[Path, dict] = {}
@@ -10732,15 +10702,14 @@ def relationship_plan_lines(
                                     f"(claim {fmt_id_display(cid)}).", path))
                 continue
             other, phrase, what, cid = line
-            if what == 'removed':
-                verb = 'would no longer list' if dry_run else 'no longer lists'
-                out.append(('info', f"{name}'s record {verb} {other} as {phrase}: claim "
-                                    f"{fmt_id_display(cid)} was the only evidence that entry "
-                                    "cited.", path))
-            else:
-                verb = 'would no longer cite' if dry_run else 'no longer cites'
-                out.append(('info', f"{name}'s record {verb} claim {fmt_id_display(cid)} "
-                                    f"for {other} ({phrase}).", path))
+            verb = 'would no longer cite' if dry_run else 'no longer cites'
+            out.append(('info', f"{name}'s record {verb} claim {fmt_id_display(cid)} "
+                                f"for {other} ({phrase}).", path))
+            if what == 'bare':
+                still = 'would still list' if dry_run else 'still lists'
+                out.append(('info', f"{name}'s record {still} {other} as {phrase}, with no "
+                                    "evidence now; remove that entry by hand if it is wrong.",
+                            path))
     for text in plan.get('problems', []):
         out.append(('warning', text, None))
     said: set[str] = set()

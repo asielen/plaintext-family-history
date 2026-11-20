@@ -1930,11 +1930,10 @@ def _apply_relationships(
 
     `uncited` are claim ids this command moved to disputed, rejected or
     superseded, or from accepted back to suggested: each is taken out of
-    every `claims:` list that cites it. An entry left with no claims goes
-    only when it said nothing else (no note, link, `source:`, status or
-    comment); the last entry going leaves `relationships: []`, so the person
-    still keeps a list. `sources` maps a claim id to its source, so an entry
-    citing that source with `source:` counts as already applying the claim.
+    every `claims:` list that cites it, and no entry is ever removed; one
+    left citing no evidence is named in a plain line for the owner.
+    `sources` maps a claim id to its source, so an entry citing that source
+    with `source:` counts as already applying the claim.
 
     Every edit is worked out and checked in memory before any person record
     is written, and `dry_run` prints the same lines a live run would. A
