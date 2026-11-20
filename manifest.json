@@ -842,7 +842,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "d856f186646a337389d709638089aed80f88b06ca7d4cf3c9cfac55889cc353e",
+      "sha256": "08779239fc86fc389c3f3ff3de9b265005943dc8532b458c7e47bef8f78463c4",
       "spec_version": "2.14",
       "src": "tools/places.py"
     },
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "ce0ea6d0a5c8cf92bcf9a03ced11de9c64c7a8004f8a67d90f1b1c6ae2a64d5b",
+      "sha256": "f49d964b9ef1ca85ed0333edc162fd863b6ac2976c3739360692ab39d1ad70b9",
       "spec_version": "2.14",
       "src": "TOOLING.md"
     },
