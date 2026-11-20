@@ -45,7 +45,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `packet.py` | fha packet: build a person data-export packet |
 | `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c) |
 | `photoindex.py` | fha photoindex: photo metadata catalog |
-| `places.py` | fha places: place registry hygiene, recurrence detection, geocoding from GeoNames (one reviewed batch) and human-directed edits |
+| `places.py` | fha places: place registry hygiene, recurrence detection, linking claims to registered places and registering a backlog in one reviewed batch, geocoding from GeoNames (one reviewed batch) and human-directed edits |
 | `process.py` | fha process: Stage A of the intake pipeline |
 | `reconcile.py` | fha reconcile: heal record inventory paths after files move (TOOLING §9) |
 | `relate.py` | fha relate: how are two people related? |
