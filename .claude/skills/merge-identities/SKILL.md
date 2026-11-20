@@ -60,7 +60,7 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    Loose *prose* `[[p-old]]` mentions are left on purpose. They resolve *through* `merged_into` and appear on lint's W107 gradual-cleanup list, which is expected and not an error. **Read the verb's warnings and judge each one; don't suppress them:**
    - an *external-id conflict* (exit 1) means the two records point at different WikiTree/Ancestry profiles: the survivor's value was kept and the tombstone keeps the other. Bring the conflict back to the human;
    - an *existing relationship edge between the two* is evidence they may be two different people. The tool warns and proceeds (the decision was the human's), but reopen the conversation if he didn't know about the edge;
-   - a *W115 heads-up* means the survivor's opted-in `relationships:` block should take the relinked accepted kin claims. Add those entries with the human. **Never create a new claim on the merged p-id** (that is exactly what W107 reports).
+   - a *W115 heads-up* means the survivor's opted-in `relationships:` block should take the relinked accepted kin claims. Show him `fha lint --fix-applied --dry-run`, and on his yes run `fha lint --fix-applied` to write those entries. **Never create a new claim on the merged p-id** (that is exactly what W107 reports).
 
 4b. **On a confirmed SPLIT (conflation), reassign deliberately (SPEC §9).** Splitting an identity is research judgment, so it stays guided:
    - mint the new person: `fha id mint p` (then scaffold a stub or record for them);

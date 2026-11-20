@@ -154,6 +154,7 @@ Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure.
 | `--fix-claims-fence` | Wrap hand-written claims that forgot the ```yaml fence (with --dry-run to preview) |
 | `--fix-ids` | Mint IDs for hand-authored id-less records (rename, keep the old name as an alias) and for id-less claims inside sources (with --dry-run to preview) |
 | `--fix-reciprocal` | Add the missing mirror edge for each W116 (with --dry-run to preview) |
+| `--fix-applied` | Add the relationships: entry each W115 says an accepted claim is missing from, citing the claim (with --dry-run to preview) |
 | `--fix-surnames` | Write the surname: line each W138 file name implies, so the record keeps the surname its file name was sorted under (with --dry-run to preview) |
 
 ## `fha stubs`

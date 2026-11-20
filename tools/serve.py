@@ -2008,10 +2008,13 @@ def _reindex_after(state: ServeState, verb: str, result: Result) -> None:
     policy = VERBS[verb]['reindex']
     if policy == 'none':
         return
-    # Accepting a death can also mark the person as no longer living (#246):
-    # a person record changed, which a one-source upsert does not reread, so
-    # the site would keep treating them as living until the next full build.
-    if policy == 'source' and not result.get('marked_not_living'):
+    # Accepting a death can also mark the person as no longer living (#246),
+    # and accepting or rejecting a relationship claim can change a person's
+    # relationships: list: a person record changed, which a one-source upsert
+    # does not reread, so the workbench would show the old person until the
+    # next full build.
+    if (policy == 'source' and not result.get('marked_not_living')
+            and not result.get('relationships_updated')):
         sid = result.get('source_id')
         if sid and is_valid_id(sid) and id_type_of(normalize_id(sid)) == 'S':
             outcome = index_mod.upsert_source(state.archive_root, state.fha_config, normalize_id(sid))

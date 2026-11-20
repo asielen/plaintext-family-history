@@ -18,6 +18,8 @@ lint.py - fha lint: verify the archive against the spec.
                                      template placeholder ids (P-__________)
                                      count as missing and are replaced in place
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
+  fha lint --fix-applied             Add the entry each W115 says an accepted claim
+                                     is missing from an opted-in relationships: list
   fha lint --fix-surnames            Record the surname: each W138 file name implies
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
@@ -66,6 +68,25 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     SOURCE_FRONTMATTER_KEY_ORDER,
+    RECIPROCAL_RELATIONSHIP_TYPE,     # relationships: entries an accepted claim owes (SPEC §9)
+    RELATIONSHIP_ENTRY_ROLES,
+    add_relationship_entry,
+    append_relationship_entry,
+    claim_backs_relationship_entry,
+    claim_owed_relationship_entries,
+    claim_parentage_pids,
+    claim_pids_in_role,
+    claim_relationship_entry_type,
+    claim_relationship_nature,
+    claim_all_roles_by_person,
+    claim_persons_with_roles,
+    claim_role_pids,
+    claim_spouse_pids,
+    format_relationship_entry,
+    plan_relationship_entries,
+    relationship_entry_applies,
+    relationship_entry_nature,
+    relationship_plan_lines,
     RETIRED_NEEDS_REVIEW,
     claim_status,
     claim_fields_cut_by_hash,
@@ -322,9 +343,9 @@ configure_utf8_stdout()
 #    _e009_question_heading      - value:-quoting question heading for one spawn (#55)
 #    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
+#    _fix_applied                : write the entries accepted claims owe for the W115 set (--fix-applied)
 #    _check_file_name_surnames   - W138: the file name sorts under a surname the record does not read
 #    _fix_surnames               - write the surname: line W138 suggests (--fix-surnames)
-#    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
 #
 #  Main entry / CLI
 #    _git_changed_files          : files differing from a git ref, plus new ones (--changed)
@@ -436,6 +457,9 @@ class Registry:
         # `--fix-reciprocal` can append the mirror without re-parsing messages.
         # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
         self.missing_mirrors: list[dict] = []
+        # Accepted claims an opted-in block leaves out (W115), as (person,
+        # claim) pairs, for `--fix-applied`.
+        self.unapplied_claims: set[tuple[str, str]] = set()
         # W138: (profile path, surname to record) for `--fix-surnames`.
         self.surname_fixes: list[tuple[Path, str]] = []
 
@@ -2779,6 +2803,9 @@ def _variant_values(variants) -> list[str]:
     and the clash check still sees the name. The `restricted` flag matters only
     to the exporters; here we want the plain string."""
     out: list[str] = []
+    # A hand-typed single value (`name_variants: 1913`) is one variant.
+    if variants is not None and not isinstance(variants, list):
+        variants = [variants]
     for v in variants or []:
         if isinstance(v, dict):
             value = v.get('value')
@@ -2897,24 +2924,24 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
 # beliefs (no link, or `status: hypothesis`) are never findings - they land on
 # the informational needs-sourcing backlog, exactly like a provisional birth.
 
-# entry `type` (the OTHER person's role) → (owner_role, other_role) in the claim.
-# A `type: parent` entry on P's record means "the other person is P's parent",
-# so P is the child and the other is the parent in the backing claim.
-_EDGE_ROLE_MAP = {
-    'parent':   ('child', 'parent'),
-    'child':    ('parent', 'child'),
-    'spouse':   ('spouse', 'spouse'),
-    'enslaver': ('enslaved', 'enslaver'),
-    'enslaved': ('enslaver', 'enslaved'),
-    'employer': ('employee', 'employer'),
-    'employee': ('employer', 'employee'),
-}
-# entry `type` → the reciprocal `type` the mirror entry on the other person uses.
-_RECIPROCAL_ROLE = {
-    'parent': 'child', 'child': 'parent', 'spouse': 'spouse', 'sibling': 'sibling',
-    'enslaver': 'enslaved', 'enslaved': 'enslaver',
-    'employer': 'employee', 'employee': 'employer',
-}
+# Which entries an accepted claim owes, and on whom, is one rule shared with
+# `fha claim` (which writes the entries when the human accepts the claim) and
+# `--fix-applied` (which writes the ones still missing): it lives in _lib
+# (`claim_owed_relationship_entries` and the helpers below), so the writer
+# never adds an entry this check then calls wrong. The private names stay so
+# the rest of lint reads as before.
+_EDGE_ROLE_MAP = RELATIONSHIP_ENTRY_ROLES
+_RECIPROCAL_ROLE = RECIPROCAL_RELATIONSHIP_TYPE
+_role_pids = claim_role_pids
+_pids_in_role = claim_pids_in_role
+_entry_subtype = relationship_entry_nature
+_claim_subtype_norm = claim_relationship_nature
+_claim_all_roles_by_person = claim_all_roles_by_person
+_claim_role_pairs = claim_persons_with_roles
+_claim_spouse_pids = claim_spouse_pids
+_claim_parentage_pids = claim_parentage_pids
+_claim_backs_edge = claim_backs_relationship_entry
+_person_reconcilable_role_label = claim_relationship_entry_type
 
 
 def _claim_by_id(registry: Registry, cid: str) -> dict | None:
@@ -2927,172 +2954,6 @@ def _claim_by_id(registry: Registry, cid: str) -> dict | None:
         if isinstance(claim, dict) and normalize_id(str(claim.get('id', ''))) == cid:
             return claim
     return None
-
-
-def _role_pids(claim: dict, role: str, alias_map: dict[str, str] | None = None) -> set[str]:
-    """Normalised P-ids filling one `roles:` key (scalar or list both accepted).
-
-    Values resolve like persons: entries (`roles: {child: "[[Sam Rivera]]"}` is
-    the quickstart's form), so role matching agrees with _claim_person_ids.
-
-    A hand-written `roles:` is not always the mapping the schema asks for -
-    a hand-written list such as `roles: [parent, child]` (E015 reports it on a
-    relationship claim) carries no person to resolve. Treat any non-mapping as "no roles
-    given" rather than letting `.get` raise: a lint pass must never hand the
-    human a traceback over a hand-edit it can simply read as empty."""
-    roles = claim.get('roles')
-    val = roles.get(role) if isinstance(roles, dict) else None
-    out: set[str] = set()
-    for ref in link_field_refs(val):
-        pid = _resolve_person_ref(ref, alias_map)
-        if pid:
-            out.add(pid)
-    return out
-
-
-def _pids_in_role(claim: dict, meaning: str,
-                  alias_map: dict[str, str] | None = None) -> set[str]:
-    """Normalised P-ids the claim lists under ANY key that means `meaning`.
-
-    A transcribed certificate says `mother:` and `father:`, and SPEC §8.3
-    reads those exactly as `parent:` (`_lib.role_meaning`), so asking "who is
-    the parent here" must read all three keys - and `Parent:` - the way
-    `fha index` does. `_role_pids` stays the one-key reader for checks that
-    report on a key as it was written (W133)."""
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return set()
-    out: set[str] = set()
-    for key in roles:
-        if role_meaning(key) == meaning:
-            out |= _role_pids(claim, key, alias_map)
-    return out
-
-
-def _entry_subtype(entry: dict) -> str:
-    """The nature an entry asserts. An unqualified parent/child edge is
-    `biological` by default (SPEC §8.2); other types have no default."""
-    st = str(entry.get('subtype', '')).strip().lower()
-    if st:
-        return st
-    role = str(entry.get('type', '')).strip().lower()
-    return 'biological' if role in ('parent', 'child') else ''
-
-
-def _claim_subtype_norm(claim: dict) -> str:
-    """The claim's nature, normalised for comparison. A parent/child claim with no
-    subtype reads as `biological`."""
-    st = str(claim.get('subtype', '')).strip().lower()
-    if st:
-        return st
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return ''
-    meanings = {role_meaning(k) for k, v in roles.items() if v}
-    if {'child', 'parent'} <= meanings:
-        return 'biological'
-    return ''
-
-
-def _claim_all_roles_by_person(
-    claim: dict, alias_map: dict[str, str] | None = None,
-) -> dict[str, list[str]]:
-    """Every role key each person is listed under, in the order written - read
-    the way the index stores it.
-
-    `fha index` fills `claim_persons.role` with every key whose people include
-    this person, in `roles:` order (index.py, the claim_persons insert; #266).
-    Lint mirrors that exactly: the two must not disagree about what a claim
-    says, or a warning here describes a tree the indexer never built. It used
-    to be the FIRST key only, on both sides, and a mother listed as
-    `informant:` and then `parent:` got no mother-child link while the father
-    got his.
-
-    Roles the claim never mentions are simply absent - a person with no role is
-    a person the claim said nothing about, which is a different thing from a
-    person it placed somewhere other than the couple. Each key is read by its
-    meaning (`_lib.role_meaning`), so `mother:` comes back as `parent`, as the
-    index's rules read it.
-    """
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return {}   # `roles: [parent, child]` names nobody; not a crash, just empty
-    out: dict[str, list[str]] = {}
-    for role_name in roles:
-        norm = role_meaning(role_name)
-        for pid in _role_pids(claim, role_name, alias_map):
-            keys = out.setdefault(pid, [])
-            if norm not in keys:
-                keys.append(norm)
-    return out
-
-
-def _claim_role_pairs(
-    claim: dict, alias_map: dict[str, str] | None = None,
-) -> list[tuple[str, str | None]]:
-    """The claim's named people paired with every role each carries - one
-    `(pid, role)` pair per role, `(pid, None)` for a person with none - the
-    input `_lib.spouse_parties` / `_lib.parentage_parties` take, built the way
-    `fha index` builds it from `claim_persons`."""
-    all_roles = _claim_all_roles_by_person(claim, alias_map)
-    return [(pid, role)
-            for pid in dict.fromkeys(_claim_person_ids(claim, alias_map))
-            for role in (all_roles.get(pid) or [None])]
-
-
-def _claim_spouse_pids(
-    claim: dict, alias_map: dict[str, str] | None = None,
-) -> set[str]:
-    """Who a couple claim says married each other, read the way the index reads it.
-
-    A couple claim is a `marriage` or a `divorce` - the shapes whose people
-    with no roles still put spouse edges in the tree.
-
-    A marriage certificate names the couple AND both sets of parents, and
-    listing all six in `persons:` is correct - `persons:` is who the claim is
-    about (SPEC §8.3) - so only `roles: spouse:` says which two of them married.
-    `_lib.spouse_parties` is that rule, shared with `fha index` and
-    `fha gedcom`; this wrapper just hands it the claim's people paired with
-    their roles, resolved through the alias map so a name-linked entry counts
-    like a bare P-id.
-
-    Lint must read it identically or it contradicts the tools: treating every
-    person on the certificate as a spouse makes W115 demand `relationships:`
-    spouse entries between the bride and her father-in-law - marriages the same
-    claim excludes and the indexer correctly refuses to derive. A lint warning
-    whose repair corrupts the tree is worse than no warning.
-
-    Only people actually named in `persons:` can carry a role, matching how the
-    index builds `claim_persons`: a `roles:` entry naming somebody left out of
-    `persons:` is a broken map, not a secret extra spouse - and that broken-map
-    shape is itself reported, for any role on any claim, by W133.
-
-    Every role is passed through, not just `spouse`. The rule's two-person
-    fallback turns on whether the OTHER person carries an explicit role, so a
-    wrapper that flattened every non-spouse role to "no role" would have lint
-    reporting a couple the index refuses to derive.
-    """
-    return set(spouse_parties(_claim_role_pairs(claim, alias_map)))
-
-
-def _claim_parentage_pids(
-    claim: dict, alias_map: dict[str, str] | None = None,
-) -> tuple[set[str], set[str]]:
-    """Who a claim says was born and to whom, read the way the index reads it.
-
-    Returns `(children, parents)`, both empty unless the claim answered both
-    halves - `_lib.parentage_parties` is the rule, shared with `fha index` so
-    W126 can never report a silence the indexer does not actually keep, nor
-    stay quiet about one it does. This wrapper only hands that rule the claim's
-    people paired with their roles, resolved through the alias map so a
-    name-linked entry counts like a bare P-id.
-
-    Only people actually named in `persons:` can carry a role, matching how the
-    index builds `claim_persons`: a `roles:` entry naming somebody left out of
-    `persons:` is a broken map, not a secret extra parent.
-    """
-    children, parents = parentage_parties(_claim_role_pairs(claim, alias_map))
-    return set(children), set(parents)
 
 
 def _claim_vital_subjects(
@@ -3114,108 +2975,6 @@ def _claim_vital_subjects(
     #136)."""
     persons_with_roles = resolve_claim_persons_with_roles(claim, alias_map)
     return vital_subjects(str(claim.get('type', '')), persons_with_roles)
-
-
-def _claim_backs_edge(
-    claim: dict, owner_pid: str, other_pid: str | None, role: str,
-    alias_map: dict[str, str] | None = None,
-) -> bool:
-    """True if `claim` is an accepted relationship/marriage/birth claim that
-    records the edge a person-doc entry asserts. When `other_pid` is None (the
-    `to:` name has no minted record yet) only the owner's side is checked, so a
-    forgiving name never produces a false reconciliation failure. `alias_map`
-    lets name-linked persons:/roles: entries back an edge the same as bare
-    P-ids.
-
-    Lint reads the same claim types the indexer derives edges from, or it
-    contradicts the tools: a birth claim whose `roles:` map names a child and a
-    parent now puts that bond in the tree (#71), so a person-doc entry citing
-    it is reconciled, not drifting. Telling the human their correctly-written
-    record disagrees with a claim the archive itself is reading would send them
-    to repair something that is not broken.
-
-    The same rule in the other direction is why a `negated: true` claim backs
-    nothing (SPEC §8.6). It is an accepted finding, but the finding is that the
-    bond is ABSENT - "we looked and they did not marry" - and the indexer mints
-    no edge from it. An entry that cites one is pointing at evidence for the
-    opposite of what it records, which `_check_relationships_reconciliation`
-    says in those words."""
-    if str(claim.get('status', '')) != 'accepted':
-        return False
-    if claim.get('negated') in (True, 'true'):
-        return False
-    ctype = str(claim.get('type', ''))
-    if role == 'spouse' and ctype == 'marriage':
-        # Not everyone on a certificate married everyone else on it: the
-        # claim's roles: map scopes the couple (_claim_spouse_pids).
-        persons = _claim_spouse_pids(claim, alias_map)
-        return owner_pid in persons and (other_pid is None or other_pid in persons)
-    if role in ('parent', 'child') and ctype == 'birth':
-        # Scoped by the derivation rule, not by the presence of a roles: key -
-        # a birth claim the indexer derives nothing from backs nothing here.
-        children, parents = _claim_parentage_pids(claim, alias_map)
-        if not (children and parents):
-            return False
-        # An entry of `type: parent` says the owner HAS a parent, so the owner
-        # is the child on the claim - the same inversion _EDGE_ROLE_MAP encodes.
-        owner_side, other_side = ((children, parents) if role == 'parent'
-                                  else (parents, children))
-        return (owner_pid in owner_side
-                and (other_pid is None or other_pid in other_side))
-    pair = _EDGE_ROLE_MAP.get(role)
-    if ctype != 'relationship' or not pair:
-        return False
-    owner_role, other_role = pair
-    if owner_pid not in _pids_in_role(claim, owner_role, alias_map):
-        return False
-    if other_pid is not None and other_pid not in _pids_in_role(claim, other_role, alias_map):
-        return False
-    return True
-
-
-def _person_reconcilable_role_label(
-    claim: dict, pid: str, alias_map: dict[str, str] | None = None,
-) -> str | None:
-    """For the reverse check: the entry `type` this person's block would use to
-    apply `claim`, or None if the claim isn't a kin edge naming them. Limited to
-    parent/child/spouse so social and power ties never over-flag.
-
-    A `negated: true` claim owes nothing either (SPEC §8.6): it records a bond
-    the research found ABSENT, so an opted-in block that leaves it out is
-    complete, not incomplete. Asking for the entry would be asking the human to
-    write down the very relationship the claim exists to deny - and if they
-    did, `fha index` would still derive no edge, so the warning could never
-    clear."""
-    if claim.get('negated') in (True, 'true'):
-        return None
-    ctype = str(claim.get('type', ''))
-    if ctype == 'marriage':
-        # Only the couple the claim marries owes a spouse entry - a parent
-        # named on the certificate owes nothing (_claim_spouse_pids).
-        return 'spouse' if pid in _claim_spouse_pids(claim, alias_map) else None
-    if ctype == 'birth':
-        # The mirror of the forward check: a birth claim that derives parentage
-        # is a kin claim, so an opted-in block that omits it is incomplete for
-        # the same reason it would be if the bond were written as a
-        # relationship claim. A birth claim the indexer derives nothing from
-        # owes nothing - only the child and the parents it actually named do.
-        children, parents = _claim_parentage_pids(claim, alias_map)
-        if not (children and parents):
-            return None
-        if pid in children:
-            return 'parent'     # the person was born → their entry names a parent
-        if pid in parents:
-            return 'child'
-        return None
-    if ctype != 'relationship':
-        return None
-    if pid in _pids_in_role(claim, 'child', alias_map):
-        return 'parent'     # the person is a child → their entry names a parent
-    if pid in _pids_in_role(claim, 'parent', alias_map):
-        return 'child'
-    if pid in _pids_in_role(claim, 'spouse', alias_map):
-        return 'spouse'
-    return None
 
 
 def _profile_path_for(registry: Registry, pid: str) -> Path:
@@ -3383,9 +3142,11 @@ def _check_relationship_guesses(
 
 def _kin_claims_by_person(
     registry: Registry, alias_map: dict[str, str],
-) -> dict[str, list[tuple[str, str]]]:
-    """P-id -> [(C-id, entry type)] for every accepted kin claim naming that
-    person, in archive order: the reverse half of W115, read once.
+) -> dict[str, list[tuple[str, str, list[tuple[str, str, str, str]]]]]:
+    """P-id -> [(C-id, entry type, owed entries)] for every accepted kin
+    claim naming that person, in archive order: the reverse half of W115,
+    read once. The owed entries are the ones `_lib.claim_owed_relationship_entries`
+    says the claim owes that person, worked out once per claim.
 
     The reverse check asks, for each person with a `relationships:` block,
     which accepted kin claims name them. Walking every claim in the archive
@@ -3395,7 +3156,7 @@ def _kin_claims_by_person(
     `_person_reconcilable_role_label` (the same rule as before) and filed
     under them. Each list keeps the order the claims sit in the archive, so
     the findings come out in the order they always did."""
-    by_person: dict[str, list[tuple[str, str]]] = {}
+    by_person: dict[str, list[tuple[str, str, list[tuple[str, str, str, str]]]]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
             if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
@@ -3410,10 +3171,14 @@ def _kin_claims_by_person(
             if isinstance(roles, dict):
                 for role_name in roles:
                     named.update(dict.fromkeys(sorted(_role_pids(claim, role_name, alias_map))))
+            owed_all: list[tuple[str, str, str, str]] | None = None
             for pid in named:
                 label = _person_reconcilable_role_label(claim, pid, alias_map)
                 if label is not None:
-                    by_person.setdefault(pid, []).append((cid, label))
+                    if owed_all is None:
+                        owed_all = claim_owed_relationship_entries(claim, alias_map)
+                    by_person.setdefault(pid, []).append(
+                        (cid, label, [o for o in owed_all if o[0] == pid]))
     return by_person
 
 
@@ -3443,7 +3208,9 @@ def _check_relationships_reconciliation(
     kin_claims_by_person: dict[str, list[tuple[str, str]]] | None = None   # built on first use
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
-        if not isinstance(block, list) or not block:
+        # `relationships: []` is an empty list the person keeps (SPEC §9):
+        # still opted in, so the reverse check below still asks for ties.
+        if not isinstance(block, list):
             continue
         if pid in survivors:
             # A merged record's block is its pre-merge view; its claims now
@@ -3511,7 +3278,10 @@ def _check_relationships_reconciliation(
                         f"claim directly with claims: [\"[[c-…]]\"]."))
                     continue
                 matched_claims.append(cands[0])
-                referenced_cids.add(normalize_id(str(cands[0].get('id', ''))))
+                # Every claim in the source that records this tie is applied
+                # by the entry, as the writer reads it
+                # (`_lib.relationship_entry_applies`).
+                referenced_cids.update(normalize_id(str(c.get('id', ''))) for c in cands)
             if not matched_claims:
                 continue
 
@@ -3529,13 +3299,28 @@ def _check_relationships_reconciliation(
         # Reverse: an opted-in block should apply every accepted kin claim that names this person.
         if kin_claims_by_person is None:
             kin_claims_by_person = _kin_claims_by_person(registry, alias_map)
-        for cid, label in kin_claims_by_person.get(pid, []):
-            if cid in referenced_cids:
+        for cid, label, owed in kin_claims_by_person.get(pid, []):
+            # Each entry the claim owes this person is checked on its own
+            # (the rule `fha claim` writes by), so a birth claim cited on the
+            # father's entry still asks for the mother's. A claim naming
+            # nobody on the other side owes no entry anyone could write; it is
+            # applied once any entry cites it.
+            if owed:
+                sid = registry.claim_ids.get(cid)
+                if all(any(relationship_entry_applies(e, cid, sid, other, etype, alias_map)
+                           for e in block)
+                       for _p, etype, other, _n in owed):
+                    continue
+            elif cid in referenced_cids:
                 continue
             findings.append(Finding('W', 'W115', profile_path,
                 f"{fmt_id_display(pid)} has a relationships: block but accepted claim "
-                f"{fmt_id_display(cid)} (a {label} edge naming them) isn't applied in it - add the "
-                f"entry and link the claim, or remove the block if it's not meant to be complete."))
+                f"{fmt_id_display(cid)} (a {label} edge naming them) isn't applied in it. Run "
+                f"`fha lint --fix-applied` to add the entry citing the claim (preview with "
+                f"--dry-run), or remove the block if it's not meant to be complete."))
+            # Captured structurally for `--fix-applied`, as W116 is for
+            # `--fix-reciprocal`, so the fix never re-parses the message.
+            registry.unapplied_claims.add((pid, cid))
 
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
@@ -6597,6 +6382,7 @@ def run_lint(
     fix_claims_fence: bool = False,
     fix_ids: bool = False,
     fix_reciprocal: bool = False,
+    fix_applied: bool = False,
     fix_surnames: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
     changed_ref: str | None = None,
@@ -6687,6 +6473,10 @@ def run_lint(
                             extra_source_paths=minted_sources)
     if fix_reciprocal:
         _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_applied:
+        # After --fix-reciprocal: a mirror it just wrote that is also a
+        # missing entry here reads as already there, not as a second entry.
+        _fix_applied(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_surnames:
         _fix_surnames(registry, archive_root, progress, changed, dry_run=dry_run)
     if mint_stubs or spawn_questions or fix_claims_fence or fix_ids or fix_reciprocal or fix_surnames:
@@ -8061,72 +7851,6 @@ def _fix_spawn_questions(
         changed.append(str(questions_path))
 
 
-def _format_mirror_entry(
-    owner_pid: str, owner_name: str, role: str, subtype: str, claim_ids: list[str],
-) -> list[str]:
-    """The YAML list-item lines for a mirror relationship entry pointing back at
-    the person who already records the edge. Pinned `[[P-id|Name]]` so it reads
-    and resolves; subtype omitted when there is nothing to say.
-
-    `owner_name` is an EXISTING person's `name:` field, not a value this
-    fixer validated - a human may have typed a quote into it long before
-    `--fix-reciprocal` ran. Escaped for the double-quoted YAML scalar it
-    lands in (same fix/reasoning as `person._relationship_item_lines`, PR
-    #30 review sweep) rather than left to splice in raw.
-    """
-    escaped_name = owner_name.replace('\\', '\\\\').replace('"', '\\"')
-    lines = [
-        f'  - to: "[[{fmt_id_display(owner_pid)}|{escaped_name}]]"',
-        f'    type: {role}',
-    ]
-    if subtype:
-        # Free text (same field person._relationship_item_lines quotes): a
-        # ': ' or ' #' typed into a claim's subtype long ago must not corrupt
-        # the mirrored record's frontmatter here either.
-        lines.append(f'    subtype: {yaml_inline(subtype)}')
-    if claim_ids:
-        # One entry per person and role, every backing claim listed (SPEC §9).
-        lines.append(f'    claims: {relationship_claims_value(claim_ids)}')
-    return lines
-
-
-def _append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
-    """Insert a relationships list-item into a person record's frontmatter.
-
-    Additive text surgery: appends to an existing block (a `relationships:` key
-    followed by indented items) or creates one just before the closing `---`.
-    Returns None when the frontmatter is missing or `relationships:` is written
-    in a form we won't safely edit (e.g. inline `relationships: [...]`), so the
-    caller can report it rather than corrupt the file."""
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != '---':
-        return None
-    close = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
-    if close is None:
-        return None
-
-    rel_idx = None
-    for i in range(1, close):
-        if re.match(r'^relationships:\s*(#.*)?$', lines[i]):
-            rel_idx = i
-            break
-        if re.match(r'^relationships:\s*\S', lines[i]):
-            return None     # inline form - refuse rather than create a duplicate key
-
-    if rel_idx is None:
-        lines[close:close] = ['relationships:'] + list(item_lines)
-    else:
-        end = rel_idx + 1
-        while end < close and (lines[end].startswith(' ') or lines[end].startswith('\t')):
-            end += 1
-        lines[end:end] = list(item_lines)
-
-    result = '\n'.join(lines)
-    if text.endswith('\n'):
-        result += '\n'
-    return result
-
-
 def _header_reads(text: str) -> bool:
     """The record's header still parses as a set of fields - so a refusal can
     tell the owner whether a save would break the header or only change it."""
@@ -8186,9 +7910,9 @@ def _fix_reciprocal(
             # not the whole `--fix-reciprocal` pass (#68).
             progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
             continue
-        item = _format_mirror_entry(m['owner_pid'], owner_name, m['mirror_role'],
-                                    m['subtype'], m['claim_ids'])
-        new_text = _append_relationship_entry(text, item)
+        item = format_relationship_entry(m['owner_pid'], owner_name, m['mirror_role'],
+                                         m['subtype'], m['claim_ids'])
+        new_text = append_relationship_entry(text, item)
         if new_text:
             new_text, _merged = collapse_relationship_entries(
                 new_text, resolve=lambda ref: resolve_ref(ref, registry.alias_map))
@@ -8228,6 +7952,72 @@ def _fix_reciprocal(
         progress.append(
             f"Added reciprocal '{m['mirror_role']}' edge to {owner_name} "
             f"(claim {claims_shown}) in {rel}")
+
+
+def _fix_applied(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """W115 fix for an accepted claim an opted-in block leaves out: write the
+    entry the claim owes that person, citing it, exactly as `fha claim`
+    does when the claim is accepted (`_lib.plan_relationship_entries`, one
+    rule for both). An entry already there for the same tie gains the claim
+    in its `claims:` list; a guess (`status: hypothesis`) is left as written
+    and the sourced entry goes beside it.
+
+    Only the (person, claim) pairs the W115 pass found are touched, so a
+    record with no `relationships:` list is never given one. Every edit is
+    worked out and checked in memory first (the header must still read, and
+    nothing but `relationships:` may change); `--dry-run` prints the same
+    lines and refusals a live run gives, and writes nothing. Each record is
+    written once, atomically."""
+    if not registry.unapplied_claims:
+        return
+    people = {pid: (paths[0], registry.person_meta.get(pid) or {})
+              for pid, paths in registry.person_profile_paths.items() if paths}
+    by_cid: dict[str, dict] = {}
+    for _pid, cid in sorted(registry.unapplied_claims):
+        claim = _claim_by_id(registry, cid)
+        if claim is not None:
+            by_cid[cid] = claim
+    plan = plan_relationship_entries(list(by_cid.values()), people, registry.alias_map,
+                                     only=registry.unapplied_claims)
+    # A claim naming only one side of its tie (a child with no parent named)
+    # owes no entry anyone can write; say so rather than skip it quietly.
+    for pid, cid in sorted(registry.unapplied_claims):
+        claim = by_cid.get(cid)
+        owed = claim_owed_relationship_entries(claim, registry.alias_map) if claim else []
+        if not any(o[0] == pid for o in owed):
+            progress.append(
+                f"--fix-applied: claim {fmt_id_display(cid)} names "
+                f"{_relationship_person_name(registry, pid)} but nobody on the other side of "
+                "the tie, so there is no entry to write. Add the other person to the claim's "
+                "roles:, or write the entry by hand.")
+    prefix = '--fix-applied dry-run: ' if dry_run else ''
+    for path, edit in plan['edits'].items():
+        if not dry_run:
+            try:
+                # Atomic: one failed write costs that record's entries, not
+                # the record.
+                write_text_exact_atomic(path, reapply_newline(edit['after'], edit['before']))
+            except OSError as e:
+                progress.append(f"--fix-applied: could not write {path.relative_to(archive_root)} "
+                                f"({e}); nothing in it was changed.")
+                continue
+            changed.append(str(path))
+        for _level, text, _where in relationship_plan_lines(
+                {'edits': {path: edit}}, people, dry_run=dry_run):
+            progress.append(f"{prefix}{text} ({path.relative_to(archive_root)})")
+    for text in plan['problems']:
+        progress.append(f"--fix-applied: {text}")
+
+
+def _relationship_person_name(registry: Registry, pid: str) -> str:
+    """A person's name for a progress line, or their id."""
+    return str((registry.person_meta.get(pid) or {}).get('name') or fmt_id_display(pid))
 
 
 def _today() -> str:
@@ -8321,6 +8111,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'as an alias) and for id-less claims inside sources (with --dry-run to preview)')
     p.add_argument('--fix-reciprocal', action='store_true',
                    help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
+    p.add_argument('--fix-applied', action='store_true',
+                   help='Add the relationships: entry each W115 says an accepted claim is '
+                        'missing from, citing the claim (with --dry-run to preview)')
     p.add_argument('--fix-surnames', action='store_true',
                    help='Write the surname: line each W138 file name implies, so the record '
                         'keeps the surname its file name was sorted under (with --dry-run '
@@ -8377,6 +8170,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_claims_fence=getattr(args, 'fix_claims_fence', False),
         fix_ids=getattr(args, 'fix_ids', False),
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
+        fix_applied=getattr(args, 'fix_applied', False),
         fix_surnames=getattr(args, 'fix_surnames', False),
         spec_root=Path(spec_root) if spec_root else None,
         changed_ref=changed_ref,
@@ -8407,6 +8201,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fix-claims-fence', action='store_true')
     parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-reciprocal', action='store_true')
+    parser.add_argument('--fix-applied', action='store_true')
     parser.add_argument('--fix-surnames', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)
