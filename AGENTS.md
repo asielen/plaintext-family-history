@@ -216,6 +216,11 @@ fha source clear-keyword <s-id> --keyword … [--replace-with …]   clear or co
 fha source set-primary <s-id> --file NAME          make the named photo the source's main
                             image (the fix `fha doctor` names when a record calls a
                             photo's back its main image; record-only, nothing renamed)
+fha source merge <keeper> <retiree> [--dry-run]    fold a second record of one piece of
+                            evidence into the first: files re-keyed (documents renamed,
+                            photos keyword only), claims moved with their ids, notes and
+                            links added, retiree record removed, its id kept in aliases:;
+                            refused when the accepted claims are about different people
 fha places set <l-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <l-id> --text …                    append a dated research note to a place

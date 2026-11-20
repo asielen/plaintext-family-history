@@ -18,6 +18,7 @@ Contents:
 8. The workbench: a local browser page
 9. Capture: one record, on the user's click
 10. Working in Obsidian
+11. Merging two sources
 
 ---
 
@@ -276,3 +277,15 @@ Other limits:
 - **Name-only links.** A link by name breaks when the name changes and is ambiguous when two people share it. The ID inside the brackets fixes both.
 - **A generated "claim mirror" note** that copies claims into queryable frontmatter. It would duplicate every claim and add a file to keep in sync, and the person frontmatter already answers the common questions.
 - **Making Obsidian, or any one editor, required.** It is one good way to read and write the files. The archive works the same in a plain text editor.
+
+## 11. Merging two sources
+
+**The rule.** When two source records prove to be one piece of evidence, `fha source merge` folds one into the other. The kept record takes the other's files, claims (ids unchanged), notes and links, keeps its id in `aliases:`, and records what moved in `merged_from:`; the other record file is removed. The merge is refused when both records hold accepted claims and no person is named in both.
+
+**Why.** An index entry and the document it indexes are one source, and so are two captures of one record, so a merge is a routine step. By hand it means clearing embedded keywords and staging files under neutral names, which loses the original filename. The `merged_from:` entry exists because a merge with no record of what moved cannot be undone. The people check uses the claims a human has already accepted: two records whose confirmed facts share no one are almost always two records, and a wrong merge is far harder to see than a refusal.
+
+**Rejected.**
+
+- **A tombstone record for the merged source**, as persons have. A merged source's files all move to the survivor, so nothing would be left for the tombstone to describe; the alias and `merged_from:` carry what it would.
+- **Guessing "different people" from names or dates in the text.** The accepted claims already say who each record is about; anything looser would grow exceptions.
+- **An `unmerge` verb now.** `merged_from:` makes an undo possible by hand; a verb waits until one is needed.

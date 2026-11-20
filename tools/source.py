@@ -7,6 +7,7 @@ source.py - fha source: deterministic source-record write-backs (TOOLING §3c si
   fha source extract S-id [--pages RANGES] [--copy LABEL] [--dry-run] [--root PATH]
   fha source clear-keyword S-id --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
   fha source set-primary S-id --file NAME [--dry-run] [--root PATH]
+  fha source merge KEEPER RETIREE [--dry-run] [--root PATH]
 
 A source's `## Notes` section is the human-written free-text channel SPEC §14
 reserves for "the story behind it, context, or where the original is kept" -
@@ -17,14 +18,15 @@ phone, on the porch, mid-research-session, and the tool finds the record,
 appends the sentence as its own paragraph, and touches nothing else.
 
 This module deliberately opens the `fha source` namespace - future
-source-field verbs would live here. Five verbs ship now: `note` (append),
+source-field verbs would live here. Six verbs ship now: `note` (append),
 `edit-note` (rewrite one existing paragraph - the workbench's per-entry edit
 button; see run_source_edit_note), `extract` (dump a PDF's embedded text
 layer into a derived [Page N]-labeled companion - see run_source_extract),
 `clear-keyword` (#112: correct a documents-root asset's embedded
 Keywords/Subject value - see run_source_clear_keyword), and `set-primary`
 (#200: make a photo's front, not its back, the record's main image - see
-run_source_set_primary).
+run_source_set_primary), and `merge` (fold a second record of one piece of
+evidence into the first: see run_source_merge and the merge rules below).
 
 DESIGN RULES (why the code looks the way it does)
 -------------------------------------------------
@@ -130,6 +132,25 @@ DESIGN RULES (why the code looks the way it does)
   'Margaret Hartley') sees its own about-to-be-removed old value as a
   case-insensitive "match", skips adding the correction, and the keyword
   vanishes entirely while the command still reports success.
+- **`merge` reuses `--more`'s naming and undo, through `_lib`.** A file
+  coming over from a merged source is named by the same SPEC §13 rule a
+  `fha process --more` attachment is (`_lib.attachment_base`), and its
+  keyword goes through the one keyword writer; the byte-exact undo copies
+  and the reverse-order undo runner are `_lib`'s too. They moved there from
+  process.py so this verb could share them (tools never import tools), and
+  process.py keeps its old names as aliases.
+- **`merge` refuses before it writes.** Everything a write could fail on
+  (both records readable, the people check, every file on disk and its
+  keyword read, the keeper's new text re-parsed to exactly the planned
+  frontmatter and claims) is checked first, so `--dry-run` gives the same
+  answer as the real run. The writes then each push an undo step, and a
+  failure part-way runs them in reverse.
+- **`merge`'s "different people" rule is the simplest one the evidence
+  supports.** The two records' accepted claims each name a set of people
+  (`persons:` and `roles:`); when both sets are non-empty and share no one,
+  the records are taken to be about different people and the merge is
+  refused, naming them. Suggested claims do not count: nobody has confirmed
+  them yet.
 
 CODE MAP
 --------
@@ -168,8 +189,18 @@ CODE MAP
   _set_entry_key              - set one key line of one files: entry in place
   run_source_set_primary      - #200: move is_primary: true to the named
                                 photo; returns a _lib.Result
+  _MergeRefused               - a merge refusal found before any write
+  _merge_read_keywords / _merge_write_keywords - exiftool seams (the _lib
+                                keyword reader/writer; tests patch them)
+  _accepted_claim_people      - everyone named in a record's accepted claims
+  _extend_frontmatter_list    - add items to one frontmatter list, as text
+  _merge_claims_text          - copy the retiree's claim items into the keeper's
+  _plan_merge_files           - each retiree file: new name, keyword, entry
+  _merge_notes_paragraph / _differing_fields - the dated Notes paragraph
+  run_source_merge            - fold one source into another; returns a Result
   _emit / _cmd_source_note / _cmd_source_edit_note / _cmd_source_extract /
-  _cmd_source_clear_keyword / _cmd_source_set_primary / _make_group_help
+  _cmd_source_clear_keyword / _cmd_source_set_primary / _cmd_source_merge /
+  _make_group_help
   register / _standalone_main
 """
 
@@ -177,6 +208,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import datetime
 import difflib
 import logging
 import re
@@ -194,6 +226,27 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    _find_claims_block,
+    attachment_base,
+    claims_in_text,
+    create_section_at_eof,
+    discard_undo_copies,
+    EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES,
+    EXIT_ERRORS,
+    ExiftoolUnavailableError,
+    files_entry_role,
+    frontmatter_key_line_indexes,
+    link_field_refs,
+    path_to_alias,
+    read_embedded_keywords,
+    record_display_names,
+    restore_undo_copy,
+    run_undo_steps,
+    slugify,
+    SOURCE_FRONTMATTER_KEY_ORDER,
+    take_undo_copy,
+    without_retired_sid,
+    yaml_inline,
     append_file_entry_to_record,
     append_paragraph_to_section,
     claims_edit_problem,
@@ -1694,6 +1747,974 @@ def run_source_set_primary(
     return result
 
 
+# ── fha source merge ─────────────────────────────────────────────────────────
+#
+# Two source records that turn out to be one piece of evidence (an index entry
+# and the document it indexes, or the same record captured from two sites)
+# become one: the keeper takes the retiree's files, claims, notes and links,
+# lists the retiree's id in `aliases:` so every old link still finds it, and
+# the retiree's record file is removed (SPEC §9 "Merged sources").
+
+_MERGE_COMMAND = 'fha source merge'
+
+# Frontmatter lists the keeper gains items in. Everything else on the retiree
+# that differs from the keeper is written into the keeper's Notes instead, so
+# nothing the retiree's record said is lost.
+_MERGE_LIST_KEYS = ('aliases', 'people', 'places', 'external_links', 'ai_passes',
+                    'files', 'merged_from')
+_MERGE_NOT_NOTED = frozenset({'id', 'created', *_MERGE_LIST_KEYS})
+
+# Copy labels a moved file can take when its role is already taken on the
+# keeper (SPEC §13: `{slug}[-{copy}][-{role}]`, copies `b`, `c`, ...).
+_MERGE_COPY_LETTERS = 'bcdefghijklmnopqrstuvwxyz'
+
+
+class _MergeRefused(Exception):
+    """A merge that cannot go ahead, found before anything is written.
+
+    Carries the plain message, the next command when there is one, the exit
+    code and the `data['status']` word, so `run_source_merge` can turn it
+    into its one refusal Result whatever check raised it."""
+
+    def __init__(self, message: str, *, next_step: str | None = None,
+                 exit_code: int = EXIT_ERRORS, status: str = 'refused') -> None:
+        super().__init__(message)
+        self.message = message
+        self.next_step = next_step
+        self.exit_code = exit_code
+        self.status = status
+
+
+def _merge_read_keywords(file_path: Path) -> list[str]:
+    """Every keyword embedded in one file (all keyword fields unioned).
+
+    A thin seam over `_lib.read_embedded_keywords`, the one keyword reader,
+    that tests monkeypatch. Raises `ExiftoolUnavailableError` when exiftool is
+    missing and RuntimeError when it could not read this file."""
+    return read_embedded_keywords(file_path, command=_MERGE_COMMAND)
+
+
+def _merge_write_keywords(file_path: Path, *, add: list[str], remove: list[str],
+                          backup: OriginalBackup) -> str | None:
+    """Add and remove keywords in one file through `_lib.write_embedded_keywords`,
+    the one keyword writer (every keyword field, one exiftool call, the
+    `originals_backup:` copy first). Returns None on success, else the
+    failure text. A seam tests monkeypatch."""
+    return write_embedded_keywords(file_path, add=add, remove=remove, backup=backup,
+                                   command=_MERGE_COMMAND)
+
+
+def _merge_today() -> datetime.date:
+    """Today's date, for the `merged_from:` entry. A seam tests pin."""
+    return datetime.date.today()
+
+
+def _claim_person_ids(claim: dict) -> set[str]:
+    """The person ids one claim names, in `persons:` and in `roles:`."""
+    ids: set[str] = set()
+    refs = list(link_field_refs(claim.get('persons')))
+    roles = claim.get('roles')
+    if isinstance(roles, dict):
+        for value in roles.values():
+            refs.extend(link_field_refs(value))
+    for ref in refs:
+        ref = str(ref).strip()
+        if is_valid_id(ref) and id_type_of(ref) == 'P':
+            ids.add(normalize_id(ref))
+    return ids
+
+
+def _accepted_claim_people(claims: list) -> set[str]:
+    """Everyone named in a record's accepted claims.
+
+    This is the evidence the human has already confirmed. Two records whose
+    accepted claims name no person in common are, on that evidence, about
+    different people, so `run_source_merge` refuses to make them one."""
+    people: set[str] = set()
+    for claim in claims:
+        if (isinstance(claim, dict)
+                and str(claim.get('status') or '').strip().lower() == 'accepted'):
+            people |= _claim_person_ids(claim)
+    return people
+
+
+def _yaml_item_lines(item, col: int) -> list[str]:
+    """One YAML list item, block style, starting at column `col`.
+
+    A mapping is written one key per line in its own key order (a flow
+    `{...}` from `yaml_inline` would sort the keys); every scalar goes through
+    `yaml_inline`, the shared quoting rule, so it reads back as the same
+    value."""
+    if isinstance(item, dict) and item:
+        return _yaml_mapping_lines(item, col + 2, first_lead=' ' * col + '- ')
+    return [' ' * col + '- ' + yaml_inline(item)]
+
+
+def _yaml_mapping_lines(mapping: dict, key_col: int, first_lead: str | None = None) -> list[str]:
+    """A YAML mapping, block style, its keys at column `key_col`."""
+    out: list[str] = []
+    for n, (key, value) in enumerate(mapping.items()):
+        lead = first_lead if (n == 0 and first_lead is not None) else ' ' * key_col
+        if isinstance(value, dict) and value:
+            out.append(f'{lead}{key}:')
+            out.extend(_yaml_mapping_lines(value, key_col + 2))
+        elif isinstance(value, list) and value:
+            out.append(f'{lead}{key}:')
+            for item in value:
+                out.extend(_yaml_item_lines(item, key_col + 2))
+        else:
+            out.append(f'{lead}{key}: {yaml_inline(value)}')
+    return out
+
+
+_TOP_KEY_RE = re.compile(r'^([A-Za-z_][\w-]*)\s*:(?:\s|$)')
+
+
+def _extend_frontmatter_list(lines: list[str], key: str, all_items: list,
+                             new_items: list, cr: str) -> list[str]:
+    """Add `new_items` to the frontmatter list `key`, as text surgery.
+
+    The keeper's frontmatter is edited line by line, like every other record
+    writer here, so its comments and key order survive. A block list gets the
+    new items after its last item, at the indent its items already use. A
+    one-line form (`aliases: [s-…, stem]`) is rewritten as a block holding
+    `all_items` (the old items and the new). An absent key is added in SPEC
+    §14's key order (`SOURCE_FRONTMATTER_KEY_ORDER`). The caller re-parses the
+    whole result and compares it with the planned values before anything is
+    written, so a shape this misreads is refused, never saved.
+    """
+    span = frontmatter_fence_span(lines)
+    if span is None:
+        raise _MergeRefused('the keeper record lost its frontmatter fences while being '
+                            'rewritten, so nothing was written.', exit_code=EXIT_FAILURE)
+    start, end = span
+    found = frontmatter_key_line_indexes(lines, start + 1, end, key)
+    if len(found) > 1:
+        raise _MergeRefused(
+            f'the keeper record has more than one `{key}:` line, so the merge cannot '
+            'tell which one to add to. Run `fha lint` to see it, keep one, then run '
+            'the merge again. Nothing was written.', next_step='fha lint')
+    if not found:
+        order = list(SOURCE_FRONTMATTER_KEY_ORDER)
+        rank = order.index(key) if key in order else len(order)
+        insert_at = end
+        for i in range(start + 1, end):
+            m = _TOP_KEY_RE.match(lines[i])
+            if m and m.group(1) in order and order.index(m.group(1)) > rank:
+                insert_at = i
+                break
+        block = [f'{key}:'] + [ln for item in all_items for ln in _yaml_item_lines(item, 2)]
+        return lines[:insert_at] + [ln + cr for ln in block] + lines[insert_at:]
+    at = found[0]
+    value_text = lines[at].rstrip('\r').split(':', 1)[1].strip()
+    block_end = at + 1
+    while block_end < end and (not lines[block_end].strip() or lines[block_end][0].isspace()
+                               or lines[block_end].startswith('- ')):
+        block_end += 1
+    while block_end > at + 1 and not lines[block_end - 1].strip():
+        block_end -= 1
+    if value_text == '' or value_text.startswith('#'):
+        indent = 2
+        for ln in lines[at + 1:block_end]:
+            stripped = ln.lstrip(' ')
+            if stripped.startswith('- ') or stripped.rstrip('\r') == '-':
+                indent = len(ln) - len(stripped)
+                break
+        added = [ln for item in new_items for ln in _yaml_item_lines(item, indent)]
+        return lines[:block_end] + [ln + cr for ln in added] + lines[block_end:]
+    block = [f'{key}:'] + [ln for item in all_items for ln in _yaml_item_lines(item, 2)]
+    return lines[:at] + [ln + cr for ln in block] + lines[block_end:]
+
+
+def _body_sections(lines: list[str], body_start: int) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """A record body as (preamble lines, [(heading, content lines), ...]).
+
+    Headings are the level-2 `## ` lines the section writers use; the content
+    of each runs to the next one. Line endings are dropped from the content
+    (the writer adds the keeper's own)."""
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    current: list[str] = preamble
+    for ln in lines[body_start:]:
+        bare = ln.rstrip('\r')
+        if re.match(r'^##\s+\S', bare):
+            current = []
+            sections.append((bare[2:].strip(), current))
+        else:
+            current.append(bare)
+    return preamble, sections
+
+
+def _trimmed(content: list[str]) -> list[str]:
+    """`content` without blank lines at either end."""
+    out = list(content)
+    while out and not out[0].strip():
+        out.pop(0)
+    while out and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _is_placeholder(content: list[str]) -> bool:
+    """True for an empty section or one holding only `(none yet)`."""
+    body = _trimmed(content)
+    return not body or (len(body) == 1 and body[0].strip() in ('*(none yet)*', '(none yet)'))
+
+
+def _outside_fence(content: list[str]) -> list[str]:
+    """A `## Claims` section's lines without its fenced ```yaml block."""
+    out: list[str] = []
+    inside = False
+    for ln in content:
+        if not inside and ln.strip() == '```yaml':
+            inside = True
+        elif inside and ln.strip() == '```':
+            inside = False
+        elif not inside:
+            out.append(ln)
+    return out
+
+
+def _claim_item_indent(block: list[str]) -> int | None:
+    """The column a claims block's list items start at, or None if it has none."""
+    for ln in block:
+        stripped = ln.lstrip(' ')
+        if stripped.startswith('- ') or stripped.rstrip('\r') == '-':
+            return len(ln) - len(stripped)
+    return None
+
+
+def _merge_claims_text(keeper_lines: list[str], retiree_lines: list[str], cr: str) -> list[str]:
+    """The keeper's lines with the retiree's claim items added to its `## Claims`.
+
+    The retiree's items are copied as written (comments and all), shifted to
+    the keeper's item indent, after the keeper's last claim. A keeper with no
+    claims block gets one, before its first `##` section. The caller checks
+    the parsed result claim by claim before anything is written."""
+    rblock = _find_claims_block(retiree_lines)
+    if rblock is None:
+        return keeper_lines
+    items = _trimmed([ln.rstrip('\r') for ln in retiree_lines[rblock[0] + 1:rblock[1]]])
+    if not items:
+        return keeper_lines
+    kblock = _find_claims_block(keeper_lines)
+    want = 0
+    if kblock is not None:
+        found = _claim_item_indent(keeper_lines[kblock[0] + 1:kblock[1]])
+        want = found if found is not None else 0
+    have = _claim_item_indent(items) or 0
+    shift = want - have
+    if shift > 0:
+        items = [(' ' * shift + ln) if ln.strip() else ln for ln in items]
+    elif shift < 0:
+        if any(ln.strip() and not ln.startswith(' ' * -shift) for ln in items):
+            raise _MergeRefused(
+                "the two records' claims are indented differently, so they cannot be "
+                'put into one block safely. Run `fha lint --format` on both records, '
+                'then run the merge again. Nothing was written.',
+                next_step='fha lint --format')
+        items = [ln[-shift:] if ln.strip() else ln for ln in items]
+    if kblock is not None:
+        open_fence, close_fence = kblock
+        head = keeper_lines[:close_fence]
+        if close_fence > open_fence + 1 and head[-1].strip():
+            head.append(cr)
+        return head + [ln + cr for ln in items] + keeper_lines[close_fence:]
+    span = frontmatter_fence_span(keeper_lines)
+    body_start = span[1] + 1 if span else 0
+    insert_at = next((i for i in range(body_start, len(keeper_lines))
+                      if re.match(r'^##\s+\S', keeper_lines[i])), None)
+    block = ['## Claims', '```yaml', *items, '```', '']
+    if insert_at is None:
+        return create_section_at_eof(keeper_lines, 'Claims', '\n'.join(block[1:-1]), cr)
+    return keeper_lines[:insert_at] + [ln + cr for ln in block] + keeper_lines[insert_at:]
+
+
+def _entry_as_dict(entry) -> dict:
+    """A `files:` entry as a mapping (a bare string entry names only its file)."""
+    if isinstance(entry, dict):
+        return dict(entry)
+    return {'file': str(entry)}
+
+
+def _ordered_entry(entry: dict) -> dict:
+    """A files: entry with its keys in SPEC §14 order (file, role, copy,
+    is_primary, original_filename, then the rest as they were)."""
+    order = ('file', 'role', 'copy', 'is_primary', 'original_filename')
+    out = {k: entry[k] for k in order if k in entry}
+    out.update({k: v for k, v in entry.items() if k not in out})
+    return out
+
+
+def _source_ids_in(keywords: list[str]) -> list[tuple[str, str]]:
+    """Every `SOURCE:` keyword in a list, as (the exact keyword, its lowercased id)."""
+    out = []
+    for kw in keywords or []:
+        m = _SOURCE_KEYWORD_RE.match(str(kw).strip())
+        if m:
+            out.append((str(kw), m.group(1).lower()))
+    return out
+
+
+def _plan_merge_files(
+    archive_root: Path, fha_config: dict, *, keeper_sid: str, retiree_sid: str,
+    keeper_meta: dict, keeper_path: Path, retiree_meta: dict, warnings: list[str],
+) -> list[dict]:
+    """Work out, without writing, what happens to each of the retiree's files.
+
+    One plan entry per `files:` entry: where the file is (`src`), what it is
+    called afterwards (`dest`; the same for a photo), the keyword change, and
+    the keeper `files:` entry it becomes.
+
+    The rules, all from SPEC §12.1/§13 and `fha process --more`:
+      - a documents-root file is renamed into the keeper's grammar,
+        `{slug}[-{copy}][-{role}]_{keeper}.{ext}`, by the same
+        `attachment_base` rule `--more` uses, beside where it is now; its
+        first name stays on record as `original_filename:` (the one it
+        already had, else the name it carries now);
+      - a photos-root file is never renamed;
+      - a file that can hold an embedded keyword gets `SOURCE: {keeper}` in
+        place of the retiree's; a file carrying a third source's keyword
+        refuses the merge, since it belongs to that source;
+      - the retiree's main file stops being the main file (the keeper's
+        stays), and a file whose role (and copy label) the keeper already
+        has takes the next free copy letter, b, c, ..., so two scans of one
+        record never share a name or a role.
+
+    Raises `_MergeRefused` for anything that would stop the run part-way;
+    `warnings` collects what goes ahead with a caveat (a document whose
+    keyword cannot be read because exiftool is not installed).
+    """
+    entries = retiree_meta.get('files')
+    if entries is None:
+        return []
+    if not isinstance(entries, list):
+        raise _MergeRefused(
+            f"{fmt_id_display(retiree_sid)}'s files: list could not be read as a list. "
+            'Run `fha lint` to see what is wrong there, fix it, then run the merge '
+            'again. Nothing was written.', next_step='fha lint')
+    keeper_files = keeper_meta.get('files')
+    keeper_entries = ([_entry_as_dict(e) for e in keeper_files]
+                      if isinstance(keeper_files, list) else [])
+    listed = {str(e.get('file') or '').replace('\\', '/') for e in keeper_entries}
+    used = {(files_entry_role(e), str(e.get('copy') or '').strip()) for e in keeper_entries}
+    planned_dests: set[str] = set()
+    keeper_shown = fmt_id_display(keeper_sid)
+    retired = frozenset({retiree_sid})
+    plans: list[dict] = []
+    for raw in entries:
+        entry = _entry_as_dict(raw)
+        alias = str(entry.get('file') or '').strip().replace('\\', '/')
+        if not alias:
+            raise _MergeRefused(
+                f"{fmt_id_display(retiree_sid)} has a files: entry with no file: line. "
+                'Fix or remove it by hand, then run the merge again. Nothing was written.')
+        if alias in listed:
+            raise _MergeRefused(
+                f'{alias} is listed on both records. Remove it from one of them by hand '
+                '(it belongs on the keeper), then run the merge again. Nothing was written.')
+        root_alias = alias.split('/', 1)[0]
+        role = files_entry_role(entry)
+        copy = str(entry.get('copy') or '').strip()
+        new_entry = {k: v for k, v in entry.items() if k != 'is_primary'}
+        placeholder = str(entry.get('status') or '').strip().lower() == 'missing-fixture'
+        if root_alias not in ('documents', 'photos'):
+            raise _MergeRefused(
+                f'{alias} is not under the documents or photos folder, so the merge cannot '
+                'tell how to re-label it. Run `fha reconcile` to fix where the record '
+                'says it is, then run the merge again. Nothing was written.',
+                next_step='fha reconcile')
+        src = resolve_path(alias, fha_config, archive_root)
+        if not placeholder and not src.is_file():
+            raise _MergeRefused(
+                f'{alias} is listed on {fmt_id_display(retiree_sid)} but is not on disk, '
+                'so it cannot be moved over. Run `fha reconcile` to find it, then run the '
+                'merge again. Nothing was written.', next_step='fha reconcile')
+
+        # Make the (role, copy) pair unique on the keeper: a second scan of the
+        # same face takes the next copy letter, as SPEC §13 names copies.
+        def _taken(r: str, c: str) -> bool:
+            return (r, c) in used
+
+        if _taken(role, copy):
+            copy = next((c for c in _MERGE_COPY_LETTERS if not _taken(role, c)), '')
+            if not copy:
+                raise _MergeRefused(
+                    f'the keeper already has every copy letter in use for role '
+                    f"'{role or 'main file'}', so {alias} has no name left. Nothing was written.")
+        dest = src
+        if root_alias == 'documents' and not placeholder:
+            # The name SPEC §13 gives it on the keeper; when another file
+            # already has that name, the next free copy letter.
+            candidates = [copy] + [c for c in _MERGE_COPY_LETTERS
+                                   if c != copy and not _taken(role, c)]
+            for candidate in candidates:
+                base = attachment_base(without_retired_sid(src, retired), keeper_meta,
+                                       keeper_path, keeper_shown, role, candidate or None)
+                suffix = f'-{slugify(role)}' if role else ''
+                if candidate:
+                    suffix = f'-{slugify(candidate)}{suffix}'
+                dest = src.with_name(f'{base}{suffix}_{keeper_shown}{src.suffix}')
+                clash = (str(dest).lower() in planned_dests
+                         or (dest.exists() and dest.resolve() != src.resolve()))
+                if not clash:
+                    copy = candidate
+                    break
+            else:
+                raise _MergeRefused(
+                    f'every name {alias} could take on the keeper is already used by '
+                    'another file. Rename one of them by hand, then run the merge '
+                    'again. Nothing was written.')
+        used.add((role, copy))
+        planned_dests.add(str(dest).lower())
+        if copy:
+            new_entry['copy'] = copy
+        else:
+            new_entry.pop('copy', None)
+        new_alias = alias if dest == src else path_to_alias(dest, 'documents', fha_config,
+                                                            archive_root)
+        new_entry['file'] = new_alias
+        if dest != src and not str(entry.get('original_filename') or '').strip():
+            new_entry['original_filename'] = src.name
+
+        # The keyword: read now, so a refusal comes before any write.
+        add: list[str] = []
+        remove: list[str] = []
+        if not placeholder and (root_alias == 'photos'
+                                or src.suffix.lower() in EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES):
+            try:
+                existing = _merge_read_keywords(src)
+            except RuntimeError as e:
+                if root_alias == 'photos':
+                    missing = isinstance(e, ExiftoolUnavailableError)
+                    raise _MergeRefused(
+                        f'could not read the keywords inside {alias} ({e}). A photo is tied '
+                        'to its source by its SOURCE: keyword alone, so the merge needs to '
+                        'change it. '
+                        + ('Install exiftool (`fha doctor` checks for it), '
+                           if missing else 'Check the file opens, ')
+                        + 'then run the merge again. Nothing was written.',
+                        next_step='fha doctor')
+                warnings.append(
+                    f'{alias}: its SOURCE: keyword could not be read ({e}), so it is renamed '
+                    'without changing the keyword inside it. Nothing is lost: its new name '
+                    f'and the record tie it to {keeper_shown}, and its old id still finds '
+                    f'{keeper_shown} through aliases:.')
+                existing = None
+            if existing is not None:
+                found = _source_ids_in(existing)
+                strangers = sorted({sid for _, sid in found
+                                    if sid not in (keeper_sid, retiree_sid)})
+                if strangers:
+                    shown = fmt_id_display(strangers[0])
+                    raise _MergeRefused(
+                        f'{alias} carries SOURCE: {shown} inside the file, so it belongs to '
+                        f'that source, not to {fmt_id_display(retiree_sid)}. Run '
+                        f'`fha find {shown}` to see that record, and settle which source '
+                        'the file belongs to before merging. Nothing was written.',
+                        next_step=f'fha find {shown}')
+                canonical = f'SOURCE: {keeper_shown}'
+                remove = [kw for kw, _ in found if kw != canonical]
+                if canonical not in [kw for kw, _ in found]:
+                    add = [canonical]
+        plans.append({
+            'alias': alias, 'new_alias': new_alias, 'src': src, 'dest': dest,
+            'root': root_alias, 'entry': _ordered_entry(new_entry),
+            'add': add, 'remove': remove, 'placeholder': placeholder,
+        })
+    return plans
+
+
+def _merge_notes_paragraph(
+    *, retiree_label: str, retiree_shown: str, date: str, n_files: int, n_claims: int,
+    differences: list[tuple[str, object]],
+) -> str:
+    """The paragraph the keeper's Notes gains, saying what was merged in and
+    keeping whatever the retiree's record said that the keeper's does not."""
+    files = f'{n_files} file' + ('' if n_files == 1 else 's')
+    claims = f'{n_claims} claim' + ('' if n_claims == 1 else 's')
+    text = (f'Merged in from {retiree_label} on {date} with `fha source merge`: its {files} '
+            f'and {claims} now belong to this source, and links to {retiree_shown} still '
+            'find it here.')
+    if differences:
+        lines = [text, '', f'Where the record of {retiree_shown} said something this one '
+                 'does not, it read:']
+        for key, value in differences:
+            shown = ' '.join(str(value).split()) if isinstance(value, str) else yaml_inline(value)
+            lines.append(f'- {key}: {shown}')
+        text = '\n'.join(lines)
+    return text
+
+
+def _differing_fields(keeper_meta: dict, retiree_meta: dict) -> list[tuple[str, object]]:
+    """The retiree's fields, outside the lists that are folded in, whose value
+    the keeper does not share (whitespace aside), in the retiree's order."""
+    out = []
+    for key, value in retiree_meta.items():
+        if key in _MERGE_NOT_NOTED or value in (None, '', [], {}):
+            continue
+        mine = keeper_meta.get(key)
+        if isinstance(value, str) and isinstance(mine, str):
+            if ' '.join(value.split()) == ' '.join(mine.split()):
+                continue
+        elif value == mine:
+            continue
+        out.append((key, value))
+    return out
+
+
+def _union(current: list, extra: list, key_of) -> list:
+    """`extra` items not already in `current` (by `key_of`), in order."""
+    seen = {key_of(x) for x in current}
+    out = []
+    for item in extra:
+        k = key_of(item)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(item)
+    return out
+
+
+def _link_key(item) -> str:
+    """What makes two `people:`/`places:`/`aliases:` entries the same: the id
+    or name they point at, without capitals."""
+    refs = link_field_refs([item])
+    return (refs[0] if refs else str(item)).strip().lower()
+
+
+def _url_key(item) -> str:
+    """What makes two `external_links:` entries the same: their URL."""
+    if isinstance(item, dict):
+        return str(item.get('url') or '').strip().rstrip('/').lower()
+    return str(item).strip().rstrip('/').lower()
+
+
+def _as_list(value) -> list:
+    """A frontmatter list value as a list (absent or blank reads as empty)."""
+    if value is None or value == '':
+        return []
+    return list(value) if isinstance(value, list) else [value]
+
+
+def _is_restricted(meta: dict) -> bool:
+    """Does a source record say it is restricted (SPEC §19)? Any value but
+    absent, empty or false counts, as packet and site read it."""
+    value = meta.get('restricted')
+    if value is None or value is False:
+        return False
+    return str(value).strip().lower() not in ('', 'false', 'no', 'none')
+
+
+def _read_merge_record(path: Path, shown: str) -> tuple[str, dict, list]:
+    """One record's exact text, strict frontmatter and parsed claims, or a refusal.
+
+    Both records must read cleanly before the merge starts: a record that is
+    already broken somewhere would make the post-write checks fail, and the
+    merge would then refuse after its first write instead of before it."""
+    try:
+        text = read_text_exact(path)
+    except (OSError, UnicodeDecodeError) as e:
+        raise _MergeRefused(
+            f'cannot read {path.name}: {e}. Check the file is not open in another program, '
+            'then run the merge again. Nothing was written.', exit_code=EXIT_FAILURE)
+    meta = parse_frontmatter_strict(text)
+    rec = read_record(path)
+    if meta is None or rec.get('parse_errors'):
+        problem = _first_problem(rec.get('parse_errors') or []) or 'its frontmatter does not read'
+        raise _MergeRefused(
+            f'the record for {shown} ({path.name}) has a problem ({problem}), so it cannot be '
+            'merged safely. Run `fha lint` to see it, fix it, then run the merge again. '
+            'Nothing was written.', next_step='fha lint')
+    claims = claims_in_text(text)
+    if claims is None:
+        if rec.get('claims'):
+            raise _MergeRefused(
+                f'the claims of {shown} are not in the usual fenced ```yaml block, so they '
+                'cannot be moved safely. Run `fha lint --format` on it, then run the merge '
+                'again. Nothing was written.', next_step='fha lint --format')
+        claims = []
+    return text, meta, claims
+
+
+def run_source_merge(
+    archive_root: Path, fha_config: dict, keeper_id: str, retiree_id: str, *,
+    dry_run: bool = False,
+) -> Result:
+    """Merge the retiree source into the keeper; return a `_lib.Result`.
+
+    SPEC §9 "Merged sources": when two source records prove to be one piece
+    of evidence, the keeper keeps the other's s-id in `aliases:`, the other's
+    files are attached to the keeper, and the other record is removed. Old
+    links and filenames still find the keeper through that alias, and lint
+    lists them (W107) for cleanup.
+
+    What moves:
+      - files (see `_plan_merge_files`): documents renamed into the keeper's
+        grammar, photos never renamed, every embedded `SOURCE:` keyword
+        changed to the keeper's;
+      - claims, ids unchanged, into the keeper's `## Claims`;
+      - `## Notes`, `## Stories` and any other section, appended to the
+        keeper's section of the same name, with a dated paragraph in Notes
+        saying what was merged and keeping every field (citation, title,
+        repository, ...) where the retiree's record said something the
+        keeper's does not;
+      - `aliases:` (the retiree's id and its own aliases), `people:`,
+        `places:`, `external_links:` and `ai_passes:`, without repeats;
+      - a `merged_from:` entry (retiree id, title, date, each file's old and
+        new name, the claim ids) so the merge can be undone by hand later.
+
+    Refusals (every one before the first write, and the same under
+    `--dry-run`): an invalid or repeated id, an id that is not a source,
+    either record missing (exit 1) or unreadable, both records holding
+    accepted claims whose people do not overlap at all (likely two different
+    records; the people are named), a restricted retiree going into an
+    unrestricted keeper, a claim id on both, a file listed on both or in
+    neither asset root or missing from disk, a file carrying a third
+    source's keyword, a photo whose keyword cannot be read.
+
+    Transaction: renames, keyword writes, the keeper's rewrite and the
+    retiree's removal run in that order, each with its undo step; any
+    failure runs the undo steps in reverse and exits 3, saying plainly what
+    (if anything) could not be put back.
+
+    `data`: {'status': 'ok'|'dry-run'|'refused'|'not-found'|'failed',
+    'keeper', 'retiree', 'keeper_path', 'retiree_path', 'files': [{'from',
+    'to'}], 'claims': [...]}. Exit codes: 0 merged or previewed, 1 a record
+    not found, 2 refused, 3 a read or write failed (rolled back).
+    """
+    result = Result(data={'status': None, 'keeper': None, 'retiree': None,
+                          'keeper_path': None, 'retiree_path': None,
+                          'files': [], 'claims': []})
+    try:
+        return _run_source_merge(archive_root, fha_config, keeper_id, retiree_id,
+                                 dry_run=dry_run, result=result)
+    except _MergeRefused as refusal:
+        return result_fail(result, refusal.status, refusal.message,
+                           exit_code=refusal.exit_code,
+                           level='warning' if refusal.exit_code == EXIT_WARNINGS else 'error',
+                           next_step=refusal.next_step)
+
+
+def _check_merge_ids(keeper_id: str, retiree_id: str) -> tuple[str, str]:
+    """Both ids, normalized, or a refusal naming what is wrong with them."""
+    example = 'fha source merge s-2b3c4d5e6f s-7q2x9c4m1k'
+    for raw in (keeper_id, retiree_id):
+        if not is_valid_id(str(raw or '')):
+            raise _MergeRefused(
+                f'{raw!r} is not a valid id. Source ids look like s-2b3c4d5e6f: an s, a '
+                'dash and 10 characters from the archive alphabet. Give the record to '
+                f'keep first and the one to fold into it second, e.g. `{example}`.')
+        if id_type_of(raw) != 'S':
+            raise _MergeRefused(
+                f'{fmt_id_display(raw)} is not a source id (source ids start with s-). '
+                'Only two sources can be merged here; two people are merged with '
+                '`fha confirm merge`.', next_step='fha confirm merge --help')
+    keeper, retiree = normalize_id(keeper_id), normalize_id(retiree_id)
+    if keeper == retiree:
+        raise _MergeRefused(
+            f'both ids are {fmt_id_display(keeper)}. Give two different sources: the one '
+            f'to keep, then the one to fold into it, e.g. `{example}`.')
+    return keeper, retiree
+
+
+def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
+                      retiree_id: str, *, dry_run: bool, result: Result) -> Result:
+    """`run_source_merge`'s body: preflight everything, then write, then report."""
+    keeper_sid, retiree_sid = _check_merge_ids(keeper_id, retiree_id)
+    keeper_shown, retiree_shown = fmt_id_display(keeper_sid), fmt_id_display(retiree_sid)
+    result.data.update(keeper=keeper_shown, retiree=retiree_shown)
+    if is_working_copy(archive_root):
+        raise _MergeRefused(
+            'This is a working copy (it holds no photos or documents), so the files of a '
+            'merge cannot be renamed here. Run the merge in the full archive. Nothing was '
+            'written.')
+
+    paths = {}
+    for sid, shown in ((keeper_sid, keeper_shown), (retiree_sid, retiree_shown)):
+        path = find_source_record_path(archive_root, sid)
+        if path is None:
+            raise _MergeRefused(
+                f'No source record found for {shown} under {archive_root / "sources"}. '
+                f'Check the id with `fha find {shown}`.',
+                exit_code=EXIT_WARNINGS, status='not-found', next_step=f'fha find {shown}')
+        paths[sid] = path
+    keeper_path, retiree_path = paths[keeper_sid], paths[retiree_sid]
+    result.data.update(keeper_path=str(keeper_path), retiree_path=str(retiree_path))
+
+    keeper_text, keeper_meta, keeper_claims = _read_merge_record(keeper_path, keeper_shown)
+    retiree_text, retiree_meta, retiree_claims = _read_merge_record(retiree_path, retiree_shown)
+    keeper_label = _source_label(keeper_text, keeper_sid)
+    retiree_label = _source_label(retiree_text, retiree_sid)
+
+    # ── Refusals about what the two records say ──
+    keeper_people = _accepted_claim_people(keeper_claims)
+    retiree_people = _accepted_claim_people(retiree_claims)
+    if keeper_people and retiree_people and not (keeper_people & retiree_people):
+        names = record_display_names(archive_root, keeper_people | retiree_people)
+
+        def _who(ids: set[str]) -> str:
+            return ', '.join(f'{names[i]} ({fmt_id_display(i)})' if i in names
+                             else fmt_id_display(i) for i in sorted(ids))
+        raise _MergeRefused(
+            f'these look like two different records. The accepted claims on {keeper_label} '
+            f'are about {_who(keeper_people)}; those on {retiree_label} are about '
+            f'{_who(retiree_people)}, and no one is on both. If they really are one record, '
+            'correct the person on the wrong claims first (`fha claim <c-id> --help` shows '
+            'how), then run the merge again. Nothing was written.',
+            next_step='fha claim --help')
+    if _is_restricted(retiree_meta) and not _is_restricted(keeper_meta):
+        raise _MergeRefused(
+            f'{retiree_label} is restricted (restricted: '
+            f'{retiree_meta.get("restricted")}) and {keeper_label} is not, so merging would '
+            'put its files and claims into shared output. Add the same `restricted:` line '
+            f'to {keeper_path.name} first, or keep {retiree_shown} instead '
+            f'(`fha source merge {retiree_shown} {keeper_shown}`). Nothing was written.')
+    keeper_cids = [normalize_id(str(c.get('id'))) for c in keeper_claims
+                   if isinstance(c, dict) and c.get('id')]
+    retiree_cids = [normalize_id(str(c.get('id'))) for c in retiree_claims
+                    if isinstance(c, dict) and c.get('id')]
+    if len(retiree_cids) != len([c for c in retiree_claims if isinstance(c, dict)]):
+        raise _MergeRefused(
+            f'a claim on {retiree_label} has no id, so it could not be traced after the '
+            f'merge. Run `fha lint` to see it, give it an id (`fha id mint C`), then run '
+            'the merge again. Nothing was written.', next_step='fha lint')
+    shared = sorted(set(keeper_cids) & set(retiree_cids))
+    if shared:
+        raise _MergeRefused(
+            f'claim {fmt_id_display(shared[0])} is on both records. Remove the duplicate from '
+            f'{retiree_path.name} by hand, then run the merge again. Nothing was written.',
+            next_step='fha lint')
+
+    # ── The files ──
+    warnings: list[str] = []
+    plans = _plan_merge_files(
+        archive_root, fha_config, keeper_sid=keeper_sid, retiree_sid=retiree_sid,
+        keeper_meta=keeper_meta, keeper_path=keeper_path, retiree_meta=retiree_meta,
+        warnings=warnings)
+
+    # ── The keeper's new text, built and checked before anything is written ──
+    today = _merge_today()
+    cr = '\r' if '\r\n' in keeper_text else ''
+    lines = keeper_text.split('\n')
+    retiree_aliases = [retiree_shown, *_as_list(retiree_meta.get('aliases'))]
+    additions = {
+        'aliases': _union(_as_list(keeper_meta.get('aliases')), retiree_aliases, _link_key),
+        'people': _union(_as_list(keeper_meta.get('people')),
+                         _as_list(retiree_meta.get('people')), _link_key),
+        'places': _union(_as_list(keeper_meta.get('places')),
+                         _as_list(retiree_meta.get('places')), _link_key),
+        'external_links': _union(_as_list(keeper_meta.get('external_links')),
+                                 _as_list(retiree_meta.get('external_links')), _url_key),
+        'ai_passes': _union(_as_list(keeper_meta.get('ai_passes')),
+                            _as_list(retiree_meta.get('ai_passes')), repr),
+        'files': [p['entry'] for p in plans],
+        'merged_from': [*_as_list(retiree_meta.get('merged_from')), {
+            'source': retiree_shown,
+            'title': str(retiree_meta.get('title') or ''),
+            'date': today,
+            'files': [{'from': p['alias'], 'to': p['new_alias']} for p in plans],
+            'claims': [fmt_id_display(c) for c in retiree_cids],
+        }],
+    }
+    planned_meta = dict(keeper_meta)
+    for key in _MERGE_LIST_KEYS:
+        new_items = additions[key]
+        if not new_items:
+            continue
+        all_items = _as_list(keeper_meta.get(key)) + new_items
+        lines = _extend_frontmatter_list(lines, key, all_items, new_items, cr)
+        planned_meta[key] = all_items
+
+    lines = _merge_claims_text(lines, retiree_text.split('\n'), cr)
+
+    span = frontmatter_fence_span(lines)
+    body_start = span[1] + 1
+    rspan = frontmatter_fence_span(retiree_text.split('\n'))
+    preamble, sections = _body_sections(retiree_text.split('\n'), rspan[1] + 1)
+    paragraph = _merge_notes_paragraph(
+        retiree_label=retiree_label, retiree_shown=retiree_shown, date=today.isoformat(),
+        n_files=len(plans), n_claims=len(retiree_cids),
+        differences=_differing_fields(keeper_meta, retiree_meta))
+    lines, _, _ = append_paragraph_to_section(lines, body_start, 'Notes', paragraph, cr)
+    # Prose above the first section that is not the purpose block (a `>` quote
+    # every scaffold writes) is the human's, so it is kept in Notes too.
+    loose = [ln for ln in _trimmed(preamble) if not ln.lstrip().startswith('>')]
+    if any(ln.strip() for ln in loose):
+        lines, _, _ = append_paragraph_to_section(
+            lines, body_start, 'Notes', '\n'.join(_trimmed(loose)), cr)
+    moved_sections = []
+    for heading, content in sections:
+        if heading == 'Claims':
+            # Prose under the heading but outside the claims fence is kept too.
+            content = _outside_fence(content)
+            heading = 'Notes'
+        if _is_placeholder(content):
+            continue
+        lines, _, _ = append_paragraph_to_section(
+            lines, body_start, heading, '\n'.join(_trimmed(content)), cr)
+        if heading not in moved_sections:
+            moved_sections.append(heading)
+    new_text = '\n'.join(lines)
+
+    after_meta = parse_frontmatter_strict(new_text)
+    if after_meta != planned_meta:
+        changed = sorted(k for k in set(planned_meta) | set(after_meta or {})
+                         if (after_meta or {}).get(k) != planned_meta.get(k))
+        raise _MergeRefused(
+            f'the details at the top of {keeper_path.name} could not be rewritten safely '
+            f'(the {", ".join(changed) or "frontmatter"} field would not read back as '
+            'planned), so nothing was written. Run `fha lint --format` on it, then run '
+            'the merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format')
+    after_claims = claims_in_text(new_text)
+    if after_claims != keeper_claims + retiree_claims:
+        raise _MergeRefused(
+            f"the claims could not be put into {keeper_path.name}'s ## Claims block safely, "
+            'so nothing was written. Run `fha lint --format` on both records, then run the '
+            'merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format')
+
+    # ── The preview: the same lines for --dry-run and for the real run ──
+    result.data['files'] = [{'from': p['alias'], 'to': p['new_alias']} for p in plans]
+    result.data['claims'] = [fmt_id_display(c) for c in retiree_cids]
+    head = (f'[dry-run] Would merge {retiree_label} into {keeper_label}:' if dry_run
+            else f'Merged {retiree_label} into {keeper_label}:')
+    result.add('info', head)
+    for p in plans:
+        keyword = (f', its SOURCE: keyword set to {keeper_shown}' if p['add'] or p['remove']
+                   else '')
+        if p['placeholder']:
+            result.add('info', f'  file {p["alias"]} (a placeholder, not on disk) listed '
+                               f'on {keeper_shown}')
+        elif p['dest'] != p['src']:
+            result.add('info', f'  file {p["alias"]} renamed {p["dest"].name}{keyword}')
+        elif p['root'] == 'photos':
+            result.add('info', f'  photo {p["alias"]} stays where it is (photos are never '
+                               f'renamed){keyword}')
+        else:
+            result.add('info', f'  file {p["alias"]} keeps its name{keyword}')
+    if retiree_cids:
+        result.add('info', f'  {len(retiree_cids)} claim(s) moved, ids unchanged: '
+                           + ', '.join(fmt_id_display(c) for c in retiree_cids))
+    gained = []
+    for key, one, many in (('people', 'person', 'people'), ('places', 'place', 'places'),
+                           ('external_links', 'web link', 'web links'),
+                           ('ai_passes', 'AI pass', 'AI passes')):
+        n = len(additions[key])
+        if n:
+            gained.append(f'{n} {one if n == 1 else many}')
+    result.add('info', f'  {keeper_shown} keeps {retiree_shown} in its aliases: (old links '
+                       'still find it) and a merged_from: entry'
+                       + (', and gains ' + ', '.join(gained) if gained else ''))
+    result.add('info', f"  {keeper_shown}'s Notes say what was merged"
+                       + (' and keep where the two records differ'
+                          if _differing_fields(keeper_meta, retiree_meta) else '')
+                       + ('; ' + ', '.join(moved_sections) + f' from {retiree_shown} added to '
+                          f"{keeper_shown}'s" if moved_sections else ''))
+    result.add('info', f'  record {retiree_path.name} removed')
+    for text in warnings:
+        result.add('warning', text)
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', 'Nothing was written. Run the same command without --dry-run '
+                           'to merge.')
+        return result
+
+    # ── Write: every step has an undo, run in reverse on any failure ──
+    undo: list = []
+    undo_copies: list[Path] = []
+    backup = OriginalBackup(archive_root, fha_config)
+    keyword_files = [p['dest'] for p in plans if p['add'] or p['remove']]
+    if keyword_files:
+        backup.announce(keyword_files)
+    try:
+        for p in plans:
+            src, dest = p['src'], p['dest']
+            if dest != src:
+                src.rename(dest)
+                undo.append((f'rename {dest.name} back to {src.name}',
+                             lambda s=src, d=dest: d.rename(s)))
+            if p['add'] or p['remove']:
+                if p['root'] == 'documents':
+                    # A document is put back byte for byte (exiftool appends
+                    # to a PDF, so removing a keyword is not the inverse).
+                    copy = take_undo_copy(dest)
+                    undo_copies.append(copy)
+                    undo.append((f'restore the original bytes of {dest.name}',
+                                 lambda c=copy, d=dest: _restore_or_say_where(c, d)))
+                else:
+                    # A photo's inverse is the opposite keyword write: photos
+                    # are never byte-copied aside (they can be very large).
+                    # Registered first: undoing a write that never happened
+                    # is a no-op.
+                    undo.append((f'put the SOURCE: keyword of {dest.name} back',
+                                 lambda d=dest, a=p['add'], r=p['remove']:
+                                 _raise_on(_merge_write_keywords(d, add=r, remove=a,
+                                                                 backup=backup))))
+                err = _merge_write_keywords(dest, add=p['add'], remove=p['remove'],
+                                            backup=backup)
+                if err is not None:
+                    raise RuntimeError(f'could not change the SOURCE: keyword in {dest.name}: '
+                                       f'{err}')
+        write_text_exact_atomic(keeper_path, new_text)
+        undo.append((f'restore {keeper_path.name}',
+                     lambda: write_text_exact_atomic(keeper_path, keeper_text)))
+        retiree_path.unlink()
+        undo.append((f'put {retiree_path.name} back',
+                     lambda: write_text_exact_atomic(retiree_path, retiree_text)))
+    except (KeyboardInterrupt, SystemExit):
+        discard_undo_copies(undo_copies)
+        raise
+    except Exception as e:
+        failed = run_undo_steps(undo)
+        if not failed:
+            discard_undo_copies(undo_copies)
+        for level, text in backup.drain_messages():
+            result.add(level, text)
+        if failed:
+            return result_fail(
+                result, 'failed',
+                f'The merge failed ({e}), and putting things back could not finish. Could '
+                'not undo: ' + '; '.join(failed) + '. Run `fha doctor` to see what is off; '
+                '`fha reconcile` re-ties a renamed file to its record.',
+                next_step='fha doctor')
+        return result_fail(
+            result, 'failed',
+            f'The merge failed ({e}), and everything was put back as it was. Nothing changed.',
+            next_step='fha doctor')
+    discard_undo_copies(undo_copies)
+    for level, text in backup.drain_messages():
+        result.add(level, text)
+    result.data['status'] = 'ok'
+    for p in plans:
+        if p['dest'] != p['src'] or p['add'] or p['remove']:
+            result.note_changed(p['dest'])
+    result.note_changed(keeper_path)
+    result.note_changed(retiree_path)
+    photos = any(p['root'] == 'photos' and (p['add'] or p['remove']) for p in plans)
+    result.add('info',
+               'Next: run `fha index` so search, lint and the workbench see the merge'
+               + (', then `fha photoindex` so the photo catalog reads the new keywords'
+                  if photos else '')
+               + f'. `fha lint` then lists any link that still names {retiree_shown} (W107), '
+               'for cleanup when convenient.',
+               next_step='fha index')
+    return result
+
+
+def _restore_or_say_where(undo_copy: Path, path: Path) -> None:
+    """Put a document's original bytes back; on failure, say where they are kept."""
+    try:
+        restore_undo_copy(undo_copy, path)
+    except OSError as e:
+        raise RuntimeError(f'{e}; its original bytes are kept at {undo_copy}') from e
+
+
+def _raise_on(err: str | None) -> None:
+    """Turn a keyword writer's failure text into an exception, for an undo step."""
+    if err is not None:
+        raise RuntimeError(err)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _emit(result: Result) -> int:
@@ -1889,6 +2910,60 @@ def _cmd_source_edit_note(args: argparse.Namespace) -> int:
     return _emit(run_source_edit_note(
         archive_root, source_id=args.source_id, old_text=args.old_text,
         text=args.text, dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_source_merge(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source merge')
+    if archive_root is None:
+        return EXIT_FAILURE
+    # strict=True: the files are found through the configured roots, so a
+    # malformed fha.yaml must refuse rather than send every rename to the
+    # internal documents/ folder.
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+    return _emit(run_source_merge(
+        archive_root, fha_config, args.keeper, args.retiree,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+_MERGE_DESCRIPTION = """Make two source records for one piece of evidence into one.
+
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k --dry-run
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
+
+The first id is the record to keep, the second the one folded into it: an
+index entry and the document it indexes, or one record saved from two sites.
+The second record's files join the first (documents are renamed for it,
+photos keep their names), with their SOURCE: keyword changed to match; its
+claims move over with their ids; its notes, people, places, web links and AI
+passes are added; and its record file is removed. Its id stays in the kept
+record's aliases:, so every old link still finds it, and a merged_from:
+entry lists what moved.
+
+Refused, with nothing written, when the two records' accepted claims are
+about different people. Preview first with --dry-run, then run `fha index`."""
+
+
+def _add_merge_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the merge verb on a group subparser (shared by both mains)."""
+    m = sub.add_parser(
+        'merge',
+        help='Make two source records for one piece of evidence into one.',
+        description=_MERGE_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    m.add_argument('keeper', metavar='keeper',
+                   help='The source to keep (e.g. s-2b3c4d5e6f).')
+    m.add_argument('retiree', metavar='retiree',
+                   help='The source folded into it and then removed (e.g. s-7q2x9c4m1k).')
+    m.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                   help='Archive root (auto-detected if omitted).')
+    m.add_argument('--dry-run', action='store_true', dest='dry_run',
+                   help='Preview the merge without writing.')
+    m.set_defaults(func=_cmd_source_merge)
 
 
 def _make_group_help(parser: argparse.ArgumentParser):
@@ -2992,13 +4067,15 @@ def run_source_extract(
 
 
 _CLI_DESCRIPTION = """\
-Update a source record directly, one field or section at a time.
+Update a source record directly, one field or section at a time, or merge
+two records of one piece of evidence into one.
 
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
   fha source clear-keyword s-2b3c4d5e6f --keyword "..." [--replace-with "..."]
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
@@ -3007,7 +4084,8 @@ text layer into a derived [Page N]-labeled companion file (needs the pypdf
 helper package); clear-keyword removes (or corrects) one embedded keyword on
 a documents-root file, the tool-mediated fix for a stray tag `fha lint
 --with-exif` (W131) finds; set-primary chooses which photo is a source's main
-image (its front, not its back), the fix `fha doctor` names."""
+image (its front, not its back), the fix `fha doctor` names; merge folds the
+second source into the first (files, claims, notes) and removes its record."""
 
 _NOTE_DESCRIPTION = """\
 Add a note to the end of a source's ## Notes section.
@@ -3079,7 +4157,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'source',
         help='Change a source record: note (append), edit-note (rewrite one), '
              'extract (PDF text layer), clear-keyword (fix a stray keyword), '
-             'set-primary (choose the main image)',
+             'set-primary (choose the main image), merge (two records into one)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -3090,6 +4168,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)
     _add_set_primary_arguments(sub)
+    _add_merge_arguments(sub)
     p.set_defaults(func=_make_group_help(p))
     return p
 
@@ -3107,6 +4186,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)
     _add_set_primary_arguments(sub)
+    _add_merge_arguments(sub)
     parser.set_defaults(func=_make_group_help(parser))
     args = parser.parse_args(argv)
     return args.func(args) or 0

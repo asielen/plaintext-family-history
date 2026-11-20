@@ -60,6 +60,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    SOURCE_FRONTMATTER_KEY_ORDER,
     RETIRED_NEEDS_REVIEW,
     claim_status,
     claim_fields_cut_by_hash,
@@ -5459,12 +5460,7 @@ _FRONTMATTER_KEY_ORDER_PERSONS = [
     'no_known_marriages', 'no_known_children', 'gender', 'external_ids',
 ]
 # SPEC §14: the source frontmatter key order, then the Appendix A extensions.
-_FRONTMATTER_KEY_ORDER_SOURCES = [
-    'id', 'aliases', 'title', 'source_type', 'source_date', 'source_class',
-    'subtype', 'original_language', 'repository', 'citation', 'people', 'places',
-    'restricted', 'provenance', 'external_links', 'files', 'ai_passes', 'created',
-    'rights', 'physical_location', 'tested_person', 'provider', 'test_type',
-]
+_FRONTMATTER_KEY_ORDER_SOURCES = list(SOURCE_FRONTMATTER_KEY_ORDER)
 # SPEC §14: each `files:` entry's keys.
 _FILES_KEY_ORDER = ['file', 'role', 'copy', 'is_primary', 'original_filename']
 # SPEC §8.4: `value` first in every claim; the rest keep their order.

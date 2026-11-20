@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.8, 2026-11-19 · companion to SPEC.md v2.8 (versions track the SPEC)**
+**Version 2.9, 2026-11-20 · companion to SPEC.md v2.9 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -550,7 +550,7 @@ After a move the index is updated in place (rows moved, tier applied), so batche
 
 ## 3d. `fha source`: source-field write-backs
 
-Write-backs to a source's own text and files, not its claims. Five verbs; all locate the record by scanning `sources/`.
+Write-backs to a source's own text and files. Six verbs; all locate the record by scanning `sources/`.
 
 ```
 fha source note <s-id> --text TEXT [--dry-run] [--root PATH]
@@ -558,6 +558,7 @@ fha source extract <s-id> [--pages RANGES] [--copy LABEL] [--dry-run] [--root PA
 fha source edit-note <s-id> --old-text TEXT --text TEXT [--dry-run] [--root PATH]
 fha source clear-keyword <s-id> --keyword TEXT [--replace-with TEXT] [--file NAME] [--dry-run] [--root PATH]
 fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
+fha source merge <keeper> <retiree> [--dry-run] [--root PATH]
 ```
 
 **`note`.** Appends a paragraph to `## Notes` (SPEC §14), adding the heading at the end if missing. Append-only, no AI marker. Refuses if the `## Claims` block was sound before and not after (Claims-less sources are fine), or on several `## Notes` headings. Superseded sources are not refused.
@@ -590,7 +591,15 @@ fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 
 Refuses, nothing written: `--file` matches none, several, or a non-photos-root entry; one-line list or entry form; 2+ other files already marked main; current main file not a photo; result without exactly one `is_primary: true`. The new text must parse to the planned list with all else unchanged before the atomic write (CRLF kept); then it is re-read and restored if wrong. `--dry-run` previews in words plus a diff; rerun is `already`.
 
-**Exit codes (all five):** 0 written/already/dry-run · 1 s-id or asset not found (with `fha reconcile`/`fha find`) · 3 bad id; blank `--text`/`--old-text`/`--keyword`; file error; multi-heading record; ambiguous or absent documents-root file; keyword absent; entry-match refusals; Claims regression. `changed[]` names the record (for `clear-keyword`, the asset).
+**`merge`.** Makes two records of one piece of evidence into one (SPEC §9 "Merged sources"): the retiree folds into the keeper and its record file is removed.
+- **Files.** Documents-root files are renamed beside where they are into the keeper's grammar, `{slug}[-{copy}][-{role}]_{keeper}.{ext}`, by `--more`'s naming rule (`_lib.attachment_base`); `original_filename:` keeps the entry's own, else the name the file had. Photos-root files are never renamed. A file whose role and copy label the keeper already has takes the next free copy letter (`b`, `c`, ...); the retiree's main file is no longer main. Every file that holds keywords gets `SOURCE: {keeper}` in place of the retiree's, through the one keyword writer (§6 Keywords).
+- **Record.** Claims move into the keeper's `## Claims`, ids unchanged, re-indented to its items. `aliases:` gains the retiree's id and its aliases; `people:`, `places:`, `external_links:` (by URL) and `ai_passes:` gain what is new; `files:` gains the moved entries; `merged_from:` gains one entry (SPEC §14). Notes gains a dated paragraph naming the merge and listing each other field the retiree held that the keeper does not share (`title`, `citation`, `source_date`, `repository`, ...); the retiree's `## Notes`, `## Stories` and any other section are appended to the keeper's section of that name, and any prose above its first section that is not the purpose block goes to Notes.
+- **Refusals, before any write and the same under `--dry-run`:** an invalid or repeated id; an id that is not a source (persons merge with `fha confirm merge`); either record missing (exit 1) or unreadable; a working copy; both records holding accepted claims whose named people (`persons:` and `roles:`) do not overlap at all, naming them; a restricted retiree into an unrestricted keeper; a claim id on both, or a claim with no id; a file listed on both, outside both asset roots, or missing from disk (`fha reconcile`); a file carrying a third source's `SOURCE:` keyword; a photo whose keywords cannot be read (exiftool missing). A document whose keywords cannot be read is renamed with a warning, its old keyword still resolving through `aliases:`.
+- **Transaction.** The keeper's new text is built and re-parsed first: its frontmatter must read back as exactly the planned values and its claims as the keeper's followed by the retiree's. Then renames, keyword writes, the keeper's atomic write and the retiree's removal, each with an undo step (a document's bytes are put back from a private copy; a photo gets the inverse keyword write); any failure undoes them in reverse and says plainly what could not be put back.
+- Next steps printed: `fha index`, then `fha photoindex` when photos were re-keyworded; lint W107 lists links still naming the retiree.
+- Exit codes: 0 merged or previewed · 1 a record not found · 2 refused · 3 a read or write failed (rolled back).
+
+**Exit codes (the other five):** 0 written/already/dry-run · 1 s-id or asset not found (with `fha reconcile`/`fha find`) · 3 bad id; blank `--text`/`--old-text`/`--keyword`; file error; multi-heading record; ambiguous or absent documents-root file; keyword absent; entry-match refusals; Claims regression. `changed[]` names the record (for `clear-keyword`, the asset).
 
 ## 4. `fha id`: minting
 
@@ -1622,7 +1631,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
 | 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_anniversaries`, `test_find`, `test_doctor` |
-| 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
+| 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary, merge), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
 | 7 | Research report | `report` | §15a | `test_report` |
@@ -1748,6 +1757,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 |---|---|
 | `fha source edit-note <s-id> --old-text … --text …` (T C) | Rewrite ONE existing `## Notes` paragraph, named by its exact current text (§3d): the source-page twin of `person edit-note`. `--dry-run`. |
 | `fha source set-primary <s-id> --file NAME` (T C) | Make the named photo a source record's main image (§3d) by moving `is_primary: true` to its `files:` entry (and `is_primary: false` onto the old one): the fix `fha doctor` names when a record calls a photo's back its main image. Edits only the record's `files:` list; no photo is renamed. `--dry-run`. |
+| `fha source merge <keeper> <retiree>` (T C) | Make two source records of one piece of evidence into one (§3d): an index entry and the document it indexes, or one record saved from two sites. The retiree's files are re-keyed to the keeper (documents renamed, photos keyword only), its claims move with their ids, its notes and links are added, and its record is removed; its id stays in the keeper's `aliases:`. Refused when the two records' accepted claims are about different people. `--dry-run`. |
 | `fha source clear-keyword <s-id> --keyword … [--replace-with …]` (T C) | Clear or correct one embedded keyword on a source's documents-root file (§3d): the tool-mediated fix for a stray keyword `fha lint --with-exif` (W131) finds. Removes the EXACT on-file value (case-insensitive match against `--keyword`) from every keyword field; `--replace-with` corrects it (into every keyword field the file takes) instead of just clearing it. `--dry-run`. |
 | `fha lint` (T C) | After any batch of edits; the done-gate. Alias: **`fha check`**. Flags: `--with-exif`, fix modes (diff-previewed). |
 | `fha doctor` (T C) | "What's wrong with this archive?" After moves, migrations, weirdness. |

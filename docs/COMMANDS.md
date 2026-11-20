@@ -1527,16 +1527,18 @@ entry stays a hand edit to the record file.
 
 ## `fha source`
 
-Change a source record: note (append), edit-note (rewrite one), extract (PDF text layer), clear-keyword (fix a stray keyword), set-primary (choose the main image)
+Change a source record: note (append), edit-note (rewrite one), extract (PDF text layer), clear-keyword (fix a stray keyword), set-primary (choose the main image), merge (two records into one)
 
 ```text
-Update a source record directly, one field or section at a time.
+Update a source record directly, one field or section at a time, or merge
+two records of one piece of evidence into one.
 
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
   fha source clear-keyword s-2b3c4d5e6f --keyword "..." [--replace-with "..."]
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
 note appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
@@ -1545,7 +1547,8 @@ text layer into a derived [Page N]-labeled companion file (needs the pypdf
 helper package); clear-keyword removes (or corrects) one embedded keyword on
 a documents-root file, the tool-mediated fix for a stray tag `fha lint
 --with-exif` (W131) finds; set-primary chooses which photo is a source's main
-image (its front, not its back), the fix `fha doctor` names.
+image (its front, not its back), the fix `fha doctor` names; merge folds the
+second source into the first (files, claims, notes) and removes its record.
 ```
 
 | Argument | What it does |
@@ -1671,6 +1674,36 @@ first with --dry-run.
 | `--file` `NAME` | The photo to make the main image: its filename, or its full files: path when two photos share a name. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the change without writing. |
+
+### `fha source merge`
+
+Make two source records for one piece of evidence into one.
+
+```text
+Make two source records for one piece of evidence into one.
+
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k --dry-run
+  fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
+
+The first id is the record to keep, the second the one folded into it: an
+index entry and the document it indexes, or one record saved from two sites.
+The second record's files join the first (documents are renamed for it,
+photos keep their names), with their SOURCE: keyword changed to match; its
+claims move over with their ids; its notes, people, places, web links and AI
+passes are added; and its record file is removed. Its id stays in the kept
+record's aliases:, so every old link still finds it, and a merged_from:
+entry lists what moved.
+
+Refused, with nothing written, when the two records' accepted claims are
+about different people. Preview first with --dry-run, then run `fha index`.
+```
+
+| Argument | What it does |
+|---|---|
+| `keeper` | The source to keep (e.g. s-2b3c4d5e6f). |
+| `retiree` | The source folded into it and then removed (e.g. s-7q2x9c4m1k). |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the merge without writing. |
 
 ## `fha site`
 
