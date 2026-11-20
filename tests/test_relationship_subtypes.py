@@ -147,6 +147,12 @@ class W159Tests(unittest.TestCase):
         self.assertEqual(self._w159(f'spouse: [{CHILD}, {PARENT}]'), [])
         self.assertEqual(self._w159(f'mother: {PARENT}', status='suggested'), [])
 
+    def test_a_lone_sibling_beside_a_whole_parentage_describes_the_family(self):
+        # The record names the children's brother too: the claim still
+        # records the parentage, so it is not one-sided.
+        roles = f'parent: [{PARENT}]\nchild: [{CHILD}]\nsibling: [{OTHER}]'
+        self.assertEqual(self._w159(roles, persons=f'[{CHILD}, {PARENT}, {OTHER}]'), [])
+
     def test_a_misspelt_key_is_left_to_w126(self):
         rel, text = _claim_source(_rel_claim(f'child: {CHILD}\nparnet: {PARENT}'))
         findings = _lint({**_people(), rel: text})

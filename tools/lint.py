@@ -1796,8 +1796,9 @@ def _one_sided_roles(roles: Any) -> list[str]:
     """W159: what is missing from a relationship claim's `roles:` map that
     names one side of a tie only, as the end of a sentence about the claim.
 
-    A parent with no child (or a child with no parent) and one person alone
-    under `spouse:` or `sibling:` record no tie. Keys are read by meaning, so
+    A parent with no child (or a child with no parent) records no tie, and
+    neither does one person alone under `spouse:` or `sibling:` on a claim
+    with no parent and child pair. Keys are read by meaning, so
     `mother:` is a parent; a misspelt key (`parnet:`) counts as the role it was
     meant to be, since W126 already reports the spelling and this would only
     repeat it. Each person is counted once however they are written."""
@@ -1823,8 +1824,12 @@ def _one_sided_roles(roles: Any) -> list[str]:
                 f'names a {have} (under {under}) and no {lack}, {no_tie} '
                 f'Add the {lack} to roles: (an indented `{lack}: [p-…]` line), or change '
                 f'the role if this was not a {have} here.')
+    # One person under `sibling:` beside a whole parent and child pair is a
+    # description (the children's brother, named on the same record), not a
+    # broken tie: the claim records the parentage, so it is left alone.
+    whole_parentage = 'parent' in named and 'child' in named
     for role, tie in (('spouse', 'marriage'), ('sibling', 'sibling')):
-        if len(named.get(role, ())) == 1:
+        if len(named.get(role, ())) == 1 and not whole_parentage:
             problems.append(
                 f'names one person under `{role}:`, {no_tie} A {tie} tie needs both '
                 f'people on that line: `{role}: [p-…, p-…]`.')
