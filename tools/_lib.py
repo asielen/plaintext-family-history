@@ -10061,6 +10061,28 @@ def claimless_duplicate_entries(block: Any, resolve=None) -> list[int]:
             and relationship_tie_key(e, resolve) in sourced]
 
 
+def sourced_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the later of two entries
+    that both cite evidence for the same tie (`relationship_tie_key`), which
+    lint W160 names for merging by hand. Writers fold such a pair themselves
+    unless the later entry holds the owner's own text (a note, another key,
+    a comment), so what is left here is always a merge for the owner."""
+    if not isinstance(block, list):
+        return []
+    seen: set = set()
+    out: list[int] = []
+    for n, e in enumerate(block):
+        if not relationship_entry_is_sourced(e):
+            continue
+        key = relationship_tie_key(e, resolve)
+        if key is None:
+            continue
+        if key in seen:
+            out.append(n)
+        seen.add(key)
+    return out
+
+
 # The keys `collapse_relationship_entries` carries into the entry it keeps.
 _FOLDABLE_ENTRY_KEYS = frozenset({
     'to', 'type', 'subtype', 'claims', 'source', 'status', 'hypothesis'})
@@ -10277,8 +10299,8 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     guess written twice, or copied in by a merge) is folded too, since
     nothing it says is lost. Any
     other later entry (a note, a date, a
-    comment, a second working answer) stays where it is, beside the first;
-    lint W160 or W155 names it for the owner to fold in by hand.
+    comment, a second working answer) stays where it is, beside the first,
+    and lint W160 names it for the owner to merge by hand.
 
     The working answer is not part of a sourced entry's key, so sourced
     entries still fold to one per person and role, and the first entry gains

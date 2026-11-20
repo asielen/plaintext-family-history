@@ -294,6 +294,26 @@ class W160Tests(unittest.TestCase):
         lint.run_lint(root, {}, fix_duplicates=True)
         self.assertEqual((root / c_rel).read_bytes(), before)
 
+    def test_a_second_entry_citing_evidence_is_named_for_merging_by_hand(self):
+        # The fold keeps a second sourced entry that carries a note, so the
+        # page lists the parent twice: W160 says so, and the fix leaves it.
+        second = (SOURCED.replace(CLAIM, 'C-eeeeeeeeee')
+                  + '    notes: from the bible\n')
+        root, c_rel = self._archive(SOURCED + second)
+        findings, _ = lint._run_lint_core(root, {})
+        (w,) = _codes(findings, 'W160')
+        self.assertIn('merge the two entries by hand', w.message)
+        self.assertNotIn('--fix-duplicates', w.message)
+        before = (root / c_rel).read_bytes()
+        lint.run_lint(root, {}, fix_duplicates=True)
+        self.assertEqual((root / c_rel).read_bytes(), before)
+
+    def test_entries_of_two_natures_are_two_ties(self):
+        adoptive = SOURCED.replace('type: parent\n', 'type: parent\n    subtype: adoptive\n')
+        root, _ = self._archive(SOURCED + adoptive)
+        findings, _ = lint._run_lint_core(root, {})
+        self.assertEqual(_codes(findings, 'W160'), [])
+
     def test_the_needs_sourcing_list_leaves_the_duplicate_to_w160(self):
         root, _ = self._archive(SOURCED + BARE)
         r = lint.run_lint(root, {})

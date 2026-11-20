@@ -178,6 +178,7 @@ from _lib import (
     relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
     relationship_tie_key,           # (person, role, nature) an entry records
     claimless_duplicate_entries,    # W160: a bare entry beside a sourced twin
+    sourced_duplicate_entries,      # W160: a second sourced entry for one tie
     drop_claimless_duplicates,      # --fix-duplicates: drop the ones holding no owner text
     subtype_misuse,                 # W158: a role, record or kinship word as subtype
     relationship_claim_records_tie,  # W159: does the index derive any edge from it
@@ -3234,8 +3235,12 @@ def _check_claimless_duplicates(
     registry: Registry, findings: list[Finding], alias_map: dict[str, str],
 ) -> None:
     """W160: a `relationships:` entry citing no evidence beside a sourced
-    entry for the same tie (`_lib.claimless_duplicate_entries`), so the
-    person's page lists the same parent or child twice.
+    entry for the same tie (`_lib.claimless_duplicate_entries`), or a second
+    entry citing evidence for a tie an earlier entry already cites
+    (`_lib.sourced_duplicate_entries`), so the person's page lists the same
+    parent or child twice. The second kind is always the owner's merge to
+    make: writers fold such a pair themselves unless the later entry holds a
+    note, another key or a comment, so `--fix-duplicates` never touches it.
 
     Read from each record's own block, so it costs one pass over the entries
     and needs no claim lookups. Only a record with such a pair is read again
@@ -3249,9 +3254,19 @@ def _check_claimless_duplicates(
         if not isinstance(block, list) or len(block) < 2 or pid in survivors:
             continue
         positions = claimless_duplicate_entries(block, resolve)
+        path = _profile_path_for(registry, pid)
+        for n in sourced_duplicate_entries(block, resolve):
+            entry = block[n]
+            role = str(entry.get('type') or '').strip() or 'relationship'
+            target = _friendly_to(entry.get('to')) or '(unnamed)'
+            findings.append(Finding('W', 'W160', path,
+                f'{target} has two {role} entries, both citing evidence, so the page '
+                'lists them twice. A tool merges such a pair only when nothing typed '
+                'by hand would be lost, and never removes a note or comment: merge the '
+                'two entries by hand, putting every claim in one claims: list and '
+                'keeping the note.'))
         if not positions:
             continue
-        path = _profile_path_for(registry, pid)
         try:
             planned = drop_claimless_duplicates(read_text_exact(path), resolve)
         except (OSError, UnicodeDecodeError):
