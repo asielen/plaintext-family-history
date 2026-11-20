@@ -260,6 +260,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    relationship_nature_word,
     parse_questions,      # question entries, to check a --working-answer h-id exists
     strip_link_wrapper,
     LIVING_VALUES as _LIB_LIVING_VALUES,
@@ -329,6 +330,7 @@ from _lib import (
     stub_filename,
     recorded_surname,
     set_surname_line,
+    sync_person_aliases,
     write_text_exact_atomic,
     yaml_edtf,
     yaml_inline,
@@ -2098,7 +2100,9 @@ def run_rename(
 
       1. Frontmatter: `name:` is replaced; `name_variants:` gains the OLD name
          when `--keep-variant` is given (a genuine append - an existing
-         variant is never dropped).
+         variant is never dropped). `aliases:` gains the new name and keeps
+         the old one, so `[[Old Name]]` links keep resolving; nothing is
+         removed from it but a restricted variant (SPEC §9).
       2. The profile file is renamed to the SPEC §13 filename the NEW name
          derives (`_lib.stub_filename` - the same deriver `fha person new`
          and `fha stubs` already use, so a renamed record's filename is
@@ -2250,6 +2254,13 @@ def run_rename(
         changed_keys.add('surname')
 
     new_text = '\n'.join(new_lines)
+    # aliases: follows the name (SPEC §9): the new name joins it so Obsidian's
+    # [[ suggestions offer it, and the old name stays so a [[Old Name]] link
+    # written before the rename keeps resolving. Only a restricted variant is
+    # ever taken out (the shared privacy rule).
+    new_text, aliases_added, aliases_removed = sync_person_aliases(new_text)
+    if aliases_added or aliases_removed:
+        changed_keys.add('aliases')
     problem = frontmatter_edit_problem(new_text, before_meta=before_meta, changed_keys=changed_keys)
     if problem is not None:
         return _refuse_result(
@@ -2336,6 +2347,27 @@ def run_rename(
                          f'automatically ({variant_note}) - add it by hand')
         elif old_name:
             steps.append(f'{old_name!r} is already in name_variants: - left as is')
+    if aliases_added:
+        steps.append('add ' + ', '.join(repr(a) for a in aliases_added) + ' to aliases:')
+    if aliases_removed:
+        # Counted, never named: these are private names.
+        steps.append(f'take {len(aliases_removed)} restricted name(s) out of aliases:')
+    # The old name stays in aliases: (a rename never removes one), which keeps
+    # [[Old Name]] links working but could later clash with a real person of
+    # that name, so the owner is told once, with the hand fix.
+    kept_note = None
+    if old_name and not refile_only:
+        fm_after = FRONT_RE.match(new_text)
+        try:
+            after_aliases = (safe_load_yaml(fm_after.group(1)) or {}).get('aliases') if fm_after else None
+        except yaml.YAMLError:
+            after_aliases = None
+        if isinstance(after_aliases, list) and old_name.strip().lower() in {
+                str(a).strip().lower() for a in after_aliases if a is not None}:
+            kept_note = (f'{old_name!r} stays in aliases: so links written under the old name '
+                         'keep working; if that name belongs to someone else, remove it from '
+                         'aliases: by hand')
+            steps.append(kept_note)
     if renaming_file:
         steps.append(f'rename {path.name} -> {new_filename}')
     if renaming_research:
@@ -2440,6 +2472,8 @@ def run_rename(
             f'{len(stale_companions)} stale companion(s) deleted: '
             + ', '.join(s.name for s in stale_companions))
     result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if kept_note:
+        result.add('info', kept_note[0].upper() + kept_note[1:] + '.', path=final_path)
     if variant_note and keep_variant:
         result.add('warning',
                    f'--keep-variant: could not add {old_name!r} to name_variants: '
@@ -2521,10 +2555,11 @@ _RECIPROCAL_RELATION = {'parent': 'child', 'child': 'parent',
 # employer, member-of, ... - describe ties this verb does not record; relate
 # only writes the four family roles above.) An unrecognised word is still
 # written (never rejected - "forgiving, not fussy", AGENTS.md), just flagged.
+# `half` is a sibling's nature only (`half-sibling` reads as `half`).
 KIN_SUBTYPES = frozenset({
     'biological', 'adoptive', 'step', 'foster', 'guardian',
     'surrogate-gestational', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
-    'social',
+    'social', 'half',
 })
 
 
@@ -2761,7 +2796,9 @@ def run_relate(
     owner_name = str(owner_meta.get('name') or '').strip() or fmt_id_display(pid)
     target_name = str(target_meta.get('name') or '').strip() or fmt_id_display(tid)
     subtype_clean = (subtype or '').strip() or None
-    warn_subtype = bool(subtype_clean) and subtype_clean.lower() not in KIN_SUBTYPES
+    nature = relationship_nature_word(subtype_clean)
+    warn_subtype = bool(subtype_clean) and (
+        nature not in KIN_SUBTYPES or (nature == 'half' and relation_type != 'sibling'))
     mirror_type = _RECIPROCAL_RELATION[relation_type]
 
     owner_has = _relationship_entry_exists(owner_meta, tid, relation_type)
@@ -2854,8 +2891,8 @@ def run_relate(
                    f'{subtype_clean!r} is not one of the archive\'s kin '
                    'subtypes (SPEC §8.2): biological, adoptive, step, foster, '
                    'guardian, surrogate-gestational, surrogate-genetic, '
-                   'donor-sperm, donor-egg, social. Recorded as written - fix '
-                   'it by hand if it was a typo.')
+                   'donor-sperm, donor-egg, social, and half for a sibling. '
+                   'Recorded as written; fix it by hand if it was a typo.')
 
     if dry_run:
         result.data['status'] = 'dry-run'

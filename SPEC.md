@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.12, 2026-11-20**
+**Version 2.14, 2026-11-20**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -145,7 +145,7 @@ This table is the spec's own and editable; editing it is a spec change (see Gove
 | Significance | Types | Role |
 |---|---|---|
 | **vital** | `birth`, `death`, `marriage` (+ `baptism`, `burial` where they stand in for vital records) | Defines completeness: a person's record is complete when each applicable vital type has ≥1 `accepted` claim. *Applicability:* `death` is inapplicable while `living: true|unknown`; `marriage` is satisfied by a `no_known_marriages` flag or a `negated: true` marriage claim (Appendix A.2); a confirmed absence counts complete, not missing. |
-| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`. *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor`. The latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as working answers (§17). Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. |
+| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`, and for siblings `half` (one parent shared; `half-sibling` is read as the same word). *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor`. The latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as working answers (§17). Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. A word that is not a nature does not belong there: a role (`mother`, `child`, `witness`) goes in `roles:`, a record's wording (`survived-by`, `nickname`) in the claim's `notes:`, and a degree of kinship (`cousin`, `uncle-nephew`, `grandparent-grandchild`) in a descriptive role such as `grandchild:`. Tooling reports such a subtype, since every view reads it as the nature of the tie. |
 | **incidental** | `event`, `note` | Preserved, never scored: anecdotes, one-off moments. `subtype` free text carries detail. |
 
 The vocabulary is mostly closed: new normalized types are added here deliberately; everything else lands in `event`/`note` + `subtype`, so no fact ever stalls for lack of a category.
@@ -172,6 +172,7 @@ The directional pairs (`enslaved`/`enslaver`, `employer`/`employee`) and `member
 
 **Repeated roles and several roles.**
 
+- A tie needs both its sides: a `parent` needs a `child` on the same claim, and a `sibling` tie names both people under `sibling:` (`sibling: [p-a, p-b]`, with `subtype: half` for half-siblings). A couple is read by "Who married" below, so two people named with one of them under `spouse:` are already the couple. A claim from which no tie at all can be read, because it names one side only, records nothing, and tooling reports it.
 - A `relationship` claim may repeat a role with distinct subtypes: a child can carry several `parent` edges (`subtype: biological`, `adoptive`, `surrogate-gestational`, `donor-egg`), each a separate, equally valid bond rather than a conflict.
 - A person may carry several roles on one claim, and every one of them counts: the mother who was also the informant on her child's birth certificate is listed under `informant:` and under `parent:`, and she is a parent of the child whichever line is written first. Order in the `roles:` map never decides a role.
 - The one contradiction a map can hold is a person listed as both the `child` and a `parent` of the same record. Nobody is their own parent and the record is about the child, so that person counts as the `child` only, and tooling reports the claim.
@@ -226,7 +227,7 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   # ---- other optional fields, present only when used ----
   subtype: biological            # the NATURE of a relationship (kin: biological [default] | adoptive |
                                  #   step | foster | guardian | surrogate-gestational | surrogate-genetic |
-                                 #   donor-sperm | donor-egg | social; non-kin: enslaver | enslaved-by |
+                                 #   donor-sperm | donor-egg | social; sibling: half; non-kin: enslaver | enslaved-by |
                                  #   employer | employee | member-of | friend | associate | neighbor);
                                  #   also free-text refinement on event/note. Unlisted natures: free text.
   roles:                         # explicit semantics for multi-subject claims;
@@ -276,13 +277,14 @@ Stub and curated are the same file shape (§16): the same frontmatter, the same 
 
 ```yaml
 id: p-de957bcda1                 # required
-aliases:                         # link-resolution handles, tool-maintained: the ID (so [[p-…]]
-  - p-de957bcda1                 #   resolves in Obsidian) + the name & variants (so [[Thomas
-  - Thomas Edward Hartley        #   Edward Hartley]] resolves) + any human stem you like.
-  - T. E. Hartley                #   Distinct in purpose from name_variants (display) - see §18.
+aliases:                         # link-resolution handles, tool-maintained: the ID first, then
+  - p-de957bcda1                 #   the name and public variants (so [[Thomas Edward Hartley]]
+  - Thomas Edward Hartley        #   resolves in the tools, and Obsidian suggests this record as
+  - T. E. Hartley                #   you type [[Thomas), plus any human stem you like. Distinct
+                                 #   in purpose from name_variants (display): see §18.
 name: Thomas Edward Hartley     # required; preferred display name (convention: the name at birth)
 surname: Hartley                 # optional; the sort name, only when chosen by hand (§13)
-name_variants: [T. E. Hartley]    # optional; display variants (mirrored into aliases)
+name_variants: [T. E. Hartley]    # optional; display variants (public ones mirrored into aliases)
 # name_at_birth: Margaret A. Cole   # optional; birth / maiden name, when it differs from name
 # married_name: Margaret Hartley     # optional; a married or later name (his wife's record shows both)
 also_known_as: [Ned]             # optional; nicknames, other spellings
@@ -331,7 +333,7 @@ The person record is identity, flags, and prose; sourced facts live with evidenc
 
 **Provisional vital estimates.** The record may carry optional **provisional** `birth:` / `death:` estimates: the unsourced date the researcher knows before finding the record, which most genealogists expect to record as a core data point. They are assertions of current knowledge, not sourced facts, and recording what is known before it can be proved is a legitimate starting state, not an error. Like any fact they want a source: add a `birth`/`death` claim tagged to the person, and that sourced claim supersedes the frontmatter estimate. When run, the linter matches the provisional `birth:`/`death:` values against sourced birth/death claims to keep them aligned, and lists any still needing a source.
 
-A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[p-…|John Smith]]`). The link keeps both the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private: a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19); it is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
+A person's `name` and each public `name_variants` entry are mirrored into `aliases:`, after the ID, so a `[[Thomas Edward Hartley]]` link resolves to that person in the tools without the unique ID, and an editor that reads `aliases:` (Obsidian) suggests the record when the name is typed after `[[`. Every tool that writes a name keeps the mirror in step; the linter reports a record whose mirror is behind (TOOLING §3). People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[p-…|John Smith]]`). The link keeps both the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private: a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19). It is never mirrored into `aliases:`, where it would sit as plain text with nothing marking it private. It is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
 
 The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[p-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claims: ["[[c-…]]", …]` (every claim that backs the tie) or `source: [[s-…]]`; the link is optional to write, required for the entry to count complete, and the linter reconciles each linked claim against the tie it is the durable home of. **One entry per person and role:** a second record proving the same tie adds its claim to that entry's `claims:` list, never a second entry, so the block lists each person once however much evidence stands behind them. An **unsourced** entry carries `status: hypothesis`: a guess the researcher is building on before it can be cited (step 3 of the research ladder, §17a). It is listed as needing a source, never an error; the tree and the site draw it as a guess, and exports leave it out. It may name the working answer it rests on with `hypothesis: h-…`, so the reason for the guess and what would settle it are one link away from the tie they concern; a link to an `h-` id no question entry defines (the guess was ruled out, or the id is mistyped) is reported. This mirrors the provisional `birth:`/`death:` pattern above: most of what is known about a person begins as an unsourced jotting and graduates when the source is found and mints the claim. **Graduating is the same entry, not a second one:** once the tie is sourced, the guess and the sourced entry are one tie (one entry per person and role), so the claims join that entry, `status: hypothesis` goes, and a `hypothesis:` link stays as the record of which working answer the evidence settled, as it does on a claim (Appendix A.4). Tools never make that change themselves, since the guess is the owner's own lines and often carries a note on why it was believed: a guess left beside an entry citing an accepted claim for the same person, role and nature is reported, for the owner to fold in.
 
@@ -644,8 +646,8 @@ The deliberate style difference (person files underscored, source files hyphenat
 ```markdown
 ---
 id: s-b237895f31
-aliases:                       # link-resolution handles: the ID (so [[s-…]] resolves) + any human
-  - s-b237895f31               #   stem you used before processing (e.g. the inbox filename)
+aliases:                       # link-resolution handles for the tools: the ID first, then any
+  - s-b237895f31               #   human stem you used before processing (e.g. the inbox filename)
 title: Campaign card for T. E. Hartley, Clerk of the District Court, 1880
 source_type: photo            # census | vital-record | photo | interview | letter | newspaper | …
 source_date: 1880-11~         # EDTF; the date OF the source itself
@@ -658,7 +660,7 @@ citation: >
   Campaign card for T. E. Hartley, candidate for Clerk of the District
   Court, Fairview, Kansas, circa November 1880.
 people:                        # who this source involves/depicts - the human cross-link surface,
-  - "[[p-…|Thomas Hartley]]"    #   link-valued so it draws an Obsidian graph edge; hand-editable by
+  - "[[p-…|Thomas Hartley]]"    #   link-valued so the tools read it as a link; hand-editable by
   - "[[p-…|Margaret Cole]]"     #   name ([[Margaret Cole]]), settled to [[p-…|Name]] by the tools
 places:                        # optional; where the source is set - same link form; may be
   - "[[l-…|Fairview]]"          #   hand-added or synced from the claims' place: fields
@@ -735,7 +737,7 @@ The `files:` inventory documents roles and provenance for humans. Each entry's k
 - Omitted, a file is undated at the per-file level and the page falls back to `source_date:` alone.
 - When a source's files carry different dates and `source_date:` is a single point, giving `source_date:` an EDTF interval (`1916-02/1916-06`) is the recommended zero-code fallback (CHEATSHEET.md) rather than leaving the page with no date signal at all.
 
-The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[p-…|Name]]` / `[[l-…|Name]]` form by the tools. The claims block (§8) is structured data in a fenced block, and its links are not clickable there; its written forms are §8.7's (`persons:` as pinned links with the name beside them, `roles:` and `place:` as bare IDs). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
+The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so someone working only in an editor can cross-link by name, hand-editable, normalized to the stable `[[p-…|Name]]` / `[[l-…|Name]]` form by the tools. The claims block (§8) is structured data in a fenced block, and its links are not clickable there; its written forms are §8.7's (`persons:` as pinned links with the name beside them, `roles:` and `place:` as bare IDs). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
 
 **Source type vocabulary** (controlled, expandable by spec change; same pattern as claim types): `census` · `vital-record` · `newspaper` · `photo` · `interview` · `letter` · `military-record` · `land-record` · `probate` · `directory` · `dna` · `book` · `website` · `artifact` · `proof-argument` · `ephemera` · `other` (+ free-text `subtype` when nothing fits). A passenger list, naturalization or other immigration record that is not itself a vital record is `other` with `subtype: immigration`.
 
@@ -925,7 +927,7 @@ Entries are **dated** because collections grow: a nil from 2024 is worth re-runn
 
 Double-bracket ID links, greppable and tool-verifiable:
 
-- **`[[s-xxxx]]` is the standard citation** on factual statements in any narrative body. It matches natural research practice (footnotes cite evidence) and is zero-hop: searching the ID surfaces the source record *and* its files together (the bare `s-xxxx` is a substring of the link). The double brackets are durable delimiters: plain text in any editor, and a live link in a wiki-style editor where the source record carries the ID as an alias (§14).
+- **`[[s-xxxx]]` is the standard citation** on factual statements in any narrative body. It matches natural research practice (footnotes cite evidence) and is zero-hop: searching the ID surfaces the source record *and* its files together (the bare `s-xxxx` is a substring of the link). The double brackets are durable delimiters: plain text in any editor, and a link in every tool and export that reads the archive. Obsidian resolves a link by file name only, never through `aliases:`, so it shows an ID link as unresolved; searching the ID there finds the record, whose file name ends in it.
 - The link always carries the **immutable ID**, never the slug or filename, so a citation survives a record rename. An optional display follows a pipe: `[[p-xxxx|Margaret Cole]]` reads as the name and links by ID.
 - `[[c-xxxx]]` is permitted when claim-level precision matters (one disputed assertion and its status), the exception; it resolves to the claim's source record (§8.7).
 - `[[p-xxxx]]` cross-links people; `[[l-xxxx]]` a place. Both zero-hop via the record's ID/alias.
@@ -933,7 +935,7 @@ Double-bracket ID links, greppable and tool-verifiable:
 - **Uncited prose is by definition story/context, never fact.**
 - Exporters swap links for refs; the WikiTree exporter renders `[[s-…]]` as `<ref>` blocks from the source's `citation` field, and redacts the display name of any `living`/`unknown` person (§19).
 
-**Resolution and the alias surface.** A `[[ ]]` link's target may be an ID or a name/stem; either resolves to a canonical ID through the record's `aliases:`. Three related fields stay distinct in purpose so they never conflate: **`aliases:`** are link-resolution handles, namely the canonical ID, any human stems, and (for persons *and* places) the `name` plus its `name_variants` / `alt_names` mirrored in, so a name-link resolves; **`name_variants:` / `alt_names:`** are the display/genealogical name variants a human curates, the *source* the tool mirrors into `aliases:`; **`face_tags:`** are exact photo people-tag strings (§20). The human edits `name` / `name_variants` / `alt_names`; the tool keeps `aliases:` in sync. Because mirrored names can collide (two `Springfield`s, two `John Smith`s), the alias-clash check (`TOOLING.md` §3) governs all of them, and a clashing name resolves only when pinned to its ID (§7). A name marked `restricted` (a `name_variants` entry carrying `restricted: true`) still resolves through the alias surface internally, so links and search keep working, but its display is redacted in any external export: the same internal-resolves / external-redacts rule that governs a `living` person's name (§19).
+**Resolution and the alias surface.** A `[[ ]]` link's target may be an ID or a name/stem; either resolves to a canonical ID through the record's `aliases:`. Three related fields stay distinct in purpose so they never conflate: **`aliases:`** are link-resolution handles, namely the canonical ID, any human stems, and (for persons *and* places) the `name` plus its public `name_variants` / `alt_names` mirrored in, so a name-link resolves; **`name_variants:` / `alt_names:`** are the display/genealogical name variants a human curates, the *source* the tool mirrors into `aliases:`; **`face_tags:`** are exact photo people-tag strings (§20). The human edits `name` / `name_variants` / `alt_names`; the tool keeps `aliases:` in sync. Because mirrored names can collide (two `Springfield`s, two `John Smith`s), the alias-clash check (`TOOLING.md` §3) governs all of them, and a clashing name resolves only when pinned to its ID (§7). In Obsidian, `aliases:` only helps find a note while typing `[[`: picking a suggestion writes the file name as the link's target and the alias as its display. A name marked `restricted` (a `name_variants` entry carrying `restricted: true`) still resolves through the alias surface internally, since the tools read it from `name_variants:` and never mirror it into `aliases:` (§9), so links and search keep working, but its display is redacted in any external export: the same internal-resolves / external-redacts rule that governs a `living` person's name (§19).
 
 ## 19. Privacy
 

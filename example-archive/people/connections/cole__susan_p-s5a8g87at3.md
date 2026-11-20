@@ -1,6 +1,6 @@
 ---
 id: p-s5a8g87at3
-aliases: [p-s5a8g87at3]
+aliases: [p-s5a8g87at3, Susan Cole]
 name: Susan Cole
 sex: F
 living: false

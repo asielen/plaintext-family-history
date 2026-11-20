@@ -1,6 +1,6 @@
 ---
 id: p-fa7541e871
-aliases: [p-fa7541e871]
+aliases: [p-fa7541e871, Calvin George Hartley]
 name: Calvin George Hartley
 profile_photo: calvin-hartley-garden.jpg
 sex: M

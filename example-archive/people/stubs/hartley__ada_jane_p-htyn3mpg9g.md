@@ -1,6 +1,6 @@
 ---
 id: p-htyn3mpg9g
-aliases: [p-htyn3mpg9g]
+aliases: [p-htyn3mpg9g, Ada Jane Hartley]
 name: Ada Jane Hartley
 sex: F
 living: false

@@ -1,6 +1,6 @@
 ---
 id: p-de957bcda1
-aliases: [p-de957bcda1]
+aliases: [p-de957bcda1, Thomas Edward Hartley, T. E. Hartley]
 name: Thomas Edward Hartley
 name_variants: [T. E. Hartley]
 profile_photo: thomas-hartley-portrait.jpg

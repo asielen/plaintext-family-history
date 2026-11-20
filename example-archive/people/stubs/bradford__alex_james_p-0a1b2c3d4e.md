@@ -1,6 +1,6 @@
 ---
 id: p-0a1b2c3d4e
-aliases: [p-0a1b2c3d4e]
+aliases: [p-0a1b2c3d4e, Alex James Bradford]
 name: Alex James Bradford
 sex: unknown
 living: unknown

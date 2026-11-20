@@ -349,6 +349,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
 #                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
+#    person_name_slot          - one person-filename name slot: [a-z0-9], single underscores
+#    name_words                - the words of a name a surname is read from (no punctuation-only words)
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
@@ -444,6 +446,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forwards registry_error from the read above
 #
 #  Alias resolution / publication guards
+#    person_alias_mirror       : the names a person's aliases: carries: name + public variants
+#    yaml_alias_entry          : one aliases: entry quoted for a YAML flow list
+#    flow_list_close           : where a one-line YAML flow list closes (not in a comment)
+#    merge_aliases_into_frontmatter: append missing entries to an aliases: list, in place
+#    sync_person_aliases       : keep a person's aliases: in step with name/name_variants
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
 #    merge_pointer             - status: merged + merged_into -> the id claims move to
@@ -1200,6 +1207,63 @@ def parentage_parties(
     return children, parents
 
 
+# The directional power ties a `relationship` claim records (SPEC §8.2): the
+# role on each side, and the edge label each side's row carries.
+POWER_TIE_ROLES: tuple[tuple[tuple[str, str], tuple[str, str]], ...] = (
+    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+    (('employee', 'employee'), ('employer', 'employer')),
+)
+
+
+def relationship_claim_parties(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> tuple[str, Any]:
+    """Which kind of tie an accepted `relationship` claim records, and who is
+    in it: the rule `fha index` derives its edges by, in one place so `fha
+    lint` (W159) asks the same question and never calls a tie missing that
+    the tree holds.
+
+    The first branch that applies wins, as in the index:
+      - ('parentage', (children, parents)) when the roles name both halves
+        (`parentage_parties`);
+      - ('spouse', people) when anyone carries a spouse role, the couple read
+        by `spouse_parties` (two people named and one marked spouse is the
+        couple, SPEC §8.3 "Who married");
+      - ('social', people) for a friend, associate or neighbor subtype
+        (`social_parties`);
+      - ('power', [(a, label_a, b, label_b), ...]) otherwise, one entry per
+        directed enslaved/enslaver or employee/employer pair.
+    Input is the claim's `(pid, role)` pairs as `claim_role_pairs` or
+    `claim_persons_with_roles` gives them."""
+    pairs = list(persons_with_roles)
+    children, parents = parentage_parties(pairs)
+    if children and parents:
+        return 'parentage', (children, parents)
+    if any(role_meaning(r) == 'spouse' for _p, r in pairs):
+        return 'spouse', spouse_parties(pairs)
+    if subtype in SOCIAL_TIE_SUBTYPES:
+        return 'social', social_parties(pairs, subtype)
+    ties = []
+    for (role_a, edge_a), (role_b, edge_b) in POWER_TIE_ROLES:
+        a_ids = [p for p, r in pairs if role_meaning(r) == role_a]
+        b_ids = [p for p, r in pairs if role_meaning(r) == role_b]
+        ties += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
+    return 'power', ties
+
+
+def relationship_claim_records_tie(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> bool:
+    """Whether `fha index` derives at least one edge from an accepted
+    `relationship` claim (`relationship_claim_parties`): a couple or social
+    group of two or more different people, any parentage, or any power-tie
+    pair."""
+    kind, parties = relationship_claim_parties(persons_with_roles, subtype)
+    if kind in ('spouse', 'social'):
+        return len(set(parties)) >= 2
+    return bool(parties)
+
+
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
 # `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
@@ -1755,6 +1819,65 @@ CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
     'enslaved', 'enslaver', 'employer', 'employee', 'member',
     'deceased',
 }) | NON_PARTY_ROLES | SOCIAL_TIE_SUBTYPES
+
+
+# SPEC §8.2's natures for a `relationship` claim's `subtype:`. The list is
+# mostly closed: a word outside it is still legal free text. `half` is the
+# nature of a sibling tie through one shared parent; `half-sibling` is read as
+# the same word (`relationship_nature_word`).
+RELATIONSHIP_NATURES: frozenset[str] = frozenset({
+    'biological', 'adoptive', 'step', 'foster', 'guardian',
+    'surrogate-gestational', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
+    'social', 'half',
+    'enslaver', 'enslaved-by', 'employer', 'employee', 'member-of',
+}) | SOCIAL_TIE_SUBTYPES
+
+_NATURE_SPELLINGS: dict[str, str] = {'half-sibling': 'half'}
+
+
+def relationship_nature_word(value: Any) -> str:
+    """A `subtype:` as every nature comparison reads it: trimmed, lower-cased,
+    and `half-sibling` read as `half` (SPEC §8.2), so an entry written one way
+    matches a claim written the other."""
+    word = str(value or '').strip().lower()
+    return _NATURE_SPELLINGS.get(word, word)
+
+
+# Words that are not a nature, written where a nature belongs (lint W158).
+# A role belongs in `roles:`, a record's wording in `value:` or `notes:`, and
+# a degree of kinship in a descriptive role (`grandchild:`). The list is a
+# deny-list: every other free-text nature stays legal.
+_SUBTYPE_ROLE_WORDS: frozenset[str] = (
+    (CLAIM_ROLE_WORDS | frozenset(CLAIM_ROLE_SYNONYMS)
+     | {'subject', 'sibling', 'grandparent', 'grandchild'})
+    - RELATIONSHIP_NATURES)
+_SUBTYPE_RECORD_WORDS: frozenset[str] = frozenset({'survived-by', 'nickname'})
+_SUBTYPE_KINSHIP_WORDS: frozenset[str] = frozenset({
+    'grandparent-grandchild', 'uncle-nephew', 'uncle-niece', 'aunt-niece',
+    'aunt-nephew', 'cousin', 'in-law', 'sibling-in-law', 'parent-in-law',
+    'child-in-law', 'mother-in-law', 'father-in-law', 'son-in-law',
+    'daughter-in-law', 'brother-in-law', 'sister-in-law', 'extended-family',
+})
+
+
+def subtype_misuse(value: Any) -> str | None:
+    """What kind of word a relationship claim's `subtype:` is when it is not a
+    nature: 'role' (`mother`, `child`, `witness`), 'record' (`survived-by`,
+    `nickname`) or 'kinship' (`cousin`, `uncle-nephew`), else None.
+
+    Spaces and underscores read as hyphens, so `survived by` is caught too.
+    A word on SPEC §8.2's list is never misuse, even where it doubles as a
+    role (`employer`, `friend`)."""
+    word = re.sub(r'[\s_]+', '-', relationship_nature_word(value))
+    if not word or word in RELATIONSHIP_NATURES:
+        return None
+    if word in _SUBTYPE_ROLE_WORDS or word.replace('-', '_') in _SUBTYPE_ROLE_WORDS:
+        return 'role'
+    if word in _SUBTYPE_RECORD_WORDS:
+        return 'record'
+    if word in _SUBTYPE_KINSHIP_WORDS:
+        return 'kinship'
+    return None
 
 
 def social_parties(
@@ -10094,10 +10217,12 @@ def extract_bare_ids(text: str) -> list[str]:
 # ── Alias resolution layer ────────────────────────────────────────────────────
 #
 # The `aliases:` field on every record is the universal resolution surface: it
-# carries the record's own canonical ID (so a bare `[[S-…]]` clicks through in
-# Obsidian), any human stem the owner typed (`grandmas-album`), on-demand C-ids,
-# and - for people and places - the display `name` and its variants, so a
-# hand-typed `[[Ken Smith]]` or `[[Fairview]]` resolves to the right record.
+# carries the record's own canonical ID, any human stem the owner typed
+# (`grandmas-album`), on-demand C-ids, and (for people and places) the
+# display `name` and its variants, so a hand-typed `[[Ken Smith]]` or
+# `[[Fairview]]` resolves to the right record in every fha reader. (Obsidian
+# resolves a link by file name only; it reads `aliases:` just to suggest
+# notes while typing `[[`.)
 #
 # These helpers are the read-time, NON-mutating resolver every front door shares.
 # Resolution order is: exact canonical ID → alias string → unresolved (None). An
@@ -10265,7 +10390,7 @@ def relationship_tie_key(entry: Any, resolve=None) -> tuple[str, str, str] | Non
     return (
         to_key,
         str(entry.get('type') or '').strip().lower(),
-        str(entry.get('subtype') or 'biological').strip().lower(),
+        relationship_nature_word(entry.get('subtype')) or 'biological',
     )
 
 
@@ -10286,6 +10411,129 @@ def relationship_entry_hypothesis(entry: Any) -> str | None:
     raw = str(entry.get('hypothesis')).strip()
     ids = extract_bare_ids(strip_link_wrapper(raw))
     return normalize_id(ids[0]) if ids and ids[0].lower().startswith('h-') else raw
+
+
+def relationship_entry_is_sourced(entry: Any) -> bool:
+    """An entry that cites evidence: a `claims:` list or a `source:`, and not
+    a guess (SPEC §9)."""
+    return (isinstance(entry, dict) and not relationship_entry_is_guess(entry)
+            and bool(relationship_entry_claim_ids(entry) or entry.get('source')))
+
+
+def claimless_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the entries lint W160
+    reports: an entry citing no evidence (no claims, no `source:`) and not a
+    guess, beside a sourced entry for the same tie (`relationship_tie_key`:
+    same person, role and nature). The profile shows such a pair as the same
+    person twice. A guess beside a sourced entry is W155's, and an entry of
+    another nature is another tie (SPEC §8.2), so neither is listed here."""
+    if not isinstance(block, list):
+        return []
+    sourced = {relationship_tie_key(e, resolve) for e in block
+               if relationship_entry_is_sourced(e)}
+    sourced.discard(None)
+    return [n for n, e in enumerate(block)
+            if isinstance(e, dict) and not relationship_entry_is_guess(e)
+            and not relationship_entry_is_sourced(e)
+            and relationship_tie_key(e, resolve) in sourced]
+
+
+def sourced_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the later of two entries
+    that both cite evidence for the same tie (`relationship_tie_key`), which
+    lint W160 names for merging by hand. Writers fold such a pair themselves
+    unless the later entry holds the owner's own text (a note, another key,
+    a comment), so what is left here is always a merge for the owner."""
+    if not isinstance(block, list):
+        return []
+    seen: set = set()
+    out: list[int] = []
+    for n, e in enumerate(block):
+        if not relationship_entry_is_sourced(e):
+            continue
+        key = relationship_tie_key(e, resolve)
+        if key is None:
+            continue
+        if key in seen:
+            out.append(n)
+        seen.add(key)
+    return out
+
+
+# The keys `collapse_relationship_entries` carries into the entry it keeps.
+_FOLDABLE_ENTRY_KEYS = frozenset({
+    'to', 'type', 'subtype', 'claims', 'source', 'status', 'hypothesis'})
+
+def _entry_within(entry: Any, kept: Any) -> bool:
+    """Whether every key of one entry, other than the `claims:` and
+    `hypothesis:` a fold carries over, is in the kept entry with the same
+    value. Then folding it loses nothing the owner wrote."""
+    if not isinstance(entry, dict) or not isinstance(kept, dict):
+        return False
+    return all(k in kept and kept[k] == v for k, v in entry.items()
+               if k not in ('claims', 'hypothesis'))
+
+
+# The keys a bare entry is made of. An entry holding anything else (a note, a
+# date, a `claims: []` left with a comment) carries the owner's text.
+_BARE_ENTRY_KEYS = frozenset({'to', 'type', 'subtype'})
+_ITEM_KEY_LINE_RE = re.compile(r'^\s*(?:-\s+)?[^\s:#][^:#]*:(?:\s+(.*))?$')
+
+
+def _item_has_comment(item: list[str]) -> bool:
+    """Whether one entry's lines hold a YAML comment, on a line of its own or
+    after a value (read the YAML way, so a `#` inside quotes is not one)."""
+    for ln in item:
+        bare = ln.rstrip('\r').strip()
+        if not bare:
+            continue
+        if bare.startswith('#') or bare.startswith('- #'):
+            return True
+        m = _ITEM_KEY_LINE_RE.match(bare)
+        rest = (m.group(1) or '') if m else bare
+        if rest and split_yaml_comment(rest)[1]:
+            return True
+    return False
+
+
+def drop_claimless_duplicates(
+    text: str, resolve=None,
+) -> tuple[str, list[tuple[int, dict]], list[tuple[int, dict]]] | None:
+    """Remove the claimless duplicate entries (`claimless_duplicate_entries`)
+    that hold nothing the owner typed, for `fha lint --fix-duplicates`.
+
+    An entry goes only when it has no key beyond `to:`, `type:` and
+    `subtype:` and no comment. One that carries a note, any other key or a
+    comment is never removed, since that text is the owner's: it is returned
+    for a "remove by hand" line instead. Everything else in the block is kept
+    as written, newlines included.
+
+    Returns `(new_text, dropped, by_hand)`, each a list of `(position in the
+    list, entry)`, the text unchanged when nothing goes; None when the block
+    is not in a form edited here."""
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return None
+    _key, block_end, items = located
+    entries = [_relationship_item_entry(lines[s:e]) for s, e in items]
+    dupes = set(claimless_duplicate_entries(entries, resolve))
+    if not dupes:
+        return text, [], []
+    dropped: list[tuple[int, dict]] = []
+    by_hand: list[tuple[int, dict]] = []
+    new_lines = list(lines[:items[0][0]])
+    for n, (s, e) in enumerate(items):
+        tail_end = items[n + 1][0] if n + 1 < len(items) else block_end
+        entry = entries[n]
+        if n in dupes:
+            if set(entry) <= _BARE_ENTRY_KEYS and not _item_has_comment(lines[s:e]):
+                dropped.append((n, entry))
+                continue          # the entry goes, with its trailing blank lines
+            by_hand.append((n, entry))
+        new_lines.extend(lines[s:tail_end])
+    new_lines.extend(lines[block_end:])
+    return '\n'.join(new_lines), dropped, by_hand
 
 
 def _relationship_item_key(entry: Any, resolve) -> tuple | None:
@@ -10419,12 +10667,21 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     duplicates is left alone. A guess is never folded into a sourced entry
     (`_relationship_item_key`).
 
+    A tool never removes text the owner typed, so a later entry is folded
+    only when the fold carries everything it says: it holds nothing beyond
+    `to:`, `type:`, `subtype:`, `claims:`, `source:`, `status:` and
+    `hypothesis:`, has no comment, and names no working answer other than the
+    one the kept entry ends up with. A later entry with no comment whose
+    every other key the first already holds with the same value (the same
+    guess written twice, or copied in by a merge) is folded too, since
+    nothing it says is lost. Any
+    other later entry (a note, a date, a
+    comment, a second working answer) stays where it is, beside the first,
+    and lint W160 names it for the owner to merge by hand.
+
     The working answer is not part of a sourced entry's key, so sourced
-    entries still fold to one per person and role. When the folded entries
-    name different working answers (`hypothesis:`), the first entry's link is
-    kept and the others are dropped; the first entry gains a link from a later
-    one only when it has none. That loses a link only when one tie was proved
-    from two different guesses, which is rare and leaves the evidence intact.
+    entries still fold to one per person and role, and the first entry gains
+    a link from a later one only when it has none.
 
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
@@ -10442,6 +10699,8 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     cr = '\r' if lines[0].endswith('\r') else ''
 
     parsed: list[tuple[tuple | None, list[str]]] = []
+    foldable: list[bool] = []
+    entries: list[Any] = []
     for s, e in items:
         indent = re.match(r'^(\s*)', lines[s]).group(1)
         chunk = '\n'.join(
@@ -10455,6 +10714,9 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         parsed.append((_relationship_item_key(entry, resolve),
                        relationship_entry_claim_ids(entry),
                        relationship_entry_hypothesis(entry)))
+        entries.append(entry)
+        foldable.append(isinstance(entry, dict) and set(entry) <= _FOLDABLE_ENTRY_KEYS
+                        and not _item_has_comment(lines[s:e]))
 
     groups: dict[tuple, list[int]] = {}
     for n, (k, _c, _h) in enumerate(parsed):
@@ -10467,6 +10729,24 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         linked = [o for o in groups if o[:-1] == k[:-1] and o[-1]]
         if len(linked) == 1:
             groups[linked[0]] = sorted(groups[linked[0]] + groups.pop(k))
+    # Only what the fold carries may be folded: a later entry holding the
+    # owner's own text stays beside the first, and lint names it.
+    for k, group in groups.items():
+        kept_link = parsed[group[0]][2]
+        members = [group[0]]
+        for m in group[1:]:
+            link = parsed[m][2]
+            later = lines[items[m][0]:items[m][1]]
+            first = lines[items[group[0]][0]:items[group[0]][1]]
+            carried = (foldable[m]
+                       or [ln.strip() for ln in later] == [ln.strip() for ln in first]
+                       or (not _item_has_comment(later)
+                           and _entry_within(entries[m], entries[group[0]])))
+            if not carried or (link and kept_link and link != kept_link):
+                continue
+            kept_link = kept_link or link
+            members.append(m)
+        groups[k] = members
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
     if not dupes:
         return text, 0
@@ -10589,8 +10869,8 @@ def claim_pids_in_role(claim: dict, meaning: str,
 def relationship_entry_nature(entry: dict) -> str:
     """The nature a `relationships:` entry states. A parent or child entry
     with no `subtype:` is `biological` (SPEC §8.2); other types have no
-    default."""
-    st = str(entry.get('subtype', '')).strip().lower()
+    default. `half-sibling` reads as `half` (`relationship_nature_word`)."""
+    st = relationship_nature_word(entry.get('subtype'))
     if st:
         return st
     role = str(entry.get('type', '')).strip().lower()
@@ -10600,7 +10880,7 @@ def relationship_entry_nature(entry: dict) -> str:
 def claim_relationship_nature(claim: dict) -> str:
     """A claim's nature, for comparing with an entry's. A claim naming a
     child and a parent with no `subtype:` is `biological`."""
-    st = str(claim.get('subtype', '')).strip().lower()
+    st = relationship_nature_word(claim.get('subtype'))
     if st:
         return st
     roles = claim.get('roles')
@@ -11595,6 +11875,421 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
     if not key:
         return None
     return alias_map.get(key)
+
+
+# ── A person's aliases: mirror (SPEC §9, §18) ─────────────────────────────────
+#
+# Obsidian reads a note's frontmatter `aliases:` to offer the note while the
+# owner types `[[`: type "Tom" and Thomas Edward Hartley's record is offered,
+# and picking it writes a link to the file. The index already reads `name:` and
+# `name_variants:` directly, so this mirror is what makes the same names work in
+# an editor that reads only the file. Every verb that writes a person's name
+# keeps the mirror in step through `sync_person_aliases`, and `fha lint
+# --fix-aliases` brings older records up to date.
+
+
+def person_alias_mirror(meta: dict) -> list[str]:
+    """The names a person's `aliases:` carries besides the ID: `name:`, then
+    each public `name_variants:` entry, in that order, without repeats.
+
+    A restricted variant (`{value:, restricted: true}`, a private prior name)
+    is left out. It still resolves inside the archive, because the index reads
+    it from `name_variants:` where its restricted marker sits; copied into
+    `aliases:` it would be plain text with no marker, which every reader of the
+    file (an editor, a packet copy) would take as public. A `name:` of
+    `unknown` (an unnamed stub) is not a name and is left out too."""
+    out: list[str] = []
+    seen: set[str] = set()
+    name = meta.get('name')
+    candidates = [str(name).strip()] if name else []
+    candidates += [str(v).strip() for v in public_name_variants(meta.get('name_variants'))]
+    for value in candidates:
+        key = value.lower()
+        if not value or key == 'unknown' or key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _restricted_variant_values(meta: dict) -> set[str]:
+    """Lowercased values of a person's restricted `name_variants:` entries."""
+    out: set[str] = set()
+    raw = meta.get('name_variants')
+    for v in (raw if isinstance(raw, list) else []):
+        if isinstance(v, dict) and v.get('value') and \
+                v.get('restricted') not in (None, False, '', 'false'):
+            out.add(str(v['value']).strip().lower())
+    return out
+
+
+def yaml_alias_entry(value: str) -> str:
+    """One alias, written so it reads back as the same string inside a YAML
+    flow list (`aliases: [a, b]`) as well as a block list item.
+
+    A name like "Hartley, Thomas" or "Lot #4" would split or lose its tail
+    unquoted inside `[...]`, so anything but a plain ID-or-stem token is
+    rendered by the YAML emitter in flow context, which quotes exactly when
+    needed. Accented letters stay as written (`allow_unicode`), so the file
+    still reads "Guðrún" rather than an escape code.
+
+    A plain token is written bare only when YAML reads it back as that same
+    string: a surname like "No" or "On" reads as a boolean, "123" as a
+    number and "1923-01-02" as a date, so those go through the emitter and
+    come out quoted."""
+    if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_\-]*', value):
+        try:
+            if yaml.safe_load(value) == value:
+                return value
+        except yaml.YAMLError:
+            pass
+    rendered = yaml.safe_dump([value], default_flow_style=True,
+                              allow_unicode=True, width=10 ** 9).strip()
+    if rendered.startswith('[') and rendered.endswith(']'):
+        return rendered[1:-1]
+    return json.dumps(value, ensure_ascii=False)
+
+
+def flow_list_close(line: str, open_at: int) -> int:
+    """Index of the `]` that closes the YAML flow list opening at `open_at`
+    on this one line, or -1 when the list does not close on it.
+
+    The last `]` on the line is not the answer: a hand comment after the
+    list (`aliases: [p-…, Tom]  # Tom [his old note]`) has its own. So the
+    line is read the way YAML reads it: nested `[`/`{` pairs (an unquoted
+    `[[wikilink]]` entry) are counted, quoted text is skipped (a quote opens
+    only at the start of an entry, so the apostrophe in O'Brien is a
+    letter), and a ` #` outside quotes starts a comment, which ends the
+    search. The bracket found counts only when nothing but a blank or a
+    comment follows it and the text up to it reads as a YAML list, so a
+    line that is not one clean flow list is never edited."""
+    depth = 0
+    quote = None
+    token_start = True
+    i = open_at
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if quote == "'" and ch == "'":
+                if line[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                quote = None
+            elif quote == '"' and ch == '\\':
+                i += 2
+                continue
+            elif quote == '"' and ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in '[{':
+            depth += 1
+            token_start = True
+        elif ch in ']}':
+            depth -= 1
+            if depth == 0:
+                # Only a blank or a ` # comment` may follow the list's end;
+                # anything else means the line is not one flow list.
+                rest = line[i + 1:]
+                # (PyYAML refuses a tab before that `#`, so only spaces count.)
+                if ch != ']' or not (not rest.strip() or re.match(r' +#', rest)):
+                    return -1
+                try:
+                    parsed = yaml.safe_load(line[open_at:i + 1])
+                except yaml.YAMLError:
+                    return -1
+                return i if isinstance(parsed, list) else -1
+            token_start = False
+        elif ch == ',':
+            token_start = True
+        elif ch == '#' and i > 0 and line[i - 1] in ' \t':
+            return -1
+        elif ch in ' \t':
+            pass
+        elif ch in '\'"' and token_start:
+            quote = ch
+            token_start = False
+        else:
+            token_start = False
+        i += 1
+    return -1
+
+
+def _merge_aliases_unchecked(
+    fm_text: str, new_id: str, aliases: list[str], nl: str, *,
+    id_first: bool = False,
+) -> tuple[str, list[str]]:
+    """Add missing alias entries to an EXISTING `aliases:` block, in place.
+
+    Shipped templates ship an `aliases:` block (the placeholder-id teaching
+    form), and hand authors write their own, so "a block already exists" must
+    mean merge, never skip. Handles the two shapes a hand file uses: a block
+    list (`- entry` item lines; new entries go after the last item at the same
+    dash indent) and a one-line flow list (`aliases: [a, b]`; new entries are
+    spliced in before the `]`). Entries already present are not repeated
+    (compared lowercased, the way the resolve map compares), and existing
+    entries keep their text, quoting and comments byte for byte. Any other
+    shape is left untouched.
+
+    `id_first` puts `new_id` at the head of the list when it is missing, so a
+    record's own ID reads first however late it was added; every other entry
+    is appended in the order given.
+
+    Returns (new_fm_text, entries_added), so a caller's note about what it
+    added prints only when something was."""
+    try:
+        parsed = safe_load_yaml(fm_text)
+    except yaml.YAMLError:
+        return fm_text, []
+    if not isinstance(parsed, dict):
+        return fm_text, []
+    raw = parsed.get('aliases')
+    if isinstance(raw, list):
+        existing = [str(a) for a in raw if a is not None]
+    elif raw is None:
+        existing = []
+    else:
+        return fm_text, []   # a scalar aliases: value is a hand form; leave it alone
+    have = {strip_link_wrapper(a).strip().lower() for a in existing}
+    head: list[str] = []
+    if id_first and normalize_id(new_id) not in have:
+        head = [new_id]
+    have.add(normalize_id(new_id))
+    tail: list[str] = []
+    for a in aliases:
+        key = a.strip().lower()
+        if key and key not in have:
+            have.add(key)
+            tail.append(a)
+    if not head and not tail:
+        return fm_text, []
+    head_entries = [yaml_alias_entry(a) for a in head]
+    tail_entries = [yaml_alias_entry(a) for a in tail]
+
+    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
+    if not m:
+        return fm_text, []
+    head_line = m.group(0).rstrip('\r')
+    line_end = m.start() + len(head_line)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        # Splice before the list's own closing bracket (`flow_list_close`):
+        # not the first `]`, which may sit inside an embedded `[[wikilink]]`
+        # entry, and not the last, which may sit in a trailing comment.
+        close = flow_list_close(head_line, flow_open.end() - 1)
+        if close >= flow_open.end():
+            open_part = head_line[:flow_open.end()]     # 'aliases: ['
+            body = head_line[flow_open.end():close]      # existing entries verbatim
+            suffix = head_line[close:]                   # '] ...trailing'
+            # A hand list may end in a comma (`[p-…, ]`, valid YAML); joining
+            # after it would write `,,`, which YAML refuses.
+            kept = body.strip()
+            while kept.endswith(','):
+                kept = kept[:-1].rstrip()
+            parts = head_entries + ([kept] if kept else []) + tail_entries
+            new_line = open_part + ', '.join(parts) + suffix
+            return fm_text[:m.start()] + new_line + fm_text[line_end:], head + tail
+    if '[' in head_line:
+        # A flow list whose `]` sits on a later line: a shape this surgery does
+        # not edit, rather than risk splicing into the middle of it.
+        return fm_text, []
+    if head_line.split('#', 1)[0].strip() != 'aliases:':
+        return fm_text, []   # `aliases: value` was ruled out above; be safe anyway
+
+    # Block-list form: walk the contiguous `- item` lines after the key and
+    # insert after the last one (or before the first, for the ID), copying the
+    # dash indent the existing items use, including none (`aliases:` then `- old`).
+    # The text is given a closing newline while it is edited (the frontmatter
+    # group a caller passes usually ends without one) and handed back without.
+    work = fm_text
+    closed = not work.endswith('\n')
+    if closed:
+        work += nl
+    # A comment line between items (`# kept from the old file name`) belongs
+    # to the list, so the walk steps over it to the items after.
+    pos = m.end() + 1                       # just past the key line's newline
+    line_re = re.compile(r'[ \t]*(?:(-[ \t]+)[^\r\n]*|#[^\r\n]*)\r?\n')
+    consumed = pos
+    cursor = pos
+    item_prefix = None
+    while True:
+        im = line_re.match(work, cursor)
+        if not im:
+            break
+        cursor = im.end()
+        if im.group(1) is None:
+            continue                        # a comment line
+        if item_prefix is None:
+            item_prefix = re.match(r'[ \t]*-[ \t]+', im.group(0)).group(0)
+        consumed = im.end()
+    if item_prefix is None:
+        item_prefix = '  - '
+    work = (work[:pos]
+            + ''.join(f'{item_prefix}{e}{nl}' for e in head_entries)
+            + work[pos:consumed]
+            + ''.join(f'{item_prefix}{e}{nl}' for e in tail_entries)
+            + work[consumed:])
+    if closed:
+        work = work[:-len(nl)]
+    return work, head + tail
+
+
+def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
+    """Remove the `aliases:` entries whose value (lowercased) is in `drop`.
+
+    Used only for the privacy rule: a name variant that is restricted never
+    sits in `aliases:` as plain text. A one-line
+    flow list is rewritten when every entry reads as plain text; a block list
+    loses just the matching item lines, so comments on the others stay. A
+    shape this cannot read safely (a flow list over several lines, an entry
+    that is itself a list) is left as it is. Returns (new_text, removed)."""
+    m = re.search(r'^aliases:[^\n]*$', fm_text, re.M)
+    if not m or not drop:
+        return fm_text, []
+    head_line = m.group(0).rstrip('\r')
+    line_end = m.start() + len(head_line)
+    flow_open = re.match(r'^aliases:[ \t]*\[', head_line)
+    if flow_open:
+        close = flow_list_close(head_line, flow_open.end() - 1)
+        if close < flow_open.end():
+            return fm_text, []
+        try:
+            items = safe_load_yaml(head_line[flow_open.end() - 1:close + 1])
+        except yaml.YAMLError:
+            return fm_text, []
+        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+            return fm_text, []
+        keep = [i for i in items if i.strip().lower() not in drop]
+        removed = [i for i in items if i.strip().lower() in drop]
+        if not removed:
+            return fm_text, []
+        new_line = (head_line[:flow_open.end()]
+                    + ', '.join(yaml_alias_entry(i) for i in keep)
+                    + head_line[close:])
+        return fm_text[:m.start()] + new_line + fm_text[line_end:], removed
+    pos = m.end()
+    if pos < len(fm_text) and fm_text[pos] == '\n':
+        pos += 1
+    line_re = re.compile(r'[ \t]*(?:(-[ \t]+)([^\r\n]*)|#[^\r\n]*)\r?\n?')
+    out_parts: list[str] = []
+    removed: list[str] = []
+    cursor = pos
+    while True:
+        im = line_re.match(fm_text, cursor)
+        if not im or im.end() == cursor:
+            break
+        if im.group(1) is None:             # a comment line between items stays
+            out_parts.append(im.group(0))
+            cursor = im.end()
+            continue
+        try:
+            value = safe_load_yaml(im.group(2))
+        except yaml.YAMLError:
+            value = None
+        if isinstance(value, str) and value.strip().lower() in drop:
+            removed.append(value)
+        else:
+            out_parts.append(im.group(0))
+        cursor = im.end()
+    if not removed:
+        return fm_text, []
+    out = fm_text[:pos] + ''.join(out_parts) + fm_text[cursor:]
+    if not fm_text.endswith('\n') and out.endswith('\n'):
+        # The removed item ended the text with no newline; the one now last
+        # keeps its own, which would leave a blank line before the fence.
+        out = out[:-2] if out.endswith('\r\n') else out[:-1]
+    return out, removed
+
+
+def _aliases_edit_reads_back(before: str, after: str, *, added=(), removed=()) -> bool:
+    """True when an `aliases:` text edit reads back as exactly what was meant.
+
+    The surgery edits text so hand comments and quoting survive, which means a
+    hand-written shape it misreads could leave YAML that no longer parses (a
+    record the tools then refuse as E010). So every edit is parsed again: the
+    other keys must be unchanged, and the list must be the old one with the
+    added entries present and the removed ones gone."""
+    try:
+        old = safe_load_yaml(before)
+        new = safe_load_yaml(after)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+    others_before = {k: v for k, v in old.items() if k != 'aliases'}
+    others_after = {k: v for k, v in new.items() if k != 'aliases'}
+    if others_before != others_after:
+        return False
+    old_list = old.get('aliases') or []
+    new_list = new.get('aliases')
+    if not isinstance(new_list, list) or not isinstance(old_list, list):
+        return False
+    gone = [x for x in old_list if x not in new_list]
+    if sorted(map(str, gone)) != sorted(map(str, removed)):
+        return False
+    return all(a in new_list for a in added)
+
+
+def merge_aliases_into_frontmatter(
+    fm_text: str, new_id: str, aliases: list[str], nl: str, *,
+    id_first: bool = False,
+) -> tuple[str, list[str]]:
+    """`_merge_aliases_unchecked`, kept only when the result reads back as
+    meant (`_aliases_edit_reads_back`); otherwise nothing is changed and the
+    caller sees nothing added, which it reports as a hand edit."""
+    new_text, added = _merge_aliases_unchecked(fm_text, new_id, aliases, nl, id_first=id_first)
+    if added and not _aliases_edit_reads_back(fm_text, new_text, added=added):
+        return fm_text, []
+    return new_text, added
+
+
+def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
+    """`_remove_aliases_unchecked`, kept only when the result reads back as meant."""
+    new_text, removed = _remove_aliases_unchecked(fm_text, drop)
+    if removed and not _aliases_edit_reads_back(fm_text, new_text, removed=removed):
+        return fm_text, []
+    return new_text, removed
+
+
+def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
+    """Bring a person record's `aliases:` in step with its name fields.
+
+    The rule (SPEC §9, §18): the ID first, then `name:`, then each public
+    `name_variants:` entry. Missing ones are added, and nothing else is
+    removed: a stem, a nickname or an old name (one a rename replaced) stays,
+    so a link written under it keeps resolving. The one thing taken out is
+    the value of a restricted variant, so a private name never sits in
+    `aliases:` as plain text.
+
+    Left alone: a record with no frontmatter, no `id:`, no `aliases:` key (it
+    never opted into the alias layer, the same scoping as lint W111), a
+    scalar or unreadable `aliases:`, and a merged tombstone (its `aliases:`
+    holds only its bare ID by design, SPEC §9). Returns (new_text, added,
+    removed); new_text is `text` itself when nothing changed."""
+    fm = FRONT_RE.match(text)
+    if not fm:
+        return text, [], []
+    try:
+        meta = safe_load_yaml(fm.group(1))
+    except yaml.YAMLError:
+        return text, [], []
+    if not isinstance(meta, dict) or not meta.get('id') or is_merged_meta(meta):
+        return text, [], []
+    if not isinstance(meta.get('aliases'), list):
+        return text, [], []
+    pid = fmt_id_display(str(meta['id']))
+    nl = '\r\n' if '\r\n' in fm.group(0) else '\n'
+    inner = fm.group(1)
+    mirror = person_alias_mirror(meta)
+    wanted = {v.lower() for v in mirror}
+    drop_keys = _restricted_variant_values(meta) - wanted
+    drop_keys.discard(normalize_id(pid))
+    inner, removed = _remove_aliases_from_frontmatter(inner, drop_keys)
+    inner, added = merge_aliases_into_frontmatter(inner, pid, mirror, nl, id_first=True)
+    if not removed and not added:
+        return text, [], []
+    new_text = text[:fm.start(1)] + inner + text[fm.end(1):]
+    return new_text, added, removed
 
 
 def persons_named(conn: sqlite3.Connection, text: str) -> list[dict]:
@@ -13747,6 +14442,11 @@ PLACE_FREE_TEXT_FIELDS = {
     'name': TEXT, 'hierarchy': TEXT, 'alt_names': TEXT, 'notes': TEXT,
     'history': {'hierarchy': TEXT},
 }
+# An inbox notes file (`{stem}.notes.md` or a bundle's `notes.md`, SPEC
+# §12.1): the source fields `fha process` copies into the new record, the
+# `people:` names it folds into that record's notes, and the `asset_path:`
+# it folds into `provenance:`.
+INBOX_NOTES_FREE_TEXT_FIELDS = {**SOURCE_FREE_TEXT_FIELDS, 'people': TEXT, 'asset_path': TEXT}
 
 
 def _scalar_cut_by_hash(block: str, node, *, aligned_comments: bool) -> dict | None:
@@ -14187,6 +14887,32 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     return parts, None
 
 
+def person_name_slot(text: str) -> str:
+    """One name slot of a person filename (SPEC §13): lowercase letters and
+    digits, words joined by single underscores, or '' when nothing is left.
+
+    "Ann Lot #2" files as `ann_lot_2`. A word that is only punctuation (a
+    lone `#` or `-`) drops out with its gap, so no slot ever starts or ends
+    with an underscore or holds two in a row: a doubled underscore inside a
+    slot would read as the sort separator, and lint's filename check would
+    then see a different sort name from the one the person was filed
+    under. Accented letters fold to their base letters (`fold_accents`)."""
+    words = (re.sub(r'[^a-z0-9_]', '', w) for w in fold_accents(str(text or '')).lower().split())
+    return re.sub(r'_+', '_', '_'.join(w for w in words if w)).strip('_')
+
+
+def name_words(name: object) -> list[str]:
+    """The words of a display name a surname can be read from.
+
+    A word with no letter or digit in it, in any script ("(?)", "&", a lone
+    "-"), is no name: "Mary Smith (?)" sorts under Smith, not under "(?)".
+    The file name (`stub_slug_name`) and the surname every page and export
+    reads (`person_surname`) both split by this, so they agree. A name made
+    only of such words keeps them all."""
+    words = str(name).split()
+    return [w for w in words if any(c.isalnum() for c in w)] or words
+
+
 def stub_slug_name(
     name: str, surname: str | None = None,
 ) -> tuple[str, str]:
@@ -14259,11 +14985,12 @@ def stub_slug_name(
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
+    parts = name_words(name)
     if surname is not None and not surname.strip():
         # `--surname ""` is "this person has no surname" (issue #292): SPEC
         # §13's empty sort slot, with the whole name, suffix and all, as the
         # given slug (`__henry_tudor_P-….md`).
-        given = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in parts))
+        given = person_name_slot(' '.join(parts))
         return ('', given or 'unknown')
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
@@ -14289,22 +15016,19 @@ def stub_slug_name(
             suffix = None
         if suffix:
             given_tokens = given_tokens + [suffix]
-        surname_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(t.lower() for t in surname_tokens))
-        given_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in given_tokens))
+        surname_slug = person_name_slot(' '.join(surname_tokens))
+        given_slug = person_name_slot(' '.join(given_tokens))
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
-        given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
+        given = person_name_slot(parts[0])
         return ('', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
-        given = core[0] if not suffix else f'{core[0]}_{suffix}'
-        given = re.sub(r'[^a-z0-9_]', '', given.lower())
+        given = person_name_slot(core[0] if not suffix else f'{core[0]} {suffix}')
         return ('', given or 'unknown')
-    surname_tok = core[-1].lower().replace(' ', '_')
     given_parts = core[:-1] + ([suffix] if suffix else [])
-    given = '_'.join(p.lower() for p in given_parts)
-    surname_tok = re.sub(r'[^a-z0-9_]', '', surname_tok)
-    given = re.sub(r'[^a-z0-9_]', '', given)
+    surname_tok = person_name_slot(core[-1])
+    given = person_name_slot(' '.join(given_parts))
     return (surname_tok or 'unknown', given or 'unknown')
 
 
@@ -14650,7 +15374,9 @@ def person_surname(name: object, recorded: str | None = None) -> str | None:
     surname is the last word of `name` once a trailing generational or
     regnal suffix is set aside (`strip_generational_suffix`) - the same
     split `stub_slug_name` files by - '' for a one-word name, and None when
-    there is no real name to read ("unknown", blank).
+    there is no real name to read ("unknown", blank). A word that is only
+    punctuation is set aside first (`name_words`), as the file name does,
+    so "Mary Smith (?)" reads as Smith and "Mary ?" as no surname.
 
     The file name is never read: it is only a sort handle, and an older
     slugger's guess sits there ("winiewska", "vii") for records filed
@@ -14660,7 +15386,7 @@ def person_surname(name: object, recorded: str | None = None) -> str | None:
         return recorded
     if is_placeholder_name(name):
         return None
-    core, _suffix = strip_generational_suffix(str(name).split())
+    core, _suffix = strip_generational_suffix(name_words(name))
     return core[-1].rstrip(',') if len(core) >= 2 else ''
 
 
@@ -14710,7 +15436,9 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     tombstone, no usable name,
     a file name without `__`, a slot equal to what `stub_slug_name` files
     the name under today, a slot an older slugger made of the same surname
-    by deleting its accented letters (`winiewska`), and a slot holding the
+    by deleting its accented letters (`winiewska`), an `unknown` slot an
+    older slugger gave a name whose last word is only punctuation ("Mary
+    Smith (?)"), and a slot holding the
     name's own suffix (`vii__henry` for "Henry VII", filed before regnal
     numbers were suffixes) - none of those record a decision.
     """
@@ -14729,6 +15457,11 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     if slot == re.sub(r'[^a-z0-9_]', '', derived.lower().replace(' ', '_')):
         return None
     if suffix and slot == re.sub(r'[^a-z0-9]', '', fold_accents(parts[-1]).lower()):
+        return None
+    if slot == 'unknown' and len(core) >= 2 and not re.sub(
+            r'[^a-z0-9_]', '', fold_accents(core[-1]).lower()):
+        # An older slugger took a last word that is only punctuation ("Mary
+        # Smith (?)") as the surname and filed it under `unknown`.
         return None
     if not slot:
         return slot, ''
@@ -14770,10 +15503,10 @@ def render_stub_content(
     way regardless of which tool wrote it; `tests/test_templates.py` checks it
     against `archive-template/people/stubs/_TEMPLATE.stub.md`.
 
-    `aliases:` carries the P-id from birth - the line that makes a bare
-    `[[P-…]]` cite click through in Obsidian. The display name registers as an
-    alias automatically (the index reads it from `name:`), so a hand-typed
-    `[[Name]]` resolves once the stub is promoted to a real name.
+    `aliases:` carries the P-id and then the name (SPEC §9's mirror, the
+    same list `sync_person_aliases` keeps up afterwards), so typing `[[` and
+    part of the name in Obsidian offers this record. An `unknown` stub lists
+    only its ID until it is given a real name.
 
     `sex`/`gender` are omitted entirely (not written as blank/null) when not
     given - most stubs never carry either, and an absent key is friendlier to
@@ -14800,10 +15533,12 @@ def render_stub_content(
         raise ValueError(format_person_sex_error(sex))
 
     display_name = name if name and name.lower() != 'unknown' else 'unknown'
+    alias_entries = [pid] + [yaml_alias_entry(a)
+                             for a in person_alias_mirror({'name': display_name})]
     lines = [
         '---',
         f'id: {pid}',
-        f'aliases: [{pid}]',
+        f'aliases: [{", ".join(alias_entries)}]',
         f'name: {yaml_inline(display_name)}',
     ]
     if surname is not None:

@@ -1,6 +1,6 @@
 ---
 id: p-d00c678c1a
-aliases: [p-d00c678c1a]
+aliases: [p-d00c678c1a, Chastina Augusta Reed]
 name: Chastina Augusta Reed
 sex: F
 living: false

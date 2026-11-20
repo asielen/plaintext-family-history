@@ -85,6 +85,7 @@ from _lib import (
     main_files_entry,
     files_entry_role,
     parentage_parties,
+    relationship_claim_parties,
     role_meaning,
     parse_filename,
     person_file_kind,
@@ -600,8 +601,8 @@ def _insert_record_aliases(
     names: tuple[str, ...] = (),
     variants: tuple[str, ...] = (),
 ) -> None:
-    """Insert the alias rows for one record: its own canonical ID (always - the
-    line that makes `[[S-…]]` click through in Obsidian), plus any human stems,
+    """Insert the alias rows for one record: its own canonical ID (always, so a
+    `[[S-…]]` link resolves in every fha reader), plus any human stems,
     display name(s), and name/alt variants. Strings are unwrapped and lowercased;
     blanks and per-record duplicates are skipped."""
     canonical_id = normalize_id(canonical_id)
@@ -803,7 +804,7 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> list[str]:
         for alt in alt_names:
             conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt))
         # Register the place's name + alt_names as aliases so a hand-typed
-        # `[[Fairview]]` resolves to its L-id in Obsidian and our tools.
+        # `[[Fairview]]` resolves to its L-id in every fha reader.
         place_name = place.get('name')
         _insert_record_aliases(
             conn, pid,
@@ -1234,13 +1235,13 @@ def _index_person(
         for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
-        # clicks through), any hand-typed `aliases:` stems, the display name, and
+        # resolves), any hand-typed `aliases:` stems, the display name, and
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
         # All variants (including restricted) go into aliases so name-wikilinks
         # to former names still resolve internally; render paths redact the display.
         # `also_known_as`, `name_at_birth`, and `married_name` (SPEC person
         # template) are additional resolution surfaces so `[[Peggy]]` /
-        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all click through to the
+        # `[[Margaret Cole]]` / `[[Margaret Hartley]]` all resolve to the
         # same P-id. The template documents them as aliases; the indexer folds
         # them into the alias-insertion path so the promise holds.
         # `name_variants` above unwraps the `{value, restricted}` dict form; the
@@ -1486,7 +1487,7 @@ def _index_source(
     )
 
     # Register the source's own resolution surface: the S-id (so `[[S-…]]`
-    # clicks through) plus any hand-typed `aliases:` stems (`grandmas-album`).
+    # resolves) plus any hand-typed `aliases:` stems (`grandmas-album`).
     _insert_record_aliases(
         conn, sid,
         stems=tuple(str(a) for a in (meta.get('aliases') or [])),
@@ -2070,12 +2071,15 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # parent/child bond (biological, adoptive, step, …; SPEC §8.2). A
             # claim naming a child and a parent is a parent/child edge whatever
             # its nature.
-            child_ids, parent_ids = parentage_parties(all_persons)
-            spouse_ids = [p for p, r in all_persons if role_meaning(r) == 'spouse']
+            # Which tie the claim records, and who is in it, is one rule
+            # shared with `fha lint` W159 (_lib.relationship_claim_parties),
+            # so lint never calls a tie missing that the tree holds.
+            kind, parties = relationship_claim_parties(all_persons, subtype)
 
-            if child_ids and parent_ids:
+            if kind == 'parentage':
+                child_ids, parent_ids = parties
                 _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
-            elif spouse_ids:
+            elif kind == 'spouse':
                 # A relationship claim naming spouses yields reciprocal spouse
                 # edges, like a marriage claim - and obeys the same scoping
                 # rule (_lib.spouse_parties), for the same reason. The
@@ -2084,7 +2088,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                 # map holding one typo'd id), and pairing off three or more
                 # people in that state would invent marriages exactly as the
                 # marriage branch used to.
-                spouse_pids = spouse_parties(all_persons)
+                spouse_pids = parties
                 for i, p1 in enumerate(spouse_pids):
                     for p2 in spouse_pids[i+1:]:
                         if p1 == p2:
@@ -2097,7 +2101,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                             (p2, 'spouse', p1, cid, dmin, None),
                         )
-            elif subtype in _RELATIONSHIPS_SOCIAL_SUBTYPES:
+            elif kind == 'social':
                 # Only the people the claim calls friends were friends. Same
                 # scoping rule as the couple branches above, same reason
                 # (_lib.social_parties, issue #118): a friend claim can name a
@@ -2108,7 +2112,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                 # nothing to tell the reader which edge the archive has
                 # evidence for. A claim with no roles: entry for its subtype
                 # still pairs everyone named, so legacy claims are untouched.
-                social_pids = social_parties(all_persons, subtype)
+                social_pids = parties
                 for i, p1 in enumerate(social_pids):
                     for p2 in social_pids[i+1:]:
                         if p1 == p2:
@@ -2126,24 +2130,15 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                 # Directional power-tie roles: enslaved/enslaver, employer/employee.
                 # Each directed pair gets an asymmetric edge so callers can
                 # distinguish victim from perpetrator (SPEC §8.2).
-                for (role_a, edge_a), (role_b, edge_b) in (
-                    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
-                    (('employee', 'employee'), ('employer', 'employer')),
-                ):
-                    a_ids = [p for p, r in all_persons if role_meaning(r) == role_a]
-                    b_ids = [p for p, r in all_persons if role_meaning(r) == role_b]
-                    for pa in a_ids:
-                        for pb in b_ids:
-                            if pa == pb:
-                                continue   # one person listed on both sides
-                            conn.execute(
-                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                                (pa, edge_a, pb, cid, dmin, dmax),
-                            )
-                            conn.execute(
-                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                                (pb, edge_b, pa, cid, dmin, dmax),
-                            )
+                for pa, edge_a, pb, edge_b in parties:
+                    conn.execute(
+                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                        (pa, edge_a, pb, cid, dmin, dmax),
+                    )
+                    conn.execute(
+                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                        (pb, edge_b, pa, cid, dmin, dmax),
+                    )
         elif ctype == 'birth':
             # "Born to X and Y" - the plainest parentage evidence an archive
             # ever holds, and the natural place to write it down. It reaches

@@ -72,9 +72,10 @@ class SurnamelessFilenameTests(unittest.TestCase):
         self.assertEqual(_codes(findings, 'W117'), [])       # English-only archive unchanged
 
     def test_malformed_with_separator_is_still_e002(self) -> None:
-        # Has `__` but the sort slot starts with a digit: genuinely malformed.
+        # Has `__` but the sort slot starts with a hyphen: genuinely malformed.
+        # (A leading digit is fine: SPEC §13 allows letters and digits.)
         pid = 'P-3kq9v8x2m1'
-        root = _archive({f'1bad__name_{pid}': _person('Bad Name', pid)})
+        root = _archive({f'-bad__name_{pid}': _person('Bad Name', pid)})
         findings, _ = lint._run_lint_core(root, load_fha_yaml(root))
         self.assertTrue(_codes(findings, 'E002'))
         self.assertEqual(_codes(findings, 'W117'), [])

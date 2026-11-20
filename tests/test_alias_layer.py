@@ -275,7 +275,9 @@ class RecordCreationAliasTests(unittest.TestCase):
     def test_stub_content_carries_canonical_id_alias(self):
         import stubs
         text = stubs._stub_content('P-de957bcda1', 'Ken Smith')
-        self.assertIn('aliases: [P-de957bcda1]', text)
+        # The P-id first, then the name (SPEC §9), so Obsidian suggests the
+        # new stub as soon as its name is typed after [[.
+        self.assertIn('aliases: [P-de957bcda1, Ken Smith]', text)
 
     def test_scaffold_emits_self_alias(self):
         import process

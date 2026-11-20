@@ -1,6 +1,6 @@
 ---
 id: p-ajnng40q36
-aliases: [p-ajnng40q36]
+aliases: [p-ajnng40q36, Charley Layng]
 name: Charley Layng
 sex: M
 living: false

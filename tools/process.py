@@ -1072,8 +1072,8 @@ def _scaffold_text(
     and `fha find --related P-xxx` surfaces the photo source without requiring
     any face-region placement (the "photos, no photo manager" path, TOOLING §FAQ).
 
-    `aliases:` ships from birth carrying the canonical S-id - the one line that
-    makes a bare `[[S-…]]` cite click through in Obsidian. A `stem` (a human tag
+    `aliases:` ships from birth carrying the canonical S-id, first in the list
+    as SPEC §14 shows it, so lint W111 has nothing to report. A `stem` (a human tag
     the source was known by before it had an ID - the inbox basename or a notes
     hint) is preserved as a second alias so old `[[stem]]` references keep
     resolving after processing.
