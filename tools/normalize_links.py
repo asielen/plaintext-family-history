@@ -83,6 +83,8 @@ from _lib import (
     fmt_id_display,
     format_yaml_dependency_error,
     yaml_link_item,
+    yaml_list_link_text,
+    code_line_mask,
     split_yaml_comment,
     written_link_display,
     id_type_of,
@@ -112,12 +114,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
-# Fenced code blocks (the ```yaml claims block, any ``` example) are structured
-# data, not prose - split them out so a prose rewrite never edits a bare ID
-# inside them.
+# Code (the ```yaml claims block, any fenced or indented example) is
+# structured data, not prose: `_lib.code_line_mask` marks it so a prose
+# rewrite never edits an ID inside it.
 import re
-
-_FENCE_RE = re.compile(r'(```.*?```)', re.S)
 
 
 # ── Record scan → alias map ───────────────────────────────────────────────────
@@ -219,7 +219,9 @@ def _rewrite_wikilinks(
         if resolved:
             display = (m.group(3) or target).strip()
             edits += 1
-            return f'[[{fmt_id_display(resolved)}|{display}]]'
+            # Obsidian's table form `[[Name\|shown]]` keeps its escaped bar.
+            bar = '\\|' if m.group(3) is not None and m.group(1).rstrip().endswith('\\') else '|'
+            return f'[[{fmt_id_display(resolved)}{bar}{display}]]'
         if target.lower() in clashes:
             ambiguous.append(target)
         return m.group(0)
@@ -297,7 +299,7 @@ def _resolve_list_item(item, want: str, alias_map: dict[str, str]) -> str | None
     An ID is kept as written (never redirected to a merge survivor - that is
     `fha confirm merge`'s job); a name resolves through the alias map."""
     if isinstance(item, list):           # an unquoted [[X]] reads as a nested list
-        item = '[[' + ' '.join(str(x) for x in item) + ']]'
+        item = yaml_list_link_text(item)
     if item is None or isinstance(item, dict):
         return None
     target = strip_link_wrapper(str(item))
@@ -376,7 +378,7 @@ def _settle_list_segment(
             else:
                 rendered = yaml_link_item(rid, name)
         elif isinstance(item, list):
-            rendered = json.dumps('[[' + ' '.join(str(x) for x in item) + ']]', ensure_ascii=False)
+            rendered = json.dumps(yaml_list_link_text(item), ensure_ascii=False)
         elif isinstance(item, str):
             rendered = json.dumps(item, ensure_ascii=False) if item.startswith('[') else yaml_inline(item)
         else:
@@ -533,14 +535,24 @@ def normalize_text(
     out: list[str] = []
     edits = e_fm + settled
     ambiguous = list(a_fm)
-    for i, part in enumerate(_FENCE_RE.split(body)):
-        if i % 2 == 1:          # odd parts are fenced blocks - structured data
+    # Code (the claims block, a fenced or indented example) is left as
+    # written; each run of prose lines between code is rewritten as one.
+    lines = body.splitlines(keepends=True)
+    code = code_line_mask(lines)
+    k = 0
+    while k < len(lines):
+        j = k
+        while j < len(lines) and code[j] == code[k]:
+            j += 1
+        part = ''.join(lines[k:j])
+        if code[k]:
             out.append(part)
-            continue
-        new_part, e, a = _rewrite_prose(part, alias_map, clashes)
-        out.append(new_part)
-        edits += e
-        ambiguous += a
+        else:
+            new_part, e, a = _rewrite_prose(part, alias_map, clashes)
+            out.append(new_part)
+            edits += e
+            ambiguous += a
+        k = j
 
     return new_fm + ''.join(out), edits, ambiguous
 

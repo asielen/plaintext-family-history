@@ -53,7 +53,10 @@ import wikitree  # noqa: E402
 from _lib import (  # noqa: E402
     LinkWriter,
     convert_written_links,
+    extract_tokens,
+    extract_wikilinks,
     link_entry,
+    link_field_refs,
     link_list_lines,
     link_parts,
     links_to_id_form,
@@ -84,6 +87,8 @@ JAMES = 'p-2b3c4d5e6f'
 JAMES_PROFILE = 'people/002 James Robert Bradford [Alex]/bradford__james_robert_p-2b3c4d5e6f.md'
 ROSTER = 'sources/other/hartley-lodge-roster_s-3m7k9n2p4q.md'
 LIVING_SON = 'Alex James Bradford'
+ALEX = 'p-0a1b2c3d4e'
+BS = '\\'   # the backslash Obsidian writes before a link's | inside a table
 
 
 def _quiet(fn, *args, **kwargs):
@@ -164,9 +169,11 @@ class LinkWriterTests(unittest.TestCase):
         self.assertEqual(self.obs.convert(f'[[s-3p8v6n0d5t#Claims|{CLAIM}]]'),
                          f'[[{CLAIM_STEM}#Claims|{CLAIM}]]')
 
-    def test_a_table_row_gets_no_added_display(self):
-        self.assertEqual(self.obs.convert(f'| 1880 | [[{CENSUS}]] |\nSee [[{CENSUS}]].'),
-                         f'| 1880 | [[{CENSUS_STEM}]] |\nSee [[{CENSUS_STEM}|{CENSUS}]].')
+    def test_a_table_row_writes_the_display_the_way_obsidian_does(self):
+        head = '| Year | Source |\n| --- | --- |\n'
+        self.assertEqual(self.obs.convert(f'{head}| 1880 | [[{CENSUS}]] |\n\nSee [[{CENSUS}]].'),
+                         f'{head}| 1880 | [[{CENSUS_STEM}{BS}|{CENSUS}]] |\n\n'
+                         f'See [[{CENSUS_STEM}|{CENSUS}]].')
 
     def test_a_heading_is_kept(self):
         self.assertEqual(self.obs.convert(f'[[{TOM}#Biography|Tom]]'),
@@ -517,14 +524,34 @@ def _private_example(dest: Path) -> Path:
     text = roster.read_text(encoding='utf-8')
     roster.write_text(text.replace('source_type:', 'restricted: true\nsource_type:', 1),
                       encoding='utf-8', newline='')
+    # Bare links (no display) to the living son and the restricted roster in
+    # a public source's notes and people:, a stub's stories and the packet
+    # subject's own stories: the stem form fills in the son's name.
+    line = (f'Kin [[{ALEX}]] and [[{ALEX}|Alex]] cite [[s-3m7k9n2p4q]] '
+            '[[s-3m7k9n2p4q|the lodge roster]] [[s-3m7k9n2p4q#Page 2]].\n\n')
+    for rel, old, new in (
+            (f'sources/census/{CENSUS_STEM}.md', '## Notes\n', '## Notes\n' + line),
+            (f'sources/census/{CENSUS_STEM}.md', 'people:\n', f'people:\n  - "[[{ALEX}]]"\n'),
+            ('people/stubs/hartley__calvin_george_p-fa7541e871.md', '## Stories\n',
+             '## Stories\n' + line),
+            (TOM_PROFILE, '## Stories\n', '## Stories\n' + line),
+            ('people/stubs/bradford__alex_james_p-0a1b2c3d4e.md', 'living: unknown',
+             'living: true')):
+        path = dest / rel
+        text = path.read_text(encoding='utf-8')
+        assert old in text, (rel, old)
+        path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='')
     return dest
 
 
 def _exports(root: Path, out: Path) -> dict:
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         index_mod.build_index(root, load_fha_yaml(root))
+        # The generated regions, rebuilt in the archive's link form first.
+        views.run_refresh(root)
+        index_mod.build_index(root, load_fha_yaml(root))
         site_res = site.run_site(root, out / 'site', linked=False)
-        wt = {pid: wikitree.run_wikitree(root, pid).data for pid in (TOM, JAMES)}
+        wt = {pid: wikitree.run_wikitree(root, pid).data for pid in (TOM, JAMES, CALVIN)}
         ged = gedcom.run_gedcom(root, None, all_persons=True)['text']
         pk = packet.run_packet(root, TOM, out / 'packet', no_photos=True)
     return {
@@ -584,9 +611,165 @@ class PrivacyInBothModesTests(unittest.TestCase):
         self.assertEqual(sorted(self.obs['packet']), sorted(self.ids['packet']))
         for name, body in self.ids['packet'].items():
             other = self.obs['packet'][name]
-            for secret in (LIVING_SON.encode(), b'hartley-lodge-roster', b'Masonic Lodge',
+            for secret in (LIVING_SON.encode(), b'Alex', b'hartley-lodge-roster', b'Masonic Lodge',
                            b'bradford__alex_james'):
-                self.assertEqual(secret in other, secret in body, (name, secret))
+                self.assertEqual(other.count(secret), body.count(secret), (name, secret))
+
+
+# ── Review round: tables, code blocks, merged records, people: shapes ────────
+
+class TableLinkTests(unittest.TestCase):
+    """Obsidian writes a link inside a table as `[[stem\\|Name]]`, since a bare
+    `|` would end the cell. The tools write it that way and read it back."""
+
+    def setUp(self):
+        self.obs = LinkWriter(ROOT / 'example-archive', 'obsidian')
+
+    def test_a_table_without_edge_pipes_is_a_table(self):
+        text = f'Name | Link\n--- | ---\nTom | [[{TOM}]]\n\nAfter [[{TOM}]].\n'
+        new, count, _bad = rewrite_record_links_to_stems(text, self.obs)
+        self.assertEqual(count, 2)
+        self.assertEqual(new, (f'Name | Link\n--- | ---\nTom | [[{TOM_STEM}{BS}|{TOM_NAME}]]\n\n'
+                               f'After [[{TOM_STEM}|{TOM_NAME}]].\n'))
+
+    def test_every_row_of_a_table_with_edge_pipes(self):
+        text = (f'| Name | Link |\n|:---|---:|\n| Tom | [[{TOM}]] |\n'
+                f'| Tom | [[{TOM}|Tom]] |\n| Tom | [[{TOM}{BS}|Tom]] |\n')
+        new, count, _bad = rewrite_record_links_to_stems(text, self.obs)
+        self.assertEqual(count, 3)
+        self.assertEqual(new.splitlines()[2:], [
+            f'| Tom | [[{TOM_STEM}{BS}|{TOM_NAME}]] |',
+            f'| Tom | [[{TOM_STEM}{BS}|Tom]] |',
+            f'| Tom | [[{TOM_STEM}{BS}|Tom]] |'])
+        self.assertEqual(rewrite_record_links_to_stems(new, self.obs), (new, 0, []))
+
+    def test_readers_take_the_escaped_pipe(self):
+        for written in (f'[[{TOM_STEM}{BS}|Tom]]', f'[[{TOM}{BS}|Tom]]'):
+            row = f'| Tom | {written} |'
+            self.assertEqual([t[:2] for t in extract_tokens(row)], [(TOM, 'Tom')], written)
+            self.assertEqual([t[:2] for t in extract_wikilinks(row)], [(TOM, 'Tom')], written)
+        self.assertEqual(link_parts(TOM_STEM + BS, 'Tom'), (TOM, 'Tom'))
+        self.assertEqual([t[:3] for t in extract_tokens(f'[[{CLAIM_STEM}#Claims{BS}|{CLAIM}]]')],
+                         [(CLAIM, None, 'Claims')])
+        self.assertEqual(links_to_id_form(f'| [[{TOM_STEM}{BS}|Tom]] |'), f'| [[{TOM}{BS}|Tom]] |')
+
+
+class CodeBlockTests(unittest.TestCase):
+    """A link inside code is an example, never rewritten."""
+
+    def setUp(self):
+        self.obs = LinkWriter(ROOT / 'example-archive', 'obsidian')
+
+    def test_fences_close_only_on_their_own_kind_and_length(self):
+        text = (f'~~~\nexample:\n```\ninside tilde fence [[{TOM}]]\n~~~\n\n'
+                f'````\n```\ninside 4-tick fence [[{TOM}]]\n````\n\n'
+                f'After [[{TOM}]].\n')
+        new, count, _bad = rewrite_record_links_to_stems(text, self.obs)
+        self.assertEqual(count, 1)
+        self.assertEqual(new, text.replace(f'After [[{TOM}]]', f'After [[{TOM_STEM}|{TOM_NAME}]]'))
+
+    def test_an_indented_code_block_is_code_but_a_nested_list_is_not(self):
+        text = (f'Para.\n\n    indented code [[{TOM}]]\n\n'
+                f'- a list\n\n    - nested item [[{TOM}]]\n')
+        new, count, _bad = rewrite_record_links_to_stems(text, self.obs)
+        self.assertEqual(count, 1)
+        self.assertIn(f'    indented code [[{TOM}]]', new)
+        self.assertIn(f'    - nested item [[{TOM_STEM}|{TOM_NAME}]]', new)
+
+    def test_normalize_links_reads_code_blocks_the_same_way(self):
+        tmp = Path(tempfile.mkdtemp(prefix='fha-381p3k-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        root = _copy_example(tmp / 'a')
+        note = root / 'notes' / 'code.md'
+        text = '~~~\n```\n[s-4f5f215e60]\n~~~\n\n    [s-4f5f215e60]\n\nSee [s-4f5f215e60].\n'
+        note.write_text(text, encoding='utf-8')
+        normalize_links.run_normalize_links(root, {}, write=True)
+        self.assertEqual(note.read_text(encoding='utf-8'),
+                         text.replace('See [s-4f5f215e60]', 'See [[s-4f5f215e60]]'))
+
+
+class MergedRecordTests(unittest.TestCase):
+    """In Obsidian mode a link to a merged record points at the record it was
+    merged into, not at the tombstone (or nothing, for a source)."""
+
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp(prefix='fha-381p3m-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.root = _copy_example(tmp / 'a')
+        _set_mode(self.root, 'obsidian')
+        (self.root / 'people/stubs/MERGED-INTO-hartley__tom_dup_p-zzzzzzzzz2.md').write_text(
+            '---\nid: p-zzzzzzzzz2\naliases: [p-zzzzzzzzz2]\nname: Tom Dup\nstatus: merged\n'
+            f'merged_into: {TOM}\nliving: false\ntier: stub\n---\n\n# Tom Dup\n',
+            encoding='utf-8')
+        census = self.root / f'sources/census/{CENSUS_STEM}.md'
+        text = census.read_text(encoding='utf-8')
+        census.write_text(text.replace(f'aliases: [{CENSUS}', f'aliases: [{CENSUS}, s-zzzzzzzzz3', 1),
+                          encoding='utf-8')
+        self.assertIn('s-zzzzzzzzz3', census.read_text(encoding='utf-8'))
+        self.note = self.root / 'notes' / 'merged.md'
+        self.note.write_text('# Merged\n\nSee [[p-zzzzzzzzz2]], [[p-zzzzzzzzz2|Tommy]] and '
+                             '[[s-zzzzzzzzz3]].\n', encoding='utf-8')
+
+    def test_normalize_points_at_the_survivor(self):
+        _quiet(normalize_links.run_normalize_links, self.root, load_fha_yaml(self.root),
+               write=True)
+        self.assertEqual(self.note.read_text(encoding='utf-8'), (
+            f'# Merged\n\nSee [[{TOM_STEM}|{TOM_NAME}]], [[{TOM_STEM}|Tommy]] and '
+            f'[[{CENSUS_STEM}|{CENSUS}]].\n'))
+        self.assertEqual([f for f in _codes(self.root, 'W161')
+                          if Path(f.path).name == 'merged.md'], [])
+
+    def test_lint_names_a_link_to_a_merged_record(self):
+        flagged = [f for f in _codes(self.root, 'W161') if Path(f.path).name == 'merged.md']
+        self.assertEqual(len(flagged), 1)
+        self.assertIn('3 link(s)', flagged[0].message)
+
+
+class PeopleListShapesTests(unittest.TestCase):
+    """normalize-links keeps every person in a `people:` list, whatever YAML
+    shape it was written in, in both link modes."""
+
+    def _run(self, mode):
+        tmp = Path(tempfile.mkdtemp(prefix='fha-381p3l-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        root = _copy_example(tmp / 'a')
+        _set_mode(root, mode)
+        src = root / 'sources/other/zz-test_s-zzzzzzzzz1.md'
+        src.write_text('---\nid: s-zzzzzzzzz1\ntitle: T\nsource_type: other\npeople:\n'
+                       f'  - [[{TOM}]]\n  - {CALVIN}\n  - "[[p-c4b26bb4bc|Ethel]]"\n'
+                       f'  - "[[{JAMES}]]"\n---\n\nNotes.\n', encoding='utf-8')
+        flow = root / 'sources/other/zz-flow_s-zzzzzzzzz4.md'
+        flow.write_text(f'---\nid: s-zzzzzzzzz4\ntitle: F\nsource_type: other\n'
+                        f'people: [[[{TOM}]], "[[{CALVIN}]]"]\n---\n\nNotes.\n',
+                        encoding='utf-8')
+        _quiet(normalize_links.run_normalize_links, root, load_fha_yaml(root), write=True)
+        again = _quiet(normalize_links.run_normalize_links, root, load_fha_yaml(root))
+        self.assertEqual(again.data['files_changed'], 0, mode)
+        _quiet(index_mod.build_index, root, load_fha_yaml(root))
+        con = sqlite3.connect(root / '.cache' / 'index.sqlite')
+        try:
+            got = {sid: sorted(r[0] for r in con.execute(
+                'SELECT person_id FROM source_people WHERE source_id = ?', (sid,)))
+                for sid in ('s-zzzzzzzzz1', 's-zzzzzzzzz4')}
+        finally:
+            con.close()
+        return src.read_text(encoding='utf-8'), flow.read_text(encoding='utf-8'), got
+
+    def test_both_modes_keep_everyone(self):
+        for mode, tom, cal in (
+                ('id', f'"[[{TOM}|{TOM_NAME}]]"', f'"[[{CALVIN}|Calvin George Hartley]]"'),
+                ('obsidian', f'"[[{TOM_STEM}|{TOM_NAME}]]"',
+                 f'"[[{CALVIN_STEM}|Calvin George Hartley]]"')):
+            src, flow, got = self._run(mode)
+            self.assertIn(f'  - {tom}\n', src, mode)
+            self.assertIn(f'  - {cal}\n', src, mode)
+            self.assertIn(f'  - {tom}\n', flow, mode)
+            self.assertEqual(got['s-zzzzzzzzz1'], sorted([TOM, CALVIN, 'p-c4b26bb4bc', JAMES]), mode)
+            self.assertEqual(got['s-zzzzzzzzz4'], sorted([TOM, CALVIN]), mode)
+
+    def test_an_unquoted_link_item_reads_as_the_link(self):
+        self.assertEqual(link_field_refs([[[TOM]]]), [TOM])
+        self.assertEqual(link_field_refs([[TOM]]), [TOM])
 
 
 if __name__ == '__main__':

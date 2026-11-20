@@ -42,10 +42,11 @@ From then on, every tool that writes a link writes it by file name. `fha lint` r
 A few links stay as they are in this mode:
 
 - **Places** keep the ID form, `[[l-…|Fairview]]`: every place lives in one `places/places.yaml` file, so there is no file name to point at yet.
-- **Claims blocks** keep the ID form. Obsidian does not follow a link inside a fenced block, so there is nothing to gain there.
+- **Claims blocks and other code** keep the ID form. Obsidian does not follow a link inside a fenced or indented code block, so there is nothing to gain there.
+- **In a table**, a link is written the way Obsidian writes one there, `[[file name\|Name]]`, so the `|` does not end the cell.
 - **A claim link with its own words**, like `[[c-…|the census line]]`: Obsidian's form needs the claim ID as the words, so the tools leave it and lint names it. Rewrite it as `[[source file name#Claims|c-…]]` and put the words beside it.
 
-When a tool renames a record (a person's name corrected, two people merged), links written with the old file name still work in every `fha` tool, because only the ID at the end is read; lint W161 names them and `fha normalize-links --obsidian --write` brings them up to date. To go back to ID links, remove the `links:` line: the tools write ID links again, and the file-name links already written keep working.
+When a tool renames a record (a person's name corrected, two people merged), links written with the old file name still work in every `fha` tool, because only the ID at the end is read; lint W161 names them and `fha normalize-links --obsidian --write` brings them up to date. A link to someone merged into another person, or to a source merged into another, is pointed at the record they were merged into. To go back to ID links, remove the `links:` line: the tools write ID links again, and the file-name links already written keep working.
 
 ## Searching your archive
 

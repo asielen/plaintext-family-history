@@ -1104,6 +1104,14 @@ def _purpose_block_prefix_end(body: str) -> int:
 _SOURCES_REGION_RE = re.compile(r'^## Sources\r?\n.*?(?=^## |\Z)', re.M | re.S)
 
 
+# {p-id: name} of the people this packet build treats as living (true or
+# unknown), filled from the index when a build starts. The Obsidian link
+# mode writes a bare person link with the name filled in; reading it back
+# for the copy drops that name for these people, so the packet says no more
+# about a living relative than an `id`-mode archive's packet would.
+_LIVING_LINK_NAMES: dict[str, str] = {}
+
+
 def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     """Remove #75's visible purpose block - and, for a person profile, #76's
     `## Sources` region plus any §16 section still holding only the record
@@ -1156,7 +1164,7 @@ def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     # A file-name link (SPEC §18 `links: obsidian`) carries the record's name
     # in the target; the copy reads every link in the ID form, as an `id`-mode
     # archive writes it, so the mode never changes what a packet holds back.
-    text = links_to_id_form(text)
+    text = links_to_id_form(text, drop_names=_LIVING_LINK_NAMES)
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]
@@ -2761,6 +2769,13 @@ def _packet_payload(
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=True)
     if conn is None:
         return {'status': 'no-index', 'packet_dir': None, 'zip_path': None, 'messages': messages}
+
+    _LIVING_LINK_NAMES.clear()
+    _LIVING_LINK_NAMES.update({
+        normalize_id(str(row[0])): ' '.join(str(row[1]).split())
+        for row in conn.execute(
+            "SELECT id, name FROM persons WHERE living IN ('true', 'unknown')")
+        if row[1]})
 
     try:
         person = _curated_person(conn, pid)

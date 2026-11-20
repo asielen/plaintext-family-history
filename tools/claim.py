@@ -327,6 +327,7 @@ from _lib import (
     find_source_record_path,
     fmt_id_display,
     convert_written_links,
+    yaml_list_link_text,
     link_writer,
     format_edtf_error,
     id_type_of,
@@ -1429,7 +1430,7 @@ def _apply_claim_review(
                 except yaml.YAMLError:
                     continue
                 target = strip_link_wrapper(str(entry)) if not isinstance(entry, list) \
-                    else strip_link_wrapper('[[' + ' '.join(map(str, entry)) + ']]')
+                    else strip_link_wrapper(yaml_list_link_text(entry))
                 if is_valid_id(target):
                     written[normalize_id(target)] = (written_link_display(entry), comment)
         if persons_idx is not None:

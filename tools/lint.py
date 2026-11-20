@@ -808,8 +808,18 @@ def _link_writer_for(registry: Registry) -> LinkWriter:
              for pid, meta in registry.person_meta.items()}
     claim_sources = {normalize_id(cid): normalize_id(sid)
                      for cid, sid in registry.claim_ids.items()}
+    # A link to a merged record points at its survivor: a person's tombstone
+    # names it, and a merged source's ID sits in its keeper's aliases:.
+    survivors = {normalize_id(k): normalize_id(v)
+                 for k, v in _registry_merge_survivors(registry).items()}
+    for sid, meta in registry.source_meta.items():
+        aliases = (meta or {}).get('aliases') or []
+        for alias in aliases if isinstance(aliases, list) else [aliases]:
+            aid = normalize_id(str(alias))
+            if id_type_of(aid) == 'S' and aid not in stems:
+                survivors.setdefault(aid, normalize_id(sid))
     links = LinkWriter(registry.archive_root, link_mode(registry.fha_config), stems=stems,
-                       claim_sources=claim_sources, names=names)
+                       claim_sources=claim_sources, names=names, survivors=survivors)
     registry._link_writer = links
     return links
 

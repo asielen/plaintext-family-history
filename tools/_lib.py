@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import bisect
 import calendar
 import codecs
 import dataclasses
@@ -556,7 +557,7 @@ TOKEN_RE = re.compile(
     + _TOKEN_STEM_LEAD +    # optional file-stem lead ending in `_`
     rf'({_TOKEN_ID})'       # 1: the ID (the only captured group)
     r'(?:#[^|\]]*)?'        # optional #heading / #^block fragment (parse-only)
-    r'(?:\|[^\]]*)?'        # optional |display alias
+    r'(?:\\?\|[^\]]*)?'     # optional |display alias (`\|` inside a table)
     r'\]\]?',               # one or two closing brackets
     re.I,
 )
@@ -569,8 +570,8 @@ _TOKEN_PARTS_RE = re.compile(
     r'\[\[?'
     + _TOKEN_STEM_LEAD +
     rf'({_TOKEN_ID})'       # 1: ID (load-bearing)
-    r'(?:#([^|\]]*))?'      # 2: #fragment (parse-only; no tool ever emits one)
-    r'(?:\|([^\]]*))?'      # 3: |display alias
+    r'(?:#([^|\]]*?))?'     # 2: #fragment (parse-only; no tool ever emits one)
+    r'(?:\\?\|([^\]]*))?'   # 3: |display alias (`\|` inside a table)
     r'\]\]?',
     re.I,
 )
@@ -10335,8 +10336,12 @@ def link_parts(target: str, display: str | None = None) -> tuple[str, str | None
       written, trimmed, for the alias map to resolve.
 
     The `#fragment` is the caller's to drop before calling: it never alters
-    resolution. Display text is trimmed, and a blank one is None."""
+    resolution. Display text is trimmed, and a blank one is None. Inside a
+    table Obsidian writes the separator as `\\|`, so a target followed by a
+    display loses a trailing backslash: `[[stem\\|Tom]]` reads as `[[stem|Tom]]`."""
     t = str(target or '').strip()
+    if display is not None and t.endswith('\\'):
+        t = t[:-1].rstrip()
     if '_' in t:
         m = _STEM_TARGET_RE.match(t)
         if m:
@@ -10390,6 +10395,20 @@ def alias_key_text(ref: Any) -> str:
     return _split_link(ref)[0]
 
 
+def yaml_list_link_text(item: list) -> str:
+    """The `[[…]]` link an unquoted YAML link became, written back as text.
+
+    YAML reads an unquoted `[[p-…]]` as a nested sequence, one level per
+    bracket pair it can see: a list item `- [[p-…]]` arrives as
+    `[['p-…']]`, and so does each item of the flow list `[[[p-…]]]`. Each
+    single-entry level is unwrapped down to the innermost list of words,
+    which is rejoined, so the link reads `[[p-…]]` again rather than the
+    Python text of a list."""
+    while isinstance(item, list) and len(item) == 1 and isinstance(item[0], list):
+        item = item[0]
+    return '[[' + ' '.join(str(x) for x in item).strip() + ']]'
+
+
 def link_field_refs(value: Any) -> list[str]:
     """Extract reference strings from a link-valued frontmatter field.
 
@@ -10412,8 +10431,7 @@ def link_field_refs(value: Any) -> list[str]:
         if isinstance(item, list):
             # An unquoted `[[X]]` reached us as a YAML nested sequence; rejoin
             # its tokens and unwrap as a wikilink target.
-            inner = ' '.join(str(x) for x in item).strip()
-            target = strip_link_wrapper(f'[[{inner}]]')
+            target = strip_link_wrapper(yaml_list_link_text(item))
         else:
             target = strip_link_wrapper(str(item))
         if target:
@@ -11852,7 +11870,8 @@ def link_list_lines(key: str, ids: Iterable[str], names: dict[str, str] | None,
 #
 # Every writer goes through one `LinkWriter`: it builds the ID form it has
 # always built and hands it to `LinkWriter.convert`, which returns it
-# unchanged in `id` mode. That keeps `id`-mode output byte-identical and
+# unchanged in `id` mode. That keeps the archive files an `id`-mode verb
+# writes byte-identical, and
 # gives the two modes one rule for what a stem link looks like.
 # `rewrite_record_links_to_stems` applies the same conversion to a whole
 # record file for `fha normalize-links --obsidian` and lint W161.
@@ -11886,9 +11905,27 @@ def link_mode(fha_config: dict | None) -> str:
 
 
 # A double-bracket link on one line, not an `![[…]]` embed: 1 target,
-# 2 `#fragment` (with its `#`), 3 display.
+# 2 `#fragment` (with its `#`), 3 display. Inside a table Obsidian writes the
+# separator as `\|`; the backslash then ends group 1 or 2, and
+# `_split_written_link` takes it off.
 _WRITE_LINK_RE = re.compile(
     r'(?<!!)\[\[([^\[\]|#\r\n]+?)(#[^\[\]|\r\n]*)?(?:\|([^\[\]\r\n]*))?\]\]')
+
+
+def _split_written_link(m: re.Match) -> tuple[str, str, str | None, bool]:
+    """(target, fragment, display, escaped) as one `_WRITE_LINK_RE` match
+    was written, the `\\|` table separator's backslash removed; `escaped`
+    says it was there."""
+    written = m.group(1).strip()
+    fragment = (m.group(2) or '').rstrip()
+    display = m.group(3)
+    escaped = False
+    if display is not None:
+        if fragment.endswith('\\'):
+            fragment, escaped = fragment[:-1], True
+        elif written.endswith('\\'):
+            written, escaped = written[:-1].rstrip(), True
+    return written, fragment, display, escaped
 
 
 class LinkWriter:
@@ -11905,10 +11942,12 @@ class LinkWriter:
     def __init__(self, archive_root: str | Path | None, mode: str = 'id', *,
                  stems: dict[str, str] | None = None,
                  claim_sources: dict[str, str] | None = None,
-                 names: dict[str, str] | None = None):
+                 names: dict[str, str] | None = None,
+                 survivors: dict[str, str] | None = None):
         self.archive_root = Path(archive_root) if archive_root is not None else None
         self.mode = mode if mode in LINK_MODES else 'id'
         self._stems = stems
+        self._survivors = survivors
         self._paths: dict[str, Path] = {}
         self._claim_sources: dict[str, str | None] = dict(claim_sources or {})
         self._claims_complete = claim_sources is not None
@@ -11963,6 +12002,43 @@ class LinkWriter:
             self._stems = self._scan_stems()
         return self._stems.get(normalize_id(str(rid)))
 
+    def _scan_survivors(self) -> dict[str, str]:
+        """{merged id: the record it now counts as}. A merged person keeps a
+        tombstone file whose `merged_into:` names the survivor (SPEC §9); a
+        merged source's record is gone and its ID sits in the keeper's
+        `aliases:` (`fha source merge`)."""
+        if self.archive_root is None:
+            return {}
+        survivors = dict(scan_person_merge_survivors(self.archive_root))
+        own = set((self._stems or {}).keys())
+        base = self.archive_root / 'sources'
+        if base.is_dir():
+            for path in sorted(walk_files(base, suffix='.md')):
+                parsed = parse_filename(path)
+                if not parsed or parsed.get('id_type') != 'S' or is_template_file(path):
+                    continue
+                try:
+                    aliases = read_record(path)['meta'].get('aliases') or []
+                except Exception:  # noqa: BLE001 - unreadable: no aliases to follow
+                    continue
+                for alias in aliases if isinstance(aliases, list) else [aliases]:
+                    aid = normalize_id(str(alias))
+                    if (id_type_of(aid) == 'S' and aid != parsed['id_str']
+                            and aid not in own):
+                        survivors.setdefault(aid, parsed['id_str'])
+        return survivors
+
+    def survivor_of(self, rid: str) -> str:
+        """The record a link to `rid` should point at: the survivor when the
+        record was merged into another, else `rid` itself."""
+        rid = normalize_id(str(rid))
+        if id_type_of(rid) not in ('P', 'S'):
+            return rid
+        if self._survivors is None:
+            self.stem_of(rid)          # the stems first: a source with a file is not merged
+            self._survivors = self._scan_survivors()
+        return self._survivors.get(rid, rid)
+
     def claim_source(self, cid: str) -> str | None:
         """The source ID that holds claim `cid`, or None when no source does."""
         cid = normalize_id(str(cid))
@@ -12016,8 +12092,8 @@ class LinkWriter:
             return text
         return self.convert_counted(text, yaml_values=yaml_values)[0]
 
-    def convert_counted(self, text: str, *, yaml_values: bool = False
-                        ) -> tuple[str, int, list[str]]:
+    def convert_counted(self, text: str, *, yaml_values: bool = False,
+                        table: bool | None = None) -> tuple[str, int, list[str]]:
         """(new text, links rewritten, links left that the stem form cannot
         carry) for one span of text, link by link:
 
@@ -12028,28 +12104,44 @@ class LinkWriter:
 
         The display a person wrote is kept, and so is a `#heading`. A link
         with no display gets the person's name or the source's ID (SPEC §18).
-        With `yaml_values` (frontmatter) a link outside double quotes gets no
-        display: unquoted, `[[p-…]]` is a YAML nested list, and a name with a
-        comma would split it. Nor does a link in a Markdown table row, where
-        the `|` would end the cell. Places, working answers, unknown IDs and names
-        are left as written. So is a claim link with words of its own
-        (`[[c-…|the census entry]]`), counted in the third value: its stem
-        form needs the claim ID as the display, so the words cannot stay."""
+        A link to a merged person or source points at the record it was
+        merged into. With `yaml_values` (frontmatter) a link outside double
+        quotes gets no display: unquoted, `[[p-…]]` is a YAML nested list, and
+        a name with a comma would split it. In a Markdown table row the
+        display is written `\\|` the way Obsidian writes it, since a bare `|`
+        would end the cell; `table` says the text is a table row, and left
+        as None the rows are found in the text (`table_line_mask`). Places,
+        working answers, unknown IDs and names are left as written. So is a
+        claim link with words of its own (`[[c-…|the census entry]]`),
+        counted in the third value: its stem form needs the claim ID as the
+        display, so the words cannot stay."""
         if not self.obsidian or '[[' not in text:
             return text, 0, []
         matches = list(_WRITE_LINK_RE.finditer(text))
         if not matches:
             return text, 0, []
-        claims = [tid for tid, _d in (link_parts(m.group(1), m.group(3)) for m in matches)
-                  if id_type_of(tid) == 'C']
+        claims = []
+        for m in matches:
+            written, _f, display, _e = _split_written_link(m)
+            tid, _d = link_parts(written, display)
+            if id_type_of(tid) == 'C':
+                claims.append(tid)
         if claims:
             self.find_claims(claims)
+        if table is None:
+            starts = [0] + [k + 1 for k, ch in enumerate(text) if ch == '\n']
+            mask = table_line_mask(text.split('\n'))
         edits = 0
         unfixable: list[str] = []
         out: list[str] = []
         last = 0
         for m in matches:
-            new = self._convert_one(m, text, unfixable, yaml_values)
+            if table is None:
+                row = bisect.bisect_right(starts, m.start()) - 1
+                in_table = mask[row]
+            else:
+                in_table = table
+            new = self._convert_one(m, text, unfixable, yaml_values, in_table)
             if new is not None and new != m.group(0):
                 out.append(text[last:m.start()])
                 out.append(new)
@@ -12061,38 +12153,38 @@ class LinkWriter:
         return ''.join(out), edits, unfixable
 
     def _convert_one(self, m: re.Match, text: str, unfixable: list[str],
-                     yaml_values: bool) -> str | None:
+                     yaml_values: bool, in_table: bool) -> str | None:
         """The stem form of one link match, or None to leave it as written."""
-        written = m.group(1).strip()
-        fragment = (m.group(2) or '').rstrip()
-        tid, display = link_parts(written, m.group(3))
+        written, fragment, raw_display, escaped = _split_written_link(m)
+        tid, display = link_parts(written, raw_display)
         kind = id_type_of(tid)
         if kind not in ('P', 'S', 'C'):
             return None
         tid = normalize_id(tid)
+        # In a table, the separator is the escaped one Obsidian writes.
+        bar = '\\|' if in_table else '|'
         if kind == 'C':
             if display is not None:
                 unfixable.append(m.group(0))
                 return None
             stem = self.stem_of(self.claim_source(tid))
-            if not stem or written == stem:
+            if not stem or (written == stem and escaped == in_table):
                 return None
-            return f'[[{stem}#Claims|{fmt_id_display(tid)}]]'
-        stem = self.stem_of(tid)
-        if not stem or written == stem:
+            return f'[[{stem}#Claims{bar}{fmt_id_display(tid)}]]'
+        target = self.survivor_of(tid)
+        stem = self.stem_of(target)
+        if not stem:
+            return None
+        if written == stem and target == tid and (raw_display is None or escaped == in_table):
             return None
         quoted = (m.start() > 0 and text[m.start() - 1] == '"'
                   and m.end() < len(text) and text[m.end()] == '"')
-        # A Markdown table cell reads a `|` as its own edge, so a link in a
-        # table row gets no added display.
-        line_start = text.rfind('\n', 0, m.start()) + 1
-        in_table = text[line_start:].lstrip().startswith('|')
-        if display is None and (quoted or not yaml_values) and not in_table:
-            default = self.person_name(tid) if kind == 'P' else fmt_id_display(tid)
+        if display is None and (quoted or not yaml_values):
+            default = self.person_name(target) if kind == 'P' else fmt_id_display(target)
             if default and quoted and ('"' in default or '\\' in default):
                 default = None
             display = default
-        return f'[[{stem}{fragment}|{display}]]' if display else f'[[{stem}{fragment}]]'
+        return f'[[{stem}{fragment}{bar}{display}]]' if display else f'[[{stem}{fragment}]]'
 
 
 def link_writer(archive_root: str | Path | None, fha_config: dict | None = None) -> LinkWriter:
@@ -12103,17 +12195,112 @@ def link_writer(archive_root: str | Path | None, fha_config: dict | None = None)
     return LinkWriter(archive_root, link_mode(fha_config))
 
 
-_LINK_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+_CODE_FENCE_RE = re.compile(r'^\s{0,3}(`{3,}|~{3,})')
+_LIST_ITEM_RE = re.compile(r'^\s*(?:[-*+]|\d{1,9}[.)])(?:\s|$)')
 _LINK_INLINE_CODE_RE = re.compile(r'(`[^`\r\n]*`)')
 _LINK_FM_KEY_RE = re.compile(r'^([A-Za-z_][\w-]*)\s*:')
 
 
+def code_line_mask(lines: list[str]) -> list[bool]:
+    """Which lines of a Markdown body are code, where a `[[…]]` is an
+    example rather than a link. The one code tracker the link scanners share
+    (the stem rewrite, lint W161 and `fha normalize-links`).
+
+    - A fence opens on three or more backticks or tildes and closes only on
+      a line of the same character, at least as long, with nothing after
+      it, so a ```` ``` ```` line inside a `~~~` or a four-backtick fence is
+      part of the example. An unclosed fence runs to the end of the text.
+    - An indented code block is a line indented four spaces (or a tab)
+      after a blank line, or right after another such line, unless it
+      continues a list: a nested `    - item` under a list stays prose.
+
+    Lines may carry their line endings."""
+    mask = [False] * len(lines)
+    fence: str | None = None        # the opening run, while inside a fence
+    last = 'none'                    # the kind of the last non-blank line
+    blank_before = True
+    for k, raw in enumerate(lines):
+        line = raw.rstrip('\r\n')
+        if fence is not None:
+            mask[k] = True
+            m = _CODE_FENCE_RE.match(line)
+            if (m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence)
+                    and not line[m.end():].strip()):
+                fence = None
+                last, blank_before = 'code', False
+            continue
+        if not line.strip():
+            if last == 'code':
+                mask[k] = True       # a blank line inside an indented block
+            blank_before = True
+            continue
+        indent = len(line) - len(line.lstrip(' \t'))
+        indented = indent >= 4 or line.startswith('\t')
+        m = _CODE_FENCE_RE.match(line)
+        if m and not indented:
+            fence = m.group(1)
+            mask[k] = True
+            last, blank_before = 'code', False
+            continue
+        if indented and (last == 'code' or (blank_before and last not in ('list', 'para-in-list'))):
+            mask[k] = True
+            last = 'code'
+        elif _LIST_ITEM_RE.match(line):
+            last = 'list'
+        elif indented or (last in ('list', 'para-in-list') and not blank_before):
+            last = 'para-in-list' if last in ('list', 'para-in-list') else 'para'
+        else:
+            last = 'para'
+        blank_before = False
+    # Blank lines count as code only between two code lines.
+    k = 0
+    while k < len(lines):
+        if mask[k] and not lines[k].strip():
+            j = k
+            while j < len(lines) and mask[j] and not lines[j].strip():
+                j += 1
+            if j >= len(lines) or not mask[j]:
+                for b in range(k, j):
+                    mask[b] = False
+            k = j
+            continue
+        k += 1
+    return mask
+
+
+_TABLE_SEPARATOR_RE = re.compile(
+    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$')
+
+
+def table_line_mask(lines: list[str]) -> list[bool]:
+    """Which lines are rows of a Markdown table: a header line with a `|`,
+    the separator row under it (`--- | ---`, with or without edge pipes),
+    and every following line up to a blank one or one with no `|`."""
+    mask = [False] * len(lines)
+    k = 1
+    while k < len(lines):
+        sep = lines[k].rstrip('\r\n')
+        head = lines[k - 1].rstrip('\r\n')
+        if ('|' in sep and _TABLE_SEPARATOR_RE.match(sep) and '|' in head
+                and head.strip() and not _TABLE_SEPARATOR_RE.match(head)):
+            mask[k - 1] = mask[k] = True
+            j = k + 1
+            while j < len(lines) and lines[j].strip() and '|' in lines[j]:
+                mask[j] = True
+                j += 1
+            k = j + 1
+            continue
+        k += 1
+    return mask
+
+
 def _link_line_kinds(lines: list[str]) -> list[str]:
     """How each line of a record file takes links, for the stem rewrite:
-    'yaml' (a frontmatter value), 'prose' (body text), or 'skip' (the
-    `---` fences, `id:` and `aliases:`, which are handles rather than links,
-    a fenced code block such as the claims YAML, and a GENERATED-BEGIN/END
-    region, which `fha views` rebuilds)."""
+    'yaml' (a frontmatter value), 'prose' (body text), 'table' (a row of a
+    Markdown table), or 'skip' (the `---` fences, `id:` and `aliases:`,
+    which are handles rather than links, code (`code_line_mask`), such as
+    the claims YAML, and a GENERATED-BEGIN/END region, which `fha views`
+    rebuilds)."""
     kinds = ['prose'] * len(lines)
     i = 0
     if lines and lines[0].lstrip('﻿').rstrip('\r\n') == '---':
@@ -12128,25 +12315,24 @@ def _link_line_kinds(lines: list[str]) -> list[str]:
                     skip_key = key.group(1) in ('aliases', 'id')
                 kinds[k] = 'skip' if skip_key else 'yaml'
             i = close + 1
-    in_fence = in_region = False
-    for k in range(i, len(lines)):
-        line = lines[k]
+    body = lines[i:]
+    code = code_line_mask(body)
+    table = table_line_mask(body)
+    in_region = False
+    for k, line in enumerate(body):
         stripped = line.strip()
-        if in_fence:
-            kinds[k] = 'skip'
-            if _LINK_FENCE_RE.match(line):
-                in_fence = False
-            continue
-        if _LINK_FENCE_RE.match(line):
-            in_fence = True
-            kinds[k] = 'skip'
+        if code[k]:
+            kinds[i + k] = 'skip'
             continue
         if stripped.startswith('<!-- GENERATED-BEGIN'):
             in_region = True
         if in_region:
-            kinds[k] = 'skip'
+            kinds[i + k] = 'skip'
             if stripped.startswith('<!-- GENERATED-END'):
                 in_region = False
+            continue
+        if table[k]:
+            kinds[i + k] = 'table'
     return kinds
 
 
@@ -12156,7 +12342,7 @@ def _convert_link_line(line: str, kind: str, links: LinkWriter) -> tuple[str, in
     if kind == 'skip' or '[[' not in line:
         return line, 0, []
     if kind == 'yaml':
-        return links.convert_counted(line, yaml_values=True)
+        return links.convert_counted(line, yaml_values=True, table=False)
     out: list[str] = []
     edits = 0
     unfixable: list[str] = []
@@ -12164,7 +12350,7 @@ def _convert_link_line(line: str, kind: str, links: LinkWriter) -> tuple[str, in
         if k % 2 == 1 or '[[' not in part:
             out.append(part)
             continue
-        new, n, bad = links.convert_counted(part)
+        new, n, bad = links.convert_counted(part, table=(kind == 'table'))
         out.append(new)
         edits += n
         unfixable += bad
@@ -12199,7 +12385,7 @@ def rewrite_record_links_to_stems(text: str, links: LinkWriter) -> tuple[str, in
     return ''.join(out), edits, unfixable
 
 
-def links_to_id_form(text: str) -> str:
+def links_to_id_form(text: str, drop_names: dict[str, str] | None = None) -> str:
     """`text` with every file-name link read back to the ID form, for an
     export that copies a record's own text out of the archive (`fha packet`).
 
@@ -12210,24 +12396,30 @@ def links_to_id_form(text: str) -> str:
     the `id` link mode would have, so switching modes never changes what an
     export holds back. The display is kept, except a source's own ID shown
     as its display and the claim ID of a claim link, which the ID form does
-    not repeat."""
+    not repeat, and a display that is exactly the name `drop_names` gives
+    for the person ({p-id: name}; the packet passes the people it treats as
+    living): the stem form fills in a person's name where the ID form had
+    none, and the copy must not gain it."""
     if '_' not in text or '[[' not in text:
         return text
+    drop = {normalize_id(k): v for k, v in (drop_names or {}).items() if v}
 
     def repl(m: re.Match) -> str:
-        written = m.group(1).strip()
+        written, fragment, raw_display, escaped = _split_written_link(m)
         if not _STEM_TARGET_RE.match(written):
             return m.group(0)
-        tid, display = link_parts(written, m.group(3))
+        tid, display = link_parts(written, raw_display)
         if not id_type_of(tid):
             return m.group(0)
         shown = fmt_id_display(tid)
         if id_type_of(tid) == 'C':
             return f'[[{shown}]]'
-        fragment = (m.group(2) or '').rstrip()
         if display is not None and display.lower() == shown:
             display = None
-        return f'[[{shown}{fragment}|{display}]]' if display else f'[[{shown}{fragment}]]'
+        if display is not None and ' '.join(display.split()) == drop.get(normalize_id(tid)):
+            display = None
+        bar = '\\|' if escaped else '|'
+        return f'[[{shown}{fragment}{bar}{display}]]' if display else f'[[{shown}{fragment}]]'
 
     return _WRITE_LINK_RE.sub(repl, text)
 
@@ -12286,7 +12478,7 @@ def written_link_display(item: object) -> str | None:
     `[[p-…|Maggie]]` or `[[Maggie]]`; None for a bare ID or `[[p-…]]`.
     Tools keep it - a display a human chose is never replaced."""
     if isinstance(item, list):           # an unquoted [[X]] reads as a nested list
-        item = '[[' + ' '.join(str(x) for x in item) + ']]'
+        item = yaml_list_link_text(item)
     if not isinstance(item, str):
         return None
     m = re.match(r'^\[\[([^\]|]*)(?:\|([^\]]*))?\]\]$', item.strip())
@@ -13164,6 +13356,8 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
         target, disp = link_parts(m.group(1), m.group(3))
         frag = m.group(2)
         if frag is not None:
+            if m.group(3) is not None and frag.endswith('\\'):
+                frag = frag[:-1]       # the `\|` table separator's backslash
             frag = frag.strip() or None
         if target:
             out.append((target, disp, frag, m.span()))
