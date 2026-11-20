@@ -2369,6 +2369,16 @@ def _register_review_lines(review: list[dict], planned_ids: dict[str, str]) -> l
                     review_lines.append(head + '; once they are registered, this command '
                                         'names the one to run for each.')
                 continue
+            if r.get('maybe'):
+                names = ', '.join(f'{n} ({pid})' for pid, n in r['maybe'])
+                review_lines.append(f'{head} may be {names}; it is not registered again. If it '
+                                    'is the same place, run its command:')
+                review_lines.extend(f'    {c}' for c in _confirm_place_commands(
+                    r['claim_ids'], r['place_ids']))
+                review_lines.append('    (Adding the county word or the country to that '
+                                    "place's hierarchy, for example \"Cook County\" or "
+                                    '", USA", lets text like this link to it by itself.)')
+                continue
             what = 'is close to' if r['near'] else 'fits'
             review_lines.append(f'{head} {what} {", ".join(r["place_ids"])}; if one is meant:')
             review_lines.extend(f'    {c}' for c in _confirm_place_commands(r['claim_ids'],
@@ -2491,7 +2501,18 @@ def run_register_candidates(
                                    'place_ids': m['ambiguous_ids'] or [m['place_id']],
                                    'near': m['tier'] == 'near'})
         else:
-            pending.append(g)
+            # The label names a registered place but does not fit its
+            # hierarchy (often a county the registry writes bare). A new
+            # place here would be a second Chicago: ask instead.
+            first = place_first_key(label.split(',')[0])
+            same = [p for p in prepared if first and first in p['first']]
+            if same:
+                data['review'].append({
+                    'label': label, 'claim_ids': g['claim_ids'], 'near': False,
+                    'maybe': [(fmt_id_display(p['id']), p['name']) for p in same],
+                    'place_ids': [fmt_id_display(p['id']) for p in same]})
+            else:
+                pending.append(g)
 
     # Spellings of one place, worked out from the labels alone so the answer
     # never depends on which cluster happens to be bigger.

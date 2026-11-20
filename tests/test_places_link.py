@@ -538,6 +538,30 @@ class RegisterSpellingsTests(_ArchiveCase):
         self.assertIsNone(claims_now['c-aaaaaaaa00'])
 
 
+class RegisterSameNameTests(_ArchiveCase):
+    """A cluster that names a registered place but does not fit it (the
+    registry writes the county bare) must not become a second Chicago."""
+
+    def test_same_first_part_is_offered_as_a_link_not_a_new_place(self):
+        self.registry('- id: l-9e3c1b6a44\n  name: Chicago\n  hierarchy: Chicago, Cook, Illinois\n')
+        self.source('one', 's-aaaaaaaaa1', [(f'c-aaaaaaaa{i:02d}', 'Chicago, Cook County, Illinois')
+                                            for i in range(3)]
+                    + [(f'c-bbbbbbbb{i:02d}', 'Nowhere Mills') for i in range(3)])
+        self.build()
+        result = places.run_register_candidates(self.root, {}, confirm=lambda _p: True)
+        rows = yaml.safe_load((self.root / 'places' / 'places.yaml').read_text(encoding='utf-8'))
+        self.assertEqual(sorted(r['name'] for r in rows), ['Chicago', 'Nowhere Mills'])
+        text = '\n'.join(result['messages'])
+        self.assertIn('"Chicago, Cook County, Illinois" (3 claims) may be Chicago (l-9e3c1b6a44)',
+                      text)
+        self.assertIn('fha confirm place c-aaaaaaaa00 c-aaaaaaaa01 c-aaaaaaaa02 '
+                      '--into l-9e3c1b6a44', text)
+        self.assertIn('county word or the country', text)
+        claims = {c['id']: c.get('place') for c in _claims_of(
+            (self.root / 'sources' / 'one_s-aaaaaaaaa1.md').read_text(encoding='utf-8'))}
+        self.assertIsNone(claims['c-aaaaaaaa00'])
+
+
 class ManyClaimsInOneRecordTests(_ArchiveCase):
     """A GEDCOM import files every claim under one source record. Linking
     them must read that record's claims a fixed number of times, not once
