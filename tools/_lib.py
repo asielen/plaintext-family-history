@@ -5821,10 +5821,13 @@ def add_places_to_claims(text: str, links: dict[str, str], accepts=None
     once more to check it. A record holding thousands of claims (a GEDCOM
     import's single source) costs two parses, not two per claim. The check
     demands that every claim reads back exactly as before, except the linked
-    ones, which gain `place:`. If the batch fails that check, each claim's
-    own lines are parsed alone, with and without its new line (one small
-    parse each, so the record is never re-read once per claim); the claims
-    whose reading changes are refused and the rest are applied together.
+    ones, which gain `place:`. If the batch fails that check, the claims
+    tied to another by a YAML anchor, alias or merge key are refused, each
+    other claim's own lines are parsed alone with and without its new line
+    (one small parse each, so the record is never re-read once per claim),
+    and the claims whose reading changes are refused. The rest are applied
+    together; if even that fails the check, halving finds the set that
+    passes.
 
     A claim is refused, with a plain reason and nothing written for it, when
     its id is missing or repeated, when the block's top-level dash lines do
@@ -5965,23 +5968,43 @@ def add_places_to_claims(text: str, links: dict[str, str], accepts=None
     new, ok = apply(linked)
     if ok:
         return '\n'.join(new), linked, refused
-    # Some claim in the batch does not read back. Check each claim's own lines
-    # (one small parse each, so a record of thousands stays quick), leave out
-    # the ones that change, and apply the rest together.
+    # Some claim in the batch does not read back. Leave out the claims tied to
+    # another claim by a YAML anchor (&name), alias (*name) or merge key (<<:),
+    # since a line added to one can change the other's reading, and the claims
+    # whose own lines read differently with the new line (one small parse
+    # each, so a record of thousands stays quick). Apply the rest together.
     reason = 'adding the place: line would change how the claims block reads.'
+    tied = re.compile(r'(^|[\s\[{,])[&*][^\s,\[\]{}]+|<<\s*:')
     good = []
     for cid in linked:
-        if reads_alone(cid):
+        _k, start, end = spans[cid]
+        if any(tied.search(ln) for ln in plain[start:end]):
+            refused[cid] = ('it shares part of its text with another claim through a YAML '
+                            'anchor or merge key (&, *, <<), so add the place: line by hand.')
+        elif reads_alone(cid):
             good.append(cid)
         else:
             refused[cid] = reason
-    if good:
-        new, ok = apply(good)
-        if ok:
-            return '\n'.join(new), good, refused
+
+    def settle(cids: list[str]) -> list[str]:
+        """The largest set found by halving whose lines read back together."""
+        if not cids or apply(cids)[1]:
+            return cids
+        if len(cids) == 1:
+            return []
+        half = len(cids) // 2
+        left, right = settle(cids[:half]), settle(cids[half:])
+        if apply(left + right)[1]:
+            return left + right
+        return left if len(left) >= len(right) else right
+
+    done = settle(good)
     for cid in good:
-        refused[cid] = reason
-    return text, [], refused
+        if cid not in done:
+            refused[cid] = reason
+    if not done:
+        return text, [], refused
+    return '\n'.join(apply(done)[0]), done, refused
 
 
 def add_place_to_claim(text: str, claim_id: str, place_id: str) -> str:
@@ -8941,24 +8964,36 @@ def _names_a_county(text: str) -> bool:
     return len(words) > 1 and (words[0] in _COUNTY_WORDS or words[-1] in _COUNTY_WORDS)
 
 
-def _names_a_division(text: str) -> bool:
-    """Whether one part of a place name says what kind of division it is
-    ("Cook County", "województwo podlaskie", "Kansas State"): its first or
-    last word is one of `PLACE_DIVISION_WORDS`, and it has another word."""
-    words = fold_place_words(text)
-    return len(words) > 1 and (words[0] in PLACE_DIVISION_WORDS
-                               or words[-1] in PLACE_DIVISION_WORDS)
+# Country names a hierarchy commonly ends with. The last part of a hierarchy is
+# its country when it is one of these; a County part never names it, nor the
+# state just above it. Folded the way `place_part_key` folds.
+_PLACE_COUNTRY_KEYS = frozenset({
+    'usa', 'us', 'u s a', 'united states', 'united states of america', 'america',
+    'canada', 'mexico', 'england', 'scotland', 'wales', 'ireland', 'northern ireland',
+    'uk', 'united kingdom', 'great britain', 'britain', 'poland', 'polska', 'germany',
+    'deutschland', 'prussia', 'austria', 'hungary', 'austria hungary', 'czech republic',
+    'czechia', 'slovakia', 'ukraine', 'russia', 'russian empire', 'lithuania', 'latvia',
+    'estonia', 'belarus', 'france', 'belgium', 'netherlands', 'holland', 'luxembourg',
+    'switzerland', 'italy', 'spain', 'portugal', 'sweden', 'norway', 'denmark', 'finland',
+    'iceland', 'greece', 'romania', 'bulgaria', 'serbia', 'croatia', 'slovenia',
+    'yugoslavia', 'australia', 'new zealand', 'south africa', 'india', 'china', 'japan',
+    'philippines', 'brazil', 'argentina', 'chile', 'cuba', 'puerto rico',
+})
 
 
 def _place_levels(parts: list[str]) -> list[tuple[str, bool, bool]]:
     """The divisions above a place, from the parts that follow its own name:
-    (comparison key, written as a county, written as any division)."""
-    levels = []
-    for part in parts:
-        key = place_part_key(part)
-        if key:
-            levels.append((key, _names_a_county(part), _names_a_division(part)))
-    return levels
+    (comparison key, written as a county, could be its county).
+
+    A part could be the county, when nothing is written as one, if it lies
+    strictly between the place and its state: the last part (and, when that
+    last part is a country, the state before it) never can. "Hinds,
+    Mississippi, USA" offers Hinds; "Mississippi, USA" offers nothing;
+    "Cook, Illinois" offers Cook."""
+    keys = [(place_part_key(p), _names_a_county(p)) for p in parts]
+    keys = [(k, c) for k, c in keys if k]
+    top = 2 if keys and keys[-1][0] in _PLACE_COUNTRY_KEYS else 1
+    return [(k, c, i < len(keys) - top) for i, (k, c) in enumerate(keys)]
 
 
 def prepare_place_registry(rows: list[dict]) -> list[dict]:
@@ -8975,8 +9010,10 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
     written as a county} for the divisions above the place: its
     `hierarchy:` after its own name, and each name's later comma parts; see
     `_place_levels`; a level that appears twice counts as a county when
-    either reading says so) and `marked` (whether any of those parts is
-    written with a division word at all)."""
+    either reading says so), `marked` (whether any of those parts is written
+    as a county) and `bare_county` (the keys of the parts that lie between
+    the place and its state, the only ones a County part may name when
+    nothing is written as a county)."""
     prepared: list[dict] = []
     for place in rows:
         pid = place.get('id')
@@ -8993,12 +9030,15 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
         levels: dict[str, bool] = {}
 
         marked = False
+        bare: set[str] = set()
 
         def add_levels(parts: list[str]) -> None:
             nonlocal marked
-            for key, county, division in _place_levels(parts):
+            for key, county, between in _place_levels(parts):
                 levels[key] = levels.get(key, False) or county
-                marked = marked or division
+                marked = marked or county
+                if between:
+                    bare.add(key)
 
         for name in names:
             exact.setdefault(normalize_place_text(name), name)
@@ -9020,7 +9060,7 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
             'id': normalize_id(pid),
             'name': names[0] if names else None,
             'exact': exact, 'tokens': tokens, 'first': first, 'levels': levels,
-            'marked': marked,
+            'marked': marked, 'bare_county': bare,
         })
     return prepared
 
@@ -9037,13 +9077,14 @@ def place_text_fits(place_text: str, place: dict) -> str | None:
     other part names a division above it. A plain part ("Cook") may name
     any of them, so "Chicago, Cook, Illinois" fits Chicago in Cook County,
     with or without the country. A part that says "County" (or Co., Parish,
-    parafia, gmina, powiat) must name a part of the hierarchy written as a
-    county when the hierarchy writes any division with its word
-    ("Jackson, Jackson County" is not the Jackson in Hinds County, nor
-    "Brooklyn, New York County" Brooklyn in Kings County, New York). When the
-    hierarchy writes every level bare ("Chicago, Cook, Illinois"), it may
-    name any of them, so "Chicago, Cook County, Illinois" fits. A later part
-    never matches the place's own name."""
+    parafia, gmina, powiat) names the county level: an explicitly written
+    county, or, when no level is written as a county, a level between the
+    place and its state. So
+    "Chicago, Cook County, Illinois" fits a Chicago registered as "Chicago,
+    Cook, Illinois", while "Jackson, Jackson County" is not the Jackson in
+    Hinds County, "Jackson, Mississippi County" is not Jackson, Mississippi,
+    and "Brooklyn, New York County" is not Brooklyn in Kings, New York. A
+    later part never matches the place's own name."""
     exact = place['exact'].get(normalize_place_text(place_text))
     if exact is not None:
         return exact
@@ -9056,7 +9097,8 @@ def place_text_fits(place_text: str, place: dict) -> str | None:
             continue
         if key not in place['levels']:
             return None
-        if _names_a_county(part) and place['marked'] and not place['levels'][key]:
+        if _names_a_county(part) and not (place['levels'][key] if place['marked']
+                                          else key in place['bare_county']):
             return None
     return place['name']
 

@@ -487,6 +487,38 @@ class HierarchyRuleTests(unittest.TestCase):
                               None))
                 self.assertEqual(m['tier'] == 'exact', fits, m)
 
+    def test_county_part_never_names_the_state_or_country(self) -> None:
+        # In a hierarchy that writes no county with its word, a County part
+        # may name only a level between the place and its state: never the
+        # state ("Jackson, Mississippi County" is not Jackson, Mississippi)
+        # and never the country. A state-level word (Province, State,
+        # województwo) does not count as writing a county.
+        rows = [
+            ('Jackson', 'Jackson, Mississippi, USA', 'Jackson, Mississippi County', False),
+            ('Jackson', 'Jackson, Mississippi, USA', 'Jackson, Mississippi Co., Arkansas', False),
+            ('Jackson', 'Jackson, Hinds, Mississippi, USA', 'Jackson, Mississippi County', False),
+            ('Jackson', 'Jackson, Hinds, Mississippi, USA', 'Jackson, Jackson County', False),
+            ('Jackson', 'Jackson, Hinds, Mississippi, USA', 'Jackson, Hinds County', True),
+            ('Brooklyn', 'Brooklyn, Kings, New York, USA', 'Brooklyn, New York County', False),
+            ('Brooklyn', 'Brooklyn, Kings, New York, USA', 'Brooklyn, Kings County, New York', True),
+            ('Washington', 'Washington, Iowa, USA', 'Washington, Iowa County', False),
+            ('Kowalin', 'Kowalin, Tykwin, podlaskie Province, Polska', 'Kowalin, parafia Tykwin',
+             True),
+            ('Kowalin', 'Kowalin, Tykwin, województwo podlaskie, Polska',
+             'Kowalin, parafia Tykwin', True),
+            ('Kowalin', 'Kowalin, Tykwin, podlaskie, Polska', 'Kowalin, powiat podlaskie', False),
+            ('Topeka', 'Topeka, Shawnee, Kansas State, USA', 'Topeka, Shawnee County, Kansas',
+             True),
+            ('Topeka', 'Topeka, Shawnee, Kansas', 'Topeka, Kansas County', False),
+        ]
+        for name, hierarchy, text, fits in rows:
+            with self.subTest(text=text, hierarchy=hierarchy):
+                m = match_place_text_to_registry(
+                    self.root, text,
+                    registry=([{'id': 'L-aaaaaaaaaa', 'name': name, 'hierarchy': hierarchy}],
+                              None))
+                self.assertEqual(m['tier'] == 'exact', fits, m)
+
     def test_two_places_that_fit_go_to_the_human(self) -> None:
         m = self.match('Springfield, USA')
         self.assertIsNone(m['tier'])

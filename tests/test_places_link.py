@@ -590,6 +590,29 @@ class ManyClaimsInOneRecordTests(_ArchiveCase):
         # Every byte read is a small multiple of the record, not n times it.
         self.assertLess(sum(parsed), 10 * len(text))
 
+    def test_anchors_and_merge_keys_hold_back_only_their_own_claims(self):
+        # YAML anchors (&name), aliases (*name) and merge keys (<<:) tie one
+        # claim's reading to another's, so a line added to one can change the
+        # other. Those claims are left alone; the plain ones still link.
+        text = ('## Claims\n```yaml\n'
+                '- id: c-keep000001\n  place_text: |+\n    Fairview\n\n  status: accepted\n'
+                '- &base\n  id: c-anch000001\n  status: accepted\n  place_text: Fairview\n'
+                '- <<: *base\n  id: c-merg000001\n  place_text: Fairview, Kansas\n'
+                '- id: c-defx000001\n  confidence: &x accepted\n  place_text: Fairview\n'
+                '- id: c-alia000001\n  status: *x\n  place_text: Fairview\n'
+                '- id: c-plain00001\n  place_text: Fairview\n'
+                '- id: c-plain00002\n  place_text: Fairview\n'
+                '```\n')
+        ids = ['c-keep000001', 'c-anch000001', 'c-merg000001', 'c-defx000001',
+               'c-alia000001', 'c-plain00001', 'c-plain00002']
+        new, linked, refused = _lib.add_places_to_claims(text, {c: PID for c in ids})
+        self.assertEqual(sorted(linked), ['c-plain00001', 'c-plain00002'])
+        self.assertEqual(sorted(refused), sorted(ids[:5]))
+        lines = new.split('\n')
+        self.assertEqual(lines.count(f'  place: {PID}'), 2)
+        self.assertEqual('\n'.join(ln for ln in lines if ln != f'  place: {PID}'), text)
+        self.assertEqual([c.get('place') for c in _claims_of(new)][-2:], [PID, PID])
+
     def test_two_thousand_claims_link_in_one_pass(self):
         n = 2000
         text = _source('s-aaaaaaaaa1', [(f'c-{i:010d}', 'Fairview, Kansas') for i in range(n)])
