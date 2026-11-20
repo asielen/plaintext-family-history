@@ -1262,6 +1262,17 @@ class RelateTests(unittest.TestCase):
         self.assertIn('    status: hypothesis\n', text)
         self.assertNotIn('subtype:', text)   # omitted when not given
 
+    def test_half_is_a_sibling_nature_only(self) -> None:
+        def warned(result) -> bool:
+            return any('kin subtypes' in m.text for m in result.messages)
+        for word in ('half', 'half-sibling'):
+            result = person.run_relate(self.root, CURATED_PID, 'sibling', TARGET_PID,
+                                       subtype=word, dry_run=True)
+            self.assertFalse(warned(result), word)
+        result = person.run_relate(self.root, CURATED_PID, 'parent', TARGET_PID,
+                                   subtype='half', dry_run=True)
+        self.assertTrue(warned(result))
+
     def test_appends_when_present(self) -> None:
         person.run_relate(self.root, CURATED_PID, 'spouse', TARGET_PID)
         result = person.run_relate(self.root, CURATED_PID, 'parent', PID)

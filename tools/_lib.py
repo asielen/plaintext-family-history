@@ -1754,6 +1754,65 @@ CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
 }) | NON_PARTY_ROLES | SOCIAL_TIE_SUBTYPES
 
 
+# SPEC §8.2's natures for a `relationship` claim's `subtype:`. The list is
+# mostly closed: a word outside it is still legal free text. `half` is the
+# nature of a sibling tie through one shared parent; `half-sibling` is read as
+# the same word (`relationship_nature_word`).
+RELATIONSHIP_NATURES: frozenset[str] = frozenset({
+    'biological', 'adoptive', 'step', 'foster', 'guardian',
+    'surrogate-gestational', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
+    'social', 'half',
+    'enslaver', 'enslaved-by', 'employer', 'employee', 'member-of',
+}) | SOCIAL_TIE_SUBTYPES
+
+_NATURE_SPELLINGS: dict[str, str] = {'half-sibling': 'half'}
+
+
+def relationship_nature_word(value: Any) -> str:
+    """A `subtype:` as every nature comparison reads it: trimmed, lower-cased,
+    and `half-sibling` read as `half` (SPEC §8.2), so an entry written one way
+    matches a claim written the other."""
+    word = str(value or '').strip().lower()
+    return _NATURE_SPELLINGS.get(word, word)
+
+
+# Words that are not a nature, written where a nature belongs (lint W158).
+# A role belongs in `roles:`, a record's wording in `value:` or `notes:`, and
+# a degree of kinship in a descriptive role (`grandchild:`). The list is a
+# deny-list: every other free-text nature stays legal.
+_SUBTYPE_ROLE_WORDS: frozenset[str] = (
+    (CLAIM_ROLE_WORDS | frozenset(CLAIM_ROLE_SYNONYMS)
+     | {'subject', 'sibling', 'grandparent', 'grandchild'})
+    - RELATIONSHIP_NATURES)
+_SUBTYPE_RECORD_WORDS: frozenset[str] = frozenset({'survived-by', 'nickname'})
+_SUBTYPE_KINSHIP_WORDS: frozenset[str] = frozenset({
+    'grandparent-grandchild', 'uncle-nephew', 'uncle-niece', 'aunt-niece',
+    'aunt-nephew', 'cousin', 'in-law', 'sibling-in-law', 'parent-in-law',
+    'child-in-law', 'mother-in-law', 'father-in-law', 'son-in-law',
+    'daughter-in-law', 'brother-in-law', 'sister-in-law', 'extended-family',
+})
+
+
+def subtype_misuse(value: Any) -> str | None:
+    """What kind of word a relationship claim's `subtype:` is when it is not a
+    nature: 'role' (`mother`, `child`, `witness`), 'record' (`survived-by`,
+    `nickname`) or 'kinship' (`cousin`, `uncle-nephew`), else None.
+
+    Spaces and underscores read as hyphens, so `survived by` is caught too.
+    A word on SPEC §8.2's list is never misuse, even where it doubles as a
+    role (`employer`, `friend`)."""
+    word = re.sub(r'[\s_]+', '-', relationship_nature_word(value))
+    if not word or word in RELATIONSHIP_NATURES:
+        return None
+    if word in _SUBTYPE_ROLE_WORDS or word.replace('-', '_') in _SUBTYPE_ROLE_WORDS:
+        return 'role'
+    if word in _SUBTYPE_RECORD_WORDS:
+        return 'record'
+    if word in _SUBTYPE_KINSHIP_WORDS:
+        return 'kinship'
+    return None
+
+
 def social_parties(
     persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
 ) -> list[str]:
@@ -9686,7 +9745,7 @@ def relationship_tie_key(entry: Any, resolve=None) -> tuple[str, str, str] | Non
     return (
         to_key,
         str(entry.get('type') or '').strip().lower(),
-        str(entry.get('subtype') or 'biological').strip().lower(),
+        relationship_nature_word(entry.get('subtype')) or 'biological',
     )
 
 
@@ -9707,6 +9766,93 @@ def relationship_entry_hypothesis(entry: Any) -> str | None:
     raw = str(entry.get('hypothesis')).strip()
     ids = extract_bare_ids(strip_link_wrapper(raw))
     return normalize_id(ids[0]) if ids and ids[0].lower().startswith('h-') else raw
+
+
+def relationship_entry_is_sourced(entry: Any) -> bool:
+    """An entry that cites evidence: a `claims:` list or a `source:`, and not
+    a guess (SPEC §9)."""
+    return (isinstance(entry, dict) and not relationship_entry_is_guess(entry)
+            and bool(relationship_entry_claim_ids(entry) or entry.get('source')))
+
+
+def claimless_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the entries lint W160
+    reports: an entry citing no evidence (no claims, no `source:`) and not a
+    guess, beside a sourced entry for the same tie (`relationship_tie_key`:
+    same person, role and nature). The profile shows such a pair as the same
+    person twice. A guess beside a sourced entry is W155's, and an entry of
+    another nature is another tie (SPEC §8.2), so neither is listed here."""
+    if not isinstance(block, list):
+        return []
+    sourced = {relationship_tie_key(e, resolve) for e in block
+               if relationship_entry_is_sourced(e)}
+    sourced.discard(None)
+    return [n for n, e in enumerate(block)
+            if isinstance(e, dict) and not relationship_entry_is_guess(e)
+            and not relationship_entry_is_sourced(e)
+            and relationship_tie_key(e, resolve) in sourced]
+
+
+# The keys a bare entry is made of. An entry holding anything else (a note, a
+# date, a `claims: []` left with a comment) carries the owner's text.
+_BARE_ENTRY_KEYS = frozenset({'to', 'type', 'subtype'})
+_ITEM_KEY_LINE_RE = re.compile(r'^\s*(?:-\s+)?[^\s:#][^:#]*:(?:\s+(.*))?$')
+
+
+def _item_has_comment(item: list[str]) -> bool:
+    """Whether one entry's lines hold a YAML comment, on a line of its own or
+    after a value (read the YAML way, so a `#` inside quotes is not one)."""
+    for ln in item:
+        bare = ln.rstrip('\r').strip()
+        if not bare:
+            continue
+        if bare.startswith('#') or bare.startswith('- #'):
+            return True
+        m = _ITEM_KEY_LINE_RE.match(bare)
+        rest = (m.group(1) or '') if m else bare
+        if rest and split_yaml_comment(rest)[1]:
+            return True
+    return False
+
+
+def drop_claimless_duplicates(
+    text: str, resolve=None,
+) -> tuple[str, list[tuple[int, dict]], list[tuple[int, dict]]] | None:
+    """Remove the claimless duplicate entries (`claimless_duplicate_entries`)
+    that hold nothing the owner typed, for `fha lint --fix-duplicates`.
+
+    An entry goes only when it has no key beyond `to:`, `type:` and
+    `subtype:` and no comment. One that carries a note, any other key or a
+    comment is never removed, since that text is the owner's: it is returned
+    for a "remove by hand" line instead. Everything else in the block is kept
+    as written, newlines included.
+
+    Returns `(new_text, dropped, by_hand)`, each a list of `(position in the
+    list, entry)`, the text unchanged when nothing goes; None when the block
+    is not in a form edited here."""
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return None
+    _key, block_end, items = located
+    entries = [_relationship_item_entry(lines[s:e]) for s, e in items]
+    dupes = set(claimless_duplicate_entries(entries, resolve))
+    if not dupes:
+        return text, [], []
+    dropped: list[tuple[int, dict]] = []
+    by_hand: list[tuple[int, dict]] = []
+    new_lines = list(lines[:items[0][0]])
+    for n, (s, e) in enumerate(items):
+        tail_end = items[n + 1][0] if n + 1 < len(items) else block_end
+        entry = entries[n]
+        if n in dupes:
+            if set(entry) <= _BARE_ENTRY_KEYS and not _item_has_comment(lines[s:e]):
+                dropped.append((n, entry))
+                continue          # the entry goes, with its trailing blank lines
+            by_hand.append((n, entry))
+        new_lines.extend(lines[s:tail_end])
+    new_lines.extend(lines[block_end:])
+    return '\n'.join(new_lines), dropped, by_hand
 
 
 def _relationship_item_key(entry: Any, resolve) -> tuple | None:
@@ -10010,8 +10156,8 @@ def claim_pids_in_role(claim: dict, meaning: str,
 def relationship_entry_nature(entry: dict) -> str:
     """The nature a `relationships:` entry states. A parent or child entry
     with no `subtype:` is `biological` (SPEC §8.2); other types have no
-    default."""
-    st = str(entry.get('subtype', '')).strip().lower()
+    default. `half-sibling` reads as `half` (`relationship_nature_word`)."""
+    st = relationship_nature_word(entry.get('subtype'))
     if st:
         return st
     role = str(entry.get('type', '')).strip().lower()
@@ -10021,7 +10167,7 @@ def relationship_entry_nature(entry: dict) -> str:
 def claim_relationship_nature(claim: dict) -> str:
     """A claim's nature, for comparing with an entry's. A claim naming a
     child and a parent with no `subtype:` is `biological`."""
-    st = str(claim.get('subtype', '')).strip().lower()
+    st = relationship_nature_word(claim.get('subtype'))
     if st:
         return st
     roles = claim.get('roles')

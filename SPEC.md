@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.10, 2026-11-20**
+**Version 2.12, 2026-11-20**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -145,7 +145,7 @@ This table is the spec's own and editable; editing it is a spec change (see Gove
 | Significance | Types | Role |
 |---|---|---|
 | **vital** | `birth`, `death`, `marriage` (+ `baptism`, `burial` where they stand in for vital records) | Defines completeness: a person's record is complete when each applicable vital type has ≥1 `accepted` claim. *Applicability:* `death` is inapplicable while `living: true|unknown`; `marriage` is satisfied by a `no_known_marriages` flag or a `negated: true` marriage claim (Appendix A.2); a confirmed absence counts complete, not missing. |
-| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`. *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor`. The latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as working answers (§17). Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. |
+| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`, and for siblings `half` (one parent shared; `half-sibling` is read as the same word). *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor`. The latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as working answers (§17). Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. A word that is not a nature does not belong there: a role (`mother`, `child`, `witness`) goes in `roles:`, a record's wording (`survived-by`, `nickname`) in the claim's `notes:`, and a degree of kinship (`cousin`, `uncle-nephew`, `grandparent-grandchild`) in a descriptive role such as `grandchild:`. Tooling reports such a subtype, since every view reads it as the nature of the tie. |
 | **incidental** | `event`, `note` | Preserved, never scored: anecdotes, one-off moments. `subtype` free text carries detail. |
 
 The vocabulary is mostly closed: new normalized types are added here deliberately; everything else lands in `event`/`note` + `subtype`, so no fact ever stalls for lack of a category.
@@ -172,6 +172,7 @@ The directional pairs (`enslaved`/`enslaver`, `employer`/`employee`) and `member
 
 **Repeated roles and several roles.**
 
+- A tie needs both its sides: a `parent` needs a `child` on the same claim, and a `spouse` or `sibling` tie names both people under that one role (`sibling: [p-a, p-b]`, with `subtype: half` for half-siblings). A claim naming one side only records no tie, and tooling reports it.
 - A `relationship` claim may repeat a role with distinct subtypes: a child can carry several `parent` edges (`subtype: biological`, `adoptive`, `surrogate-gestational`, `donor-egg`), each a separate, equally valid bond rather than a conflict.
 - A person may carry several roles on one claim, and every one of them counts: the mother who was also the informant on her child's birth certificate is listed under `informant:` and under `parent:`, and she is a parent of the child whichever line is written first. Order in the `roles:` map never decides a role.
 - The one contradiction a map can hold is a person listed as both the `child` and a `parent` of the same record. Nobody is their own parent and the record is about the child, so that person counts as the `child` only, and tooling reports the claim.
@@ -226,7 +227,7 @@ The silence is never left unsaid: tooling reports every accepted birth claim tha
   # ---- other optional fields, present only when used ----
   subtype: biological            # the NATURE of a relationship (kin: biological [default] | adoptive |
                                  #   step | foster | guardian | surrogate-gestational | surrogate-genetic |
-                                 #   donor-sperm | donor-egg | social; non-kin: enslaver | enslaved-by |
+                                 #   donor-sperm | donor-egg | social; sibling: half; non-kin: enslaver | enslaved-by |
                                  #   employer | employee | member-of | friend | associate | neighbor);
                                  #   also free-text refinement on event/note. Unlisted natures: free text.
   roles:                         # explicit semantics for multi-subject claims;
