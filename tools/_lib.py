@@ -16021,7 +16021,13 @@ def notes_fts_rowids_by_path(conn: sqlite3.Connection) -> dict[str, list[int]]:
     every time. On a large archive that one statement, run once per profile,
     was most of a several-minute `fha views refresh`. Reading the ids once and
     deleting by rowid (which FTS5 does index) turns each delete into a lookup.
-    Pass the result to `delete_notes_fts_path` for each file."""
+    Pass the result to `delete_notes_fts_path` for each file.
+
+    The caller must already hold the write lock (`BEGIN IMMEDIATE` inside its
+    `with conn:` block) before calling this. Otherwise an `fha index` rebuild
+    in another process, the workbench beside the CLI for one, can renumber
+    the rows between this read and the deletes, and a stale id would delete
+    another file's search text."""
     out: dict[str, list[int]] = {}
     for rowid, path in conn.execute('SELECT rowid, path FROM notes_fts'):
         out.setdefault(path, []).append(rowid)
@@ -16092,6 +16098,9 @@ def relocate_person_in_index(
     manifest_updates: dict[str, float | None] = {}
     try:
         with conn:
+            # Hold the write lock from the start, so the notes_fts row ids
+            # read below cannot be renumbered by another process first.
+            conn.execute('BEGIN IMMEDIATE')
             tables = _index_tables_with_path_column(conn)
             for old, new in moves:
                 old_rel = str(Path(old).relative_to(archive_root))
@@ -16254,6 +16263,9 @@ def sync_generated_view_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
                 fts_rowids = notes_fts_rowids_by_path(conn)
                 for rel, _pid, _kind in targets_removed:
                     delete_notes_fts_path(conn, fts_rowids, rel)
@@ -16349,6 +16361,9 @@ def resync_person_profile_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
                 fts_rowids = notes_fts_rowids_by_path(conn)
                 for path in paths:
                     try:

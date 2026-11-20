@@ -665,6 +665,83 @@ class ResyncDeletesTheRightRowsTests(_SyncBase):
         self.assertEqual(self._fts_rows('backup words'), [rel + '.bak'])
 
 
+class ConcurrentRebuildTests(_SyncBase):
+    """An `fha index` in another process (the workbench beside the CLI) that
+    renumbers the search rows while a sync is running must not make the sync
+    delete another file's search text. The sync holds the write lock from
+    before it reads the row ids, so the other writer waits (here: gives up at
+    once) and nothing is lost."""
+
+    def _renumber_from_another_connection(self) -> str:
+        """Give every notes_fts row its neighbour's rowid, as a rebuild in a
+        different walk order would. Returns 'renumbered' or 'busy'."""
+        other = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'), timeout=0.1)
+        try:
+            with other:
+                rows = other.execute(
+                    'SELECT rowid, path, content FROM notes_fts ORDER BY rowid').fetchall()
+                ids = [r[0] for r in rows]
+                shifted = ids[1:] + ids[:1]
+                other.execute('DELETE FROM notes_fts')
+                other.executemany(
+                    'INSERT INTO notes_fts(rowid, path, content) VALUES (?,?,?)',
+                    [(new_id, r[1], r[2]) for new_id, r in zip(shifted, rows)])
+            return 'renumbered'
+        except sqlite3.OperationalError:
+            return 'busy'
+        finally:
+            other.close()
+
+    def _all_rows(self) -> list[tuple[str, str]]:
+        conn = self._db()
+        try:
+            return sorted((r['path'], r['content'])
+                          for r in conn.execute('SELECT path, content FROM notes_fts'))
+        finally:
+            conn.close()
+
+    def _run_with_rebuild_after_the_id_read(self, fn, *args):
+        outcome = []
+        real = _lib.notes_fts_rowids_by_path
+
+        def read_then_rebuild(conn):
+            ids = real(conn)
+            outcome.append(self._renumber_from_another_connection())
+            return ids
+
+        with mock.patch.object(_lib, 'notes_fts_rowids_by_path', read_then_rebuild):
+            status = fn(*args)
+        return status, outcome
+
+    def _assert_nothing_lost(self, rel: str, before) -> None:
+        after = self._all_rows()
+        self.assertEqual([r for r in after if r[0] != rel],
+                         [r for r in before if r[0] != rel])
+        self.assertEqual(self._rows_for('notes_fts', rel), 1)
+
+    def test_profile_resync(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        rel = str(Path('people') / FOLDER / profile.name)
+        before = self._all_rows()
+        self.assertGreaterEqual(len(before), 2)
+        status, outcome = self._run_with_rebuild_after_the_id_read(
+            _lib.resync_person_profile_rows, self.root, [profile])
+        self.assertEqual(outcome, ['busy'])
+        self.assertEqual(status, 'indexed')
+        self._assert_nothing_lost(rel, before)
+
+    def test_companion_sync(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        timeline = self.root / self._timeline_rel()
+        before = self._all_rows()
+        status, outcome = self._run_with_rebuild_after_the_id_read(
+            _lib.sync_generated_view_rows, self.root, [timeline])
+        self.assertEqual(outcome, ['busy'])
+        self.assertEqual(status, 'indexed')
+        self._assert_nothing_lost(self._timeline_rel(), before)
+
+
 class ResyncProfileReadFailureTests(_SyncBase):
     """A profile `resync_person_profile_rows` cannot RE-READ must not be
     silently reported as re-indexed with its search text quietly emptied.
