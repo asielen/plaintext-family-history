@@ -1,5 +1,5 @@
 """
-test_stem_links.py - a link that names a record's file, the way Obsidian writes
+test_stem_links.py: a link that names a record's file, the way Obsidian writes
 it, works everywhere the ID form works (SPEC §18).
 
 When the owner types `[[` in Obsidian and picks Thomas Edward Hartley, Obsidian
