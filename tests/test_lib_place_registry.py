@@ -450,6 +450,43 @@ class HierarchyRuleTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.match(text)['place_id'], pid)
 
+    def test_county_word_against_a_hierarchy_that_writes_counties_bare(self) -> None:
+        # Many registries write the county without the word ("Chicago, Cook,
+        # Illinois"). A text that says "Cook County" must still fit; refusing
+        # it left the claims unlinked and made `--register` offer a second
+        # Chicago. When the hierarchy marks no division at all, a County part
+        # may match any level but the place's own name.
+        rows = [
+            ('Chicago', 'Chicago, Cook County, Illinois, USA', 'Chicago, Cook, Illinois', True),
+            ('Chicago', 'Chicago, Cook County, Illinois, USA', 'Chicago, Cook Co., Illinois', True),
+            ('Chicago', 'Chicago, Cook, Illinois, USA', 'Chicago, Cook County, Illinois', True),
+            ('Chicago', 'Chicago, Cook, Illinois', 'Chicago, Cook County, Illinois', True),
+            ('Chicago', 'Cook, Illinois', 'Chicago, Cook County, Illinois', True),
+            ('Fairview', 'Fairview, Fairview Township, Breton County, Kansas, USA',
+             'Fairview, Breton County, Kansas', True),
+            ('Fairview', 'Fairview, Fairview Township, Breton, Kansas, USA',
+             'Fairview, Breton County, Kansas', True),
+            ('Ashby', 'Ashby, Lafitte Parish, Louisiana, USA', 'Ashby, Lafitte Parish', True),
+            ('Ashby', 'Ashby, Lafitte, Louisiana, USA', 'Ashby, Lafitte Parish', True),
+            ('Kowalin', 'Kowalin, parafia Tykwin, podlaskie, Polska', 'Kowalin, parafia Tykwin', True),
+            ('Kowalin', 'Kowalin, Tykwin, podlaskie', 'Kowalin, parafia Tykwin', True),
+            ('Kowalin', 'Kowalin, gmina Tykwin, powiat białostocki, podlaskie, Polska',
+             'Kowalin, powiat białostocki', True),
+            # The earlier finding stays fixed: where the hierarchy names its
+            # county, a County part must be that county.
+            ('Jackson', 'Jackson, Hinds County, Mississippi, USA', 'Jackson, Jackson County', False),
+            ('Brooklyn', 'Brooklyn, Kings County, New York, USA', 'Brooklyn, New York County',
+             False),
+            ('Chicago', 'Chicago, Cook, Illinois', 'Chicago, Chicago County', False),
+        ]
+        for name, hierarchy, text, fits in rows:
+            with self.subTest(text=text, hierarchy=hierarchy):
+                m = match_place_text_to_registry(
+                    self.root, text,
+                    registry=([{'id': 'L-aaaaaaaaaa', 'name': name, 'hierarchy': hierarchy}],
+                              None))
+                self.assertEqual(m['tier'] == 'exact', fits, m)
+
     def test_two_places_that_fit_go_to_the_human(self) -> None:
         m = self.match('Springfield, USA')
         self.assertIsNone(m['tier'])

@@ -564,6 +564,32 @@ class ManyClaimsInOneRecordTests(_ArchiveCase):
         new = plans[path][1]
         self.assertEqual(new.count(f'  place: {PID}\n'), n)
 
+    def test_one_odd_claim_does_not_make_the_record_slow(self):
+        # A keep-chomped block scalar (|+) followed by a blank line changes
+        # meaning when a line is added after it, so that claim is refused.
+        # Finding it must not re-read the whole record once per claim.
+        n = 400
+        items = ['- id: c-keep000001\n  place_text: |+\n    Fairview, Kansas\n\n'
+                 '  status: accepted\n']
+        items += [f'- id: c-{i:010d}\n  place_text: Fairview, Kansas\n  status: accepted\n'
+                  for i in range(n)]
+        text = '## Claims\n```yaml\n' + ''.join(items) + '```\n'
+        links = {'c-keep000001': PID, **{f'c-{i:010d}': PID for i in range(n)}}
+        parsed = []
+        real = _lib.safe_load_yaml
+
+        def counting(t, *a, **kw):
+            parsed.append(len(t))
+            return real(t, *a, **kw)
+
+        with mock.patch.object(_lib, 'safe_load_yaml', counting):
+            new, linked, refused = _lib.add_places_to_claims(text, links)
+        self.assertEqual(len(linked), n)
+        self.assertEqual(list(refused), ['c-keep000001'])
+        self.assertEqual(new.count(f'  place: {PID}\n'), n)
+        # Every byte read is a small multiple of the record, not n times it.
+        self.assertLess(sum(parsed), 10 * len(text))
+
     def test_two_thousand_claims_link_in_one_pass(self):
         n = 2000
         text = _source('s-aaaaaaaaa1', [(f'c-{i:010d}', 'Fairview, Kansas') for i in range(n)])
