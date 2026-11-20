@@ -14009,10 +14009,8 @@ def render_stub_content(
 
 SOURCE_PURPOSE_BLOCK = (
     "> **This source's record - yours to write.** The citation and claims for "
-    "one piece\n"
-    "> of evidence. `fha process` scaffolded this file; everything below is "
-    "yours to\n"
-    "> correct and add to."
+    "one piece of evidence. `fha process` scaffolded this file; everything "
+    "below is yours to correct and add to."
 )
 
 # #75's stated scope names the `_research` companion explicitly alongside
@@ -14024,14 +14022,10 @@ SOURCE_PURPOSE_BLOCK = (
 # whichever of those two supplies the body text.
 RESEARCH_PURPOSE_BLOCK = (
     "> **This person's research workspace - yours to write.** An OPTIONAL "
-    "companion\n"
-    "> file for notes that outgrow the `## Research Notes` section on the "
-    "person's own\n"
-    "> record - most people never need one. Open questions, leads, and "
-    "half-proven\n"
-    "> hunches belong here; nothing in this file is a claim until it is "
-    "cited on a\n"
-    "> source record."
+    "companion file for notes that outgrow the `## Research Notes` section on "
+    "the person's own record - most people never need one. Open questions, "
+    "leads, and half-proven hunches belong here; nothing in this file is a "
+    "claim until it is cited on a source record."
 )
 
 # keyed by the `fha views` subcommand that rebuilds each kind - `_gen_header`
@@ -14092,16 +14086,11 @@ VIEW_PURPOSE_BLOCKS: dict[str, str] = {
 
 PERSON_PURPOSE_BLOCK = (
     "> **This person's record - yours to write.** The main page for this person: "
-    "summary,\n"
-    "> biography, relationships. The summary lines under this note and the "
-    "`## Sources`\n"
-    "> list are generated - `fha views refresh` rewrites them, so never edit them "
-    "by hand.\n"
-    "> Everything else here is yours; working notes go in `## Research Notes` "
-    "below, or in\n"
-    "> a separate `_research` file if this person's research grows large enough "
-    "to want one\n"
-    "> of its own."
+    "summary, biography, relationships. The summary lines under this note and "
+    "the `## Sources` list are generated - `fha views refresh` rewrites them, "
+    "so never edit them by hand. Everything else here is yours; working notes "
+    "go in `## Research Notes` below, or in a separate `_research` file if "
+    "this person's research grows large enough to want one of its own."
 )
 
 # The `## Sources` heading's content before the first `fha views sources-index`
@@ -14122,24 +14111,20 @@ PERSON_SOURCES_PLACEHOLDER = (
 # kept verbatim, unchanged from before this constant existed). Cross-checked
 # for byte equality against the template by `tests/test_templates.py`.
 PERSON_BODY_SECTIONS_TEXT = '''## Biography
-Write their story in plain sentences. Uncited prose is welcome - it's story and
-context, never treated as proven fact. Mark anything you mean to back up later
-with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
+Write their story in plain sentences. Uncited prose is welcome - it's story and context, never treated as proven fact. Mark anything you mean to back up later with `(TODO: import source)` and a tool will keep it on a gentle to-do list.
 
 ## Stories
 *(none yet)*
 
 ## Research Notes
-Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default.
+Open questions, hunches, and brick walls - where to look next. (Delete this line as you add your own.) This section is public by default.
 <!-- To keep one note out of anything you share, put it between two marker
      lines: before it, the word private inside marks like the ones around this
      note; after it, /private the same way. START_HERE.md shows both lines.
      The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
-People connected to them who aren't blood relatives - neighbors, business
-partners, the family they boarded with. Type [[ and pick a name to link.
+People connected to them who aren't blood relatives - neighbors, business partners, the family they boarded with. Type [[ and pick a name to link.
 '''
 
 # The Research Notes placeholder profiles were scaffolded with before plan 19
@@ -14152,7 +14137,21 @@ A hunch you're not ready to publish - say, a possible tie to a living relative.
 This block stays in your local `--linked` preview but is dropped from the shared
 (standalone) site.
 <!-- /private -->'''
+# Records scaffolded before the placeholders were written one line per
+# paragraph carry the same words hard-wrapped at about 80 columns; those are
+# scaffolding too, so a profile he never filled in stays unpublished.
 _LEGACY_PERSON_PLACEHOLDERS = (
+    ('Biography', '''Write their story in plain sentences. Uncited prose is welcome - it's story and
+context, never treated as proven fact. Mark anything you mean to back up later
+with `(TODO: import source)` and a tool will keep it on a gentle to-do list.'''),
+    ('Research Notes', '''Open questions, hunches, and brick walls - where to look next. (Delete this line
+as you add your own.) This section is public by default.
+<!-- To keep one note out of anything you share, put it between two marker
+     lines: before it, the word private inside marks like the ones around this
+     note; after it, /private the same way. START_HERE.md shows both lines.
+     The note stays in your own archive and your local preview. -->'''),
+    ('Friends & Family', '''People connected to them who aren't blood relatives - neighbors, business
+partners, the family they boarded with. Type [[ and pick a name to link.'''),
     ('Research Notes', '''Open questions, hunches, and brick walls - where to look next. (Delete this line
 as you add your own.) This section is public by default; to keep a single note out
 of a shared copy, wrap it in a private fence like the example below.
@@ -16219,8 +16218,7 @@ created: 2026-01-01
 
 ## Open Questions
 
-*(what you do not know yet - one `## Q:` entry per question, in the same form as
-`notes/questions.md`; a guess you are working from goes in the same entry)*
+*(what you do not know yet - one `## Q:` entry per question, in the same form as `notes/questions.md`; a guess you are working from goes in the same entry)*
 '''
 
 

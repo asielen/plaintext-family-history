@@ -80,6 +80,7 @@ The archive already knows what it doesn't know: open questions, working answers 
 - Log-aware: no lead duplicates a recent logged nil (within the 18-month horizon); state "already searched (date)" before proposing.
 - A working answer is the question entry's `id`/`guess`/`basis`/`verify` lines on a question the human asked (`origin:` stays the question's origin; the guess is credited `(agent)` on its dated `context:` line), `status: open`, in the research file or `notes/questions.md`. It never goes into a source's `## Claims`.
 - Executed searches are logged in `notes/research-log.md` (including nils), since nothing said in the chat carries over to the next session.
+- Prose written into a question's `context:` lines or a working answer keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

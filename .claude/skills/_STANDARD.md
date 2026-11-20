@@ -57,6 +57,7 @@ The same plain-writing rules govern both the lines a skill tells the agent to sa
 - **No slogans.** No mirrored "X, not Y" refrains, no closing punchline that restates the paragraph, no coined labels standing in for a plain name ("on-ramp", "front door"), and no stock words such as "genuinely", "literally", "crucial" or "seamless". State the fact and stop.
 - **Present tense.** A skill describes what the tools do. The history of how they got that way belongs in git, not in the skill.
 - **Soft wrap.** One paragraph or one list item per line in the file. Code, tables and lists keep their line breaks.
+- **Record prose is one line per paragraph.** Everything a skill writes into an archive record as prose (a biography, a story under `## Stories`, a `## Notes` or `## Research Notes` paragraph, a place note or history entry, a question's context, a discovery's text) puts each paragraph on one line of the file, with a blank line between paragraphs, and lets the editor wrap it. Never hard-wrap at a column and never put one sentence per line. The human edits these files by hand: a one-line paragraph takes a new sentence without re-flowing a ragged block. Lists, headings, quotes, tables, code and HTML comments keep their own line breaks, and a YAML folded scalar (`notes: >`) inside a claims block is YAML, not prose, so it stays as it is.
 - **Example names come from `example-archive/`** (the Hartley family), never from a real family.
 
 ## 5. Accept messy input

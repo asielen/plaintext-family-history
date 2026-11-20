@@ -7054,8 +7054,8 @@ class UnfilledPlaceholderSectionTests(_Base):
         # whether the other (still untouched) publishes.
         body = render_person_body_scaffold('Thomas Hartley').replace(
             "## Biography\nWrite their story in plain sentences. Uncited prose is welcome - "
-            "it's story and\ncontext, never treated as proven fact. Mark anything you mean to "
-            "back up later\nwith `(TODO: import source)` and a tool will keep it on a gentle "
+            "it's story and context, never treated as proven fact. Mark anything you mean to "
+            "back up later with `(TODO: import source)` and a tool will keep it on a gentle "
             "to-do list.\n",
             '## Biography\nBorn in 1840 in New York, Thomas grew up on his '
             "father's farm.\n",

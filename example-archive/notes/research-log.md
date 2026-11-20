@@ -1,7 +1,6 @@
 # Research log
 
-Every search run, by hand or by `fha capture`, one entry per search, so no
-collection is searched twice by accident.
+Every search run, by hand or by `fha capture`, one entry per search, so no collection is searched twice by accident.
 
 - date: 2026-06-12
   question: "[[h-3f2a8c1d04]] when the Hartleys settled in Fairview"

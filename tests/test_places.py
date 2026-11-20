@@ -889,6 +889,15 @@ class PlaceSetNoteTests(unittest.TestCase):
         # The rest of the block survived the notes rewrite.
         self.assertEqual(parsed['L-7c1a9f4e22']['coords'], [39.8, -95.6])
 
+    def test_note_long_paragraph_stays_on_one_line(self) -> None:
+        # The registry is a file he can open and edit, so a long note is one
+        # line in the `notes: |` block, never broken at a column.
+        long_note = ' '.join(['Platted 1858 beside the Plains Junction Railroad depot.'] * 4)
+        places.run_place_note(self.root, 'L-7c1a9f4e22', long_note)
+        raw = self.registry.read_text(encoding='utf-8')
+        self.assertTrue(any(line.strip().endswith(long_note) for line in raw.splitlines()))
+        self.assertIn(long_note, self._parsed()['L-7c1a9f4e22']['notes'])
+
     def test_note_creates_the_key_when_absent(self) -> None:
         result = places.run_place_note(self.root, 'L-9999999999', 'First note.')
         self.assertEqual(result.exit_code, 0)
