@@ -13162,7 +13162,7 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     parts = name.split()
     core, suffix = strip_generational_suffix(parts)
     derived = person_surname(name) or ''
-    if slot == person_name_slot(derived):
+    if slot == re.sub(r'[^a-z0-9_]', '', derived.lower().replace(' ', '_')):
         return None
     if suffix and slot == re.sub(r'[^a-z0-9]', '', fold_accents(parts[-1]).lower()):
         return None
