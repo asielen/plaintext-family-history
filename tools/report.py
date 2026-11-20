@@ -1199,6 +1199,24 @@ def _place_text_group_line(
     )
 
 
+def _place_bulk_lines(matches: list[dict]) -> list[str]:
+    """The commands that settle every listed place-text cluster at once,
+    ahead of the one-cluster commands: `fha places link` for clusters whose
+    text already fits a registered place, and `fha places candidates
+    --register` for clusters no registered place answers to. Each previews
+    before it writes. `matches` is one registry match per cluster
+    (`match_place_text_to_registry`); a cluster that fits several places
+    needs the human and is left to its own line."""
+    lines: list[str] = []
+    if any(m.get('tier') == 'exact' for m in matches):
+        lines.append('To link every cluster that fits a registered place in one go: '
+                     '`fha places link` (it lists what it would link; add `--apply` to write it)')
+    if any(not m.get('tier') and not m.get('ambiguous_ids') for m in matches):
+        lines.append('To register a place for every cluster with none in one go: '
+                     '`fha places candidates --register` (one list, one yes)')
+    return lines
+
+
 def _fetch_place_candidates(archive_root: Path, fha_config: dict) -> tuple[dict | None, str | None]:
     """
     The one `places.run_candidates()` call a report run makes (TOOLING
@@ -1310,10 +1328,12 @@ def _section_place_candidates(
 
     if places_registry is None:
         places_registry = read_places_registry(archive_root)
-    lines: list[str] = []
-    for g in place_text_groups:
+    matches = [match_place_text_to_registry(archive_root, g['label'], registry=places_registry)
+               for g in place_text_groups]
+    lines: list[str] = [f'- {line}' for line in _place_bulk_lines(matches)]
+    for g, m in zip(place_text_groups, matches):
         lines.append(
-            f'- {_place_text_group_line(archive_root, g, registry=places_registry)}')
+            f'- {_place_text_group_line(archive_root, g, registry=places_registry, match=m)}')
     for c in gps_clusters:
         lines.append(
             f"- GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - "
@@ -1742,6 +1762,7 @@ def _render_report(
             f'to close ({pointer}):**'
         )
         lines.extend(f'- {line}' for line in place_escalation_lines)
+        lines.extend(f'- {line}' for line in _place_bulk_lines(matches))
         lines.append('')
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:

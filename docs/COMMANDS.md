@@ -689,6 +689,8 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Place text that recurs often enough for a registry entry
+  fha places candidates --register   Register all of them at once (one list, one yes)
+  fha places link [--apply]          Link claims to the registered places their text names
   fha places geocode (--place l-id | --all)  Fill in coordinates from GeoNames (one table, one yes)
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text "..."  Append a dated research note to the place
@@ -721,6 +723,21 @@ Detect recurring unlinked place_text and GPS clusters
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--threshold` `N` | Minimum occurrences for a candidate cluster (default: 3). |
 | `--include-suggested` | Also cluster place_text on status: suggested claims (normally excluded): a one-time scan of a backlog not yet reviewed, e.g. right after a fresh `fha gedcom import`, not the everyday view. |
+| `--register` | Register a place for every cluster listed and link its claims: one list, one yes. Coordinates come from GeoNames data already saved; nothing is downloaded. |
+| `--dry-run` | With --register: show the list without asking or writing. |
+
+### `fha places link`
+
+Link existing claims to the registered places their place text names
+
+```text
+Link claims written before their place was registered. A claim is linked when its place text names exactly one registered place: the first part is the name of the place or another name for it, and every other part is in its hierarchy ("Chicago, Cook, Illinois" for Chicago, Cook County, Illinois, USA). The place text itself is never changed. Shows what it would link; --apply writes it.
+```
+
+| Argument | What it does |
+|---|---|
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--apply` | Write the links (without it, nothing is written). |
 
 ### `fha places geocode`
 

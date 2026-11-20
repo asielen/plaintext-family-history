@@ -226,6 +226,11 @@ fha places geocode (--place <l-id> | --all) [--dry-run]   coordinates, missing c
                             state/country and spellings from GeoNames (downloaded once);
                             one table, one [y/N] the human answers; ambiguous places
                             list a `places set --coords` command per candidate
+fha places link [--apply]    link claims written before their place was registered: a
+                            place_text whose first part names one registered place and
+                            whose other parts are in its hierarchy (dry run; --apply writes)
+fha places candidates --register [--dry-run]   register every recurring place text at
+                            once, GeoNames coordinates where saved; one list, one [y/N]
 fha places set <l-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <l-id> --text …                    append a dated research note to a place

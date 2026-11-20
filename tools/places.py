@@ -5,6 +5,8 @@ human-directed registry edits (TOOLING §10, SPEC §15).
 
   fha places lint [--root PATH]
   fha places candidates [--root PATH] [--threshold N] [--include-suggested]
+                        [--register [--dry-run]]
+  fha places link [--apply] [--root PATH]
   fha places geocode [--place L-id] [--all] [--offline] [--root PATH]
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text TEXT [--dry-run]
@@ -34,6 +36,17 @@ right after a fresh `fha gedcom import` (which mints everything as
 `suggested`), not everyday use. A second, independent detector clusters
 geotagged photos (`.cache/photos.sqlite`) that have no known place within
 ~150m of them.
+
+`fha places link` applies the write-time rule (SPEC §15) to claims written
+before their place was registered: a claim whose `place_text` fits exactly
+one registered place (its name or an alt name, or a first part naming the
+place with every other part in its hierarchy) gains a `place:` line. Dry run
+by default; `--apply` writes. `fha places candidates --register` registers a
+place for every cluster at once, with coordinates, hierarchy and spellings
+from the GeoNames data already saved, after one yes for the whole list, and
+links the clusters' claims. Both add one `place:` line per claim and nothing
+else (`_lib.add_place_to_claim`), each record rewritten atomically, and a
+failure partway puts every file back.
 
 `fha places geocode` (TOOLING §10) fills in `coords` for registry places that
 lack them, plus a missing county, state or country in `hierarchy` and GeoNames'
@@ -91,6 +104,14 @@ CODE MAP
     _registry_country_spellings            : write the country the registry's way
     _proposal_table, run_geocode           : one table, one yes, one atomic write
 
+  Link and register (claims gain place:)
+    _claim_source_paths, _claim_place_text  : where a claim lives; its place text now
+    _plan_claim_links                      : every place: line, planned before any write
+    _write_all_or_nothing                  : per-file atomic writes, every file put back on failure
+    run_link                               : fha places link: the write-time rule over old claims
+    _new_place_block, _register_table      : a new places.yaml block; the one list shown
+    run_register_candidates                : fha places candidates --register: one list, one yes
+
   Registry write-backs (set / note)
     _key_span, _set_block_key              - one key's span within a block; replace/insert
     _parse_coords_text, _parse_history_lines - human-typed field values → stored shapes
@@ -100,7 +121,7 @@ CODE MAP
     run_place_edit_note                    - rewrite ONE notes: entry (matched by exact text)
 
   CLI
-    _cmd_places_lint, _cmd_places_candidates, _cmd_places_geocode,
+    _cmd_places_lint, _cmd_places_candidates, _cmd_places_link, _cmd_places_geocode,
     _cmd_places_set, _cmd_places_note, register, _standalone_main
 """
 
@@ -115,7 +136,6 @@ import re
 import shutil
 import sqlite3
 import sys
-import unicodedata
 import urllib.request
 import zipfile
 import zlib
@@ -129,6 +149,17 @@ import yaml
 
 from _lib import (
     PARKED_CLAIM_SQL,
+    PLACE_DIVISION_WORDS,
+    _find_claims_block,
+    ClaimEditRefused,
+    add_place_to_claim,
+    fold_place_words,
+    match_place_text_to_registry,
+    mint_ids,
+    place_part_key,
+    place_text_fits,
+    prepare_place_registry,
+    read_places_registry,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
@@ -676,20 +707,9 @@ _COUNTRY_EXTRA_NAMES = {
     'holland': 'NL', 'polska': 'PL', 'deutschland': 'DE', 'czech republic': 'CZ',
 }
 
-# Words that name a kind of division rather than the division itself, so
-# "Cook County", "Cook Co." and "Cook" read alike, and so do "powiat
-# białostocki" and GeoNames' "Powiat białostocki". Only the first and last
-# word of a part are dropped, and never the part's only word.
-_ADMIN_WORDS = frozenset({
-    'county', 'co', 'parish', 'parafia', 'powiat', 'gmina', 'wojewodztwo',
-    'voivodeship', 'province', 'department', 'departement', 'state',
-})
-
-# Letters that Unicode decomposition leaves alone but a person typing on an
-# English keyboard writes plainly ("Lodz" for "Łódź").
-_FOLD_LETTERS = str.maketrans({
-    'ł': 'l', 'ø': 'o', 'đ': 'd', 'æ': 'ae', 'œ': 'oe', 'ı': 'i', 'þ': 'th',
-})
+# Words that name a kind of division rather than the division itself
+# ("County", "Co.", "powiat"); see `_lib.PLACE_DIVISION_WORDS`.
+_ADMIN_WORDS = PLACE_DIVISION_WORDS
 
 # GeoNames feature codes for a neighbourhood, an abandoned, destroyed or
 # historical settlement. When a living town of the same name also fits, these
@@ -704,28 +724,12 @@ _MAX_CANDIDATES_SHOWN = 10
 _SITE_KINDS = {'CH': 'church', 'CMTY': 'cemetery', 'SYG': 'synagogue'}
 
 
-def _fold(text: str | None) -> list[str]:
-    """A name's words with case and accents folded and punctuation dropped:
-    "Wola Mała" and "WOLA MALA" fold alike."""
-    s = unicodedata.normalize('NFKD', str(text or '').casefold().translate(_FOLD_LETTERS))
-    s = ''.join(ch for ch in s if not unicodedata.combining(ch))
-    return re.sub(r'[\W_]+', ' ', s).split()
-
-
-def _geo_key(text: str | None) -> str:
-    """The comparison form of one place name: case and accents folded,
-    punctuation turned to spaces, and a leading or trailing division word
-    ("County", "Co.", "powiat") dropped.
-
-    Every name on both sides (the registry's and GeoNames') goes through
-    this one function, so "Białystok", "Bialystok" and "BIALYSTOK" are the
-    same key, as are "Cook County", "Cook Co." and "Cook"."""
-    tokens = _fold(text)
-    while len(tokens) > 1 and tokens[0] in _ADMIN_WORDS:
-        tokens.pop(0)
-    while len(tokens) > 1 and tokens[-1] in _ADMIN_WORDS:
-        tokens.pop()
-    return ' '.join(tokens)
+# The name folding lives in _lib, shared with the write-time place rule that
+# `fha claim` and `fha places link` use, so the gazetteer match and the claim
+# link read "Cook County", "Cook Co." and "Cook" the same way. Every name on
+# both sides (the registry's and GeoNames') goes through `_geo_key`.
+_fold = fold_place_words
+_geo_key = place_part_key
 
 
 def _hierarchy_parts(hierarchy: str | None) -> list[str]:
@@ -1918,6 +1922,629 @@ def _interactive_confirm(prompt: str) -> bool:
     return ans in ('y', 'yes')
 
 
+# ── Link: attach registered places to the claims that name them ─────────────────
+# Write-time resolution (SPEC §15) links a claim as it is written. Claims written
+# before their place was registered, or before an alt name was added, stay
+# unlinked until `fha places link` applies the same rule to them. `fha places
+# candidates --register` mints the places for the clusters that still have none.
+# Both write the claim side the same way: `_lib.add_place_to_claim` adds one
+# `place:` line and nothing else, each source record is rewritten whole and
+# atomically, and a failure partway puts every file back as it was.
+
+_LINK_REQUIRED_TABLES = ('claims', 'sources')
+_REGISTER_REQUIRED_TABLES = ('claims', 'sources', 'places')
+
+
+def _claim_source_paths(conn: sqlite3.Connection, archive_root: Path,
+                        claim_ids: list[str]) -> dict[str, Path]:
+    """Each claim's source record, from the index (a path relative to the
+    archive root). The write reads the record itself and checks the claim is
+    there, so a stale row can only make a claim be skipped, never misplaced."""
+    out: dict[str, Path] = {}
+    wanted = set(claim_ids)
+    for row in conn.execute('SELECT c.id, s.path FROM claims c JOIN sources s ON s.id = c.source_id'):
+        if row['id'] in wanted and row['path']:
+            out[row['id']] = archive_root / row['path']
+    return out
+
+
+def _plan_claim_links(archive_root: Path, links: dict[str, str], paths: dict[str, Path],
+                      accepts) -> tuple[dict[Path, tuple[str, str]], list[str], list[dict]]:
+    """Work out every `place:` line to add, in memory, before anything is written.
+
+    `links` maps a claim id to the place id it gets; `accepts(cid,
+    place_text)` says whether the claim's `place_text` as it now stands in
+    its record is still the text the link was decided on. Returns ({path:
+    (original text, new text)}, [linked claim ids], [skipped: {claim_id,
+    path, reason}]). A claim this cannot link safely is skipped with a plain
+    reason; its file's other claims still go ahead."""
+    by_path: dict[Path, list[str]] = {}
+    skipped: list[dict] = []
+    for cid in sorted(links):
+        path = paths.get(cid)
+        if path is None:
+            skipped.append({'claim_id': fmt_id_display(cid), 'path': '',
+                            'reason': 'its source record is not in the index; run `fha index`'})
+            continue
+        by_path.setdefault(path, []).append(cid)
+
+    plans: dict[Path, tuple[str, str]] = {}
+    linked: list[str] = []
+    for path, cids in sorted(by_path.items()):
+        rel = _rel_display(path, archive_root)
+        try:
+            original = read_text_exact(path)
+        except OSError as e:
+            for cid in cids:
+                skipped.append({'claim_id': fmt_id_display(cid), 'path': rel,
+                                'reason': f'the record could not be read ({e})'})
+            continue
+        text = original
+        for cid in cids:
+            current = _claim_place_text(text, cid)
+            if current is None or not accepts(cid, current):
+                skipped.append({'claim_id': fmt_id_display(cid), 'path': rel,
+                                'reason': 'its place text changed since `fha index` last ran'})
+                continue
+            try:
+                text = add_place_to_claim(text, cid, links[cid])
+            except ClaimEditRefused as e:
+                skipped.append({'claim_id': fmt_id_display(cid), 'path': rel, 'reason': str(e)})
+                continue
+            linked.append(cid)
+        if text != original:
+            plans[path] = (original, text)
+    return plans, linked, skipped
+
+
+def _claim_place_text(text: str, cid: str) -> str | None:
+    """The `place_text` of one claim as its record holds it now, or None."""
+    rec_claims = None
+    lines = [ln[:-1] if ln.endswith('\r') else ln for ln in text.split('\n')]
+    block = _find_claims_block(lines)
+    if block is not None:
+        try:
+            rec_claims = safe_load_yaml('\n'.join(lines[block[0] + 1:block[1]]))
+        except yaml.YAMLError:
+            rec_claims = None
+    if not isinstance(rec_claims, list):
+        return None
+    for c in rec_claims:
+        if isinstance(c, dict) and normalize_id(str(c.get('id') or '')) == cid:
+            value = c.get('place_text')
+            return value if isinstance(value, str) else None
+    return None
+
+
+def _rel_display(path: Path, archive_root: Path) -> str:
+    try:
+        return path.relative_to(archive_root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _write_all_or_nothing(writes: list[tuple[Path, str, str | None]]) -> str | None:
+    """Write each (path, new text, original text or None for a new file) in
+    order, atomically per file. On the first failure every file already
+    written is put back (or removed, if it was new) and the reason is
+    returned; None when everything landed."""
+    done: list[tuple[Path, str | None]] = []
+    for path, new_text, original in writes:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_text_exact_atomic(path, reapply_newline(new_text, original or ''))
+        except OSError as e:
+            for back_path, back_text in reversed(done):
+                try:
+                    if back_text is None:
+                        back_path.unlink()
+                    else:
+                        write_text_exact_atomic(back_path, back_text)
+                except OSError:
+                    pass
+            return f'cannot write {path}: {e}'
+        done.append((path, original))
+    return None
+
+
+def _plural(n: int, word: str, many: str | None = None) -> str:
+    return f'{n} {word if n == 1 else (many or word + "s")}'
+
+
+def _confirm_place_commands(claim_ids: list[str], place_ids: list[str]) -> list[str]:
+    ids = ' '.join(fmt_id_display(c) for c in claim_ids)
+    return [f'fha confirm place {ids} --into {pid}' for pid in place_ids]
+
+
+def _skipped_lines(skipped: list[dict]) -> list[str]:
+    if not skipped:
+        return []
+    lines = ['', 'Left as they are:']
+    for s in skipped:
+        where = f' in {s["path"]}' if s['path'] else ''
+        lines.append(f'  {s["claim_id"]}{where}: {s["reason"]}')
+    return lines
+
+
+def run_link(archive_root: Path, *, apply: bool = False) -> Result:
+    """Attach `place:` to existing claims whose `place_text` fits a registered
+    place by the write-time rule (SPEC §15, `_lib.place_text_fits`).
+
+    A dry run unless `apply`: it lists every place text that fits exactly one
+    registered place, with its claim count and the place, and says how many
+    claims and records a run with `--apply` would change. `--apply` is the
+    human's yes, so there is no further question. `place_text` is never
+    altered; each claim gains one `place:` line. Texts that fit several
+    places, or come close to one without fitting, are listed with the
+    `fha confirm place` command that links them on the human's say-so.
+
+    Every claim's `place_text` is matched once per distinct text against the
+    registry read once. Claims of every status are linked, as the write-time
+    rule links them when they are written.
+
+    `data`: {'status': 'ok'|'failed', 'linked': int, 'files': int,
+    'links': [{place_text, place_id, name, claim_ids}], 'ambiguous': [...],
+    'near': [...], 'skipped': [{claim_id, path, reason}], 'messages': [...]}.
+    `linked` and `files` count what was written, or in a dry run what would be.
+    """
+    data: dict = {'status': 'ok', 'linked': 0, 'files': 0, 'links': [], 'ambiguous': [],
+                  'near': [], 'skipped': [], 'messages': []}
+    messages = data['messages']
+
+    def _failed(msg: str | None = None) -> Result:
+        data['status'] = 'failed'
+        if msg:
+            messages.append(f'ERROR: {msg}')
+        return Result(ok=False, exit_code=EXIT_FAILURE, data=data)
+
+    rows, registry_error = read_places_registry(archive_root)
+    if registry_error:
+        return _failed(f'{registry_error} Nothing was linked; fix places.yaml and run again.')
+    if not rows:
+        messages.append('No places are registered yet, so there is nothing to link to. '
+                        '`fha places candidates --register` registers the place names your '
+                        'claims use most.')
+        return Result(exit_code=EXIT_CLEAN, data=data)
+    by_id = {normalize_id(str(r.get('id'))): r for r in rows}
+    prepared = prepare_place_registry(rows)
+
+    conn = open_index_db(archive_root, _LINK_REQUIRED_TABLES, strict=True)
+    if conn is None:
+        return _failed()
+    try:
+        claim_rows = conn.execute(
+            "SELECT id, place_text FROM claims WHERE (place_id IS NULL OR place_id = '') "
+            "AND place_text IS NOT NULL AND place_text != '' ORDER BY id").fetchall()
+        texts: dict[str, list[str]] = {}
+        for r in claim_rows:
+            texts.setdefault(r['place_text'], []).append(r['id'])
+        matched: dict[str, dict] = {}
+        for text in texts:
+            matched[text] = match_place_text_to_registry(archive_root, text, registry=(rows, None),
+                                                         prepared=prepared)
+        to_link = {cid: matched[t]['place_id'] for t, cids in texts.items()
+                   if matched[t]['tier'] == 'exact' for cid in cids}
+        paths = _claim_source_paths(conn, archive_root, list(to_link))
+    except sqlite3.OperationalError:
+        return _failed('.cache/index.sqlite is unreadable or has an incompatible schema. '
+                       'Run `fha index` to rebuild it, then run this again.')
+    finally:
+        conn.close()
+
+    for text, cids in sorted(texts.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        m = matched[text]
+        if m['tier'] == 'exact':
+            data['links'].append({'place_text': text, 'place_id': m['place_id'],
+                                  'name': m['name'], 'claim_ids': cids})
+        elif m['ambiguous_ids']:
+            data['ambiguous'].append({'place_text': text, 'place_ids': m['ambiguous_ids'],
+                                      'claim_ids': cids})
+        elif m['tier'] == 'near':
+            data['near'].append({'place_text': text, 'place_ids': [m['place_id']],
+                                 'name': m['name'], 'claim_ids': cids})
+
+    expected_text = {cid: normalize_place_text(t) for t, cids in texts.items() for cid in cids}
+    plans, linked, skipped = _plan_claim_links(
+        archive_root, to_link, paths,
+        lambda cid, now: normalize_place_text(now) == expected_text.get(cid))
+    data['skipped'] = skipped
+    data['linked'] = len(linked)
+    data['files'] = len(plans)
+    linked_set = set(linked)
+
+    def _place_label(pid: str) -> str:
+        row = by_id.get(normalize_id(pid)) or {}
+        label = f'{pid} {row.get("name") or ""}'.rstrip()
+        hierarchy = row.get('hierarchy')
+        return f'{label} ({hierarchy})' if isinstance(hierarchy, str) and hierarchy else label
+
+    shown = [ln for ln in data['links'] if any(c in linked_set for c in ln['claim_ids'])]
+    if shown:
+        messages.append('These place texts each fit one registered place:')
+        for ln in shown:
+            n = sum(1 for c in ln['claim_ids'] if c in linked_set)
+            messages.append(f'  "{ln["place_text"]}" ({_plural(n, "claim")}) -> '
+                            f'{_place_label(ln["place_id"])}')
+    if data['ambiguous']:
+        messages.append('')
+        messages.append('Not linked: each of these fits more than one registered place. If you '
+                        'know which is meant, run its command:')
+        for a in data['ambiguous']:
+            messages.append(f'  "{a["place_text"]}" ({_plural(len(a["claim_ids"]), "claim")}) fits '
+                            + ', '.join(_place_label(p) for p in a['place_ids']))
+            messages.extend(f'    {c}' for c in _confirm_place_commands(a['claim_ids'], a['place_ids']))
+    if data['near']:
+        messages.append('')
+        messages.append('Not linked: these are close to a registered place but do not fit it. '
+                        'If one is the same place, run its command:')
+        for a in data['near']:
+            messages.append(f'  "{a["place_text"]}" ({_plural(len(a["claim_ids"]), "claim")}) is '
+                            f'close to {_place_label(a["place_ids"][0])}')
+            messages.extend(f'    {c}' for c in _confirm_place_commands(a['claim_ids'], a['place_ids']))
+    messages.extend(_skipped_lines(skipped))
+
+    if messages:
+        messages.append('')
+    if not plans:
+        messages.append('No claims to link: every claim whose place text fits a registered '
+                        'place is already linked.' if not skipped else 'No claims were linked.')
+        return Result(exit_code=EXIT_CLEAN, data=data)
+    summary = (f'{_plural(len(linked), "claim")} in '
+               f'{_plural(len(plans), "source record")}')
+    if not apply:
+        messages.append(f'[dry-run] Would link {summary}. Nothing written; run '
+                        '`fha places link --apply` to write them.')
+        return Result(exit_code=EXIT_CLEAN, data=data)
+
+    error = _write_all_or_nothing([(p, new, old) for p, (old, new) in plans.items()])
+    if error:
+        data['linked'] = data['files'] = 0
+        return _failed(f'{error}. Nothing was linked (every record is as it was); check the '
+                       'file is not open elsewhere and run again.')
+    result = Result(exit_code=EXIT_CLEAN, data=data)
+    for p in plans:
+        result.note_changed(p)
+    messages.append(f'Linked {summary}. Next: run `fha index` so place pages and maps show them.')
+    return result
+
+
+# ── Register: one place per recurring cluster, one yes ──────────────────────────
+
+def _new_place_block(place_id: str, plan: dict) -> list[str]:
+    """The places.yaml lines for one newly registered place: id, name, and the
+    coordinates, hierarchy and also-known-as names the gazetteer gave."""
+    lines = [f'- id: {place_id}', f'  name: {yaml_inline(plan["name"])}']
+    if plan.get('lat') is not None:
+        lines.append(f'  coords: [{plan["lat"]}, {plan["lon"]}]')
+    if plan.get('hierarchy'):
+        lines.append(f'  hierarchy: {yaml_inline(plan["hierarchy"])}')
+    if plan.get('alt_names'):
+        lines.append(f'  alt_names: {yaml_inline(list(plan["alt_names"]))}')
+    return lines
+
+
+def _register_table(new_places: list[dict], joins: list[dict]) -> list[str]:
+    """The one list the human answers: each new place with what it gets, then
+    each cluster that joins a place instead of becoming one."""
+    lines: list[str] = []
+    for p in new_places:
+        n = sum(len(g['claim_ids']) for g in p['groups'])
+        bits = []
+        if p.get('lat') is not None:
+            bits.append(f'coordinates {_fmt_coord(p["lat"])}, {_fmt_coord(p["lon"])}'
+                        + (f' (the pin is the {p["kind"]})' if p.get('kind') else ''))
+        elif p['pin'] == 'general':
+            bits.append('a country, state or region: needs no coordinates')
+        elif p['pin'] == 'ambiguous':
+            bits.append('no coordinates yet: `fha places geocode` asks which GeoNames entry it is')
+        else:
+            bits.append('no coordinates yet')
+        if p.get('hierarchy'):
+            bits.append(f'hierarchy "{p["hierarchy"]}"')
+        if p.get('alt_names'):
+            bits.append('also known as ' + ', '.join(p['alt_names']))
+        lines.append(f'  New place "{p["name"]}" ({_plural(n, "claim")}): ' + '; '.join(bits))
+        for g in p['groups'][1:]:
+            lines.append(f'    with "{g["label"]}" ({_plural(len(g["claim_ids"]), "claim")})')
+    for j in joins:
+        lines.append(f'  "{j["label"]}" ({_plural(len(j["claim_ids"]), "claim")}) links to '
+                     f'{j["place_id"]} {j["name"]}, already registered')
+    return lines
+
+
+def run_register_candidates(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    threshold: int = 3,
+    include_suggested: bool = False,
+    dry_run: bool = False,
+    confirm=None,
+) -> Result:
+    """Register a place for every place-text cluster of `threshold` or more
+    claims (`fha places candidates --register`), and link the clusters'
+    claims to them, after ONE yes from the human for the whole list.
+
+    Each cluster (biggest first) becomes one of:
+
+    - a link to an already-registered place, when its label fits exactly one
+      by the write-time rule (`_lib.place_text_fits`);
+    - part of a new place planned earlier in this run, when its label fits
+      that place or GeoNames matched both to the same entry ("Chicago,
+      Illinois" and "Chicago, Cook, Illinois" make one place, not two);
+    - a new place named with the cluster's label, carrying the coordinates,
+      missing county/state/country and spellings GeoNames gives, read only
+      from the GeoNames data already saved in `.cache/geonames/` (nothing is
+      downloaded). A country, state or region needs no coordinates; a name
+      GeoNames has more than once gets none, and `fha places geocode` asks
+      about it later. Population never picks.
+    - left out and listed for the human, when its label fits several
+      registered places or comes close to one without fitting.
+
+    The list is shown once and `confirm` asks once (`[y/N]` by default;
+    tests inject one). A yes re-reads `places.yaml`: a cluster whose label
+    now fits a place registered in the meantime, or whose target place's
+    block changed, is left out with a line saying so. The new places are
+    appended in one atomic rewrite of `places.yaml`, then each source record
+    gains its `place:` lines; a failure puts every file back. `--dry-run`
+    prints the same list, including every claim that would be skipped.
+
+    `data`: {'status', 'registered': int, 'linked': int, 'new_places': [...],
+    'joins': [...], 'review': [...], 'skipped': [...], 'messages': [...]}.
+    """
+    data: dict = {'status': 'ok', 'registered': 0, 'linked': 0, 'new_places': [],
+                  'joins': [], 'review': [], 'skipped': [], 'messages': []}
+    messages = data['messages']
+    if confirm is None:
+        confirm = _interactive_confirm
+
+    def _failed(msg: str | None = None) -> Result:
+        data['status'] = 'failed'
+        if msg:
+            messages.append(f'ERROR: {msg}')
+        return Result(ok=False, exit_code=EXIT_FAILURE, data=data)
+
+    places_yaml = archive_root / 'places' / 'places.yaml'
+    rows, registry_error = read_places_registry(archive_root)
+    if registry_error:
+        return _failed(f'{registry_error} Nothing was registered; fix places.yaml and run again.')
+    try:
+        start_text = read_text_exact(places_yaml) if places_yaml.exists() else ''
+    except OSError as e:
+        return _failed(f'cannot read {places_yaml}: {e}. Check the file is not open '
+                       'elsewhere, then run again.')
+
+    conn = open_index_db(archive_root, _REGISTER_REQUIRED_TABLES, strict=True)
+    if conn is None:
+        return _failed()
+    try:
+        groups = _place_text_candidates(conn, threshold, include_suggested=include_suggested)
+        paths = _claim_source_paths(conn, archive_root,
+                                    [c for g in groups for c in g['claim_ids']])
+    except sqlite3.OperationalError:
+        return _failed('.cache/index.sqlite is unreadable or has an incompatible schema. '
+                       'Run `fha index` to rebuild it, then run this again.')
+    finally:
+        conn.close()
+    if not groups:
+        messages.append(f'No unlinked place text recurs {threshold} or more times, so there '
+                        'is nothing to register.')
+        return Result(exit_code=EXIT_CLEAN, data=data)
+
+    prepared = prepare_place_registry(rows)
+    by_id = {p['id']: p for p in prepared}
+    taken = {normalize_place_text(n) for r in rows
+             for n in [r.get('name'), *(r.get('alt_names') or [])] if isinstance(n, str)}
+
+    # Coordinates come only from the GeoNames data already saved: this run
+    # never downloads. Without it, places are registered without coordinates.
+    gaz = None
+    try:
+        gaz, _notes = _prepare_gazetteer(
+            archive_root, [{'name': g['label'], 'hierarchy': None} for g in groups],
+            offline=True, progress=lambda _line: None)
+        if gaz is not None:
+            _registry_country_spellings(
+                [{'name': r.get('name'), 'hierarchy': r.get('hierarchy')} for r in rows], gaz)
+    except sqlite3.DatabaseError:
+        gaz = None
+
+    new_places: list[dict] = []
+    try:
+        for g in groups:
+            label = g['label']
+            m = match_place_text_to_registry(archive_root, label, registry=(rows, None),
+                                             prepared=prepared)
+            if m['tier'] == 'exact':
+                data['joins'].append({'label': label, 'claim_ids': g['claim_ids'],
+                                      'key': g['key'], 'place_id': m['place_id'],
+                                      'name': (by_id.get(normalize_id(m['place_id'])) or {})
+                                      .get('name') or m['name']})
+                continue
+            if m['ambiguous_ids'] or m['tier'] == 'near':
+                data['review'].append({'label': label, 'claim_ids': g['claim_ids'],
+                                       'place_ids': m['ambiguous_ids'] or [m['place_id']],
+                                       'near': m['tier'] == 'near'})
+                continue
+
+            match = _match_place(label, None, gaz) if gaz is not None else None
+            hit = match.hit if match is not None and match.status == 'hit' else None
+            owners = [p for p in new_places
+                      if place_text_fits(label, p['prepared']) is not None
+                      or (hit is not None and p.get('gid') == hit.gid)]
+            if len(owners) == 1:
+                owners[0]['groups'].append(g)
+                continue
+            if len(owners) > 1:
+                data['review'].append({'label': label, 'claim_ids': g['claim_ids'],
+                                       'place_ids': [], 'near': False,
+                                       'planned': [p['name'] for p in owners]})
+                continue
+
+            plan = {'name': label, 'groups': [g], 'lat': None, 'lon': None,
+                    'hierarchy': None, 'alt_names': [], 'kind': None, 'gid': None,
+                    'pin': 'none'}
+            if match is not None and match.status in ('general', 'ambiguous'):
+                plan['pin'] = match.status
+            if hit is not None:
+                plan.update(pin='hit', lat=hit.lat, lon=hit.lon, gid=hit.gid,
+                            hierarchy=_filled_hierarchy(label, None, match, gaz),
+                            kind=_SITE_KINDS.get(hit.fcode) if _is_site(hit) else None)
+                plan['alt_names'] = _proposed_alt_names(hit, label, set(), taken)
+            taken.add(normalize_place_text(label))
+            taken.update(normalize_place_text(a) for a in plan['alt_names'])
+            plan['prepared'] = prepare_place_registry([{
+                'id': 'l-0000000000', 'name': label, 'hierarchy': plan['hierarchy'],
+                'alt_names': plan['alt_names']}])[0]
+            new_places.append(plan)
+    except sqlite3.DatabaseError as e:
+        return _failed(f'the saved GeoNames data in .cache/geonames is damaged ({e}). Delete '
+                       'that folder and run again; nothing was written.')
+    finally:
+        if gaz is not None:
+            gaz.conn.close()
+
+    # Plan every claim edit now, against a stand-in id, so the preview names
+    # every claim the write would have to skip.
+    def _claim_links(placeholder: dict[int, str]) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for i, p in enumerate(new_places):
+            for g in p['groups']:
+                out.update({cid: placeholder[i] for cid in g['claim_ids']})
+        for j in data['joins']:
+            out.update({cid: j['place_id'] for cid in j['claim_ids']})
+        return out
+
+    cluster_key = {cid: g['key'] for g in groups for cid in g['claim_ids']}
+
+    def _accepts(cid: str, now: str) -> bool:
+        return place_text_cluster_key(now) == cluster_key.get(cid)
+
+    stand_in = {i: f'l-{i:010d}' for i in range(len(new_places))}
+    _plans, linked, skipped = _plan_claim_links(archive_root, _claim_links(stand_in), paths,
+                                                _accepts)
+
+    def _describe() -> list[dict]:
+        return [{k: v for k, v in p.items() if k not in ('prepared', 'groups')}
+                | {'labels': [g['label'] for g in p['groups']],
+                   'claim_ids': [c for g in p['groups'] for c in g['claim_ids']]}
+                for p in new_places]
+
+    data['new_places'] = _describe()
+    data['skipped'] = skipped
+
+    review_lines: list[str] = []
+    if data['review']:
+        review_lines += ['', 'Not registered: these need you to say which place is meant.']
+        for r in data['review']:
+            head = f'  "{r["label"]}" ({_plural(len(r["claim_ids"]), "claim")})'
+            if r.get('planned'):
+                review_lines.append(head + ' fits more than one of the new places above ('
+                                    + '; '.join(r['planned']) + '). To register it on its own:')
+                ids = ' '.join(fmt_id_display(c) for c in r['claim_ids'])
+                review_lines.append(f'    fha confirm place {ids} --name={shell_quote(r["label"])}')
+                continue
+            what = 'is close to' if r['near'] else 'fits'
+            review_lines.append(f'{head} {what} {", ".join(r["place_ids"])}; if one is meant:')
+            review_lines.extend(f'    {c}' for c in _confirm_place_commands(r['claim_ids'],
+                                                                           r['place_ids']))
+
+    if not new_places and not data['joins']:
+        messages.extend(review_lines[1:] if review_lines else [])
+        messages.extend(_skipped_lines(skipped))
+        return Result(exit_code=EXIT_CLEAN, data=data)
+
+    table = [f'Register {_plural(len(new_places), "new place")} and link '
+             f'{_plural(len(linked), "claim")}:', *_register_table(new_places, data['joins'])]
+    question = (f'Register {_plural(len(new_places), "place")} and link '
+                f'{_plural(len(linked), "claim")}?')
+    if dry_run:
+        messages.extend(table)
+        messages.extend(review_lines)
+        messages.extend(_skipped_lines(skipped))
+        messages.append('')
+        messages.append(f'[dry-run] {question[:-1].replace("Register", "Would register", 1)}. '
+                        'Nothing written; run without --dry-run to review and answer yes.')
+        data['registered'] = len(new_places)
+        data['linked'] = len(linked)
+        return Result(exit_code=EXIT_CLEAN, data=data)
+
+    if not confirm('\n'.join(table + review_lines + _skipped_lines(skipped)) + '\n' + question):
+        messages.append('Nothing written.')
+        return Result(exit_code=EXIT_CLEAN, data=data)
+
+    # The question may stay open a long time. Re-read the registry and leave
+    # out whatever it now answers differently.
+    rows_now, registry_error = read_places_registry(archive_root)
+    if registry_error:
+        return _failed(f'{registry_error} Nothing was written; fix places.yaml and run again.')
+    try:
+        now_text = read_text_exact(places_yaml) if places_yaml.exists() else ''
+    except OSError as e:
+        return _failed(f'cannot read {places_yaml}: {e}. Nothing was written.')
+    if now_text != start_text:
+        prepared_now = prepare_place_registry(rows_now)
+        for p in list(new_places):
+            if any(match_place_text_to_registry(archive_root, g['label'], registry=(rows_now, None),
+                                                prepared=prepared_now)['tier'] == 'exact'
+                   for g in p['groups']):
+                new_places.remove(p)
+                messages.append(f'"{p["name"]}" was registered while the question was open, so '
+                                'it was left out. Run `fha index`, then `fha places link`.')
+        for j in list(data['joins']):
+            if _place_block_text(now_text, j['place_id']) != _place_block_text(start_text,
+                                                                               j['place_id']):
+                data['joins'].remove(j)
+                messages.append(f'{j["place_id"]} {j["name"]} changed while the question was '
+                                f'open, so "{j["label"]}" was not linked to it. Run `fha index`, '
+                                'then `fha places candidates --register` to look again.')
+
+    new_ids = [fmt_id_display(normalize_id(i))
+               for i in mint_ids('L', len(new_places), archive_root)] if new_places else []
+    plans, linked, skipped = _plan_claim_links(
+        archive_root, _claim_links(dict(enumerate(new_ids))), paths, _accepts)
+    data['skipped'] = skipped
+    blocks: list[str] = []
+    for pid, p in zip(new_ids, new_places):
+        blocks.extend(_new_place_block(pid, p))
+    writes: list[tuple[Path, str, str | None]] = []
+    if blocks:
+        sep = '' if (not now_text or now_text.endswith('\n')) else '\n'
+        writes.append((places_yaml, now_text + sep + '\n'.join(blocks) + '\n',
+                       now_text if places_yaml.exists() else None))
+    writes.extend((path, new, old) for path, (old, new) in plans.items())
+    if not writes:
+        messages.append('Nothing written.')
+        messages.extend(_skipped_lines(skipped))
+        return Result(exit_code=EXIT_CLEAN, data=data)
+    error = _write_all_or_nothing(writes)
+    if error:
+        return _failed(f'{error}. Nothing was registered or linked (every file is as it was); '
+                       'check the file is not open elsewhere and run again.')
+
+    result = Result(exit_code=EXIT_CLEAN, data=data)
+    for path, _new, _old in writes:
+        result.note_changed(path)
+    data['registered'] = len(new_ids)
+    data['linked'] = len(linked)
+    data['new_places'] = _describe()
+    for pid, entry in zip(new_ids, data['new_places']):
+        entry['place_id'] = pid
+    messages.append(f'Registered {_plural(len(new_ids), "place")} and linked '
+                    f'{_plural(len(linked), "claim")}.')
+    for pid, p in zip(new_ids, new_places):
+        messages.append(f'  {pid} {p["name"]}')
+    messages.extend(review_lines)
+    messages.extend(_skipped_lines(skipped))
+    without = sum(1 for p in new_places if p['lat'] is None and p['pin'] != 'general')
+    nxt = 'Next: run `fha index` so place pages and maps show them'
+    if without:
+        nxt += (f', then `fha places geocode --all` for the {_plural(without, "place")} still '
+                'without coordinates (it shows what it finds and asks before writing)')
+    messages.append(nxt + '.')
+    return result
+
+
 # ── Registry write-backs (set / note) ─────────────────────────────────────────
 # The human-directed edits the workbench place page drives: coordinates, the
 # alt-names ("also known as") list, the dated `history:` entries, and a dated
@@ -2378,6 +3005,18 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     include_suggested = bool(getattr(args, 'include_suggested', False))
+    if getattr(args, 'register', False):
+        result = run_register_candidates(
+            archive_root, fha_config, threshold=threshold, include_suggested=include_suggested,
+            dry_run=bool(getattr(args, 'dry_run', False)))
+        for m in result['messages']:
+            print(m, file=sys.stderr if m.startswith('ERROR: ') else sys.stdout)
+        return result.exit_code
+    if getattr(args, 'dry_run', False):
+        print('ERROR: --dry-run goes with --register (a plain `fha places candidates` only '
+              'lists, it never writes). Run `fha places candidates --register --dry-run`.',
+              file=sys.stderr)
+        return EXIT_FAILURE
     result = run_candidates(archive_root, fha_config, threshold=threshold,
                              include_suggested=include_suggested)
     if result['status'] == 'failed':
@@ -2405,6 +3044,16 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
         print('\nNo candidate GPS clusters found.')
 
     return EXIT_CLEAN
+
+
+def _cmd_places_link(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    result = run_link(archive_root, apply=bool(getattr(args, 'apply', False)))
+    for m in result['messages']:
+        print(m, file=sys.stderr if m.startswith('ERROR: ') else sys.stdout)
+    return result.exit_code
 
 
 def _cmd_places_geocode(args: argparse.Namespace) -> int:
@@ -2505,6 +3154,8 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Place text that recurs often enough for a registry entry
+  fha places candidates --register   Register all of them at once (one list, one yes)
+  fha places link [--apply]          Link claims to the registered places their text names
   fha places geocode (--place l-id | --all)  Fill in coordinates from GeoNames (one table, one yes)
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text "..."  Append a dated research note to the place
@@ -2539,7 +3190,26 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
                                help='Also cluster place_text on status: suggested claims (normally '
                                     'excluded): a one-time scan of a backlog not yet reviewed, e.g. right after '
                                     'a fresh `fha gedcom import`, not the everyday view.')
+    candidates_p.add_argument('--register', action='store_true',
+                               help='Register a place for every cluster listed and link its '
+                                    'claims: one list, one yes. Coordinates come from GeoNames '
+                                    'data already saved; nothing is downloaded.')
+    candidates_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                               help='With --register: show the list without asking or writing.')
     candidates_p.set_defaults(func=_cmd_places_candidates)
+
+    link_p = deferred.add_parser(
+        'link', help='Link existing claims to the registered places their place text names',
+        description=('Link claims written before their place was registered. A claim is '
+                     'linked when its place text names exactly one registered place: the '
+                     'first part is the name of the place or another name for it, and every other '
+                     'part is in its hierarchy ("Chicago, Cook, Illinois" for Chicago, Cook '
+                     'County, Illinois, USA). The place text itself is never changed. Shows '
+                     'what it would link; --apply writes it.'))
+    link_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (auto-detected if omitted).')
+    link_p.add_argument('--apply', action='store_true',
+                        help='Write the links (without it, nothing is written).')
+    link_p.set_defaults(func=_cmd_places_link)
 
     geocode_p = deferred.add_parser(
         'geocode', help='Fill in coordinates, missing county/state/country and spellings from GeoNames',
@@ -2628,7 +3298,14 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     candidates_p.add_argument('--root', metavar='PATH')
     candidates_p.add_argument('--threshold', type=int, default=3)
     candidates_p.add_argument('--include-suggested', action='store_true', dest='include_suggested')
+    candidates_p.add_argument('--register', action='store_true')
+    candidates_p.add_argument('--dry-run', action='store_true', dest='dry_run')
     candidates_p.set_defaults(func=_cmd_places_candidates)
+
+    link_p = subs.add_parser('link')
+    link_p.add_argument('--root', metavar='PATH')
+    link_p.add_argument('--apply', action='store_true')
+    link_p.set_defaults(func=_cmd_places_link)
 
     geocode_p = subs.add_parser('geocode')
     geocode_p.add_argument('--root', metavar='PATH')

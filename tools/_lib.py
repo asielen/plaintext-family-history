@@ -5776,6 +5776,112 @@ def append_claim_to_source(text: str, item_lines: list[str]) -> tuple[str, bool]
     return guard_claims_rewrite('\n'.join(new) + trailing, new_cid), True
 
 
+def _claims_list_at(lines: list[str], block: tuple[int, int]) -> list | None:
+    """The parsed claims list between a `## Claims` fence pair, or None."""
+    try:
+        parsed = safe_load_yaml('\n'.join(lines[block[0] + 1:block[1]]))
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def add_place_to_claim(text: str, claim_id: str, place_id: str) -> str:
+    """Add `place: <l-id>` to one claim in a source record's `## Claims`
+    block and return the new text, every other byte unchanged.
+
+    The link writer `fha places link` and `fha places candidates
+    --register` share. It adds exactly one line, right after the claim's
+    own `place_text:` (and that key's continuation lines), at the claim's
+    own key column; an empty `place:` line the claim already has is filled
+    in instead, keeping its trailing comment. The text is split on `\\n`
+    only, so a CRLF record keeps its `\\r` on every line (the new line gets
+    one too) and no other character is ever read as a line break.
+
+    The claim is found by parsing: the block's k-th list item is the claim
+    whose `id` matches, and its k-th top-level dash line is where it starts.
+    When the dash lines and the parsed items do not line up, or the claim has
+    no `place_text:` key line of its own, or already names a place, this
+    raises `ClaimEditRefused` with a plain reason and the caller writes
+    nothing for that claim. The result is checked by parsing it again: every
+    claim must read back exactly as before, except this one, which gains
+    `place:`. Any other outcome is refused, never written.
+    """
+    target = normalize_id(claim_id)
+    pid = fmt_id_display(normalize_id(place_id))
+    raw = text.split('\n')
+    plain = [ln[:-1] if ln.endswith('\r') else ln for ln in raw]
+    block = _find_claims_block(plain)
+    if block is None:
+        raise ClaimEditRefused('this record has no readable ## Claims block.')
+    before = _claims_list_at(plain, block)
+    if before is None:
+        raise ClaimEditRefused('its ## Claims block does not read as a list of claims.')
+    matches = [k for k, c in enumerate(before)
+               if isinstance(c, dict) and normalize_id(str(c.get('id') or '')) == target]
+    if len(matches) != 1:
+        raise ClaimEditRefused(
+            f'{fmt_id_display(target)} appears {len(matches)} times in its ## Claims block.')
+    k = matches[0]
+    claim = before[k]
+    if claim.get('place') not in (None, ''):
+        raise ClaimEditRefused('it already names a place.')
+
+    open_fence, close_fence = block
+    dash_lines = [i for i in range(open_fence + 1, close_fence)
+                  if re.match(r'^(\s*)-(\s|$)', plain[i])]
+    base = re.match(r'^(\s*)', plain[dash_lines[0]]).group(1) if dash_lines else ''
+    starts = [i for i in dash_lines if re.match(r'^' + re.escape(base) + r'-(\s|$)', plain[i])]
+    if len(starts) != len(before):
+        raise ClaimEditRefused(
+            'its ## Claims block is laid out in a way this edit cannot follow safely.')
+    start = starts[k]
+    end = starts[k + 1] if k + 1 < len(starts) else close_fence
+    key_indent = claim_item_key_indent(plain[start:end], base)
+
+    def own_key(i: int, key: str) -> bool:
+        return bool(re.match(r'^' + re.escape(key_indent) + re.escape(key) + r':(\s|$)', plain[i])
+                    or (i == start and re.match(r'^' + re.escape(base) + r'-\s+'
+                                                + re.escape(key) + r':(\s|$)', plain[i])))
+
+    def eol(i: int) -> str:
+        return '\r' if raw[i].endswith('\r') else ''
+
+    new = list(raw)
+    place_line = next((i for i in range(start, end) if own_key(i, 'place')), None)
+    if place_line is not None:
+        value = plain[place_line].split(':', 1)[1]
+        comment = re.search(r'(\s+#.*)$', value)
+        if value.strip() and not value.strip().startswith('#'):
+            raise ClaimEditRefused('it already has a place: line.')
+        prefix = plain[place_line].split(':', 1)[0]
+        new[place_line] = (f'{prefix}: {pid}' + (comment.group(1) if comment else '')
+                           + eol(place_line))
+    else:
+        text_line = next((i for i in range(start, end) if own_key(i, 'place_text')), None)
+        if text_line is None:
+            raise ClaimEditRefused('it has no place_text: line of its own to link from.')
+        after = text_line
+        for i in range(text_line + 1, end):
+            if not plain[i].strip():
+                continue
+            if len(re.match(r'^(\s*)', plain[i]).group(1)) > len(key_indent):
+                after = i
+                continue
+            break
+        new.insert(after + 1, f'{key_indent}place: {pid}' + eol(after))
+
+    result = '\n'.join(new)
+    check = [ln[:-1] if ln.endswith('\r') else ln for ln in new]
+    after_block = _find_claims_block(check)
+    after_list = _claims_list_at(check, after_block) if after_block else None
+    expected = [dict(c) if isinstance(c, dict) else c for c in before]
+    expected[k]['place'] = pid
+    if after_list != expected:
+        raise ClaimEditRefused(
+            'adding the place: line would change how the claims block reads.')
+    return result
+
+
 def is_merged_meta(meta: dict | None) -> bool:
     """True when a record's frontmatter marks it a merged tombstone (SPEC §9).
 
@@ -8508,6 +8614,48 @@ def place_text_cluster_key(text: str) -> str:
     return ' '.join(tokens)
 
 
+# Words that name a kind of division rather than the division itself, so
+# "Cook County", "Cook Co." and "Cook" read alike, and so do "parafia
+# Tykwin", "gmina Tykwin" and "Tykwin". Only the first and last word of a
+# part are dropped, and never the part's only word. Shared by the
+# write-time place rule below and `fha places geocode`'s GeoNames matching.
+PLACE_DIVISION_WORDS = frozenset({
+    'county', 'co', 'parish', 'parafia', 'powiat', 'gmina', 'wojewodztwo',
+    'voivodeship', 'province', 'department', 'departement', 'state',
+})
+
+# Letters that Unicode decomposition leaves alone but a person typing on an
+# English keyboard writes plainly ("Lodz" for "Łódź").
+_PLACE_FOLD_LETTERS = str.maketrans({
+    'ł': 'l', 'ø': 'o', 'đ': 'd', 'æ': 'ae', 'œ': 'oe', 'ı': 'i', 'þ': 'th',
+})
+
+
+def fold_place_words(text: str | None) -> list[str]:
+    """A place name's words with case and accents folded and punctuation
+    dropped: "Wola Mała" and "WOLA MALA" fold alike."""
+    s = unicodedata.normalize('NFKD', str(text or '').casefold().translate(_PLACE_FOLD_LETTERS))
+    s = ''.join(ch for ch in s if not unicodedata.combining(ch))
+    return re.sub(r'[\W_]+', ' ', s).split()
+
+
+def place_part_key(text: str | None) -> str:
+    """The comparison form of one part of a place name: case and accents
+    folded, punctuation turned to spaces, and a leading or trailing division
+    word ("County", "Co.", "parafia") dropped.
+
+    "Białystok", "Bialystok" and "BIALYSTOK" are one key, as are "Cook
+    County", "Cook Co." and "Cook". Both the write-time place rule
+    (`place_text_fits`) and `fha places geocode` compare names through this
+    one function, so the two never disagree about what a name says."""
+    tokens = fold_place_words(text)
+    while len(tokens) > 1 and tokens[0] in PLACE_DIVISION_WORDS:
+        tokens.pop(0)
+    while len(tokens) > 1 and tokens[-1] in PLACE_DIVISION_WORDS:
+        tokens.pop()
+    return ' '.join(tokens)
+
+
 _PLACES_REGISTRY_EXAMPLE = '- id: L-0123456789\n  name: Fairview'
 
 
@@ -8656,127 +8804,162 @@ def read_places_registry(archive_root: str | Path) -> tuple[list[dict], str | No
     return [row for row in data if isinstance(row, dict) and row.get('id')], None
 
 
+def _place_first_key(text: str) -> str:
+    """The comparison form of a place text's first part, the part that
+    names the place itself: case, accents and punctuation folded, "Co."
+    read as "County", and every word kept. A division word here says what
+    kind of place it is, so "Cook County" never names a town called Cook
+    and "Los Angeles" never names Los Angeles County."""
+    return ' '.join('county' if w == 'co' else w for w in fold_place_words(text))
+
+
+def prepare_place_registry(rows: list[dict]) -> list[dict]:
+    """Read each registered place once into the forms the write-time rule
+    compares, so a caller matching many place texts in one run (`fha places
+    link`, `fha report`'s place section) does not re-fold every name for
+    every text.
+
+    One dict per place with a valid l-id: `id` (normalized), `name` (the
+    registered name, or the first alt name when it has none), `exact`
+    ({normalized whole name: name as written}, name and alt names), `tokens`
+    ({sorted-token-set key: name as written}, for the near tier), `first`
+    (`_place_first_key` of each name's first comma part) and `context`
+    (`place_part_key` of every `hierarchy:` part and of each name's later
+    comma parts)."""
+    prepared: list[dict] = []
+    for place in rows:
+        pid = place.get('id')
+        if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):
+            continue
+        names = [place.get('name')]
+        alt = place.get('alt_names')
+        if isinstance(alt, list):
+            names.extend(alt)
+        names = [n for n in names if isinstance(n, str) and n.strip()]
+        exact: dict[str, str] = {}
+        tokens: dict[str, str] = {}
+        first: set[str] = set()
+        context: set[str] = set()
+        for name in names:
+            exact.setdefault(normalize_place_text(name), name)
+            tokens.setdefault(place_text_cluster_key(name), name)
+            parts = [p for p in name.split(',') if p.strip()]
+            if parts:
+                first.add(_place_first_key(parts[0]))
+                context.update(k for k in (place_part_key(p) for p in parts[1:]) if k)
+        hierarchy = place.get('hierarchy')
+        if isinstance(hierarchy, str):
+            context.update(k for k in (place_part_key(p) for p in hierarchy.split(',')) if k)
+        prepared.append({
+            'id': normalize_id(pid),
+            'name': names[0] if names else None,
+            'exact': exact, 'tokens': tokens, 'first': first, 'context': context,
+        })
+    return prepared
+
+
+def place_text_fits(place_text: str, place: dict) -> str | None:
+    """Whether a claim's place text fits one prepared registered place
+    (`prepare_place_registry`) by the write-time rule of SPEC §15; returns
+    the name it fits by, or None.
+
+    It fits when the text equals one of the place's names or alt names once
+    case, spacing and punctuation are folded, or when it agrees with the
+    place's hierarchy: the text's first comma part names the place (the
+    first part of its name or of an alt name, every word counted) and every
+    other part appears in its hierarchy. Those other parts compare through
+    `place_part_key`, so "County" and the like are optional there, and the
+    text need not name every level: "Chicago, Cook, Illinois" fits a place
+    named Chicago whose hierarchy reads "Chicago, Cook County, Illinois,
+    USA", with or without the country. A part the hierarchy does not hold
+    ("Chicago, Ohio") keeps the text from fitting, and so does a first part
+    that names a different kind of place ("Cook County, Illinois" is not
+    Chicago, and not a town called Cook)."""
+    exact = place['exact'].get(normalize_place_text(place_text))
+    if exact is not None:
+        return exact
+    parts = [p for p in place_text.split(',') if p.strip()]
+    if not parts or _place_first_key(parts[0]) not in place['first']:
+        return None
+    rest = [k for k in (place_part_key(p) for p in parts[1:]) if k]
+    if all(k in place['context'] for k in rest):
+        return place['name']
+    return None
+
+
 def match_place_text_to_registry(
     archive_root: str | Path,
     place_text: str,
     *,
     registry: tuple[list[dict], str | None] | None = None,
+    prepared: list[dict] | None = None,
 ) -> dict:
     """
     Match one claim's free-text place against the registered places
-    (`places/places.yaml`) - the write-time resolution issue #79 point 3
-    asked for: "when a claim is drafted with place_text, look it up against
-    the registry; on an exact or near match, attach the place_id; on a
-    miss, note it as a candidate."
+    (`places/places.yaml`): the write-time resolution of SPEC §15, which
+    `fha claim` runs as a claim is written and `fha places link` runs over
+    claims written earlier.
 
-    `registry` lets a caller that is about to do this lookup many times in
-    one pass - report.py's §6b listing and its escalation banner, one call
-    per place-text cluster - pass in `read_places_registry(archive_root)`'s
-    own `(rows, error)` result instead of making this function re-read and
-    re-parse `places/places.yaml` from scratch on every single call. Before
-    this existed, a report with N unlinked-place clusters re-read and
-    re-scanned the whole registry N times over - quadratic in (clusters x
-    registry size) for work that only ever needed the file read once per
-    report run (issue #166 finding 2; a synthetic 200-cluster/200-place
-    fixture measured ~6.9s in this section alone). Omitted (every existing
-    caller, including `claim.py`'s single-lookup write path), the lookup
-    reads the registry itself exactly as before - this is additive, not a
-    behavior change for anyone who only ever calls this once.
+    `registry` lets a caller pass `read_places_registry(archive_root)`'s
+    `(rows, error)` instead of this function reading the file itself;
+    `prepared` (`prepare_place_registry(rows)`) also skips folding every
+    name again. A caller matching many texts in one run (`fha report`,
+    `fha places link`) reads the registry once and passes it in. With
+    neither, the registry is read here.
 
-    Two tiers, built from the SAME normalization `fha places candidates`
-    clusters unlinked place_text with (`place_text_cluster_key` above) - a
-    write-time auto-attach and that report's clustering can never disagree
-    about what counts as "the same place":
+    Tiers:
 
-    - `'exact'` - `normalize_place_text(place_text)` equals that same
-      normalization of a registered place's `name:` or one of its
-      `alt_names:`. Safe to auto-attach: once case/punctuation/whitespace
-      noise is folded out, the strings are identical.
-    - `'near'` - not an exact match, but the sorted-token-set key agrees
-      (word order differs, or an abbreviation like "St"/"Co" was expanded
-      on one side only). NEVER auto-attached - a wrong `place_id` is worse
-      than an unlinked `place_text` that the existing `fha places
-      candidates` clustering will still surface on its own; a caller
-      returns this tier as a nudge only (point at `fha confirm place ...
-      --into`), never as a write.
+    - `'exact'`: the text fits exactly one registered place by the
+      write-time rule (`place_text_fits`): it equals a name or alt name, or
+      it agrees with the place's hierarchy. Safe to attach.
+    - `'near'`: it fits no place, but its sorted-token-set key
+      (`place_text_cluster_key`, the clustering `fha places candidates`
+      uses) equals one place's name's: word order differs, or an
+      abbreviation was expanded on one side only. Never attached
+      automatically; a caller shows it as a nudge (`fha confirm place ...
+      --into`). A wrong `place_id` is worse than an unlinked `place_text`.
 
-    A key claimed by more than one place_id - an exact tie, or a near tie -
-    is a registry hygiene problem in its own right (`fha places lint`'s
-    PL002, duplicate names): this function refuses to guess which one is
-    meant and reports no match at all, the same as a genuine miss, rather
-    than auto-attaching to an arbitrary one of them.
+    When the text fits more than one place (or, fitting none, near-matches
+    more than one), this refuses to guess: the tier is None and
+    `ambiguous_ids` names the places, sorted and display-cased. Ambiguity
+    goes to the human; nothing else breaks the tie.
 
     Returns `{'tier': 'exact'|'near'|None, 'place_id': str|None (display-
-    cased, e.g. 'L-baba9801fa'), 'name': str|None (the registered name or
-    alt_name that matched), 'registry_error': str|None, 'ambiguous_ids':
-    list[str]|None}`.
-
-    `registry_error` carries `read_places_registry`'s plain-language failure
-    reason straight through when `places/places.yaml` EXISTS but could not be
-    parsed - distinct from a genuine, error-free miss (Codex review, PR
-    #150). The caller (`claim.py`'s `_resolve_place_text_for_write`) surfaces
-    it as a warning instead of treating the lookup as an ordinary no-match.
-
-    `ambiguous_ids` is the one field that exists SPECIFICALLY for a `tier:
-    None` caller that needs to tell "genuinely no match" apart from "this
-    function refused to guess" - the tie case the docstring above describes.
-    It stays `None` (not an empty list) whenever `tier` is a real value, and
-    whenever the miss is genuine (no registered name shares this text's
-    normalization at all); it is the display-cased, sorted list of every
-    tied `place_id` ONLY in the two tie branches below. A write-time caller
-    (`claim.py`) that only ever checks `tier` sees no behavior change - this
-    is additive, read by report.py's §6b/escalation-banner rendering so it
-    can name the clash instead of silently falling through to a mint
-    recommendation that would create a THIRD, duplicate place_id on top of
-    an already-unresolved duplicate-name registry problem (Codex review,
-    PR #142 finding 2 follow-up).
+    cased, e.g. 'l-baba9801fa'), 'name': str|None (the registered name or
+    alt name it matched by), 'registry_error': str|None, 'ambiguous_ids':
+    list[str]|None}`. `registry_error` carries `read_places_registry`'s
+    plain reason when `places/places.yaml` exists but could not be parsed,
+    so a caller can say why nothing matched. `ambiguous_ids` is None
+    whenever the tier is set, and on a genuine miss.
     """
-    key = normalize_place_text(place_text)
-    if not key:
-        return {'tier': None, 'place_id': None, 'name': None,
-                'registry_error': None, 'ambiguous_ids': None}
-    token_key = place_text_cluster_key(place_text)
-
-    exact_hits: dict[str, str] = {}
-    near_hits: dict[str, str] = {}
-    if registry is None:
-        rows, registry_error = read_places_registry(archive_root)
-    else:
-        rows, registry_error = registry
-    for place in rows:
-        pid = place.get('id')
-        if not (isinstance(pid, str) and is_valid_id(pid) and id_type_of(pid) == 'L'):
-            continue
-        pid_norm = normalize_id(pid)
-        names = [place.get('name')]
-        alt = place.get('alt_names')
-        if isinstance(alt, list):
-            names.extend(alt)
-        for name in names:
-            if not isinstance(name, str) or not name.strip():
-                continue
-            if normalize_place_text(name) == key:
-                exact_hits.setdefault(pid_norm, name)
-            elif place_text_cluster_key(name) == token_key:
-                near_hits.setdefault(pid_norm, name)
-
-    if exact_hits:
-        if len(exact_hits) == 1:
-            (pid_norm, name), = exact_hits.items()
-            return {'tier': 'exact', 'place_id': fmt_id_display(pid_norm), 'name': name,
-                    'registry_error': registry_error, 'ambiguous_ids': None}
-        return {'tier': None, 'place_id': None, 'name': None, 'registry_error': registry_error,
-                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in exact_hits)}
-
-    if len(near_hits) == 1:
-        (pid_norm, name), = near_hits.items()
-        return {'tier': 'near', 'place_id': fmt_id_display(pid_norm), 'name': name,
-                'registry_error': registry_error, 'ambiguous_ids': None}
-    if len(near_hits) > 1:
-        return {'tier': None, 'place_id': None, 'name': None, 'registry_error': registry_error,
-                'ambiguous_ids': sorted(fmt_id_display(pid) for pid in near_hits)}
-    return {'tier': None, 'place_id': None, 'name': None,
+    if registry is None and prepared is None:
+        registry = read_places_registry(archive_root)
+    registry_error = registry[1] if registry is not None else None
+    miss = {'tier': None, 'place_id': None, 'name': None,
             'registry_error': registry_error, 'ambiguous_ids': None}
+    if not normalize_place_text(place_text):
+        return miss
+    if prepared is None:
+        prepared = prepare_place_registry(registry[0])
+
+    token_key = place_text_cluster_key(place_text)
+    fits: dict[str, str] = {}
+    near: dict[str, str] = {}
+    for place in prepared:
+        name = place_text_fits(place_text, place)
+        if name is not None:
+            fits.setdefault(place['id'], name)
+        elif token_key in place['tokens']:
+            near.setdefault(place['id'], place['tokens'][token_key])
+
+    for hits, tier in ((fits, 'exact'), (near, 'near')):
+        if len(hits) == 1:
+            (pid_norm, name), = hits.items()
+            return {'tier': tier, 'place_id': fmt_id_display(pid_norm), 'name': name,
+                    'registry_error': registry_error, 'ambiguous_ids': None}
+        if hits:
+            return {**miss, 'ambiguous_ids': sorted(fmt_id_display(p) for p in hits)}
+    return miss
 
 
 # Archive-root folders that never hold a record's own ID (see scan_ids_in_tree).

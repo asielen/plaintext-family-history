@@ -556,6 +556,26 @@ class ReportTests(unittest.TestCase):
             md,
         )
 
+    def test_place_candidates_section_offers_the_all_at_once_commands(self) -> None:
+        # One registration per cluster is a few hundred commands in a real
+        # archive: the section leads with the command that does them all.
+        (self.archive_root / 'sources' / 'sourcesix_S-6666666666.md').write_text(
+            _SOURCE_PLACE_CLUSTER_MD, encoding='utf-8'
+        )
+        md = report.run_report(self.archive_root, {}, full=True,
+                               section='place-candidates')['markdown']
+        self.assertIn('`fha places candidates --register`', md)
+        self.assertNotIn('`fha places link`', md)
+
+        (self.archive_root / 'places').mkdir(exist_ok=True)
+        (self.archive_root / 'places' / 'places.yaml').write_text(
+            '- id: l-baba9801fa\n  name: Topeka\n  hierarchy: Topeka, Shawnee County, Kansas\n',
+            encoding='utf-8')
+        md = report.run_report(self.archive_root, {}, full=True,
+                               section='place-candidates')['markdown']
+        self.assertIn('`fha places link`', md)
+        self.assertNotIn('`fha places candidates --register`', md)
+
     def test_place_candidates_below_threshold_gets_no_command(self) -> None:
         # Two claims never clear run_candidates()'s default threshold (3) -
         # no cluster line, so no command should be invented for it either.

@@ -19,6 +19,7 @@ Contents:
 9. Capture: one record, on the user's click
 10. Working in Obsidian
 11. Geocoding: one table, one yes
+12. Linking place text: the hierarchy rule
 
 ---
 
@@ -293,3 +294,19 @@ Other limits:
 - **Writing coordinates when `fha confirm place` mints a place.** Its yes is about the claims and the name, not coordinates the tool inferred. It names the geocode command to run next, so the coordinates get their own table and yes.
 - **Guessing between candidates** (largest population, nearest to other places). A confident wrong pin is worse than an empty one the human can fill with one command. For the same reason a place that names no country is never a confident match, even when one entry fits.
 - **A pin for every place.** A country or a region like Prussia has no one point that means it; a pin in its middle would look precise and say nothing.
+
+---
+
+## 12. Linking place text: the hierarchy rule
+
+**The rule.** A claim's place text links to a registered place when it fits exactly one: it equals a name or alt name, or its first part names the place and every other part is in the place's hierarchy, "County" and the country optional after the first part. The same rule runs when a claim is written, over claims written earlier (`fha places link`, a dry run until `--apply`), and when a backlog of recurring place texts is registered at once (`fha places candidates --register`, one list and one yes). The place text itself is never changed.
+
+**Why.** Records name a place at whatever depth the clerk wrote: "Chicago", "Chicago, Cook, Illinois", "Chicago, Cook Co., Illinois, USA". Requiring the exact registered wording leaves many mentions unlinked although the place is registered (a third of them in one large archive), and the place page then shows a fraction of the family's life there. Every part of the text still has to agree with the place's hierarchy, so a text that names a different county or state never links, and a text that two places could answer to goes to the human. Registering one cluster per command turns a backlog of hundreds of place names into hundreds of commands; one reviewed list makes it one decision. The `--register` list shows each new place's coordinates, so its yes covers them, which `fha confirm place` (whose yes is about claims and a name) cannot.
+
+**Rejected.**
+
+- **Linking on the first part alone.** "Springfield" names a dozen towns; the other parts are what tell them apart.
+- **"County" optional in the first part too.** A county and its seat often share a name, so "Los Angeles, California" would fit both the city and the county and link neither, and "Lafayette County, Missouri" would link to the town of Lafayette.
+- **Breaking a tie by population or by the family's other places.** A confident wrong link is worse than an unlinked text the report keeps showing.
+- **Rewriting `place_text` to the registered name.** It records what the source says, which is evidence; the link is the interpretation.
+- **Downloading GeoNames data during `--register`.** It stays a quick, offline review; `fha places geocode` is the command that fetches and asks.

@@ -161,6 +161,8 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
    ```
    (Left alone on purpose: a relinked claim's place shows as a clickable `[[l-…]]` in an affected person's timeline only after that person's next `fha views timeline <p-id>`.) Ask once per place per session, then let it rest, the same as promotion.
 
+   **If he asks to settle all of them**, not just this one, two commands do it in one reviewed step each, and the close-out reopens the same way afterwards. `fha places link` lists every claim whose place text already fits a registered place (its first part names the place and the rest is in its hierarchy); on his yes, `fha places link --apply` writes them. `fha places candidates --register --dry-run` lists a new place for every cluster with none; on his yes to that list, `echo y | fha places candidates --register` writes it (it asks one `[y/N]`).
+
 ## Guardrails
 
 - **Never** `--status accepted` without an explicit human decision recorded in the session. If he didn't say yes to *this* claim, it stays `suggested`. A batched reply counts exactly as far as its numbers reach: "accept 1–4" decides claims 1 through 4 and nothing else.
