@@ -106,6 +106,8 @@ from _lib import (
     set_surname_line,
     recorded_surname,
     stub_slug_name,
+    name_words,
+    person_name_slot,
     fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
@@ -7033,42 +7035,23 @@ def _slugify_segment(text: str) -> str:
 def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     """(surname, given) for the §13 person filename `{surname}__{given}_{P-id}`.
 
-    Derived from the `name:` field - surname is the last word, given the rest -
-    falling back to the hand-filename when there is no usable name. Letters only,
-    so the generated filename matches the strict person grammar and lint won't
-    immediately re-flag it.
+    `--fix-ids` names a hand-made record the way `fha person new` names the
+    same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
+    Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
+    slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
+    the file never draws W138 the moment it is named.
 
-    A trailing generational suffix (Jr, Sr, II, III, IV, V) is pulled off
-    first via the shared `_lib.strip_generational_suffix` (issue #53) so
-    `--fix-ids` never mints a hand-authored "Roy Eugene Dodson Jr" as
-    `jr__roy_eugene_dodson` - the suffix rides at the end of the given slug
-    instead, the same rule `_lib.stub_slug_name` applies for `fha person new`
-    and `fha stubs --from-names`, so all three sites file a suffixed name the
-    same way. A leftover single core token after the suffix is stripped ("Roy
-    Jr") gets the same surname-less treatment `stub_slug_name` gives it - the
-    suffix does not promote the one remaining word into a surname. The
-    ORIGINAL single-token-with-no-suffix behaviour just below (surname =
-    that word, given = 'unknown') is untouched - it predates this fix and is
-    not part of it; SPEC §13's actual mononym convention (empty surname) is
-    `stub_slug_name`'s job, not this function's.
-
-    Accented letters fold to their base letters before the letters-only
-    filter (`_lib.fold_accents`, issue #279), the same fold `stub_slug_name`
-    applies, so "Halina Wiśniewska" becomes `wisniewska__halina` here too
-    instead of losing the `ś`."""
-    def letters(word: str) -> str:
-        return re.sub(r'[^a-z]+', '', fold_accents(word).lower())
-    parts = [p for p in str(name).split() if letters(p)]
-    core, suffix = strip_generational_suffix(parts)
-    if len(core) >= 2:
-        given_parts = core[:-1] + ([suffix] if suffix else [])
-        return (letters(core[-1]) or 'unknown',
-                '_'.join(letters(p) for p in given_parts) or 'unknown')
-    if core:
-        if suffix:
-            given = f'{core[0]} {suffix}'
-            return '', '_'.join(letters(p) for p in given.split()) or 'unknown'
-        return letters(core[0]) or 'unknown', 'unknown'
+    One difference is kept on purpose: a one-word name with no suffix
+    ("Cher") files as `cher__unknown` here, the convention this function
+    has always used, where `stub_slug_name` writes SPEC §13's surname-less
+    `__cher`. With no usable name at all, the slots come from the hand
+    filename."""
+    words = name_words(fold_accents(str(name or '')))
+    core, suffix = strip_generational_suffix(words)
+    if len(core) == 1 and not suffix and person_name_slot(core[0]):
+        return person_name_slot(core[0]), 'unknown'
+    if any(person_name_slot(w) for w in words):
+        return stub_slug_name(str(name))
     seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())
     return (seg or 'unknown'), 'unknown'
 

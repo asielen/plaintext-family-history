@@ -6665,6 +6665,16 @@ class FrontmatterTextCutByHashW157Tests(unittest.TestCase):
         paths = sorted(Path(m.path).name for m in codes['W157'])
         self.assertEqual(paths, ['deed.notes.md', 'deed.notes.md', 'notes.md'])
 
+    def test_an_inbox_asset_path_cut_at_a_hash_warns(self) -> None:
+        # `fha process` folds asset_path into the new source's provenance.
+        codes = self._inbox_codes({
+            'inbox/deed.notes.md': '---\nasset_elsewhere: true\n'
+                                   'asset_path: Cole box #4, shelf 2\n---\n',
+        })
+        (w,) = codes.get('W157', [])
+        self.assertIn("asset_path: stops at", w.message)
+        self.assertIn("Only 'Cole box' is read", w.message)
+
     def test_inbox_walk_skips_processed_templates_and_clean_notes(self) -> None:
         codes = self._inbox_codes({
             'inbox/processed/old.notes.md': '---\ntitle: Lot #4\n---\n',
