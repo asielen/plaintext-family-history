@@ -213,6 +213,7 @@ from _lib import (
     generated_text_differs,   # the date-masked "did anything change" test,
     is_generated_file,
     is_place_note_path,   # places/{slug}_{l-id}.md, the place-note name (SPEC §15),
+    is_owned_place_note,  # a place note views places wrote (marker after frontmatter),
     is_template_file,
     place_note_stem,      # a place's note stem from its id and name,
     rewrite_stale_stem_links,  # re-point file-name links after a place rename,
@@ -4444,12 +4445,10 @@ def _place_note_text(place: dict, names: dict[str, str]) -> str:
 
 def _owned_place_note(path: Path) -> bool:
     """True when `path` is a place note `fha views places` wrote: its first
-    line after the frontmatter is the views GENERATED marker."""
-    try:
-        text = path.read_text(encoding='utf-8', errors='ignore')
-    except OSError:
-        return False
-    return is_generated_text(text, prefix=_GEN_MARKER, after_frontmatter=True)
+    line after the frontmatter is the places GENERATED marker. The same test
+    the link writer uses (`_lib.is_owned_place_note`), so the two never
+    disagree about which file is a place's note."""
+    return is_owned_place_note(path)
 
 
 def _place_record_files(archive_root: Path) -> list[Path]:
@@ -4513,14 +4512,15 @@ def _place_notes_pass(conn: sqlite3.Connection, archive_root: Path,
         if planned.get(lid) == path.stem:
             continue
         rel = _rel_display(path, archive_root)
+        if not _owned_place_note(path):
+            # The owner's own file (research notes on the town, say). It is
+            # never a link target and never touched, so nothing is wrong:
+            # say what it is once, and carry on.
+            print(f'  note: {rel} carries place {fmt_id_display(lid)} in its name but is '
+                  'not its note, so it was left as it is and no link points at it.')
+            continue
         why = (f'the place is now called {names.get(lid) or fmt_id_display(lid)}'
                if lid in planned else 'that place is no longer in places.yaml')
-        if not _owned_place_note(path):
-            print(f'WARNING: left {rel} alone: it is named like a place note but '
-                  f'fha did not write it ({why}). Rename or delete it by hand.',
-                  file=sys.stderr)
-            stats['skipped'] += 1
-            continue
         if not dry_run:
             try:
                 path.unlink()
@@ -4597,7 +4597,8 @@ def _place_notes_summary(stats: dict, dry_run: bool) -> None:
           'up to date.')
     if stats['relinked'] and not dry_run:
         print(f'Re-pointed {stats["links"]} place link(s) in {len(stats["relinked"])} '
-              'record(s). Run `fha index` so searches see the new file names.')
+              'record(s), so the index is now out of date. Run `fha index` before the '
+              'next `fha views` or `fha find`.')
     if stats['skipped']:
         print(f'{stats["skipped"]} item(s) skipped; see the warnings above.')
 
@@ -4643,9 +4644,16 @@ def run_places(archive_root: Path, dry_run: bool = False) -> Result:
             'relinked': len(stats['relinked'])}
     if stats['skipped']:
         data['skipped'] = stats['skipped']
+    # A re-pointed link is an edit to a record the index read, and only a
+    # rebuild re-reads everything a record feeds (its search text, its
+    # citation and title columns, a question's text), so the run says the
+    # index is stale rather than leave it looking current.
+    stale = bool(stats['relinked']) and not dry_run
+    if stale:
+        data['index_stale'] = True
     changed = [] if dry_run else [str(p) for p in
                                   stats['written'] + stats['removed'] + stats['relinked']]
-    code = EXIT_WARNINGS if stats['skipped'] else EXIT_CLEAN
+    code = EXIT_WARNINGS if stats['skipped'] or stale else EXIT_CLEAN
     return _views_result(code, changed=changed, data=data)
 
 
@@ -4934,6 +4942,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         # view written below links places by their notes' current names.
         place_changed: list[str] = []
         place_skipped = 0
+        place_relinked = False
         if 'md' in fmt_passes and link_mode(load_fha_yaml(archive_root)) == 'obsidian':
             stats = _place_notes_pass(conn, archive_root)
             if stats is None:
@@ -4946,6 +4955,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                 place_changed = [str(p) for p in
                                  stats['written'] + stats['removed'] + stats['relinked']]
                 place_skipped = stats['skipped']
+                place_relinked = bool(stats['relinked'])
             _VIEW_LINKS.clear()
 
         records = _summary_completeness_context(conn, archive_root) if 'md' in fmt_passes else None
@@ -5029,8 +5039,14 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                 archive_root, [p for p in profiles_touched if p in profiles_written])
             if profile_sync != 'indexed' and sync == 'indexed':
                 sync = profile_sync
+        # Re-pointed place links edited records the index read (see
+        # `run_places`): the batch contract's index_stale, not a clean exit.
         result = _batch_view_result(count, skipped + place_skipped,
-                                    changed + place_changed, 'view', sync)
+                                    changed + place_changed, 'view',
+                                    'index_error' if place_relinked else sync)
+        if place_relinked:
+            print('Run `fha index` now: the place links re-pointed above changed '
+                  'records the index had read.')
         if not person_ids and result.exit_code == EXIT_CLEAN:
             # Every curated record parked under people/stubs/: the profiles'
             # regions were refreshed, but no companion view could be, and

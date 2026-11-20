@@ -189,6 +189,10 @@ class PlaceNoteTests(unittest.TestCase):
         self.assertEqual(place_note_slug('Kraków, St. Mary\'s'), 'krakow-st-mary-s')
         self.assertEqual(place_note_slug('  '), 'place')
         self.assertEqual(place_note_slug(None), 'place')
+        # Letters NFKD leaves whole are folded the way person file names fold them.
+        for name, slug in (('Suwałki', 'suwalki'), ('Łódź', 'lodz'), ('Bø', 'bo'),
+                           ('Großdorf', 'grossdorf'), ('Ærø', 'aero')):
+            self.assertEqual(place_note_slug(name), slug, name)
         self.assertEqual(place_note_stem('L-7C1A9F4E22', 'Fairview'), STEM)
 
     def test_a_second_run_and_a_new_day_rewrite_nothing(self):
@@ -225,7 +229,9 @@ class PlaceNoteTests(unittest.TestCase):
         _rename_place(self.root, 'Fairview', 'Fair View')
         _index(self.root)
         res, out, _err = _loud(views.run_places, self.root)
-        self.assertEqual(res.exit_code, 0)
+        # The re-pointed links edited records the index read: the run says so.
+        self.assertEqual(res.exit_code, 1)
+        self.assertTrue(res.data['index_stale'])
         new_stem = f'fair-view_{PLACE}'
         self.assertFalse((self.root / NOTE).exists())
         self.assertTrue((self.root / 'places' / f'{new_stem}.md').exists())
@@ -259,14 +265,61 @@ class PlaceNoteTests(unittest.TestCase):
         stray.write_text('---\naliases: [Fairview]\n---\nMine too.\n', encoding='utf-8')
         res, _out, err = _loud(views.run_places, self.root)
         self.assertEqual(res.exit_code, 1)
-        self.assertEqual(res.data['skipped'], 2)
+        # The file at the note's own name is in the way (skipped); the other
+        # one is the owner's file, named and left, which is not a problem.
+        self.assertEqual(res.data['skipped'], 1)
         self.assertEqual(mine.read_text(encoding='utf-8'), '# My Fairview notes\n')
         self.assertTrue(stray.exists())
         self.assertIn('no GENERATED header', err)
-        self.assertIn('fha did not write it', err)
+        self.assertIn(f'carries place {PLACE} in its name but is not its note', _out)
         _quiet(views.run_clean, self.root)
         self.assertTrue(mine.exists())
         self.assertTrue(stray.exists())
+
+    def test_a_hand_file_with_the_place_id_never_takes_the_links(self):
+        # Research notes on the town, named the way records are named.
+        hand = self.root / 'places' / f'fairview-research_{PLACE}.md'
+        hand.write_text('# My Fairview research\n', encoding='utf-8')
+        # No note yet: a place link keeps its ID form, never the hand file.
+        self.assertEqual(LinkWriter(self.root, 'obsidian').convert(f'[[{PLACE}|Fairview]]'),
+                         f'[[{PLACE}|Fairview]]')
+        res, out, _err = _loud(views.run_places, self.root)
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn(f'carries place {PLACE} in its name but is not its note', out)
+        self.assertNotIn('now called', out)
+        self.assertEqual(LinkWriter(self.root, 'obsidian').convert(f'[[{PLACE}|Fairview]]'),
+                         f'[[{STEM}|Fairview]]')
+        # normalize-links, views places and lint agree: a second cycle edits nothing.
+        for _cycle in range(2):
+            _quiet(normalize_links.run_normalize_links, self.root, load_fha_yaml(self.root),
+                   write=True)
+            _index(self.root)
+            _quiet(views.run_places, self.root)
+        before = _tree(self.root)
+        again = _quiet(normalize_links.run_normalize_links, self.root,
+                       load_fha_yaml(self.root), write=True)
+        self.assertEqual(again.data['files_changed'], 0)
+        self.assertEqual(_quiet(views.run_places, self.root).data['links'], 0)
+        self.assertEqual(_tree(self.root), before)
+        self.assertEqual(_codes(self.root, 'W161'), [])
+        self.assertIn(f'[[{STEM}|Fairview]]', (self.root / SUSAN).read_text(encoding='utf-8'))
+        self.assertNotIn('fairview-research_', (self.root / SUSAN).read_text(encoding='utf-8'))
+
+    def test_refresh_after_a_rename_says_the_index_is_stale(self):
+        _quiet(views.run_refresh, self.root)
+        _quiet(normalize_links.run_normalize_links, self.root, load_fha_yaml(self.root),
+               write=True)
+        _index(self.root)
+        settled = _quiet(views.run_refresh, self.root)
+        self.assertEqual(settled.exit_code, 0)
+        _rename_place(self.root, 'Fairview', 'Fair View')
+        _index(self.root)
+        res, out, _err = _loud(views.run_refresh, self.root)
+        self.assertEqual(res.exit_code, 1)
+        self.assertTrue(res.data['index_stale'])
+        self.assertIn('Run `fha index`', out)
+        _index(self.root)
+        self.assertEqual(_quiet(views.run_refresh, self.root).exit_code, 0)
 
     def test_dry_run_writes_nothing_and_says_what_it_would_do(self):
         _quiet(views.run_places, self.root)
