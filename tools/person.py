@@ -260,6 +260,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import yaml
 
 from _lib import (
+    relationship_nature_word,
     parse_questions,      # question entries, to check a --working-answer h-id exists
     strip_link_wrapper,
     LIVING_VALUES as _LIB_LIVING_VALUES,
@@ -2521,10 +2522,11 @@ _RECIPROCAL_RELATION = {'parent': 'child', 'child': 'parent',
 # employer, member-of, ... - describe ties this verb does not record; relate
 # only writes the four family roles above.) An unrecognised word is still
 # written (never rejected - "forgiving, not fussy", AGENTS.md), just flagged.
+# `half` is a sibling's nature only (`half-sibling` reads as `half`).
 KIN_SUBTYPES = frozenset({
     'biological', 'adoptive', 'step', 'foster', 'guardian',
     'surrogate-gestational', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
-    'social',
+    'social', 'half',
 })
 
 
@@ -2761,7 +2763,9 @@ def run_relate(
     owner_name = str(owner_meta.get('name') or '').strip() or fmt_id_display(pid)
     target_name = str(target_meta.get('name') or '').strip() or fmt_id_display(tid)
     subtype_clean = (subtype or '').strip() or None
-    warn_subtype = bool(subtype_clean) and subtype_clean.lower() not in KIN_SUBTYPES
+    nature = relationship_nature_word(subtype_clean)
+    warn_subtype = bool(subtype_clean) and (
+        nature not in KIN_SUBTYPES or (nature == 'half' and relation_type != 'sibling'))
     mirror_type = _RECIPROCAL_RELATION[relation_type]
 
     owner_has = _relationship_entry_exists(owner_meta, tid, relation_type)
@@ -2854,8 +2858,8 @@ def run_relate(
                    f'{subtype_clean!r} is not one of the archive\'s kin '
                    'subtypes (SPEC §8.2): biological, adoptive, step, foster, '
                    'guardian, surrogate-gestational, surrogate-genetic, '
-                   'donor-sperm, donor-egg, social. Recorded as written - fix '
-                   'it by hand if it was a typo.')
+                   'donor-sperm, donor-egg, social, and half for a sibling. '
+                   'Recorded as written; fix it by hand if it was a typo.')
 
     if dry_run:
         result.data['status'] = 'dry-run'

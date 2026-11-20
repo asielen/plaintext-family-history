@@ -1202,6 +1202,63 @@ def parentage_parties(
     return children, parents
 
 
+# The directional power ties a `relationship` claim records (SPEC §8.2): the
+# role on each side, and the edge label each side's row carries.
+POWER_TIE_ROLES: tuple[tuple[tuple[str, str], tuple[str, str]], ...] = (
+    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+    (('employee', 'employee'), ('employer', 'employer')),
+)
+
+
+def relationship_claim_parties(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> tuple[str, Any]:
+    """Which kind of tie an accepted `relationship` claim records, and who is
+    in it: the rule `fha index` derives its edges by, in one place so `fha
+    lint` (W159) asks the same question and never calls a tie missing that
+    the tree holds.
+
+    The first branch that applies wins, as in the index:
+      - ('parentage', (children, parents)) when the roles name both halves
+        (`parentage_parties`);
+      - ('spouse', people) when anyone carries a spouse role, the couple read
+        by `spouse_parties` (two people named and one marked spouse is the
+        couple, SPEC §8.3 "Who married");
+      - ('social', people) for a friend, associate or neighbor subtype
+        (`social_parties`);
+      - ('power', [(a, label_a, b, label_b), ...]) otherwise, one entry per
+        directed enslaved/enslaver or employee/employer pair.
+    Input is the claim's `(pid, role)` pairs as `claim_role_pairs` or
+    `claim_persons_with_roles` gives them."""
+    pairs = list(persons_with_roles)
+    children, parents = parentage_parties(pairs)
+    if children and parents:
+        return 'parentage', (children, parents)
+    if any(role_meaning(r) == 'spouse' for _p, r in pairs):
+        return 'spouse', spouse_parties(pairs)
+    if subtype in SOCIAL_TIE_SUBTYPES:
+        return 'social', social_parties(pairs, subtype)
+    ties = []
+    for (role_a, edge_a), (role_b, edge_b) in POWER_TIE_ROLES:
+        a_ids = [p for p, r in pairs if role_meaning(r) == role_a]
+        b_ids = [p for p, r in pairs if role_meaning(r) == role_b]
+        ties += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
+    return 'power', ties
+
+
+def relationship_claim_records_tie(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> bool:
+    """Whether `fha index` derives at least one edge from an accepted
+    `relationship` claim (`relationship_claim_parties`): a couple or social
+    group of two or more different people, any parentage, or any power-tie
+    pair."""
+    kind, parties = relationship_claim_parties(persons_with_roles, subtype)
+    if kind in ('spouse', 'social'):
+        return len(set(parties)) >= 2
+    return bool(parties)
+
+
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
 # `divorce` name them as `spouse` (and on those two, `spouse_parties` answers
@@ -1757,6 +1814,65 @@ CLAIM_ROLE_WORDS: frozenset[str] = frozenset({
     'enslaved', 'enslaver', 'employer', 'employee', 'member',
     'deceased',
 }) | NON_PARTY_ROLES | SOCIAL_TIE_SUBTYPES
+
+
+# SPEC §8.2's natures for a `relationship` claim's `subtype:`. The list is
+# mostly closed: a word outside it is still legal free text. `half` is the
+# nature of a sibling tie through one shared parent; `half-sibling` is read as
+# the same word (`relationship_nature_word`).
+RELATIONSHIP_NATURES: frozenset[str] = frozenset({
+    'biological', 'adoptive', 'step', 'foster', 'guardian',
+    'surrogate-gestational', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
+    'social', 'half',
+    'enslaver', 'enslaved-by', 'employer', 'employee', 'member-of',
+}) | SOCIAL_TIE_SUBTYPES
+
+_NATURE_SPELLINGS: dict[str, str] = {'half-sibling': 'half'}
+
+
+def relationship_nature_word(value: Any) -> str:
+    """A `subtype:` as every nature comparison reads it: trimmed, lower-cased,
+    and `half-sibling` read as `half` (SPEC §8.2), so an entry written one way
+    matches a claim written the other."""
+    word = str(value or '').strip().lower()
+    return _NATURE_SPELLINGS.get(word, word)
+
+
+# Words that are not a nature, written where a nature belongs (lint W158).
+# A role belongs in `roles:`, a record's wording in `value:` or `notes:`, and
+# a degree of kinship in a descriptive role (`grandchild:`). The list is a
+# deny-list: every other free-text nature stays legal.
+_SUBTYPE_ROLE_WORDS: frozenset[str] = (
+    (CLAIM_ROLE_WORDS | frozenset(CLAIM_ROLE_SYNONYMS)
+     | {'subject', 'sibling', 'grandparent', 'grandchild'})
+    - RELATIONSHIP_NATURES)
+_SUBTYPE_RECORD_WORDS: frozenset[str] = frozenset({'survived-by', 'nickname'})
+_SUBTYPE_KINSHIP_WORDS: frozenset[str] = frozenset({
+    'grandparent-grandchild', 'uncle-nephew', 'uncle-niece', 'aunt-niece',
+    'aunt-nephew', 'cousin', 'in-law', 'sibling-in-law', 'parent-in-law',
+    'child-in-law', 'mother-in-law', 'father-in-law', 'son-in-law',
+    'daughter-in-law', 'brother-in-law', 'sister-in-law', 'extended-family',
+})
+
+
+def subtype_misuse(value: Any) -> str | None:
+    """What kind of word a relationship claim's `subtype:` is when it is not a
+    nature: 'role' (`mother`, `child`, `witness`), 'record' (`survived-by`,
+    `nickname`) or 'kinship' (`cousin`, `uncle-nephew`), else None.
+
+    Spaces and underscores read as hyphens, so `survived by` is caught too.
+    A word on SPEC §8.2's list is never misuse, even where it doubles as a
+    role (`employer`, `friend`)."""
+    word = re.sub(r'[\s_]+', '-', relationship_nature_word(value))
+    if not word or word in RELATIONSHIP_NATURES:
+        return None
+    if word in _SUBTYPE_ROLE_WORDS or word.replace('-', '_') in _SUBTYPE_ROLE_WORDS:
+        return 'role'
+    if word in _SUBTYPE_RECORD_WORDS:
+        return 'record'
+    if word in _SUBTYPE_KINSHIP_WORDS:
+        return 'kinship'
+    return None
 
 
 def social_parties(
@@ -9899,7 +10015,7 @@ def relationship_tie_key(entry: Any, resolve=None) -> tuple[str, str, str] | Non
     return (
         to_key,
         str(entry.get('type') or '').strip().lower(),
-        str(entry.get('subtype') or 'biological').strip().lower(),
+        relationship_nature_word(entry.get('subtype')) or 'biological',
     )
 
 
@@ -9920,6 +10036,129 @@ def relationship_entry_hypothesis(entry: Any) -> str | None:
     raw = str(entry.get('hypothesis')).strip()
     ids = extract_bare_ids(strip_link_wrapper(raw))
     return normalize_id(ids[0]) if ids and ids[0].lower().startswith('h-') else raw
+
+
+def relationship_entry_is_sourced(entry: Any) -> bool:
+    """An entry that cites evidence: a `claims:` list or a `source:`, and not
+    a guess (SPEC §9)."""
+    return (isinstance(entry, dict) and not relationship_entry_is_guess(entry)
+            and bool(relationship_entry_claim_ids(entry) or entry.get('source')))
+
+
+def claimless_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the entries lint W160
+    reports: an entry citing no evidence (no claims, no `source:`) and not a
+    guess, beside a sourced entry for the same tie (`relationship_tie_key`:
+    same person, role and nature). The profile shows such a pair as the same
+    person twice. A guess beside a sourced entry is W155's, and an entry of
+    another nature is another tie (SPEC §8.2), so neither is listed here."""
+    if not isinstance(block, list):
+        return []
+    sourced = {relationship_tie_key(e, resolve) for e in block
+               if relationship_entry_is_sourced(e)}
+    sourced.discard(None)
+    return [n for n, e in enumerate(block)
+            if isinstance(e, dict) and not relationship_entry_is_guess(e)
+            and not relationship_entry_is_sourced(e)
+            and relationship_tie_key(e, resolve) in sourced]
+
+
+def sourced_duplicate_entries(block: Any, resolve=None) -> list[int]:
+    """The positions in a `relationships:` list of the later of two entries
+    that both cite evidence for the same tie (`relationship_tie_key`), which
+    lint W160 names for merging by hand. Writers fold such a pair themselves
+    unless the later entry holds the owner's own text (a note, another key,
+    a comment), so what is left here is always a merge for the owner."""
+    if not isinstance(block, list):
+        return []
+    seen: set = set()
+    out: list[int] = []
+    for n, e in enumerate(block):
+        if not relationship_entry_is_sourced(e):
+            continue
+        key = relationship_tie_key(e, resolve)
+        if key is None:
+            continue
+        if key in seen:
+            out.append(n)
+        seen.add(key)
+    return out
+
+
+# The keys `collapse_relationship_entries` carries into the entry it keeps.
+_FOLDABLE_ENTRY_KEYS = frozenset({
+    'to', 'type', 'subtype', 'claims', 'source', 'status', 'hypothesis'})
+
+def _entry_within(entry: Any, kept: Any) -> bool:
+    """Whether every key of one entry, other than the `claims:` and
+    `hypothesis:` a fold carries over, is in the kept entry with the same
+    value. Then folding it loses nothing the owner wrote."""
+    if not isinstance(entry, dict) or not isinstance(kept, dict):
+        return False
+    return all(k in kept and kept[k] == v for k, v in entry.items()
+               if k not in ('claims', 'hypothesis'))
+
+
+# The keys a bare entry is made of. An entry holding anything else (a note, a
+# date, a `claims: []` left with a comment) carries the owner's text.
+_BARE_ENTRY_KEYS = frozenset({'to', 'type', 'subtype'})
+_ITEM_KEY_LINE_RE = re.compile(r'^\s*(?:-\s+)?[^\s:#][^:#]*:(?:\s+(.*))?$')
+
+
+def _item_has_comment(item: list[str]) -> bool:
+    """Whether one entry's lines hold a YAML comment, on a line of its own or
+    after a value (read the YAML way, so a `#` inside quotes is not one)."""
+    for ln in item:
+        bare = ln.rstrip('\r').strip()
+        if not bare:
+            continue
+        if bare.startswith('#') or bare.startswith('- #'):
+            return True
+        m = _ITEM_KEY_LINE_RE.match(bare)
+        rest = (m.group(1) or '') if m else bare
+        if rest and split_yaml_comment(rest)[1]:
+            return True
+    return False
+
+
+def drop_claimless_duplicates(
+    text: str, resolve=None,
+) -> tuple[str, list[tuple[int, dict]], list[tuple[int, dict]]] | None:
+    """Remove the claimless duplicate entries (`claimless_duplicate_entries`)
+    that hold nothing the owner typed, for `fha lint --fix-duplicates`.
+
+    An entry goes only when it has no key beyond `to:`, `type:` and
+    `subtype:` and no comment. One that carries a note, any other key or a
+    comment is never removed, since that text is the owner's: it is returned
+    for a "remove by hand" line instead. Everything else in the block is kept
+    as written, newlines included.
+
+    Returns `(new_text, dropped, by_hand)`, each a list of `(position in the
+    list, entry)`, the text unchanged when nothing goes; None when the block
+    is not in a form edited here."""
+    lines = text.split('\n')
+    located = _relationship_block_items(lines)
+    if located is None:
+        return None
+    _key, block_end, items = located
+    entries = [_relationship_item_entry(lines[s:e]) for s, e in items]
+    dupes = set(claimless_duplicate_entries(entries, resolve))
+    if not dupes:
+        return text, [], []
+    dropped: list[tuple[int, dict]] = []
+    by_hand: list[tuple[int, dict]] = []
+    new_lines = list(lines[:items[0][0]])
+    for n, (s, e) in enumerate(items):
+        tail_end = items[n + 1][0] if n + 1 < len(items) else block_end
+        entry = entries[n]
+        if n in dupes:
+            if set(entry) <= _BARE_ENTRY_KEYS and not _item_has_comment(lines[s:e]):
+                dropped.append((n, entry))
+                continue          # the entry goes, with its trailing blank lines
+            by_hand.append((n, entry))
+        new_lines.extend(lines[s:tail_end])
+    new_lines.extend(lines[block_end:])
+    return '\n'.join(new_lines), dropped, by_hand
 
 
 def _relationship_item_key(entry: Any, resolve) -> tuple | None:
@@ -10053,12 +10292,21 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     duplicates is left alone. A guess is never folded into a sourced entry
     (`_relationship_item_key`).
 
+    A tool never removes text the owner typed, so a later entry is folded
+    only when the fold carries everything it says: it holds nothing beyond
+    `to:`, `type:`, `subtype:`, `claims:`, `source:`, `status:` and
+    `hypothesis:`, has no comment, and names no working answer other than the
+    one the kept entry ends up with. A later entry with no comment whose
+    every other key the first already holds with the same value (the same
+    guess written twice, or copied in by a merge) is folded too, since
+    nothing it says is lost. Any
+    other later entry (a note, a date, a
+    comment, a second working answer) stays where it is, beside the first,
+    and lint W160 names it for the owner to merge by hand.
+
     The working answer is not part of a sourced entry's key, so sourced
-    entries still fold to one per person and role. When the folded entries
-    name different working answers (`hypothesis:`), the first entry's link is
-    kept and the others are dropped; the first entry gains a link from a later
-    one only when it has none. That loses a link only when one tie was proved
-    from two different guesses, which is rare and leaves the evidence intact.
+    entries still fold to one per person and role, and the first entry gains
+    a link from a later one only when it has none.
 
     Returns (new_text, entries_removed); the text comes back unchanged when
     nothing repeats or the block is not in a form edited here.
@@ -10076,6 +10324,8 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
     cr = '\r' if lines[0].endswith('\r') else ''
 
     parsed: list[tuple[tuple | None, list[str]]] = []
+    foldable: list[bool] = []
+    entries: list[Any] = []
     for s, e in items:
         indent = re.match(r'^(\s*)', lines[s]).group(1)
         chunk = '\n'.join(
@@ -10089,6 +10339,9 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         parsed.append((_relationship_item_key(entry, resolve),
                        relationship_entry_claim_ids(entry),
                        relationship_entry_hypothesis(entry)))
+        entries.append(entry)
+        foldable.append(isinstance(entry, dict) and set(entry) <= _FOLDABLE_ENTRY_KEYS
+                        and not _item_has_comment(lines[s:e]))
 
     groups: dict[tuple, list[int]] = {}
     for n, (k, _c, _h) in enumerate(parsed):
@@ -10101,6 +10354,24 @@ def collapse_relationship_entries(text: str, resolve=None) -> tuple[str, int]:
         linked = [o for o in groups if o[:-1] == k[:-1] and o[-1]]
         if len(linked) == 1:
             groups[linked[0]] = sorted(groups[linked[0]] + groups.pop(k))
+    # Only what the fold carries may be folded: a later entry holding the
+    # owner's own text stays beside the first, and lint names it.
+    for k, group in groups.items():
+        kept_link = parsed[group[0]][2]
+        members = [group[0]]
+        for m in group[1:]:
+            link = parsed[m][2]
+            later = lines[items[m][0]:items[m][1]]
+            first = lines[items[group[0]][0]:items[group[0]][1]]
+            carried = (foldable[m]
+                       or [ln.strip() for ln in later] == [ln.strip() for ln in first]
+                       or (not _item_has_comment(later)
+                           and _entry_within(entries[m], entries[group[0]])))
+            if not carried or (link and kept_link and link != kept_link):
+                continue
+            kept_link = kept_link or link
+            members.append(m)
+        groups[k] = members
     dupes = {n: g for g in groups.values() if len(g) > 1 for n in g}
     if not dupes:
         return text, 0
@@ -10223,8 +10494,8 @@ def claim_pids_in_role(claim: dict, meaning: str,
 def relationship_entry_nature(entry: dict) -> str:
     """The nature a `relationships:` entry states. A parent or child entry
     with no `subtype:` is `biological` (SPEC §8.2); other types have no
-    default."""
-    st = str(entry.get('subtype', '')).strip().lower()
+    default. `half-sibling` reads as `half` (`relationship_nature_word`)."""
+    st = relationship_nature_word(entry.get('subtype'))
     if st:
         return st
     role = str(entry.get('type', '')).strip().lower()
@@ -10234,7 +10505,7 @@ def relationship_entry_nature(entry: dict) -> str:
 def claim_relationship_nature(claim: dict) -> str:
     """A claim's nature, for comparing with an entry's. A claim naming a
     child and a parent with no `subtype:` is `biological`."""
-    st = str(claim.get('subtype', '')).strip().lower()
+    st = relationship_nature_word(claim.get('subtype'))
     if st:
         return st
     roles = claim.get('roles')
