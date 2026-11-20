@@ -45,7 +45,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `packet.py` | fha packet: build a person data-export packet |
 | `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c) |
 | `photoindex.py` | fha photoindex: photo metadata catalog |
-| `places.py` | fha places: place registry hygiene, recurrence detection and geocoding |
+| `places.py` | fha places: place registry hygiene, recurrence detection, geocoding from GeoNames (one reviewed batch) and human-directed edits |
 | `process.py` | fha process: Stage A of the intake pipeline |
 | `reconcile.py` | fha reconcile: heal record inventory paths after files move (TOOLING §9) |
 | `relate.py` | fha relate: how are two people related? |
@@ -54,7 +54,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `scaffold.py` | fha install / fha update-tools: vendor the operating layer into an archive; also writes manifest.json |
 | `serve.py` | fha serve: the local browser workbench (TOOLING_INTERFACE §1b) |
 | `site.py` | fha site: the static-HTML family explorer (TOOLING §12) |
-| `source.py` | fha source: deterministic source-record write-backs (TOOLING §3c sibling) |
+| `source.py` | fha source: deterministic source-record write-backs, and merging two records of one piece of evidence (TOOLING §3d) |
 | `stubs.py` | fha stubs: mint person stubs for unresolved P-id references |
 | `views.py` | fha views: generate view files from the index |
 | `wikitree.py` | fha wikitree: render a curated profile to the WikiTree dialect |

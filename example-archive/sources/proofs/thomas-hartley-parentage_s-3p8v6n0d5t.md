@@ -43,8 +43,7 @@ created: 2026-07-03
 
 ## The question
 
-Who were the parents of [[p-de957bcda1|Thomas Edward Hartley]], the Fairview railroad
-bookkeeper? No birth record, death record or family Bible names them.
+Who were the parents of [[p-de957bcda1|Thomas Edward Hartley]], the Fairview railroad bookkeeper? No birth record, death record or family Bible names them.
 
 ## The evidence
 
@@ -59,21 +58,12 @@ bookkeeper? No birth record, death record or family Bible names them.
 
 ## The reasoning
 
-The Thomas of 1850 and the Thomas of 1880 agree in name, middle initial, birth year and
-birth state, and no other Thomas Hartley of that age appears in New York in 1850. A boy
-of ten living with a couple of 40 and 36 who share his surname is, in the usual case,
-their son; nothing in the records points to another arrangement. The 1880 entry for
-Thomas's father's birthplace (New York) does not match Caleb's (Vermont) - the one
-discrepancy, and the kind an informant in 1880 could easily get wrong about a parent
-he had not lived with for twenty years.
+The Thomas of 1850 and the Thomas of 1880 agree in name, middle initial, birth year and birth state, and no other Thomas Hartley of that age appears in New York in 1850. A boy of ten living with a couple of 40 and 36 who share his surname is, in the usual case, their son; nothing in the records points to another arrangement. The 1880 entry for Thomas's father's birthplace (New York) does not match Caleb's (Vermont) - the one discrepancy, and the kind an informant in 1880 could easily get wrong about a parent he had not lived with for twenty years.
 
 ## Conclusion
 
-Thomas Edward Hartley was the son of Caleb Comstock Hartley and Chastina Augusta Reed.
-The conclusion rests on indirect evidence, so it carries medium confidence; a record
-naming Caleb or Chastina as his parent would raise it.
+Thomas Edward Hartley was the son of Caleb Comstock Hartley and Chastina Augusta Reed. The conclusion rests on indirect evidence, so it carries medium confidence; a record naming Caleb or Chastina as his parent would raise it.
 
 ## Notes
 
-Written to settle the working answer on "Who were Thomas Edward Hartley's parents?"
-(notes/questions.md).
+Written to settle the working answer on "Who were Thomas Edward Hartley's parents?" (notes/questions.md).

@@ -959,6 +959,20 @@ class ConfirmArchiveTests(unittest.TestCase):
             conn.close()
         self.assertEqual(row['place_id'], lid.lower())
 
+    def test_new_place_points_at_geocode_after_index(self) -> None:
+        # A freshly minted place has no coordinates; the next step names the
+        # exact geocode command, after `fha index` (geocode reads the index).
+        # Nothing here writes coordinates: geocode asks its own yes.
+        result = confirm.run_confirm_place(
+            self.root, claim_ids=[CLAIM_B], name='Marsh Creek', hierarchy='Marsh Creek, Kansas, USA')
+        lid = result['place_id']
+        text = '\n'.join(m.text for m in result.messages)
+        self.assertIn(f'run `fha index`, then `fha places geocode --place {lid}`', text)
+        yaml_text = (self.root / 'places' / 'places.yaml').read_text(encoding='utf-8')
+        self.assertNotIn('coords:', yaml_text.split(lid, 1)[1].split('- id:', 1)[0])
+        into = confirm.run_confirm_place(self.root, claim_ids=[CLAIM_B], into='L-7c1a9f4e22')
+        self.assertNotIn('geocode', '\n'.join(m.text for m in into.messages))
+
     def test_place_relinks_all_claims_in_one_source_file(self) -> None:
         # Regression: two claims that live in the SAME source record must both
         # keep their relink. Building each preview from the pristine file text
@@ -1030,6 +1044,14 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn('Found the marriage record', text)
         self.assertIn(f'[{SOURCE.lower()}]', text)
         self.assertIn(f'[{PERSON_1.lower()}]', text)
+
+    def test_discovery_long_text_stays_on_one_line(self) -> None:
+        # The win he logs is read and edited by hand later, so a long
+        # sentence goes in as one line and the editor does the wrapping.
+        long_text = ' '.join(['Found the marriage notice for Thomas Hartley and Margaret Cole.'] * 4)
+        confirm.run_add_discovery(self.root, text=long_text, refs=[SOURCE])
+        text = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
+        self.assertIn(long_text, text)
 
     def test_discovery_dry_run_writes_nothing(self) -> None:
         before = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')

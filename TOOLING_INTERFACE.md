@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *AI-interface* side of the archive: the workbench harness configuration and the workflow skills that turn `fha` tools into a genealogy-aware research assistant. To use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-**Version 2.8, companion to SPEC.md v2.8 and TOOLING.md v2.8 (versions track the SPEC).**
+**Version 2.11, companion to SPEC.md v2.11 and TOOLING.md v2.11 (versions track the SPEC).**
 
 This document expands one layer that [`TOOLING.md`](TOOLING.md) only sketches: the harness and skills that sit *on top of* the deterministic `fha` tool suite. TOOLING.md specifies the tools (schemas, algorithms, command shapes). This document specifies what drives them: the workbench configuration that makes any conforming harness genealogy-aware, the browser workbench, and the workflow skills that combine `fha` calls with model judgment into the everyday research loop.
 
@@ -92,7 +92,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 ### 2.2 Judgment-heavy skills
 
 - `merge-identities` ([SKILL.md](.claude/skills/merge-identities/SKILL.md)): the "same person or two people?" decision, run on the frontier tier (§1). Reads both people's neighborhoods (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation, and enacts a confirmed merge with `fha confirm merge` (dry-run first). A `merged_into` person is never directly referenced again (lint W107 lists any left; it counts for the survivor meanwhile, SPEC §9).
-- `place-research` ([SKILL.md](.claude/skills/place-research/SKILL.md)): "fill in this place's history." Drafts dated `history:` entries and place notes (loose citations are acceptable, since place context is not vital fact), links `[[l-…]]`, and proposes registry entries for `fha confirm place` to write.
+- `place-research` ([SKILL.md](.claude/skills/place-research/SKILL.md)): "fill in this place's history." Drafts dated `history:` entries and place notes (loose citations are acceptable, since place context is not vital fact), links `[[l-…]]`, and proposes registry entries for `fha confirm place` to write; for a place without coordinates it previews `fha places geocode --place` and runs it on the human's yes.
 
 ### 2.3 Photos and sharing
 

@@ -82,6 +82,7 @@ Explicit invocation only: "mine grandpa's interview", "pull the claims out of th
 - The transcript text is **byte-unchanged**: never deleted, rewritten, or trimmed.
 - Names resolve via candidate proposals or confirmed stubs, never silent guesses.
 - Any record ID written into `## Stories` or `## Notes` prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only inside claims-block YAML fields and tool arguments (_STANDARD.md §11).
+- Prose written into `## Stories` or `## Notes` keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

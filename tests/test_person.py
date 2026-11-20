@@ -2001,6 +2001,14 @@ class NoteTests(unittest.TestCase):
         self.assertIn('## Stories\nA real story.', out)
         self.assertNotIn('none yet', out)
 
+    def test_long_paragraph_stays_on_one_line(self) -> None:
+        # A note he types by hand must be editable by hand later: the tool
+        # writes the paragraph as one line and leaves wrapping to the editor.
+        long_note = ' '.join(['The 1880 census lists the Hartleys on the same page as the Coles.'] * 4)
+        person.run_note(self.root, PID, 'research', long_note)
+        after = self.stub.read_text(encoding='utf-8')
+        self.assertIn('\n' + long_note + '\n', after)
+
     def test_never_touches_existing_text(self) -> None:
         person.run_note(self.root, PID, 'research', 'Keep me exactly as written.')
         person.run_note(self.root, PID, 'research', 'Add me too.')
