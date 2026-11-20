@@ -236,6 +236,7 @@ One real archive held about 40 image-only sources carrying over a hundred accept
 - Nothing written into the archive carries a machine-specific absolute path (AGENTS_TOOLING §11). The transcript header names the file it read by filename.
 - Any record ID written into `## Notes` or `notes/questions.md` prose is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured YAML fields and tool arguments (_STANDARD.md §11).
 - A marker is written at creation and **never hand-flipped**. The missing flip verb is a blocked gap (`GAP.md`); don't work around it.
+- Prose written into the source's `## Notes` or a `## Q:` context line (the transcript itself keeps the document's own line breaks) keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

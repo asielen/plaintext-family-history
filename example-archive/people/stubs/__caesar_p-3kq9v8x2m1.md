@@ -30,20 +30,17 @@ tier: stub
 <!-- GENERATED-END sources-index -->
 
 ## Biography
-Recorded only as "Caesar" in the 1849 probate inventory of the Hartley estate. A stub kept
-so the archive remembers him while the inventory is found and filed.
+Recorded only as "Caesar" in the 1849 probate inventory of the Hartley estate. A stub kept so the archive remembers him while the inventory is found and filed.
 
 ## Stories
 *(none yet)*
 
 ## Research Notes
-Open questions, hunches, and brick walls - where to look next. (Delete this line
-as you add your own.) This section is public by default.
+Open questions, hunches, and brick walls - where to look next. (Delete this line as you add your own.) This section is public by default.
 <!-- To keep one note out of anything you share, put it between two marker
      lines: before it, the word private inside marks like the ones around this
      note; after it, /private the same way. START_HERE.md shows both lines.
      The note stays in your own archive and your local preview. -->
 
 ## Friends & Family
-People connected to them who aren't blood relatives - neighbors, business
-partners, the family they boarded with. Type [[ and pick a name to link.
+People connected to them who aren't blood relatives - neighbors, business partners, the family they boarded with. Type [[ and pick a name to link.

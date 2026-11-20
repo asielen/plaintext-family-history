@@ -91,6 +91,7 @@ Open the regenerated page and confirm the human's change is present *because it 
 - **Never** overwrite the human's existing `custom.css`, `home.md`, or record prose (append and merge around it), and **never** edit below a `GENERATED` header; route a fix that landed on a generated block to its upstream record instead.
 - **Never** fold an unsourced *fact* from a hand-edit straight into a record as accepted prose. It goes through the claim gate like any other fact.
 - Respect privacy on the rebuild: it is a standalone snapshot, so redaction, EXIF-stripping, and living-co-depiction drops all still apply to anything the human added.
+- Prose folded into a person record or `notes/home.md` keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

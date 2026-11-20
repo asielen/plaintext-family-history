@@ -85,6 +85,7 @@ Invoked only, never automatically or in bulk. Triggers: "what do we know about t
 - **Never** write a caption the human hasn't read verbatim and approved.
 - **Never** touch a human-caption field (`Caption-Abstract` / `XMP-dc:Description`). The verb enforces this; the skill promises it.
 - **Working-copy mode:** the write verb refuses there (the photo files live on the main computer). Say so plainly rather than retrying.
+- A drafted caption keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

@@ -636,7 +636,7 @@ _SEARCH_LOG_DDL = '''CREATE TABLE IF NOT EXISTS search_log(
 _RESEARCH_LOG_HEADER = (
     '# Research log\n'
     '\n'
-    'Every search run, by hand or by `fha capture`, one entry per search, so no\n'
+    'Every search run, by hand or by `fha capture`, one entry per search, so no '
     'collection is searched twice by accident.\n'
 )
 
