@@ -2910,11 +2910,13 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         undo.append((f'restore {keeper_path.name}',
                      lambda: write_text_exact_atomic(keeper_path, keeper_text)))
         for edit in other_link_edits:
-            # Registered first: restoring a file the write never reached
-            # writes back the bytes it already holds.
+            # Registered once the write has landed: an atomic write that
+            # failed left the file as it was, and putting back a file that
+            # could not be written (read-only, held open) would fail again
+            # and be reported as damage that is not there.
+            write_text_exact_atomic(edit.path, edit.after)
             undo.append((f'restore the links in {edit.path.name}',
                          lambda e=edit: write_text_exact_atomic(e.path, e.before)))
-            write_text_exact_atomic(edit.path, edit.after)
         retiree_path.unlink()
         undo.append((f'put {retiree_path.name} back',
                      lambda: write_text_exact_atomic(retiree_path, retiree_text)))

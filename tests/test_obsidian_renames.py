@@ -22,7 +22,9 @@ Temp copies throughout; the example archive itself is never written.
 import contextlib
 import importlib.util
 import io
+import os
 import re
+import stat
 import shutil
 import sys
 import tempfile
@@ -370,6 +372,147 @@ class FixIdsTests(_Base):
             result = self._fix(root)
         self.assertEqual((root / NOTE).read_bytes(), note_before)
         self.assertIn('fha normalize-links --obsidian --write', '\n'.join(result.data['progress']))
+
+
+# ── Failure paths: a read-only file, Ctrl+C, a restore that fails ─────────────
+
+def _linking_files(root: Path, stem: str) -> list[Path]:
+    return [p for p in _lib.link_record_files(root)
+            if f'[[{stem}' in p.read_text(encoding='utf-8') and 'sources' not in p.parts]
+
+
+class _ReadOnly:
+    """One link file made read-only for the length of a `with` block."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def __enter__(self):
+        os.chmod(self.path, stat.S_IREAD)
+        return self.path
+
+    def __exit__(self, *exc):
+        os.chmod(self.path, stat.S_IWRITE | stat.S_IREAD)
+
+
+class FailurePathTests(_Base):
+
+    def _interrupt_on(self, owner, k: int):
+        """Patch `owner.write_text_exact_atomic` so its k-th call is a Ctrl+C."""
+        real = owner.write_text_exact_atomic
+        calls = {'n': 0}
+
+        def flaky(path, text):
+            calls['n'] += 1
+            if calls['n'] == k:
+                raise KeyboardInterrupt
+            return real(path, text)
+        return mock.patch.object(owner, 'write_text_exact_atomic', flaky)
+
+    def test_source_merge_with_a_read_only_link_file_says_nothing_changed(self):
+        root = self.obsidian()
+        target = _linking_files(root, RETIREE_STEM)[0]
+        before = _tree(root)
+        with _ReadOnly(target):
+            result = source.run_source_merge(root, load_fha_yaml(root), KEEPER, RETIREE)
+        self.assertEqual(result.data['status'], 'failed')
+        self.assertEqual(_tree(root), before)
+        said = _messages(result)
+        self.assertIn('everything was put back as it was', said)
+        self.assertNotIn('could not finish', said)
+
+    def test_confirm_merge_with_a_read_only_link_file_says_nothing_changed(self):
+        root = self.obsidian()
+        target = _linking_files(root, CALVIN_STEM)[-1]
+        before = _tree(root)
+        with _ReadOnly(target):
+            result = confirm.run_confirm_merge(root, person_merged=CALVIN, into=TOM,
+                                               reason='one person')
+        self.assertEqual(result.data['status'], 'failed')
+        self.assertEqual(_tree(root), before)
+        self.assertIn('nothing to clean up', _messages(result))
+
+    def test_ctrl_c_in_person_rename_puts_the_rename_back_too(self):
+        root = self.obsidian()
+        before = _tree(root)
+        err = io.StringIO()
+        with self._interrupt_on(_lib, 2), contextlib.redirect_stderr(err), \
+                self.assertRaises(KeyboardInterrupt):
+            person.run_rename(root, TOM, 'Thomas E. Hartley')
+        self.assertEqual(_tree(root), before)
+        self.assertIn('stopped (Ctrl+C)', err.getvalue())
+        self.assertIn('nothing changed', err.getvalue())
+
+    def test_ctrl_c_in_confirm_merge_puts_everything_back(self):
+        root = self.obsidian()
+        before = _tree(root)
+        err = io.StringIO()
+        with self._interrupt_on(confirm, 3), contextlib.redirect_stderr(err), \
+                self.assertRaises(KeyboardInterrupt):
+            confirm.run_confirm_merge(root, person_merged=CALVIN, into=TOM, reason='one')
+        self.assertEqual(_tree(root), before)
+        self.assertIn('nothing changed', err.getvalue())
+
+    def test_ctrl_c_in_fix_ids_puts_the_links_back_and_names_the_fix(self):
+        root = self.obsidian()
+        FixIdsTests._add_album(FixIdsTests(), root)
+        note_before = (root / NOTE).read_bytes()
+        err = io.StringIO()
+        with self._interrupt_on(_lib, 1), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()), self.assertRaises(KeyboardInterrupt):
+            lint.run_lint(root, load_fha_yaml(root), fix_ids=True)
+        self.assertEqual((root / NOTE).read_bytes(), note_before)
+        self.assertIn('fha normalize-links --obsidian --write', err.getvalue())
+        self.assertIn('keep their new IDs', err.getvalue())
+
+    def test_a_restore_that_fails_is_named_not_called_a_clean_undo(self):
+        root = self.obsidian()
+        real = _lib.write_text_exact_atomic
+        calls = {'n': 0}
+
+        def flaky(path, text):
+            # The second link file fails, and putting the first back fails too.
+            calls['n'] += 1
+            if calls['n'] in (2, 3):
+                raise PermissionError(13, 'file in use')
+            return real(path, text)
+
+        with mock.patch.object(_lib, 'write_text_exact_atomic', flaky):
+            result = person.run_rename(root, TOM, 'Thomas E. Hartley')
+        said = _messages(result)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertNotIn('every completed step was undone', said)
+        self.assertIn('could not be put back', said)
+        self.assertIn('fha normalize-links --obsidian --write', said)
+        stuck = [p for p in _lib.link_record_files(root)
+                 if TOM_NEW_STEM in p.read_text(encoding='utf-8')]
+        self.assertEqual(len(stuck), 1)
+        self.assertIn(stuck[0].relative_to(root).as_posix(), said)
+
+
+class FixIdsSameNameTests(_Base):
+    """An old name another file also carries is left for a hand fix: the
+    link may have meant that other file."""
+
+    def test_a_link_another_file_could_own_is_left_and_reported(self):
+        root = self.obsidian()
+        (root / 'sources/other/1880-census.md').write_text(
+            '---\ntitle: 1880 census page\nsource_type: other\n---\n\n# 1880 census page\n',
+            encoding='utf-8', newline='')
+        research = root / 'notes' / 'research'
+        research.mkdir(parents=True, exist_ok=True)
+        (research / '1880-census.md').write_text('# My working notes\n', encoding='utf-8',
+                                                 newline='')
+        plan = research / 'plan.md'
+        plan.write_text('# Plan\n\nSee [[1880-census]] first.\n', encoding='utf-8', newline='')
+        before = plan.read_bytes()
+        preview = _quiet(lint.run_lint, root, load_fha_yaml(root), fix_ids=True, dry_run=True)
+        self.assertIn('would be left as written', '\n'.join(preview.data['progress']))
+        result = _quiet(lint.run_lint, root, load_fha_yaml(root), fix_ids=True)
+        self.assertEqual(plan.read_bytes(), before)
+        said = '\n'.join(result.data['progress'])
+        self.assertIn('[[1880-census]] were left as written', said)
+        self.assertTrue(list((root / 'sources/other').glob('1880-census_s-*.md')))
 
 
 # ── Privacy after a rename ───────────────────────────────────────────────────

@@ -338,6 +338,8 @@ from _lib import (
     rename_link_writer,
     rename_links_message,
     write_rename_links,
+    rename_links_stuck,
+    rename_links_stuck_text,
     yaml_edtf,
     yaml_inline,
     safe_load_yaml,
@@ -2417,36 +2419,21 @@ def run_rename(
 
     # ── Live apply: frontmatter, then the two file renames, reversible ───────
     wrote_frontmatter = moved_file = moved_research = False
-    try:
-        write_text_exact_atomic(path, reapply_newline(new_text, text))
-        wrote_frontmatter = True
-        if renaming_file:
-            path.rename(new_path)
-            moved_file = True
-        if renaming_research:
-            # old_research_path may itself have just moved if it sits at the
-            # SAME name as the profile's own path would (never true in
-            # practice - research filenames always differ from the profile's -
-            # but the rename targets are computed from the pre-move paths,
-            # which stay valid since only the PROFILE file moved above).
-            old_research_path.rename(new_research_path)
-            moved_research = True
-        # Last: on a failure it puts its own files back before raising, so
-        # the unwind below finds every other file as this run left it.
-        for linked in write_rename_links(other_link_edits):
-            result.note_changed(linked)
-    except OSError as e:
-        # Unwind what completed, in reverse - the same promise
-        # promote_person_record makes for its own multi-step write.
-        # `profile_path` tracks where the record ACTUALLY is as rollback
-        # proceeds (mirrors promote_person_record's identical bookkeeping):
-        # the file-rename-undo below only moves it back to `path` if that
-        # undo itself succeeds, so the frontmatter-undo write must target
-        # wherever the record really sits, never blindly `path` - writing to
-        # an absent `path` after a failed move-back would create a SECOND
-        # file there instead of restoring the one that already exists at
-        # new_path.
+
+    def _unwind(exc: BaseException) -> list[str]:
+        """Undo what completed, in reverse (the promise promote_person_record
+        makes for its own multi-step write), and return what could not be
+        undone. `profile_path` tracks where the record ACTUALLY is as the
+        rollback proceeds: the file-rename-undo only moves it back to `path`
+        if that undo itself succeeds, so the frontmatter-undo write targets
+        wherever the record really sits, never blindly `path` (writing to an
+        absent `path` after a failed move-back would create a SECOND file
+        there). Link files `write_rename_links` could not put back are named
+        too, so no message claims a clean undo that did not happen."""
         rollback_notes: list[str] = []
+        stuck = rename_links_stuck(exc)
+        if stuck:
+            rollback_notes.append(rename_links_stuck_text(stuck, archive_root))
         profile_path = new_path if moved_file else path
         try:
             if moved_research:
@@ -2464,8 +2451,40 @@ def run_rename(
                 write_text_exact_atomic(profile_path, text)
         except OSError as undo_err:
             rollback_notes.append(f'could not undo the frontmatter edit ({undo_err})')
-        detail = ('; '.join(rollback_notes) + ' - run `fha lint` to check the record'
-                 ) if rollback_notes else 'every completed step was undone'
+        return rollback_notes
+
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+        wrote_frontmatter = True
+        if renaming_file:
+            path.rename(new_path)
+            moved_file = True
+        if renaming_research:
+            # old_research_path may itself have just moved if it sits at the
+            # SAME name as the profile's own path would (never true in
+            # practice: research filenames always differ from the profile's,
+            # and the rename targets are computed from the pre-move paths,
+            # which stay valid since only the PROFILE file moved above).
+            old_research_path.rename(new_research_path)
+            moved_research = True
+        # Last: on a failure it puts its own files back before raising, so
+        # the unwind below finds every other file as this run left it.
+        for linked in write_rename_links(other_link_edits):
+            result.note_changed(linked)
+    except (KeyboardInterrupt, SystemExit) as e:
+        # Ctrl+C part-way is put back too: stopped between the file rename
+        # and the links, the record would sit under its new name with every
+        # link still naming the old one. The exception goes on up, so what
+        # was done is said here.
+        notes = _unwind(e)
+        detail = ('; '.join(notes) + '. Run `fha lint` to check the record'
+                  ) if notes else 'every completed step was undone, so nothing changed'
+        print(f'ERROR: Renaming {label} was stopped (Ctrl+C); {detail}.', file=sys.stderr)
+        raise
+    except OSError as e:
+        notes = _unwind(e)
+        detail = ('; '.join(notes) + '. Run `fha lint` to check the record'
+                  ) if notes else 'every completed step was undone'
         return _refuse_result(
             result, 'refused',
             f'Renaming {label} failed partway ({e}); {detail}. Nothing is left half-renamed '

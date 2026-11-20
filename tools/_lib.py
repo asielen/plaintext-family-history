@@ -12632,25 +12632,54 @@ def plan_rename_links(archive_root: str | Path, links: LinkWriter | None, *,
 
 
 def write_rename_links(edits: Iterable[RenameLinkEdit]) -> list[Path]:
-    """Write planned link edits, each file atomically. On a failure every
-    file this call already wrote is put back as it was and the error is
-    raised again, so the caller's own undo runs on an archive this call
-    left untouched. A file the caller writes itself (one it passed as
-    `pending`) is left out of `edits` by the caller. Returns the files
-    written."""
+    """Write planned link edits, each file atomically. On a failure, or a
+    Ctrl+C, every file this call already wrote is put back as it was and
+    the exception is raised again, so the caller's own undo runs on an
+    archive this call left as it found it. A file that cannot be put back
+    (Windows refuses the restore for the same reason it refused the write)
+    is listed on the exception, read with `rename_links_stuck`, so the
+    caller never claims a clean undo that did not happen. A file the caller
+    writes itself (one it passed as `pending`) is left out of `edits` by the
+    caller. Returns the files written."""
     done: list[RenameLinkEdit] = []
     try:
         for edit in edits:
             write_text_exact_atomic(edit.path, edit.after)
             done.append(edit)
-    except BaseException:
+    except BaseException as exc:
+        stuck: list[Path] = []
         for edit in reversed(done):
             try:
                 write_text_exact_atomic(edit.path, edit.before)
             except OSError:
-                pass
+                stuck.append(edit.path)
+        exc.rename_links_stuck = stuck
         raise
     return [e.path for e in done]
+
+
+def rename_links_stuck(exc: BaseException) -> list[Path]:
+    """The link files `write_rename_links` could not put back, from the
+    exception it raised (empty for any other exception)."""
+    return list(getattr(exc, 'rename_links_stuck', None) or [])
+
+
+def rename_links_stuck_text(stuck: Iterable[Path], archive_root: str | Path) -> str:
+    """The sentence naming link files left holding this run's rewrite:
+    their links name the file the rename was going to give the record."""
+    root = Path(archive_root)
+    names = []
+    for path in stuck:
+        try:
+            names.append(Path(path).relative_to(root).as_posix())
+        except ValueError:
+            names.append(str(path))
+    if not names:
+        return ''
+    return (f'these file(s) could not be put back and still hold the rewritten links, '
+            f'which name the new file name: {", ".join(names)}. Close any program '
+            'holding them, then run `fha normalize-links --obsidian --write` to point '
+            'them at the file the record has now')
 
 
 def rename_links_message(edits: Iterable[RenameLinkEdit], *, dry_run: bool,

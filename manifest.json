@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "89658ddfafdb46e210684697fc62c5ab53b1868cec5743700d59a95ab3492c5a",
+      "sha256": "c74255370b63412871fd9d446fb534aea0a23da0eab96404c5dd0338aeb591ca",
       "spec_version": "2.17",
       "src": "tools/_lib.py"
     },
@@ -723,7 +723,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "54e7de61af692196a927abc79ac38cf58acf643bad9eda3d9bdd7e9af53a4107",
+      "sha256": "35d20c2b3eaa185093475a9a372e7ebe3d10e052f3197d28d24f52c610f76045",
       "spec_version": "2.17",
       "src": "tools/confirm.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "fbefc44d33d63bd7c3649a6b0749c0fb6b91f5fa3a2c75dc6816709d29faaa97",
+      "sha256": "283db869bf14395dbdcf6b5f7538b502f72a06809346e90223c04db59d6edb31",
       "spec_version": "2.17",
       "src": "tools/lint.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "8758e314fe6a327b5af3378ec44029be3115573f6662b70dbde63e4e9414285e",
+      "sha256": "4b222ad8575127d96cac50767420c627e6305ab4fc9792e084be01f498f52c31",
       "spec_version": "2.17",
       "src": "tools/person.py"
     },
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "374c35d595ec7d68ac38551d7cd52fa19d7c667e211cfea4d2d743571d225243",
+      "sha256": "d6259feb6058863dfda37fe24bea911f015805c864cf1c0bda27ca33a8a28974",
       "spec_version": "2.17",
       "src": "tools/source.py"
     },
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "96ba8257006b4ace00a4b2cba4e169e5d7d62092eb1230e09284785259ef8e68",
+      "sha256": "a4c2c3ad08a09512c24dcd7478bfae45743335e5b80f65bff88816403fff7ddb",
       "spec_version": "2.17",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "b1c17607f6c862c102ef12ab2da2088b16fede4f81f0ef8731a073917cfcef48",
+      "sha256": "c603435d6e2c5c948877eb83024f7e9daa937dbf7dafb4ddf563bcf7da0b243e",
       "spec_version": "2.17",
       "src": "TOOLING.md"
     },
