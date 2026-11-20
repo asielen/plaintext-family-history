@@ -327,6 +327,7 @@ configure_utf8_stdout()
 #
 #  Main entry / CLI
 #    _git_changed_files          : files differing from a git ref, plus new ones (--changed)
+#    _texts_at_ref               : those files' text at the ref, in one git call (removed IDs)
 #    _changed_scope / _in_changed_scope: the files a --changed report keeps
 #                                   (changed ones and the records they link to or from)
 #    run_lint                    - orchestrates both passes; returns a Result
@@ -6374,21 +6375,36 @@ def _run_lint_core(
 #   E011        a `files:` entry against the scans and photos on disk, which
 #               an archive keeps out of git (a deleted or moved scan).
 #   E012, W131  keywords embedded in those files (`--with-exif`).
-#   W124        reads a saved page's data file in the documents folder.
 #   W137        prose naming a file that is really on disk and unowned.
 _ALWAYS_KEPT_WITH_CHANGED = frozenset(
-    {'W123', 'W128', 'E011', 'E012', 'W131', 'W124', 'W137'})
+    {'W123', 'W128', 'E011', 'E012', 'W131', 'W137'})
+
+# Files that hold no record but that records anywhere depend on: a change to
+# one can change findings on records git does not see as changed (a mistyped
+# roots: path, a place taken out of the registry), so `--changed` reports the
+# whole archive when one of them changed.
+_WHOLE_ARCHIVE_FILES = (
+    ('fha.yaml', 'a settings change can affect every record'),
+    ('places/places.yaml', 'records anywhere can name its places'),
+)
 
 
-def _git_changed_files(archive_root: Path, ref: str) -> tuple[list[Path] | None, str]:
+def _git_changed_files(
+    archive_root: Path, ref: str,
+) -> tuple[list[Path] | None, str, dict[Path, str]]:
     """The files under the archive that differ from git `ref`, plus new ones.
 
-    Returns (paths, '') or, when git cannot answer, (None, a one-line note
-    saying why and that the whole archive was checked instead). "Changed"
-    means anything `git diff REF` lists (staged or not, deleted files
-    included, since a deleted record can break links elsewhere) and every
-    untracked file git does not ignore. Renames count as a delete and an add,
-    so both names are checked. Paths come back absolute.
+    Returns (paths, '', old texts) or, when git cannot answer, (None, a
+    one-line note saying why and that the whole archive was checked instead,
+    {}). "Changed" means anything `git diff REF` lists (staged or not,
+    deleted files included, since a deleted record can break links elsewhere)
+    and every untracked file git does not ignore. Renames count as a delete
+    and an add, so both names are checked. Paths come back absolute.
+
+    The old texts are each changed record file as it stood at `ref`
+    (`_texts_at_ref`), so the scope can follow the IDs an edit removed: a
+    deleted question block leaves its contradiction unrecorded, and the
+    claims it named are where that shows.
 
     A ref that starts with `-` is refused rather than handed to git, where it
     would read as an option."""
@@ -6401,21 +6417,60 @@ def _git_changed_files(archive_root: Path, ref: str) -> tuple[list[Path] | None,
     try:
         top = git('rev-parse', '--show-toplevel')
     except OSError:
-        return None, f'--changed needs git, which is not installed here. {full}'
+        return None, f'--changed needs git, which is not installed here. {full}', {}
     if top.returncode != 0:
         return None, (f'--changed needs git, and this archive is not kept in a git '
-                      f'repository. {full}')
+                      f'repository. {full}'), {}
     if ref.startswith('-') or git('rev-parse', '--verify', '--quiet',
                                    f'{ref}^{{commit}}').returncode != 0:
         return None, (f'git has no commit called {ref!r} (check the spelling, or '
-                      f'make a first commit). {full}')
+                      f'make a first commit). {full}'), {}
     diff = git('diff', '--name-only', '--no-renames', '-z', ref, '--', '.')
     new = git('ls-files', '--others', '--exclude-standard', '--full-name', '-z', '--', '.')
     if diff.returncode != 0 or new.returncode != 0:
-        return None, f'git could not list the changed files. {full}'
+        return None, f'git could not list the changed files. {full}', {}
     toplevel = Path(top.stdout.strip())
-    names = [n for n in (diff.stdout + '\0' + new.stdout).split('\0') if n]
-    return [toplevel / n for n in dict.fromkeys(names)], ''
+    tracked = [n for n in diff.stdout.split('\0') if n]
+    names = tracked + [n for n in new.stdout.split('\0') if n]
+    old = _texts_at_ref(archive_root, ref, tracked)
+    return ([toplevel / n for n in dict.fromkeys(names)], '',
+            {toplevel / n: text for n, text in old.items()})
+
+
+def _texts_at_ref(archive_root: Path, ref: str, names: list[str]) -> dict[str, str]:
+    """The text each named record file had at `ref`, read in one git call.
+
+    Only `.md` and `.yaml` files are asked for (the files that carry IDs),
+    through a single `git cat-file --batch`, so following removed IDs costs
+    one process however many files changed. A file new since `ref` has no
+    old text and is left out. Names are relative to the repository's top
+    folder, as `git diff` gives them. Any git trouble gives an empty answer:
+    the scope then follows the current text only, as it did before."""
+    wanted = [n for n in names
+              if n.lower().endswith(('.md', '.yaml', '.yml')) and '\n' not in n]
+    if not wanted:
+        return {}
+    request = ''.join(f'{ref}:{n}\n' for n in wanted).encode('utf-8')
+    try:
+        proc = subprocess.run(['git', '-C', str(archive_root), 'cat-file', '--batch'],
+                              input=request, capture_output=True)
+    except OSError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out, pos, texts = proc.stdout, 0, {}
+    try:
+        for name in wanted:
+            end = out.index(b'\n', pos)
+            header = out[pos:end].split()
+            pos = end + 1
+            if len(header) == 3 and header[1] == b'blob':
+                size = int(header[2])
+                texts[name] = out[pos:pos + size].decode('utf-8', errors='replace')
+                pos += size + 1
+    except (ValueError, IndexError):
+        return texts
+    return texts
 
 
 def _path_key(path: Path | str) -> str:
@@ -6425,14 +6480,19 @@ def _path_key(path: Path | str) -> str:
 
 
 def _changed_scope(archive_root: Path, registry: Registry,
-                   changed_files: list[Path]) -> set[str]:
+                   changed_files: list[Path],
+                   old_texts: dict[Path, str] | None = None) -> set[str]:
     """The files `--changed` reports on, as `_path_key` spellings.
 
     That is the changed files themselves, the files of every record their text
     names by ID (a person a changed source's claim names, say), and every
     record file whose text names a record the changed files hold (the sources
     whose claims name a changed person, say). A deleted file's ID is read
-    from its name, so the records still linking to it are reported. Links are
+    from its name, so the records still linking to it are reported. An ID the
+    edit removed (in `old_texts`, the files as they stood at the ref, but no
+    longer in them) is followed both ways too: deleting a question block
+    brings in the claims it named, and deleting a claim brings in the records
+    still naming it. Links are
     found by ID; a link written only as a name (`[[Ada Hartley]]`) is not
     followed, which is one reason a full lint stays the check before a
     release.
@@ -6465,20 +6525,27 @@ def _changed_scope(archive_root: Path, registry: Registry,
                 if isinstance(claim, dict) and claim.get('id'):
                     held.add(normalize_id(str(claim['id'])))
 
-    # Records the changed files name: add the files that hold them.
-    places_path = archive_root / 'places' / 'places.yaml'
+    # Records the changed files name, now or (for an ID the edit removed)
+    # at the ref: add the files that hold them.
+    named: set[str] = set()
     for path in changed_files:
-        if not path.is_file():
-            continue
-        for rid in ids_in(path):
-            for p in (registry.person_profile_paths.get(rid, [])
-                      + registry.person_companion_paths.get(rid, [])):
-                scope.add(_path_key(p))
-            sid = registry.claim_ids.get(rid, rid)
-            if sid in registry.source_paths:
-                scope.add(_path_key(registry.source_paths[sid]))
-            if rid in registry.place_ids:
-                scope.add(_path_key(places_path))
+        now = ids_in(path) if path.is_file() else set()
+        named |= now
+        old = (old_texts or {}).get(path)
+        if old:
+            removed = {normalize_id(m.group(0)) for m in ID_RE.finditer(old)} - now
+            named |= removed
+            held |= removed
+    places_path = archive_root / 'places' / 'places.yaml'
+    for rid in named:
+        for p in (registry.person_profile_paths.get(rid, [])
+                  + registry.person_companion_paths.get(rid, [])):
+            scope.add(_path_key(p))
+        sid = registry.claim_ids.get(rid, rid)
+        if sid in registry.source_paths:
+            scope.add(_path_key(registry.source_paths[sid]))
+        if rid in registry.place_ids:
+            scope.add(_path_key(places_path))
 
     # Record files that name what the changed files hold.
     if held:
@@ -6537,8 +6604,9 @@ def run_lint(
     from (`_changed_scope`), plus every finding about the scans and photos on
     disk that git does not track (`_ALWAYS_KEPT_WITH_CHANGED`). The
     needs-sourcing worklist, which is about the whole archive, is left out.
-    When fha.yaml itself changed, outside a git repository, or for a ref git
-    does not know, the full report is returned with a note saying why.
+    When fha.yaml or places.yaml changed (`_WHOLE_ARCHIVE_FILES`), outside a
+    git repository, or for a ref git does not know, the full report is
+    returned with a note saying why.
 
     The reference implementation of the structured-result contract (_lib.py): this
     function computes findings and performs the mutating fix modes (their file
@@ -6631,19 +6699,18 @@ def run_lint(
     scoped = False
     idless_records = registry.idless_records
     if changed_ref is not None:
-        changed_files, why_not = _git_changed_files(archive_root, changed_ref)
-        config_key = _path_key(archive_root / 'fha.yaml')
+        changed_files, why_not, old_texts = _git_changed_files(archive_root, changed_ref)
+        changed_keys = {_path_key(p) for p in changed_files or []}
+        whole = next(((name, why) for name, why in _WHOLE_ARCHIVE_FILES
+                      if _path_key(archive_root / name) in changed_keys), None)
         if changed_files is None:
             changed_note = why_not
-        elif any(_path_key(p) == config_key for p in changed_files):
-            # A settings change (a roots: path, root_person) can change the
-            # findings on any record, none of which git sees as changed.
-            changed_note = (f'fha.yaml has changed since {changed_ref}, and a settings '
-                            'change can affect every record, so this run reports the '
-                            'whole archive.')
+        elif whole:
+            changed_note = (f'{whole[0]} has changed since {changed_ref}, and {whole[1]}, '
+                            'so this run reports the whole archive.')
         else:
             scoped = True
-            scope = _changed_scope(archive_root, registry, changed_files)
+            scope = _changed_scope(archive_root, registry, changed_files, old_texts)
             findings = [f for f in findings
                         if f.code in _ALWAYS_KEPT_WITH_CHANGED
                         or _in_changed_scope(f.path, archive_root, scope)]
@@ -8223,7 +8290,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         '(default HEAD, so: since the last commit) and new files, '
                         'plus the records they link to. Every check still runs, '
                         'findings about scans and photos on disk are always shown, '
-                        'and a change to fha.yaml reports the whole archive. '
+                        'and a change to fha.yaml or places.yaml reports the '
+                        'whole archive. '
                         'Before a release or after `fha update-tools`, run a '
                         'full lint without it')
     p.add_argument('--timings', action='store_true',

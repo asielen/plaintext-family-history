@@ -111,7 +111,7 @@
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "77b5f9e5fc62c3985148cf409bb63a40ed0e35effc09e640e1a4e4117a9cbf83",
+      "sha256": "b5bb3111af18b37be6fd975121453f285487a76a5736be5d2b8a7a23103bdfd1",
       "spec_version": "2.8",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
@@ -271,7 +271,7 @@
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
-      "sha256": "77b5f9e5fc62c3985148cf409bb63a40ed0e35effc09e640e1a4e4117a9cbf83",
+      "sha256": "b5bb3111af18b37be6fd975121453f285487a76a5736be5d2b8a7a23103bdfd1",
       "spec_version": "2.8"
     },
     {
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "fe34fdc7e820a2381cd9c53d0d71c748a0d25742bb01fea39ae91cd8d3630964",
+      "sha256": "51d3b4e2af4844d6065511379ee3e930ddfee9dc70a00df189c96255dacbad39",
       "spec_version": "2.8",
       "src": "tools/lint.py"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2a94e5699290c2982a6b77a7f132dbe155b49d9a2588e769a0988616b5129a13",
+      "sha256": "73c6fb777bf7985cc057660e45a1d8f5abcc433dc01be558f2f808486c585119",
       "spec_version": "2.8"
     },
     {
@@ -1126,7 +1126,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "ad7b66a5559c271fadd2df43b153cc01aa8877adab7c49c56674c586caab63bd",
+      "sha256": "edf6d3e4358352650b5c0e66a6442191a9e291bedfeb1f5d25b94802bff85701",
       "spec_version": "2.8"
     },
     {
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d3881cbac927ff365bd6dac6a5963a7a550f97e2b62c37742834e1284e03b850",
+      "sha256": "c3c9faf36e918e83ae8a9951a4dbc66f65279da2d8de7f215f7f5102fbc5f074",
       "spec_version": "2.8",
       "src": "TOOLING.md"
     },

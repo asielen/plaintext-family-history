@@ -13,7 +13,9 @@ check which findings the narrowed report keeps:
   - a deleted person brings in the source still naming them (E005);
   - a new, untracked file is reported;
   - a scan deleted from the git-ignored documents folder still shows (E011);
-  - an fha.yaml edit reports the whole archive;
+  - an fha.yaml or places.yaml edit reports the whole archive;
+  - a deleted question block brings back the contradiction it recorded;
+  - an unrelated source's W124 (a record-text check) stays out;
   - a files: entry naming a junction out of the documents folder is E011;
   - outside git, the whole report comes back with a plain note;
   - a fix flag is refused beside --changed (a fix works on everything);
@@ -224,6 +226,64 @@ class ChangedKeepsWhatGitCannotSeeTests(_ArchiveBase):
         self.assertIn('fha.yaml has changed since HEAD', out)
         self.assertIn('reports the whole archive', out)
         self.assertEqual(self._w102_paths(out), {SRC_A, SRC_B})
+
+    def test_place_registry_change_reports_the_whole_archive(self) -> None:
+        # Taking a place out of places.yaml breaks every record naming it,
+        # and none of those records changed.
+        places = self.root / 'places' / 'places.yaml'
+        places.parent.mkdir()
+        places.write_text('- id: l-aaaaaaaaaa\n  name: Fairview\n', encoding='utf-8')
+        self._commit_all()
+        places.write_text('[]\n', encoding='utf-8')
+        _code, out, _err = self._lint('--changed')
+        self.assertIn('places/places.yaml has changed since HEAD', out)
+        self.assertEqual(self._w102_paths(out), {SRC_A, SRC_B})
+
+    def test_unrelated_untranscribed_source_stays_out(self) -> None:
+        # W124 is about a record's own files: list, which git sees; an edit
+        # elsewhere must not bring it into the narrowed report.
+        src = self.root / SRC_B
+        src.write_text(src.read_text(encoding='utf-8')
+                       .replace(self.SCAN, 'documents/other/ruth-letter_s-bbbbbbbbbb.jpg')
+                       .replace('status: suggested', 'status: accepted'), encoding='utf-8')
+        (self.root / 'documents/other/ruth-letter_s-bbbbbbbbbb.jpg').write_bytes(b'jpg')
+        _code, out, _err = self._lint()
+        self.assertIn('W W124 ', out)   # the full lint does report it
+        self._commit_all()
+        with open(self.root / SRC_A, 'a', encoding='utf-8') as f:
+            f.write('\nEdited.\n')
+        _code, out, _err = self._lint('--changed')
+        self.assertNotIn('W W124 ', out)
+
+
+@unittest.skipUnless(_GIT, 'git is not installed')
+class ChangedFollowsRemovedIdsTests(_ArchiveBase):
+    """An edit that takes an ID out of a file can break the record that ID
+    names, which the file no longer mentions: the old text is read too."""
+
+    QUESTIONS = 'notes/questions.md'
+
+    def setUp(self) -> None:
+        super().setUp()
+        src = self.root / SRC_A
+        src.write_text(src.read_text(encoding='utf-8').replace(
+            '  status: suggested\n',
+            '  status: suggested\n  contradicts: [C-bbbbbbbbbb]\n'), encoding='utf-8')
+        (self.root / self.QUESTIONS).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / self.QUESTIONS).write_text(
+            '# Questions\n\n## Q: Which residence is right?\n- status: open\n'
+            '- refs: [c-aaaaaaaaaa, c-bbbbbbbbbb]\n', encoding='utf-8')
+
+    def test_deleted_question_block_brings_back_its_contradiction(self) -> None:
+        self._commit_all()
+        _code, out, _err = self._lint()
+        self.assertNotIn('E E009 ', out)   # the question records the conflict
+        (self.root / self.QUESTIONS).write_text('# Questions\n', encoding='utf-8')
+        code, out, _err = self._lint('--changed')
+        e009 = [line for line in out.splitlines() if line.startswith('E E009 ')]
+        self.assertEqual(len(e009), 1)
+        self.assertIn('ada-note', e009[0])
+        self.assertEqual(code, 2)
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'junctions are a Windows feature')

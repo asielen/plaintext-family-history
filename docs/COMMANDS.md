@@ -144,7 +144,7 @@ Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure.
 | `--spec-root` `PATH` | Spec docs root (when separate from archive root) |
 | `--with-exif` | Also verify embedded SOURCE: keywords and stray documents-root person keywords (W131) via exiftool (slow) |
 | `--json` | Machine-readable JSON output |
-| `--changed` `[REF]` | Report only on files changed since the git commit REF (default HEAD, so: since the last commit) and new files, plus the records they link to. Every check still runs, findings about scans and photos on disk are always shown, and a change to fha.yaml reports the whole archive. Before a release or after `fha update-tools`, run a full lint without it |
+| `--changed` `[REF]` | Report only on files changed since the git commit REF (default HEAD, so: since the last commit) and new files, plus the records they link to. Every check still runs, findings about scans and photos on disk are always shown, and a change to fha.yaml or places.yaml reports the whole archive. Before a release or after `fha update-tools`, run a full lint without it |
 | `--timings` | After the report, print how many seconds each group of checks took (to stderr) |
 | `--format-check` | Check formatting only (no fixes) |
 | `--format-write` | Apply conservative formatting fixes |
