@@ -143,6 +143,27 @@ class MirrorRuleTests(unittest.TestCase):
         self.assertEqual(_aliases(new), [PID, 'Thomas Edward Hartley'])
         self.assertIn('  # Wren was [a stage name]\n', new)
 
+    def test_trailing_comma_in_a_flow_list_is_not_doubled(self):
+        for line in (f'aliases: [{PID}, ]\n', f'aliases: [{PID},]\n',
+                     f'aliases: [{PID}, Tom , ]  # note [x]\n'):
+            with self.subTest(line=line):
+                new, added, _ = sync_person_aliases(_person(line))
+                self.assertIn('Thomas Edward Hartley', added)
+                self.assertIn('Thomas Edward Hartley', _aliases(new))
+                self.assertNotIn(',,', new)
+                self.assertEqual(sync_person_aliases(new), (new, [], []))
+
+    def test_an_edit_that_would_not_read_back_is_not_made(self):
+        # Shapes the surgery cannot read safely are left exactly as written,
+        # never turned into a record YAML cannot parse.
+        for line in (f'aliases: [{PID}, ]# x]\n', f'aliases: [{PID}, \\,]\n'):
+            with self.subTest(line=line):
+                text = _person(line)
+                new, _, _ = sync_person_aliases(text)
+                yaml.safe_load(new.split('---\n')[1])   # must still parse
+                if new != text:
+                    self.assertIn('Thomas Edward Hartley', _aliases(new))
+
     def test_names_yaml_would_read_as_another_type_are_quoted(self):
         for name in ('No', 'yes', 'On', 'null', '123', '1923-01-02', '0x1F', '1e3'):
             with self.subTest(name=name):
@@ -224,6 +245,24 @@ class NameWritingVerbTests(unittest.TestCase):
         shown = ' '.join(m.text for m in res.messages)
         self.assertIn("'Thomas Hartley' to aliases:", shown)
         self.assertNotIn('out of aliases:', shown)
+        self.assertIn("'Thomas Hartly' stays in aliases:", shown)
+
+    def test_rename_says_the_old_name_is_kept_and_how_to_drop_it(self):
+        # Keeping the old name can clash with a real person of that name added
+        # later, so the rename says so once, with the hand fix.
+        self._rename_fixture()
+        res = person.run_rename(self.root, PID, 'Thomas Hartley')
+        shown = ' '.join(m.text for m in res.messages)
+        self.assertIn("'Thomas Hartly' stays in aliases:", shown)
+        self.assertIn('belongs to someone else', shown)
+
+    def test_rename_works_on_a_flow_list_with_a_trailing_comma(self):
+        path = self.root / 'people' / 'stubs' / f'hartly__thomas_{PID}.md'
+        path.write_text(_person(f'aliases: [{PID}, Thomas Hartly, ]\n', name='Thomas Hartly'),
+                        encoding='utf-8')
+        res = person.run_rename(self.root, PID, 'Thomas Hartley')
+        self.assertEqual(res.exit_code, 0, res.messages)
+        self.assertEqual(self._renamed()['aliases'], [PID, 'Thomas Hartly', 'Thomas Hartley'])
 
     def test_gedcom_import_stub_lists_name_and_variants(self):
         stub = gedcom_import._PersonStub.__new__(gedcom_import._PersonStub)

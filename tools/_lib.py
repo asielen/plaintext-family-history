@@ -11319,7 +11319,9 @@ def flow_list_close(line: str, open_at: int) -> int:
     `[[wikilink]]` entry) are counted, quoted text is skipped (a quote opens
     only at the start of an entry, so the apostrophe in O'Brien is a
     letter), and a ` #` outside quotes starts a comment, which ends the
-    search."""
+    search. The bracket found counts only when nothing but a blank or a
+    comment follows it and the text up to it reads as a YAML list, so a
+    line that is not one clean flow list is never edited."""
     depth = 0
     quote = None
     token_start = True
@@ -11345,7 +11347,17 @@ def flow_list_close(line: str, open_at: int) -> int:
         elif ch in ']}':
             depth -= 1
             if depth == 0:
-                return i if ch == ']' else -1
+                # Only a blank or a ` # comment` may follow the list's end;
+                # anything else means the line is not one flow list.
+                rest = line[i + 1:]
+                # (PyYAML refuses a tab before that `#`, so only spaces count.)
+                if ch != ']' or not (not rest.strip() or re.match(r' +#', rest)):
+                    return -1
+                try:
+                    parsed = yaml.safe_load(line[open_at:i + 1])
+                except yaml.YAMLError:
+                    return -1
+                return i if isinstance(parsed, list) else -1
             token_start = False
         elif ch == ',':
             token_start = True
@@ -11362,7 +11374,7 @@ def flow_list_close(line: str, open_at: int) -> int:
     return -1
 
 
-def merge_aliases_into_frontmatter(
+def _merge_aliases_unchecked(
     fm_text: str, new_id: str, aliases: list[str], nl: str, *,
     id_first: bool = False,
 ) -> tuple[str, list[str]]:
@@ -11428,7 +11440,12 @@ def merge_aliases_into_frontmatter(
             open_part = head_line[:flow_open.end()]     # 'aliases: ['
             body = head_line[flow_open.end():close]      # existing entries verbatim
             suffix = head_line[close:]                   # '] ...trailing'
-            parts = head_entries + ([body.strip()] if body.strip() else []) + tail_entries
+            # A hand list may end in a comma (`[p-…, ]`, valid YAML); joining
+            # after it would write `,,`, which YAML refuses.
+            kept = body.strip()
+            while kept.endswith(','):
+                kept = kept[:-1].rstrip()
+            parts = head_entries + ([kept] if kept else []) + tail_entries
             new_line = open_part + ', '.join(parts) + suffix
             return fm_text[:m.start()] + new_line + fm_text[line_end:], head + tail
     if '[' in head_line:
@@ -11476,7 +11493,7 @@ def merge_aliases_into_frontmatter(
     return work, head + tail
 
 
-def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
+def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
     """Remove the `aliases:` entries whose value (lowercased) is in `drop`.
 
     Used only for the privacy rule: a name variant that is restricted never
@@ -11541,6 +11558,56 @@ def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str,
         # keeps its own, which would leave a blank line before the fence.
         out = out[:-2] if out.endswith('\r\n') else out[:-1]
     return out, removed
+
+
+def _aliases_edit_reads_back(before: str, after: str, *, added=(), removed=()) -> bool:
+    """True when an `aliases:` text edit reads back as exactly what was meant.
+
+    The surgery edits text so hand comments and quoting survive, which means a
+    hand-written shape it misreads could leave YAML that no longer parses (a
+    record the tools then refuse as E010). So every edit is parsed again: the
+    other keys must be unchanged, and the list must be the old one with the
+    added entries present and the removed ones gone."""
+    try:
+        old = safe_load_yaml(before)
+        new = safe_load_yaml(after)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+    others_before = {k: v for k, v in old.items() if k != 'aliases'}
+    others_after = {k: v for k, v in new.items() if k != 'aliases'}
+    if others_before != others_after:
+        return False
+    old_list = old.get('aliases') or []
+    new_list = new.get('aliases')
+    if not isinstance(new_list, list) or not isinstance(old_list, list):
+        return False
+    gone = [x for x in old_list if x not in new_list]
+    if sorted(map(str, gone)) != sorted(map(str, removed)):
+        return False
+    return all(a in new_list for a in added)
+
+
+def merge_aliases_into_frontmatter(
+    fm_text: str, new_id: str, aliases: list[str], nl: str, *,
+    id_first: bool = False,
+) -> tuple[str, list[str]]:
+    """`_merge_aliases_unchecked`, kept only when the result reads back as
+    meant (`_aliases_edit_reads_back`); otherwise nothing is changed and the
+    caller sees nothing added, which it reports as a hand edit."""
+    new_text, added = _merge_aliases_unchecked(fm_text, new_id, aliases, nl, id_first=id_first)
+    if added and not _aliases_edit_reads_back(fm_text, new_text, added=added):
+        return fm_text, []
+    return new_text, added
+
+
+def _remove_aliases_from_frontmatter(fm_text: str, drop: set[str]) -> tuple[str, list[str]]:
+    """`_remove_aliases_unchecked`, kept only when the result reads back as meant."""
+    new_text, removed = _remove_aliases_unchecked(fm_text, drop)
+    if removed and not _aliases_edit_reads_back(fm_text, new_text, removed=removed):
+        return fm_text, []
+    return new_text, removed
 
 
 def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:

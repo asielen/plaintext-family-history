@@ -2351,6 +2351,22 @@ def run_rename(
     if aliases_removed:
         # Counted, never named: these are private names.
         steps.append(f'take {len(aliases_removed)} restricted name(s) out of aliases:')
+    # The old name stays in aliases: (a rename never removes one), which keeps
+    # [[Old Name]] links working but could later clash with a real person of
+    # that name, so the owner is told once, with the hand fix.
+    kept_note = None
+    if old_name and not refile_only:
+        fm_after = FRONT_RE.match(new_text)
+        try:
+            after_aliases = (safe_load_yaml(fm_after.group(1)) or {}).get('aliases') if fm_after else None
+        except yaml.YAMLError:
+            after_aliases = None
+        if isinstance(after_aliases, list) and old_name.strip().lower() in {
+                str(a).strip().lower() for a in after_aliases if a is not None}:
+            kept_note = (f'{old_name!r} stays in aliases: so links written under the old name '
+                         'keep working; if that name belongs to someone else, remove it from '
+                         'aliases: by hand')
+            steps.append(kept_note)
     if renaming_file:
         steps.append(f'rename {path.name} -> {new_filename}')
     if renaming_research:
@@ -2455,6 +2471,8 @@ def run_rename(
             f'{len(stale_companions)} stale companion(s) deleted: '
             + ', '.join(s.name for s in stale_companions))
     result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if kept_note:
+        result.add('info', kept_note[0].upper() + kept_note[1:] + '.', path=final_path)
     if variant_note and keep_variant:
         result.add('warning',
                    f'--keep-variant: could not add {old_name!r} to name_variants: '
