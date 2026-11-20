@@ -16,6 +16,8 @@ Genealogy keeps asking "are these two records the same human?" or "is this one r
 
 "Are these the same person?", "this looks like two people", "the report flagged a possible duplicate", "did Thomas Hartley and Thos. Hartley get entered twice?"
 
+Two *source* records that are one piece of evidence (an index entry and the document it indexes, one record saved from two sites) are not this skill. They merge with `fha source merge <keep> <other>`: run it with `--dry-run`, show the human what moves, and run it for real only on his yes. It refuses when the two sources' accepted claims are about different people.
+
 ## The contract for this skill (state it before you start)
 
 - **Human-confirmed only.** No `merged_into` is ever written without an explicit human decision, naming the specific survivor and the specific merge, stated *this session*. The skill lays out evidence, proposes, and stops until the human confirms.
