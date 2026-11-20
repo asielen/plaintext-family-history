@@ -2010,9 +2010,9 @@ def _merge_claims_text(keeper_lines: list[str], retiree_lines: list[str], cr: st
         if any(ln.strip() and not ln.startswith(' ' * -shift) for ln in items):
             raise _MergeRefused(
                 "the two records' claims are indented differently, so they cannot be "
-                'put into one block safely. Run `fha lint --format` on both records, '
+                'put into one block safely. Run `fha lint --format-write` to tidy both records, '
                 'then run the merge again. Nothing was written.',
-                next_step='fha lint --format')
+                next_step='fha lint --format-write')
         items = [ln[-shift:] if ln.strip() else ln for ln in items]
     if kblock is not None:
         open_fence, close_fence = kblock
@@ -2331,8 +2331,9 @@ def _read_merge_record(path: Path, shown: str) -> tuple[str, dict, list]:
         if rec.get('claims'):
             raise _MergeRefused(
                 f'the claims of {shown} are not in the usual fenced ```yaml block, so they '
-                'cannot be moved safely. Run `fha lint --format` on it, then run the merge '
-                'again. Nothing was written.', next_step='fha lint --format')
+                'cannot be moved safely. Run `fha lint --fix-claims-fence` to fence them, then '
+                'run the merge again. Nothing was written.',
+                next_step='fha lint --fix-claims-fence')
         claims = []
     return text, meta, claims
 
@@ -2564,14 +2565,14 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         raise _MergeRefused(
             f'the details at the top of {keeper_path.name} could not be rewritten safely '
             f'(the {", ".join(changed) or "frontmatter"} field would not read back as '
-            'planned), so nothing was written. Run `fha lint --format` on it, then run '
-            'the merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format')
+            'planned), so nothing was written. Run `fha lint --format-write` to tidy it, then run '
+            'the merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format-write')
     after_claims = claims_in_text(new_text)
     if after_claims != keeper_claims + retiree_claims:
         raise _MergeRefused(
             f"the claims could not be put into {keeper_path.name}'s ## Claims block safely, "
-            'so nothing was written. Run `fha lint --format` on both records, then run the '
-            'merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format')
+            'so nothing was written. Run `fha lint --format-write` to tidy both records, then run the '
+            'merge again.', exit_code=EXIT_FAILURE, next_step='fha lint --format-write')
 
     # ── The preview: the same lines for --dry-run and for the real run ──
     result.data['files'] = [{'from': p['alias'], 'to': p['new_alias']} for p in plans]
