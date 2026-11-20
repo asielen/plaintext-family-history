@@ -56,6 +56,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -604,6 +605,24 @@ def _resolved_root(alias: str, registry: Registry) -> Path:
     return cache[alias]
 
 
+def _entry_may_redirect(entry: os.DirEntry) -> bool:
+    """Whether resolving this folder entry could lead somewhere else.
+
+    A symlink does, and so does a Windows junction, which Python 3.12 and
+    later no longer report as a symlink (`is_junction`). Any other Windows
+    reparse point is treated the same way to be safe; the folder listing
+    already carries its attributes, so asking costs nothing. A `files:` entry
+    naming a junction that leads out of the archive must still be E011."""
+    if entry.is_symlink() or getattr(entry, 'is_junction', lambda: False)():
+        return True
+    reparse = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    try:
+        attrs = getattr(entry.stat(follow_symlinks=False), 'st_file_attributes', 0)
+    except OSError:
+        return True
+    return bool(reparse and attrs & reparse)
+
+
 def _resolve_in_folder(path: Path, registry: Registry) -> Path:
     """`path.resolve()`, resolving each folder only once per run.
 
@@ -613,9 +632,10 @@ def _resolve_in_folder(path: Path, registry: Registry) -> Path:
     that is not itself a link resolves to its folder's resolved path plus its
     own name, and an archive keeps many files in each folder, so the folder's
     answer is kept and reused, together with the names of the links in it
-    (one folder listing tells both). A file that is a link, a name such as
-    `..`, or a file in a folder that cannot be listed still goes through the
-    full resolve."""
+    (one folder listing tells both). A name that is a link of any kind
+    (`_entry_may_redirect`: a symlink, a Windows junction, any reparse
+    point), a name such as `..`, or a file in a folder that cannot be listed
+    still goes through the full resolve."""
     if path.name in ('', '.', '..'):
         return path.resolve()
     cache = registry.__dict__.setdefault('_resolved_folders', {})
@@ -623,7 +643,8 @@ def _resolve_in_folder(path: Path, registry: Registry) -> Path:
     if folder not in cache:
         try:
             with os.scandir(path.parent) as entries:
-                links = {os.path.normcase(e.name) for e in entries if e.is_symlink()}
+                links = {os.path.normcase(e.name) for e in entries
+                         if _entry_may_redirect(e)}
             cache[folder] = (path.parent.resolve(), links)
         except (OSError, RuntimeError):
             cache[folder] = None
@@ -6346,6 +6367,19 @@ def _run_lint_core(
     return findings, registry
 
 
+# Findings `--changed` always keeps, whatever changed. Each one depends on
+# something git cannot see as changed, so no edited file would bring it in:
+#   W123, W128  lint could not read a folder or a file; a narrowed report
+#               must still say so, or it reads as clean over unread records.
+#   E011        a `files:` entry against the scans and photos on disk, which
+#               an archive keeps out of git (a deleted or moved scan).
+#   E012, W131  keywords embedded in those files (`--with-exif`).
+#   W124        reads a saved page's data file in the documents folder.
+#   W137        prose naming a file that is really on disk and unowned.
+_ALWAYS_KEPT_WITH_CHANGED = frozenset(
+    {'W123', 'W128', 'E011', 'E012', 'W131', 'W124', 'W137'})
+
+
 def _git_changed_files(archive_root: Path, ref: str) -> tuple[list[Path] | None, str]:
     """The files under the archive that differ from git `ref`, plus new ones.
 
@@ -6500,9 +6534,11 @@ def run_lint(
     archive, because the cross-record checks need every record to be right,
     but the report keeps only the findings on files changed since that git
     ref (plus new files) and on the records those files link to or are linked
-    from (`_changed_scope`). The needs-sourcing worklist, which is about the
-    whole archive, is left out. Outside a git repository the full report is
-    returned with a note saying so.
+    from (`_changed_scope`), plus every finding about the scans and photos on
+    disk that git does not track (`_ALWAYS_KEPT_WITH_CHANGED`). The
+    needs-sourcing worklist, which is about the whole archive, is left out.
+    When fha.yaml itself changed, outside a git repository, or for a ref git
+    does not know, the full report is returned with a note saying why.
 
     The reference implementation of the structured-result contract (_lib.py): this
     function computes findings and performs the mutating fix modes (their file
@@ -6596,21 +6632,32 @@ def run_lint(
     idless_records = registry.idless_records
     if changed_ref is not None:
         changed_files, why_not = _git_changed_files(archive_root, changed_ref)
+        config_key = _path_key(archive_root / 'fha.yaml')
         if changed_files is None:
             changed_note = why_not
+        elif any(_path_key(p) == config_key for p in changed_files):
+            # A settings change (a roots: path, root_person) can change the
+            # findings on any record, none of which git sees as changed.
+            changed_note = (f'fha.yaml has changed since {changed_ref}, and a settings '
+                            'change can affect every record, so this run reports the '
+                            'whole archive.')
         else:
             scoped = True
             scope = _changed_scope(archive_root, registry, changed_files)
-            # W123/W128 say lint could not read something; a narrowed report
-            # must still say that, or it reads as clean over unread records.
             findings = [f for f in findings
-                        if f.code in ('W123', 'W128')
+                        if f.code in _ALWAYS_KEPT_WITH_CHANGED
                         or _in_changed_scope(f.path, archive_root, scope)]
             idless_records = [(p, k) for p, k in idless_records
                               if _in_changed_scope(p, archive_root, scope)]
             if changed_files:
                 what = (f'Reporting on the {len(changed_files)} file(s) changed since '
-                        f'{changed_ref} and the records they link to.')
+                        f'{changed_ref} and the records they link to, plus every '
+                        'finding about scans and photos on disk, which git does not '
+                        'track.')
+            elif findings:
+                what = (f'No record has changed since {changed_ref}; the findings below '
+                        'are about scans and photos on disk, which git does not track, '
+                        'or about the archive as a whole.')
             else:
                 what = f'No file has changed since {changed_ref}.'
             changed_note = (f'{what} Before a release or after `fha update-tools`, '
@@ -8174,7 +8221,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--changed', nargs='?', const='HEAD', default=None, metavar='REF',
                    help='Report only on files changed since the git commit REF '
                         '(default HEAD, so: since the last commit) and new files, '
-                        'plus the records they link to. Every check still runs. '
+                        'plus the records they link to. Every check still runs, '
+                        'findings about scans and photos on disk are always shown, '
+                        'and a change to fha.yaml reports the whole archive. '
                         'Before a release or after `fha update-tools`, run a '
                         'full lint without it')
     p.add_argument('--timings', action='store_true',

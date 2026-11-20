@@ -166,8 +166,10 @@ fha serve [--port N]         human-started localhost workbench: a browser front 
                             do not start it unasked; killing it loses nothing.
 fha lint                     verify archive against spec; run after any batch of edits
 fha lint --changed           the quick check before a commit: report only on files changed
-                            since the last commit and the records they link to (a full
-                            fha lint stays the check before a release or after update-tools)
+                            since the last commit and the records they link to, plus every
+                            finding about scans and photos on disk; an fha.yaml edit reports
+                            everything (a full fha lint stays the check before a release or
+                            after update-tools)
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint p|s|c|l|h        mint verified IDs
 fha stubs                    create stubs for unresolved person references

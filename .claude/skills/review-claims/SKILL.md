@@ -124,7 +124,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
    ```
    Translate the result: "All good. Three facts accepted, the census agrees with the marriage notice, and nothing is left flagged." If lint flags something, name the fix in plain words (_STANDARD.md §4) instead of pasting the code.
 
-   In an archive kept in git, `fha lint --changed` is the quicker check when only this session's files matter: it reports on the files changed since the last commit and the records they link to, which keeps a long-standing backlog of warnings elsewhere out of the answer. A full `fha lint` stays the check before a release and after `fha update-tools`.
+   In an archive kept in git, `fha lint --changed` is the quicker check when only this session's files matter: it reports on the files changed since the last commit and the records they link to (plus anything wrong with the scans and photos on disk, and everything when `fha.yaml` changed), which keeps a long-standing backlog of warnings elsewhere out of the answer. A full `fha lint` stays the check before a release and after `fha update-tools`.
 
    Then, with the index fresh from step 5, check for **two nudges, promotion and places. Each is capped at one per session, needs the same explicit yes, and is never repeated once declined this session.**
 

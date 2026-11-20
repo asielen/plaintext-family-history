@@ -12,6 +12,9 @@ check which findings the narrowed report keeps:
   - a changed person brings in the source whose claim names them;
   - a deleted person brings in the source still naming them (E005);
   - a new, untracked file is reported;
+  - a scan deleted from the git-ignored documents folder still shows (E011);
+  - an fha.yaml edit reports the whole archive;
+  - a files: entry naming a junction out of the documents folder is E011;
   - outside git, the whole report comes back with a plain note;
   - a fix flag is refused beside --changed (a fix works on everything);
   - --timings writes its table to stderr only, so --json stays one document.
@@ -24,6 +27,7 @@ relationships: block, which is what made a large archive take minutes.
 from __future__ import annotations
 
 import io
+import os
 import json
 import shutil
 import subprocess
@@ -180,6 +184,81 @@ class ChangedScopeTests(_ArchiveBase):
         _code, out, _err = self._lint('--changed', 'no-such-branch')
         self.assertIn("git has no commit called 'no-such-branch'", out)
         self.assertEqual(self._w102_paths(out), {SRC_A, SRC_B})
+
+
+@unittest.skipUnless(_GIT, 'git is not installed')
+class ChangedKeepsWhatGitCannotSeeTests(_ArchiveBase):
+    """Scans and photos sit in folders the archive keeps out of git, and
+    fha.yaml can change every record's findings: --changed must not hide
+    either."""
+
+    SCAN = 'documents/other/ruth-letter_s-bbbbbbbbbb.txt'
+
+    def setUp(self) -> None:
+        super().setUp()
+        src = self.root / SRC_B
+        src.write_text(src.read_text(encoding='utf-8').replace(
+            'source_type: other\n',
+            f'source_type: other\nfiles:\n  - file: {self.SCAN}\n'), encoding='utf-8')
+        (self.root / self.SCAN).parent.mkdir(parents=True)
+        (self.root / self.SCAN).write_text('scan', encoding='utf-8')
+        # The archive template's own rule: scans are not kept in git.
+        (self.root / '.gitignore').write_text('/documents/\n', encoding='utf-8')
+
+    def test_deleted_scan_is_still_reported(self) -> None:
+        self._commit_all()
+        (self.root / self.SCAN).unlink()
+        code, out, _err = self._lint('--changed')
+        e011 = [line for line in out.splitlines() if line.startswith('E E011 ')]
+        self.assertEqual(len(e011), 1)
+        self.assertIn('ruth-note', e011[0])
+        self.assertNotIn('No file has changed', out)
+        self.assertIn('scans and photos on disk', out)
+        self.assertEqual(code, 2)
+
+    def test_settings_change_reports_the_whole_archive(self) -> None:
+        self._commit_all()
+        with open(self.root / 'fha.yaml', 'a', encoding='utf-8') as f:
+            f.write('# a note\n')
+        _code, out, _err = self._lint('--changed')
+        self.assertIn('fha.yaml has changed since HEAD', out)
+        self.assertIn('reports the whole archive', out)
+        self.assertEqual(self._w102_paths(out), {SRC_A, SRC_B})
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'junctions are a Windows feature')
+class JunctionOutOfTheRootsTests(_ArchiveBase):
+    """A `files:` entry naming a Windows junction that leads out of the
+    documents folder is E011, as it would be for a symlink."""
+
+    def tearDown(self) -> None:
+        self.doCleanups()
+        super().tearDown()
+
+    @staticmethod
+    def _unlink_junction(path: Path) -> None:
+        if os.path.lexists(path):
+            os.rmdir(path)
+
+    def test_junction_entry_resolving_outside_is_e011(self) -> None:
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        docs = self.root / 'documents'
+        docs.mkdir()
+        made = subprocess.run(['cmd', '/c', 'mklink', '/J', str(docs / 'elsewhere'),
+                               outside.name], capture_output=True)
+        if made.returncode != 0:
+            self.skipTest('could not make a junction here')
+        # Unlink the junction before the archive folder is removed, so the
+        # clean-up never walks through it into the outside folder.
+        self.addCleanup(self._unlink_junction, docs / 'elsewhere')
+        src = self.root / SRC_A
+        src.write_text(src.read_text(encoding='utf-8').replace(
+            'source_type: other\n',
+            'source_type: other\nfiles:\n  - file: documents/elsewhere\n'),
+            encoding='utf-8')
+        _code, out, _err = self._lint()
+        self.assertIn("'documents/elsewhere' resolves outside", out)
 
 
 class ChangedOutsideGitTests(_ArchiveBase):
