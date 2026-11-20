@@ -673,10 +673,23 @@ class GeocodeMatchTests(_GazetteerCase):
         # name inside them: the city is geocoded.
         m = self.match('Berlin', 'Berlin, Germany')
         self.assertEqual((m.status, m.hit.gid), ('hit', 302))
+        # Alone, the name says no country: the city is listed for review.
         m = self.match('Hamburg')
-        self.assertEqual((m.status, m.hit.gid), ('hit', 304))
+        self.assertEqual((m.status, [g.gid for g in m.candidates]), ('ambiguous', [304]))
         m = self.match('New York')
-        self.assertEqual((m.status, m.hit.gid), ('hit', 109))
+        self.assertEqual((m.status, [g.gid for g in m.candidates]), ('ambiguous', [109]))
+
+    def test_lone_state_name_never_implies_its_country(self):
+        # A bare "Berlin" in a US registry may be Berlin, Kansas: it goes to
+        # review with every Berlin, never straight to Germany.
+        self.assertEqual(places._place_countries('berlin', [], self.gaz), set())
+        extra = (130, 'Berlin', 'Berlin', '', 39.6, -95.3, 'P', 'PPL', 'KS', '091', '', 500)
+        self.gaz.conn.execute('INSERT INTO features VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                              (extra[0], 'US', *extra[1:3], *extra[4:8], *extra[8:12]))
+        self.gaz.conn.execute("INSERT INTO names VALUES ('berlin', 'US', 130)")
+        m = self.match('Berlin')
+        self.assertEqual(m.status, 'ambiguous')
+        self.assertEqual({g.gid for g in m.candidates}, {302, 130})
 
     def test_state_with_a_namesake_town_elsewhere_stays_general(self):
         # The village of Kansas in New Jersey does not make Kansas a town.
@@ -686,6 +699,18 @@ class GeocodeMatchTests(_GazetteerCase):
     def test_historical_town_outranks_a_church_of_the_same_name(self):
         m = self.match('Ashby', 'Ashby, Breton County, Kansas, USA')
         self.assertEqual((m.status, m.hit.gid), ('hit', 121))
+
+    def test_church_fits_when_its_namesake_town_is_elsewhere(self):
+        # A town called Grace in New Jersey does not hide the church of
+        # Grace in Fairview, Kansas.
+        rows = [(131, 'Grace', 'Grace', '', 40.3, -74.0, 'P', 'PPL', 'NJ', '025', '', 100),
+                (132, 'Grace', 'Grace', '', 39.562, -95.123, 'S', 'CH', 'KS', '091', '', 0)]
+        for gid, name, ascii_, _a, lat, lon, fcl, fco, a1, a2, a3, pop in rows:
+            self.gaz.conn.execute('INSERT INTO features VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                                  (gid, 'US', name, ascii_, lat, lon, fcl, fco, a1, a2, a3, pop))
+            self.gaz.conn.execute("INSERT INTO names VALUES ('grace', 'US', ?)", (gid,))
+        m = self.match('Grace', 'Grace, Fairview, Kansas, USA')
+        self.assertEqual((m.status, m.hit.gid), ('hit', 132))
 
     def test_all_fitting_candidates_are_returned(self):
         m = self.match('Fairview', 'Fairview, USA')
@@ -731,6 +756,12 @@ class GeocodeFillTests(_GazetteerCase):
 
     def test_city_state_does_not_repeat_its_own_name(self):
         self.assertIsNone(self.fill('Berlin', 'Berlin, Germany'))
+
+    def test_city_inside_a_same_named_state_keeps_the_state(self):
+        # New York City has a county between it and New York State, so the
+        # state is a real level of its hierarchy.
+        self.assertEqual(self.fill('New York', 'New York, USA'),
+                         'New York, New York County, New York, USA')
 
     def test_cemetery_keeps_its_town_and_gains_the_rest(self):
         self.assertEqual(self.fill('Oak Hill Cemetery', 'Oak Hill Cemetery, Fairview, Kansas'),

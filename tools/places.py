@@ -1108,12 +1108,8 @@ def _place_countries(name_key: str, context: list[str], gaz: _Gazetteer) -> set[
             found |= owners
     elif name_key in gaz.country_names:
         found.add(gaz.country_names[name_key])
-    else:
-        # A lone state name ("Hamburg", "Kansas") points at the one country
-        # that has it, so the check for a city of that name can run.
-        owners = gaz.admin1_countries(name_key)
-        if len(owners) == 1:
-            found |= owners
+    # A lone name that is only a state somewhere ("Berlin") never implies
+    # that country: it may be the Berlin in Kansas.
     return found
 
 
@@ -1186,10 +1182,7 @@ def _match_place(name: str, hierarchy: str | None, gaz: _Gazetteer) -> _PlaceMat
         return _PlaceMatch('none', candidates=[], unmatched=[], countries=countries,
                            no_country=not named)
 
-    # A church or cemetery is never matched on its name alone, and never
-    # stands in for a town or division (living or historical) of the name.
-    if any(not _is_site(g) for g in feats):
-        feats = [g for g in feats if not _is_site(g)]
+    # A church or cemetery is never matched on its name alone.
     feats = [g for g in feats if context or not _is_site(g)]
     if not feats:
         return _PlaceMatch('none', candidates=[], unmatched=[], countries=countries,
@@ -1208,16 +1201,21 @@ def _match_place(name: str, hierarchy: str | None, gaz: _Gazetteer) -> _PlaceMat
         scored.append((geo, ranks, missing))
 
     fitting = [s for s in scored if not s[2]]
+    # A church or cemetery never stands in for a town or division (living
+    # or historical) of the same name that fits the same hierarchy.
+    if any(not _is_site(s[0]) for s in fitting):
+        fitting = [s for s in fitting if not _is_site(s[0])]
     # A state is a general place, unless a town of the same name lies inside
-    # it (the city-states Berlin and Hamburg, New York City): then the town
-    # is the place. A namesake village in another state does not count.
+    # it (the city-states Berlin and Hamburg, New York City): then the state
+    # steps aside and the town is matched like any other. A namesake village
+    # in another state does not count, and other fitting towns stay listed.
     states = [s for s in fitting if _feature_rank(s[0]) == _RANK_ADMIN1]
     if states:
         inside = [s for s in fitting if s[0].fclass == 'P' and any(
             s[0].country == st[0].country and s[0].admin1 == st[0].admin1 for st in states)]
         if not inside:
             return _PlaceMatch('general', candidates=[], unmatched=[], countries=countries)
-        fitting = inside
+        fitting = [s for s in fitting if _feature_rank(s[0]) != _RANK_ADMIN1]
     if len(fitting) > 1:
         current = [s for s in fitting if s[0].fcode not in _NOT_CURRENT_CODES
                    and not (s[0].fclass == 'A' and s[0].fcode.endswith('H'))]
@@ -1305,8 +1303,11 @@ def _filled_hierarchy(name: str, hierarchy: str | None, match: _PlaceMatch,
             continue
         label = gaz.admin_label(geo.country, level, '.'.join(codes))
         # A city-state is its own state: "Berlin, Germany" gains no second
-        # "Berlin".
-        if label and _fold(label) != _fold(lookup):
+        # "Berlin". Only a city with no county between it and the state;
+        # New York City keeps New York State.
+        city_state = (rank == _RANK_ADMIN1 and geo.admin2 in ('', '00')
+                      and _fold(label or '') == _fold(lookup))
+        if label and not city_state:
             items.append((rank, label))
             added = True
     if own > _RANK_COUNTRY and _RANK_COUNTRY not in present:
@@ -1822,13 +1823,14 @@ def run_geocode(
     if proposals:
         n = len(proposals)
         noun = 'place' if n == 1 else 'places'
+        these = 'this place' if n == 1 else f'these {n} places'
         table = [f'GeoNames found a match for {n} {noun}:', *_proposal_table(proposals)]
         if dry_run:
             messages.extend(table)
-            messages.append(f'[dry-run] Would write coordinates for these {n} {noun}. '
+            messages.append(f'[dry-run] Would write coordinates for {these}. '
                             'Nothing written; run without --dry-run to review and apply.')
             written = n
-        elif confirm('\n'.join(table) + f'\nWrite coordinates for these {n} {noun}?'):
+        elif confirm('\n'.join(table) + f'\nWrite coordinates for {these}?'):
             # The question may stay open a long time, and the workbench,
             # `fha places set` or `fha confirm place` may write the registry
             # meanwhile. Re-read it now and apply the edits to what is there;
