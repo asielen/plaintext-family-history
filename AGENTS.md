@@ -223,6 +223,11 @@ fha source clear-keyword <s-id> --keyword … [--replace-with …]   clear or co
 fha source set-primary <s-id> --file NAME          make the named photo the source's main
                             image (the fix `fha doctor` names when a record calls a
                             photo's back its main image; record-only, nothing renamed)
+fha source merge <keeper> <retiree> [--dry-run]    fold a second record of one piece of
+                            evidence into the first: files re-keyed (documents renamed,
+                            photos keyword only), claims moved with their ids, notes and
+                            links added, retiree record removed, its id kept in aliases:;
+                            refused when the accepted claims are about different people
 fha places geocode (--place <l-id> | --all) [--dry-run]   coordinates, missing county/
                             state/country and spellings from GeoNames (downloaded once);
                             one table, one [y/N] the human answers; ambiguous places

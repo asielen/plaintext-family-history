@@ -19,6 +19,7 @@ Contents:
 9. Capture: one record, on the user's click
 10. Working in Obsidian
 11. Geocoding: one table, one yes
+12. Merging two sources
 
 ---
 
@@ -294,3 +295,17 @@ Other limits:
 - **Writing coordinates when `fha confirm place` mints a place.** Its yes is about the claims and the name, not coordinates the tool inferred. It names the geocode command to run next, so the coordinates get their own table and yes.
 - **Guessing between candidates** (largest population, nearest to other places). A confident wrong pin is worse than an empty one the human can fill with one command. For the same reason a place that names no country is never a confident match, even when one entry fits.
 - **A pin for every place.** A country or a region like Prussia has no one point that means it; a pin in its middle would look precise and say nothing.
+
+---
+
+## 12. Merging two sources
+
+**The rule.** When two source records prove to be one piece of evidence, `fha source merge` folds one into the other. The kept record takes the other's files, claims (ids unchanged), notes and links, keeps its id in `aliases:`, and records what moved in `merged_from:`; the other record file is removed. The merge is refused when both records hold accepted claims and no person is named in both.
+
+**Why.** An index entry and the document it indexes are one source, and so are two captures of one record, so a merge is a routine step. By hand it means clearing embedded keywords and staging files under neutral names, which loses the original filename. The `merged_from:` entry exists because a merge with no record of what moved cannot be undone. The people check uses the claims a human has already accepted: two records whose confirmed facts share no one are almost always two records, and a wrong merge is far harder to see than a refusal.
+
+**Rejected.**
+
+- **A tombstone record for the merged source**, as persons have. A merged source's files all move to the survivor, so nothing would be left for the tombstone to describe; the alias and `merged_from:` carry what it would.
+- **Guessing "different people" from names or dates in the text.** The accepted claims already say who each record is about; anything looser would grow exceptions.
+- **An `unmerge` verb now.** `merged_from:` makes an undo possible by hand; a verb waits until one is needed.
