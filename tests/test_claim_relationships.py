@@ -343,6 +343,28 @@ class UncitingTests(unittest.TestCase):
         claim.run_claim(root, claim_id=REL, status='rejected')
         self.assertIn('# Aunt Ruth says so\n    type: parent\n---', _read(root, thomas))
 
+    def test_a_comment_on_the_claims_key_is_never_removed(self) -> None:
+        inline = ('relationships:\n  - to: "[[%s|Margaret Cole]]"\n    type: parent\n'
+                  '    claims: ["[[%s]]"]   # census 1900, p.4\n' % (MARGARET, REL))
+        root, thomas, _margaret = self._setup('', inline)
+        claim.run_claim(root, claim_id=REL, status='disputed')
+        after = _read(root, thomas)
+        self.assertIn('    type: parent\n    claims: []  # census 1900, p.4\n---', after)
+        # `claims: []` reads as no claims: lint sees an unsourced belief.
+        self.assertEqual([f for f in _codes(root, 'W115') if 'links claim' in f.message], [])
+        # Accepting again writes the claim back and keeps the comment.
+        claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertIn(f'    claims: ["[[{REL}]]"]  # census 1900, p.4\n', _read(root, thomas))
+
+    def test_a_comment_inside_a_block_claims_list_is_kept(self) -> None:
+        block = ('relationships:\n  - to: "[[%s|Margaret Cole]]"\n    type: parent\n'
+                 '    claims:\n      # the 1900 census\n      - "[[%s]]"\n    note: kept\n'
+                 % (MARGARET, REL))
+        root, thomas, _margaret = self._setup('', block)
+        claim.run_claim(root, claim_id=REL, status='rejected')
+        self.assertIn('    type: parent\n    # the 1900 census\n    claims: []\n    note: kept\n',
+                      _read(root, thomas))
+
     def test_an_empty_list_is_still_a_kept_list(self) -> None:
         root, thomas, _margaret = self._setup('', 'relationships: []\n')
         # Lint still asks for the accepted ties, and the writers open it up.

@@ -9751,6 +9751,41 @@ def _item_with_hypothesis(item: list[str], link: str | None, cr: str) -> list[st
     return list(item) + [f'{key_indent}hypothesis: {yaml_inline(link)}{cr}']
 
 
+def _claims_key_comments(item: list[str]) -> tuple[list[str], str]:
+    """The comments the owner typed on an entry's `claims:` key: the ones on
+    lines of their own inside a block-style list (and any after a list item),
+    and the one at the end of the key line. A writer that rewrites or empties
+    `claims:` keeps them, since they are the owner's text."""
+    own: list[str] = []
+    inline = ''
+    key_col: int | None = None
+    for ln in item:
+        bare = ln.rstrip('\r')
+        if key_col is not None:
+            if bare.strip() and len(bare) - len(bare.lstrip()) > key_col:
+                inner = bare.strip()
+                if inner.startswith('#'):
+                    own.append(inner)
+                else:
+                    value = inner[1:].strip() if inner.startswith('-') else inner
+                    after = split_yaml_comment(value)[1]
+                    if after:
+                        own.append(after)
+                continue
+            key_col = None
+        m = _REL_CLAIM_LINE_RE.match(bare)
+        if not m:
+            continue
+        rest = m.group(4).strip()
+        if rest.startswith('#'):
+            inline = rest
+        elif rest:
+            inline = split_yaml_comment(rest)[1]
+        if not rest or rest.startswith('#'):
+            key_col = len(m.group(1)) + len(m.group(2) or '')
+    return own, inline
+
+
 def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[str]:
     """One entry's lines with its `claims:` key replaced by a `claims:`
     line listing `claim_ids` - written where it stood, else at the end of
@@ -9760,6 +9795,8 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
     dash = re.match(r'^(\s*)-\s+', item[0])
     key_indent = (dash.group(1) + '  ') if dash else '    '
     value = relationship_claims_value(claim_ids)
+    own, inline = _claims_key_comments(item)
+    tail = f'  {inline}' if inline else ''
     out: list[str] = []
     placed = False
     skip_deeper: int | None = None
@@ -9777,11 +9814,16 @@ def _item_with_claims(item: list[str], claim_ids: list[str], cr: str) -> list[st
         if m.group(3) == 'claims' and (not rest or rest.startswith('#')):
             skip_deeper = len(m.group(1)) + len(m.group(2) or '')
         if m.group(2):
-            # `- claims: ...` opened the entry: the dash stays on that line.
-            out.append(f'{m.group(1)}{m.group(2)}claims: {value}{cr}')
+            # `- claims: ...` opened the entry: the dash stays on that line,
+            # so comments from inside a block list join the line's own.
+            joined = ' '.join(([inline] if inline else []) + own)
+            out.append(f'{m.group(1)}{m.group(2)}claims: {value}'
+                       f'{"  " + joined if joined else ""}{cr}')
             placed = True
         elif not placed:
-            out.append(f'{m.group(1)}claims: {value}{cr}')
+            # The owner's comments stay: own-line ones above the key.
+            out.extend(f'{m.group(1)}{c}{cr}' for c in own)
+            out.append(f'{m.group(1)}claims: {value}{tail}{cr}')
             placed = True
     if not placed:
         out.append(f'{key_indent}claims: {value}{cr}')
@@ -10273,8 +10315,12 @@ def add_relationship_entry(
 
 def _item_without_claims(item: list[str]) -> list[str] | None:
     """One entry's lines with its `claims:` key (and any block-list items
-    under it) removed. None when `claims:` opens the entry (`- claims: …`),
+    under it) removed. A comment the owner typed on the key or inside its
+    list is never removed: then the key stays as `claims: []` with the key
+    line's comment, and own-line comments above it (`[]` reads as no claims
+    to every reader). None when `claims:` opens the entry (`- claims: …`),
     where taking the line would take the list dash with it."""
+    own, inline = _claims_key_comments(item)
     out: list[str] = []
     skip_deeper: int | None = None
     for ln in item:
@@ -10292,6 +10338,10 @@ def _item_without_claims(item: list[str]) -> list[str] | None:
         rest = m.group(4).strip()
         if not rest or rest.startswith('#'):
             skip_deeper = len(m.group(1))
+        if own or inline:
+            cr = '\r' if ln.endswith('\r') else ''
+            out.extend(f'{m.group(1)}{c}{cr}' for c in own)
+            out.append(f'{m.group(1)}claims: []{"  " + inline if inline else ""}{cr}')
     return out
 
 
