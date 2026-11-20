@@ -467,6 +467,11 @@ _US_FEATURES = [
     (112, 'Coleville', 'Coleville', 'Easton', 42.90, -76.20, 'P', 'PPL', 'NY', '017', '', 500),
     (113, 'Atlanta', 'Atlanta', '', 33.749, -84.388, 'P', 'PPLA', 'GA', '121', '', 400000),
     (114, 'Georgia', 'Georgia', 'GA', 32.75, -83.5, 'A', 'ADM1', 'GA', '', '', 10000000),
+    (115, 'Tykwin', 'Tykwin', '', 38.9, -95.3, 'P', 'PPL', 'KS', '091', '', 40),
+    (116, 'Oak Hill Cemetery', 'Oak Hill Cemetery', '', 39.565, -95.125, 'S', 'CMTY', 'KS', '091', '', 0),
+    (117, 'Oak Hill Cemetery', 'Oak Hill Cemetery', '', 40.37, -74.05, 'S', 'CMTY', 'NJ', '025', '', 0),
+    (118, 'Saint Mary Church', 'Saint Mary Church', '', 39.564, -95.122, 'S', 'CH', 'KS', '091', '', 0),
+    (119, 'Fairview Inn', 'Fairview Inn', '', 39.563, -95.121, 'S', 'HTL', 'KS', '091', '', 0),
 ]
 _PL_FEATURES = [
     (200, 'Republic of Poland', 'Republic of Poland', 'Poland,Polska', 52.0, 20.0, 'A', 'PCLI', '00', '', '', 38000000),
@@ -517,7 +522,7 @@ class _GazetteerCase(unittest.TestCase):
         self.root = Path(self._tmp.name)
         _write_geonames(self.root / '.cache' / 'geonames')
         rows = [_row('Fairview', 'Fairview, Breton County, Kansas, USA'),
-                _row('Poland', 'Poland')]
+                _row('Tykwin', 'Tykwin, Poland')]
         self.gaz, notes = places._prepare_gazetteer(
             self.root, rows, offline=True, progress=lambda _l: None)
         self.assertIsNotNone(self.gaz, notes)
@@ -560,20 +565,23 @@ class GeocodeMatchTests(_GazetteerCase):
     def test_unknown_name(self):
         self.assertEqual(self.match('Nowhere', 'Nowhere, Kansas, USA').status, 'none')
 
-    def test_state_matches_its_division_not_a_town_of_that_name(self):
-        m = self.match('Kansas', 'Kansas, USA')
-        self.assertEqual(m.status, 'hit')
-        self.assertEqual(m.hit.fcode, 'ADM1')
+    def test_a_state_is_a_general_place_not_a_town_of_that_name(self):
+        # Owner decision: a state needs no coordinates.
+        self.assertEqual(self.match('Kansas', 'Kansas, USA').status, 'general')
+        self.assertEqual(self.match('Kansas').status, 'general')
 
     def test_county_place_matches_the_county(self):
         m = self.match('Breton County', 'Breton County, Kansas, USA')
         self.assertEqual(m.status, 'hit')
         self.assertEqual(m.hit.gid, 102)
 
-    def test_country_on_its_own(self):
-        m = self.match('Poland', 'Poland')
-        self.assertEqual(m.status, 'hit')
-        self.assertEqual(m.hit.fcode, 'PCLI')
+    def test_country_on_its_own_is_a_general_place(self):
+        self.assertEqual(self.match('Poland', 'Poland').status, 'general')
+        self.assertEqual(self.match('England').status, 'general')
+
+    def test_historic_region_is_a_general_place(self):
+        self.assertEqual(self.match('Prussia').status, 'general')
+        self.assertEqual(self.match('Galicia', 'Galicia').status, 'general')
 
     def test_town_named_like_its_county_and_state(self):
         # "New York, New York, USA" is the city: the state cannot be its own
@@ -583,9 +591,38 @@ class GeocodeMatchTests(_GazetteerCase):
         self.assertEqual(m.hit.gid, 109)
 
     def test_state_reading_when_the_hierarchy_names_only_the_country(self):
-        m = self.match('New York', 'New York, USA')
+        # The state, so a general place: no coordinates proposed.
+        self.assertEqual(self.match('New York', 'New York, USA').status, 'general')
+
+    def test_country_written_in_the_name_is_read_like_a_hierarchy(self):
+        # "Tykwin, Poland" with no hierarchy is the Polish town, never the
+        # Kansas namesake.
+        m = self.match('Tykwin, Poland')
         self.assertEqual(m.status, 'hit')
-        self.assertEqual(m.hit.gid, 108)
+        self.assertEqual(m.hit.country, 'PL')
+
+    def test_place_naming_no_country_goes_to_review(self):
+        # One entry fits, but nothing says which country: the human decides.
+        m = self.match('Easton')
+        self.assertEqual(m.status, 'ambiguous')
+        self.assertEqual(m.candidates[0].gid, 111)
+
+    def test_cemetery_matches_when_its_town_county_and_state_agree(self):
+        m = self.match('Oak Hill Cemetery',
+                       'Oak Hill Cemetery, Fairview, Breton County, Kansas, USA')
+        self.assertEqual(m.status, 'hit')
+        self.assertEqual(m.hit.gid, 116)
+        m = self.match('Saint Mary Church', 'Saint Mary Church, Fairview, Kansas, USA')
+        self.assertEqual(m.status, 'hit')
+        self.assertEqual(m.hit.gid, 118)
+
+    def test_cemetery_never_matches_on_its_name_alone(self):
+        self.assertNotEqual(self.match('Oak Hill Cemetery').status, 'hit')
+        self.assertEqual(self.match('Oak Hill Cemetery', 'Oak Hill Cemetery, USA').status,
+                         'ambiguous')
+        # A town the cemetery's county does not hold is a disagreement.
+        self.assertEqual(self.match('Oak Hill Cemetery',
+                                    'Oak Hill Cemetery, Easton, Kansas, USA').status, 'partial')
 
     def test_village_with_no_country_uses_loaded_countries(self):
         # "podlaskie" is a spelling only the loaded Polish data knows; the
@@ -647,13 +684,17 @@ class GeocodeFillTests(_GazetteerCase):
     def test_nothing_missing_proposes_nothing(self):
         self.assertIsNone(self.fill('Fairview', 'Fairview, Breton County, Kansas, USA'))
 
-    def test_no_hierarchy_gets_one(self):
-        self.assertEqual(self.fill('Wola Mała', None),
+    def test_country_in_the_name_with_no_hierarchy_gets_one(self):
+        self.assertEqual(self.fill('Wola Mała, Poland', None),
                          'Wola Mała, Powiat białostocki, Podlasie, Poland')
 
     def test_division_gets_only_the_levels_above_it(self):
-        self.assertEqual(self.fill('Breton County', 'Breton County'),
+        self.assertEqual(self.fill('Breton County', 'Breton County, Kansas'),
                          'Breton County, Kansas, United States')
+
+    def test_cemetery_keeps_its_town_and_gains_the_rest(self):
+        self.assertEqual(self.fill('Oak Hill Cemetery', 'Oak Hill Cemetery, Fairview, Kansas'),
+                         'Oak Hill Cemetery, Fairview, Breton County, Kansas, United States')
 
     def test_part_that_could_be_two_levels_adds_neither(self):
         # "New York" is both the county and the state of the city.
@@ -674,6 +715,25 @@ class GeocodeYamlEditTests(unittest.TestCase):
         # the id line and name line survive
         self.assertIn('- id: L-7c1a9f4e22', new)
         self.assertIn('name: Fairview', new)
+
+    def test_comment_line_after_the_id_does_not_set_the_indent(self):
+        import yaml
+        text = ('- id: L-7c1a9f4e22\n    # moved from the old notebook\n'
+                '  name: Fairview\n  hierarchy: Fairview, Kansas\n')
+        new, changed = places._apply_geocode_to_yaml(
+            text, 'L-7c1a9f4e22', 39.5, -95.1, ['Fair #view'],
+            'Fairview, Breton County, Kansas, USA')
+        entry = yaml.safe_load(new)[0]
+        self.assertEqual(entry['hierarchy'], 'Fairview, Breton County, Kansas, USA')
+        self.assertEqual(entry['coords'], [39.5, -95.1])
+        self.assertEqual(entry['alt_names'], ['Fair #view'])
+        self.assertIn('# moved from the old notebook', new)
+
+    def test_empty_alt_names_list_is_filled(self):
+        import yaml
+        text = '- id: L-7c1a9f4e22\n  name: Fairview\n  alt_names: []\n'
+        new, _ = places._apply_geocode_to_yaml(text, 'L-7c1a9f4e22', 1.0, 2.0, ['Fairview City'])
+        self.assertEqual(yaml.safe_load(new)[0]['alt_names'], ['Fairview City'])
 
     def test_filled_hierarchy_replaces_only_that_key(self):
         import yaml
@@ -976,6 +1036,130 @@ class GeocodeRunTests(unittest.TestCase):
         entry = yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))[0]
         self.assertEqual(entry['alt_names'], ['Wola'])
 
+    def test_edit_made_while_the_question_is_open_survives(self):
+        import yaml
+        self._registry()
+        _write_geonames(self.gdir)
+
+        def confirm(prompt):
+            text = self.yaml_path.read_text(encoding='utf-8')
+            text = text.replace('  name: Nowhere\n',
+                                '  name: Nowhere\n  notes: typed in the workbench\n')
+            self.yaml_path.write_text(text, encoding='utf-8')
+            return True
+        result = places.run_geocode(self.root, {}, offline=True, confirm=confirm)
+        data = {e['id']: e for e in yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))}
+        self.assertEqual(data['L-ab4d2c7b55']['notes'], 'typed in the workbench')
+        self.assertIn('coords', data['L-7c1a9f4e22'])
+        self.assertEqual(result['written'], 2)
+
+    def test_place_changed_while_the_question_is_open_is_skipped(self):
+        import yaml
+        self._registry()
+        _write_geonames(self.gdir)
+
+        def confirm(prompt):
+            text = self.yaml_path.read_text(encoding='utf-8')
+            text = text.replace('  hierarchy: Fairview, Kansas, USA\n',
+                                '  hierarchy: Fairview, Kansas, USA\n  coords: [1.0, 2.0]\n')
+            self.yaml_path.write_text(text, encoding='utf-8')
+            return True
+        result = places.run_geocode(self.root, {}, offline=True, confirm=confirm)
+        data = {e['id']: e for e in yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))}
+        self.assertEqual(data['L-7c1a9f4e22']['coords'], [1.0, 2.0])
+        self.assertIn('coords', data['L-8d2b0a5f33'])
+        self.assertEqual(result['written'], 1)
+        self.assertIn('l-7c1a9f4e22', '\n'.join(result['messages']))
+
+    def test_damaged_dump_is_one_plain_line_and_the_rest_carry_on(self):
+        import zipfile
+        self._registry()
+        _write_geonames(self.gdir)
+        zp = self.gdir / 'US.zip'
+        data = zipfile.ZipFile(zp).read('US.txt') * 50
+        with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr('US.txt', data)
+        raw = bytearray(zp.read_bytes())
+        for i in range(200, 260):
+            raw[i] ^= 0xFF
+        zp.write_bytes(bytes(raw))
+        result, _ = self._run(dry_run=True)
+        out = '\n'.join(result['messages'])
+        self.assertIn('US.zip could not be read', out)
+        self.assertIn('l-8d2b0a5f33', out)   # Poland still matched
+        self.assertEqual(result['written'], 1)
+
+    def test_damaged_cache_is_a_plain_message_and_closes_the_cache(self):
+        self._registry()
+        _write_geonames(self.gdir)
+        with mock.patch.object(places._Gazetteer, 'features_named',
+                               side_effect=sqlite3.DatabaseError('database disk image is malformed')):
+            result, prompts = self._run(dry_run=True)
+        self.assertEqual(result['status'], 'no-gazetteer')
+        self.assertIn('gazetteer.sqlite', '\n'.join(result['messages']))
+        # Closed: on Windows an open connection would block this delete.
+        (self.gdir / places._GAZETTEER_DB).unlink()
+
+    def test_empty_alt_names_list_shows_and_writes_the_same(self):
+        import yaml
+        self._registry('- id: L-8d2b0a5f33\n  name: Wola Mała\n'
+                       '  hierarchy: Wola Mała, Poland\n  alt_names: []\n')
+        _write_geonames(self.gdir)
+        result, prompts = self._run()
+        self.assertIn('also known as Wola Mala', prompts[0])
+        entry = yaml.safe_load(self.yaml_path.read_text(encoding='utf-8'))[0]
+        self.assertEqual(entry['alt_names'], ['Wola Mala'])
+
+    def test_general_places_get_one_summary_line(self):
+        self._registry('- id: L-7c1a9f4e22\n  name: Poland\n'
+                       '- id: L-8d2b0a5f33\n  name: Kansas\n  hierarchy: Kansas, USA\n'
+                       '- id: L-9e3c1b6a44\n  name: Prussia\n'
+                       '- id: L-ab4d2c7b55\n  name: Fairview\n'
+                       '  hierarchy: Fairview, Breton County, Kansas, USA\n')
+        _write_geonames(self.gdir)
+        result, prompts = self._run(dry_run=True)
+        out = '\n'.join(result['messages'])
+        self.assertIn('3 general places (countries, states, regions) need no coordinates', out)
+        self.assertEqual(result['written'], 1)
+        self.assertNotIn('Not found', out)
+        self.assertNotIn('Poland  ', out)
+
+    def test_general_places_download_no_country(self):
+        self._registry('- id: L-7c1a9f4e22\n  name: Poland\n'
+                       '- id: L-8d2b0a5f33\n  name: Kansas\n  hierarchy: Kansas, USA\n')
+        source = self.root / 'source-files'
+        _write_geonames(source)
+        fetched = []
+
+        def fake_fetch(url, dest):
+            fetched.append(url.rsplit('/', 1)[1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes((source / dest.name).read_bytes())
+            return None
+        with mock.patch.object(places, '_fetch_url', side_effect=fake_fetch):
+            result, prompts = self._run(offline=False)
+        self.assertEqual(sorted(fetched), ['admin1CodesASCII.txt', 'admin2Codes.txt',
+                                           'countryInfo.txt'])
+        self.assertEqual(prompts, [])
+        self.assertIn('2 general places', '\n'.join(result['messages']))
+
+    def test_country_in_the_name_downloads_that_country(self):
+        self._registry('- id: L-8d2b0a5f33\n  name: Tykwin, Poland\n')
+        source = self.root / 'source-files'
+        _write_geonames(source)
+        fetched = []
+
+        def fake_fetch(url, dest):
+            fetched.append(url.rsplit('/', 1)[1])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes((source / dest.name).read_bytes())
+            return None
+        with mock.patch.object(places, '_fetch_url', side_effect=fake_fetch):
+            result, _ = self._run(offline=False, dry_run=True)
+        self.assertIn('PL.zip', fetched)
+        self.assertNotIn('US.zip', fetched)
+        self.assertEqual(result['written'], 1)
+
     def test_hierarchy_with_a_hand_comment_is_not_rewritten(self):
         self._registry('- id: L-7c1a9f4e22\n  name: Fairview\n'
                        '  hierarchy: Fairview, Kansas  # as the 1880 census has it\n')
@@ -1071,13 +1255,15 @@ class GeocodeRunTests(unittest.TestCase):
         result = places.run_geocode(self.root, {}, place_id='l-9999999999', offline=True)
         self.assertEqual(result['status'], 'not-found')
 
-    def test_dump_keeps_only_towns_and_divisions(self):
+    def test_dump_keeps_towns_divisions_churches_and_cemeteries(self):
         _write_geonames(self.gdir)
         db = places._open_gazetteer_db(self.gdir / places._GAZETTEER_DB)
         try:
             self.assertIsNone(places._import_country(db, self.gdir / 'US.zip', 'US'))
             classes = {r[0] for r in db.execute('SELECT DISTINCT fclass FROM features')}
-            self.assertEqual(classes, {'P', 'A'})
+            self.assertEqual(classes, {'P', 'A', 'S'})
+            codes = {r[0] for r in db.execute("SELECT fcode FROM features WHERE fclass = 'S'")}
+            self.assertEqual(codes, {'CMTY', 'CH'})
         finally:
             db.close()
 
