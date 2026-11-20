@@ -53,6 +53,7 @@ from _lib import (
     id_type_of,
     is_genetic_parent_subtype,
     is_valid_id,
+    link_writer,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -403,19 +404,24 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         for c in blood['common_ancestors']:
             names[c] = people.get(c, {}).get('name') or fmt_id_display(c)
 
-    return Result(
-        ok=True,
-        exit_code=EXIT_CLEAN,
-        data={
-            'a': pid_a, 'b': pid_b,
-            'a_name': people[pid_a]['name'], 'b_name': people[pid_b]['name'],
-            'names': names,
-            'blood': blood, 'any': path,
-        },
-    )
+    data = {
+        'a': pid_a, 'b': pid_b,
+        'a_name': people[pid_a]['name'], 'b_name': people[pid_b]['name'],
+        'names': names,
+        'blood': blood, 'any': path,
+    }
+    # With links: obsidian (SPEC §18) each name is linked by its file name, so
+    # the line can be pasted into a note Obsidian follows. The id mode's
+    # output is unchanged.
+    links = link_writer(archive_root, fha_config)
+    if links.obsidian:
+        data['links'] = {pid: links.link(pid, name) for pid, name in names.items()}
+    return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
 
 
-def _id_name(pid: str, name: str) -> str:
+def _id_name(pid: str, name: str, links: dict[str, str] | None = None) -> str:
+    if links and pid in links:
+        return links[pid]
     return f'[[{fmt_id_display(pid)}|{name}]]'
 
 
@@ -432,15 +438,16 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         return result.exit_code
 
     data = result.data
-    a_label = _id_name(data['a'], data['a_name'])
-    b_label = _id_name(data['b'], data['b_name'])
+    links = data.get('links')
+    a_label = _id_name(data['a'], data['a_name'], links)
+    b_label = _id_name(data['b'], data['b_name'], links)
     print(f'{a_label}  <->  {b_label}')
 
     names = data.get('names', {})
     blood = data.get('blood')
     if blood:
         anc = ', '.join(
-            _id_name(c, names.get(c, fmt_id_display(c))) for c in blood['common_ancestors']
+            _id_name(c, names.get(c, fmt_id_display(c)), links) for c in blood['common_ancestors']
         )
         rel = blood['relationship']
         if blood['common_ancestors']:

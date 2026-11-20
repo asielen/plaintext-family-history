@@ -6,6 +6,10 @@ normalize_links.py - fha normalize-links: settle citations to their canonical fo
   fha normalize-links --dry-run  The same preview, named explicitly (the flag the
                                  operating instructions tell agents to always pass)
   fha normalize-links --write    Apply them, showing the same diff
+  fha normalize-links --obsidian [--write]
+                                 Also point every person, source and claim
+                                 link at the record's file (SPEC §18 link
+                                 mode), so Obsidian can follow it
 
 `--dry-run --write` together is refused (exit 2): pick one - preview or write.
 
@@ -40,6 +44,15 @@ Nothing a person wrote is lost: a display they chose (`[[p-…|Maggie]]`,
 and a trailing `# note` stays on its line. A record with no usable name is written as its bare ID, never
 guessed; an entry that does not resolve is left as written. Nothing else in the claims
 ```yaml block is touched - `roles:` and `place:` stay bare IDs (SPEC §8.7).
+
+One more, with `--obsidian` or whenever fha.yaml says `links: obsidian`:
+  (f) a person, source or claim link in prose or frontmatter → the record's
+      file stem as the target (`[[hartley__thomas_edward_p-…|Name]]`,
+      `[[letter_s-…|s-…]]`, `[[letter_s-…#Claims|c-…]]`), and a stem left
+      stale by a rename → the current one. `_lib.rewrite_record_links_to_stems`
+      does the work, the same function lint W161 asks. Display text is kept;
+      place links, the claims block, inline code and GENERATED regions are
+      left alone.
 
 Follows the headless-core Result contract: `run_normalize_links` computes and
 returns a `Result`; `_cmd_normalize_links` renders it and returns the exit code.
@@ -79,8 +92,11 @@ from _lib import (
     yaml_inline,
     is_template_file,
     link_entry,
+    link_mode,
     link_parts,
+    LinkWriter,
     load_fha_yaml,
+    rewrite_record_links_to_stems,
     normalize_id,
     read_record,
     read_text_exact,
@@ -556,10 +572,19 @@ def run_normalize_links(
     fha_config: dict,
     *,
     write: bool = False,
+    obsidian: bool = False,
 ) -> Result:
     """Compute (and, with write=True, apply) the citation normalization, returning
     a Result. `data` carries `files_changed`, `edits`, the per-file unified
-    `diffs`, and the `ambiguous` names that were left for a human to pin."""
+    `diffs`, and the `ambiguous` names that were left for a human to pin.
+
+    `obsidian=True`, or `links: obsidian` in fha.yaml, adds rewrite (f): every
+    person, source and claim link pointed at the record's file. Each record is
+    rewritten in one atomic write, the ID rewrites and the stem rewrite
+    together, so a second run finds nothing to do."""
+    mode = link_mode(fha_config)
+    stems_on = obsidian or mode == 'obsidian'
+    stem_links = LinkWriter(archive_root, 'obsidian') if stems_on else None
     undecodable: list[Path] = []
     on_decode_error = undecodable_file_recorder(undecodable)
     records = _scan_records(archive_root, on_decode_error=on_decode_error)
@@ -577,6 +602,7 @@ def run_normalize_links(
     files_changed = 0
     total_edits = 0
     ambiguous_seen: set[str] = set()
+    worded_claim_links: list[tuple[str, str]] = []
 
     for path in _record_files(archive_root):
         try:
@@ -604,6 +630,10 @@ def run_normalize_links(
             continue
         new_text, edits, ambiguous = normalize_text(original, alias_map, clashes, names)
         rel = str(path.relative_to(archive_root)).replace('\\', '/')
+        if stem_links is not None:
+            new_text, stem_edits, worded = rewrite_record_links_to_stems(new_text, stem_links)
+            edits += stem_edits
+            worded_claim_links += [(rel, link) for link in worded]
 
         for name in ambiguous:
             if name.lower() not in ambiguous_seen:
@@ -636,7 +666,9 @@ def run_normalize_links(
     result.data['files_changed'] = files_changed
     result.data['edits'] = total_edits
     result.data['written'] = write
+    result.data['obsidian'] = stems_on
 
+    write_cmd = 'fha normalize-links --obsidian --write' if obsidian else 'fha normalize-links --write'
     if files_changed == 0:
         result.add('info', 'All citations are already in canonical form - nothing to normalize.')
     elif write:
@@ -645,7 +677,20 @@ def run_normalize_links(
         result.add('info',
                    f'{total_edits} citation(s) across {files_changed} file(s) can be normalized. '
                    'Re-run with --write to apply.',
-                   next_step='fha normalize-links --write')
+                   next_step=write_cmd)
+    if stems_on:
+        result.add('info', 'Place links ([[l-…]]) keep their ID form: a place has no file of '
+                           'its own yet, so there is no file name for Obsidian to follow.')
+        if mode != 'obsidian':
+            result.add('info', 'fha.yaml does not say `links: obsidian`, so links the tools '
+                               'write from now on will name IDs again. Add the line '
+                               '`links: obsidian` to fha.yaml to keep new links in the '
+                               'file-name form.')
+    for rel, link in worded_claim_links:
+        result.add('warning', f'{rel}: {link} links a claim with words of its own, so it '
+                              'was left as written. A claim link Obsidian can follow shows '
+                              'the claim ID: write it as [[source file name#Claims|c-…]] and '
+                              'put the words beside it.')
 
     if undecodable:
         shown = ', '.join(
@@ -666,7 +711,7 @@ def run_normalize_links(
             'Save As, then pick UTF-8 from the Encoding menu), '
             'then run `fha normalize-links` again.')
 
-    if ambiguous_seen or undecodable:
+    if ambiguous_seen or undecodable or worded_claim_links:
         result.ok = False
         result.exit_code = EXIT_WARNINGS
     return result
@@ -707,7 +752,9 @@ def _cmd_normalize_links(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    result = run_normalize_links(archive_root, fha_config, write=bool(getattr(args, 'write', False)))
+    result = run_normalize_links(archive_root, fha_config,
+                                 write=bool(getattr(args, 'write', False)),
+                                 obsidian=bool(getattr(args, 'obsidian', False)))
     return _emit(result, show_diff=not bool(getattr(args, 'quiet', False)))
 
 
@@ -719,9 +766,14 @@ with the name beside the ID, so a record says who it is about.
 
   fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
+  fha normalize-links --obsidian --write
+                                 Also point each person, source and claim link
+                                 at the record's file, so Obsidian can follow it
 
 Runs as a preview by default; a real write needs --write. Your original names
-are kept as aliases, so the shortened links still resolve."""
+are kept as aliases, so the shortened links still resolve. With links: obsidian
+in fha.yaml, every run also does what --obsidian does. Place links keep their
+ID form: places have no files of their own yet."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -739,6 +791,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'so the always-preview habit works here too)')
     p.add_argument('--quiet', action='store_true',
                    help='Suppress the per-file diff (show only the summary)')
+    p.add_argument('--obsidian', action='store_true',
+                   help="Point each person, source and claim link at the record's file "
+                        '(Obsidian link mode); already on when fha.yaml says links: obsidian')
     p.set_defaults(func=_cmd_normalize_links)
 
 
@@ -752,6 +807,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--write', action='store_true')
     parser.add_argument('--dry-run', action='store_true', dest='dry_run')
     parser.add_argument('--quiet', action='store_true')
+    parser.add_argument('--obsidian', action='store_true')
     args = parser.parse_args(argv)
     return _cmd_normalize_links(args)
 

@@ -218,6 +218,8 @@ from _lib import (
     SOURCE_PURPOSE_BLOCK,
     SOURCE_TYPES,
     link_list_lines,
+    link_writer,
+    LinkWriter,
     record_display_names,
     BackupRefused,
     EMBEDDED_KEYWORD_DOCUMENT_SUFFIXES,
@@ -1042,6 +1044,7 @@ def _scaffold_text(
     source_class: str | None = None,
     people_names: dict[str, str] | None = None,
     physical_location: str | None = None,
+    links: LinkWriter | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -1068,7 +1071,8 @@ def _scaffold_text(
     A.6), written as `{holder, as_of}` with this month as `as_of`.
 
     `people` is a validated list of P-ids from `--people`; they land in the
-    record's `people:` field so `fha index` indexes the photo-to-person link
+    record's `people:` field (each a file-name link when fha.yaml says
+    `links: obsidian`, through `links`) so `fha index` indexes the photo-to-person link
     and `fha find --related P-xxx` surfaces the photo source without requiring
     any face-region placement (the "photos, no photo manager" path, TOOLING §FAQ).
 
@@ -1116,7 +1120,7 @@ def _scaffold_text(
         # Names beside the IDs (SPEC §14): `"[[p-…|Name]]"`, so the record
         # says who is in it without the tools; a person with no name on
         # record is written as the bare ID rather than a guess.
-        lines += link_list_lines('people', people, people_names)
+        lines += link_list_lines('people', people, people_names, links=links)
     else:
         lines.append('people: []')
     if restricted:
@@ -2781,6 +2785,7 @@ def process_photo(
         people=people or None,
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
         people_names=record_display_names(archive_root, people or []),
+        links=link_writer(archive_root, fha_config),
     )
 
     if dry_run:
@@ -3005,6 +3010,7 @@ def process_photo_group(
         people=people or None,
         source_class=_sidecar_str(sidecar_meta, 'source_class'),
         people_names=record_display_names(archive_root, people or []),
+        links=link_writer(archive_root, fha_config),
     )
 
     if dry_run:

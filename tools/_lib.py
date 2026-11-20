@@ -50,6 +50,7 @@ import calendar
 import codecs
 import dataclasses
 import datetime
+import difflib
 import fnmatch
 import hashlib
 import html
@@ -10326,6 +10327,10 @@ def link_parts(target: str, display: str | None = None) -> tuple[str, str | None
     - A source link whose display is exactly a claim ID points at that claim
       (`[[source_stem|c-…]]`, `[[s-…#Claims|c-…]]`): the result is the claim
       ID with no display, the same as `[[c-…]]`.
+    - A display that is exactly the link's own ID is no display:
+      `[[source_stem|s-…]]`, the form Obsidian link mode writes for a
+      citation, reads as `[[s-…]]`, so the site and the exports show it as
+      the same footnote.
     - Anything else (an ID, a name, a hand stem with no ID) comes back as
       written, trimmed, for the alias map to resolve.
 
@@ -10342,6 +10347,8 @@ def link_parts(target: str, display: str | None = None) -> tuple[str, str | None
     if (d is not None and d[:2].lower() == 'c-'
             and id_type_of(d) == 'C' and id_type_of(t) == 'S'):
         return d, None
+    if d is not None and d.lower() == t.lower() and id_type_of(t):
+        return t, None
     return t, d
 
 
@@ -11786,32 +11793,473 @@ def _usable_link_name(name: object) -> str | None:
     return text
 
 
-def link_entry(rid: str, name: object = None) -> str:
-    """`[[p-…|Name]]` for an ID with a usable name, else the bare lowercase ID."""
+def link_entry(rid: str, name: object = None, links: 'LinkWriter | None' = None) -> str:
+    """`[[p-…|Name]]` for an ID with a usable name, else the bare lowercase ID.
+
+    With `links` in Obsidian mode (SPEC §18) the target is the record's file
+    stem: `[[hartley__thomas_edward_p-…|Name]]`, or `[[stem]]` when there is
+    no usable name. A record with no file found keeps the ID form."""
     shown = fmt_id_display(str(rid).strip())
     display = _usable_link_name(name)
-    return f'[[{shown}|{display}]]' if display else shown
+    plain = f'[[{shown}|{display}]]' if display else shown
+    if links is None or not links.obsidian:
+        return plain
+    wrapped = plain if display else f'[[{shown}]]'
+    converted = links.convert(wrapped, yaml_values=not display)
+    return plain if converted == wrapped else converted
 
 
-def yaml_link_item(rid: str, name: object = None) -> str:
+def yaml_link_item(rid: str, name: object = None, links: 'LinkWriter | None' = None) -> str:
     """One list item's YAML text: `"[[p-…|Name]]"` (quoted, so YAML reads a
-    string, not a nested list) or the bare ID when there is no usable name."""
-    entry = link_entry(rid, name)
+    string, not a nested list) or the bare ID when there is no usable name.
+    `links` as for `link_entry`."""
+    entry = link_entry(rid, name, links)
     if entry.startswith('[['):
         return json.dumps(entry, ensure_ascii=False)   # JSON strings are YAML double-quoted scalars
     return entry
 
 
 def link_list_lines(key: str, ids: Iterable[str], names: dict[str, str] | None,
-                    indent: str = '') -> list[str]:
+                    indent: str = '', links: 'LinkWriter | None' = None) -> list[str]:
     """`key:` and one `- "[[id|Name]]"` line per ID, at `indent` (the key's own
-    column). `names` maps lowercase IDs to names (`record_display_names`)."""
+    column). `names` maps lowercase IDs to names (`record_display_names`).
+
+    `links` is for frontmatter lists (a source's `people:`), which Obsidian
+    draws as graph edges. A claim's `persons:` sits in the fenced claims
+    block, where Obsidian follows no link, so its writers leave `links` out
+    and the list keeps the ID form in both link modes."""
     names = names or {}
     out = [f'{indent}{key}:']
     for rid in ids:
-        out.append(f'{indent}  - {yaml_link_item(rid, names.get(normalize_id(str(rid))))}')
+        out.append(f'{indent}  - {yaml_link_item(rid, names.get(normalize_id(str(rid))), links)}')
     return out
 
+
+# ── Link mode: how tools WRITE a link (SPEC §18) ─────────────────────────────
+#
+# Every reader accepts both link forms (`link_parts`). This is the writing
+# side. `fha.yaml`'s `links:` picks the form:
+#
+#   links: id         (the default) `[[p-…|Name]]`, `[[s-…]]`, `[[c-…]]`
+#   links: obsidian   the record's file stem as the target, so Obsidian can
+#                     follow the link: `[[hartley__thomas_edward_p-…|Name]]`,
+#                     `[[letter_s-…|s-…]]`, `[[letter_s-…#Claims|c-…]]`
+#
+# Places stay in the ID form in both modes: a place has no file of its own
+# (they all live in places/places.yaml), so there is no stem to point at.
+# Links inside a fenced code block (the claims YAML) stay in the ID form too:
+# Obsidian follows no link there.
+#
+# Every writer goes through one `LinkWriter`: it builds the ID form it has
+# always built and hands it to `LinkWriter.convert`, which returns it
+# unchanged in `id` mode. That keeps `id`-mode output byte-identical and
+# gives the two modes one rule for what a stem link looks like.
+# `rewrite_record_links_to_stems` applies the same conversion to a whole
+# record file for `fha normalize-links --obsidian` and lint W161.
+
+LINK_MODES = ('id', 'obsidian')
+
+
+def link_mode_setting(fha_config: dict | None) -> tuple[str, str | None]:
+    """(mode, problem) from fha.yaml's optional `links:` key.
+
+    An absent key is `id`. A value that is neither `id` nor `obsidian` reads
+    as `id`, so a typo never turns the archive's links into something the
+    owner did not ask for, and `problem` carries the plain message lint W161
+    shows for it."""
+    raw = (fha_config or {}).get('links') if isinstance(fha_config, dict) else None
+    if raw is None:
+        return 'id', None
+    value = str(raw).strip().lower()
+    if value in LINK_MODES:
+        return value, None
+    return 'id', (
+        f"fha.yaml's links: is {raw!r}, but it must be id or obsidian:\n"
+        "  links: id         # links name the record's ID (the default; or remove the line)\n"
+        "  links: obsidian   # links name the record's file, so Obsidian can follow them\n"
+        "Until it is fixed, the tools write links the id way.")
+
+
+def link_mode(fha_config: dict | None) -> str:
+    """'id' or 'obsidian': the link form tools write (see `link_mode_setting`)."""
+    return link_mode_setting(fha_config)[0]
+
+
+# A double-bracket link on one line, not an `![[…]]` embed: 1 target,
+# 2 `#fragment` (with its `#`), 3 display.
+_WRITE_LINK_RE = re.compile(
+    r'(?<!!)\[\[([^\[\]|#\r\n]+?)(#[^\[\]|\r\n]*)?(?:\|([^\[\]\r\n]*))?\]\]')
+
+
+class LinkWriter:
+    """THE link formatter every writing tool shares (SPEC §18 link mode).
+
+    Build one per command run with `link_writer(archive_root, fha_config)`.
+    In `id` mode `convert` returns its text unchanged and nothing on disk is
+    read. In Obsidian mode the file stems are read from file names under
+    people/ and sources/ the first time one is needed, and a claim's source
+    is found by scanning sources/ for that claim (archive truth, never the
+    index). A caller that already holds these maps (lint's registry) passes
+    them in so nothing is scanned twice."""
+
+    def __init__(self, archive_root: str | Path | None, mode: str = 'id', *,
+                 stems: dict[str, str] | None = None,
+                 claim_sources: dict[str, str] | None = None,
+                 names: dict[str, str] | None = None):
+        self.archive_root = Path(archive_root) if archive_root is not None else None
+        self.mode = mode if mode in LINK_MODES else 'id'
+        self._stems = stems
+        self._paths: dict[str, Path] = {}
+        self._claim_sources: dict[str, str | None] = dict(claim_sources or {})
+        self._claims_complete = claim_sources is not None
+        self._names: dict[str, str | None] = (
+            {k: _usable_link_name(v) for k, v in names.items()} if names is not None else {})
+        self._names_complete = names is not None
+
+    @property
+    def obsidian(self) -> bool:
+        return self.mode == 'obsidian'
+
+    # ── lookups ──
+
+    def _scan_stems(self) -> dict[str, str]:
+        """{p-/s- id: the record file's stem}. A person's stem is its profile
+        (never a companion view or research file); content decides an
+        ambiguous name, as `person_file_kind` does everywhere else."""
+        stems: dict[str, str] = {}
+        if self.archive_root is None:
+            return stems
+        for sub, kind in (('people', 'P'), ('sources', 'S')):
+            base = self.archive_root / sub
+            if not base.is_dir():
+                continue
+            for path in sorted(walk_files(base, suffix='.md')):
+                if is_template_file(path):
+                    continue
+                parsed = parse_filename(path)
+                if not parsed or parsed.get('id_type') != kind:
+                    continue
+                rid = parsed['id_str']
+                if rid in stems:
+                    continue
+                if kind == 'P' and parsed.get('kind') != 'profile':
+                    if not parsed.get('kind_ambiguous'):
+                        continue
+                    try:
+                        meta = read_record(path)['meta']
+                    except Exception:  # noqa: BLE001 - unreadable: not this record
+                        continue
+                    if person_file_kind(path, meta) != 'profile':
+                        continue
+                stems[rid] = path.stem
+                self._paths[rid] = path
+        return stems
+
+    def stem_of(self, rid: str | None) -> str | None:
+        """The current file stem of a person or source record, or None."""
+        if not rid:
+            return None
+        if self._stems is None:
+            self._stems = self._scan_stems()
+        return self._stems.get(normalize_id(str(rid)))
+
+    def claim_source(self, cid: str) -> str | None:
+        """The source ID that holds claim `cid`, or None when no source does."""
+        cid = normalize_id(str(cid))
+        if cid not in self._claim_sources:
+            self.find_claims([cid])
+        return self._claim_sources.get(cid)
+
+    def find_claims(self, cids: Iterable[str]) -> None:
+        """Look up many claims' sources in one pass over sources/."""
+        if self._claims_complete or self.archive_root is None:
+            return
+        wanted = sorted({normalize_id(str(c)) for c in cids} - set(self._claim_sources))
+        if not wanted:
+            return
+        found = locate_claim_records(self.archive_root, wanted)
+        for cid in wanted:
+            hit = found.get(cid)
+            sid = None
+            if hit:
+                parsed = parse_filename(hit[0])
+                if parsed and parsed.get('id_type') == 'S':
+                    sid = parsed['id_str']
+            self._claim_sources[cid] = sid
+
+    def person_name(self, pid: str) -> str | None:
+        """The usable `name:` of a person record, read from its file."""
+        pid = normalize_id(str(pid))
+        if pid not in self._names and not self._names_complete:
+            name = None
+            if self.stem_of(pid) is not None and pid in self._paths:
+                try:
+                    name = read_record(self._paths[pid])['meta'].get('name')
+                except Exception:  # noqa: BLE001 - no name to show
+                    name = None
+            self._names[pid] = _usable_link_name(name)
+        return self._names.get(pid)
+
+    # ── writing ──
+
+    def link(self, rid: str, display: str | None = None) -> str:
+        """`[[…]]` for one record in the archive's link form: `[[p-…|Tom]]`
+        in `id` mode, `[[person_stem|Tom]]` in Obsidian mode."""
+        shown = fmt_id_display(str(rid).strip())
+        text = f'[[{shown}|{display}]]' if display else f'[[{shown}]]'
+        return self.convert(text)
+
+    def convert(self, text: str, *, yaml_values: bool = False) -> str:
+        """`text` with every person, source and claim link in the stem form
+        (Obsidian mode), or unchanged (`id` mode). See `convert_counted`."""
+        if not self.obsidian:
+            return text
+        return self.convert_counted(text, yaml_values=yaml_values)[0]
+
+    def convert_counted(self, text: str, *, yaml_values: bool = False
+                        ) -> tuple[str, int, list[str]]:
+        """(new text, links rewritten, links left that the stem form cannot
+        carry) for one span of text, link by link:
+
+          [[p-…]] / [[p-…|Tom]]            → [[person_stem|Name]] / [[person_stem|Tom]]
+          [[s-…]] / [[s-…|the letter]]     → [[source_stem|s-…]] / [[source_stem|the letter]]
+          [[c-…]] / [[s-…#Claims|c-…]]     → [[source_stem#Claims|c-…]]
+          [[old_stem_p-…|Tom]]             → [[person_stem|Tom]] (renamed since)
+
+        The display a person wrote is kept, and so is a `#heading`. A link
+        with no display gets the person's name or the source's ID (SPEC §18).
+        With `yaml_values` (frontmatter) a link outside double quotes gets no
+        display: unquoted, `[[p-…]]` is a YAML nested list, and a name with a
+        comma would split it. Nor does a link in a Markdown table row, where
+        the `|` would end the cell. Places, working answers, unknown IDs and names
+        are left as written. So is a claim link with words of its own
+        (`[[c-…|the census entry]]`), counted in the third value: its stem
+        form needs the claim ID as the display, so the words cannot stay."""
+        if not self.obsidian or '[[' not in text:
+            return text, 0, []
+        matches = list(_WRITE_LINK_RE.finditer(text))
+        if not matches:
+            return text, 0, []
+        claims = [tid for tid, _d in (link_parts(m.group(1), m.group(3)) for m in matches)
+                  if id_type_of(tid) == 'C']
+        if claims:
+            self.find_claims(claims)
+        edits = 0
+        unfixable: list[str] = []
+        out: list[str] = []
+        last = 0
+        for m in matches:
+            new = self._convert_one(m, text, unfixable, yaml_values)
+            if new is not None and new != m.group(0):
+                out.append(text[last:m.start()])
+                out.append(new)
+                last = m.end()
+                edits += 1
+        if not edits:
+            return text, 0, unfixable
+        out.append(text[last:])
+        return ''.join(out), edits, unfixable
+
+    def _convert_one(self, m: re.Match, text: str, unfixable: list[str],
+                     yaml_values: bool) -> str | None:
+        """The stem form of one link match, or None to leave it as written."""
+        written = m.group(1).strip()
+        fragment = (m.group(2) or '').rstrip()
+        tid, display = link_parts(written, m.group(3))
+        kind = id_type_of(tid)
+        if kind not in ('P', 'S', 'C'):
+            return None
+        tid = normalize_id(tid)
+        if kind == 'C':
+            if display is not None:
+                unfixable.append(m.group(0))
+                return None
+            stem = self.stem_of(self.claim_source(tid))
+            if not stem or written == stem:
+                return None
+            return f'[[{stem}#Claims|{fmt_id_display(tid)}]]'
+        stem = self.stem_of(tid)
+        if not stem or written == stem:
+            return None
+        quoted = (m.start() > 0 and text[m.start() - 1] == '"'
+                  and m.end() < len(text) and text[m.end()] == '"')
+        # A Markdown table cell reads a `|` as its own edge, so a link in a
+        # table row gets no added display.
+        line_start = text.rfind('\n', 0, m.start()) + 1
+        in_table = text[line_start:].lstrip().startswith('|')
+        if display is None and (quoted or not yaml_values) and not in_table:
+            default = self.person_name(tid) if kind == 'P' else fmt_id_display(tid)
+            if default and quoted and ('"' in default or '\\' in default):
+                default = None
+            display = default
+        return f'[[{stem}{fragment}|{display}]]' if display else f'[[{stem}{fragment}]]'
+
+
+def link_writer(archive_root: str | Path | None, fha_config: dict | None = None) -> LinkWriter:
+    """The `LinkWriter` for this archive's link mode. `fha_config` is read
+    from fha.yaml when not given (a malformed file reads as the `id` mode)."""
+    if fha_config is None and archive_root is not None:
+        fha_config = load_fha_yaml(archive_root)
+    return LinkWriter(archive_root, link_mode(fha_config))
+
+
+_LINK_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+_LINK_INLINE_CODE_RE = re.compile(r'(`[^`\r\n]*`)')
+_LINK_FM_KEY_RE = re.compile(r'^([A-Za-z_][\w-]*)\s*:')
+
+
+def _link_line_kinds(lines: list[str]) -> list[str]:
+    """How each line of a record file takes links, for the stem rewrite:
+    'yaml' (a frontmatter value), 'prose' (body text), or 'skip' (the
+    `---` fences, `id:` and `aliases:`, which are handles rather than links,
+    a fenced code block such as the claims YAML, and a GENERATED-BEGIN/END
+    region, which `fha views` rebuilds)."""
+    kinds = ['prose'] * len(lines)
+    i = 0
+    if lines and lines[0].lstrip('﻿').rstrip('\r\n') == '---':
+        close = next((k for k in range(1, len(lines))
+                      if lines[k].rstrip('\r\n') == '---'), None)
+        if close is not None:
+            kinds[0] = kinds[close] = 'skip'
+            skip_key = False
+            for k in range(1, close):
+                key = _LINK_FM_KEY_RE.match(lines[k])
+                if key:
+                    skip_key = key.group(1) in ('aliases', 'id')
+                kinds[k] = 'skip' if skip_key else 'yaml'
+            i = close + 1
+    in_fence = in_region = False
+    for k in range(i, len(lines)):
+        line = lines[k]
+        stripped = line.strip()
+        if in_fence:
+            kinds[k] = 'skip'
+            if _LINK_FENCE_RE.match(line):
+                in_fence = False
+            continue
+        if _LINK_FENCE_RE.match(line):
+            in_fence = True
+            kinds[k] = 'skip'
+            continue
+        if stripped.startswith('<!-- GENERATED-BEGIN'):
+            in_region = True
+        if in_region:
+            kinds[k] = 'skip'
+            if stripped.startswith('<!-- GENERATED-END'):
+                in_region = False
+    return kinds
+
+
+def _convert_link_line(line: str, kind: str, links: LinkWriter) -> tuple[str, int, list[str]]:
+    """One line through `LinkWriter.convert_counted` by its kind; inline
+    `code` in prose is left alone."""
+    if kind == 'skip' or '[[' not in line:
+        return line, 0, []
+    if kind == 'yaml':
+        return links.convert_counted(line, yaml_values=True)
+    out: list[str] = []
+    edits = 0
+    unfixable: list[str] = []
+    for k, part in enumerate(_LINK_INLINE_CODE_RE.split(line)):
+        if k % 2 == 1 or '[[' not in part:
+            out.append(part)
+            continue
+        new, n, bad = links.convert_counted(part)
+        out.append(new)
+        edits += n
+        unfixable += bad
+    return ''.join(out), edits, unfixable
+
+
+def rewrite_record_links_to_stems(text: str, links: LinkWriter) -> tuple[str, int, list[str]]:
+    """One record file's links in the stem form, for `fha normalize-links
+    --obsidian` and lint W161: (new text, links rewritten, links left that
+    the stem form cannot carry).
+
+    Only the text a person reads as a link is touched: frontmatter values
+    (never `id:` or `aliases:`) and body prose. Fenced code blocks (the
+    claims YAML), inline `code`, and GENERATED-BEGIN/END regions are left
+    alone (`_link_line_kinds`). Each link is replaced in place, so line
+    endings, YAML comments and everything around the link stay byte for
+    byte, and a second run changes nothing."""
+    if not links.obsidian or '[[' not in text:
+        return text, 0, []
+    lines = text.splitlines(keepends=True)
+    kinds = _link_line_kinds(lines)
+    out: list[str] = []
+    edits = 0
+    unfixable: list[str] = []
+    for line, kind in zip(lines, kinds):
+        new, n, bad = _convert_link_line(line, kind, links)
+        out.append(new)
+        edits += n
+        unfixable += bad
+    if not edits:
+        return text, 0, unfixable
+    return ''.join(out), edits, unfixable
+
+
+def links_to_id_form(text: str) -> str:
+    """`text` with every file-name link read back to the ID form, for an
+    export that copies a record's own text out of the archive (`fha packet`).
+
+    A file name carries the record's name: `[[bradford__alex_james_p-…|…]]`
+    names a living person and `[[lodge-roster_s-…|s-…]]` a restricted source
+    even where the export withholds that person or source. Reading the link
+    back to `[[p-…|…]]` / `[[s-…]]` / `[[c-…]]` gives the copy the same text
+    the `id` link mode would have, so switching modes never changes what an
+    export holds back. The display is kept, except a source's own ID shown
+    as its display and the claim ID of a claim link, which the ID form does
+    not repeat."""
+    if '_' not in text or '[[' not in text:
+        return text
+
+    def repl(m: re.Match) -> str:
+        written = m.group(1).strip()
+        if not _STEM_TARGET_RE.match(written):
+            return m.group(0)
+        tid, display = link_parts(written, m.group(3))
+        if not id_type_of(tid):
+            return m.group(0)
+        shown = fmt_id_display(tid)
+        if id_type_of(tid) == 'C':
+            return f'[[{shown}]]'
+        fragment = (m.group(2) or '').rstrip()
+        if display is not None and display.lower() == shown:
+            display = None
+        return f'[[{shown}{fragment}|{display}]]' if display else f'[[{shown}{fragment}]]'
+
+    return _WRITE_LINK_RE.sub(repl, text)
+
+
+def convert_written_links(before: str, after: str, links: LinkWriter | None) -> str:
+    """`after` with the links on the lines a tool wrote in the archive's link
+    form: every line of `after` that is not an unchanged line of `before`
+    goes through the stem rewrite (`_link_line_kinds` decides how), and every
+    other line stays byte for byte.
+
+    This is how a writing verb follows `links: obsidian` without touching
+    links it did not write: `fha claim` adding a `relationships:` entry, a
+    note verb appending a paragraph, `fha confirm merge` re-pointing a link.
+    `before` is '' for a new file. In `id` mode, or with no `links`, `after`
+    comes back unchanged."""
+    if links is None or not links.obsidian or '[[' not in after:
+        return after
+    old = before.splitlines(keepends=True)
+    new = after.splitlines(keepends=True)
+    kinds = _link_line_kinds(new)
+    written = [True] * len(new)
+    # Compared without line endings: a writer may hand back LF text for a
+    # CRLF record (`reapply_newline` restores them at the write).
+    matcher = difflib.SequenceMatcher(None, [ln.rstrip('\r\n') for ln in old],
+                                      [ln.rstrip('\r\n') for ln in new], autojunk=False)
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'equal':
+            for j in range(j1, j2):
+                written[j] = False
+    out = [(_convert_link_line(line, kind, links)[0] if mine else line)
+           for line, kind, mine in zip(new, kinds, written)]
+    return ''.join(out)
 
 def split_yaml_comment(rest: str) -> tuple[str, str]:
     """`value  # note` -> (`value`, `# note`), read the YAML way: the comment

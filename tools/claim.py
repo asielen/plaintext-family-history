@@ -326,6 +326,8 @@ from _lib import (
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
+    convert_written_links,
+    link_writer,
     format_edtf_error,
     id_type_of,
     is_merged_meta,
@@ -1959,6 +1961,11 @@ def _apply_relationships(
         plan = plan_relationship_removals(uncited, people)
     if not plan['edits'] and not plan['problems']:
         return
+    # The entries name people and claims as links: in the file-name form
+    # when fha.yaml says links: obsidian (SPEC §18).
+    links = link_writer(archive_root)
+    for edit in plan['edits'].values():
+        edit['after'] = convert_written_links(edit['before'], edit['after'], links)
     failed: set[Path] = set()
     if not dry_run:
         for path, edit in plan['edits'].items():

@@ -209,6 +209,8 @@ from _lib import (
     unreadable_dir_recorder,
     walk_files,
     write_text_exact_atomic,
+    convert_written_links,
+    link_writer,
     scan_ids_in_tree,
     scan_person_record_ids,
     yaml_inline,
@@ -1454,6 +1456,8 @@ def run_add_discovery(
 
     suffix = (' ' + ' '.join(ref_tokens)) if ref_tokens else ''
     entry = f'- {_today()}: {text}{suffix}'
+    # A link in the text is written in the archive's link form (SPEC §18).
+    entry = convert_written_links('', entry, link_writer(archive_root))
     result.data['entry'] = entry
 
     path = archive_root / 'notes' / 'discoveries.md'
@@ -3191,6 +3195,12 @@ def run_confirm_merge(
         return _unreadable_merge_refusal(result, unreadable, archive_root)
 
     has_warnings = any(m.level == 'warning' for m in result.messages)
+
+    # The links the merge re-points to the survivor are written in the
+    # archive's link form (SPEC §18), in the preview and the write alike.
+    links = link_writer(archive_root)
+    planned = {path: (before, convert_written_links(before, after, links))
+               for path, (before, after) in planned.items()}
 
     # ── Dry-run: the complete, honest preview ───────────────────────────────
     if dry_run:

@@ -332,6 +332,8 @@ from _lib import (
     set_surname_line,
     sync_person_aliases,
     write_text_exact_atomic,
+    convert_written_links,
+    link_writer,
     yaml_edtf,
     yaml_inline,
     safe_load_yaml,
@@ -2894,6 +2896,11 @@ def run_relate(
                    'donor-sperm, donor-egg, social, and half for a sibling. '
                    'Recorded as written; fix it by hand if it was a typo.')
 
+    # The new entries link people in the archive's link form (SPEC §18).
+    links = link_writer(archive_root)
+    writes = [(path, old_text, convert_written_links(old_text, new_text, links), label)
+              for path, old_text, new_text, label in writes]
+
     if dry_run:
         result.data['status'] = 'dry-run'
         for path, old_text, new_text, label in writes:
@@ -3378,6 +3385,8 @@ def run_edit(
         new_lines, created, old_content = _replace_section(
             lines, fence_end + 1, heading_text, new_text, cr)
     new_full_text = '\n'.join(new_lines)
+    # A link in the text is written in the archive's link form (SPEC §18).
+    new_full_text = convert_written_links(old_text, new_full_text, link_writer(archive_root))
 
     warn_private_dropped = False
     if not append:
@@ -3530,6 +3539,8 @@ def run_note(
             'retry. Nothing was written.')
 
     new_full_text = '\n'.join(new_lines)
+    # A link in the text is written in the archive's link form (SPEC §18).
+    new_full_text = convert_written_links(old_text, new_full_text, link_writer(archive_root))
 
     if dry_run:
         result.data['status'] = 'dry-run'
@@ -3631,6 +3642,8 @@ def run_edit_note(
         result.data['reason'] = reason
         return _refuse_result(result, 'refused', err)
     new_full_text = '\n'.join(new_lines)
+    # A link in the text is written in the archive's link form (SPEC §18).
+    new_full_text = convert_written_links(full_text, new_full_text, link_writer(archive_root))
 
     # The same silent-failure guard run_edit carries: an unbalanced wikilink
     # renders as raw text with no error anywhere, so flag it while the human

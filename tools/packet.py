@@ -237,6 +237,7 @@ from _lib import (
     apply_private_fence,
     configure_utf8_stdout,
     extract_tokens,
+    links_to_id_form,
     count_private_fences,
     extract_wikilinks,
     has_unfenced_draft_text,
@@ -1152,6 +1153,10 @@ def _strip_scaffolding_blocks(text: str, *, is_person_profile: bool) -> str:
     their Biography (a quoted obituary, letter, or inscription is common
     genealogical prose, and looks identical in shape to this block).
     """
+    # A file-name link (SPEC §18 `links: obsidian`) carries the record's name
+    # in the target; the copy reads every link in the ID form, as an `id`-mode
+    # archive writes it, so the mode never changes what a packet holds back.
+    text = links_to_id_form(text)
     fm = FRONT_RE.match(text)
     body_start = fm.end() if fm else 0
     body = text[body_start:]

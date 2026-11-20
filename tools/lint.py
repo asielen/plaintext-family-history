@@ -240,6 +240,11 @@ from _lib import (
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
+    LinkWriter,
+    convert_written_links,
+    link_mode,
+    link_mode_setting,
+    rewrite_record_links_to_stems,
     write_text_exact_atomic,
     yaml_inline,
     safe_load_yaml,
@@ -331,6 +336,10 @@ configure_utf8_stdout()
 #    _check_stray_person_keywords - W131: documents-root keyword naming a known
 #                                   person absent from the source's own people: list
 #    _check_generated_headers    - W105: hand-edits below a GENERATED header
+#    _check_obsidian_links      - W161: with links: obsidian, links Obsidian cannot
+#                                   follow (an ID target or a stale file name), or
+#                                   an unknown links: value in fha.yaml
+#    _link_writer_for            - the run's _lib.LinkWriter, built from the registry
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #    _check_untranscribed_evidence - W124: accepted claims on evidence the
@@ -780,6 +789,76 @@ def _is_generated_file(path: Path) -> bool:
         if line.strip():
             return line.startswith(_GENERATED_MARKER)
     return False
+
+
+def _link_writer_for(registry: Registry) -> LinkWriter:
+    """The link writer for this run (SPEC §18 link mode), its file names,
+    claim sources and person names taken from the registry, so a check or a
+    fix never scans the tree again. Built once and kept on the registry."""
+    cached = getattr(registry, '_link_writer', None)
+    if cached is not None:
+        return cached
+    stems: dict[str, str] = {}
+    for pid, paths in registry.person_profile_paths.items():
+        if paths:
+            stems[normalize_id(pid)] = sorted(paths)[0].stem
+    for sid, path in registry.source_paths.items():
+        stems[normalize_id(sid)] = path.stem
+    names = {normalize_id(pid): meta.get('name')
+             for pid, meta in registry.person_meta.items()}
+    claim_sources = {normalize_id(cid): normalize_id(sid)
+                     for cid, sid in registry.claim_ids.items()}
+    links = LinkWriter(registry.archive_root, link_mode(registry.fha_config), stems=stems,
+                       claim_sources=claim_sources, names=names)
+    registry._link_writer = links
+    return links
+
+
+def _check_obsidian_links(registry: Registry, findings: list[Finding]) -> None:
+    """W161: fha.yaml's `links:` is not a known value, or, with `links:
+    obsidian` (SPEC §18), a record holds person, source or claim links that
+    Obsidian cannot follow: an ID-form target (`[[p-…|Name]]`) or a file
+    name left stale by a rename. One finding per record, counting its links
+    and naming the command that rewrites them.
+
+    The question asked is exactly "would `fha normalize-links --obsidian`
+    change this file's links?" (`_lib.rewrite_record_links_to_stems`), so
+    lint and the fix can never disagree. The stems, claim sources and names
+    come from this run's registry, so nothing is read twice. A claim link
+    carrying its own words (`[[c-…|the census line]]`) cannot be rewritten
+    and is named on its own line with the hand fix. Silent in `id` mode."""
+    mode, problem = link_mode_setting(registry.fha_config)
+    if problem:
+        findings.append(Finding('W', 'W161', registry.archive_root / 'fha.yaml', problem))
+        return
+    if mode != 'obsidian':
+        return
+    links = _link_writer_for(registry)
+    fix = 'fha normalize-links --obsidian --write'
+    for sub in ('people', 'sources', 'notes'):
+        base = registry.archive_root / sub
+        if not base.is_dir():
+            continue
+        for path in sorted(walk_files(base, suffix='.md')):
+            if is_template_file(path) or _is_generated_file(path):
+                continue
+            try:
+                text = read_text_exact(path)
+            except (OSError, UnicodeDecodeError):
+                continue    # W128 / W123 report an unreadable file
+            if '[[' not in text:
+                continue
+            _new, count, worded = rewrite_record_links_to_stems(text, links)
+            if count:
+                findings.append(Finding('W', 'W161', path,
+                    f'{count} link(s) here name an ID or an old file name, so Obsidian '
+                    'cannot follow them (fha.yaml says links: obsidian). Fix: '
+                    f'`{fix}` points each one at the file it means.'))
+            for link in worded:
+                findings.append(Finding('W', 'W161', path,
+                    f'{link} links a claim with words of its own, which Obsidian cannot '
+                    'follow and which the stem form cannot keep. Fix it by hand: write '
+                    'it as [[source file name#Claims|c-…]] and put the words beside it.'))
 
 
 def _never_mintable(path: Path) -> bool:
@@ -3647,6 +3726,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W160: an entry citing no evidence beside a sourced one for the same tie.
     _check_claimless_duplicates(registry, findings, alias_map)
     registry.lap('relationships blocks')
+
+    # W161: with `links: obsidian`, a link Obsidian cannot follow.
+    _check_obsidian_links(registry, findings)
+    registry.lap('obsidian links')
 
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
@@ -8212,6 +8295,8 @@ def _fix_reciprocal(
                 f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
                 f"{owner_name} (claim {claims_shown}) in {rel}")
             continue
+        # The mirror links in the archive's link form (SPEC §18).
+        new_text = convert_written_links(text, new_text, _link_writer_for(registry))
         # A person record, edited in a loop over every missing mirror edge:
         # atomic so one failure costs one skipped edge, not one lost ancestor.
         write_text_exact_atomic(path, reapply_newline(new_text, text))
@@ -8264,6 +8349,9 @@ def _fix_applied(
                 "the tie, so there is no entry to write. Add the other person to the claim's "
                 "roles:, or write the entry by hand.")
     prefix = '--fix-applied dry-run: ' if dry_run else ''
+    links = _link_writer_for(registry)
+    for edit in plan['edits'].values():
+        edit['after'] = convert_written_links(edit['before'], edit['after'], links)
     for path, edit in plan['edits'].items():
         if not dry_run:
             try:
