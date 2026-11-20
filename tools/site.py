@@ -945,6 +945,12 @@ def _inline_html(text: str, render_token) -> str:
             target, wdisp = link_parts(m.group('wtarget'), m.group('wdisp'))
             scrubbed_wdisp = _scrub_internal_encoding(wdisp) if wdisp is not None else None
             rendered = render_token(target, scrubbed_wdisp)
+            if not rendered and target.lower().startswith('c-'):
+                # A claim the index does not know: cite the source the link
+                # was written against, as before the claim rule read it.
+                named = link_parts(m.group('wtarget'))[0]
+                if named.lower().startswith('s-'):
+                    rendered = render_token(named, None)
         elif m.group('token'):
             rendered = render_token(m.group('token'))
         elif m.group('ltext') is not None:

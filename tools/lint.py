@@ -175,6 +175,7 @@ from _lib import (
     VITAL_SUBJECT_ROLES,
     roles_by_person,
     extract_token_ids,
+    cited_source_ids,
     extract_wikilinks,
     link_field_refs,
     resolve_ref,
@@ -925,7 +926,7 @@ def _near_miss_text(ref: str, near: tuple[str | None, str]) -> str:
     return f'{ref!r} {detail}'
 
 
-def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]]]:
+def _parse_summary_block(body: str, claim_source=None) -> list[tuple[str, str, list[str], list[str]]]:
     """
     Parse the summary block from a curated profile body.
     Handles both multi-line and inline (single-line) summary blocks.
@@ -956,7 +957,8 @@ def _parse_summary_block(body: str) -> list[tuple[str, str, list[str], list[str]
         # ignoring any display text. extract_token_ids handles both bracket forms.
         seg_ids = extract_token_ids(segment)
         p_ids = [i for i in seg_ids if id_type_of(i) == 'P']
-        s_ids = [i for i in seg_ids if id_type_of(i) == 'S']
+        # A claim link cites the source holding the claim (`claim_source`).
+        s_ids = cited_source_ids(segment, claim_source or (lambda _cid: None))
         results.append((label, segment, p_ids, s_ids))
 
     return results
@@ -4347,6 +4349,11 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # E013: summary block drift for curated profiles
     children_of = _build_children_of(registry)   # parent_pid → {child_pids}
+    claim_source = {
+        normalize_id(str(c['id'])): sid
+        for sid, claims in registry.source_claims.items()
+        for c in claims if isinstance(c, dict) and c.get('id')
+    }
     for pid, paths in registry.person_profile_paths.items():
         profile_path = paths[0]
         meta = registry.person_meta.get(pid, {})
@@ -4354,7 +4361,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             continue
 
         rec = read_record(profile_path)
-        summary = _parse_summary_block(rec['body'])
+        summary = _parse_summary_block(rec['body'], claim_source.get)
         if not summary:
             continue
 

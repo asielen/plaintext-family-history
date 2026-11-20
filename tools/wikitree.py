@@ -115,8 +115,12 @@ from _lib import (
     configure_utf8_stdout,
     claim_date_order_sql,
     edtf_bounds,
+    claim_source_lookup,
+    cited_source_ids,
+    extract_link_tokens,
     extract_token_ids,
     extract_tokens,
+    token_source_id,
     link_parts,
     fmt_id_display,
     id_type_of,
@@ -566,9 +570,9 @@ def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: 
     warns about, so `undecodable` is tested first and fails closed on its own.
     """
     extra_sids, _ = _resolve_wikilink_ids(conn, text)
-    source_ids = sorted({
-        t for t in extract_token_ids(text) if id_type_of(t) == 'S'
-    } | extra_sids)
+    # A claim link cites the source holding the claim, so a restricted
+    # source cited as `[[c-…]]` or `[[source#Claims|c-…]]` is caught too.
+    source_ids = sorted(set(cited_source_ids(text, claim_source_lookup(conn))) | extra_sids)
     if not source_ids:
         return []
     placeholders = ','.join('?' * len(source_ids))
@@ -914,11 +918,17 @@ def _render_tokens(
     Both bracket forms and the legacy single-bracket `[P-id]` flow through here."""
     out: list[str] = []
     pos = 0
-    for pid_raw, display, _fragment, (start, end) in extract_tokens(text):
+    claim_source = claim_source_lookup(conn)
+    for pid_raw, display, _fragment, (start, end), named in extract_link_tokens(text):
         out.append(text[pos:start])
         pos = end
         pid = normalize_id(pid_raw)
         kind = id_type_of(pid)
+        if kind == 'C':
+            # A claim link cites the source that holds the claim (SPEC §8.7).
+            sid = token_source_id(pid, named, claim_source)
+            if sid:
+                pid, kind = sid, 'S'
         if kind == 'S':
             if pid not in used_sources:
                 used_sources.append(pid)
@@ -989,9 +999,7 @@ def _transform_line(
     """Transform one prose line: spacetime-wrap qualifying sentences, then render tokens."""
     out_sentences: list[str] = []
     for sentence in _split_sentences(line):
-        sids = [
-            t for t in extract_token_ids(sentence) if id_type_of(t) == 'S'
-        ]
+        sids = cited_source_ids(sentence, claim_source_lookup(conn))
         rendered = _render_tokens(conn, sentence, used_sources, person_cache)
         if len(sids) == 1 and sids[0] in spacetime:
             loc, date = spacetime[sids[0]]

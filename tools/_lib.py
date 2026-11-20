@@ -71,7 +71,7 @@ from collections import deque
 from html.parser import HTMLParser
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any, Callable, NamedTuple
 
 try:
     import yaml
@@ -430,6 +430,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 without staling the freshness watermark
 #    extract_tokens            - (id, display, fragment, span) per citation token
 #    extract_token_ids         - the IDs of all citation tokens in a text block
+#    cited_source_ids          - the source IDs a text cites, a claim link
+#                                 counted as its source (claim_source_lookup)
 #    extract_bare_ids          - all bare IDs from a text block
 #    normalize_place_text      - lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
@@ -10205,14 +10207,68 @@ def extract_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[i
     tuple as its ID form, and a source link whose display is a claim ID
     (`[[source_stem#Claims|c-…]]`) gives the claim: see `link_parts`.
     """
-    tokens: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
+    return [tok[:4] for tok in extract_link_tokens(text)]
+
+
+def extract_link_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int], str | None]]:
+    """`extract_tokens`' tuples plus a fifth value: the source ID the link was
+    written against when the claim rule turned it into a claim
+    (`[[source_stem#Claims|c-…]]` → that source), else None."""
+    tokens = []
     for m in _TOKEN_PARTS_RE.finditer(text):
         fragment = m.group(2)
         if fragment is not None:
             fragment = fragment.strip() or None
-        target, display = link_parts(m.group(1), m.group(3))
-        tokens.append((target.lower(), display, fragment, m.span()))
+        written = m.group(1).lower()
+        target, display = link_parts(written, m.group(3))
+        target = target.lower()
+        named_source = written if target != written and written.startswith('s-') else None
+        tokens.append((target, display, fragment, m.span(), named_source))
     return tokens
+
+
+def claim_source_lookup(conn: Any) -> Callable[[str], str | None]:
+    """A cached `c-id → s-id` reader over the index's claims table, for
+    `cited_source_ids` and the renderers. An unknown claim reads as None."""
+    cache: dict[str, str | None] = {}
+
+    def lookup(cid: str) -> str | None:
+        cid = normalize_id(cid)
+        if cid not in cache:
+            try:
+                row = conn.execute('SELECT source_id FROM claims WHERE id = ?', (cid,)).fetchone()
+            except Exception:
+                row = None
+            cache[cid] = normalize_id(str(row[0])) if row and row[0] else None
+        return cache[cid]
+    return lookup
+
+
+def token_source_id(tid: str, named_source: str | None,
+                    claim_source: Callable[[str], str | None]) -> str | None:
+    """The source one citation token cites: a source token is itself; a
+    claim token is the source that holds the claim (SPEC §8.7), or, when that
+    claim is unknown, the source its link was written against."""
+    kind = id_type_of(tid)
+    if kind == 'S':
+        return tid
+    if kind == 'C':
+        return claim_source(tid) or named_source
+    return None
+
+
+def cited_source_ids(text: str, claim_source: Callable[[str], str | None]) -> list[str]:
+    """The source IDs this text cites, one per citation, in document order.
+    A claim link (`[[c-…]]`, `[[source_stem#Claims|c-…]]`) cites the source
+    holding the claim, so a reader asking "is this source cited?" counts it.
+    `claim_source` maps a claim ID to its source ID (`claim_source_lookup`
+    over the index, or a dict's `.get`)."""
+    out: list[str] = []
+    for tid, _d, _f, _span, named in extract_link_tokens(text):
+        sid = token_source_id(tid, named, claim_source)
+        if sid:
+            out.append(sid)
+    return out
 
 
 def extract_token_ids(text: str) -> list[str]:
@@ -10269,13 +10325,15 @@ def link_parts(target: str, display: str | None = None) -> tuple[str, str | None
     The `#fragment` is the caller's to drop before calling: it never alters
     resolution. Display text is trimmed, and a blank one is None."""
     t = str(target or '').strip()
-    m = _STEM_TARGET_RE.match(t)
-    if m:
-        t = m.group(1)
+    if '_' in t:
+        m = _STEM_TARGET_RE.match(t)
+        if m:
+            t = m.group(1)
     d = display.strip() if display is not None else None
     if not d:
         d = None
-    if d is not None and id_type_of(t) == 'S' and id_type_of(d) == 'C':
+    if (d is not None and d[:2].lower() == 'c-'
+            and id_type_of(d) == 'C' and id_type_of(t) == 'S'):
         return d, None
     return t, d
 
