@@ -689,7 +689,7 @@ Keep your places tidy, fill in their coordinates, and record what you learn.
 
   fha places lint                    Check the place registry for problems
   fha places candidates              Place text that recurs often enough for a registry entry
-  fha places geocode (--place l-id | --all)  Fill in coordinates (offline, confirmed one by one)
+  fha places geocode (--place l-id | --all)  Fill in coordinates from GeoNames (one table, one yes)
   fha places set l-id [--coords "LAT, LON"] [--aka NAME]... [--history "PERIOD | HIERARCHY"]...
   fha places note l-id --text "..."  Append a dated research note to the place
   fha places edit-note l-id --old-text "..." --text "..."  Rewrite one existing note
@@ -724,15 +724,19 @@ Detect recurring unlinked place_text and GPS clusters
 
 ### `fha places geocode`
 
-Backfill coords/alt-names from the offline GeoNames dump
+Fill in coordinates, missing county/state/country and spellings from GeoNames
+
+```text
+Match places without coordinates against GeoNames, the free world gazetteer: towns, villages, counties, states and countries. The data is downloaded once into .cache/geonames/ (only the countries your places name). Every match is shown in one table and nothing is written until you answer yes. Places that could be more than one GeoNames entry are listed with the command that settles each.
+```
 
 | Argument | What it does |
 |---|---|
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--place` `l-id` | Geocode only this place. |
 | `--all` | Geocode every registry place lacking coordinates. |
-| `--offline` | Never download; match only against an already-cached GeoNames dump. |
-| `--dry-run` | Preview proposed changes without writing. |
+| `--offline` | Never download; match only against GeoNames data already saved. |
+| `--dry-run` | Show the same table without asking or writing. |
 
 ### `fha places set`
 

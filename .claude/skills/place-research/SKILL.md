@@ -59,6 +59,12 @@ Places carry history (a town is renamed, a county forms, a parish splits), and t
    fha lint
    fha places lint                    # registry hygiene: orphan l-ids, duplicates, dangling within: links
    ```
+5. **If a specific place (a town, village, church or cemetery) has no coordinates, offer to look them up.** A country, state or historic region ("Prussia") needs none; leave it as it is. After the reindex:
+   ```
+   fha places geocode --place <l-id> --dry-run   # what GeoNames found: coordinates, missing county/state/country
+   ```
+   Show the human the match in plain words. Only on their yes to that match, run it without `--dry-run` and answer the tool's `[y/N]` with their yes (in a shell that cannot type, `echo y | fha places geocode --place <l-id>`). If it lists several candidates, read them out and let the human pick; the tool prints the `fha places set <l-id> --coords "LAT, LON"` for each, and you run the one they chose. You never type coordinates of your own into the registry.
+
    Report plainly: "I added Fairview's history from territory to statehood and joined the three loose 'Fairview City' census mentions into one place. I left the map coordinates as they were." (Cosmetic: a relinked claim's place shows as a clickable `[[l-…]]` in an affected person's timeline only after that person's next `fha views timeline <p-id>`. The label text is unchanged until then, and a later `review-claims` or `write-biography` pass picks it up; regenerate now only if you want the link live.)
 
 ## Guardrails
