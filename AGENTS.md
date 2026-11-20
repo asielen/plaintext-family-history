@@ -165,6 +165,9 @@ fha serve [--port N]         human-started localhost workbench: a browser front 
                             these same commands (dry-run, then confirm; CLI echoed). Agents
                             do not start it unasked; killing it loses nothing.
 fha lint                     verify archive against spec; run after any batch of edits
+fha lint --changed           the quick check before a commit: report only on files changed
+                            since the last commit and the records they link to (a full
+                            fha lint stays the check before a release or after update-tools)
 fha index                    rebuild the SQLite query surface (.cache/index.sqlite)
 fha id mint p|s|c|l|h        mint verified IDs
 fha stubs                    create stubs for unresolved person references

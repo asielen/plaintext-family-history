@@ -128,10 +128,14 @@ Check the archive for problems and report them (a spell-check for your data).
   fha check               The same command, plainer name
   fha lint --fix-ids      Give IDs to records you named in plain English
   fha lint --mint-stubs   Create placeholder records for people named but not filed
+  fha lint --changed      Quick check before a commit: report only on files
+                          changed since the last commit and the records they
+                          link to
 
 Catches broken links, missing dates, contradictions, and people referenced but
-never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
-2 errors, 3 tool failure.
+never filed. Run it any time something feels off. A full `fha lint` (without
+--changed) is still the check before a release and after `fha update-tools`.
+Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure.
 ```
 
 | Argument | What it does |
@@ -140,6 +144,8 @@ never filed. Run it any time something feels off. Exit: 0 clean, 1 warnings,
 | `--spec-root` `PATH` | Spec docs root (when separate from archive root) |
 | `--with-exif` | Also verify embedded SOURCE: keywords and stray documents-root person keywords (W131) via exiftool (slow) |
 | `--json` | Machine-readable JSON output |
+| `--changed` `[REF]` | Report only on files changed since the git commit REF (default HEAD, so: since the last commit) and new files, plus the records they link to. Every check still runs. Before a release or after `fha update-tools`, run a full lint without it |
+| `--timings` | After the report, print how many seconds each group of checks took (to stderr) |
 | `--format-check` | Check formatting only (no fixes) |
 | `--format-write` | Apply conservative formatting fixes |
 | `--dry-run` | Preview mutating operations without writing |
