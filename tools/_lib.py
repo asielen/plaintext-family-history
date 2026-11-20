@@ -1200,6 +1200,63 @@ def parentage_parties(
     return children, parents
 
 
+# The directional power ties a `relationship` claim records (SPEC §8.2): the
+# role on each side, and the edge label each side's row carries.
+POWER_TIE_ROLES: tuple[tuple[tuple[str, str], tuple[str, str]], ...] = (
+    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+    (('employee', 'employee'), ('employer', 'employer')),
+)
+
+
+def relationship_claim_parties(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> tuple[str, Any]:
+    """Which kind of tie an accepted `relationship` claim records, and who is
+    in it: the rule `fha index` derives its edges by, in one place so `fha
+    lint` (W159) asks the same question and never calls a tie missing that
+    the tree holds.
+
+    The first branch that applies wins, as in the index:
+      - ('parentage', (children, parents)) when the roles name both halves
+        (`parentage_parties`);
+      - ('spouse', people) when anyone carries a spouse role, the couple read
+        by `spouse_parties` (two people named and one marked spouse is the
+        couple, SPEC §8.3 "Who married");
+      - ('social', people) for a friend, associate or neighbor subtype
+        (`social_parties`);
+      - ('power', [(a, label_a, b, label_b), ...]) otherwise, one entry per
+        directed enslaved/enslaver or employee/employer pair.
+    Input is the claim's `(pid, role)` pairs as `claim_role_pairs` or
+    `claim_persons_with_roles` gives them."""
+    pairs = list(persons_with_roles)
+    children, parents = parentage_parties(pairs)
+    if children and parents:
+        return 'parentage', (children, parents)
+    if any(role_meaning(r) == 'spouse' for _p, r in pairs):
+        return 'spouse', spouse_parties(pairs)
+    if subtype in SOCIAL_TIE_SUBTYPES:
+        return 'social', social_parties(pairs, subtype)
+    ties = []
+    for (role_a, edge_a), (role_b, edge_b) in POWER_TIE_ROLES:
+        a_ids = [p for p, r in pairs if role_meaning(r) == role_a]
+        b_ids = [p for p, r in pairs if role_meaning(r) == role_b]
+        ties += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
+    return 'power', ties
+
+
+def relationship_claim_records_tie(
+    persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
+) -> bool:
+    """Whether `fha index` derives at least one edge from an accepted
+    `relationship` claim (`relationship_claim_parties`): a couple or social
+    group of two or more different people, any parentage, or any power-tie
+    pair."""
+    kind, parties = relationship_claim_parties(persons_with_roles, subtype)
+    if kind in ('spouse', 'social'):
+        return len(set(parties)) >= 2
+    return bool(parties)
+
+
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
 # `baptism` name the person the record is about as the `child`; `marriage` and
 # `divorce` name them as `spouse` (and on those two, `spouse_parties` answers

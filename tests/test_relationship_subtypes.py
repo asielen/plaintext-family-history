@@ -135,11 +135,32 @@ class W159Tests(unittest.TestCase):
         (w,) = self._w159(f'child: {CHILD}')
         self.assertIn('no parent', w.message)
 
-    def test_one_spouse_or_one_sibling(self):
-        (w,) = self._w159(f'spouse: [{PARENT}]')
+    def test_one_spouse_or_one_sibling_on_a_claim_naming_one_person(self):
+        (w,) = self._w159(f'spouse: [{PARENT}]', persons=f'[{PARENT}]')
         self.assertIn('`spouse: [p-…, p-…]`', w.message)
-        (w,) = self._w159(f'sibling: [{CHILD}]', subtype='half')
+        (w,) = self._w159(f'sibling: [{CHILD}]', subtype='half', persons=f'[{CHILD}]')
         self.assertIn('`sibling:`', w.message)
+
+    def test_a_tie_the_index_derives_is_never_one_sided(self):
+        # SPEC §8.3 "Who married", case 2: two people named and one marked
+        # spouse are the couple, and the index records the marriage. A
+        # couple beside a lone parent or a lone sibling is a marriage too.
+        # Following "add the child" there would trade the marriage for a
+        # parent edge, so lint must say nothing.
+        three = f'[{CHILD}, {PARENT}, {OTHER}]'
+        for roles, persons in (
+                (f'spouse: [{PARENT}]', f'[{CHILD}, {PARENT}]'),
+                (f'spouse: [{CHILD}, {PARENT}]\nparent: [{OTHER}]', three),
+                (f'spouse: [{CHILD}, {PARENT}]\nsibling: [{OTHER}]', three)):
+            self.assertEqual(self._w159(roles, persons=persons), [], roles)
+
+    def test_lint_and_index_read_a_claim_the_same_way(self):
+        from _lib import relationship_claim_records_tie
+        a, b, c = CHILD.lower(), PARENT.lower(), OTHER.lower()
+        self.assertTrue(relationship_claim_records_tie([(a, None), (b, 'spouse')], None))
+        self.assertFalse(relationship_claim_records_tie([(b, 'mother')], None))
+        self.assertTrue(relationship_claim_records_tie(
+            [(a, 'spouse'), (b, 'spouse'), (c, 'parent')], None))
 
     def test_whole_maps_and_unaccepted_claims_are_quiet(self):
         self.assertEqual(self._w159(f'child: {CHILD}\nfather: {PARENT}'), [])

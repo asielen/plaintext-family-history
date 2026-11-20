@@ -180,6 +180,8 @@ from _lib import (
     claimless_duplicate_entries,    # W160: a bare entry beside a sourced twin
     drop_claimless_duplicates,      # --fix-duplicates: drop the ones holding no owner text
     subtype_misuse,                 # W158: a role, record or kinship word as subtype
+    relationship_claim_records_tie,  # W159: does the index derive any edge from it
+    optional_scalar,                # a subtype as the index stores it
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
     carries_person_record_fields,
@@ -1804,17 +1806,26 @@ def _subtype_misuse_message(cid: str, subtype: str, kind: str) -> str:
             'nature, so until it is fixed the tie shows with it.')
 
 
-def _one_sided_roles(roles: Any) -> list[str]:
+def _one_sided_roles(claim: dict, alias_map: dict[str, str]) -> list[str]:
     """W159: what is missing from a relationship claim's `roles:` map that
     names one side of a tie only, as the end of a sentence about the claim.
 
-    A parent with no child (or a child with no parent) records no tie, and
-    neither does one person alone under `spouse:` or `sibling:` on a claim
-    with no parent and child pair. Keys are read by meaning, so
-    `mother:` is a parent; a misspelt key (`parnet:`) counts as the role it was
-    meant to be, since W126 already reports the spelling and this would only
-    repeat it. Each person is counted once however they are written."""
+    Only a claim the index derives no edge from is asked
+    (`_lib.relationship_claim_records_tie` over the same `(person, role)`
+    pairs `fha index` reads): two people named with one marked spouse are a
+    couple (SPEC §8.3 "Who married"), and a couple beside a lone parent or
+    sibling is a marriage, so none of those is one-sided. On a claim that
+    records nothing, a parent with no child (or a child with no parent) and
+    one person alone under `spouse:` or `sibling:` are named. Keys are read
+    by meaning, so `mother:` is a parent; a misspelt key (`parnet:`) counts as
+    the role it was meant to be, since W126 already reports the spelling and
+    this would only repeat it. Each person is counted once however they are
+    written."""
+    roles = claim.get('roles')
     if not isinstance(roles, dict):
+        return []
+    if relationship_claim_records_tie(claim_persons_with_roles(claim, alias_map),
+                                      optional_scalar(claim.get('subtype'))):
         return []
     named: dict[str, set[str]] = {}
     keys: dict[str, list[str]] = {}
@@ -1836,12 +1847,8 @@ def _one_sided_roles(roles: Any) -> list[str]:
                 f'names a {have} (under {under}) and no {lack}, {no_tie} '
                 f'Add the {lack} to roles: (an indented `{lack}: [p-…]` line), or change '
                 f'the role if this was not a {have} here.')
-    # One person under `sibling:` beside a whole parent and child pair is a
-    # description (the children's brother, named on the same record), not a
-    # broken tie: the claim records the parentage, so it is left alone.
-    whole_parentage = 'parent' in named and 'child' in named
     for role, tie in (('spouse', 'marriage'), ('sibling', 'sibling')):
-        if len(named.get(role, ())) == 1 and not whole_parentage:
+        if len(named.get(role, ())) == 1:
             problems.append(
                 f'names one person under `{role}:`, {no_tie} A {tie} tie needs both '
                 f'people on that line: `{role}: [p-…, p-…]`.')
@@ -2093,15 +2100,6 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             if misuse:
                 findings.append(Finding('W', 'W158', path,
                     _subtype_misuse_message(cid, str(claim.get('subtype')).strip(), misuse)))
-
-        # W159: an accepted relationship claim whose roles name one side of
-        # the tie only. It records nothing in the tree, and until now the only
-        # sign was a W115 on the person asking for an entry nobody could write.
-        if claim_type == 'relationship' and str(claim.get('status', '')) == 'accepted' \
-                and claim.get('negated') not in (True, 'true'):
-            for problem in _one_sided_roles(claim.get('roles')):
-                findings.append(Finding('W', 'W159', path,
-                    f'Claim {cid} (type: relationship) {problem}'))
 
         # E006: accepted claim must have reviewed
         # A blank `reviewed:` line is YAML null and reads as absent here, as it
@@ -3651,6 +3649,19 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # status: a broken roles:/persons: pairing is a hand-edit mistake
             # the moment it is written, not only once the claim is accepted,
             # so the human sees it before review rather than after.
+            # W159: an accepted relationship claim whose roles name one side
+            # of a tie only. It records nothing in the tree, and until now the
+            # only sign was a W115 on the person asking for an entry nobody
+            # could write. Asked only when the index derives no edge from the
+            # claim (_lib.relationship_claim_records_tie, the index's own
+            # rule), so the advice can never cost a tie the claim records.
+            if (str(claim.get('type', '')) == 'relationship'
+                    and str(claim.get('status', '')) == 'accepted'
+                    and claim.get('negated') not in (True, 'true')):
+                for problem in _one_sided_roles(claim, alias_map):
+                    findings.append(Finding('W', 'W159', src_path,
+                        f'Claim {claim.get("id", "?")} (type: relationship) {problem}'))
+
             if isinstance(claim.get('roles'), dict):
                 claim_person_ids = set(_claim_person_ids(claim, alias_map))
                 for role_name in claim['roles']:
