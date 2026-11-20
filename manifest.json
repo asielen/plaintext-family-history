@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.8",
-  "generated": "2026-11-19",
+  "generated": "2026-11-20",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "89d4721682e1ba0ae614bb39c20cd923991e5dc83854bf9dd0a647d539da801e",
+      "sha256": "f0f645307cb1def2fd933a8c48cc33cc8b423a8f1ae560629469e8f6094eb735",
       "spec_version": "2.8",
       "src": "tools/_lib.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "1232562f0335b0b8bd44a37ebc99702c15559e3862c98f7a232095e3b6e9f5fc",
+      "sha256": "7ea72b5e14d677a49c3349d809ca909e064ec1eb5d9c8be16b97d72e1dd1a828",
       "spec_version": "2.8",
       "src": "tools/gedcom_import.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "77b4b3e5877a3bfdef438241faf95489904fc341329a97dc0b587da00f53a5ae",
+      "sha256": "3fe7477a275fc98831640d5ae2784f1709f88b7a74355123e7cad10cc93f64b7",
       "spec_version": "2.8",
       "src": "tools/lint.py"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "064228f8e0c5e5fa743a20fb6f46f2a7188116b3f97d21e335d7eb4014459fab",
+      "sha256": "80aa1aa8ea5f8eb521714b01683728e44ef1cd97484611a476e9e6cd6ed19948",
       "spec_version": "2.8"
     },
     {
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "2fb228a620abe6977657fdd1caa45a7460fea56cfac002b8658befd672b9e40b",
+      "sha256": "94307d33b1632c84dda9b403e64de0616476ff15da7747c0c473989eb56aa02a",
       "spec_version": "2.8",
       "src": "TOOLING.md"
     },

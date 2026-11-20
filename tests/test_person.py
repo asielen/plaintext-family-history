@@ -1530,6 +1530,48 @@ class RewriteKeepsQuotedHashTests(unittest.TestCase):
             "profile_photo: 'b #2.jpg'")
 
 
+class NameWithDigitsFilesCleanTests(unittest.TestCase):
+    """A person named "Ann Lot #2 Doe" got `doe__ann_lot_2_p-….md`, and lint
+    refused that file (E002) the moment it was made: its filename check took
+    letters only, while SPEC §13 says letters and digits. The names `fha
+    person new` and `rename` write must be names lint accepts."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _filename_errors(self) -> list[str]:
+        import lint
+        findings, _reg = lint._run_lint_core(self.root, {})
+        return [f.message for f in findings if f.code in ('E002', 'W117')]
+
+    def test_new_with_a_digit_in_the_name_lints_clean(self) -> None:
+        for name, start in (('Ann Lot #2 Doe', 'doe__ann_lot_2_'),
+                            ('2nd Lt Easton', 'easton__2nd_lt_'),
+                            ('Ann # Doe', 'doe__ann_'),
+                            ('Cole 3rd', '3rd__cole_'),
+                            ('Bradford #', '__bradford_')):
+            with self.subTest(name=name):
+                res = person.run_new(self.root, name, force=True)
+                self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
+                self.assertTrue(Path(res.data['path']).name.startswith(start),
+                                Path(res.data['path']).name)
+        self.assertEqual(self._filename_errors(), [])
+
+    def test_rename_to_a_name_with_a_digit_lints_clean(self) -> None:
+        pid = person.run_new(self.root, 'Ann Doe').data['person_id']
+        res = person.run_rename(self.root, pid, 'Ann Lot #2 Doe')
+        self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)
+        (path,) = list((self.root / 'people').rglob('*_p-*.md'))
+        self.assertTrue(path.name.startswith('doe__ann_lot_2_'), path.name)
+        self.assertEqual(self._filename_errors(), [])
+
+
 class EstimateTests(unittest.TestCase):
     """fha person estimate: provisional, unsourced birth:/death: writes."""
 

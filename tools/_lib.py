@@ -349,6 +349,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
 #                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
+#    person_name_slot          - one person-filename name slot: [a-z0-9], single underscores
 #    stub_slug_name            - display name → (surname_slug, given_slug) for a filename
 #    stub_filename             - {surname}__{given}_{P-id}.md, the stub naming grammar
 #    render_stub_content       - the stub frontmatter text `fha stubs`/`fha person new` write
@@ -12164,6 +12165,10 @@ PLACE_FREE_TEXT_FIELDS = {
     'name': TEXT, 'hierarchy': TEXT, 'alt_names': TEXT, 'notes': TEXT,
     'history': {'hierarchy': TEXT},
 }
+# An inbox notes file (`{stem}.notes.md` or a bundle's `notes.md`, SPEC
+# §12.1): the source fields `fha process` copies into the new record, and
+# the `people:` names it folds into that record's notes.
+INBOX_NOTES_FREE_TEXT_FIELDS = {**SOURCE_FREE_TEXT_FIELDS, 'people': TEXT}
 
 
 def _scalar_cut_by_hash(block: str, node, *, aligned_comments: bool) -> dict | None:
@@ -12604,6 +12609,20 @@ def strip_generational_suffix(parts: list[str]) -> tuple[list[str], str | None]:
     return parts, None
 
 
+def person_name_slot(text: str) -> str:
+    """One name slot of a person filename (SPEC §13): lowercase letters and
+    digits, words joined by single underscores, or '' when nothing is left.
+
+    "Ann Lot #2" files as `ann_lot_2`. A word that is only punctuation (a
+    lone `#` or `-`) drops out with its gap, so no slot ever starts or ends
+    with an underscore or holds two in a row: a doubled underscore inside a
+    slot would read as the sort separator, and lint's filename check would
+    then see a different sort name from the one the person was filed
+    under. Accented letters fold to their base letters (`fold_accents`)."""
+    words = (re.sub(r'[^a-z0-9_]', '', w) for w in fold_accents(str(text or '')).lower().split())
+    return re.sub(r'_+', '_', '_'.join(w for w in words if w)).strip('_')
+
+
 def stub_slug_name(
     name: str, surname: str | None = None,
 ) -> tuple[str, str]:
@@ -12676,11 +12695,14 @@ def stub_slug_name(
     parts = name.strip().split()
     if not parts:
         return ('unknown', 'unknown')
+    # A word with no letter or digit in it ("Bradford #") is no name to sort
+    # by: left in, it would be taken as the surname and file as `unknown`.
+    parts = [p for p in parts if person_name_slot(p)] or parts
     if surname is not None and not surname.strip():
         # `--surname ""` is "this person has no surname" (issue #292): SPEC
         # §13's empty sort slot, with the whole name, suffix and all, as the
         # given slug (`__henry_tudor_P-….md`).
-        given = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in parts))
+        given = person_name_slot(' '.join(parts))
         return ('', given or 'unknown')
     if surname is not None and surname.strip():
         surname_tokens = surname.strip().split()
@@ -12706,22 +12728,19 @@ def stub_slug_name(
             suffix = None
         if suffix:
             given_tokens = given_tokens + [suffix]
-        surname_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(t.lower() for t in surname_tokens))
-        given_slug = re.sub(r'[^a-z0-9_]', '', '_'.join(p.lower() for p in given_tokens))
+        surname_slug = person_name_slot(' '.join(surname_tokens))
+        given_slug = person_name_slot(' '.join(given_tokens))
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
-        given = re.sub(r'[^a-z0-9_]', '', parts[0].lower())
+        given = person_name_slot(parts[0])
         return ('', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
-        given = core[0] if not suffix else f'{core[0]}_{suffix}'
-        given = re.sub(r'[^a-z0-9_]', '', given.lower())
+        given = person_name_slot(core[0] if not suffix else f'{core[0]} {suffix}')
         return ('', given or 'unknown')
-    surname_tok = core[-1].lower().replace(' ', '_')
     given_parts = core[:-1] + ([suffix] if suffix else [])
-    given = '_'.join(p.lower() for p in given_parts)
-    surname_tok = re.sub(r'[^a-z0-9_]', '', surname_tok)
-    given = re.sub(r'[^a-z0-9_]', '', given)
+    surname_tok = person_name_slot(core[-1])
+    given = person_name_slot(' '.join(given_parts))
     return (surname_tok or 'unknown', given or 'unknown')
 
 
@@ -13143,7 +13162,7 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     parts = name.split()
     core, suffix = strip_generational_suffix(parts)
     derived = person_surname(name) or ''
-    if slot == re.sub(r'[^a-z0-9_]', '', derived.lower().replace(' ', '_')):
+    if slot == person_name_slot(derived):
         return None
     if suffix and slot == re.sub(r'[^a-z0-9]', '', fold_accents(parts[-1]).lower()):
         return None
