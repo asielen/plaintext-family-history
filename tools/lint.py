@@ -20,6 +20,7 @@ lint.py - fha lint: verify the archive against the spec.
   fha lint --fix-reciprocal          Add the missing mirror edge for each W116
   fha lint --fix-applied             Add the entry each W115 says an accepted claim
                                      is missing from an opted-in relationships: list
+  fha lint --fix-duplicates          Remove the bare duplicate entry each W160 names
   fha lint --fix-surnames            Record the surname: each W138 file name implies
   fha lint --fix-aliases             Bring each W111 record's aliases: into step
 
@@ -94,6 +95,8 @@ from _lib import (
     PERSON_FREE_TEXT_FIELDS,
     PLACE_FREE_TEXT_FIELDS,
     SOURCE_FREE_TEXT_FIELDS,
+    INBOX_NOTES_FREE_TEXT_FIELDS,
+    INBOX_PROCESSED_DIRNAME,
     text_fields_cut_by_hash,
     claim_is_parked,
     file_name_surname_mismatch,
@@ -105,6 +108,8 @@ from _lib import (
     set_surname_line,
     recorded_surname,
     stub_slug_name,
+    name_words,
+    person_name_slot,
     fold_accents,
     configure_utf8_stdout,
     CLAIMS_RE,
@@ -182,6 +187,12 @@ from _lib import (
     relationship_entry_hypothesis,  # an entry's hypothesis: h-… link (SPEC §9)
     relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
     relationship_tie_key,           # (person, role, nature) an entry records
+    claimless_duplicate_entries,    # W160: a bare entry beside a sourced twin
+    sourced_duplicate_entries,      # W160: a second sourced entry for one tie
+    drop_claimless_duplicates,      # --fix-duplicates: drop the ones holding no owner text
+    subtype_misuse,                 # W158: a role, record or kinship word as subtype
+    relationship_claim_records_tie,  # W159: does the index derive any edge from it
+    optional_scalar,                # a subtype as the index stores it
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
     collapse_relationship_entries,  # one entry per person and role after a write
     carries_person_record_fields,
@@ -267,6 +278,7 @@ configure_utf8_stdout()
 #    _process_person_file        - index one person file + file-level checks
 #                                   (returns the record it read; content decides the kind)
 #    _process_source_file        - index one source file + file-level checks + claims
+#    _check_inbox_notes          - W157 on the inbox's waiting notes files
 #
 #  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127, W129)
 #    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
@@ -286,7 +298,8 @@ configure_utf8_stdout()
 #    _check_direct_line_stubs    - W119: direct-line ancestor still filed as a stub
 #                                   (report-only lead; brackets --fix-promote applies)
 #
-#  Relationship reconciliation (W115, W116)
+#  Relationship reconciliation (W115, W116, W160)
+#    _check_claimless_duplicates : W160: an entry citing no evidence beside a sourced twin
 #    _kin_claims_by_person       : accepted kin claims per person, read once (reverse W115)
 #    _check_relationships_reconciliation - sourced relationships: entry vs claim
 #    _check_reciprocity          - W116: a sourced edge unmirrored on the other person
@@ -349,6 +362,7 @@ configure_utf8_stdout()
 #    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
 #    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
 #    _fix_applied                : write the entries accepted claims owe for the W115 set (--fix-applied)
+#    _fix_duplicates             : drop the bare W160 entries, never one holding owner text (--fix-duplicates)
 #    _check_file_name_surnames   - W138: the file name sorts under a surname the record does not read
 #    _fix_surnames               - write the surname: line W138 suggests (--fix-surnames)
 #    _fix_aliases                : bring W111 records' aliases: into step (--fix-aliases)
@@ -466,6 +480,8 @@ class Registry:
         # Accepted claims an opted-in block leaves out (W115), as (person,
         # claim) pairs, for `--fix-applied`.
         self.unapplied_claims: set[tuple[str, str]] = set()
+        # People with a claimless duplicate entry (W160), for `--fix-duplicates`.
+        self.claimless_duplicate_pids: set[str] = set()
         # W138: (profile path, surname to record) for `--fix-surnames`.
         self.surname_fixes: list[tuple[Path, str]] = []
         # W111: record files whose aliases: `--fix-aliases` brings into step.
@@ -570,13 +586,16 @@ _PERSON_FILENAME_RE = re.compile(
     # Both name slots admit interior hyphens (`smith-jones__anne`,
     # `hartley__mary-jane`) - SPEC §13 never forbids them, and hyphenated
     # surnames/given names are ordinary names, not grammar errors ("forgiving,
-    # not fussy"). A hyphen cannot lead a slot (the first char stays a letter),
-    # and the companion-kind suffix is untouched: kind classification lives in
-    # _lib.parse_filename (an endswith test on `_research`/`_timeline`/
+    # not fussy"). Both slots hold digits too, anywhere, because SPEC §13 says
+    # "letters and digits only": "Ann Lot #2 Doe" files as
+    # `doe__ann_lot_2_p-…` and "2nd Lt" as `2nd_lt`, the names
+    # `_lib.person_name_slot` builds. A hyphen cannot lead a slot, and the companion-kind suffix is untouched: kind classification
+    # lives in _lib.parse_filename (an endswith test on `_research`/`_timeline`/
     # `_sources-index`/`_draft-queue`), which a hyphen inside a NAME slot can
     # never satisfy - the kind needs its own leading underscore.
     r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
-    r'([a-z][a-z_-]*)?__[a-z][a-z_-]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    r'([a-z0-9][a-z0-9_-]*)?__[a-z0-9][a-z0-9_-]*(_[a-z][a-z0-9\-]*)?'
+    r'_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 
 # A copy-paste template's placeholder id value, e.g. `P-__________` (the shipped
@@ -1750,8 +1769,10 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     survives being pasted (no `$`, backtick or `"`), else the hand-quoted
     line. A `#` two spaces or more past the text, with a space after it, is
     a comment written on purpose, as the templates do, and is left alone.
-    `record` is `person`, `source` or `place`; for `places.yaml` the hit
-    names its place. Nothing here edits a record."""
+    `record` is `person`, `source`, `place` or `notes` (an inbox notes
+    file, whose cut value `fha process` would copy into the new source);
+    for `places.yaml` the hit names its place. Nothing here edits a
+    record."""
     for hit in text_fields_cut_by_hash(block, fields):
         key, field, whole, rid = hit['key'], hit['field'], hit['whole'], hit['record_id']
         owner = ''
@@ -1767,21 +1788,129 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
         # A real comment after the text stays on the fixed line.
         hand = (f'`- {yaml_inline(whole)}{hit["aside"]}`' if hit['item'] and '.' not in field
                 else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
-        where = 'places.yaml' if record == 'place' else 'the record file'
+        where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
         if rid and flag and not any(ch in whole for ch in '$`"'):
             fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
-        read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
-                'and the site show' if hit['kept'] else
-                'Nothing is read, so every page, the index and the site show it empty')
+        if record == 'notes':
+            read = (f'Only {hit["kept"]!r} is read, so that is what `fha process` copies '
+                    'into the new source' if hit['kept'] else
+                    'Nothing is read, so `fha process` leaves it out of the new source')
+        else:
+            read = (f'Only {hit["kept"]!r} is read, so that is what every page, the index '
+                    'and the site show' if hit['kept'] else
+                    'Nothing is read, so every page, the index and the site show it empty')
         findings.append(Finding('W', 'W157', path,
             f'{what} stops at the "#". {read}; "{hit["dropped"]}" is read as a '
             f'hidden comment and dropped. If it is all part of the {key}, {fix}. If the '
             'part after # is a note to yourself, it can simply be deleted, or kept by '
             'leaving two spaces before the # and one after it.'))
+
+
+def _subtype_misuse_message(cid: str, subtype: str, kind: str) -> str:
+    """W158's words for one claim: what `subtype:` is for, and where the
+    word written there belongs instead (`_lib.subtype_misuse` names the kind)."""
+    head = (f'Claim {cid} says `subtype: {subtype}`, but subtype names the nature of '
+            'the tie (biological, adoptive, step, foster, half and the like, SPEC §8.2), ')
+    if kind == 'role':
+        why = ("not anyone's part in it. Who plays which part belongs in `roles:` "
+               '(`parent:`, `child:`, `spouse:`, `sibling:`).')
+    elif kind == 'record':
+        why = ("not what the record says. Keep that wording in the claim's `notes:`, "
+               "and put each person's part in `roles:`.")
+    else:
+        why = ('not the degree of kinship. Say that with a role in `roles:` instead, '
+               'for example a `grandchild:` or `cousin:` line naming each person.')
+    return (f'{head}{why} Then write the nature in subtype, or delete the line when there '
+            'is none to state (a parent and child with no subtype are read as '
+            'biological). The family tree and the person pages read this word as the '
+            'nature, so until it is fixed the tie shows with it.')
+
+
+def _one_sided_roles(claim: dict, alias_map: dict[str, str]) -> list[str]:
+    """W159: what is missing from a relationship claim's `roles:` map that
+    names one side of a tie only, as the end of a sentence about the claim.
+
+    Only a claim the index derives no edge from is asked
+    (`_lib.relationship_claim_records_tie` over the same `(person, role)`
+    pairs `fha index` reads): two people named with one marked spouse are a
+    couple (SPEC §8.3 "Who married"), and a couple beside a lone parent or
+    sibling is a marriage, so none of those is one-sided. On a claim that
+    records nothing, a parent with no child (or a child with no parent) and
+    one person alone under `spouse:` or `sibling:` are named. Keys are read
+    by meaning, so `mother:` is a parent; a misspelt key (`parnet:`) counts as
+    the role it was meant to be, since W126 already reports the spelling and
+    this would only repeat it. Each person is counted once however they are
+    written."""
+    roles = claim.get('roles')
+    if not isinstance(roles, dict):
+        return []
+    if relationship_claim_records_tie(claim_persons_with_roles(claim, alias_map),
+                                      optional_scalar(claim.get('subtype'))):
+        return []
+    named: dict[str, set[str]] = {}
+    keys: dict[str, list[str]] = {}
+    for key, value in roles.items():
+        meaning = role_near_miss(key) or role_meaning(key)
+        if meaning not in ('parent', 'child', 'spouse', 'sibling'):
+            continue
+        refs = {strip_link_wrapper(r).strip().lower() for r in link_field_refs(value)}
+        refs.discard('')
+        if refs:
+            named.setdefault(meaning, set()).update(refs)
+            keys.setdefault(meaning, []).append(str(key).strip())
+    problems: list[str] = []
+    no_tie = ('so it records no tie and nobody\'s family tree gains a link from it.')
+    for have, lack in (('parent', 'child'), ('child', 'parent')):
+        if have in named and lack not in named:
+            under = ', '.join(f'`{k}:`' for k in keys[have])
+            problems.append(
+                f'names a {have} (under {under}) and no {lack}, {no_tie} '
+                f'Add the {lack} to roles: (an indented `{lack}: [p-…]` line), or change '
+                f'the role if this was not a {have} here.')
+    for role, tie in (('spouse', 'marriage'), ('sibling', 'sibling')):
+        if len(named.get(role, ())) == 1:
+            problems.append(
+                f'names one person under `{role}:`, {no_tie} A {tie} tie needs both '
+                f'people on that line: `{role}: [p-…, p-…]`.')
+    return problems
+
+
+def _check_inbox_notes(archive_root: Path, fha_config: dict,
+                       findings: list[Finding]) -> None:
+    """W157 for the notes files waiting in the inbox (SPEC §12.1).
+
+    A `{stem}.notes.md` beside a scan, or a bundle folder's `notes.md`, can
+    say `title: Deed to Lot #4 of block 2`. `fha process` copies its title,
+    citation and the rest into the new source, so the cut text would land
+    there too, and the notes file is deleted once it is used. Saying so
+    while the item still waits gives the human the chance to add the quotes
+    first. Only the frontmatter is read: the walk skips `processed/` (the
+    kept originals) and the `_TEMPLATE` copy, and a file that will not open
+    or decode is left to `fha process`, which refuses it with the fix."""
+    inbox = resolve_path('inbox', fha_config, archive_root)
+    if not inbox.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(inbox):
+        if Path(dirpath) == inbox:
+            dirnames[:] = [d for d in dirnames if d.casefold() != INBOX_PROCESSED_DIRNAME]
+        for name in sorted(filenames):
+            low = name.lower()
+            if not (low == 'notes.md' or low.endswith('.notes.md')) or is_template_file(name):
+                continue
+            path = Path(dirpath) / name
+            try:
+                rec = read_record(path, on_decode_error=lambda _p: None)
+            except OSError:
+                continue
+            if rec.get('undecodable'):
+                continue
+            _check_frontmatter_text_cut_by_hash(path, rec.get('frontmatter') or '',
+                                                INBOX_NOTES_FREE_TEXT_FIELDS, findings,
+                                                'notes')
 
 
 def _process_source_file(path: Path, registry: Registry, findings: list[Finding]) -> None:
@@ -2018,6 +2147,17 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             findings.append(Finding('W', 'W153', path,
                 f'Claim {cid} says `subtype: {old_subtype}`, an old way of writing a '
                 f'relationship that the tools no longer read. {fix}'))
+
+        # W158: a relationship claim's subtype that is not a nature at all.
+        # The tree, the site and lint's own W115 read `subtype:` as the
+        # nature of the tie, so `mother` or `survived-by` there gives the
+        # person's page a second, odd line for the same child, and a careless
+        # subtype is often the sign the roles were written carelessly too.
+        if claim_type == 'relationship':
+            misuse = subtype_misuse(claim.get('subtype'))
+            if misuse:
+                findings.append(Finding('W', 'W158', path,
+                    _subtype_misuse_message(cid, str(claim.get('subtype')).strip(), misuse)))
 
         # E006: accepted claim must have reviewed
         # A blank `reviewed:` line is YAML null and reads as absent here, as it
@@ -3193,6 +3333,72 @@ def _check_relationship_guesses(
                     f'but {detail}'))
 
 
+def _check_claimless_duplicates(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W160: a `relationships:` entry citing no evidence beside a sourced
+    entry for the same tie (`_lib.claimless_duplicate_entries`), or a second
+    entry citing evidence for a tie an earlier entry already cites
+    (`_lib.sourced_duplicate_entries`), so the person's page lists the same
+    parent or child twice. The second kind is always the owner's merge to
+    make: writers fold such a pair themselves unless the later entry holds a
+    note, another key or a comment, so `--fix-duplicates` never touches it.
+
+    Read from each record's own block, so it costs one pass over the entries
+    and needs no claim lookups. Only a record with such a pair is read again
+    as text, to say whether `--fix-duplicates` can drop the entry or it holds
+    the owner's own words and must go by hand. Merged tombstones are skipped,
+    as W155 skips them."""
+    survivors = getattr(alias_map, 'survivors', None) or {}
+    resolve = lambda ref: resolve_ref(ref, alias_map)  # noqa: E731
+    for pid in sorted(registry.person_meta):
+        block = registry.person_meta[pid].get('relationships')
+        if not isinstance(block, list) or len(block) < 2 or pid in survivors:
+            continue
+        positions = claimless_duplicate_entries(block, resolve)
+        path = _profile_path_for(registry, pid)
+        for n in sourced_duplicate_entries(block, resolve):
+            entry = block[n]
+            role = str(entry.get('type') or '').strip() or 'relationship'
+            target = _friendly_to(entry.get('to')) or '(unnamed)'
+            findings.append(Finding('W', 'W160', path,
+                f'{target} has two {role} entries, both citing evidence, so the page '
+                'lists them twice. A tool merges such a pair only when nothing typed '
+                'by hand would be lost, and never removes a note or comment: merge the '
+                'two entries by hand, putting every claim in one claims: list and '
+                'keeping the note.'))
+        if not positions:
+            continue
+        try:
+            planned = drop_claimless_duplicates(read_text_exact(path), resolve)
+        except (OSError, UnicodeDecodeError):
+            planned = None
+        # The text and the parsed header list the same entries in the same
+        # order, so a position names one entry in both.
+        by_hand = {n for n, _e in planned[2]} if planned is not None else set()
+        if planned is None or planned[1]:
+            registry.claimless_duplicate_pids.add(pid)
+        for n in positions:
+            entry = block[n]
+            role = str(entry.get('type') or '').strip() or 'relationship'
+            target = _friendly_to(entry.get('to')) or '(unnamed)'
+            head = (f'The {role} entry for {target} cites no evidence (no claims:, no '
+                    f'source:) and sits beside a {role} entry for the same person that '
+                    'does, so the page lists them twice. ')
+            if planned is None:
+                tail = ('Its relationships: list is not written as a simple list, so '
+                        'remove it by hand if it is a duplicate.')
+            elif n in by_hand:
+                tail = ('It holds more than the name and role (a note, another line or a '
+                        'comment), so no tool removes it: remove it by hand if it is a '
+                        'duplicate, moving anything worth keeping onto the entry that '
+                        'cites the evidence.')
+            else:
+                tail = ('Run `fha lint --fix-duplicates` to remove it (preview with '
+                        '--dry-run).')
+            findings.append(Finding('W', 'W160', path, head + tail))
+
+
 def _kin_claims_by_person(
     registry: Registry, alias_map: dict[str, str],
 ) -> dict[str, list[tuple[str, str, list[tuple[str, str, str, str]]]]]:
@@ -3341,7 +3547,21 @@ def _check_relationships_reconciliation(
             entry_subtype = _entry_subtype(entry)
             for matched in matched_claims:
                 claim_subtype = _claim_subtype_norm(matched)
-                if entry_subtype and claim_subtype and entry_subtype != claim_subtype:
+                if entry_subtype and claim_subtype and entry_subtype != claim_subtype \
+                        and subtype_misuse(claim_subtype):
+                    # The claim's word is not a nature at all (W158 on the
+                    # claim), so the record is not what needs changing: point
+                    # at the claim, or the owner copies the wrong word over.
+                    mcid = normalize_id(str(matched.get('id', '')))
+                    src = registry.source_paths.get(registry.claim_ids.get(mcid, ''))
+                    where = f' in {src.name}' if src else ''
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: entry for claim {fmt_id_display(mcid)} says subtype "
+                        f"{entry_subtype!r} but the claim says {claim_subtype!r}, which is not "
+                        f"a nature (lint W158 on the claim). Fix the claim{where}, not this "
+                        f"entry: move that word out of its subtype, and this note clears once "
+                        f"the two agree."))
+                elif entry_subtype and claim_subtype and entry_subtype != claim_subtype:
                     findings.append(Finding('W', 'W115', profile_path,
                         f"relationships: entry for claim {fmt_id_display(normalize_id(str(matched.get('id', ''))))} "
                         f"says subtype {entry_subtype!r} but the claim says {claim_subtype!r} - make the nature match."))
@@ -3414,6 +3634,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # W155: relationship guesses left beside the evidence that settled them,
     # or resting on a working answer no question entry defines.
     _check_relationship_guesses(registry, findings, alias_map)
+
+    # W160: an entry citing no evidence beside a sourced one for the same tie.
+    _check_claimless_duplicates(registry, findings, alias_map)
     registry.lap('relationships blocks')
 
     # E001: duplicate person profiles
@@ -3543,6 +3766,19 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # status: a broken roles:/persons: pairing is a hand-edit mistake
             # the moment it is written, not only once the claim is accepted,
             # so the human sees it before review rather than after.
+            # W159: an accepted relationship claim whose roles name one side
+            # of a tie only. It records nothing in the tree, and until now the
+            # only sign was a W115 on the person asking for an entry nobody
+            # could write. Asked only when the index derives no edge from the
+            # claim (_lib.relationship_claim_records_tie, the index's own
+            # rule), so the advice can never cost a tie the claim records.
+            if (str(claim.get('type', '')) == 'relationship'
+                    and str(claim.get('status', '')) == 'accepted'
+                    and claim.get('negated') not in (True, 'true')):
+                for problem in _one_sided_roles(claim, alias_map):
+                    findings.append(Finding('W', 'W159', src_path,
+                        f'Claim {claim.get("id", "?")} (type: relationship) {problem}'))
+
             if isinstance(claim.get('roles'), dict):
                 claim_person_ids = set(_claim_person_ids(claim, alias_map))
                 for role_name in claim['roles']:
@@ -6244,6 +6480,8 @@ def _run_lint_core(
     registry.lap('asset folder settings')
     _walk_archive(archive_root, registry, findings)
     registry.lap('reading records (one-file checks)')
+    _check_inbox_notes(archive_root, fha_config, findings)
+    registry.lap('inbox notes files')
     _cross_file_checks(registry, findings, with_exif=with_exif)
     registry.lap('unreadable folders')
     # E021/W147 say the rule a claim breaks; W125/W126/W132, where they also
@@ -6490,6 +6728,7 @@ def run_lint(
     fix_ids: bool = False,
     fix_reciprocal: bool = False,
     fix_applied: bool = False,
+    fix_duplicates: bool = False,
     fix_surnames: bool = False,
     fix_aliases: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
@@ -6585,12 +6824,14 @@ def run_lint(
         # After --fix-reciprocal: a mirror it just wrote that is also a
         # missing entry here reads as already there, not as a second entry.
         _fix_applied(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_duplicates:
+        _fix_duplicates(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_surnames:
         _fix_surnames(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_aliases:
         _fix_aliases(registry, archive_root, progress, changed, dry_run=dry_run)
     if (mint_stubs or spawn_questions or fix_claims_fence or fix_ids or fix_reciprocal
-            or fix_applied or fix_surnames or fix_aliases):
+            or fix_applied or fix_duplicates or fix_surnames or fix_aliases):
         registry.lap('fixes')
 
     # W128: files this run could not decode as UTF-8 (#68). `_run_lint_core`
@@ -6885,7 +7126,12 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
         resolve = lambda ref: resolve_ref(ref, registry.alias_map or {})  # noqa: E731
         sourced_ties = {relationship_tie_key(e, resolve) for e in block
                         if _entry_is_settled(registry, e, pid, registry.alias_map or {})}
+        # A bare entry beside a sourced one for the same tie is W160's: the
+        # tie is sourced, and the entry is a duplicate to remove.
+        duplicates = {id(block[n]) for n in claimless_duplicate_entries(block, resolve)}
         for entry in block:
+            if id(entry) in duplicates:
+                continue
             status = str(entry.get('status', '')).strip().lower()
             sourced = bool(relationship_entry_claim_ids(entry) or entry.get('source'))
             if sourced and status != 'hypothesis':
@@ -7095,42 +7341,23 @@ def _slugify_segment(text: str) -> str:
 def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     """(surname, given) for the §13 person filename `{surname}__{given}_{P-id}`.
 
-    Derived from the `name:` field - surname is the last word, given the rest -
-    falling back to the hand-filename when there is no usable name. Letters only,
-    so the generated filename matches the strict person grammar and lint won't
-    immediately re-flag it.
+    `--fix-ids` names a hand-made record the way `fha person new` names the
+    same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
+    Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
+    slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
+    a name of two words or more never draws W138 the moment it is named.
 
-    A trailing generational suffix (Jr, Sr, II, III, IV, V) is pulled off
-    first via the shared `_lib.strip_generational_suffix` (issue #53) so
-    `--fix-ids` never mints a hand-authored "Roy Eugene Dodson Jr" as
-    `jr__roy_eugene_dodson` - the suffix rides at the end of the given slug
-    instead, the same rule `_lib.stub_slug_name` applies for `fha person new`
-    and `fha stubs --from-names`, so all three sites file a suffixed name the
-    same way. A leftover single core token after the suffix is stripped ("Roy
-    Jr") gets the same surname-less treatment `stub_slug_name` gives it - the
-    suffix does not promote the one remaining word into a surname. The
-    ORIGINAL single-token-with-no-suffix behaviour just below (surname =
-    that word, given = 'unknown') is untouched - it predates this fix and is
-    not part of it; SPEC §13's actual mononym convention (empty surname) is
-    `stub_slug_name`'s job, not this function's.
-
-    Accented letters fold to their base letters before the letters-only
-    filter (`_lib.fold_accents`, issue #279), the same fold `stub_slug_name`
-    applies, so "Halina Wiśniewska" becomes `wisniewska__halina` here too
-    instead of losing the `ś`."""
-    def letters(word: str) -> str:
-        return re.sub(r'[^a-z]+', '', fold_accents(word).lower())
-    parts = [p for p in str(name).split() if letters(p)]
-    core, suffix = strip_generational_suffix(parts)
-    if len(core) >= 2:
-        given_parts = core[:-1] + ([suffix] if suffix else [])
-        return (letters(core[-1]) or 'unknown',
-                '_'.join(letters(p) for p in given_parts) or 'unknown')
-    if core:
-        if suffix:
-            given = f'{core[0]} {suffix}'
-            return '', '_'.join(letters(p) for p in given.split()) or 'unknown'
-        return letters(core[0]) or 'unknown', 'unknown'
+    One difference is kept on purpose: a one-word name with no suffix
+    ("Cher") files as `cher__unknown` here, the convention this function
+    has always used, where `stub_slug_name` writes SPEC §13's surname-less
+    `__cher`. That file does draw W138, as it always has. With no usable name at all, the slots come from the hand
+    filename."""
+    words = name_words(fold_accents(str(name or '')))
+    core, suffix = strip_generational_suffix(words)
+    if len(core) == 1 and not suffix and person_name_slot(core[0]):
+        return person_name_slot(core[0]), 'unknown'
+    if any(person_name_slot(w) for w in words):
+        return stub_slug_name(str(name))
     seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())
     return (seg or 'unknown'), 'unknown'
 
@@ -8023,6 +8250,83 @@ def _fix_applied(
         progress.append(f"--fix-applied: {text}")
 
 
+def _fix_duplicates(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """W160 fix: remove each entry that cites no evidence beside a sourced
+    entry for the same tie, on the records the W160 pass named.
+
+    Only an entry made of `to:`, `type:` and `subtype:` alone, with no
+    comment, is removed (`_lib.drop_claimless_duplicates`): one that holds a
+    note, any other line or a comment is the owner's text, and gets a
+    "remove by hand" line instead. Each edit is checked in memory first (the
+    header must still read, and nothing but `relationships:` may change);
+    `--dry-run` prints the same lines and refusals and writes nothing. Each
+    record is written once, atomically."""
+    resolve = lambda ref: resolve_ref(ref, registry.alias_map)  # noqa: E731
+    prefix = '--fix-duplicates dry-run: would remove' if dry_run else 'Removed'
+    for pid in sorted(registry.claimless_duplicate_pids):
+        paths = registry.person_profile_paths.get(pid)
+        if not paths:
+            continue
+        path = paths[0]
+        rel = path.relative_to(archive_root)
+        name = _relationship_person_name(registry, pid)
+        try:
+            text = read_text_exact(path)
+        except (OSError, UnicodeDecodeError):
+            progress.append(f"--fix-duplicates: could not read {rel}; skipped.")
+            continue
+        planned = drop_claimless_duplicates(text, resolve)
+        if planned is None:
+            progress.append(
+                f"--fix-duplicates: {rel} keeps its relationships: list in a form this fix "
+                "does not edit; remove the duplicate entry by hand.")
+            continue
+        new_text, dropped, by_hand = planned
+        for _n, entry in by_hand:
+            progress.append(
+                f"--fix-duplicates: {name}'s {entry.get('type') or 'relationship'} entry for "
+                f"{_friendly_to(entry.get('to')) or '(unnamed)'} holds more than the name and "
+                f"role, so it was left as written; remove it by hand if it is a duplicate ({rel}).")
+        if not dropped:
+            continue
+        problem = frontmatter_edit_problem(
+            new_text, before_meta=_strict_header(text), changed_keys={'relationships'})
+        if problem is not None:
+            progress.append(
+                f"--fix-duplicates: removing the duplicate from {rel} would change more than "
+                f"its relationships: list ({problem}), so nothing was written; remove it by hand.")
+            continue
+        if not dry_run:
+            try:
+                write_text_exact_atomic(path, reapply_newline(new_text, text))
+            except OSError as e:
+                progress.append(f"--fix-duplicates: could not write {rel} ({e}); nothing in "
+                                "it was changed.")
+                continue
+            changed.append(str(path))
+        for _n, entry in dropped:
+            progress.append(
+                f"{prefix} the duplicate {entry.get('type') or 'relationship'} entry for "
+                f"{_friendly_to(entry.get('to')) or '(unnamed)'} from {name}'s record ({rel})")
+
+
+def _strict_header(text: str) -> dict:
+    """A record's frontmatter as plain YAML reads it, or {} (what
+    `frontmatter_edit_problem` compares a rewrite against)."""
+    fm = FRONT_RE.match(text)
+    try:
+        meta = safe_load_yaml(fm.group(1)) if fm else None
+    except Exception:
+        meta = None
+    return meta if isinstance(meta, dict) else {}
+
+
 def _relationship_person_name(registry: Registry, pid: str) -> str:
     """A person's name for a progress line, or their id."""
     return str((registry.person_meta.get(pid) or {}).get('name') or fmt_id_display(pid))
@@ -8122,6 +8426,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--fix-applied', action='store_true',
                    help='Add the relationships: entry each W115 says an accepted claim is '
                         'missing from, citing the claim (with --dry-run to preview)')
+    p.add_argument('--fix-duplicates', action='store_true',
+                   help='Remove each relationships: entry W160 names, one that cites no '
+                        'evidence beside an entry for the same person that does; an entry '
+                        'holding a note, another line or a comment is left for you to '
+                        'remove by hand (with --dry-run to preview)')
     p.add_argument('--fix-surnames', action='store_true',
                    help='Write the surname: line each W138 file name implies, so the record '
                         'keeps the surname its file name was sorted under (with --dry-run '
@@ -8160,6 +8469,8 @@ def _run_lint(args: argparse.Namespace) -> int:
         ('--fix-claims-fence', getattr(args, 'fix_claims_fence', False)),
         ('--fix-ids', getattr(args, 'fix_ids', False)),
         ('--fix-reciprocal', getattr(args, 'fix_reciprocal', False)),
+        ('--fix-applied', getattr(args, 'fix_applied', False)),
+        ('--fix-duplicates', getattr(args, 'fix_duplicates', False)),
         ('--fix-surnames', getattr(args, 'fix_surnames', False)),
     ) if on]
     if changed_ref is not None and fixing:
@@ -8183,6 +8494,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_ids=getattr(args, 'fix_ids', False),
         fix_reciprocal=getattr(args, 'fix_reciprocal', False),
         fix_applied=getattr(args, 'fix_applied', False),
+        fix_duplicates=getattr(args, 'fix_duplicates', False),
         fix_surnames=getattr(args, 'fix_surnames', False),
         fix_aliases=getattr(args, 'fix_aliases', False),
         spec_root=Path(spec_root) if spec_root else None,
@@ -8215,6 +8527,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--fix-ids', action='store_true')
     parser.add_argument('--fix-reciprocal', action='store_true')
     parser.add_argument('--fix-applied', action='store_true')
+    parser.add_argument('--fix-duplicates', action='store_true')
     parser.add_argument('--fix-surnames', action='store_true')
     parser.add_argument('--fix-aliases', action='store_true')
     args = parser.parse_args(argv)

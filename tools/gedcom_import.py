@@ -102,7 +102,7 @@ from _lib import (
     surname_frontmatter_line,
     person_alias_mirror,
     yaml_alias_entry,
-    fold_accents,
+    person_name_slot,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -213,10 +213,10 @@ def _name_slot(text: str) -> str:
 
     Accented letters fold to their base letters first (`_lib.fold_accents`,
     issue #279), the same fold `stub_slug_name` applies, so an imported
-    "Wiśniewska" files as `wisniewska` rather than `winiewska`."""
-    slot = re.sub(r'[^a-z0-9_]', '',
-                  fold_accents(text or '').strip().lower().replace(' ', '_'))
-    return (slot or 'unknown')[:60]
+    "Wiśniewska" files as `wisniewska` rather than `winiewska`. Built by
+    `_lib.person_name_slot`, so a word that is only punctuation never
+    leaves a stray underscore that lint's filename check would refuse."""
+    return (person_name_slot(text) or 'unknown')[:60].rstrip('_')
 
 
 # The one quoting rule every writer shares (`_lib.yaml_inline`): a title or

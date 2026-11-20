@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *intake* side of the `fha` tool suite: anything that puts material into an archive's inbox for `fha process` to turn into a source. To use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-**Version 2.12, companion to SPEC.md v2.12 and TOOLING.md v2.12 (versions track the SPEC).**
+**Version 2.13, companion to SPEC.md v2.13 and TOOLING.md v2.13 (versions track the SPEC).**
 
 This document defines one thing first and everything else after it: **what a source waiting in the inbox looks like**, and how `fha process` reads it (§1). That shape is the contract. A person dropping a scan and typing a note, the `fha capture` engine (§2), the browser companion (§5), a script someone writes for their own scanner: each is only a front end, and **any front end that produces the §1 shape is conforming**. SPEC.md §12.1 states what a source stub is; TOOLING.md §13b names the `fha capture` engine; this document specifies the contract and the engine in enough detail to build a new front end in any language.
 
@@ -63,7 +63,7 @@ A folder that holds no `notes.md` is not a bundle: `fha process` treats it as a 
 | `asset_path_absolute` | the same path, resolved | written by `fha capture --path` for a person reading the stub; not copied into the record, since a machine-specific path does not belong in a file that travels |
 | `files` / `roles` | per-file hints, bundle folders only (§1.3) | each file's entry in the record's `files:` inventory |
 
-The fill-in template a person copies by hand is `archive-template/inbox/_TEMPLATE.notes.md`: plain questions, no frontmatter. A notes file must be UTF-8; one saved in another encoding, or with frontmatter that does not parse, is refused with the fix named and nothing changed.
+The fill-in template a person copies by hand is `archive-template/inbox/_TEMPLATE.notes.md`: plain questions, no frontmatter. A notes file must be UTF-8; one saved in another encoding, or with frontmatter that does not parse, is refused with the fix named and nothing changed. A frontmatter value with an unquoted ` #` in it (`title: Deed to Lot #4`) parses but loses everything from the `#` on, so `fha lint` reads the notes files waiting in the inbox and names each one (W157, TOOLING.md §3) while the quotes can still go in.
 
 ### 1.3 Role hints in a bundle
 

@@ -155,6 +155,7 @@ Exit: 0 clean, 1 warnings, 2 errors, 3 tool failure.
 | `--fix-ids` | Mint IDs for hand-authored id-less records (rename, keep the old name as an alias) and for id-less claims inside sources (with --dry-run to preview) |
 | `--fix-reciprocal` | Add the missing mirror edge for each W116 (with --dry-run to preview) |
 | `--fix-applied` | Add the relationships: entry each W115 says an accepted claim is missing from, citing the claim (with --dry-run to preview) |
+| `--fix-duplicates` | Remove each relationships: entry W160 names, one that cites no evidence beside an entry for the same person that does; an entry holding a note, another line or a comment is left for you to remove by hand (with --dry-run to preview) |
 | `--fix-surnames` | Write the surname: line each W138 file name implies, so the record keeps the surname its file name was sorted under (with --dry-run to preview) |
 | `--fix-aliases` | Bring each W111 record's aliases: into step: its own ID, and for a person their name and public name variants, so typing [[ in Obsidian finds them by name (with --dry-run to preview) |
 

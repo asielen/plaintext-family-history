@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "d80c16e2cee440909faa1a9b4a4a1bcf65303ea95432be38797d80f6d6524cd1",
+      "sha256": "53c7c424af781aa8dc5789969ad9fed45fe155f38c06048053fbe4067f314a7e",
       "spec_version": "2.12",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -253,7 +253,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "d80c16e2cee440909faa1a9b4a4a1bcf65303ea95432be38797d80f6d6524cd1",
+      "sha256": "53c7c424af781aa8dc5789969ad9fed45fe155f38c06048053fbe4067f314a7e",
       "spec_version": "2.12"
     },
     {
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c166afe205303896af0ac009a14e8a7e102b338648b8888513762ac65333230f",
+      "sha256": "e79b24bc33601bd9ef4e99c131afd8e4731c3a433d4f38f6ea63b145da1feaba",
       "spec_version": "2.12",
       "src": "tools/_lib.py"
     },
@@ -723,7 +723,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "b4dece916aa2339a068b978240fbc68d12c1456f1615602df53b64f943c3b68c",
+      "sha256": "bae34ba215e06b136ced3ece6337d07f61cf74f986bad3819d17c8b1bedc9ad8",
       "spec_version": "2.12",
       "src": "tools/confirm.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "a238956860e59780d9ae83ebf32344a7b40eb9ea047cc04a8e89e2efebb2e2b7",
+      "sha256": "7ea72b5e14d677a49c3349d809ca909e064ec1eb5d9c8be16b97d72e1dd1a828",
       "spec_version": "2.12",
       "src": "tools/gedcom_import.py"
     },
@@ -786,14 +786,14 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "a41779584c8e7e94c17b5614f787295e28d1d2ac879e4d15c1a718e3bb928430",
+      "sha256": "12ad14cebf4a1e019f115b16d3a09a88e723b04fe3027955ee0b0d4ede96a824",
       "spec_version": "2.12",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "efc3d7e3282cf16e21959ac67788b33afafee85b3c70e30fb3476506f3977f61",
+      "sha256": "da676cb7e5c713b9fdcf8aae51ea7d9a45d8febc6930d585eaab973615a9a5c4",
       "spec_version": "2.12",
       "src": "tools/lint.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "384805d63c1807d25f815307f6f065fdc4631f1003f078dc0bfaaf0a256d1d6b",
+      "sha256": "4633a66956257bf8532935fb3c92634112d67c4bef69abfebfa58fd96d2b82ce",
       "spec_version": "2.12",
       "src": "tools/person.py"
     },
@@ -849,7 +849,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "37cda50d55b9b99b6489a3439a3a09f1494a660af5281e859abd1d84a65780c3",
+      "sha256": "923132d656b5dd6ce134160a72042e5db9980ba38e61ec23547d3c8380aa9edd",
       "spec_version": "2.12",
       "src": "tools/process.py"
     },
@@ -1052,7 +1052,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "2d68d2376d6d26435167dd1613c69282531a4f481a9a620ba983e93d4b571074",
+      "sha256": "d4eae5dfaf178a5c7ac30ceeb7bce7083c5dc106b7333ce0ef8cb77fc872be0d",
       "spec_version": "2.12",
       "src": "tools/views.py"
     },
@@ -1101,7 +1101,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "369e6130974cef3408ec41290792b0a11762f96d75954ffde9d2f9073dfb5b5d",
+      "sha256": "dadc5f1781c07d80958a0e00d9ab7faf6663547f39f436bf6961a945768a0895",
       "spec_version": "2.12"
     },
     {
@@ -1126,7 +1126,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "e01da368f8279f5c1cb43deb4d334bda960f9fb1f8482c2df1e2fccbf661b8c9",
+      "sha256": "407d6df1550141bdb13b55143df36f7fd971eb816ad28db9dda55beeb7c6d8b2",
       "spec_version": "2.12"
     },
     {
@@ -1144,7 +1144,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "20609413788a588289a3b8045dd1de0c8024ac8d231600a3c3193f1900831d21",
+      "sha256": "2f76f04c33b0de0191f3f6d503832f44f1267bf5c92a50c9c51472017d6ce0e4",
       "spec_version": "2.12"
     },
     {
@@ -1168,7 +1168,7 @@
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "efc3cb557eca1a4b4357e1ad68abdeffdc0b13ce0212712a6f3bf4b2c761c76d",
+      "sha256": "7362e921df20f9cd7070ea24a38b688906a0e2087e1545826895da3d46330554",
       "spec_version": "2.12"
     },
     {
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "378cce4fab1d77c667ec4eb260e70cc90c23e131a20369ef703c2d0992417d25",
+      "sha256": "1e7fe7947536221e7b74508f534b7ec3e8a52d3aa1133d32634dbeb65bb77aa9",
       "spec_version": "2.12",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "e694d1d8d4884f794a7acabba2a6c338e6f3cab094738616a41863fb1e0283d1",
+      "sha256": "90a65be4fdaf42f914433872957d48364990d33b91a1d9de86b1778c6c1aa0b4",
       "spec_version": "2.12",
       "src": "TOOLING.md"
     },
@@ -1212,7 +1212,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "69b123216b3f56ea17b740ff55b414669a8219d888286e6004421c78931a6abc",
+      "sha256": "752568030f5e659c1ad1fcbe99a5104a38aef83e3e0e048bb401b5c2aad17cb5",
       "spec_version": "2.12"
     },
     {
@@ -1286,7 +1286,7 @@
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
-      "sha256": "a27289de696961f91d7c156e6b631db3a89db47a466e2882656137bb3b09fdd6",
+      "sha256": "7ddf8caaaeb41c46c81339358266a67a4273bc117b0dab8f5fb8b1afc1fffc1c",
       "spec_version": "2.12",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
@@ -1341,7 +1341,7 @@
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
-      "sha256": "9d158522317aac9e8f387f66eab8e48b79aefe5c6679ac1784332e5a6fbdb54e",
+      "sha256": "84c89a4f2497dac56471bdfae246c3ad9ccecc15c5e5dea27188329a09d16698",
       "spec_version": "2.12",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
