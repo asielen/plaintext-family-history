@@ -78,6 +78,7 @@ from _lib import (
     claim_spouse_pids,
     format_relationship_entry,
     plan_relationship_entries,
+    relationship_entry_applies,
     relationship_entry_nature,
     relationship_plan_lines,
     RETIRED_NEEDS_REVIEW,
@@ -2696,6 +2697,9 @@ def _variant_values(variants) -> list[str]:
     and the clash check still sees the name. The `restricted` flag matters only
     to the exporters; here we want the plain string."""
     out: list[str] = []
+    # A hand-typed single value (`name_variants: 1913`) is one variant.
+    if variants is not None and not isinstance(variants, list):
+        variants = [variants]
     for v in variants or []:
         if isinstance(v, dict):
             value = v.get('value')
@@ -3055,7 +3059,9 @@ def _check_relationships_reconciliation(
     survivors = getattr(alias_map, 'survivors', None) or {}
     for pid in sorted(registry.person_meta):
         block = registry.person_meta[pid].get('relationships')
-        if not isinstance(block, list) or not block:
+        # `relationships: []` is a list the person keeps, emptied (SPEC §9):
+        # still opted in, so the reverse check below still asks for ties.
+        if not isinstance(block, list):
             continue
         if pid in survivors:
             # A merged record's block is its pre-merge view; its claims now
@@ -3123,7 +3129,10 @@ def _check_relationships_reconciliation(
                         f"claim directly with claims: [\"[[c-…]]\"]."))
                     continue
                 matched_claims.append(cands[0])
-                referenced_cids.add(normalize_id(str(cands[0].get('id', ''))))
+                # Every claim in the source that records this tie is applied
+                # by the entry, as the writer reads it
+                # (`_lib.relationship_entry_applies`).
+                referenced_cids.update(normalize_id(str(c.get('id', ''))) for c in cands)
             if not matched_claims:
                 continue
 
@@ -3146,10 +3155,25 @@ def _check_relationships_reconciliation(
                 if str(claim.get('type', '')) not in ('relationship', 'marriage', 'birth'):
                     continue
                 cid = normalize_id(str(claim.get('id', '')))
-                if not cid or cid in referenced_cids:
+                if not cid:
                     continue
                 label = _person_reconcilable_role_label(claim, pid, alias_map)
                 if label is None:
+                    continue
+                # Each entry the claim owes this person is checked on its own
+                # (the rule `fha claim` writes by), so a birth claim cited on
+                # the father's entry still asks for the mother's. A claim
+                # naming nobody on the other side owes no entry anyone could
+                # write; it is applied once any entry cites it.
+                owed = [o for o in claim_owed_relationship_entries(claim, alias_map)
+                        if o[0] == pid]
+                if owed:
+                    sid = registry.claim_ids.get(cid)
+                    if all(any(relationship_entry_applies(e, cid, sid, other, etype, alias_map)
+                               for e in block)
+                           for _p, etype, other, _n in owed):
+                        continue
+                elif cid in referenced_cids:
                     continue
                 findings.append(Finding('W', 'W115', profile_path,
                     f"{fmt_id_display(pid)} has a relationships: block but accepted claim "

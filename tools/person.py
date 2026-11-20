@@ -2629,8 +2629,14 @@ def _insert_relationship_entry(text: str, item_lines: list[str]) -> str | None:
     if key_lines:
         idx = key_lines[0]
         rest = lines[idx].split(':', 1)[1].strip()
-        if rest and not rest.startswith('#'):
-            return None   # flow/inline form - refuse rather than risk corrupting it
+        empty = re.match(r'^\[\s*\]\s*(#.*)?$', rest.rstrip('\r'))
+        if empty:
+            # An emptied list (`relationships: []`, what `fha claim` leaves
+            # when the last entry goes) opens back into block form.
+            new_lines[idx] = ('relationships:'
+                              + (f'  {empty.group(1)}' if empty.group(1) else '') + cr)
+        elif rest and not rest.startswith('#'):
+            return None   # flow/inline form: refuse rather than risk corrupting it
         block_end = idx + 1
         while block_end < end:
             line = lines[block_end]

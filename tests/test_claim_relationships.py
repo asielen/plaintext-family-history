@@ -321,11 +321,129 @@ class UncitingTests(unittest.TestCase):
         self.assertNotIn('Margaret Cole"', _read(root, thomas))
         self.assertNotIn('Thomas Hartley"', _read(root, margaret))
 
-    def test_parking_at_suggested_leaves_the_lists_alone(self) -> None:
-        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL])
+    def test_parking_an_accepted_claim_takes_it_out_of_the_lists(self) -> None:
+        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [OLDER, REL])
         root, thomas, _margaret = self._setup('', block)
         claim.run_claim(root, claim_id=REL, status='suggested')
+        self.assertIn(f'    claims: ["[[{OLDER}]]"]\n', _read(root, thomas))
+        self.assertNotIn(REL, _read(root, thomas))
+
+    def test_parking_in_a_batch_takes_them_out_too(self) -> None:
+        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [OLDER, REL])
+        root, thomas, _margaret = self._setup('', block)
+        claim.run_claim_batch(root, claim_ids=[REL, OLDER], status='suggested')
+        self.assertIn('\nrelationships: []\n', _read(root, thomas))
+
+    def test_an_entry_the_owner_wrote_more_into_keeps_its_lines(self) -> None:
+        note = '    note: "Mother per the family Bible"  # my own line\n'
+        hyp = '    hypothesis: h-abcdefghjk   # why we believed it\n'
+        root, thomas, margaret = self._setup(
+            'relationships:\n' + _entry(THOMAS, 'Thomas Hartley', 'child', [REL], extra=hyp),
+            'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL], extra=note))
+        claim.run_claim(root, claim_id=REL, status='disputed')
+        t_after, m_after = _read(root, thomas), _read(root, margaret)
+        self.assertIn(f'  - to: "[[{MARGARET}|Margaret Cole]]"\n    type: parent\n' + note, t_after)
+        self.assertIn(f'  - to: "[[{THOMAS}|Thomas Hartley]]"\n    type: child\n' + hyp, m_after)
+        self.assertNotIn(REL, t_after + m_after)
+
+    def test_a_comment_keeps_an_entry(self) -> None:
+        block = ('relationships:\n  - to: "[[%s|Margaret Cole]]"  # Aunt Ruth says so\n'
+                 '    type: parent\n    claims: ["[[%s]]"]\n' % (MARGARET, REL))
+        root, thomas, _margaret = self._setup('', block)
+        claim.run_claim(root, claim_id=REL, status='rejected')
+        self.assertIn('# Aunt Ruth says so\n    type: parent\n---', _read(root, thomas))
+
+    def test_the_last_entry_going_keeps_an_empty_list(self) -> None:
+        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL])
+        root, thomas, _margaret = self._setup('', block)
+        claim.run_claim(root, claim_id=REL, status='disputed')
+        self.assertIn('\nrelationships: []\n---', _read(root, thomas))
+        # Still opted in: lint asks for the other accepted tie, and accepting
+        # the claim again writes the entry back.
+        self.assertTrue([f for f in _codes(root, 'W115') if OLDER in f.message])
+        claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertIn(f'relationships:\n  - to: "[[{MARGARET}|Margaret Cole]]"\n'
+                      f'    type: parent\n    claims: ["[[{REL}]]"]\n', _read(root, thomas))
+
+    def test_person_relate_writes_into_an_emptied_list(self) -> None:
+        import person
+        block = 'relationships:\n' + _entry(MARGARET, 'Margaret Cole', 'parent', [REL])
+        root, thomas, _margaret = self._setup('', block)
+        claim.run_claim(root, claim_id=REL, status='disputed')
+        result = person.run_relate(root, THOMAS, 'parent', MARGARET)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        after = _read(root, thomas)
+        self.assertNotIn('[]', after)
+        self.assertIn('status: hypothesis', after)
+
+
+class AcceptJudgesEachOwedEntryTests(unittest.TestCase):
+    """What counts as already applied, and which entry a claim joins."""
+
+    def test_an_entry_citing_the_claims_source_already_applies_it(self) -> None:
+        block = ('relationships:\n  - to: "[[%s|Margaret Cole]]"\n    type: parent\n'
+                 '    source: "[[%s]]"\n' % (MARGARET, SOURCE))
+        thomas, t_text = _person('Thomas Hartley', THOMAS, block)
+        margaret, m_text = _person('Margaret Cole', MARGARET)
+        src, s_text = _source(_rel_claim())
+        root = _build({thomas: t_text, margaret: m_text, src: s_text})
+        claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertEqual(_read(root, thomas), t_text)
+        self.assertEqual([f for f in _codes(root, 'W115') if REL in f.message], [])
+
+    def test_a_marriage_with_a_subtype_joins_the_spouse_entry(self) -> None:
+        margaret, m_text = _person('Margaret Cole', MARGARET,
+                                   'relationships:\n' + _entry(JOHN, 'John Hartley', 'spouse'))
+        john, j_text = _person('John Hartley', JOHN)
+        marriage = (f'- value: "a marriage"\n  id: {MARRIAGE}\n  type: marriage\n'
+                    '  subtype: civil\n'
+                    f'  persons: [{JOHN}, {MARGARET}]\n  roles:\n    spouse: [{JOHN}, {MARGARET}]\n'
+                    '  status: suggested\n  reviewed: 2026-01-01\n  confidence: high\n'
+                    '  information: primary\n  evidence: direct\n  notes: A test claim.\n')
+        src, s_text = _source(marriage)
+        root = _build({margaret: m_text, john: j_text, src: s_text})
+        claim.run_claim(root, claim_id=MARRIAGE, status='accepted')
+        m_after = _read(root, margaret)
+        self.assertEqual(m_after.count('John Hartley'), 1, m_after)
+        self.assertIn(f'    type: spouse\n    subtype: civil\n    claims: ["[[{MARRIAGE}]]"]\n',
+                      m_after)
+        self.assertEqual([f for f in _codes(root, 'W115') if MARRIAGE in f.message], [])
+
+    def test_a_claim_cited_on_one_entry_still_writes_the_others(self) -> None:
+        birth_id = 'c-hhhhhhhhhh'
+        birth = _claim(birth_id, 'birth', {'child': THOMAS, 'mother': MARGARET, 'father': JOHN})
+        thomas, t_text = _person('Thomas Hartley', THOMAS, 'relationships:\n'
+                                 + _entry(JOHN, 'John Hartley', 'parent', [birth_id]))
+        margaret, m_text = _person('Margaret Cole', MARGARET)
+        john, j_text = _person('John Hartley', JOHN)
+        src, s_text = _source(birth)
+        root = _build({thomas: t_text, margaret: m_text, john: j_text, src: s_text})
+        claim.run_claim(root, claim_id=birth_id, status='accepted')
+        self.assertIn(f'"[[{MARGARET}|Margaret Cole]]"\n    type: parent\n'
+                      f'    claims: ["[[{birth_id}]]"]', _read(root, thomas))
+        self.assertEqual([f for f in _codes(root, 'W115') if birth_id in f.message], [])
+
+    def test_lint_asks_for_each_owed_entry(self) -> None:
+        birth_id = 'c-hhhhhhhhhh'
+        birth = _claim(birth_id, 'birth', {'child': THOMAS, 'mother': MARGARET, 'father': JOHN},
+                       'accepted')
+        thomas, t_text = _person('Thomas Hartley', THOMAS, 'relationships:\n'
+                                 + _entry(JOHN, 'John Hartley', 'parent', [birth_id]))
+        src, s_text = _source(birth)
+        root = _build({thomas: t_text, src: s_text})
+        self.assertTrue([f for f in _codes(root, 'W115') if birth_id in f.message])
+
+    def test_a_bare_number_alias_does_not_stop_the_accept(self) -> None:
+        thomas, t_text = _person('Thomas Hartley', THOMAS,
+                                 'relationships:\n' + _entry(JOHN, 'John Hartley', 'parent'))
+        margaret, m_text = _person('Margaret Cole', MARGARET,
+                                   'aliases: 1912\nname_variants: 1913\n')
+        src, s_text = _source(_rel_claim())
+        root = _build({thomas: t_text, margaret: m_text, src: s_text})
+        result = claim.run_claim(root, claim_id=REL, status='accepted')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
         self.assertIn(f'claims: ["[[{REL}]]"]', _read(root, thomas))
+        lint._run_lint_core(root, {})   # and lint reads the record too
 
 
 class LintFixAppliedTests(unittest.TestCase):

@@ -174,8 +174,8 @@ or `fha claim new`) is applied to the person records it connects that already
 keep a `relationships:` list (SPEC §9): `_apply_relationships` reads the
 shared rule (`_lib.claim_owed_relationship_entries`, the one lint W115 checks
 against) and writes each record once, after working every edit out in memory.
-Disputing, rejecting or superseding a claim takes it back out of every
-`claims:` list. A record with no list is never given one.
+Disputing, rejecting or superseding a claim, or parking an accepted one at
+suggested, takes it back out of every `claims:` list. A record with no list is never given one.
 
 **`fha claim new`** mints a brand-new claim onto an EXISTING source record - the
 CLI-driven counterpart to hand-typing a claim item under `## Claims`. It shares
@@ -1909,7 +1909,8 @@ _UNCITE_STATUSES = ('disputed', 'rejected', 'superseded')
 
 def _apply_relationships(
     archive_root: Path, result: Result, *,
-    accepted: list[dict] = (), uncited: list[str] = (), dry_run: bool = False,
+    accepted: list[dict] = (), uncited: list[str] = (),
+    sources: dict[str, str] | None = None, dry_run: bool = False,
 ) -> None:
     """Keep the person records' `relationships:` lists in step with the decision.
 
@@ -1928,8 +1929,12 @@ def _apply_relationships(
     alone, because a list, once there, must hold every tie the person has.
 
     `uncited` are claim ids this command moved to disputed, rejected or
-    superseded: each is taken out of every `claims:` list that cites it, and
-    an entry left with no claims and no `source:` is removed (a guess stays).
+    superseded, or from accepted back to suggested: each is taken out of
+    every `claims:` list that cites it. An entry left with no claims goes
+    only when it said nothing else (no note, link, `source:`, status or
+    comment); the last entry going leaves `relationships: []`, so the person
+    still keeps a list. `sources` maps a claim id to its source, so an entry
+    citing that source with `source:` counts as already applying the claim.
 
     Every edit is worked out and checked in memory before any person record
     is written, and `dry_run` prints the same lines a live run would. A
@@ -1944,7 +1949,8 @@ def _apply_relationships(
         return
     people = read_person_records(archive_root)
     if kin:
-        plan = plan_relationship_entries(kin, people, person_alias_map(people))
+        plan = plan_relationship_entries(kin, people, person_alias_map(people),
+                                         claim_sources=sources)
     else:
         plan = plan_relationship_removals(uncited, people)
     if not plan['edits'] and not plan['problems']:
@@ -2486,7 +2492,9 @@ def run_claim(
     still_marked: tuple[dict, dict | None] | None = None
     # Leaving the claim out of the relationships: entries that cite it (a
     # batch does this itself, for the claims it wrote).
-    uncite_now = [cid] if (not _in_batch and status in _UNCITE_STATUSES) else []
+    uncite_now = [cid] if (not _in_batch and (
+        status in _UNCITE_STATUSES or (status == 'suggested' and was_accepted))) else []
+    claim_source = {cid: result.data['source_id']} if result.data.get('source_id') else {}
     if not _in_batch:
         if status == 'accepted' and not was_accepted:
             accepted_now = _effective_claim(written_claim)
@@ -2535,7 +2543,7 @@ def run_claim(
             _warn_still_marked(archive_root, result, [still_marked], status, dry_run=True)
         _apply_relationships(archive_root, result,
                              accepted=[accepted_now] if accepted_now is not None else [],
-                             uncited=uncite_now, dry_run=True)
+                             uncited=uncite_now, sources=claim_source, dry_run=True)
         result.add('info', _DRY_RUN_TRAILER)
         return result
 
@@ -2578,7 +2586,7 @@ def run_claim(
         _warn_still_marked(archive_root, result, [still_marked], status)
     _apply_relationships(archive_root, result,
                          accepted=[accepted_now] if accepted_now is not None else [],
-                         uncited=uncite_now)
+                         uncited=uncite_now, sources=claim_source)
     result.add('info', _INDEX_REMINDER, next_step='fha index')
     return result
 
@@ -2934,10 +2942,17 @@ def run_claim_batch(
     # The relationships: entries, for the claims this batch actually wrote
     # (or, under dry-run, previewed): every edit worked out before any person
     # record is written, as for a single claim.
+    if status in _UNCITE_STATUSES:
+        uncited = [normalize_id(c) for c in applied]
+    elif status == 'suggested':
+        # Parked again after being accepted: the tie no longer rests on it.
+        uncited = [normalize_id(str(c.get('id') or '')) for c in unaccepted_claims]
+    else:
+        uncited = []
     _apply_relationships(
-        archive_root, result, accepted=accepted_claims,
-        uncited=([normalize_id(c) for c in applied]
-                 if status in _UNCITE_STATUSES else []),
+        archive_root, result, accepted=accepted_claims, uncited=uncited,
+        sources={normalize_id(str(d.get('claim_id') or '')): d.get('source_id')
+                 for d in result.data['results'] if d.get('source_id')},
         dry_run=dry_run)
 
     if stopped is not None or write_failed is not None:
@@ -3412,7 +3427,8 @@ def run_claim_new(
         if accepted_now is not None:
             _mark_deceased_not_living(archive_root, result, [accepted_now],
                                       dry_run=True, keep_living=keep_living, confirm_deceased=confirm_deceased)
-            _apply_relationships(archive_root, result, accepted=[accepted_now], dry_run=True)
+            _apply_relationships(archive_root, result, accepted=[accepted_now],
+                                 sources={cid: sid}, dry_run=True)
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
@@ -3438,7 +3454,7 @@ def run_claim_new(
     if accepted_now is not None:
         _mark_deceased_not_living(archive_root, result, [accepted_now],
                                   keep_living=keep_living, confirm_deceased=confirm_deceased)
-        _apply_relationships(archive_root, result, accepted=[accepted_now])
+        _apply_relationships(archive_root, result, accepted=[accepted_now], sources={cid: sid})
     if status == 'suggested':
         result.add('info',
                    'Minted as `suggested` - review it with '
