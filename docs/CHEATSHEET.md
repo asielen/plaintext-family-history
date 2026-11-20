@@ -42,6 +42,7 @@ fha report                    # the review queue and research leads
 fha find --text "Rose Hartley"   # search everything
 fha doctor                    # health check: run this when stuck
 fha lint                      # "is my archive shaped right?"
+fha lint --changed            # quick check before a commit: only what changed since the last one
 fha reconcile --dry-run       # after reorganizing documents or photos: preview the re-links, run without --dry-run to apply
 fha reorganize                # preview moving loose documents/ files into type folders; add --apply --yes to do it
 fha backup                    # dated zip beside the archive; to restore, unzip it
