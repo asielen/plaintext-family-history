@@ -1284,6 +1284,8 @@ def run_confirm_place(
             result.add('info', f'[dry-run] Would register place {place_disp} ({name}) in places.yaml.')
             for ln in new_block_lines:
                 result.add('info', '  ' + ln)
+            result.add('info', '[dry-run] Once it is registered, `fha places geocode --place` '
+                               'with its new id fills in its coordinates from GeoNames.')
         else:
             result.add('info', f'[dry-run] Would relink claims to existing place {place_disp}.')
         for cid, path in claim_paths.items():
@@ -1361,8 +1363,19 @@ def run_confirm_place(
     result.add('info',
                f'Relinked {len(result.data["relinked"])} claim(s) to {place_disp}: '
                + ', '.join(result.data['relinked']))
-    result.add('info', 'Reminder: run `fha index` so the place link enters the query surface.',
-               next_step='fha index')
+    if into is None:
+        # The new place has no coordinates yet. Geocoding stays its own
+        # command rather than part of this write, so inferred coordinates
+        # still go through geocode's table and yes (AGENTS.md: never written
+        # unconfirmed). Geocode reads the index, so `fha index` comes first.
+        result.add('info',
+                   f'Next: run `fha index`, then `fha places geocode --place {place_disp}` '
+                   'to fill in its coordinates from GeoNames (it shows the match and '
+                   'asks before writing).',
+                   next_step='fha index')
+    else:
+        result.add('info', 'Reminder: run `fha index` so the place link enters the query surface.',
+                   next_step='fha index')
     return result
 
 
@@ -1381,7 +1394,8 @@ def _place_exists(archive_root: Path, place_id: str) -> bool:
 
 
 def _place_block_lines(place_id: str, name: str, hierarchy: str | None) -> list[str]:
-    """Build a minimal new place record for places.yaml (no coords - geocode later).
+    """Build a minimal new place record for places.yaml (no coords: `fha places
+    geocode` fills them in afterwards, behind its own yes).
 
     No `notes:`: SPEC §15 writes notes only when there is something to say
     about the place, so a new place carries none (place-research or

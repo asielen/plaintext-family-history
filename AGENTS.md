@@ -227,6 +227,10 @@ fha source merge <keeper> <retiree> [--dry-run]    fold a second record of one p
                             photos keyword only), claims moved with their ids, notes and
                             links added, retiree record removed, its id kept in aliases:;
                             refused when the accepted claims are about different people
+fha places geocode (--place <l-id> | --all) [--dry-run]   coordinates, missing county/
+                            state/country and spellings from GeoNames (downloaded once);
+                            one table, one [y/N] the human answers; ambiguous places
+                            list a `places set --coords` command per candidate
 fha places set <l-id> --coords|--aka|--history …   human-directed place registry edit
                             (each field a full replace; dry-run diff first)
 fha places note <l-id> --text …                    append a dated research note to a place
