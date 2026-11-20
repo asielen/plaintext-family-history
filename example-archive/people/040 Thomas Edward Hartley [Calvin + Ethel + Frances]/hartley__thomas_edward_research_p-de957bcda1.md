@@ -10,8 +10,7 @@ created: 2026-06-12
 > source record.
 
 ## Research Notes
-The family is in Fairview by the March 1871 marriage notice and in the 1880 census. The
-1870 census and the 1875 Kansas state census are the gap to close.
+The family is in Fairview by the March 1871 marriage notice and in the 1880 census. The 1870 census and the 1875 Kansas state census are the gap to close.
 
 ## Open Questions
 

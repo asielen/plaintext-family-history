@@ -86,6 +86,7 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
 - Don't recompute what `fha report` already computed. The report refreshes the index and runs lint, so skip a separate `fha index` / `fha lint`. `fha xref` belongs to `review-claims`, not this briefing.
 - Give a briefing with one clear next step instead of reading out every section.
 - Any record ID in the text of a confirmed discovery is `[[ ]]`-wrapped, `[[id|Name]]` preferred. The structured `--refs` list takes bare IDs, but IDs *inside the sentence* follow _STANDARD.md §11.
+- The text of a confirmed discovery keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

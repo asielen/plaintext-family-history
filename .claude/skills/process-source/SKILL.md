@@ -155,6 +155,7 @@ The everyday intake path: an inbox item (a scan, a photo, a capture stub, a bund
 - Never force a claim out of an item that asserts nothing; the zero-claims exit above is the correct path.
 - The place-registration offer fires at most **once per place-text cluster per session**, only on an explicit yes, and is not repeated once declined in the same session (the same rule `review-claims`' promotion nudge follows).
 - A registry write is the one write here that reaches **past the item in hand**, into `places.yaml` and other sources' records, so unlike the rest of Stage B it owns its own follow-through: `fha index` then `fha places lint`, immediately. (Stage A's scaffold and a `fha stubs` mint also add records the index hasn't seen; those belong to this item and are picked up by the review close-out's full reindex.) The `l-id` written into a claim is always the one the **apply** run printed, never the dry-run's.
+- Prose written into the record's `## Notes` (or `## Stories`) keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
 
 ## Done when
 

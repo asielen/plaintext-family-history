@@ -1,7 +1,6 @@
 # Open Questions
 
-The questions that span people, with their working answers (SPEC §17). A question about one
-person can also live in that person's research file.
+The questions that span people, with their working answers (SPEC §17). A question about one person can also live in that person's research file.
 
 ## Q: Who were Thomas Edward Hartley's parents?
 - origin: human
