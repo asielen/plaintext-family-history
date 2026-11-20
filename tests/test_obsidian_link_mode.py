@@ -616,6 +616,75 @@ class PrivacyInBothModesTests(unittest.TestCase):
                 self.assertEqual(other.count(secret), body.count(secret), (name, secret))
 
 
+class PacketWithheldPeopleTests(unittest.TestCase):
+    """A bare link to anyone the packet withholds (restricted, or living
+    through a merge) never gains that person's name in an Obsidian-mode
+    packet: the copy says what an `id`-mode packet says."""
+
+    ADA = 'p-htyn3mpg9g'
+    CALEB = 'p-075114a0f8'
+    ADA_FILE = 'people/stubs/hartley__ada_jane_p-htyn3mpg9g.md'
+    CALEB_FILE = 'people/stubs/hartley__caleb_comstock_p-075114a0f8.md'
+
+    def _packet(self, tmp: Path, mode: str | None, setup) -> str:
+        root = _copy_example(tmp / (mode or 'id'))
+        profile = root / TOM_PROFILE
+        text = profile.read_text(encoding='utf-8')
+        profile.write_text(text.replace(
+            '## Stories', f'Kin [[{self.ADA}]] and [[{self.CALEB}]].\n\n## Stories', 1),
+            encoding='utf-8', newline='')
+        setup(root)
+        if mode:
+            _set_mode(root, mode)
+            _quiet(normalize_links.run_normalize_links, root, load_fha_yaml(root), write=True)
+        _quiet(index_mod.build_index, root, load_fha_yaml(root))
+        out = tmp / f'out-{mode or "id"}'
+        res = _quiet(packet.run_packet, root, TOM, out, no_photos=True)
+        self.assertEqual(res.data['status'], 'ok', res.data.get('messages'))
+        return '\n'.join(p.read_text(encoding='utf-8') for p in out.rglob('*.md'))
+
+    def _both(self, setup) -> tuple[str, str]:
+        tmp = Path(tempfile.mkdtemp(prefix='fha-381p3pk-'))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return self._packet(tmp, None, setup), self._packet(tmp, 'obsidian', setup)
+
+    @staticmethod
+    def _edit(root: Path, rel: str, old: str, new: str) -> None:
+        path = root / rel
+        text = path.read_text(encoding='utf-8')
+        assert old in text, (rel, old)
+        path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='')
+
+    def test_a_restricted_person_who_is_not_living(self):
+        def setup(root):
+            self._edit(root, self.ADA_FILE, 'living: false', 'living: false\nrestricted: true')
+        ids, obs = self._both(setup)
+        self.assertNotIn('Ada Jane', ids)
+        self.assertNotIn('Ada Jane', obs)
+        self.assertIn(f'[[{self.ADA}]]', obs)
+
+    def test_a_person_living_only_through_a_merge(self):
+        def setup(root):
+            (root / 'people/stubs/MERGED-INTO-hartley__ada_p-mmmmmmmmm1.md').write_text(
+                '---\nid: p-mmmmmmmmm1\nname: Ada Hartley\nstatus: merged\n'
+                f'merged_into: {self.ADA}\nliving: true\ntier: stub\n---\n', encoding='utf-8')
+        ids, obs = self._both(setup)
+        self.assertNotIn('Ada Jane', ids)
+        self.assertNotIn('Ada Jane', obs)
+
+    def test_a_restricted_name_variant_stays_out_and_the_name_is_kept(self):
+        def setup(root):
+            self._edit(root, self.CALEB_FILE, 'name: Caleb Comstock Hartley',
+                       'name: Caleb Comstock Hartley\nname_variants:\n'
+                       '  - value: Secretname Hartley\n    restricted: true')
+        ids, obs = self._both(setup)
+        self.assertNotIn('Secretname', ids)
+        self.assertNotIn('Secretname', obs)
+        # Caleb is neither living nor restricted: the stem form's filled-in
+        # name is an ordinary display and reads back with the link.
+        self.assertIn(f'[[{self.CALEB}|Caleb Comstock Hartley]]', obs)
+
+
 # ── Review round: tables, code blocks, merged records, people: shapes ────────
 
 class TableLinkTests(unittest.TestCase):

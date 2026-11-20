@@ -12385,7 +12385,7 @@ def rewrite_record_links_to_stems(text: str, links: LinkWriter) -> tuple[str, in
     return ''.join(out), edits, unfixable
 
 
-def links_to_id_form(text: str, drop_names: dict[str, str] | None = None) -> str:
+def links_to_id_form(text: str, drop_names: Any = None) -> str:
     """`text` with every file-name link read back to the ID form, for an
     export that copies a record's own text out of the archive (`fha packet`).
 
@@ -12396,13 +12396,13 @@ def links_to_id_form(text: str, drop_names: dict[str, str] | None = None) -> str
     the `id` link mode would have, so switching modes never changes what an
     export holds back. The display is kept, except a source's own ID shown
     as its display and the claim ID of a claim link, which the ID form does
-    not repeat, and a display that is exactly the name `drop_names` gives
-    for the person ({p-id: name}; the packet passes the people it treats as
-    living): the stem form fills in a person's name where the ID form had
-    none, and the copy must not gain it."""
+    not repeat, and a display that is exactly the name `drop_names.get(p-id)`
+    gives for the person (anything with a `get`; the packet passes the
+    people it withholds): the stem form fills in a person's name where the
+    ID form had none, and the copy must not gain it."""
     if '_' not in text or '[[' not in text:
         return text
-    drop = {normalize_id(k): v for k, v in (drop_names or {}).items() if v}
+    drop = drop_names if drop_names is not None else {}
 
     def repl(m: re.Match) -> str:
         written, fragment, raw_display, escaped = _split_written_link(m)
