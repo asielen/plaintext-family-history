@@ -8964,36 +8964,19 @@ def _names_a_county(text: str) -> bool:
     return len(words) > 1 and (words[0] in _COUNTY_WORDS or words[-1] in _COUNTY_WORDS)
 
 
-# Country names a hierarchy commonly ends with. The last part of a hierarchy is
-# its country when it is one of these; a County part never names it, nor the
-# state just above it. Folded the way `place_part_key` folds.
-_PLACE_COUNTRY_KEYS = frozenset({
-    'usa', 'us', 'u s a', 'united states', 'united states of america', 'america',
-    'canada', 'mexico', 'england', 'scotland', 'wales', 'ireland', 'northern ireland',
-    'uk', 'united kingdom', 'great britain', 'britain', 'poland', 'polska', 'germany',
-    'deutschland', 'prussia', 'austria', 'hungary', 'austria hungary', 'czech republic',
-    'czechia', 'slovakia', 'ukraine', 'russia', 'russian empire', 'lithuania', 'latvia',
-    'estonia', 'belarus', 'france', 'belgium', 'netherlands', 'holland', 'luxembourg',
-    'switzerland', 'italy', 'spain', 'portugal', 'sweden', 'norway', 'denmark', 'finland',
-    'iceland', 'greece', 'romania', 'bulgaria', 'serbia', 'croatia', 'slovenia',
-    'yugoslavia', 'australia', 'new zealand', 'south africa', 'india', 'china', 'japan',
-    'philippines', 'brazil', 'argentina', 'chile', 'cuba', 'puerto rico',
-})
-
-
 def _place_levels(parts: list[str]) -> list[tuple[str, bool, bool]]:
     """The divisions above a place, from the parts that follow its own name:
     (comparison key, written as a county, could be its county).
 
-    A part could be the county, when nothing is written as one, if it lies
-    strictly between the place and its state: the last part (and, when that
-    last part is a country, the state before it) never can. "Hinds,
-    Mississippi, USA" offers Hinds; "Mississippi, USA" offers nothing;
-    "Cook, Illinois" offers Cook."""
+    When nothing is written as a county, a part could be the county only if
+    it is not among the last two levels: those may be a state and a country,
+    and a country can be spelled any way ("U.S.", "Kingdom of Prussia",
+    "Sverige"), so no list of names is trusted to tell. "Hinds, Mississippi,
+    USA" offers Hinds; "Mississippi, USA" and "Cook, Illinois" offer
+    nothing, and a County part against them goes to the human."""
     keys = [(place_part_key(p), _names_a_county(p)) for p in parts]
     keys = [(k, c) for k, c in keys if k]
-    top = 2 if keys and keys[-1][0] in _PLACE_COUNTRY_KEYS else 1
-    return [(k, c, i < len(keys) - top) for i, (k, c) in enumerate(keys)]
+    return [(k, c, i < len(keys) - 2) for i, (k, c) in enumerate(keys)]
 
 
 def prepare_place_registry(rows: list[dict]) -> list[dict]:
@@ -9011,9 +8994,9 @@ def prepare_place_registry(rows: list[dict]) -> list[dict]:
     `hierarchy:` after its own name, and each name's later comma parts; see
     `_place_levels`; a level that appears twice counts as a county when
     either reading says so), `marked` (whether any of those parts is written
-    as a county) and `bare_county` (the keys of the parts that lie between
-    the place and its state, the only ones a County part may name when
-    nothing is written as a county)."""
+    as a county) and `bare_county` (the keys of the levels other than the
+    last two, the only ones a County part may name when nothing is written
+    as a county)."""
     prepared: list[dict] = []
     for place in rows:
         pid = place.get('id')
@@ -9078,13 +9061,16 @@ def place_text_fits(place_text: str, place: dict) -> str | None:
     any of them, so "Chicago, Cook, Illinois" fits Chicago in Cook County,
     with or without the country. A part that says "County" (or Co., Parish,
     parafia, gmina, powiat) names the county level: an explicitly written
-    county, or, when no level is written as a county, a level between the
-    place and its state. So
-    "Chicago, Cook County, Illinois" fits a Chicago registered as "Chicago,
-    Cook, Illinois", while "Jackson, Jackson County" is not the Jackson in
-    Hinds County, "Jackson, Mississippi County" is not Jackson, Mississippi,
-    and "Brooklyn, New York County" is not Brooklyn in Kings, New York. A
-    later part never matches the place's own name."""
+    county, or, when no level is written as a county, a level above the
+    place other than the hierarchy's last two (they may be a state and a
+    country, however the country is spelled). So "Chicago, Cook County,
+    Illinois" fits a Chicago registered as "Chicago, Cook, Illinois, USA",
+    while "Jackson, Jackson County" is not the Jackson in Hinds County,
+    "Jackson, Mississippi County" is not Jackson, Mississippi, and "Brooklyn,
+    New York County" is not Brooklyn in Kings, New York. Against "Chicago,
+    Cook, Illinois" (two levels, nothing written as a county) a County part
+    fits nothing and the claim goes to the human. A later part never
+    matches the place's own name."""
     exact = place['exact'].get(normalize_place_text(place_text))
     if exact is not None:
         return exact

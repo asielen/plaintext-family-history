@@ -460,8 +460,12 @@ class HierarchyRuleTests(unittest.TestCase):
             ('Chicago', 'Chicago, Cook County, Illinois, USA', 'Chicago, Cook, Illinois', True),
             ('Chicago', 'Chicago, Cook County, Illinois, USA', 'Chicago, Cook Co., Illinois', True),
             ('Chicago', 'Chicago, Cook, Illinois, USA', 'Chicago, Cook County, Illinois', True),
-            ('Chicago', 'Chicago, Cook, Illinois', 'Chicago, Cook County, Illinois', True),
-            ('Chicago', 'Cook, Illinois', 'Chicago, Cook County, Illinois', True),
+            # Two levels above the place, nothing written as a county: the
+            # last two could be state and country, so neither is a county.
+            # A true match is lost here; the claim goes to the human.
+            ('Chicago', 'Chicago, Cook, Illinois', 'Chicago, Cook County, Illinois', False),
+            ('Chicago', 'Cook, Illinois', 'Chicago, Cook County, Illinois', False),
+            ('Chicago', 'Chicago, Cook, Illinois', 'Chicago, Cook, Illinois', True),
             ('Fairview', 'Fairview, Fairview Township, Breton County, Kansas, USA',
              'Fairview, Breton County, Kansas', True),
             ('Fairview', 'Fairview, Fairview Township, Breton, Kansas, USA',
@@ -469,7 +473,8 @@ class HierarchyRuleTests(unittest.TestCase):
             ('Ashby', 'Ashby, Lafitte Parish, Louisiana, USA', 'Ashby, Lafitte Parish', True),
             ('Ashby', 'Ashby, Lafitte, Louisiana, USA', 'Ashby, Lafitte Parish', True),
             ('Kowalin', 'Kowalin, parafia Tykwin, podlaskie, Polska', 'Kowalin, parafia Tykwin', True),
-            ('Kowalin', 'Kowalin, Tykwin, podlaskie', 'Kowalin, parafia Tykwin', True),
+            ('Kowalin', 'Kowalin, Tykwin, podlaskie', 'Kowalin, parafia Tykwin', False),
+            ('Kowalin', 'Kowalin, Tykwin, podlaskie', 'Kowalin, Tykwin', True),
             ('Kowalin', 'Kowalin, gmina Tykwin, powiat białostocki, podlaskie, Polska',
              'Kowalin, powiat białostocki', True),
             # The earlier finding stays fixed: where the hierarchy names its
@@ -517,6 +522,40 @@ class HierarchyRuleTests(unittest.TestCase):
                     self.root, text,
                     registry=([{'id': 'L-aaaaaaaaaa', 'name': name, 'hierarchy': hierarchy}],
                               None))
+                self.assertEqual(m['tier'] == 'exact', fits, m)
+
+    def test_county_part_never_names_the_last_two_levels(self) -> None:
+        # Whatever the country is called ("U.S.", "Kingdom of Prussia",
+        # "Sverige", "Italia"), the last two levels of a hierarchy that
+        # writes no county are never a county, so a County part cannot land
+        # on the state. No list of country names is consulted.
+        for country in ('USA', 'U.S.', 'U.S.A.', 'United States', 'US of A', 'North America',
+                        'Prussia', 'Kingdom of Prussia', 'German Empire', 'Austria-Hungary',
+                        'Éire', 'Wales', 'United Kingdom', 'Polska', 'Sverige', 'Norge',
+                        'Danmark', 'Österreich', 'Italia', 'Magyarország', 'Česko'):
+            with self.subTest(country=country):
+                m = match_place_text_to_registry(
+                    self.root, 'Jackson, Mississippi County',
+                    registry=([{'id': 'L-aaaaaaaaaa', 'name': 'Jackson',
+                                'hierarchy': f'Jackson, Mississippi, {country}'}], None))
+                self.assertIsNone(m['tier'])
+        rows = [
+            ('Kowalin, Tykwin, białostocki, podlaskie, Polska', 'Kowalin, gmina Tykwin', True),
+            ('Kowalin, Tykwin, białostocki, podlaskie, Polska', 'Kowalin, powiat białostocki',
+             True),
+            ('Kowalin, Tykwin, białostocki, podlaskie, Polska', 'Kowalin, powiat podlaskie',
+             False),
+            ('Kowalin, Tykwin, białostocki, podlaskie', 'Kowalin, gmina Tykwin', True),
+            ('Kowalin, Tykwin, białostocki, podlaskie', 'Kowalin, powiat podlaskie', False),
+            ('Kowalin, Tykwin, białostocki, podlaskie, Rzeczpospolita Polska',
+             'Kowalin, parafia Tykwin, podlaskie', True),
+        ]
+        for hierarchy, text, fits in rows:
+            with self.subTest(text=text, hierarchy=hierarchy):
+                m = match_place_text_to_registry(
+                    self.root, text,
+                    registry=([{'id': 'L-aaaaaaaaaa', 'name': 'Kowalin',
+                                'hierarchy': hierarchy}], None))
                 self.assertEqual(m['tier'] == 'exact', fits, m)
 
     def test_two_places_that_fit_go_to_the_human(self) -> None:
