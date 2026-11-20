@@ -449,6 +449,13 @@ class SyncFailureIsAWarningTests(_SyncBase):
             views.run_sources_index, self.root, person_id=PID)
         self.assertEqual(single.exit_code, EXIT_WARNINGS)
         self.assertTrue(single.data.get('index_stale'))
+        # A second source gives the batch a real change to write: a batch
+        # re-syncs only the profiles it rewrote, so with nothing new there
+        # would be no sync to fail.
+        (self.root / 'sources' / 'notes' / f'second_{SID2.lower()}.md').write_text(
+            _source(SID2, 'Ferry Road Directory', 'lived at Ferry Road',
+                    'C-9bbbbbbbbb'),
+            encoding='utf-8')
         self._reindex()
         batch, _out2, _err2 = self._with_locked_sync(
             views.run_sources_index, self.root, all_curated=True)
@@ -569,6 +576,170 @@ class SyncHelperTests(_SyncBase):
             self._rows_for('person_files',
                            str(Path('people') / FOLDER / profile.name)),
             before)
+
+
+class QuietRefreshTests(_SyncBase):
+    """A refresh with nothing new to say writes no files and re-syncs no
+    profiles, even on a new day. On a large archive the old behaviour turned
+    a quiet refresh into minutes of work and a commit touching every view."""
+
+    PID2 = 'P-9bbbbbbbbb'
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.folder / f'hartley__other_{self.PID2}.md').write_text(
+            _person(self.PID2, 'Other Hartley'), encoding='utf-8')
+        self._reindex()
+
+    def _refresh_on(self, date: str):
+        """Run a refresh as if today were `date`; return (result, files
+        written, profile paths re-synced)."""
+        writes: list[Path] = []
+        resynced: list[Path] = []
+        real_write = _lib.write_text_exact_atomic
+        real_resync = views.resync_person_profile_rows
+
+        def spy_write(path, *a, **kw):
+            writes.append(Path(path))
+            return real_write(path, *a, **kw)
+
+        def spy_resync(root, paths):
+            resynced.extend(Path(p) for p in paths)
+            return real_resync(root, paths)
+
+        with mock.patch.object(views, '_today', lambda: date), \
+             mock.patch.object(_lib, 'generated_marker_date', lambda: date), \
+             mock.patch.object(_lib, 'write_text_exact_atomic', spy_write), \
+             mock.patch.object(views, 'write_text_exact_atomic', spy_write), \
+             mock.patch.object(views, 'resync_person_profile_rows', spy_resync):
+            res, _out, _err = self._quiet(views.run_refresh, self.root)
+        return res, writes, resynced
+
+    def test_a_new_day_alone_writes_nothing(self) -> None:
+        res, writes, _ = self._refresh_on('2026-11-19')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertTrue(writes)
+        res, writes, resynced = self._refresh_on('2026-11-20')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        self.assertEqual(writes, [])
+        self.assertEqual(resynced, [])
+        # The dates keep saying when the content last changed.
+        timeline = (self.root / self._timeline_rel()).read_text(encoding='utf-8')
+        self.assertIn('on 2026-11-19', timeline)
+        self.assertNotIn('2026-11-20', timeline)
+
+    def test_only_the_changed_profile_is_resynced(self) -> None:
+        self._refresh_on('2026-11-19')
+        (self.root / 'sources' / 'notes' / f'second_{SID2.lower()}.md').write_text(
+            _source(SID2, 'Ferry Road Directory', 'lived at Ferry Road',
+                    'C-9bbbbbbbbb'),
+            encoding='utf-8')
+        self._reindex()
+        res, writes, resynced = self._refresh_on('2026-11-20')
+        self.assertEqual(res.exit_code, EXIT_CLEAN)
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        self.assertEqual(resynced, [profile])
+        self.assertIn(profile, writes)
+        self.assertNotIn(self.folder / f'hartley__other_{self.PID2}.md', writes)
+        # The changed files carry the new date, and search sees the new text.
+        self.assertIn('on 2026-11-20', profile.read_text(encoding='utf-8'))
+        self.assertIn('on 2026-11-20',
+                      (self.root / self._timeline_rel()).read_text(encoding='utf-8'))
+        self.assertIn(self._timeline_rel(), self._fts_rows('Ferry Road'))
+
+
+class ResyncDeletesTheRightRowsTests(_SyncBase):
+    def test_a_path_that_starts_the_same_way_keeps_its_row(self) -> None:
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        rel = str(Path('people') / FOLDER / profile.name)
+        conn = self._db()
+        try:
+            with conn:
+                conn.execute('INSERT INTO notes_fts(path, content) VALUES (?,?)',
+                             (rel + '.bak', 'keep the backup words'))
+        finally:
+            conn.close()
+        status = _lib.resync_person_profile_rows(self.root, [profile, profile])
+        self.assertEqual(status, 'indexed')
+        self.assertEqual(self._rows_for('notes_fts', rel), 1)
+        self.assertEqual(self._fts_rows('backup words'), [rel + '.bak'])
+
+
+class ConcurrentRebuildTests(_SyncBase):
+    """An `fha index` in another process (the workbench beside the CLI) that
+    renumbers the search rows while a sync is running must not make the sync
+    delete another file's search text. The sync holds the write lock from
+    before it reads the row ids, so the other writer waits (here: gives up at
+    once) and nothing is lost."""
+
+    def _renumber_from_another_connection(self) -> str:
+        """Give every notes_fts row its neighbour's rowid, as a rebuild in a
+        different walk order would. Returns 'renumbered' or 'busy'."""
+        other = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'), timeout=0.1)
+        try:
+            with other:
+                rows = other.execute(
+                    'SELECT rowid, path, content FROM notes_fts ORDER BY rowid').fetchall()
+                ids = [r[0] for r in rows]
+                shifted = ids[1:] + ids[:1]
+                other.execute('DELETE FROM notes_fts')
+                other.executemany(
+                    'INSERT INTO notes_fts(rowid, path, content) VALUES (?,?,?)',
+                    [(new_id, r[1], r[2]) for new_id, r in zip(shifted, rows)])
+            return 'renumbered'
+        except sqlite3.OperationalError:
+            return 'busy'
+        finally:
+            other.close()
+
+    def _all_rows(self) -> list[tuple[str, str]]:
+        conn = self._db()
+        try:
+            return sorted((r['path'], r['content'])
+                          for r in conn.execute('SELECT path, content FROM notes_fts'))
+        finally:
+            conn.close()
+
+    def _run_with_rebuild_after_the_id_read(self, fn, *args):
+        outcome = []
+        real = _lib.notes_fts_rowids_by_path
+
+        def read_then_rebuild(conn):
+            ids = real(conn)
+            outcome.append(self._renumber_from_another_connection())
+            return ids
+
+        with mock.patch.object(_lib, 'notes_fts_rowids_by_path', read_then_rebuild):
+            status = fn(*args)
+        return status, outcome
+
+    def _assert_nothing_lost(self, rel: str, before) -> None:
+        after = self._all_rows()
+        self.assertEqual([r for r in after if r[0] != rel],
+                         [r for r in before if r[0] != rel])
+        self.assertEqual(self._rows_for('notes_fts', rel), 1)
+
+    def test_profile_resync(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        profile = self.folder / f'hartley__cur_{PID}.md'
+        rel = str(Path('people') / FOLDER / profile.name)
+        before = self._all_rows()
+        self.assertGreaterEqual(len(before), 2)
+        status, outcome = self._run_with_rebuild_after_the_id_read(
+            _lib.resync_person_profile_rows, self.root, [profile])
+        self.assertEqual(outcome, ['busy'])
+        self.assertEqual(status, 'indexed')
+        self._assert_nothing_lost(rel, before)
+
+    def test_companion_sync(self) -> None:
+        self._quiet(views.run_refresh, self.root)
+        timeline = self.root / self._timeline_rel()
+        before = self._all_rows()
+        status, outcome = self._run_with_rebuild_after_the_id_read(
+            _lib.sync_generated_view_rows, self.root, [timeline])
+        self.assertEqual(outcome, ['busy'])
+        self.assertEqual(status, 'indexed')
+        self._assert_nothing_lost(self._timeline_rel(), before)
 
 
 class ResyncProfileReadFailureTests(_SyncBase):
