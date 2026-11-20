@@ -250,10 +250,13 @@ fha process refile <s-id> --to photos|documents
                             sanctioned correction; rename at the crossing; --dry-run)
 fha views timeline|sources-index|brackets     regenerate views (timeline and draft-queue also
                             take --format html: a printable page under generated/views/)
+fha views places             with links: obsidian, one generated note per place in places/
+                            (a mirror of places.yaml, never edited; --dry-run)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default);
                             --obsidian (on by itself when fha.yaml says links: obsidian)
                             points person, source and claim links at the record's file,
-                            so Obsidian can follow them; place links keep the ID form
+                            and place links at their place notes once `fha views places`
+                            has written them, so Obsidian can follow them
 fha reconcile                re-tie moved files to their records (documents by filename s-id,
                             photos via the catalog) after the human reorganizes; --dry-run first
 fha reorganize [--apply]     bulk-tidy documents/: fold loose, still-machine-filed files into

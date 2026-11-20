@@ -59,6 +59,7 @@ Places carry history (a town is renamed, a county forms, a parish splits), and t
    fha lint
    fha places lint                    # registry hygiene: orphan l-ids, duplicates, dangling within: links
    ```
+   In an archive whose `fha.yaml` says `links: obsidian`, also run `fha views places` after the reindex: it rebuilds the place's Obsidian note from the new `history:` and `notes:`, and gives a new place its note.
 5. **If a specific place (a town, village, church or cemetery) has no coordinates, offer to look them up.** A country, state or historic region ("Prussia") needs none; leave it as it is. After the reindex:
    ```
    fha places geocode --place <l-id> --dry-run   # what GeoNames found: coordinates, missing county/state/country
