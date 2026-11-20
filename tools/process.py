@@ -87,7 +87,7 @@ are found the user is asked whether they are *one* source (shared S-id) or
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Slug / type derivation
-#    _slugify                  - text → lowercase-hyphenated slug
+#    _slugify                  - text → lowercase-hyphenated slug (_lib.slugify)
 #    _derive_slug              - pick the slug from --slug / --title / filename stem
 #    _bundle_file_slug         - a bundle file's slug: the title's for a capture's generic name
 #
@@ -106,7 +106,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    _embed_document_keyword     - the same keyword into a documents-root file (#252)
 #    _document_source_keyword    - the S-id a document already carries inside it
 #    _take_undo_copy / _restore_undo_copy / _discard_undo_copies - byte-exact
-#                                  rollback of a document keyword (a PDF append)
+#                                  rollback of a document keyword (a PDF append; in _lib,
+#                                  shared with `fha source merge`)
 #    _document_keyword_undo      - the undo step that restores those bytes
 #    _refuse_if_document_belongs_elsewhere - the embedded-ID preflight for companions
 #    _open_backup                - the run's safety-copy policy, announced (TOOLING §13f)
@@ -153,8 +154,8 @@ are found the user is asked whether they are *one* source (shared S-id) or
 #    attach_more               - relocate --more's file out of inbox/ if needed (#111),
 #                                 then hand off to the engine below
 #    _more_file_kind           - which root a --more file joins (a record's page: documents, #274)
-#    _attachment_base          - the source slug a --more attachment is named with (#278)
-#    _names_something          - does a filed stem name anything before its _{S-id}?
+#    _attachment_base          - the source slug a --more attachment is named with
+#                                 (_lib.attachment_base, shared with `fha source merge`)
 #    _outside_roots_message    - "move it into the inbox" refusal for a file outside every root
 #    _attach_more_engine       - the attach logic proper: identity-mark + files: entry
 #
@@ -198,6 +199,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    FILENAME_SOURCE_ID_RE,
+    attachment_base,
+    discard_undo_copies,
+    restore_undo_copy,
+    retired_source_ids,
+    run_undo_steps,
+    slugify,
+    strip_sid_suffix,
+    take_undo_copy,
+    without_retired_sid,
     SOURCE_CLASS_VALUES,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -295,7 +306,7 @@ _PHOTO_SOURCE_TYPE = 'photo'
 _INBOX_PROCESSED_DIRNAME = INBOX_PROCESSED_DIRNAME
 
 # A filename already carrying an S-id (e.g. a re-run of a processed document).
-_FILENAME_SOURCE_ID_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
+_FILENAME_SOURCE_ID_RE = FILENAME_SOURCE_ID_RE
 
 # An embedded `SOURCE: S-xxxx` keyword (the photo identity carrier).
 _SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
@@ -322,18 +333,7 @@ def _today() -> str:
 
 # ── Slug / type derivation ────────────────────────────────────────────────────
 
-def _slugify(text: str) -> str:
-    """Collapse arbitrary text to a lowercase-hyphenated slug (SPEC §13).
-
-    Slugs are mutable and human-facing; only the trailing `_{S-id}` carries
-    machine meaning. We keep ASCII letters and digits, turn every other run of
-    characters into a single hyphen, and trim hyphens off the ends. An empty
-    result (e.g. a filename of only punctuation) falls back to 'source' so a
-    record is always nameable.
-    """
-    text = (text or '').strip().lower()
-    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
-    return slug or 'source'
+_slugify = slugify
 
 
 # The names a capture (the browser add-on, `fha capture`) gives the files it
@@ -668,25 +668,8 @@ def _intake_default_type(file_path: Path, fha_config: dict, archive_root: Path,
     return stype
 
 
-def _retired_source_ids(meta: dict, sid: str) -> frozenset[str]:
-    """The other S-ids in a source record's `aliases:` (lowercased) - the ids
-    of sources merged into it (#300). Its own id is not among them."""
-    out = set()
-    for ref in link_field_refs(meta.get('aliases')):
-        ref = str(ref).strip()
-        if is_valid_id(ref) and id_type_of(ref) == 'S':
-            out.add(normalize_id(ref))
-    out.discard(sid.lower())
-    return frozenset(out)
-
-
-def _without_retired_sid(file_path: Path, retired: frozenset[str]) -> Path:
-    """`file_path` with a trailing `_{S-id}` cut off its stem when that id is
-    one the target source retired, so the new name does not carry it."""
-    m = _FILENAME_SOURCE_ID_RE.search(file_path.stem)
-    if m and m.group(1).lower() in retired:
-        return file_path.with_name(file_path.stem[:m.start()] + file_path.suffix)
-    return file_path
+_retired_source_ids = retired_source_ids
+_without_retired_sid = without_retired_sid
 
 
 def _filename_has_source_id(file_path: Path) -> str | None:
@@ -885,36 +868,9 @@ def _source_lists_a_photo(archive_root: Path, sid: str) -> bool:
                .replace('\\', '/').split('/', 1)[0] == _PHOTO_DIR for e in files)
 
 
-def _take_undo_copy(path: Path) -> Path:
-    """Copy `path`'s bytes to a private temp file; return the copy's path."""
-    fd, name = tempfile.mkstemp(prefix='fha-undo-', suffix=path.suffix)
-    os.close(fd)
-    try:
-        shutil.copy2(path, name)
-    except OSError:
-        Path(name).unlink(missing_ok=True)
-        raise
-    return Path(name)
-
-
-def _restore_undo_copy(undo_copy: Path, path: Path) -> None:
-    """Put `path` back to the bytes `undo_copy` holds, then drop the copy.
-
-    Raises OSError if the bytes could not be put back; the copy is then KEPT,
-    so the caller's report can name where the original bytes still are.
-    """
-    _clear_read_only(path)
-    shutil.copy2(undo_copy, path)
-    undo_copy.unlink(missing_ok=True)
-
-
-def _discard_undo_copies(copies) -> None:
-    """Delete undo copies a successful run no longer needs (best-effort)."""
-    for copy in copies:
-        try:
-            Path(copy).unlink(missing_ok=True)
-        except OSError:
-            pass
+_take_undo_copy = take_undo_copy
+_restore_undo_copy = restore_undo_copy
+_discard_undo_copies = discard_undo_copies
 
 
 def _document_source_keyword(path: Path) -> str | None:
@@ -4387,99 +4343,8 @@ def _more_file_kind(
     return kind
 
 
-def _attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
-                     role: str, copy: str | None = None) -> str:
-    """The `{slug}` a documents-root `--more` attachment is named with (#278).
-
-    SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
-    so the pages of one item sort together and carry the item's name. The
-    slug is the one the source's primary document already carries (its stem
-    without `_{S-id}`, and without the `-{copy}-{role}` its own `files:` entry
-    names when that tail follows the record's slug), or the record's own slug when the primary is a photo (photos are
-    never renamed, so their name is no guide) or is named by its S-id alone.
-    The scan's real name is not lost: it is recorded as `original_filename:`.
-
-    Two names are kept, both the recording and transcript skills'
-    deliberate conventions (owner decision on PR #287):
-
-      * a file whose name starts with the source's slug and a hyphen -
-        `{slug}-farm.m4a` attached as `audio` files as
-        `{slug}-farm-audio_...` (one session, one prefix, the topic in the
-        name).
-      * on a recording source whose slug is `{session}-audio` (or
-        `-video`, `-recording`: `_lib.SESSION_MEDIA_SUFFIXES`, the
-        whisper-pass convention), a file named `{session}` or starting
-        with `{session}-` - so `{session}-farm.m4a` keeps its topic too,
-        and every recording of the session gets a name of its own.
-
-    In both, a name that already ends in what the caller will append -
-    `-{copy}-{role}` or `-{role}` - does not get it twice:
-    `{slug}-back.tif` as `back:c` files as `{slug}-c-back_...`, and so does
-    `{slug}-c-back.tif`.
-
-    Everything else takes the source's slug - a scanner's `scan-0412-p3`,
-    and a short name like `postcard` that merely begins the slug.
-    """
-    record_slug = _strip_sid_suffix(record_path.stem, sid)
-    slug = None
-    for entry in meta.get('files') or []:
-        if (files_entry_is_main(entry)
-                and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
-            stem = PurePosixPath(str(entry['file'])).stem
-            if _names_something(stem, sid):
-                slug = _strip_sid_suffix(stem, sid)
-                # A main file can carry its own `-{copy}-{role}` after the
-                # record's slug (a Find a Grave memorial's main file is
-                # `{slug}-grave-1_…`). That tail names that one file, not the
-                # source, so the next file attached never inherits it. It is
-                # dropped only when what is left is the record's own slug: a
-                # main file named the bare slug (a refiled photo's
-                # `store-front_…` with role `front`) has no tail to drop.
-                bare = _strip_suffix_tail(slug, '', str(entry.get('role') or ''),
-                                          str(entry.get('copy') or '') or None)
-                if bare != slug and bare == record_slug:
-                    slug = bare
-            break
-    if not slug:
-        # A main file named by its S-id alone (`_s-….pdf`) has no slug to
-        # share; the record's own name does.
-        slug = record_slug
-    own = _slugify(more_file.stem)
-    prefixes = [slug]
-    for media_suffix in SESSION_MEDIA_SUFFIXES:
-        if slug.endswith(media_suffix) and len(slug) > len(media_suffix):
-            prefixes.append(slug[:-len(media_suffix)])
-    for prefix in prefixes:
-        if own == prefix:
-            return own
-        if own.startswith(prefix + '-'):
-            return _strip_suffix_tail(own, prefix, role, copy)
-    return slug
-
-
-def _strip_suffix_tail(own: str, prefix: str, role: str, copy: str | None) -> str:
-    """`own` without a trailing `-{copy}-{role}` (or `-{role}`) the caller is
-    about to append, so it is never doubled; never cut back past `prefix`."""
-    role_tail = f'-{_slugify(role)}' if role else ''
-    tails = [role_tail] if role_tail else []
-    if copy:
-        tails.insert(0, f'-{_slugify(copy)}{role_tail}')
-    for tail in tails:
-        if own.endswith(tail) and len(own) - len(tail) >= len(prefix):
-            return own[:-len(tail)]
-    return own
-
-
-def _strip_sid_suffix(stem: str, sid: str) -> str:
-    """A filename stem without its trailing `_{S-id}`, slugified."""
-    return _slugify(re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE))
-
-
-def _names_something(stem: str, sid: str) -> bool:
-    """Is there a name in `stem` before its `_{S-id}`? Asked before
-    slugifying, since `_slugify` turns an empty name into 'source'."""
-    rest = re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE)
-    return re.search(r'[a-z0-9]', rest, re.IGNORECASE) is not None
+_attachment_base = attachment_base
+_strip_sid_suffix = strip_sid_suffix
 
 
 def _outside_roots_message(
@@ -5103,23 +4968,7 @@ def _stdin_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def _run_undo(undo: list) -> list[str]:
-    """Run undo steps in reverse, best-effort, and return what could NOT be undone.
-
-    Rollback has to be best-effort - a later step still runs after an earlier one
-    fails - but it must never claim more than it actually did. Each entry is a
-    (description, callable) pair, and the description is written for the archive's
-    owner, so a rollback that cannot finish names exactly what it left behind (a
-    file still renamed, a record still on disk) instead of the older silent
-    'rolled back' that hid a half-undone, inconsistent archive from him.
-    """
-    failed: list[str] = []
-    for desc, fn in reversed(undo):
-        try:
-            fn()
-        except Exception as undo_exc:
-            failed.append(f'{desc} ({undo_exc})')
-    return failed
+_run_undo = run_undo_steps
 
 
 def _move_file(src: Path, dest: Path) -> None:

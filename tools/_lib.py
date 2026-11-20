@@ -459,6 +459,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    transcript_text_is_unchecked - that state collapsed to the one question a
 #                                 consumer asks (damaged counts as unchecked)
 #    GENERATED_PREFIX, is_generated_text, is_generated_file - GENERATED-header ownership test
+#    generated_marker_date, generated_text_differs - the date in a GENERATED marker
+#                                 means "last changed": a rewrite differing only there is skipped
+#    notes_fts_rowids_by_path, delete_notes_fts_path - drop one file's search rows by rowid
 #
 #  Walking a tree that might not open
 #    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
@@ -9485,6 +9488,214 @@ def append_file_entry_to_record(record_text: str, entry_lines: list[str]) -> str
     return '\n'.join(lines[:block_end] + entry_lines + lines[block_end:])
 
 
+# ── Source file naming and undo steps shared by `fha process` and `fha source merge`
+#
+# A file that joins a source (`fha process --more`) and a file that comes over
+# from a merged source (`fha source merge`) are named by the same SPEC §13
+# grammar, and both runs undo their renames and keyword writes the same way on
+# failure. They lived in process.py until the merge verb needed them, and
+# tools never import tools.
+
+# SPEC §14: the source frontmatter key order tools write, then the Appendix A
+# extensions. `fha lint --format` sorts by it and `fha source merge` places a
+# key it adds by it.
+SOURCE_FRONTMATTER_KEY_ORDER: tuple[str, ...] = (
+    'id', 'aliases', 'title', 'source_type', 'source_date', 'source_class',
+    'subtype', 'original_language', 'repository', 'citation', 'people', 'places',
+    'restricted', 'provenance', 'external_links', 'files', 'ai_passes',
+    'merged_from', 'created',
+    'rights', 'physical_location', 'tested_person', 'provider', 'test_type',
+)
+
+# A filename stem ending in a source's id (SPEC §13: `{slug}…_{s-id}.{ext}`).
+FILENAME_SOURCE_ID_RE = re.compile(r'_(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
+
+
+def slugify(text: str) -> str:
+    """Collapse arbitrary text to a lowercase-hyphenated slug (SPEC §13).
+
+    Slugs are mutable and human-facing; only the trailing `_{S-id}` carries
+    machine meaning. We keep ASCII letters and digits, turn every other run of
+    characters into a single hyphen, and trim hyphens off the ends. An empty
+    result (e.g. a filename of only punctuation) falls back to 'source' so a
+    record is always nameable.
+    """
+    text = (text or '').strip().lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return slug or 'source'
+
+
+def retired_source_ids(meta: dict, sid: str) -> frozenset[str]:
+    """The other S-ids in a source record's `aliases:` (lowercased): the ids
+    of sources merged into it (SPEC §9). Its own id is not among them."""
+    out = set()
+    for ref in link_field_refs(meta.get('aliases')):
+        ref = str(ref).strip()
+        if is_valid_id(ref) and id_type_of(ref) == 'S':
+            out.add(normalize_id(ref))
+    out.discard(sid.lower())
+    return frozenset(out)
+
+
+def without_retired_sid(file_path: Path, retired: frozenset[str]) -> Path:
+    """`file_path` with a trailing `_{S-id}` cut off its stem when that id is
+    one the target source retired, so the new name does not carry it."""
+    m = FILENAME_SOURCE_ID_RE.search(file_path.stem)
+    if m and m.group(1).lower() in retired:
+        return file_path.with_name(file_path.stem[:m.start()] + file_path.suffix)
+    return file_path
+
+
+def attachment_base(more_file: Path, meta: dict, record_path: Path, sid: str,
+                    role: str, copy: str | None = None) -> str:
+    """The `{slug}` a documents-root file joining a source is named with.
+
+    SPEC §13 names every file of a source `{slug}[-{copy}][-{role}]_{S-id}`,
+    so the pages of one item sort together and carry the item's name. The
+    slug is the one the source's primary document already carries (its stem
+    without `_{S-id}`, and without the `-{copy}-{role}` its own `files:` entry
+    names when that tail follows the record's slug), or the record's own slug
+    when the primary is a photo (photos are never renamed, so their name is no
+    guide) or is named by its S-id alone. The file's real name is not lost:
+    the caller records it as `original_filename:`.
+
+    Two names are kept, both the recording and transcript skills' deliberate
+    conventions:
+
+      * a file whose name starts with the source's slug and a hyphen:
+        `{slug}-farm.m4a` attached as `audio` files as `{slug}-farm-audio_...`
+        (one session, one prefix, the topic in the name).
+      * on a recording source whose slug is `{session}-audio` (or `-video`,
+        `-recording`: `SESSION_MEDIA_SUFFIXES`, the whisper-pass convention),
+        a file named `{session}` or starting with `{session}-`, so
+        `{session}-farm.m4a` keeps its topic too, and every recording of the
+        session gets a name of its own.
+
+    In both, a name that already ends in what the caller will append
+    (`-{copy}-{role}` or `-{role}`) does not get it twice: `{slug}-back.tif`
+    as `back:c` files as `{slug}-c-back_...`, and so does `{slug}-c-back.tif`.
+
+    Everything else takes the source's slug: a scanner's `scan-0412-p3`, and
+    a short name like `postcard` that merely begins the slug.
+    """
+    record_slug = strip_sid_suffix(record_path.stem, sid)
+    slug = None
+    for entry in meta.get('files') or []:
+        if (files_entry_is_main(entry)
+                and str(entry.get('file') or '').replace('\\', '/').startswith('documents/')):
+            stem = PurePosixPath(str(entry['file'])).stem
+            if _names_something(stem, sid):
+                slug = strip_sid_suffix(stem, sid)
+                # A main file can carry its own `-{copy}-{role}` after the
+                # record's slug (a Find a Grave memorial's main file is
+                # `{slug}-grave-1_…`). That tail names that one file, not the
+                # source, so the next file attached never inherits it. It is
+                # dropped only when what is left is the record's own slug: a
+                # main file named the bare slug (a refiled photo's
+                # `store-front_…` with role `front`) has no tail to drop.
+                bare = _strip_suffix_tail(slug, '', str(entry.get('role') or ''),
+                                          str(entry.get('copy') or '') or None)
+                if bare != slug and bare == record_slug:
+                    slug = bare
+            break
+    if not slug:
+        # A main file named by its S-id alone (`_s-….pdf`) has no slug to
+        # share; the record's own name does.
+        slug = record_slug
+    own = slugify(more_file.stem)
+    prefixes = [slug]
+    for media_suffix in SESSION_MEDIA_SUFFIXES:
+        if slug.endswith(media_suffix) and len(slug) > len(media_suffix):
+            prefixes.append(slug[:-len(media_suffix)])
+    for prefix in prefixes:
+        if own == prefix:
+            return own
+        if own.startswith(prefix + '-'):
+            return _strip_suffix_tail(own, prefix, role, copy)
+    return slug
+
+
+def _strip_suffix_tail(own: str, prefix: str, role: str, copy: str | None) -> str:
+    """`own` without a trailing `-{copy}-{role}` (or `-{role}`) the caller is
+    about to append, so it is never doubled; never cut back past `prefix`."""
+    role_tail = f'-{slugify(role)}' if role else ''
+    tails = [role_tail] if role_tail else []
+    if copy:
+        tails.insert(0, f'-{slugify(copy)}{role_tail}')
+    for tail in tails:
+        if own.endswith(tail) and len(own) - len(tail) >= len(prefix):
+            return own[:-len(tail)]
+    return own
+
+
+def strip_sid_suffix(stem: str, sid: str) -> str:
+    """A filename stem without its trailing `_{S-id}`, slugified."""
+    return slugify(re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE))
+
+
+def _names_something(stem: str, sid: str) -> bool:
+    """Is there a name in `stem` before its `_{S-id}`? Asked before
+    slugifying, since `slugify` turns an empty name into 'source'."""
+    rest = re.sub(rf'_{re.escape(sid)}$', '', stem, flags=re.IGNORECASE)
+    return re.search(r'[a-z0-9]', rest, re.IGNORECASE) is not None
+
+
+def take_undo_copy(path: Path) -> Path:
+    """Copy `path`'s bytes to a private temp file; return the copy's path.
+
+    Removing a keyword again does not give a PDF its old bytes back (exiftool
+    edits a PDF by appending an update), so a run that writes a keyword into
+    a document keeps this copy and puts it back on rollback.
+    """
+    fd, name = tempfile.mkstemp(prefix='fha-undo-', suffix=path.suffix)
+    os.close(fd)
+    try:
+        shutil.copy2(path, name)
+    except OSError:
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def restore_undo_copy(undo_copy: Path, path: Path) -> None:
+    """Put `path` back to the bytes `undo_copy` holds, then drop the copy.
+
+    Raises OSError if the bytes could not be put back; the copy is then KEPT,
+    so the caller's report can name where the original bytes still are.
+    """
+    clear_read_only_bit(path)
+    shutil.copy2(undo_copy, path)
+    undo_copy.unlink(missing_ok=True)
+
+
+def discard_undo_copies(copies) -> None:
+    """Delete undo copies a successful run no longer needs (best-effort)."""
+    for copy in copies:
+        try:
+            Path(copy).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def run_undo_steps(undo: list) -> list[str]:
+    """Run undo steps in reverse, best-effort, and return what could NOT be undone.
+
+    Rollback has to be best-effort (a later step still runs after an earlier
+    one fails) but it must never claim more than it actually did. Each entry
+    is a (description, callable) pair, and the description is written for the
+    archive's owner, so a rollback that cannot finish names exactly what it
+    left behind (a file still renamed, a record still on disk) instead of a
+    silent 'rolled back' that hides a half-undone archive.
+    """
+    failed: list[str] = []
+    for desc, fn in reversed(undo):
+        try:
+            fn()
+        except Exception as undo_exc:
+            failed.append(f'{desc} ({undo_exc})')
+    return failed
+
+
 def is_working_copy(archive_root: str | Path) -> bool:
     """Return True if the archive is in working-copy mode.
 
@@ -11980,12 +12191,56 @@ def write_generated_file(
         # GENERATED file protected from another tool's overwrite.
         if not is_generated_text(existing, prefix=marker_prefix):
             raise GeneratedFileRefused(out_path)
+        # Only the date in the marker would change: leave the file alone, so
+        # its date keeps saying when its content last changed and a quiet
+        # refresh on a new day rewrites nothing. Compared on the exact bytes
+        # (no newline translation, no dropped bytes) so a file that differs
+        # in any other way is still rewritten.
+        try:
+            exact = out_path.read_bytes().decode('utf-8')
+        except (OSError, UnicodeDecodeError):
+            exact = None
+        if exact is not None and not generated_text_differs(exact, content):
+            return out_path
     if not out_path.parent.is_dir():
         if not create_parents:
             raise GeneratedFileParentMissing(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
     write_text_exact_atomic(out_path, content)
     return out_path
+
+
+def generated_marker_date() -> str:
+    """Today's date as a GENERATED marker carries it (YYYY-MM-DD). One home,
+    so a test can move the clock for every marker writer at once."""
+    return datetime.date.today().isoformat()
+
+
+# The date in a GENERATED marker line: the whole-file header
+# (`<!-- GENERATED by fha views timeline on 2026-11-20 ...`), a region's BEGIN
+# marker (`<!-- GENERATED-BEGIN sources-index by sources-index on ...`), and
+# the visible line an HTML view repeats it in. Only lines that START with one
+# of these are masked, so a date inside record text always counts.
+_GENERATED_DATE_RE = re.compile(
+    r'^([ \t]*(?:<!--[ \t]*GENERATED\b|<p class="view-generated">)[^\n]*? on )'
+    r'\d{4}-\d{2}-\d{2}',
+    re.MULTILINE)
+
+
+def generated_text_differs(old: str, new: str) -> bool:
+    """True when `new` says something `old` does not, ignoring the date in
+    every GENERATED marker line.
+
+    The one write test shared by the whole-file writer
+    (`write_generated_file`) and the region writer (`write_generated_region`):
+    a regenerated view whose only difference is today's date is not written.
+    Without it the first refresh of a new day rewrote every view and every
+    profile region by one line, which made the run slow and buried the real
+    changes in a commit of thousands of files. The marker date therefore
+    means "content last changed on", not "last regenerated on"."""
+    if old == new:
+        return False
+    return _GENERATED_DATE_RE.sub(r'\1', old) != _GENERATED_DATE_RE.sub(r'\1', new)
 
 
 # ── GENERATED-BEGIN/END regions (SPEC §21b, #76) ──────────────────────────────
@@ -12051,7 +12306,7 @@ def render_generated_region(
     inside the region, not just a comment framing it.
     """
     begin, end = generated_region_markers(
-        region_name, subcommand, datetime.date.today().isoformat())
+        region_name, subcommand, generated_marker_date())
     if notice is None:
         notice = f'*(Generated by `{subcommand}` - do not edit; regenerate instead.)*'
     parts = [begin, '', notice]
@@ -12081,7 +12336,10 @@ def write_generated_region(
     Uses `replace_section_content` (REPLACE mode, not append): a region is
     rewritten wholesale every time, never accumulated onto. Returns
     `(new_text, created)` - `created` is True only when the heading itself
-    had to be inserted, not merely when the region's content changed.
+    had to be inserted, not merely when the region's content changed. When
+    the only difference is the date in the BEGIN marker, `text` comes back
+    unchanged (`generated_text_differs`), so the caller writes nothing and
+    the date keeps saying when the list last changed.
     """
     lines = text.split('\n')
     bounds = frontmatter_fence_span(lines)
@@ -12090,7 +12348,10 @@ def write_generated_region(
     region_text = render_generated_region(region_name, subcommand, body)
     new_lines, created, _old = replace_section_content(
         lines, body_start, heading, region_text, cr, position='first')
-    return '\n'.join(new_lines), created
+    new_text = '\n'.join(new_lines)
+    if not generated_text_differs(text, new_text):
+        return text, False
+    return new_text, created
 
 
 # ── The profile's summary region (SPEC §16, §21b) ─────────────────────────────
@@ -13112,6 +13373,33 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
         if parsed is not None and parsed['id_type'] == 'P' and parsed['kind'] == 'profile':
             found.add(parsed['id_str'])
     return found
+
+
+def scan_person_merge_survivors(archive_root: str | Path) -> dict[str, str]:
+    """{merged P-id: the person it now counts as}, read from the person files.
+
+    The tree-scan twin of `index_merge_survivors`, for a writer that must not
+    trust a possibly stale index (`fha source merge` asks whether two records
+    are about the same people, and a claim naming a merged record counts for
+    its survivor, SPEC §9). Same rule: `merge_pointer` decides which records
+    are merged, `merge_survivor_map` follows the chain."""
+    root = Path(archive_root)
+    people_dir = root / 'people'
+    if not people_dir.is_dir():
+        return {}
+    pointers: dict[str, str] = {}
+    known: set[str] = set()
+    for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
+        pid = normalize_id(parsed['id_str'])
+        known.add(pid)
+        meta = _person_frontmatter_all(p) or {}
+        target = merge_pointer(meta.get('status'), meta.get('merged_into'))
+        if target:
+            pointers[pid] = target
+    return merge_survivor_map(pointers, known)
 
 
 def find_person_record_path(
@@ -17033,6 +17321,39 @@ def _index_tables_with_path_column(conn: sqlite3.Connection) -> list[str]:
     return out
 
 
+def notes_fts_rowids_by_path(conn: sqlite3.Connection) -> dict[str, list[int]]:
+    """Every `notes_fts` row id, grouped by the file path it holds text for.
+
+    `notes_fts` is an FTS5 table, and FTS5 keeps no index on an ordinary
+    column, so `DELETE ... WHERE path=?` reads the whole table, text and all,
+    every time. On a large archive that one statement, run once per profile,
+    was most of a several-minute `fha views refresh`. Reading the ids once and
+    deleting by rowid (which FTS5 does index) turns each delete into a lookup.
+    Pass the result to `delete_notes_fts_path` for each file.
+
+    The caller must already hold the write lock (`BEGIN IMMEDIATE` inside its
+    `with conn:` block) before calling this. Otherwise an `fha index` rebuild
+    in another process, the workbench beside the CLI for one, can renumber
+    the rows between this read and the deletes, and a stale id would delete
+    another file's search text."""
+    out: dict[str, list[int]] = {}
+    for rowid, path in conn.execute('SELECT rowid, path FROM notes_fts'):
+        out.setdefault(path, []).append(rowid)
+    return out
+
+
+def delete_notes_fts_path(
+    conn: sqlite3.Connection, rowids: dict[str, list[int]], rel: str,
+) -> None:
+    """Delete one file's `notes_fts` rows, found by exact path in `rowids`
+    (from `notes_fts_rowids_by_path`), and forget them there so a second call
+    for the same path in one pass deletes nothing twice. A caller that then
+    inserts the file's new text records the new row id with
+    `rowids.setdefault(rel, []).append(cursor.lastrowid)`."""
+    for rowid in rowids.pop(rel, ()):
+        conn.execute('DELETE FROM notes_fts WHERE rowid=?', (rowid,))
+
+
 def relocate_person_in_index(
     archive_root: Path,
     pid: str,
@@ -17085,6 +17406,9 @@ def relocate_person_in_index(
     manifest_updates: dict[str, float | None] = {}
     try:
         with conn:
+            # Hold the write lock from the start, so the notes_fts row ids
+            # read below cannot be renumbered by another process first.
+            conn.execute('BEGIN IMMEDIATE')
             tables = _index_tables_with_path_column(conn)
             for old, new in moves:
                 old_rel = str(Path(old).relative_to(archive_root))
@@ -17111,7 +17435,7 @@ def relocate_person_in_index(
                     body = read_record(new_research).get('body') or ''
                 except Exception:
                     body = ''
-                conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                delete_notes_fts_path(conn, notes_fts_rowids_by_path(conn), rel)
                 if body.strip():
                     conn.execute(
                         'INSERT INTO notes_fts(path, content) VALUES (?,?)', (rel, body))
@@ -17247,19 +17571,24 @@ def sync_generated_view_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
+                fts_rowids = notes_fts_rowids_by_path(conn)
                 for rel, _pid, _kind in targets_removed:
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     conn.execute('DELETE FROM person_files WHERE path=?', (rel,))
                 for row in targets_written:
                     rel = row['rel']
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every regeneration.
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     if row['body'].strip():
-                        conn.execute(
+                        cur = conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
                             (rel, row['body']))
+                        fts_rowids.setdefault(rel, []).append(cur.lastrowid)
                     if row['is_person_record']:
                         # Her `person_files` row says 'profile' and must keep
                         # saying it: person_files is keyed by (person_id, kind,
@@ -17340,6 +17669,10 @@ def resync_person_profile_rows(
         conn = sqlite3.connect(str(db_path))
         try:
             with conn:
+                # Write lock first: the row ids must not change before the
+                # deletes (see `notes_fts_rowids_by_path`).
+                conn.execute('BEGIN IMMEDIATE')
+                fts_rowids = notes_fts_rowids_by_path(conn)
                 for path in paths:
                     try:
                         rel = str(path.relative_to(archive_root))
@@ -17367,11 +17700,12 @@ def resync_person_profile_rows(
                     # Delete before rewrite: notes_fts is an FTS5 table with no
                     # unique key, so a plain insert would stack a second body
                     # row for the same path on every refresh.
-                    conn.execute('DELETE FROM notes_fts WHERE path=?', (rel,))
+                    delete_notes_fts_path(conn, fts_rowids, rel)
                     if body.strip():
-                        conn.execute(
+                        cur = conn.execute(
                             'INSERT INTO notes_fts(path, content) VALUES (?,?)',
                             (rel, body))
+                        fts_rowids.setdefault(rel, []).append(cur.lastrowid)
                     try:
                         resynced_mtimes[Path(rel).as_posix()] = path.stat().st_mtime
                     except OSError:

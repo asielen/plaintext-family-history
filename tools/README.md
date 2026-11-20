@@ -54,7 +54,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `scaffold.py` | fha install / fha update-tools: vendor the operating layer into an archive; also writes manifest.json |
 | `serve.py` | fha serve: the local browser workbench (TOOLING_INTERFACE §1b) |
 | `site.py` | fha site: the static-HTML family explorer (TOOLING §12) |
-| `source.py` | fha source: deterministic source-record write-backs (TOOLING §3c sibling) |
+| `source.py` | fha source: deterministic source-record write-backs, and merging two records of one piece of evidence (TOOLING §3d) |
 | `stubs.py` | fha stubs: mint person stubs for unresolved P-id references |
 | `views.py` | fha views: generate view files from the index |
 | `wikitree.py` | fha wikitree: render a curated profile to the WikiTree dialect |

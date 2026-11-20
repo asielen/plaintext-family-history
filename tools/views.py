@@ -1264,7 +1264,8 @@ def _sources_index_region_body(by_type: dict[str, list[sqlite3.Row]]) -> str:
 
 
 def _generate_sources_index_person(
-    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
+    conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md',
+    written: set[Path] | None = None,
 ) -> Path | None:
     """Refresh the person's OWN `## Sources` GENERATED-BEGIN/END region in
     place; return the profile path written, or None.
@@ -1285,6 +1286,10 @@ def _generate_sources_index_person(
     `fmt='html'` is refused by the caller before this is ever reached (no
     separate file means no HTML twin to build) - this function only ever
     writes `.md` (the profile IS markdown either way).
+
+    `written`, when given, collects the profile path only when the file was
+    actually rewritten, so a batch re-syncs the index for changed profiles
+    alone instead of every one it looked at.
     """
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
@@ -1307,6 +1312,8 @@ def _generate_sources_index_person(
     if new_text == text:
         return profile_p   # already current - nothing to write, still a success
     write_text_exact_atomic(profile_p, reapply_newline(new_text, text))
+    if written is not None:
+        written.add(profile_p)
     return profile_p
 
 
@@ -1540,10 +1547,12 @@ def _summary_records_line(ctx: dict | None, pid: str) -> str:
 
 def _generate_summary_person(
     conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md',
-    completeness: dict | None = None,
+    completeness: dict | None = None, written: set[Path] | None = None,
 ) -> Path | None:
     """Write the person's summary region (`_lib.write_summary_region`);
     return the profile path when it is current afterwards, else None.
+    `written`, when given, collects the path only when the file was rewritten
+    (see `_generate_sources_index_person`).
 
     Like `## Sources`, the region lives inside the profile, so there is no
     companion file and no HTML twin. A profile whose summary lines a human
@@ -1575,6 +1584,8 @@ def _generate_summary_person(
               '(no GENERATED markers) - left as they are.')
     if status == 'written':
         write_text_exact_atomic(profile_p, reapply_newline(new_text, text))
+        if written is not None:
+            written.add(profile_p)
     return profile_p
 
 
@@ -4039,10 +4050,11 @@ def run_sources_index(
             # --all-curated stays curated-tier-only by its own name, matching
             # timeline/draft-queue's batch scope; a stub's region is refreshed
             # one at a time (fha views sources-index <P-id>).
+            written: set[Path] = set()
             for pid in _view_eligible_curated_ids(conn, archive_root):
                 out = _generate_or_warn(
                     f'sources-index for {pid}', _generate_sources_index_person,
-                    conn, pid, archive_root, fmt=fmt,
+                    conn, pid, archive_root, fmt=fmt, written=written,
                 )
                 if out:
                     print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -4059,7 +4071,7 @@ def run_sources_index(
                 # `fha views` call in the same close-out sequence does not
                 # refuse on "index is stale" (see that function's docstring).
                 sync = resync_person_profile_rows(
-                    archive_root, [Path(c) for c in changed])
+                    archive_root, [Path(c) for c in changed if Path(c) in written])
                 return _batch_view_result(
                     count, skipped, changed, 'sources-index', sync)
             if not skipped:
@@ -4135,9 +4147,11 @@ def run_summary(
         records = _summary_completeness_context(conn, archive_root)
         if all_curated:
             count = skipped = 0
+            written: set[Path] = set()
             for pid in _view_eligible_curated_ids(conn, archive_root):
                 out = _generate_or_warn(f'summary for {pid}', _generate_summary_person,
-                                        conn, pid, archive_root, completeness=records)
+                                        conn, pid, archive_root, completeness=records,
+                                        written=written)
                 if out:
                     print(f'  summary       ->{out.relative_to(archive_root)}')
                     changed.append(str(out))
@@ -4146,7 +4160,8 @@ def run_summary(
                     skipped += 1
             print(f'Checked {count} summary region(s).')
             if count:
-                sync = resync_person_profile_rows(archive_root, [Path(c) for c in changed])
+                sync = resync_person_profile_rows(
+                    archive_root, [Path(c) for c in changed if Path(c) in written])
                 return _batch_view_result(count, skipped, changed, 'summary', sync)
             if not skipped:
                 return _empty_curated_views_result(conn)
@@ -4533,6 +4548,10 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         count = 0
         skipped = 0
         profiles_touched: list[Path] = []
+        # The profiles actually rewritten: only these need their search text
+        # re-synced. Re-reading every profile looked at made a quiet refresh
+        # on a large archive take minutes.
+        profiles_written: set[Path] = set()
         companion_ids = set(person_ids)
         for pid in list(person_ids) + region_only_ids:
             for fn, label in (_per_person if pid in companion_ids else ()):
@@ -4555,7 +4574,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
             if 'md' in fmt_passes:
                 out = _generate_or_warn(
                     f'sources-index for {pid}', _generate_sources_index_person,
-                    conn, pid, archive_root, fmt='md',
+                    conn, pid, archive_root, fmt='md', written=profiles_written,
                 )
                 if out:
                     print(f'  sources-index ->{out.relative_to(archive_root)}')
@@ -4569,6 +4588,7 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                 out = _generate_or_warn(
                     f'summary for {pid}', _generate_summary_person,
                     conn, pid, archive_root, completeness=records,
+                    written=profiles_written,
                 )
                 if out:
                     print(f'  summary       ->{out.relative_to(archive_root)}')
@@ -4596,8 +4616,9 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         companion_writes = [Path(c) for c in changed if Path(c) not in profiles_touched]
         if count and 'md' in fmt_passes and companion_writes:
             sync = _sync_written_views(archive_root, conn, companion_writes, 'files')
-        if count and 'md' in fmt_passes and profiles_touched:
-            profile_sync = resync_person_profile_rows(archive_root, profiles_touched)
+        if count and 'md' in fmt_passes and profiles_written:
+            profile_sync = resync_person_profile_rows(
+                archive_root, [p for p in profiles_touched if p in profiles_written])
             if profile_sync != 'indexed' and sync == 'indexed':
                 sync = profile_sync
         result = _batch_view_result(count, skipped, changed, 'view', sync)
