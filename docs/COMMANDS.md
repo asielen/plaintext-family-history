@@ -195,6 +195,8 @@ Build always-current summary pages from your records.
   fha views summary <p-id>         Born / Died / Married / Parents / Children
                                    lines under the person's name
   fha views draft-queue <p-id>     Accepted facts not yet written into the bio
+  fha views places                 One note per place, for Obsidian
+                                   (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
 
 Add --format html (refresh also takes --format both) for a printable
@@ -279,6 +281,26 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--format` `{md,html}` | md (default): the companion .md beside the profile. html: a standalone printable page under generated/views/ (private and unredacted; it carries a visible not-for-publication banner; share through `fha site`). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
+### `fha views places`
+
+Write one note per place in places/, for Obsidian (links: obsidian only).
+
+```text
+With links: obsidian in fha.yaml, write one generated note per place
+in places/ (places/{name}_{l-id}.md), built from places/places.yaml,
+so Obsidian can follow a place link and show what mentions the place.
+A place renamed in places.yaml gets a note under its new name, the old
+note is removed, and links to the old name are pointed at the new one.
+places.yaml stays the record; edit the place there, never the note.
+With links: id (the default) nothing is written.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `--dry-run` | Show what would be written, removed and re-pointed, without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
 ### `fha views brackets`
 
 Check couple-folder bracket lists, Ahnentafel placement, and direct-line stubs (W103/W110/W119/W120).
@@ -319,7 +341,8 @@ Delete every generated view file (companion .md + generated/views/ HTML); they r
 ```text
 Delete all GENERATED-headed view files: companion .md files (timeline,
 draft-queue, and any old couple-folder sources-index.md) from the
-people/ tree, and single-file HTML views under generated/views/. Uses the <!-- GENERATED
+people/ tree, single-file HTML views under generated/views/, and the
+place notes Obsidian link mode writes in places/. Uses the <!-- GENERATED
 … --> whole-file header as the sole signal, file by file; never touches
 profiles or manually authored files, including a profile whose own
 ## Sources section is a GENERATED-BEGIN/END region: that region is
@@ -341,7 +364,8 @@ Regenerate all content views for every curated person.
 ```text
 Regenerate timeline and draft-queue for every curated person, and
 refresh every person's own ## Sources section and summary lines
-(stubs included).
+(stubs included). With links: obsidian in fha.yaml, the place notes
+are rebuilt first, as `fha views places` does.
 --format html regenerates the standalone generated/views/ pages
 instead; --format both writes the two sets in one pass.
 Requires a fresh .cache/index.sqlite (run `fha index` first).
@@ -1864,13 +1888,15 @@ with the name beside the ID, so a record says who it is about.
   fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
   fha normalize-links --obsidian --write
-                                 Also point each person, source and claim link
-                                 at the record's file, so Obsidian can follow it
+                                 Also point each person, source, claim and
+                                 place link at its file, so Obsidian can
+                                 follow it
 
 Runs as a preview by default; a real write needs --write. Your original names
 are kept as aliases, so the shortened links still resolve. With links: obsidian
-in fha.yaml, every run also does what --obsidian does. Place links keep their
-ID form: places have no files of their own yet.
+in fha.yaml, every run also does what --obsidian does. A place link names its
+place note once `fha views places` has written one; until then it keeps its
+ID form.
 ```
 
 | Argument | What it does |
@@ -1879,7 +1905,7 @@ ID form: places have no files of their own yet.
 | `--write` | Apply the rewrites (default is a dry-run preview) |
 | `--dry-run` | Preview without writing (already the default; accepted so the always-preview habit works here too) |
 | `--quiet` | Suppress the per-file diff (show only the summary) |
-| `--obsidian` | Point each person, source and claim link at the record's file (Obsidian link mode); already on when fha.yaml says links: obsidian |
+| `--obsidian` | Point each person, source, claim and place link at the record's file (Obsidian link mode); already on when fha.yaml says links: obsidian |
 
 ## `fha backup`
 

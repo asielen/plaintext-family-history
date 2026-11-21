@@ -147,10 +147,10 @@
 #   Obsidian finds a note by its file name. Turn this on and the tools write
 #   links by file name instead ([[hartley__thomas_edward_p-de957bcda1|Thomas
 #   Edward Hartley]]); the file name ends in the ID, so every fha tool still
-#   reads it. After turning it on, run `fha normalize-links --obsidian --write`
-#   once to rewrite the links already in your records. Place links keep the
-#   ID form: places have no files of their own yet. docs/USING_WITH_OBSIDIAN.md
-#   has the whole story.
+#   reads it. After turning it on, run `fha index`, then `fha views places`
+#   (one generated note per place, for place links to open), then
+#   `fha normalize-links --obsidian --write` once to rewrite the links
+#   already in your records. docs/USING_WITH_OBSIDIAN.md has the whole story.
 #
 # links: id         # id (the default) | obsidian
 

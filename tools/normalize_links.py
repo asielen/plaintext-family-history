@@ -7,9 +7,9 @@ normalize_links.py - fha normalize-links: settle citations to their canonical fo
                                  operating instructions tell agents to always pass)
   fha normalize-links --write    Apply them, showing the same diff
   fha normalize-links --obsidian [--write]
-                                 Also point every person, source and claim
-                                 link at the record's file (SPEC §18 link
-                                 mode), so Obsidian can follow it
+                                 Also point every person, source, claim and
+                                 place link at the record's file (SPEC §18
+                                 link mode), so Obsidian can follow it
 
 `--dry-run --write` together is refused (exit 2): pick one - preview or write.
 
@@ -48,11 +48,12 @@ guessed; an entry that does not resolve is left as written. Nothing else in the 
 One more, with `--obsidian` or whenever fha.yaml says `links: obsidian`:
   (f) a person, source or claim link in prose or frontmatter → the record's
       file stem as the target (`[[hartley__thomas_edward_p-…|Name]]`,
-      `[[letter_s-…|s-…]]`, `[[letter_s-…#Claims|c-…]]`), and a stem left
-      stale by a rename → the current one. `_lib.rewrite_record_links_to_stems`
-      does the work, the same function lint W161 asks. Display text is kept;
-      place links, the claims block, inline code and GENERATED regions are
-      left alone.
+      `[[letter_s-…|s-…]]`, `[[letter_s-…#Claims|c-…]]`), a place link → its
+      place note's stem once `fha views places` has written the note
+      (`[[fairview_l-…|Fairview]]`), and a stem left stale by a rename → the
+      current one. `_lib.rewrite_record_links_to_stems` does the work, the
+      same function lint W161 asks. Display text is kept; the claims block,
+      inline code and GENERATED regions are left alone.
 
 Follows the headless-core Result contract: `run_normalize_links` computes and
 returns a `Result`; `_cmd_normalize_links` renders it and returns the exit code.
@@ -99,6 +100,7 @@ from _lib import (
     LinkWriter,
     load_fha_yaml,
     rewrite_record_links_to_stems,
+    scan_place_note_stems,
     normalize_id,
     read_record,
     read_text_exact,
@@ -691,8 +693,13 @@ def run_normalize_links(
                    'Re-run with --write to apply.',
                    next_step=write_cmd)
     if stems_on:
-        result.add('info', 'Place links ([[l-…]]) keep their ID form: a place has no file of '
-                           'its own yet, so there is no file name for Obsidian to follow.')
+        noted = scan_place_note_stems(archive_root)
+        registered = {r['id'] for r in records if r['id'].startswith('l-')}
+        if registered - set(noted):
+            result.add('info', 'A place link ([[l-…]]) names its place note once the note '
+                               'exists; until then it keeps its ID form. With links: obsidian '
+                               'in fha.yaml, `fha views places` writes a note for every place.',
+                       next_step='fha views places')
         if mode != 'obsidian':
             result.add('info', 'fha.yaml does not say `links: obsidian`, so links the tools '
                                'write from now on will name IDs again. Add the line '
@@ -779,13 +786,15 @@ with the name beside the ID, so a record says who it is about.
   fha normalize-links            Preview the rewrites (dry run, writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
   fha normalize-links --obsidian --write
-                                 Also point each person, source and claim link
-                                 at the record's file, so Obsidian can follow it
+                                 Also point each person, source, claim and
+                                 place link at its file, so Obsidian can
+                                 follow it
 
 Runs as a preview by default; a real write needs --write. Your original names
 are kept as aliases, so the shortened links still resolve. With links: obsidian
-in fha.yaml, every run also does what --obsidian does. Place links keep their
-ID form: places have no files of their own yet."""
+in fha.yaml, every run also does what --obsidian does. A place link names its
+place note once `fha views places` has written one; until then it keeps its
+ID form."""
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -804,8 +813,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument('--quiet', action='store_true',
                    help='Suppress the per-file diff (show only the summary)')
     p.add_argument('--obsidian', action='store_true',
-                   help="Point each person, source and claim link at the record's file "
-                        '(Obsidian link mode); already on when fha.yaml says links: obsidian')
+                   help="Point each person, source, claim and place link at the record's "
+                        'file (Obsidian link mode); already on when fha.yaml says links: obsidian')
     p.set_defaults(func=_cmd_normalize_links)
 
 
