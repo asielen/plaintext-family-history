@@ -652,7 +652,7 @@ Refuses, nothing written: `--file` matches none, several, or a non-photos-root e
 
 | ID | Output |
 |---|---|
-| s-id | record; every asset file (via `fha.yaml`; documents by filename, photos by inventory + keyword); citation sites; claim count by status. An s-id merged into another (in that record's `aliases:`, SPEC §9) says so and shows the kept record, here, under `--related`, and in `--json` (and so in the workbench pickers) |
+| s-id | record; every asset file (via `fha.yaml`; documents by filename, photos by inventory + keyword); citation sites, the source's own links and every link to one of its claims (`[[c-…]]`, `[[s-…#Claims|c-…]]`, the file-name form), each claim site marked with the claim's ID, read by the rule the exports use (`_lib.cited_source_ids`); claim count by status. An s-id merged into another (in that record's `aliases:`, SPEC §9) says so and shows the kept record, here, under `--related`, and in `--json` (and so in the workbench pickers) |
 | p-id | person file, couple folder, claims naming them, photo count (§9), citation sites |
 | c-id | source record and line, status, links in and out |
 | l-id / h-id | record and every reference |
@@ -667,7 +667,7 @@ Ranked, read-only index query, built on `xref` and `cooccur` data. Absent or unr
 
 - **p-id:** relationship edges (type, backing-source count); co-occurring people without an edge (shared-source count, the `cooccur` grouping); recurring places (claim `place_id`/`place_text`); shared entities (occupation/military/membership values, with who shares them); source count; photos via `photo_people` (note when no photoindex). Backs the FAN view and Friends & Family suggestions.
 - **l-id:** claims naming it; their people by frequency; source count; photos geotagged within about 0.002°; micro-places `within:` it.
-- **s-id:** claims by status; people; places; sources corroborating or contradicting its claims (`claim_links`, both ways); sibling sources sharing a person or `repository`.
+- **s-id:** claims by status; people; places; sources corroborating or contradicting its claims (`claim_links`, both ways); sibling sources sharing a person or `repository`; the citation sites the plain `fha find <s-id>` lists. `--json` (and so `/api/find` and the workbench) gives a source hit for an s-id the same sites as a `citations` list of `{path, line, claim}`, `claim` null for a link to the source itself.
 - **c-id:** source, persons, place; claims it corroborates/contradicts (both ways); sibling claims (same person, same type).
 - **h-id:** the people its question is about (`refs:`, from the `hypotheses` index), and claims referencing it (`claims.hypothesis`, SPEC A.4). With no index row, the people come from those claims.
 

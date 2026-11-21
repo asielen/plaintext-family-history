@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c7ce3e4c8ab8a6dcc6dcd94c6dee1348282c88838d2165ce67f6abe9571db3d2",
+      "sha256": "00f4216be8579a2ee673bf51caca85b6d740e4847d6177652dc0f30e058b5663",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -758,7 +758,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "814671876251b2cae90b573dbfec57779b431f467b0556ce364a4dbc5c032fe0",
+      "sha256": "036fdd0956117ad1bd8bcf52dd718b8a38d23553b4b527ce2e2b488db5ef680a",
       "spec_version": "2.19",
       "src": "tools/find.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "5313011da69e28ec08b182e6d26495e86ea77da50e35bdb0b2382fc1c0353074",
+      "sha256": "9ba9411476851237d493ed0e1ab4e4ef5ad03a36abeb160ba76cb319f7e75a39",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -786,7 +786,7 @@
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
-      "sha256": "880b2b69a6bef94ccb2ed6dc63640beebaa43ae79a5d6623641278cea7abe58d",
+      "sha256": "6582cee0e1f48d52d004bd38d4e19a37b7bbbd51a57945537e89b50e03f0e22b",
       "spec_version": "2.19",
       "src": "tools/index.py"
     },
@@ -1193,7 +1193,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "f563b898ac0168bd9744ab77f2b0d1a14477962eb89c338cbe2c9edb3e30c761",
+      "sha256": "2af0cfbe5d69abce48dba79272007b79792f949948e2141bb09760c6278ecb17",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
