@@ -211,6 +211,9 @@ from _lib import (
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
     scan_ids_in_tree,
     scan_person_record_ids,
     yaml_inline,
@@ -3202,6 +3205,26 @@ def run_confirm_merge(
     planned = {path: (before, convert_written_links(before, after, links))
                for path, (before, after) in planned.items()}
 
+    # With links: obsidian, every link that names the merged person, by ID
+    # or by the file name the tombstone rename retires, is pointed at the
+    # survivor across the archive (SPEC §18). Folded into `planned`, so the
+    # preview shows it and the undo journal covers it.
+    link_edits = plan_rename_links(
+        archive_root,
+        rename_link_writer(archive_root, None, [pm], stems={pm: dest.stem},
+                           survivors={pm: ps}),
+        pending={path: after for path, (_before, after) in planned.items()})
+    for edit in link_edits:
+        before = planned[edit.path][0] if edit.path in planned else edit.before
+        planned[edit.path] = (before, edit.after)
+        if edit.path != merged_path:
+            prose_refs -= (len(token_re.findall(edit.before))
+                           - len(token_re.findall(edit.after)))
+    prose_refs = max(prose_refs, 0)
+    result.data['prose_refs_remaining'] = prose_refs
+    links_line = rename_links_message(link_edits, dry_run=dry_run,
+                                      target=f"the survivor's file ({ps_disp})")
+
     # ── Dry-run: the complete, honest preview ───────────────────────────────
     if dry_run:
         result.data['status'] = 'ok'
@@ -3221,79 +3244,92 @@ def run_confirm_merge(
                    f'[dry-run] Would relink {relinked_claims} claim(s) and '
                    f'{relinked_profiles} other record(s); {prose_refs} prose '
                    f'mention(s) of {pm_disp} would remain for gradual cleanup (W107).')
+        if links_line:
+            result.add('info', f'[dry-run] {links_line}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         if has_warnings:
             result.exit_code = EXIT_WARNINGS
         return result
 
     # ── Apply: undo journal, rename last ────────────────────────────────────
-    undo: list = []
+    # Each entry is (what it puts back, how). An entry is registered only
+    # once its step has landed, so the rollback never re-writes a file the
+    # run could not write in the first place (a read-only file would refuse
+    # the restore too and be reported as damage that is not there).
+    undo: list[tuple] = []
 
-    def _rollback_merge() -> None:
-        for fn in reversed(undo):
+    def _rollback_merge() -> list[str]:
+        """Run the journal in reverse; return what could not be put back."""
+        stuck: list[str] = []
+        for what, fn in reversed(undo):
             try:
                 fn()
-            except OSError:
-                pass
+            except OSError as undo_err:
+                stuck.append(f'{what} ({undo_err})')
         result.changed.clear()
+        return stuck
 
-    for path, (before, after) in planned.items():
-        # Register the restore BEFORE writing (the convert_mining pattern).
-        #
-        # Does the atomic writer make this journal unnecessary? Half of it, yes.
-        # The old justification was that "a write that fails partway can still
-        # leave a half-written file" - `write_text_exact_atomic` retires that
-        # one outright: the failing path is left holding its original bytes, so
-        # there is no torn file for the journal to repair. What the journal is
-        # still for is the OTHER files. A merge rewrites many records, and a
-        # failure on record N leaves records 1..N-1 completely and correctly
-        # written - to the survivor's half of a merge the human never
-        # authorised. No writer can undo those; only a replay of their pristine
-        # text can. So the journal stays, and registering the entry before the
-        # write stays too: an atomic write either happened or did not, and a
-        # restore for a write that never happened is a harmless no-op rewrite
-        # of identical bytes.
-        #
-        # The restore itself is atomic for the same reason the write is - a
-        # rollback is exactly when the archive can least afford a second
-        # failure to destroy the record it is rescuing.
-        undo.append(lambda p=path, t=before: write_text_exact_atomic(p, t))
-        try:
-            write_text_exact_atomic(path, reapply_newline(after, before))
-        except OSError as e:
-            _rollback_merge()
-            return _fail(result, 'failed',
-                         f'cannot write {path}: {e}; every earlier write was '
-                         'rolled back - nothing to clean up.')
-
-    # Companion-view deletion sits between the content writes and the rename
-    # (rename stays LAST): each file's bytes are captured for the undo journal
-    # before the unlink, so a mid-apply failure restores them verbatim.
-    for path in view_files:
-        try:
-            original_bytes = path.read_bytes()
-        except OSError as e:
-            _rollback_merge()
-            return _fail(result, 'failed',
-                         f'cannot read {path} before deleting it: {e}; every '
-                         'earlier write was rolled back - nothing to clean up.')
-        undo.append(lambda p=path, b=original_bytes: p.write_bytes(b))
-        try:
-            path.unlink()
-        except OSError as e:
-            _rollback_merge()
-            return _fail(result, 'failed',
-                         f'cannot delete the generated view {path}: {e}; every '
-                         'earlier write was rolled back - nothing to clean up.')
+    def _rolled_back(problem: str) -> Result:
+        stuck = _rollback_merge()
+        if not stuck:
+            return _fail(result, 'failed', f'{problem}; every earlier write was rolled back, '
+                                           'so there is nothing to clean up.')
+        return _fail(result, 'failed',
+                     f'{problem}, and putting things back could not finish. Could not undo: '
+                     + '; '.join(stuck) + '. Those files keep the merge\'s change. Close any '
+                     'program holding them, then put them back from git or a backup '
+                     '(`git checkout -- <file>`) and run `fha lint`.')
 
     try:
-        undo.append(lambda src=dest, back=merged_path: src.rename(back))
-        merged_path.rename(dest)
-    except OSError as e:
-        _rollback_merge()
-        return _fail(result, 'failed',
-                     f'cannot rename {merged_path.name} -> {dest.name}: {e}; '
-                     'every content write was rolled back - nothing to clean up.')
+        for path, (before, after) in planned.items():
+            # The journal is for the OTHER files: the atomic writer leaves a
+            # failing path holding its original bytes, but a failure on
+            # record N leaves records 1..N-1 written to a merge the human
+            # never authorised, and only a replay of their pristine text
+            # undoes that. The restore is atomic too: a rollback is exactly
+            # when the archive can least afford a second failure.
+            try:
+                write_text_exact_atomic(path, reapply_newline(after, before))
+            except OSError as e:
+                return _rolled_back(f'cannot write {path}: {e}')
+            undo.append((f'restore {path.name}',
+                         lambda p=path, t=before: write_text_exact_atomic(p, t)))
+
+        # Companion-view deletion sits between the content writes and the
+        # rename (rename stays LAST): each file's bytes are captured for the
+        # undo journal before the unlink, so a mid-apply failure restores them.
+        for path in view_files:
+            try:
+                original_bytes = path.read_bytes()
+            except OSError as e:
+                return _rolled_back(f'cannot read {path} before deleting it: {e}')
+            try:
+                path.unlink()
+            except OSError as e:
+                return _rolled_back(f'cannot delete the generated view {path}: {e}')
+            undo.append((f'put back {path.name}',
+                         lambda p=path, b=original_bytes: p.write_bytes(b)))
+
+        try:
+            merged_path.rename(dest)
+        except OSError as e:
+            return _rolled_back(f'cannot rename {merged_path.name} -> {dest.name}: {e}')
+        undo.append((f'rename {dest.name} back to {merged_path.name}',
+                     lambda src=dest, back=merged_path: src.rename(back)))
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl+C part-way is put back too: a merge stopped between files would
+        # leave some records naming the survivor and some the merged person.
+        # The exception goes on up, so what was put back is said here.
+        stuck = _rollback_merge()
+        if stuck:
+            print('ERROR: The merge was stopped (Ctrl+C), and putting things back could '
+                  'not finish. Could not undo: ' + '; '.join(stuck) + '. Those files keep '
+                  "the merge's change; put them back from git or a backup and run "
+                  '`fha lint`.', file=sys.stderr)
+        else:
+            print('ERROR: The merge was stopped (Ctrl+C); everything it had written was put '
+                  'back, so nothing changed.', file=sys.stderr)
+        raise
 
     for path in planned:
         if path != merged_path:
@@ -3319,6 +3355,8 @@ def run_confirm_merge(
     result.add('info',
                f'Relinked {relinked_claims} claim(s) and {relinked_profiles} '
                f'other record(s) to {ps_disp}.')
+    if links_line:
+        result.add('info', links_line)
     if prose_refs:
         result.add('info',
                    f'{prose_refs} prose mention(s) of {pm_disp} remain - they '

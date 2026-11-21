@@ -1105,12 +1105,15 @@ _SOURCES_REGION_RE = re.compile(r'^## Sources\r?\n.*?(?=^## |\Z)', re.M | re.S)
 
 
 class _WithheldLinkNames:
-    """`get(p-id)`: the name of a person this packet withholds, else None.
+    """`get(p-id)`: the names of a person this packet withholds, else None.
 
     The Obsidian link mode writes a bare person link with the name filled in
     (`[[stem|Ada Jane Hartley]]`); reading it back for the copy drops that
     name for these people, so the packet says no more about them than an
-    `id`-mode archive's packet would. "Withheld" is the packet's own rule for
+    `id`-mode archive's packet would. A rename keeps the filled-in name in
+    the link, so every name the person has carried counts: `name:`, each
+    `name_variants:` entry (a restricted one too) and each name in
+    `aliases:`, where a rename keeps the old one. "Withheld" is the packet's own rule for
     people, asked person by person as links turn up: counted as living
     (`person_is_living`, which follows a merge both ways), or restricted in
     their own record in a way this build's flags do not open
@@ -1123,9 +1126,9 @@ class _WithheldLinkNames:
         self.archive_root = archive_root
         self.include_restricted = include_restricted
         self.include_dna = include_dna
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, frozenset[str] | None] = {}
 
-    def get(self, pid: str) -> str | None:
+    def get(self, pid: str) -> frozenset[str] | None:
         if self.conn is None:
             return None
         pid = normalize_id(pid)
@@ -1133,22 +1136,37 @@ class _WithheldLinkNames:
             self._cache[pid] = self._withheld_name(pid)
         return self._cache[pid]
 
-    def _withheld_name(self, pid: str) -> str | None:
+    def _withheld_name(self, pid: str) -> frozenset[str] | None:
         row = self.conn.execute(
             'SELECT name, path FROM persons WHERE id = ?', (pid,)).fetchone()
         if row is None or not row[0]:
             return None
-        name = ' '.join(str(row[0]).split())
+        names = self._names(str(row[0]), row[1])
         if person_is_living(self.conn, pid):
-            return name
+            return names
         if not row[1] or self.archive_root is None:
-            return name                 # no record to read the marker from
+            return names                # no record to read the marker from
         marker, trouble = _record_restriction(self.archive_root / row[1])
         if trouble is not None or not _restricted_included(
                 marker, include_restricted=self.include_restricted,
                 include_dna=self.include_dna):
-            return name
+            return names
         return None
+
+    def _names(self, name: str, rel: str | None) -> frozenset[str]:
+        """The indexed name plus the record's variants and alias names."""
+        names = {' '.join(name.split())}
+        if rel and self.archive_root is not None:
+            try:
+                meta = read_record(self.archive_root / rel)['meta']
+            except Exception:  # noqa: BLE001 (no record to read: the indexed name stands)
+                meta = {}
+            for raw in [*(meta.get('name_variants') or []), *(meta.get('aliases') or [])]:
+                value = raw.get('value') if isinstance(raw, dict) else raw
+                text = ' '.join(str(value or '').split())
+                if text and not id_type_of(text):
+                    names.add(text)
+        return frozenset(names)
 
 
 # The withheld-name rule for the packet being built (set when a build starts).

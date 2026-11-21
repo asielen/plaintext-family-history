@@ -292,6 +292,9 @@ from _lib import (
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
     safe_load_yaml,
     yaml_inline,)
 
@@ -2780,6 +2783,23 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     # form (SPEC §18); the claims block keeps the ID form.
     new_text = convert_written_links(keeper_text, new_text,
                                      link_writer(archive_root, fha_config))
+    # With links: obsidian, every link to the removed record and every claim
+    # link to a claim that moves is pointed at the keeper's file across the
+    # archive (SPEC §18). Planned before anything is written, so the preview
+    # counts what the write does; the keeper's own links join its one write.
+    link_edits = plan_rename_links(
+        archive_root,
+        rename_link_writer(archive_root, fha_config, [retiree_sid],
+                           survivors={retiree_sid: keeper_sid},
+                           claim_sources={c: keeper_sid for c in retiree_cids}),
+        pending={keeper_path: new_text}, gone=[retiree_path])
+    for edit in link_edits:
+        if edit.path == keeper_path:
+            new_text = edit.after
+    other_link_edits = [e for e in link_edits if e.path != keeper_path]
+    links_target = f"the kept record's file ({keeper_shown})"
+    links_step = rename_links_message(link_edits, dry_run=dry_run, target=links_target,
+                                      step=True)
 
     # ── The preview: the same lines for --dry-run and for the real run ──
     result.data['files'] = [{'from': p['alias'], 'to': p['new_alias']} for p in plans]
@@ -2822,6 +2842,8 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
                        + ('; add ' + ', '.join(moved_sections) + f' from {retiree_shown} to '
                           f'the same sections of {keeper_shown}' if moved_sections else ''))
     result.add('info', f'  remove the record {retiree_path.name}')
+    if links_step:
+        result.add('info', f'  {links_step}')
     for text in warnings:
         result.add('warning', text)
     if dry_run:
@@ -2887,6 +2909,14 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         write_text_exact_atomic(keeper_path, new_text)
         undo.append((f'restore {keeper_path.name}',
                      lambda: write_text_exact_atomic(keeper_path, keeper_text)))
+        for edit in other_link_edits:
+            # Registered once the write has landed: an atomic write that
+            # failed left the file as it was, and putting back a file that
+            # could not be written (read-only, held open) would fail again
+            # and be reported as damage that is not there.
+            write_text_exact_atomic(edit.path, edit.after)
+            undo.append((f'restore the links in {edit.path.name}',
+                         lambda e=edit: write_text_exact_atomic(e.path, e.before)))
         retiree_path.unlink()
         undo.append((f'put {retiree_path.name} back',
                      lambda: write_text_exact_atomic(retiree_path, retiree_text)))
@@ -2925,9 +2955,14 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
     result.add('info', f'Merged {retiree_label} into {keeper_label}: {len(plans)} file(s) '
                        f'moved over ({moved} renamed or re-keyworded), {len(retiree_cids)} '
                        f'claim(s) moved, and {retiree_path.name} removed.')
+    links_line = rename_links_message(link_edits, dry_run=False, target=links_target)
+    if links_line:
+        result.add('info', links_line)
     for p in plans:
         if p['dest'] != p['src'] or p['add'] or p['remove']:
             result.note_changed(p['dest'])
+    for edit in other_link_edits:
+        result.note_changed(edit.path)
     result.note_changed(keeper_path)
     result.note_changed(retiree_path)
     photos = any(p['root'] == 'photos' and (p['add'] or p['remove']) for p in plans)

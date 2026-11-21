@@ -334,6 +334,12 @@ from _lib import (
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
+    plan_rename_links,
+    rename_link_writer,
+    rename_links_message,
+    write_rename_links,
+    rename_links_stuck,
+    rename_links_stuck_text,
     yaml_edtf,
     yaml_inline,
     safe_load_yaml,
@@ -2334,6 +2340,26 @@ def run_rename(
         new_folder_name = None
         new_folder = None
 
+    # ── Links that name the old file (links: obsidian, SPEC §18) ─────────────
+    # Planned now, before anything moves, so the preview and the write count
+    # the same links. The profile's own links are folded into its one write;
+    # every other file is written after the renames, inside the same undo.
+    link_edits = []
+    if renaming_file:
+        link_edits = plan_rename_links(
+            archive_root,
+            rename_link_writer(archive_root, None, [pid], stems={pid: new_path.stem},
+                               names={pid: clean_new}),
+            pending={path: new_text})
+    for edit in [e for e in link_edits if e.path == path]:
+        new_text = edit.after
+    moved_files = {path: new_path}
+    if renaming_research:
+        moved_files[old_research_path] = new_research_path
+    other_link_edits = [e._replace(path=moved_files.get(e.path, e.path))
+                        for e in link_edits if e.path != path]
+    links_line = rename_links_message(link_edits, dry_run=dry_run)
+
     # ── Plain-words plan (both --dry-run and the live run's messages use it) ──
     # A re-file (a new --surname on the same name) leaves name: as it is.
     steps = ([f're-file under its corrected file name (name: stays {clean_new})']
@@ -2386,37 +2412,28 @@ def run_rename(
         result.add('info', f'[dry-run] Would rename {label}:')
         for step in steps:
             result.add('info', f'  - {step}')
+        if links_line:
+            result.add('info', f'[dry-run] {links_line}')
         result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
         return result
 
     # ── Live apply: frontmatter, then the two file renames, reversible ───────
     wrote_frontmatter = moved_file = moved_research = False
-    try:
-        write_text_exact_atomic(path, reapply_newline(new_text, text))
-        wrote_frontmatter = True
-        if renaming_file:
-            path.rename(new_path)
-            moved_file = True
-        if renaming_research:
-            # old_research_path may itself have just moved if it sits at the
-            # SAME name as the profile's own path would (never true in
-            # practice - research filenames always differ from the profile's -
-            # but the rename targets are computed from the pre-move paths,
-            # which stay valid since only the PROFILE file moved above).
-            old_research_path.rename(new_research_path)
-            moved_research = True
-    except OSError as e:
-        # Unwind what completed, in reverse - the same promise
-        # promote_person_record makes for its own multi-step write.
-        # `profile_path` tracks where the record ACTUALLY is as rollback
-        # proceeds (mirrors promote_person_record's identical bookkeeping):
-        # the file-rename-undo below only moves it back to `path` if that
-        # undo itself succeeds, so the frontmatter-undo write must target
-        # wherever the record really sits, never blindly `path` - writing to
-        # an absent `path` after a failed move-back would create a SECOND
-        # file there instead of restoring the one that already exists at
-        # new_path.
+
+    def _unwind(exc: BaseException) -> list[str]:
+        """Undo what completed, in reverse (the promise promote_person_record
+        makes for its own multi-step write), and return what could not be
+        undone. `profile_path` tracks where the record ACTUALLY is as the
+        rollback proceeds: the file-rename-undo only moves it back to `path`
+        if that undo itself succeeds, so the frontmatter-undo write targets
+        wherever the record really sits, never blindly `path` (writing to an
+        absent `path` after a failed move-back would create a SECOND file
+        there). Link files `write_rename_links` could not put back are named
+        too, so no message claims a clean undo that did not happen."""
         rollback_notes: list[str] = []
+        stuck = rename_links_stuck(exc)
+        if stuck:
+            rollback_notes.append(rename_links_stuck_text(stuck, archive_root))
         profile_path = new_path if moved_file else path
         try:
             if moved_research:
@@ -2434,8 +2451,40 @@ def run_rename(
                 write_text_exact_atomic(profile_path, text)
         except OSError as undo_err:
             rollback_notes.append(f'could not undo the frontmatter edit ({undo_err})')
-        detail = ('; '.join(rollback_notes) + ' - run `fha lint` to check the record'
-                 ) if rollback_notes else 'every completed step was undone'
+        return rollback_notes
+
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+        wrote_frontmatter = True
+        if renaming_file:
+            path.rename(new_path)
+            moved_file = True
+        if renaming_research:
+            # old_research_path may itself have just moved if it sits at the
+            # SAME name as the profile's own path would (never true in
+            # practice: research filenames always differ from the profile's,
+            # and the rename targets are computed from the pre-move paths,
+            # which stay valid since only the PROFILE file moved above).
+            old_research_path.rename(new_research_path)
+            moved_research = True
+        # Last: on a failure it puts its own files back before raising, so
+        # the unwind below finds every other file as this run left it.
+        for linked in write_rename_links(other_link_edits):
+            result.note_changed(linked)
+    except (KeyboardInterrupt, SystemExit) as e:
+        # Ctrl+C part-way is put back too: stopped between the file rename
+        # and the links, the record would sit under its new name with every
+        # link still naming the old one. The exception goes on up, so what
+        # was done is said here.
+        notes = _unwind(e)
+        detail = ('; '.join(notes) + '. Run `fha lint` to check the record'
+                  ) if notes else 'every completed step was undone, so nothing changed'
+        print(f'ERROR: Renaming {label} was stopped (Ctrl+C); {detail}.', file=sys.stderr)
+        raise
+    except OSError as e:
+        notes = _unwind(e)
+        detail = ('; '.join(notes) + '. Run `fha lint` to check the record'
+                  ) if notes else 'every completed step was undone'
         return _refuse_result(
             result, 'refused',
             f'Renaming {label} failed partway ({e}); {detail}. Nothing is left half-renamed '
@@ -2474,6 +2523,8 @@ def run_rename(
             f'{len(stale_companions)} stale companion(s) deleted: '
             + ', '.join(s.name for s in stale_companions))
     result.add('info', f'Renamed {fmt_id_display(pid)}: ' + '; '.join(changed_bits), path=final_path)
+    if links_line:
+        result.add('info', links_line)
     if kept_note:
         result.add('info', kept_note[0].upper() + kept_note[1:] + '.', path=final_path)
     if variant_note and keep_variant:
