@@ -636,17 +636,22 @@ def _with_nsfx(display: str, given_slot: str, surname: str,
             surname)
 
 
-def _person_filename(given: str, surname: str, pid: str) -> str:
+def _person_filename(given: str, surname: str, pid: str, *,
+                     no_surname: bool = False) -> str:
     """`{surname}__{given}_{P-id}.md` per the stub grammar (stubs.py, SPEC §13).
 
-    A surname-less person leads with the double underscore (`__caesar_P-….md`);
-    a person with no NAME at all files as `unknown__unknown_{P-id}.md`; and a
-    person with a surname but no given name (`1 NAME /Dodson/`) takes
-    'unknown' in the given slot rather than a second copy of the surname -
-    the same answer `_lib.stub_filename` gives for that name."""
+    A NAME with no surname in it (`1 NAME Caesar`) says nothing about one,
+    so the slot reads `unknown` (`unknown__caesar_P-….md`), as `fha person
+    new` files the same name. Only a NAME that marks the surname empty
+    (`1 NAME Caesar //`, `no_surname`) leads with the bare double underscore
+    (`__caesar_P-….md`), SPEC §13's no-surname form. A person with no NAME at
+    all files as `unknown__unknown_{P-id}.md`; and a person with a surname
+    but no given name (`1 NAME /Dodson/`) takes 'unknown' in the given slot
+    rather than a second copy of the surname, the same answer
+    `_lib.stub_filename` gives for that name."""
     if not given and not surname:
         return f'unknown__unknown_{pid}.md'
-    surname_slot = _name_slot(surname) if surname else ''
+    surname_slot = _name_slot(surname) if surname else ('' if no_surname else 'unknown')
     given_slot = _name_slot(given) if given else 'unknown'
     return f'{surname_slot}__{given_slot}_{pid}.md'
 
@@ -1738,7 +1743,8 @@ Next: fha index, then fha lint."""
 
 def _planned_stub_path(plan: ImportPlan, stub: _PersonStub) -> Path:
     return (plan.archive_root / 'people' / 'stubs'
-            / _person_filename(stub.given, stub.surname, stub.pid))
+            / _person_filename(stub.given, stub.surname, stub.pid,
+                               no_surname=stub.recorded_surname == ''))
 
 
 def _missing_ancestors(path: Path, root: Path) -> list[Path]:

@@ -110,6 +110,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     index_merge_survivors,
+    recorded_surname,
     living_carried_to_survivors,
     restricted_with_survivors,
     fold_accents,
@@ -288,7 +289,8 @@ def _same_word(a: str, b: str) -> bool:
     return fold_accents(a.rstrip('.,')).lower() == fold_accents(b.rstrip('.,')).lower()
 
 
-def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
+def _gedcom_name(name: str, surname: str | None, *,
+                 no_surname_recorded: bool = False) -> tuple[str, str | None]:
     """Render a person name as GEDCOM `Given /Surname/` (+ NSFX suffix).
 
     `surname` is the index's `persons.surname`, which `fha index` reads by
@@ -299,9 +301,14 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     cases:
 
       - None (no usable name, or an old index): split `name` the same way.
-      - '' : the person has no surname - a one-word name, or a recorded
-        `surname: ""` ("Jon Thorsson") - so the whole suffix-stripped name is
-        the given part (`Jon Thorsson //`, `Henry // VII`).
+      - '' : no surname is read from the name. "Not known" and "none" stay
+        different (SPEC §13), and in GEDCOM an empty slash field (`Cher //`)
+        says "no surname". So a one-word name with nothing recorded (the
+        surname is just not known) is written with no slashes at all
+        (`1 NAME Cher`, `1 NAME Henry VII`), and the empty field is written
+        only for a recorded `surname: ""` (`no_surname_recorded`: `Cher //`,
+        `Jon Thorsson //`, `Henry // VII`). A name of two words or more
+        reads '' only from a recorded `surname: ""`.
       - a surname: matched as a trailing word run of the name, first with
         the suffix still on (a `surname: XI` on "Jinping XI" says XI IS the
         surname, so `Jinping /XI/`), then without it (`Roy /Dodson/ Jr`).
@@ -333,13 +340,21 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
         return f'{field} {tail}' if tail else field
 
     sn = _name_text(_escape(surname)) if surname else ''
+    def bare(given: str, tail: str | None) -> str:
+        # No slash field: the surname is not known, not absent.
+        return f'{given} {tail}' if tail else given
+
     if surname is None or (surname and is_placeholder_name(sn)):
         # No surname read, or a placeholder standing in for one ("Unknown"
         # from an old index): split the name itself.
         if len(core) <= 1:
-            return compose(core[0], '', raw_suffix), raw_suffix
+            if not name:
+                return compose(core[0], '', raw_suffix), raw_suffix
+            return bare(core[0], raw_suffix), raw_suffix
         return compose(' '.join(core[:-1]), core[-1], raw_suffix), raw_suffix
     if not sn:
+        if len(core) <= 1 and not no_surname_recorded:
+            return bare(' '.join(core), raw_suffix), raw_suffix
         return compose(' '.join(core), '', raw_suffix), raw_suffix
 
     sn_tokens = sn.split()
@@ -353,6 +368,25 @@ def _gedcom_name(name: str, surname: str | None) -> tuple[str, str | None]:
     if len(core) >= n and all(_same_word(p, t) for p, t in zip(core[-n:], sn_tokens)):
         return compose(' '.join(core[:-n]), ' '.join(core[-n:]), raw_suffix), raw_suffix
     return compose(' '.join(core), sn, raw_suffix), raw_suffix
+
+
+def _recorded_no_surname_ids(archive_root: Path, rows: list) -> set[str]:
+    """The people the index reads no surname for whose record says so with
+    `surname: ""` (SPEC §13). The index stores '' for both a one-word name
+    (surname not known) and a recorded "no surname", so only the record can
+    tell them apart, and only those rows are read. A record that cannot be
+    read counts as "not known", which writes no slashes."""
+    out: set[str] = set()
+    for row in rows:
+        if row['surname'] != '' or not row['path']:
+            continue
+        try:
+            meta = read_record(archive_root / row['path'])['meta']
+        except Exception:  # noqa: BLE001 (unreadable: read as "not known")
+            continue
+        if recorded_surname(meta) == '':
+            out.add(row['id'])
+    return out
 
 
 # ── Graph traversal ─────────────────────────────────────────────────────────────
@@ -826,9 +860,12 @@ def _emit_individual(
     src_xref: dict[str, str], place_cache: dict[str, str],
     include_living: bool, restricted_persons: set[str] = frozenset(),
     with_ids: bool = True,
+    no_surname_ids: set[str] = frozenset(),
 ) -> list[str]:
     """One INDI record. `with_ids` False (a `--basic` export) leaves out the
-    REFN line, the archive id another program would otherwise keep."""
+    REFN line, the archive id another program would otherwise keep.
+    `no_surname_ids` are the people whose record says `surname: ""`
+    (`_gedcom_name`)."""
     pid = person['id']
     redacted = _is_redacted(person, include_living, restricted_persons)
     lines = [f'0 @{xref}@ INDI']
@@ -836,7 +873,8 @@ def _emit_individual(
     if redacted:
         lines.append(f'1 NAME {_redacted_name(person, restricted_persons)}')
     else:
-        name_field, suffix = _gedcom_name(person['name'], person['surname'])
+        name_field, suffix = _gedcom_name(person['name'], person['surname'],
+                                          no_surname_recorded=pid in no_surname_ids)
         lines.append(f'1 NAME {name_field}')
         if suffix:
             lines.append(f'2 NSFX {suffix}')
@@ -1078,12 +1116,14 @@ def _gedcom_payload(
 
         place_cache: dict[str, str] = {}
         lines: list[str] = _emit_header()
+        no_surname_ids = _recorded_no_surname_ids(
+            archive_root, [persons[p] for p in included])
 
         for pid_ in sorted(included):
             lines += _emit_individual(
                 persons[pid_], person_xref[pid_], conn, vitals, person_fams,
                 child_fam, fam_xref, src_xref, place_cache, include_living,
-                restricted_persons, with_ids=not basic,
+                restricted_persons, with_ids=not basic, no_surname_ids=no_surname_ids,
             )
         for key, children in families:
             lines += _emit_family(

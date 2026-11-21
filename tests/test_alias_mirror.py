@@ -3,8 +3,9 @@ test_alias_mirror.py - a person's names are listed in their `aliases:`.
 
 Obsidian offers a note while the owner types `[[` by searching file names and
 each note's frontmatter `aliases:`. SPEC §9 and §18 say a person's `name:` and
-public `name_variants:` are mirrored there, after the ID, so typing `[[Tom`
-finds Thomas Edward Hartley. These tests pin that rule where it is written:
+public other names (`name_variants:`, `name_at_birth:`, `married_name:` and
+`also_known_as:`) are mirrored there, after the ID, so typing `[[Tom` finds
+Thomas Edward Hartley and typing a nickname or a maiden name finds him too. These tests pin that rule where it is written:
 
   - the shared rule itself (`_lib.person_alias_mirror`, `sync_person_aliases`);
   - every verb that writes a name: `fha person new`, `fha person rename`
@@ -12,7 +13,7 @@ finds Thomas Edward Hartley. These tests pin that rule where it is written:
     survivor of `fha confirm merge`, and `fha lint --fix-ids`;
   - the backfill: lint W111 names a record whose mirror is behind, and
     `fha lint --fix-aliases` brings it up to date (dry run first);
-  - privacy: a restricted name variant is never written into `aliases:`, is
+  - privacy: a restricted name, in any of those fields, is never written into `aliases:`, is
     taken out if it is there, and a packet copy of a synced profile does not
     carry it;
   - the alias-clash check reports two people of one name once, mirrored or
@@ -333,7 +334,7 @@ class BackfillTests(unittest.TestCase):
             extra='name_variants:\n  - {value: Quenby Talbot, restricted: true}\n'))
         _, found = self._w111()
         self.assertEqual(len(found), 1)
-        self.assertIn('restricted name variant', found[0].text)
+        self.assertIn('restricted name', found[0].text)
         self.assertNotIn('Quenby', found[0].text)
         self._w111(fix_aliases=True)
         self.assertEqual(read_record(path)['meta']['aliases'], [PID, 'Thomas Edward Hartley'])
@@ -414,6 +415,158 @@ class ExportPrivacyTests(unittest.TestCase):
         self.assertIsNotNone(redacted)
         self.assertNotIn('Quenby', redacted[0])
         self.assertEqual(_aliases(redacted[0]), [PID, 'Thomas Edward Hartley', 'T. E. Hartley'])
+
+
+
+class OtherNameFieldTests(unittest.TestCase):
+    """A nickname, a birth name and a married name are mirrored too (SPEC §9).
+
+    Each field may be one string, a list, or hold `{value:, restricted:}`
+    entries. A restricted value never reaches `aliases:`, and no output line
+    names one."""
+
+    PRIVATE = 'Quenby Talbot'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        self.people = self.root / 'people' / 'stubs'
+        self.people.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_mirror_lists_every_name_field_in_record_order(self):
+        meta = {'name': 'Margaret A. Cole',
+                'name_variants': ['Maggie Cole'],
+                'name_at_birth': 'Margaret Ann Cole',
+                'married_name': {'value': 'Margaret Hartley'},
+                'also_known_as': ['Peggy', 'maggie cole']}
+        self.assertEqual(person_alias_mirror(meta),
+                         ['Margaret A. Cole', 'Maggie Cole', 'Margaret Ann Cole',
+                          'Margaret Hartley', 'Peggy'])
+
+    def test_one_string_also_known_as_is_mirrored(self):
+        self.assertEqual(person_alias_mirror({'name': 'Edith Hartley', 'also_known_as': 'Edie'}),
+                         ['Edith Hartley', 'Edie'])
+
+    def test_restricted_values_in_every_field_are_left_out(self):
+        for field in ('also_known_as', 'name_at_birth', 'married_name'):
+            for value in ({'value': self.PRIVATE, 'restricted': True},
+                          [{'value': self.PRIVATE, 'restricted': 'by-request'}]):
+                with self.subTest(field=field, value=value):
+                    meta = {'name': 'Edith Hartley', field: value}
+                    self.assertEqual(person_alias_mirror(meta), ['Edith Hartley'])
+
+    def test_a_name_restricted_in_one_field_is_not_mirrored_from_another(self):
+        meta = {'name': 'Edith Hartley',
+                'also_known_as': [self.PRIVATE],
+                'name_variants': [{'value': self.PRIVATE, 'restricted': True}]}
+        self.assertEqual(person_alias_mirror(meta), ['Edith Hartley'])
+
+    def test_sync_adds_the_nickname_and_takes_a_restricted_birth_name_out(self):
+        text = _person(f'aliases: [{PID}, Thomas Edward Hartley, {self.PRIVATE}]\n', extra=(
+            f'name_at_birth: {{value: {self.PRIVATE}, restricted: true}}\n'
+            'also_known_as: [Ned]\n'))
+        new, added, removed = sync_person_aliases(text)
+        self.assertEqual(added, ['Ned'])
+        self.assertEqual(removed, [self.PRIVATE])
+        self.assertEqual(_aliases(new), [PID, 'Thomas Edward Hartley', 'Ned'])
+
+    def _w111(self, **kw):
+        res = lint.run_lint(self.root, {}, **kw)
+        return res, [m for m in res.messages if m.code == 'W111']
+
+    def test_w111_names_a_missing_nickname_and_fix_aliases_adds_it(self):
+        path = self.people / f'hartley__thomas_edward_{PID}.md'
+        path.write_text(_person(f'aliases: [{PID}, Thomas Edward Hartley]\n', extra=(
+            'married_name: Tom Easton\nalso_known_as: [Ned]\n')), encoding='utf-8')
+        _, found = self._w111()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Tom Easton, Ned', found[0].text)
+        self._w111(fix_aliases=True)
+        self.assertEqual(read_record(path)['meta']['aliases'],
+                         [PID, 'Thomas Edward Hartley', 'Tom Easton', 'Ned'])
+        self.assertEqual(self._w111()[1], [])
+
+    def test_restricted_married_name_in_aliases_is_never_printed(self):
+        path = self.people / f'hartley__thomas_edward_{PID}.md'
+        path.write_text(_person(f'aliases: [{PID}, Thomas Edward Hartley, {self.PRIVATE}]\n',
+                                extra=(f'married_name:\n  value: {self.PRIVATE}\n'
+                                       '  restricted: true\nalso_known_as: Ned\n')),
+                        encoding='utf-8')
+        _, found = self._w111()
+        self.assertEqual(len(found), 1)
+        self.assertIn('restricted name', found[0].text)
+        res, _ = self._w111(fix_aliases=True, dry_run=True)
+        res2, _ = self._w111(fix_aliases=True)
+        shown = ' '.join([m.text for m in found] + res.data['progress'] + res2.data['progress'])
+        self.assertNotIn('Quenby', shown)
+        self.assertEqual(read_record(path)['meta']['aliases'],
+                         [PID, 'Thomas Edward Hartley', 'Ned'])
+
+    def test_rename_keeps_the_old_name_and_never_mirrors_a_private_one(self):
+        path = self.people / f'hartly__thomas_{PID}.md'
+        path.write_text(_person(f'aliases: [{PID}, Thomas Hartly]\n', name='Thomas Hartly', extra=(
+            f'also_known_as:\n  - Ned\n  - {{value: {self.PRIVATE}, restricted: true}}\n')),
+            encoding='utf-8')
+        res = person.run_rename(self.root, PID, 'Thomas Hartley')
+        self.assertEqual(res.exit_code, 0, res.messages)
+        self.assertNotIn('Quenby', ' '.join(m.text for m in res.messages))
+        meta = read_record(next(self.root.rglob(f'*_{PID}.md')))['meta']
+        self.assertEqual(meta['aliases'], [PID, 'Thomas Hartly', 'Thomas Hartley', 'Ned'])
+
+
+
+class WikilinkAliasTests(unittest.TestCase):
+    """A private name written into `aliases:` as a wikilink (`"[[Name]]"`,
+    or an unquoted `[[Name]]` YAML reads as a nested list) is found by W111
+    and taken out by `--fix-aliases`, so the warning clears, and no line
+    prints the name."""
+
+    PRIVATE = 'Birthsecret'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        self.people = self.root / 'people' / 'stubs'
+        self.people.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _w111(self, **kw):
+        res = lint.run_lint(self.root, {}, **kw)
+        return res, [m for m in res.messages if m.code == 'W111']
+
+    def test_quoted_and_unquoted_wikilinks_are_taken_out(self):
+        for field in ('name_at_birth: {value: Birthsecret, restricted: true}\n',
+                      'name_variants: [{value: Birthsecret, restricted: true}]\n'):
+            for entry in ('"[[Birthsecret]]"', '[[Birthsecret]]'):
+                with self.subTest(field=field, entry=entry):
+                    path = self.people / f'hartley__thomas_edward_{PID}.md'
+                    path.write_text(_person(
+                        f'aliases:\n  - {PID}\n  - Thomas Edward Hartley\n  - {entry}\n'
+                        '  - grandpa-tom\n', extra=field), encoding='utf-8')
+                    _, found = self._w111()
+                    self.assertEqual(len(found), 1)
+                    self.assertIn('restricted name', found[0].text)
+                    res, _ = self._w111(fix_aliases=True)
+                    shown = ' '.join([found[0].text] + res.data['progress'])
+                    self.assertNotIn(self.PRIVATE, shown)
+                    self.assertEqual(read_record(path)['meta']['aliases'],
+                                     [PID, 'Thomas Edward Hartley', 'grandpa-tom'])
+                    self.assertEqual(self._w111()[1], [])
+
+    def test_a_public_name_written_as_a_wikilink_is_not_added_twice(self):
+        path = self.people / f'hartley__thomas_edward_{PID}.md'
+        path.write_text(_person(f'aliases:\n  - {PID}\n  - "[[Thomas Edward Hartley]]"\n'),
+                        encoding='utf-8')
+        self.assertEqual(self._w111()[1], [])
 
 
 if __name__ == '__main__':

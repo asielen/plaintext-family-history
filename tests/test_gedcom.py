@@ -138,7 +138,7 @@ class GedcomNameTests(unittest.TestCase):
         self.assertEqual(gedcom._gedcom_name('John Smith', None), ('John /Smith/', None))
 
     def test_single_name(self):
-        self.assertEqual(gedcom._gedcom_name('Madonna', None), ('Madonna //', None))
+        self.assertEqual(gedcom._gedcom_name('Madonna', None), ('Madonna', None))
 
     # ── issue #78: generational suffix must not reach the /Surname/ field ──
 
@@ -167,7 +167,7 @@ class GedcomNameTests(unittest.TestCase):
                 self.assertEqual(returned_suffix, suffix)
 
     def test_mononym_unchanged(self):
-        self.assertEqual(gedcom._gedcom_name('Cher', None), ('Cher //', None))
+        self.assertEqual(gedcom._gedcom_name('Cher', None), ('Cher', None))
 
     def test_surname_genuinely_at_the_end_unchanged(self):
         self.assertEqual(
@@ -293,7 +293,7 @@ class GedcomNameTests(unittest.TestCase):
             ('Roy Eugene Dodson Jr', None,
              'Roy Eugene /Dodson/ Jr', 'Roy Eugene Dodson Jr'),
             ('John McDonald', 'Mcdonald', 'John /McDonald/', 'John McDonald'),
-            ('Cher', None, 'Cher //', 'Cher'),
+            ('Cher', None, 'Cher', 'Cher'),
             ('unknown', 'Unknown', 'Unknown //', 'Unknown'),
         ):
             with self.subTest(name=name):
@@ -304,7 +304,8 @@ class GedcomNameTests(unittest.TestCase):
                 display, _given, surname_slot = gedcom_import._parse_gedcom_name(
                     field, suffix or '')
                 self.assertEqual(display, expected_display)
-                self.assertEqual(surname_slot, '' if '//' in field else field.split('/')[1])
+                self.assertEqual(surname_slot, '' if '/' not in field or '//' in field
+                                 else field.split('/')[1])
 
 
 class GedcomExportTests(unittest.TestCase):

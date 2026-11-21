@@ -757,20 +757,22 @@ class PersonFilenamePartsSuffixTests(unittest.TestCase):
 
     def test_two_token_given_plus_suffix_has_no_promoted_surname(self) -> None:
         self.assertEqual(
-            lint._person_filename_parts('Roy Jr', 'fallback'), ('', 'roy_jr'))
+            lint._person_filename_parts('Roy Jr', 'fallback'), ('unknown', 'roy_jr'))
 
-    def test_suffix_alone_falls_through_to_the_pre_existing_single_token_path(self) -> None:
-        # Nothing left to strip TO - reads as an ordinary given name, same as
-        # before this fix (this function's pre-existing single-token
-        # behaviour, untouched: surname = the one word, given = 'unknown').
+    def test_suffix_alone_reads_as_a_one_word_name(self) -> None:
+        # Nothing left to strip TO: a one-word name, filed like any other.
         self.assertEqual(
-            lint._person_filename_parts('Jr', 'fallback'), ('jr', 'unknown'))
+            lint._person_filename_parts('Jr', 'fallback'), ('unknown', 'jr'))
 
-    def test_no_suffix_single_token_behaviour_is_unchanged(self) -> None:
-        # This function's own (pre-existing, non-SPEC-mononym) single-token
-        # convention is out of scope for #53 and must not move.
+    def test_one_word_name_files_as_person_new_files_it(self) -> None:
+        # SPEC §13: one word says nothing about a surname, so `--fix-ids`
+        # files "Cher" as `unknown__cher`, exactly as `fha person new` does,
+        # never `cher__unknown` (which made "Cher" read as a surname).
+        from _lib import stub_slug_name
         self.assertEqual(
-            lint._person_filename_parts('Cher', 'fallback'), ('cher', 'unknown'))
+            lint._person_filename_parts('Cher', 'fallback'), ('unknown', 'cher'))
+        self.assertEqual(lint._person_filename_parts('Cher', 'fallback'),
+                         stub_slug_name('Cher'))
 
 
 class FixIdsRenamesSuffixedNamesTests(unittest.TestCase):

@@ -60,7 +60,9 @@ Design decisions in TOOLING §4a:
   records. stdout stays the bare `[{id, type, label, detail}, …]` array it has
   always been - the coverage caveat goes to STDERR (so nothing that parses
   stdout sees a change), and an unchecked transcript hit gains one additive
-  key, `"unchecked": true`, present only when true.
+  key, `"unchecked": true`, present only when true. A source found by its
+  own ID carries one more additive key, `"citations"`, the same citation
+  sites the plain listing prints (`source_citation_sites`).
 """
 
 from __future__ import annotations
@@ -77,6 +79,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    claim_source_lookup,
+    token_source_id,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -393,6 +397,45 @@ def _find_person(
     return EXIT_CLEAN
 
 
+def source_citation_sites(conn: sqlite3.Connection, sid: str) -> list[dict]:
+    """Every place the archive cites a source, as [{'path', 'line', 'claim'}]
+    in path and line order: links to the source itself (`claim` None) and
+    links to any of its claims (`[[c-…]]`, `[[s-…#Claims|c-…]]` or the
+    file-name form Obsidian link mode writes), each marked with that claim's
+    ID.
+
+    In Obsidian link mode most citations point at a claim, so a listing of
+    `[[s-…]]` links alone would miss most of them. A claim link is read as
+    citing the source that holds the claim, through `_lib.token_source_id`,
+    the per-link rule of `cited_source_ids` that the exports use, so `fha
+    find`, `--related`, `--json` and the workbench all count the same
+    citations an export does. One shared helper feeds every surface."""
+    rows = conn.execute(
+        'SELECT DISTINCT path, line, token FROM citations '
+        'WHERE token = ? OR token IN (SELECT id FROM claims WHERE source_id = ?) '
+        'ORDER BY path, line, token', (sid, sid)).fetchall()
+    claim_source = claim_source_lookup(conn)
+    sites = []
+    for path, line, token in rows:
+        if token_source_id(token, None, claim_source) != sid:
+            continue
+        sites.append({'path': path, 'line': line,
+                      'claim': token if id_type_of(token) == 'C' else None})
+    return sites
+
+
+def _print_source_citation_sites(conn: sqlite3.Connection, sid: str, heading: str) -> None:
+    """The citation-site lines `fha find <s-id>` and `--related` print."""
+    sites = source_citation_sites(conn, sid)
+    if not sites:
+        print(f'  {heading}: none')
+        return
+    print(f'  {heading} ({len(sites)}):')
+    for site in sites:
+        via = f'  (claim {site["claim"]})' if site['claim'] else ''
+        print(f'    {site["path"]}:{site["line"]}{via}')
+
+
 def merged_source_holder(conn: sqlite3.Connection, sid: str) -> str | None:
     """The source a merged-away S-id now belongs to, or None.
 
@@ -505,17 +548,8 @@ def _find_source(
     else:
         print('  claims: none')
 
-    # Citation sites
-    citations = conn.execute(
-        "SELECT path, line FROM citations WHERE token = ? ORDER BY path, line",
-        (sid,)
-    ).fetchall()
-    if citations:
-        print(f'  citation sites ({len(citations)}):')
-        for c in citations:
-            print(f'    {c["path"]}:{c["line"]}')
-    else:
-        print('  citation sites: none')
+    # Citation sites: the source's own links and its claims' links.
+    _print_source_citation_sites(conn, sid, 'citation sites')
 
     return EXIT_CLEAN
 
@@ -2035,6 +2069,9 @@ def _related_source(
     else:
         print('  sibling sources: none')
 
+    # The same citation sites the plain `fha find <s-id>` lists.
+    _print_source_citation_sites(conn, sid, 'citation sites')
+
     return EXIT_CLEAN
 
 
@@ -2479,10 +2516,15 @@ def _bare_id_hit(conn: sqlite3.Connection, id_norm: str) -> dict | None:
                 if label is not None:
                     note = f'{id_norm} was merged into this record'
                     return {'id': kept, 'type': 'source', 'label': label,
-                            'detail': f'{note}; {detail}' if detail else note}
+                            'detail': f'{note}; {detail}' if detail else note,
+                            'citations': source_citation_sites(conn, kept)}
         if label is None:
             return None
-        return {'id': id_norm, 'type': hit_type, 'label': label, 'detail': detail}
+        hit = {'id': id_norm, 'type': hit_type, 'label': label, 'detail': detail}
+        if hit_type == 'source':
+            # The citation sites the plain listing shows (additive key).
+            hit['citations'] = source_citation_sites(conn, id_norm)
+        return hit
 
     if hit_type == 'claim':
         row = conn.execute(

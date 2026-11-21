@@ -390,7 +390,7 @@ class MoreLettersFoldTests(unittest.TestCase):
     def test_turkish_and_french_letters(self) -> None:
         self.assertEqual(stub_filename('Ayşe Yıldız', 'p-0000000001'),
                          'yildiz__ayse_p-0000000001.md')
-        self.assertEqual(stub_filename('Œdipe', 'p-0000000001'), '__oedipe_p-0000000001.md')
+        self.assertEqual(stub_filename('Œdipe', 'p-0000000001'), 'unknown__oedipe_p-0000000001.md')
         self.assertEqual(fold_accents('ħŧŋĦŦŊ'), 'htnHTN')
 
     def test_fix_ids_fallback_slug_folds(self) -> None:
@@ -592,7 +592,9 @@ class PunctuationWordsTests(unittest.TestCase):
         for name in ('Mary Smith (?)', 'Mary ?', 'John & Mary Smith', 'John - Smith'):
             with self.subTest(name=name):
                 slot = _lib.stub_slug_name(name)[0]
-                self.assertEqual(slot, _lib.person_name_slot(_lib.person_surname(name)))
+                # No surname read from the name is filed as not known.
+                self.assertEqual(
+                    slot, _lib.person_name_slot(_lib.person_surname(name)) or 'unknown')
                 stem = _lib.stub_filename(name, 'p-0000000001')[:-3]
                 self.assertIsNone(_lib.file_name_surname_mismatch(stem, {'name': name}))
 

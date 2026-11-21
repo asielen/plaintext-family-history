@@ -45,8 +45,10 @@ def _slots(filename: str) -> str:
 class RegnalNumberTests(unittest.TestCase):
 
     def test_regnal_numbers_ride_in_the_given_slot(self) -> None:
-        for name, expected in (('Henry VII', '__henry_vii'), ('Henry VIII', '__henry_viii'),
-                               ('Louis XIV', '__louis_xiv'), ('Henry VI', '__henry_vi'),
+        for name, expected in (('Henry VII', 'unknown__henry_vii'),
+                               ('Henry VIII', 'unknown__henry_viii'),
+                               ('Louis XIV', 'unknown__louis_xiv'),
+                               ('Henry VI', 'unknown__henry_vi'),
                                ('John Smith VII', 'smith__john_vii')):
             with self.subTest(name=name):
                 self.assertEqual(_slots(stub_filename(name, PID)), expected)
@@ -59,15 +61,15 @@ class RegnalNumberTests(unittest.TestCase):
                 self.assertEqual(_slots(stub_filename(name, PID)), expected)
 
     def test_existing_suffixes_unchanged(self) -> None:
-        self.assertEqual(_slots(stub_filename('Henry V', PID)), '__henry_v')
+        self.assertEqual(_slots(stub_filename('Henry V', PID)), 'unknown__henry_v')
         self.assertEqual(_slots(stub_filename('Roy Eugene Dodson Jr', PID)),
                          'dodson__roy_eugene_jr')
 
     def test_every_consumer_shares_the_rule(self) -> None:
         self.assertEqual(strip_generational_suffix(['Louis', 'XIV']), (['Louis'], 'xiv'))
-        self.assertEqual(lint._person_filename_parts('Henry VII', 'x'), ('', 'henry_vii'))
+        self.assertEqual(lint._person_filename_parts('Henry VII', 'x'), ('unknown', 'henry_vii'))
         self.assertEqual(gedcom_import._parse_gedcom_name('Henry VII')[1:], ('Henry VII', ''))
-        self.assertEqual(gedcom._gedcom_name('Henry VII', None), ('Henry // VII', 'VII'))
+        self.assertEqual(gedcom._gedcom_name('Henry VII', None), ('Henry VII', 'VII'))
 
     def test_bracket_surname_skips_esq_and_regnal_numbers(self) -> None:
         # The second suffix list (_NAME_SUFFIXES behind `_surname_of`) is
@@ -106,7 +108,7 @@ class RegnalNumberTests(unittest.TestCase):
                 index.build_index(root, {})
             time.sleep(0.02)
             text = gedcom.run_gedcom(root, None, all_persons=True, include_living=True)['text']
-            self.assertIn('1 NAME Henry // VII', text)
+            self.assertIn('1 NAME Henry VII', text)
             found = find_people_by_name(root, ['Henry VII'])
             self.assertEqual([m['id'] for m in found['Henry VII']], [first.data['person_id']])
 
@@ -144,7 +146,7 @@ class OldFileNamesExportByNameTests(unittest.TestCase):
         time.sleep(0.02)
         lines = gedcom.run_gedcom(self.root, None, all_persons=True,
                                   include_living=True)['text'].splitlines()
-        for expected in ('1 NAME Henry // VII', '1 NAME John /Smith/ Esq',
+        for expected in ('1 NAME Henry VII', '1 NAME John /Smith/ Esq',
                          '1 NAME Halina /Wiśniewska/', '1 NAME Guðrún /Þórðardóttir/'):
             self.assertIn(expected, lines)
         import sqlite3
@@ -160,7 +162,7 @@ class OldFileNamesExportByNameTests(unittest.TestCase):
 class SuffixEdgeTests(unittest.TestCase):
 
     def test_trailing_comma_does_not_hide_the_suffix(self) -> None:
-        self.assertEqual(_slots(stub_filename('Henry VII,', PID)), '__henry_vii')
+        self.assertEqual(_slots(stub_filename('Henry VII,', PID)), 'unknown__henry_vii')
         self.assertEqual(_slots(stub_filename('Roy Dodson Jr.,', PID)), 'dodson__roy_jr')
         self.assertEqual(strip_generational_suffix(['Henry', 'VII,']), (['Henry'], 'vii'))
 
@@ -202,7 +204,7 @@ class ExplicitNumeralSurnameTests(unittest.TestCase):
             '---\nid: p-0000000051\nname: Henry VII\nliving: false\n---\n', encoding='utf-8')
         lines = self._export_lines()
         self.assertIn('1 NAME Jinping /XI/', lines)
-        self.assertIn('1 NAME Henry // VII', lines)
+        self.assertIn('1 NAME Henry VII', lines)
 
     def test_same_name_rename_keeps_the_recorded_surname(self) -> None:
         made = person.run_new(self.root, 'Jinping XI', surname='XI')

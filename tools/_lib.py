@@ -396,7 +396,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Applying relationship claims to person records (SPEC §9; lint W115, fha claim)
 #    claim_owed_relationship_entries: every entry an accepted kin claim owes, on whom
-#    claim_backs_relationship_entry / claim_relationship_entry_type: the two
+#    claim_backs_relationship_entry / claim_relationship_entry_types: the two
 #                                 directions lint W115 checks, on the same rule
 #    claim_spouse_pids / claim_parentage_pids: the couple / the child and parents
 #    relationship_entry_applies: does an entry already apply one owed entry
@@ -450,11 +450,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forwards registry_error from the read above
 #
 #  Alias resolution / publication guards
-#    person_alias_mirror       : the names a person's aliases: carries: name + public variants
+#    person_alias_mirror       : the names a person's aliases: carries: name + public other names
+#    person_restricted_names   : the restricted other names that never sit in aliases:
 #    yaml_alias_entry          : one aliases: entry quoted for a YAML flow list
 #    flow_list_close           : where a one-line YAML flow list closes (not in a comment)
 #    merge_aliases_into_frontmatter: append missing entries to an aliases: list, in place
-#    sync_person_aliases       : keep a person's aliases: in step with name/name_variants
+#    sync_person_aliases       : keep a person's aliases: in step with name and other names
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
 #    merge_pointer             - status: merged + merged_into -> the id claims move to
@@ -1235,38 +1236,52 @@ POWER_TIE_ROLES: tuple[tuple[tuple[str, str], tuple[str, str]], ...] = (
 
 def relationship_claim_parties(
     persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
-) -> tuple[str, Any]:
-    """Which kind of tie an accepted `relationship` claim records, and who is
-    in it: the rule `fha index` derives its edges by, in one place so `fha
+) -> list[tuple[str, Any]]:
+    """Every kind of tie an accepted `relationship` claim records, and who is
+    in each: the rule `fha index` derives its edges by, in one place so `fha
     lint` (W159) asks the same question and never calls a tie missing that
     the tree holds.
 
-    The first branch that applies wins, as in the index:
+    One claim can record several ties at once. "Ann, daughter of Cara,
+    married Bob" is `parent: [Cara]`, `child: [Ann]`, `spouse: [Ann, Bob]`:
+    a parent tie and a marriage, and the tree gets both (SPEC §8.3). The list
+    holds, in this order, each tie the roles support:
       - ('parentage', (children, parents)) when the roles name both halves
         (`parentage_parties`);
       - ('spouse', people) when anyone carries a spouse role, the couple read
         by `spouse_parties` (two people named and one marked spouse is the
         couple, SPEC §8.3 "Who married");
-      - ('social', people) for a friend, associate or neighbor subtype
-        (`social_parties`);
-      - ('power', [(a, label_a, b, label_b), ...]) otherwise, one entry per
+      - ('social', people) for a friend, associate or neighbor subtype, when
+        `social_parties` finds two or more people (it finds none when the
+        claim calls someone a parent or spouse and names no friends);
+      - ('power', [(a, label_a, b, label_b), ...]) when the roles name a
         directed enslaved/enslaver or employee/employer pair.
+    A kind that yields nobody is left out, so a claim that records no tie
+    gives an empty list, and a claim whose roles support one kind of tie
+    gets exactly the edges it always did.
     Input is the claim's `(pid, role)` pairs as `claim_role_pairs` or
     `claim_persons_with_roles` gives them."""
     pairs = list(persons_with_roles)
+    ties: list[tuple[str, Any]] = []
     children, parents = parentage_parties(pairs)
     if children and parents:
-        return 'parentage', (children, parents)
+        ties.append(('parentage', (children, parents)))
     if any(role_meaning(r) == 'spouse' for _p, r in pairs):
-        return 'spouse', spouse_parties(pairs)
+        spouses = spouse_parties(pairs)
+        if spouses:
+            ties.append(('spouse', spouses))
     if subtype in SOCIAL_TIE_SUBTYPES:
-        return 'social', social_parties(pairs, subtype)
-    ties = []
+        social = social_parties(pairs, subtype)
+        if social:
+            ties.append(('social', social))
+    power = []
     for (role_a, edge_a), (role_b, edge_b) in POWER_TIE_ROLES:
         a_ids = [p for p, r in pairs if role_meaning(r) == role_a]
         b_ids = [p for p, r in pairs if role_meaning(r) == role_b]
-        ties += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
-    return 'power', ties
+        power += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
+    if power:
+        ties.append(('power', power))
+    return ties
 
 
 def relationship_claim_records_tie(
@@ -1276,10 +1291,13 @@ def relationship_claim_records_tie(
     `relationship` claim (`relationship_claim_parties`): a couple or social
     group of two or more different people, any parentage, or any power-tie
     pair."""
-    kind, parties = relationship_claim_parties(persons_with_roles, subtype)
-    if kind in ('spouse', 'social'):
-        return len(set(parties)) >= 2
-    return bool(parties)
+    for kind, parties in relationship_claim_parties(persons_with_roles, subtype):
+        if kind in ('spouse', 'social'):
+            if len(set(parties)) >= 2:
+                return True
+        elif parties:
+            return True
+    return False
 
 
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
@@ -10395,6 +10413,17 @@ def alias_key_text(ref: Any) -> str:
     return _split_link(ref)[0]
 
 
+def alias_entry_key(entry: Any) -> str:
+    """One `aliases:` entry, as parsed YAML, read as the lowercased handle
+    it names: `Edith`, `"[[Edith]]"` and an unquoted `[[Edith]]` (which YAML
+    reads as a nested list) all give `edith`. The alias mirror's checks and
+    edits compare entries this way, so a private name written as a wikilink
+    is found and taken out like a plain one."""
+    if isinstance(entry, list):
+        entry = yaml_list_link_text(entry)
+    return alias_key_text(str(entry)).strip().lower()
+
+
 def yaml_list_link_text(item: list) -> str:
     """The `[[…]]` link an unquoted YAML link became, written back as text.
 
@@ -11030,17 +11059,28 @@ def relationship_entry_nature(entry: dict) -> str:
     return 'biological' if role in ('parent', 'child') else ''
 
 
-def claim_relationship_nature(claim: dict) -> str:
-    """A claim's nature, for comparing with an entry's. A claim naming a
-    child and a parent with no `subtype:` is `biological`."""
+def claim_relationship_nature(claim: dict, entry_type: str | None = None) -> str:
+    """A claim's nature, for comparing with (or writing onto) an entry of
+    `entry_type`. A claim naming a child and a parent with no `subtype:` is
+    `biological`.
+
+    On a relationship claim that records a parent tie, `subtype:` names the
+    nature of that tie (SPEC §8.2). A marriage the same claim records
+    ("Edith, adopted daughter of Clara, married George") is not adoptive,
+    so a `spouse` entry reads no nature from such a claim: it is never
+    written `subtype: adoptive`, and an entry saying `civil` is not called a
+    mismatch. A claim recording only a marriage keeps its own subtype."""
+    roles = claim.get('roles')
+    meanings = ({role_meaning(k) for k, v in roles.items() if v}
+                if isinstance(roles, dict) else set())
+    records_parentage = {'child', 'parent'} <= meanings
+    if entry_type == 'spouse' and records_parentage \
+            and str(claim.get('type', '')).strip().lower() == 'relationship':
+        return ''
     st = relationship_nature_word(claim.get('subtype'))
     if st:
         return st
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return ''
-    meanings = {role_meaning(k) for k, v in roles.items() if v}
-    if {'child', 'parent'} <= meanings:
+    if records_parentage and entry_type in (None, 'parent', 'child'):
         return 'biological'
     return ''
 
@@ -11139,38 +11179,52 @@ def claim_backs_relationship_entry(
     return True
 
 
-def claim_relationship_entry_type(
+def claim_relationship_entry_types(
     claim: dict, pid: str, alias_map: dict[str, str] | None = None,
-) -> str | None:
-    """The entry type (`parent`, `child` or `spouse`) a person's block owes
-    for `claim`, or None when the claim is not a kin tie naming them. Social
-    and power ties (employer, enslaver) are never owed, so an opted-in block
-    is not asked for them. A negated claim owes nothing: it records a tie the
+) -> list[str]:
+    """Every entry type (`parent`, `child`, `spouse`) a person's block owes
+    for `claim`, in that order, or [] when the claim is not a kin tie naming
+    them. One relationship claim can record two ties for one person: "Ann,
+    daughter of Cara, married Bob" owes Ann a `parent` entry and a `spouse`
+    entry (SPEC §8.3). A person the roles name as both child and parent is
+    read as the child, as `parentage_parties` reads them. Social and power
+    ties (employer, enslaver) are never owed, so an opted-in block is not
+    asked for them. A negated claim owes nothing: it records a tie the
     research found absent."""
     if claim.get('negated') in (True, 'true'):
-        return None
+        return []
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
         # Only the couple owes a spouse entry, never a parent on the certificate.
-        return 'spouse' if pid in claim_spouse_pids(claim, alias_map) else None
+        return ['spouse'] if pid in claim_spouse_pids(claim, alias_map) else []
     if ctype == 'birth':
         children, parents = claim_parentage_pids(claim, alias_map)
         if not (children and parents):
-            return None
+            return []
         if pid in children:
-            return 'parent'     # the person was born: their entry names a parent
+            return ['parent']   # the person was born: their entry names a parent
         if pid in parents:
-            return 'child'
-        return None
+            return ['child']
+        return []
     if ctype != 'relationship':
-        return None
+        return []
+    types: list[str] = []
     if pid in claim_pids_in_role(claim, 'child', alias_map):
-        return 'parent'
-    if pid in claim_pids_in_role(claim, 'parent', alias_map):
-        return 'child'
+        types.append('parent')
+    elif pid in claim_pids_in_role(claim, 'parent', alias_map):
+        types.append('child')
     if pid in claim_pids_in_role(claim, 'spouse', alias_map):
-        return 'spouse'
-    return None
+        types.append('spouse')
+    return types
+
+
+def claim_relationship_entry_type(
+    claim: dict, pid: str, alias_map: dict[str, str] | None = None,
+) -> str | None:
+    """The first entry type `claim_relationship_entry_types` names for a
+    person, or None: the label a message uses for the tie."""
+    types = claim_relationship_entry_types(claim, pid, alias_map)
+    return types[0] if types else None
 
 
 def claim_owed_relationship_entries(
@@ -11179,9 +11233,9 @@ def claim_owed_relationship_entries(
     """Every `relationships:` entry an accepted kin claim owes, as
     `(person, entry type, other person, nature)`, in a stable order.
 
-    Each person the claim connects owes entries of the one type
-    `claim_relationship_entry_type` names, one per person on the other side
-    of the tie: a birth claim naming a child and two parents owes the child
+    Each person the claim connects owes entries of each type
+    `claim_relationship_entry_types` names, one per person on the other side
+    of that tie: a birth claim naming a child and two parents owes the child
     two `parent` entries and each parent a `child` entry. Every entry listed
     passes `claim_backs_relationship_entry`, so writing it can never produce
     a lint W115. A claim that is not accepted, is negated, or names only one
@@ -11200,22 +11254,22 @@ def claim_owed_relationship_entries(
         people = set()
         for meaning in ('child', 'parent', 'spouse'):
             people |= claim_pids_in_role(claim, meaning, alias_map)
-    nature = claim_relationship_nature(claim)
     owed: list[tuple[str, str, str, str]] = []
     for pid in sorted(people):
-        entry_type = claim_relationship_entry_type(claim, pid, alias_map)
-        if entry_type is None:
-            continue
-        other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
-        if ctype == 'marriage':
-            others = people
-        elif ctype == 'birth':
-            others = parents if entry_type == 'parent' else children
-        else:
-            others = claim_pids_in_role(claim, other_role, alias_map)
-        for other in sorted(others - {pid}):
-            if claim_backs_relationship_entry(claim, pid, other, entry_type, alias_map):
-                owed.append((pid, entry_type, other, nature))
+        for entry_type in claim_relationship_entry_types(claim, pid, alias_map):
+            # The nature belongs to the tie: a parentage subtype never
+            # reaches the spouse entry the same claim owes.
+            nature = claim_relationship_nature(claim, entry_type)
+            other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
+            if ctype == 'marriage':
+                others = people
+            elif ctype == 'birth':
+                others = parents if entry_type == 'parent' else children
+            else:
+                others = claim_pids_in_role(claim, other_role, alias_map)
+            for other in sorted(others - {pid}):
+                if claim_backs_relationship_entry(claim, pid, other, entry_type, alias_map):
+                    owed.append((pid, entry_type, other, nature))
     return owed
 
 
@@ -13056,44 +13110,89 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
 # Obsidian reads a note's frontmatter `aliases:` to offer the note while the
 # owner types `[[`: type "Tom" and Thomas Edward Hartley's record is offered,
 # and picking it writes a link to the file. The index already reads `name:` and
-# `name_variants:` directly, so this mirror is what makes the same names work in
+# the other-name fields directly, so this mirror is what makes the same names work in
 # an editor that reads only the file. Every verb that writes a person's name
 # keeps the mirror in step through `sync_person_aliases`, and `fha lint
 # --fix-aliases` brings older records up to date.
 
 
+# The fields that hold a person's other names, in the order the person
+# record lists them (SPEC §9). Each may be one string, a list, or carry
+# `{value:, restricted:}` entries; all of them resolve `[[name]]` links in
+# the index, and all of their public values are mirrored into `aliases:`.
+PERSON_OTHER_NAME_FIELDS = ('name_variants', 'name_at_birth', 'married_name',
+                            'also_known_as')
+
+
+def person_other_name_entries(meta: dict) -> list[tuple[str, str, Any]]:
+    """Every `(field, value, restricted marker)` a person's other-name
+    fields carry, in field order (`PERSON_OTHER_NAME_FIELDS`). A bare string
+    has the marker None; a `{value:, restricted:}` entry has its marker as
+    written (`true`, `dna`, `by-request`, `false`, ...).
+
+    The one reader every surface that withholds a private name goes
+    through: the alias mirror, lint W111, the packet, WikiTree and the
+    site. A name marked restricted in `name_at_birth:` is as private as one
+    in `name_variants:` (SPEC §9), so no exporter may read only one field."""
+    out: list[tuple[str, str, Any]] = []
+    for field in PERSON_OTHER_NAME_FIELDS:
+        raw = meta.get(field)
+        for item in (raw if isinstance(raw, list) else [raw]):
+            if isinstance(item, dict):
+                value, marker = item.get('value'), item.get('restricted')
+            else:
+                value, marker = item, None
+            if value is None or isinstance(value, (dict, list)):
+                continue
+            text = str(value).strip()
+            if text:
+                out.append((field, text, marker))
+    return out
+
+
+def _person_other_names(meta: dict) -> list[tuple[str, bool]]:
+    """Every (value, restricted) a person's other-name fields carry, in
+    field order. A bare string is public; a `{value:, restricted:}` entry is
+    restricted unless its marker is absent or false (SPEC §19)."""
+    return [(value, marker not in (None, False, '', 'false'))
+            for _field, value, marker in person_other_name_entries(meta)]
+
+
+def person_restricted_names(meta: dict) -> set[str]:
+    """Lowercased values of every restricted entry in a person's other-name
+    fields (`name_variants`, `name_at_birth`, `married_name`,
+    `also_known_as`). These never sit in `aliases:`, and no public export
+    prints them."""
+    return {v.lower() for v, restricted in _person_other_names(meta) if restricted}
+
+
 def person_alias_mirror(meta: dict) -> list[str]:
     """The names a person's `aliases:` carries besides the ID: `name:`, then
-    each public `name_variants:` entry, in that order, without repeats.
+    each public value of `name_variants:`, `name_at_birth:`, `married_name:`
+    and `also_known_as:`, in that order, without repeats. So typing "Peggy",
+    a maiden name or a married name after `[[` in Obsidian offers the person.
 
-    A restricted variant (`{value:, restricted: true}`, a private prior name)
-    is left out. It still resolves inside the archive, because the index reads
-    it from `name_variants:` where its restricted marker sits; copied into
-    `aliases:` it would be plain text with no marker, which every reader of the
-    file (an editor, a packet copy) would take as public. A `name:` of
-    `unknown` (an unnamed stub) is not a name and is left out too."""
+    A restricted value (`{value:, restricted: true}`, a private prior name)
+    is left out, and so is a public entry with the same text as a restricted
+    one: marking a name private anywhere keeps it out. It still resolves
+    inside the archive, because the index reads it from the field where its
+    restricted marker sits; copied into `aliases:` it would be plain text
+    with no marker, which every reader of the file (an editor, a packet copy)
+    would take as public. A `name:` of `unknown` (an unnamed stub) is not a
+    name and is left out too."""
     out: list[str] = []
     seen: set[str] = set()
     name = meta.get('name')
+    others = _person_other_names(meta)
+    private = {v.lower() for v, restricted in others if restricted}
     candidates = [str(name).strip()] if name else []
-    candidates += [str(v).strip() for v in public_name_variants(meta.get('name_variants'))]
+    candidates += [v for v, restricted in others if not restricted and v.lower() not in private]
     for value in candidates:
         key = value.lower()
         if not value or key == 'unknown' or key in seen:
             continue
         seen.add(key)
         out.append(value)
-    return out
-
-
-def _restricted_variant_values(meta: dict) -> set[str]:
-    """Lowercased values of a person's restricted `name_variants:` entries."""
-    out: set[str] = set()
-    raw = meta.get('name_variants')
-    for v in (raw if isinstance(raw, list) else []):
-        if isinstance(v, dict) and v.get('value') and \
-                v.get('restricted') not in (None, False, '', 'false'):
-            out.add(str(v['value']).strip().lower())
     return out
 
 
@@ -13219,12 +13318,12 @@ def _merge_aliases_unchecked(
         return fm_text, []
     raw = parsed.get('aliases')
     if isinstance(raw, list):
-        existing = [str(a) for a in raw if a is not None]
+        existing = [a for a in raw if a is not None]
     elif raw is None:
         existing = []
     else:
         return fm_text, []   # a scalar aliases: value is a hand form; leave it alone
-    have = {alias_key_text(a).strip().lower() for a in existing}
+    have = {alias_entry_key(a) for a in existing}
     head: list[str] = []
     if id_first and normalize_id(new_id) not in have:
         head = [new_id]
@@ -13331,10 +13430,12 @@ def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[s
             items = safe_load_yaml(head_line[flow_open.end() - 1:close + 1])
         except yaml.YAMLError:
             return fm_text, []
-        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+        if not isinstance(items, list):
             return fm_text, []
-        keep = [i for i in items if i.strip().lower() not in drop]
-        removed = [i for i in items if i.strip().lower() in drop]
+        keep = [i for i in items if alias_entry_key(i) not in drop]
+        removed = [i for i in items if alias_entry_key(i) in drop]
+        if not all(isinstance(i, str) for i in keep):
+            return fm_text, []   # a kept entry this rewrite could not write back as it was
         if not removed:
             return fm_text, []
         new_line = (head_line[:flow_open.end()]
@@ -13360,7 +13461,7 @@ def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[s
             value = safe_load_yaml(im.group(2))
         except yaml.YAMLError:
             value = None
-        if isinstance(value, str) and value.strip().lower() in drop:
+        if isinstance(value, (str, list)) and alias_entry_key(value) in drop:
             removed.append(value)
         else:
             out_parts.append(im.group(0))
@@ -13429,11 +13530,12 @@ def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
     """Bring a person record's `aliases:` in step with its name fields.
 
     The rule (SPEC §9, §18): the ID first, then `name:`, then each public
-    `name_variants:` entry. Missing ones are added, and nothing else is
-    removed: a stem, a nickname or an old name (one a rename replaced) stays,
-    so a link written under it keeps resolving. The one thing taken out is
-    the value of a restricted variant, so a private name never sits in
-    `aliases:` as plain text.
+    value of `name_variants:`, `name_at_birth:`, `married_name:` and
+    `also_known_as:` (`person_alias_mirror`). Missing ones are added, and
+    nothing else is removed: a stem, a nickname or an old name (one a rename
+    replaced) stays, so a link written under it keeps resolving. The one
+    thing taken out is the value of a restricted entry in any of those
+    fields, so a private name never sits in `aliases:` as plain text.
 
     Left alone: a record with no frontmatter, no `id:`, no `aliases:` key (it
     never opted into the alias layer, the same scoping as lint W111), a
@@ -13456,7 +13558,7 @@ def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
     inner = fm.group(1)
     mirror = person_alias_mirror(meta)
     wanted = {v.lower() for v in mirror}
-    drop_keys = _restricted_variant_values(meta) - wanted
+    drop_keys = person_restricted_names(meta) - wanted
     drop_keys.discard(normalize_id(pid))
     inner, removed = _remove_aliases_from_frontmatter(inner, drop_keys)
     inner, added = merge_aliases_into_frontmatter(inner, pid, mirror, nl, id_first=True)
@@ -16124,29 +16226,20 @@ def stub_slug_name(
     `dodson__roy_eugene_jr_P-….md` sorts directly under
     `dodson__roy_eugene_P-….md` (issue #53). Splitting then continues on
     whatever tokens remain: two or more -> the last is the surname as usual;
-    exactly one -> the SAME surname-less treatment the true mononym case
-    below gets ("Roy Jr" has no more of a real surname than "Roy" alone
-    does - the suffix does not promote "Roy" into one).
+    exactly one -> the SAME treatment the one-word case below gets ("Roy
+    Jr" has no more of a known surname than "Roy" alone does, since the
+    suffix does not promote "Roy" into one).
 
-    A SINGLE-token name (with no suffix to strip) is a surname-less person -
-    a mononym (`Cher`), an enslaved ancestor recorded only by a given name, a
-    patronymic. SPEC §13 files those with the sort-name slot EMPTY, so the
-    filename leads with the double underscore (`__cher_P-….md`), a distinct
-    no-surname sort group - hence the empty surname slug here, not the
-    literal 'unknown'. 'unknown' stays reserved for the genuinely nameless
-    fallback below (a blank or whitespace-only display name), which is a
-    missing name, not a mononym. The suffix fix above leaves that
-    surname-less contract exactly as it was.
-
-    That path used to return the token unslugged, which is the one place
-    the `[a-z0-9_]` promise at the top of this docstring was not kept: a
-    mononym carrying punctuation came back verbatim, so `Bob/Rob` filed as
-    `__bob/rob_P-….md` - a path separator inside a filename, pointing the
-    write at a folder that is not there - and `?` or a colon produced a
-    name Windows refuses outright. Every other return here sanitises; this
-    one now does too, and a token with nothing left after sanitising falls
-    back to 'unknown' in the given slot (`__unknown_P-….md`) while staying
-    surname-less, because a mononym nobody can spell is still a mononym.
+    A SINGLE-token name (with no suffix to strip) says nothing about a
+    surname: "Cher" may be a mononym, or the one name a record gave for a
+    woman whose surname nobody wrote down. SPEC §13 keeps the two apart.
+    Not known is the `unknown` slot (`unknown__cher_P-….md`), and that is
+    what a one-word name gets here. No surname at all (a mononym, a regnal
+    or religious name, a naming culture without surnames) is the EMPTY slot
+    (`__cher_P-….md`), written only when the human says so with an empty
+    `surname` override (`--surname ""`, or a `surname: ""` line the caller
+    passes in). The given slot is sanitised like every other, and a token
+    with nothing left after sanitising falls back to 'unknown'.
 
     `surname`, when given, overrides the automatic split outright - the
     escape hatch for names no heuristic should be expected to get right:
@@ -16214,11 +16307,11 @@ def stub_slug_name(
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
         given = person_name_slot(parts[0])
-        return ('', given or 'unknown')
+        return ('unknown', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
         given = person_name_slot(core[0] if not suffix else f'{core[0]} {suffix}')
-        return ('', given or 'unknown')
+        return ('unknown', given or 'unknown')
     given_parts = core[:-1] + ([suffix] if suffix else [])
     surname_tok = person_name_slot(core[-1])
     given = person_name_slot(' '.join(given_parts))
@@ -16628,7 +16721,9 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     Not a mismatch, so None: a record with a `surname:` line, a merged
     tombstone, no usable name,
     a file name without `__`, a slot equal to what `stub_slug_name` files
-    the name under today, a slot an older slugger made of the same surname
+    the name under today, any slot on a one-word name (an earlier version
+    filed "Cher" as `__cher` or `cher__unknown`; neither names a surname
+    the human chose), a slot an older slugger made of the same surname
     by deleting its accented letters (`winiewska`), an `unknown` slot an
     older slugger gave a name whose last word is only punctuation ("Mary
     Smith (?)"), and a slot holding the
@@ -16655,6 +16750,13 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
             r'[^a-z0-9_]', '', fold_accents(core[-1]).lower()):
         # An older slugger took a last word that is only punctuation ("Mary
         # Smith (?)") as the surname and filed it under `unknown`.
+        return None
+    if len(core) <= 1:
+        # A one-word name (with or without a suffix) has no surname to read,
+        # whichever way an earlier version filed it: `__cher` (no surname,
+        # as `fha person new` once wrote it) or `cher__unknown` (the word as
+        # the surname, as `--fix-ids` once wrote it). Neither records a
+        # decision, and a `surname: Cher` line would invent one.
         return None
     if not slot:
         return slot, ''

@@ -75,11 +75,12 @@ class StubSlugNameTests(unittest.TestCase):
     def test_multi_word_given_names(self) -> None:
         self.assertEqual(stub_slug_name('Mary Ann Smith'), ('smith', 'mary_ann'))
 
-    def test_single_word_name_has_no_surname(self) -> None:
-        # SPEC §13: a surname-less person (a mononym) leaves the sort-name slot
-        # EMPTY, so the filename leads with the double underscore
-        # (`__cher_P-….md`) - hence the empty surname slug, not 'unknown'.
-        self.assertEqual(stub_slug_name('Cher'), ('', 'cher'))
+    def test_single_word_name_has_an_unknown_surname(self) -> None:
+        # SPEC §13: one word says nothing about a surname, so the slot reads
+        # `unknown` (`unknown__cher_P-….md`). Only an explicit empty surname
+        # gives the no-surname form `__cher_P-….md`.
+        self.assertEqual(stub_slug_name('Cher', surname=''), ('', 'cher'))
+        self.assertEqual(stub_slug_name('Cher'), ('unknown', 'cher'))
 
     def test_empty_string_falls_back_to_unknown(self) -> None:
         self.assertEqual(stub_slug_name(''), ('unknown', 'unknown'))
@@ -99,18 +100,17 @@ class StubSlugNameTests(unittest.TestCase):
         # `Bob/Rob` filed as `__bob/rob_P-….md` - a path separator inside a
         # filename, aiming the write at a folder that is not there - and a
         # `?` or `:` produced a name Windows refuses outright.
-        self.assertEqual(stub_slug_name("O'Brien"), ('', 'obrien'))
-        self.assertEqual(stub_slug_name('Bob/Rob'), ('', 'bobrob'))
-        self.assertEqual(stub_slug_name('Ka:wehi'), ('', 'kawehi'))
+        self.assertEqual(stub_slug_name("O'Brien"), ('unknown', 'obrien'))
+        self.assertEqual(stub_slug_name('Bob/Rob'), ('unknown', 'bobrob'))
+        self.assertEqual(stub_slug_name('Ka:wehi'), ('unknown', 'kawehi'))
         self.assertEqual(stub_filename('Bob/Rob', 'P-0000000001'),
-                         '__bobrob_P-0000000001.md')
+                         'unknown__bobrob_P-0000000001.md')
 
-    def test_a_mononym_that_sanitises_to_nothing_stays_surname_less(self) -> None:
-        # Still a mononym, just an unspellable one: the sort-name slot stays
-        # EMPTY (§13) and only the given slot falls back to 'unknown'.
-        self.assertEqual(stub_slug_name('?'), ('', 'unknown'))
+    def test_a_one_word_name_that_sanitises_to_nothing(self) -> None:
+        # The given slot falls back to 'unknown' too.
+        self.assertEqual(stub_slug_name('?'), ('unknown', 'unknown'))
         self.assertEqual(stub_filename('?', 'P-0000000001'),
-                         '__unknown_P-0000000001.md')
+                         'unknown__unknown_P-0000000001.md')
 
     # -- Generational suffixes (issue #53) --------------------------------
     # "Roy Eugene Dodson Jr" used to file as `jr__roy_eugene_dodson_P-….md`,
@@ -144,29 +144,27 @@ class StubSlugNameTests(unittest.TestCase):
         # "Roy Jr" is no more a real surname than "Roy" alone - the suffix
         # must not promote the remaining word into one (that would just move
         # the original bug from "Jr" to "Roy").
-        self.assertEqual(stub_slug_name('Roy Jr'), ('', 'roy_jr'))
+        self.assertEqual(stub_slug_name('Roy Jr'), ('unknown', 'roy_jr'))
 
     def test_suffix_alone_has_nothing_to_strip_to_reads_as_a_mononym(self) -> None:
         # A name that IS only a suffix has no token left over to carry the
         # name once stripped, so it falls through unchanged to the ordinary
         # single-token/mononym path.
-        self.assertEqual(stub_slug_name('Jr'), ('', 'jr'))
+        self.assertEqual(stub_slug_name('Jr'), ('unknown', 'jr'))
 
     def test_roman_numeral_alone_is_a_plain_mononym(self) -> None:
         # "IV" with nothing else present is just a given name/mononym, not a
         # suffix with nothing to attach to.
-        self.assertEqual(stub_slug_name('IV'), ('', 'iv'))
+        self.assertEqual(stub_slug_name('IV'), ('unknown', 'iv'))
 
     def test_roman_numeral_as_second_token_reads_as_a_suffix(self) -> None:
         # Documented tradeoff: "IV" after another token is indistinguishable
         # from the generational suffix - the --surname override is the
         # escape hatch when that reading is wrong.
-        self.assertEqual(stub_slug_name('John IV'), ('', 'john_iv'))
+        self.assertEqual(stub_slug_name('John IV'), ('unknown', 'john_iv'))
 
-    def test_true_mononym_is_byte_identical_to_before_the_fix(self) -> None:
-        # The suffix fix must not touch the real mononym contract at all -
-        # same code path, same output, no new sanitisation applied.
-        self.assertEqual(stub_slug_name('Cher'), ('', 'cher'))
+    def test_one_word_name_reads_the_same_with_or_without_a_suffix_rule(self) -> None:
+        self.assertEqual(stub_slug_name('Cher'), ('unknown', 'cher'))
 
     # -- --surname override -------------------------------------------------
 
@@ -205,13 +203,15 @@ class StubFilenameTests(unittest.TestCase):
             'doe__jane_P-aaaaaaaaaa.md',
         )
 
-    def test_mononym_leads_with_double_underscore(self) -> None:
-        # SPEC §13: a real single-token name (a mononym, an enslaved ancestor
-        # recorded only by a given name) has an EMPTY sort-name slot, so the
-        # filename leads with the double underscore - `__cher_P-….md`, NOT the
-        # `unknown__cher_…` a genuinely nameless fallback would use.
+    def test_one_word_name_files_under_an_unknown_surname(self) -> None:
+        # SPEC §13: not known is `unknown__cher`; no surname at all is
+        # `__cher`, and only when the caller says so.
         self.assertEqual(
             stub_filename('Cher', 'P-ffffffffff'),
+            'unknown__cher_P-ffffffffff.md',
+        )
+        self.assertEqual(
+            stub_filename('Cher', 'P-ffffffffff', surname=''),
             '__cher_P-ffffffffff.md',
         )
 

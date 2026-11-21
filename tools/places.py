@@ -93,6 +93,7 @@ CODE MAP
     _Gazetteer                             : lookups: names, divisions, labels, descriptions
     _place_name_and_context, _place_countries : what to look up, and in which countries
     _is_general_name                       : a country or region by name needs no coordinates
+    _city_country                          : a lone country name that is also its capital city
     _says_division, _skipped_levels        : tie-break helpers
     _match_place                           : name+hierarchy to hit / ambiguous / partial / none
     _filled_hierarchy, _proposed_alt_names : what a hit adds besides coordinates
@@ -705,6 +706,7 @@ _COUNTRY_EXTRA_NAMES = {
     'england': 'GB', 'scotland': 'GB', 'wales': 'GB', 'northern ireland': 'GB',
     'great britain': 'GB', 'britain': 'GB', 'uk': 'GB', 'u k': 'GB',
     'holland': 'NL', 'polska': 'PL', 'deutschland': 'DE', 'czech republic': 'CZ',
+    'vatican city': 'VA',
 }
 
 # Words that name a kind of division rather than the division itself
@@ -803,13 +805,19 @@ def _fetch_url(url: str, dest: Path) -> str | None:
     return None
 
 
-def _read_country_info(path: Path) -> tuple[dict[str, str], dict[str, str]]:
-    """countryInfo.txt -> ({name key: country code}, {code: country name}).
+def _read_country_info(
+    path: Path,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """countryInfo.txt -> ({name key: country code}, {code: country name},
+    {code: capital name key}).
 
-    The name map also carries `_COUNTRY_EXTRA_NAMES`. Comment lines start
-    with '#'; a short or malformed line is skipped."""
+    The name map also carries `_COUNTRY_EXTRA_NAMES`. The capital column is
+    what tells, before any download, that a country may be its own capital
+    city (Luxembourg, Singapore, Monaco). Comment lines start with '#'; a
+    short or malformed line is skipped."""
     names: dict[str, str] = {}
     labels: dict[str, str] = {}
+    capitals: dict[str, str] = {}
     with open(path, encoding='utf-8') as fh:
         for line in fh:
             if line.startswith('#'):
@@ -822,9 +830,12 @@ def _read_country_info(path: Path) -> tuple[dict[str, str], dict[str, str]]:
             key = _geo_key(label)
             if key:
                 names.setdefault(key, cc)
+            capital = _geo_key(cols[5]) if len(cols) > 5 else ''
+            if capital:
+                capitals[cc] = capital
     for raw, cc in _COUNTRY_EXTRA_NAMES.items():
         names.setdefault(_geo_key(raw), cc)
-    return names, labels
+    return names, labels, capitals
 
 
 _GAZETTEER_DDL = """
@@ -962,10 +973,13 @@ class _Gazetteer:
     uses most for that country ("USA") over GeoNames' ("United States")."""
 
     def __init__(self, conn: sqlite3.Connection, country_names: dict[str, str],
-                 country_labels: dict[str, str]):
+                 country_labels: dict[str, str],
+                 capital_keys: dict[str, str] | None = None):
         self.conn = conn
         self.country_names = country_names
         self.country_labels = dict(country_labels)
+        # Code -> the capital's name key, from countryInfo.txt (`_city_country`).
+        self.capital_keys = dict(capital_keys or {})
         self.loaded = {r[0] for r in conn.execute('SELECT cc FROM loaded')}
         self._ctx_cache: dict[tuple[str, int, str], set[str]] = {}
 
@@ -1117,15 +1131,39 @@ def _place_countries(name_key: str, context: list[str], gaz: _Gazetteer) -> set[
     return found
 
 
+def _city_country(name_key: str, context: list[str], gaz: _Gazetteer) -> str | None:
+    """The country code when a lone country name may also be its capital
+    city, else None.
+
+    "Luxembourg", "Singapore" and "Monaco" each name a country and its
+    capital at once, and a family record that says "born in Luxembourg"
+    means a place with coordinates. countryInfo.txt names each capital, so
+    the candidates are known before anything is downloaded: the place's
+    folded name must equal its country's capital. `_match_place` then asks
+    the country's own data for a capital (`PPLC`) of that same folded name,
+    so the coordinates come from GeoNames' capital and never from a guess.
+    Any other lone country name ("Poland", "Wales", "Georgia") stays a
+    general place."""
+    if context:
+        return None
+    cc = gaz.country_names.get(name_key)
+    if cc and gaz.capital_keys.get(cc) == name_key:
+        return cc
+    return None
+
+
 def _is_general_name(name_key: str, context: list[str], gaz: _Gazetteer) -> bool:
     """Whether a place is a country or a historic region by its words alone:
     "Poland", "Wales", "Prussia". Such a place is specific enough as it is
     and gets no coordinates (owner's rule), and needs no download. A state
     ("Kansas") is decided after matching instead, because a state can also
-    be a city (Berlin, Hamburg, New York)."""
+    be a city (Berlin, Hamburg, New York). A country that is also its own
+    capital city ("Luxembourg") is not general here: `_match_place` looks
+    for the capital (`_city_country`)."""
     if name_key in _HISTORIC_REGIONS and len(context) <= 1:
         return True
-    return not context and name_key in gaz.country_names
+    return (not context and name_key in gaz.country_names
+            and _city_country(name_key, context, gaz) is None)
 
 
 def _says_division(name: str) -> bool:
@@ -1175,6 +1213,20 @@ def _match_place(name: str, hierarchy: str | None, gaz: _Gazetteer) -> _PlaceMat
         return _PlaceMatch('none', candidates=[], unmatched=[], countries=[])
     if _is_general_name(name_key, context, gaz):
         return _PlaceMatch('general', candidates=[], unmatched=[], countries=[])
+    city_cc = _city_country(name_key, context, gaz)
+    if city_cc is not None:
+        # A country that is its own capital: the capital (`PPLC`) of that
+        # country with the same folded name is the one candidate, and the
+        # owner still confirms it in the review table like any other hit.
+        # Without the country's data there is nothing to check it against.
+        if city_cc not in gaz.loaded:
+            return _PlaceMatch('no-data', candidates=[], unmatched=[], countries=[city_cc])
+        capitals = [g for g in gaz.features_named(name_key, [city_cc])
+                    if g.fcode == 'PPLC' and name_key in (_geo_key(g.name), _geo_key(g.asciiname))]
+        if len(capitals) == 1:
+            return _PlaceMatch('hit', hit=capitals[0], candidates=capitals, unmatched=[],
+                               part_ranks=[], countries=[city_cc])
+        return _PlaceMatch('general', candidates=[], unmatched=[], countries=[city_cc])
     named = _place_countries(name_key, context, gaz)
     countries = sorted(named & gaz.loaded) if named else sorted(gaz.loaded)
     if not countries:
@@ -1511,10 +1563,11 @@ def _prepare_gazetteer(
                 return None, notes
     conn = None
     try:
-        country_names, country_labels = _read_country_info(gdir / 'countryInfo.txt')
+        country_names, country_labels, capital_keys = _read_country_info(
+            gdir / 'countryInfo.txt')
         conn = _open_gazetteer_db(gdir / _GAZETTEER_DB)
         _import_admin_codes(conn, gdir)
-        gaz = _Gazetteer(conn, country_names, country_labels)
+        gaz = _Gazetteer(conn, country_names, country_labels, capital_keys)
         return _load_countries(gaz, gdir, rows, offline=offline, progress=progress,
                                notes=notes)
     except (OSError, UnicodeDecodeError, ValueError, sqlite3.DatabaseError) as e:
@@ -1530,7 +1583,9 @@ def _load_countries(gaz: _Gazetteer, gdir: Path, rows: list, *, offline: bool,
                     progress, notes: list[str]) -> tuple[_Gazetteer | None, list[str]]:
     """The country half of `_prepare_gazetteer`: fetch and import the dump of
     every country the places point at. A general place (a country, state or
-    region on its own) needs no coordinates, so it never causes a download.
+    region on its own) needs no coordinates, so it never causes a download;
+    a country that is its own capital city (`_city_country`) does, since its
+    capital is looked up in that country's data.
     Closes the cache itself when nothing could be loaded."""
     conn, country_labels = gaz.conn, gaz.country_labels
     wanted: set[str] = set()

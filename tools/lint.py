@@ -158,6 +158,8 @@ from _lib import (
     public_name_variants,
     merge_aliases_into_frontmatter,
     person_alias_mirror,
+    person_restricted_names,
+    alias_entry_key,
     sync_person_aliases,
     yaml_alias_entry,
     reconcile_bracket_entries,
@@ -170,7 +172,6 @@ from _lib import (
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
-    strip_generational_suffix,
     vital_subjects,
     event_role_gaps,      # E021/W147: an event claim naming several people says whose event it is
     VITAL_SUBJECT_ROLES,
@@ -3113,10 +3114,12 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
 
 def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
     """What a person's `aliases:` lacks against SPEC §9's mirror, and whether
-    it holds a restricted name variant as plain text.
+    it holds a restricted name as plain text.
 
     Returns (missing, holds_restricted): `missing` is the own ID and then each
-    of `name:` and the public `name_variants:` not yet listed. Only a record
+    name `person_alias_mirror` gives (`name:` and the public values of
+    `name_variants:`, `name_at_birth:`, `married_name:` and `also_known_as:`)
+    not yet listed. Only a record
     that opted into the alias layer is checked (the same scoping as the
     self-ID check). A merged tombstone, or an `aliases:` written as a single
     value rather than a list, is checked for its own ID only: a tombstone's
@@ -3126,14 +3129,13 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
         return [], False
     if not isinstance(aliases, list) or is_merged_meta(meta):
         return ([] if _self_alias_ok(meta, pid) else [fmt_id_display(pid)]), False
-    present = {alias_key_text(str(a)).strip().lower() for a in aliases if a is not None}
+    # A wikilink-form entry (`"[[Name]]"`, or an unquoted `[[Name]]` YAML
+    # reads as a nested list) is the same handle as the plain name.
+    present = {alias_entry_key(a) for a in aliases if a is not None}
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
     public = {v.lower() for v in person_alias_mirror(meta)}
-    restricted = set()
-    for v in meta.get('name_variants') or []:
-        if isinstance(v, dict) and v.get('value') and _is_restricted(v.get('restricted')):
-            restricted.add(str(v['value']).strip().lower())
+    restricted = person_restricted_names(meta)
     return missing, bool((restricted - public) & present)
 
 
@@ -3141,8 +3143,9 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
     """The alias-layer maintenance + integrity checks (Pass 2).
 
       - W111 alias mirror: a record that uses `aliases:` but omits its own ID,
-        or a person whose `aliases:` lacks their `name:` or a public name
-        variant (SPEC §9, §18), or holds a restricted variant as plain text.
+        or a person whose `aliases:` lacks their `name:` or one of their
+        public other names (SPEC §9, §18), or holds a restricted one as
+        plain text.
         `fha lint --fix-aliases` brings each one into step.
       - W112 latent clash: one string names ≥2 records, but nothing links by it
         yet - normal in genealogy (same-name people), just a heads-up.
@@ -3164,11 +3167,11 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
         names = [m for m in missing if m != own]
         if names:
             which = 'that name' if len(names) == 1 else 'those names'
-            parts.append(f'aliases: does not list {", ".join(names)} from name: and '
-                         f'name_variants:, so typing [[ in Obsidian does not suggest '
+            parts.append(f'aliases: does not list {", ".join(names)} from the '
+                         f"person's names, so typing [[ in Obsidian does not suggest "
                          f'this person by {which}')
         if holds_restricted:
-            parts.append('aliases: holds a restricted name variant as plain text, '
+            parts.append('aliases: holds a restricted name as plain text, '
                          'where nothing marks it private')
         registry.alias_fixes.append(path)
         findings.append(Finding('W', 'W111', path,
@@ -3305,7 +3308,7 @@ def _check_reciprocity(
         e_to = normalize_id(e_to) if e_to else None
         if e_to == owner_pid and str(e.get('type', '')).strip().lower() == mirror_role:
             if relationship_entry_is_guess(e):
-                if _entry_subtype(e) != (_claim_subtype_norm(claims[0]) or _entry_subtype(e)):
+                if _entry_subtype(e) != (_claim_subtype_norm(claims[0], mirror_role) or _entry_subtype(e)):
                     continue   # a guess of another nature: not this tie, no promise
                 # A guess is not a mirror of a sourced tie: left alone, the
                 # other side keeps drawing as a guess what the evidence has
@@ -3336,7 +3339,7 @@ def _check_reciprocity(
         'other_pid': other_pid,
         'owner_pid': owner_pid,
         'mirror_role': mirror_role,
-        'subtype': _claim_subtype_norm(claims[0]),
+        'subtype': _claim_subtype_norm(claims[0], mirror_role),
         'claim_ids': cids,
     })
 
@@ -3368,7 +3371,7 @@ def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bo
         sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
         candidates += [c for c in registry.source_claims.get(sid, []) if isinstance(c, dict)]
     return any(claim and _claim_backs_edge(claim, pid, other, role, alias_map)
-               and _claim_subtype_norm(claim) in ('', nature)
+               and _claim_subtype_norm(claim, role) in ('', nature)
                for claim in candidates)
 
 
@@ -3650,7 +3653,7 @@ def _check_relationships_reconciliation(
 
             entry_subtype = _entry_subtype(entry)
             for matched in matched_claims:
-                claim_subtype = _claim_subtype_norm(matched)
+                claim_subtype = _claim_subtype_norm(matched, role)
                 if entry_subtype and claim_subtype and entry_subtype != claim_subtype \
                         and subtype_misuse(claim_subtype):
                     # The claim's word is not a nature at all (W158 on the
@@ -3684,10 +3687,16 @@ def _check_relationships_reconciliation(
             # applied once any entry cites it.
             if owed:
                 sid = registry.claim_ids.get(cid)
-                if all(any(relationship_entry_applies(e, cid, sid, other, etype, alias_map)
-                           for e in block)
-                       for _p, etype, other, _n in owed):
+                missing = [etype for _p, etype, other, _n in owed
+                           if not any(relationship_entry_applies(e, cid, sid, other, etype,
+                                                                 alias_map)
+                                      for e in block)]
+                if not missing:
                     continue
+                # Name the tie that is missing: a claim recording a parent
+                # tie and a marriage, with the parent entry already written,
+                # is asking for the spouse entry.
+                label = ' and '.join(dict.fromkeys(missing))
             elif cid in referenced_cids:
                 continue
             findings.append(Finding('W', 'W115', profile_path,
@@ -4862,8 +4871,8 @@ def _fix_aliases(
     """W111 fix: bring each listed record's `aliases:` into step.
 
     A person gets the shared `_lib.sync_person_aliases` rule every name-writing
-    verb uses (own ID first, then `name:` and the public `name_variants:`; a
-    restricted variant taken out), so a backfilled record ends up exactly as
+    verb uses (own ID first, then `name:` and the person's other public
+    names; a restricted name taken out), so a backfilled record ends up exactly as
     a freshly written one would. A source, or a merged tombstone (whose list
     holds its bare ID only, SPEC §9), gets its own ID at the head of the
     list. Only the `aliases:` lines change; anything a human added stays.
@@ -7476,17 +7485,10 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
     Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
     slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
-    a name of two words or more never draws W138 the moment it is named.
-
-    One difference is kept on purpose: a one-word name with no suffix
-    ("Cher") files as `cher__unknown` here, the convention this function
-    has always used, where `stub_slug_name` writes SPEC §13's surname-less
-    `__cher`. That file does draw W138, as it always has. With no usable name at all, the slots come from the hand
-    filename."""
+    and no name draws W138 the moment it is named. A one-word name ("Cher")
+    files as `unknown__cher`: its surname is not known (SPEC §13). With no
+    usable name at all, the slots come from the hand filename."""
     words = name_words(fold_accents(str(name or '')))
-    core, suffix = strip_generational_suffix(words)
-    if len(core) == 1 and not suffix and person_name_slot(core[0]):
-        return person_name_slot(core[0]), 'unknown'
     if any(person_name_slot(w) for w in words):
         return stub_slug_name(str(name))
     seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())
@@ -8691,8 +8693,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'to preview)')
     p.add_argument('--fix-aliases', action='store_true',
                    help="Bring each W111 record's aliases: into step: its own ID, and for a "
-                        "person their name and public name variants, so typing [[ in "
-                        'Obsidian finds them by name (with --dry-run to preview)')
+                        "person their name and other public names (variants, nicknames, "
+                        "birth and married names), so typing [[ in Obsidian finds them by "
+                        'name (with --dry-run to preview)')
     # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
     # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
     # flag: one owner per mutation, and E011's message names the tool.
