@@ -426,12 +426,12 @@ class PersonFilenameTests(unittest.TestCase):
                     f'dodson__roy_eugene_{suffix.lower()}_P-0000000001.md',
                 )
 
-    def test_a_mononym_files_surname_less_per_spec_13(self):
-        # GUARD: `cher__cher_P-….md` invented a surname for someone who
-        # has none; §13 leads with the double underscore instead.
+    def test_a_one_word_name_files_under_an_unknown_surname(self):
+        # GUARD: `cher__cher_P-….md` invented a surname; §13 files one word
+        # under `unknown`, the same as `fha person new`.
         self.assertEqual(
             convert_mining._person_filename('Cher', 'P-0000000001'),
-            '__cher_P-0000000001.md',
+            'unknown__cher_P-0000000001.md',
         )
 
     def test_given_names_join_with_underscores_like_every_other_path(self):
@@ -451,11 +451,11 @@ class PersonFilenameTests(unittest.TestCase):
         # separator inside a filename.
         self.assertEqual(
             convert_mining._person_filename('Bob/Rob', 'P-0000000001'),
-            '__bobrob_P-0000000001.md',
+            'unknown__bobrob_P-0000000001.md',
         )
         self.assertEqual(
             convert_mining._person_filename("O'Brien", 'P-0000000001'),
-            '__obrien_P-0000000001.md',
+            'unknown__obrien_P-0000000001.md',
         )
 
     def test_a_nameless_person_still_gets_the_unknown_form(self):

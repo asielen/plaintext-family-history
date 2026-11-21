@@ -504,9 +504,9 @@ def _person_filename(name: str, pid: str) -> str:
     private fourth copy of "the last word is the surname" and drifted from
     the shared rule three ways: a generational suffix became the surname
     ("Roy Eugene Dodson Jr" filed as `jr__roy-eugene-dodson_P-….md` -
-    issues #53/#78, the same bug in a record-writing path); a mononym was
-    filed as `cher__cher_P-….md` rather than §13's surname-less
-    `__cher_P-….md`; and given names were joined with hyphens where every
+    issues #53/#78, the same bug in a record-writing path); a one-word
+    name was filed as `cher__cher_P-….md`, inventing a surname, rather than
+    §13's `unknown__cher_P-….md`; and given names were joined with hyphens where every
     other stub-writing path uses underscores.
     """
     return stub_filename(name, pid)

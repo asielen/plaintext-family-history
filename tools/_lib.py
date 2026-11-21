@@ -16186,29 +16186,20 @@ def stub_slug_name(
     `dodson__roy_eugene_jr_P-….md` sorts directly under
     `dodson__roy_eugene_P-….md` (issue #53). Splitting then continues on
     whatever tokens remain: two or more -> the last is the surname as usual;
-    exactly one -> the SAME surname-less treatment the true mononym case
-    below gets ("Roy Jr" has no more of a real surname than "Roy" alone
-    does - the suffix does not promote "Roy" into one).
+    exactly one -> the SAME treatment the one-word case below gets ("Roy
+    Jr" has no more of a known surname than "Roy" alone does - the suffix
+    does not promote "Roy" into one).
 
-    A SINGLE-token name (with no suffix to strip) is a surname-less person -
-    a mononym (`Cher`), an enslaved ancestor recorded only by a given name, a
-    patronymic. SPEC §13 files those with the sort-name slot EMPTY, so the
-    filename leads with the double underscore (`__cher_P-….md`), a distinct
-    no-surname sort group - hence the empty surname slug here, not the
-    literal 'unknown'. 'unknown' stays reserved for the genuinely nameless
-    fallback below (a blank or whitespace-only display name), which is a
-    missing name, not a mononym. The suffix fix above leaves that
-    surname-less contract exactly as it was.
-
-    That path used to return the token unslugged, which is the one place
-    the `[a-z0-9_]` promise at the top of this docstring was not kept: a
-    mononym carrying punctuation came back verbatim, so `Bob/Rob` filed as
-    `__bob/rob_P-….md` - a path separator inside a filename, pointing the
-    write at a folder that is not there - and `?` or a colon produced a
-    name Windows refuses outright. Every other return here sanitises; this
-    one now does too, and a token with nothing left after sanitising falls
-    back to 'unknown' in the given slot (`__unknown_P-….md`) while staying
-    surname-less, because a mononym nobody can spell is still a mononym.
+    A SINGLE-token name (with no suffix to strip) says nothing about a
+    surname: "Cher" may be a mononym, or the one name a record gave for a
+    woman whose surname nobody wrote down. SPEC §13 keeps the two apart.
+    Not known is the `unknown` slot (`unknown__cher_P-….md`), and that is
+    what a one-word name gets here. No surname at all (a mononym, a regnal
+    or religious name, a naming culture without surnames) is the EMPTY slot
+    (`__cher_P-….md`), written only when the human says so with an empty
+    `surname` override (`--surname ""`, or a `surname: ""` line the caller
+    passes in). The given slot is sanitised like every other, and a token
+    with nothing left after sanitising falls back to 'unknown'.
 
     `surname`, when given, overrides the automatic split outright - the
     escape hatch for names no heuristic should be expected to get right:
@@ -16276,11 +16267,11 @@ def stub_slug_name(
         return (surname_slug or 'unknown', given_slug or 'unknown')
     if len(parts) == 1:
         given = person_name_slot(parts[0])
-        return ('', given or 'unknown')
+        return ('unknown', given or 'unknown')
     core, suffix = strip_generational_suffix(parts)
     if len(core) == 1:
         given = person_name_slot(core[0] if not suffix else f'{core[0]} {suffix}')
-        return ('', given or 'unknown')
+        return ('unknown', given or 'unknown')
     given_parts = core[:-1] + ([suffix] if suffix else [])
     surname_tok = person_name_slot(core[-1])
     given = person_name_slot(' '.join(given_parts))
@@ -16690,7 +16681,9 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
     Not a mismatch, so None: a record with a `surname:` line, a merged
     tombstone, no usable name,
     a file name without `__`, a slot equal to what `stub_slug_name` files
-    the name under today, a slot an older slugger made of the same surname
+    the name under today, any slot on a one-word name (an earlier version
+    filed "Cher" as `__cher` or `cher__unknown`; neither names a surname
+    the human chose), a slot an older slugger made of the same surname
     by deleting its accented letters (`winiewska`), an `unknown` slot an
     older slugger gave a name whose last word is only punctuation ("Mary
     Smith (?)"), and a slot holding the
@@ -16717,6 +16710,13 @@ def file_name_surname_mismatch(stem: str, meta: dict) -> tuple[str, str | None] 
             r'[^a-z0-9_]', '', fold_accents(core[-1]).lower()):
         # An older slugger took a last word that is only punctuation ("Mary
         # Smith (?)") as the surname and filed it under `unknown`.
+        return None
+    if len(core) <= 1:
+        # A one-word name (with or without a suffix) has no surname to read,
+        # whichever way an earlier version filed it: `__cher` (no surname,
+        # as `fha person new` once wrote it) or `cher__unknown` (the word as
+        # the surname, as `--fix-ids` once wrote it). Neither records a
+        # decision, and a `surname: Cher` line would invent one.
         return None
     if not slot:
         return slot, ''

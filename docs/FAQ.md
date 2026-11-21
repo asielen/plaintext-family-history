@@ -42,7 +42,7 @@ Decide by where it should live, not by what it looks like. If it belongs in your
 
 ### My family isn't Anglo: mononyms, two surnames, surname-first names, an ancestor with only a given name. Does this handle that?
 
-Yes. A surname only decides where a person sorts in their folder, so families land together. Someone with no surname (a mononym, an enslaved ancestor recorded by a single given name, an Icelandic patronymic, a foundling) sorts in a "no surname" group, and their full name, in its own cultural order, is written in the record. For two surnames or surname-first names you choose the name to sort by, and the page shows the name the way it should be written.
+Yes. A surname only decides where a person sorts in their folder, so families land together. Someone with no surname (a mononym, an enslaved ancestor recorded by a single given name, an Icelandic patronymic, a foundling) sorts in a "no surname" group once you say so (`fha person new "Caesar" --surname ""`; a single name with nothing said files under "unknown", since the surname may just not be known), and their full name, in its own cultural order, is written in the record. For two surnames or surname-first names you choose the name to sort by, and the page shows the name the way it should be written.
 
 ### Can I keep a translation of a foreign-language record?
 

@@ -171,7 +171,6 @@ from _lib import (
     resolve_claim_persons_with_roles,
     spouse_extended_base,
     spouse_parties,
-    strip_generational_suffix,
     vital_subjects,
     event_role_gaps,      # E021/W147: an event claim naming several people says whose event it is
     VITAL_SUBJECT_ROLES,
@@ -7477,17 +7476,10 @@ def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     same person: from `name:` through `_lib.stub_slug_name`, so "Ann Lot 2
     Doe" mints as `doe__ann_lot_2`, a suffix rides at the end of the given
     slot (`dodson__roy_eugene_jr`), accents fold (`wisniewska__halina`), and
-    a name of two words or more never draws W138 the moment it is named.
-
-    One difference is kept on purpose: a one-word name with no suffix
-    ("Cher") files as `cher__unknown` here, the convention this function
-    has always used, where `stub_slug_name` writes SPEC §13's surname-less
-    `__cher`. That file does draw W138, as it always has. With no usable name at all, the slots come from the hand
-    filename."""
+    and no name draws W138 the moment it is named. A one-word name ("Cher")
+    files as `unknown__cher`: its surname is not known (SPEC §13). With no
+    usable name at all, the slots come from the hand filename."""
     words = name_words(fold_accents(str(name or '')))
-    core, suffix = strip_generational_suffix(words)
-    if len(core) == 1 and not suffix and person_name_slot(core[0]):
-        return person_name_slot(core[0]), 'unknown'
     if any(person_name_slot(w) for w in words):
         return stub_slug_name(str(name))
     seg = re.sub(r'[^a-z]+', '', fold_accents(fallback_slug).lower())

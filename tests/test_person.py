@@ -1026,12 +1026,13 @@ class NewTests(unittest.TestCase):
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         path = Path(result.data['path'])
         # `fha person new` passes the name straight through the SHARED
-        # `_lib.stub_filename` helper. A single-word name is a surname-less
-        # mononym, which SPEC §13 files with an EMPTY sort-name slot - the
-        # filename leads with the double underscore (`__cher_P-….md`), the
-        # same form a hand-filed mononym (e.g. `__caesar_P-….md`) uses.
-        self.assertTrue(path.name.startswith('__cher_'))
+        # `_lib.stub_filename` helper. One word says nothing about a surname,
+        # so SPEC §13 files it under `unknown` (`unknown__cher_P-….md`); the
+        # no-surname form `__caesar_P-….md` is for `--surname ""` only.
+        self.assertTrue(path.name.startswith('unknown__cher_'), path.name)
         self.assertTrue(path.name.endswith('.md'))
+        none = person.run_new(self.root, 'Caesar', surname='')
+        self.assertTrue(Path(none.data['path']).name.startswith('__caesar_'))
 
     def test_generational_suffix_sorts_adjacent_to_the_parent(self) -> None:
         # Issue #53: "Roy Eugene Dodson Jr" used to file as `jr__roy_eugene_
@@ -1074,7 +1075,7 @@ class NewTests(unittest.TestCase):
         result = person.run_new(self.root, 'Roy Jr')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         name = Path(result.data['path']).name
-        self.assertTrue(name.startswith('__roy_jr_'), name)
+        self.assertTrue(name.startswith('unknown__roy_jr_'), name)
 
     def test_suffix_alone_is_not_stripped_reads_as_a_plain_name(self) -> None:
         # A name that IS only a suffix ("Jr") has nothing left to strip TO,
@@ -1082,13 +1083,13 @@ class NewTests(unittest.TestCase):
         result = person.run_new(self.root, 'Jr')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         name = Path(result.data['path']).name
-        self.assertTrue(name.startswith('__jr_'), name)
+        self.assertTrue(name.startswith('unknown__jr_'), name)
 
     def test_roman_numeral_given_name_alone_is_a_plain_mononym(self) -> None:
         result = person.run_new(self.root, 'IV')
         self.assertEqual(result.exit_code, EXIT_CLEAN)
         name = Path(result.data['path']).name
-        self.assertTrue(name.startswith('__iv_'), name)
+        self.assertTrue(name.startswith('unknown__iv_'), name)
 
     def test_surname_override_replaces_the_automatic_split(self) -> None:
         # The escape hatch: a Spanish double surname no last-word heuristic
@@ -1566,7 +1567,7 @@ class NameWithDigitsFilesCleanTests(unittest.TestCase):
                             ('2nd Lt Easton', 'easton__2nd_lt_'),
                             ('Ann # Doe', 'doe__ann_'),
                             ('Cole 3rd', '3rd__cole_'),
-                            ('Bradford #', '__bradford_')):
+                            ('Bradford #', 'unknown__bradford_')):
             with self.subTest(name=name):
                 res = person.run_new(self.root, name, force=True)
                 self.assertEqual(res.exit_code, EXIT_CLEAN, res.messages)

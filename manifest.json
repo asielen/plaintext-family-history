@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "a518e0d8fd64539b888b0b9f977dfba38a66e3d707703a81512d7c2f9740cdb6",
+      "sha256": "c7ce3e4c8ab8a6dcc6dcd94c6dee1348282c88838d2165ce67f6abe9571db3d2",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -730,7 +730,7 @@
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
-      "sha256": "04afaf066f8401d0acefbd74be2f72bddf7b4c7e599a89717e083165270c2a9e",
+      "sha256": "cc2169675dfd1c6e095e851c09d697124983948f59eb1f983f23c5090a078aba",
       "spec_version": "2.19",
       "src": "tools/convert_mining.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "807ac5e36e3ce53843fc9e50fa29d552ceb4149a0febb0b9103600e7c89df5e6",
+      "sha256": "5313011da69e28ec08b182e6d26495e86ea77da50e35bdb0b2382fc1c0353074",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "08ca90a3622b5af2b1bd44a58fc234914cc913304a15643be1b76460ee7eaede",
+      "sha256": "2b61900ca2c6567b5fc2c3ac7c42f820af5fc496b9d93467777b05e12b2f6b4b",
       "spec_version": "2.19",
       "src": "tools/lint.py"
     },
@@ -1150,7 +1150,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "b59439c6b72cb4e6dc0239915c8a7bc7301bb1b4fed387ca5faec8287d66583e",
+      "sha256": "7e78c0c69451a7155c86629c8736cce43c8b90a4fe6495c4aaea8b10853832df",
       "spec_version": "2.19"
     },
     {
@@ -1186,14 +1186,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "ed0885b887a8f5284e57551751faf5d6deec93ff167efdc8cbc55ae30e6e4fe4",
+      "sha256": "804cbce21e65b69e3353772df40109aeb0d131857f5ebf08f1654447ded7a7db",
       "spec_version": "2.19",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "4eda319f5a27c34cdb40c7bb43aae96ad9d99c071f14dfd2f88761565b3336c2",
+      "sha256": "3ab41f491c9fe4a9170a03b186c2caa245eedc3b591b1466baf534f1992f1668",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },

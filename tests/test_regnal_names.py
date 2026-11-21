@@ -45,8 +45,10 @@ def _slots(filename: str) -> str:
 class RegnalNumberTests(unittest.TestCase):
 
     def test_regnal_numbers_ride_in_the_given_slot(self) -> None:
-        for name, expected in (('Henry VII', '__henry_vii'), ('Henry VIII', '__henry_viii'),
-                               ('Louis XIV', '__louis_xiv'), ('Henry VI', '__henry_vi'),
+        for name, expected in (('Henry VII', 'unknown__henry_vii'),
+                               ('Henry VIII', 'unknown__henry_viii'),
+                               ('Louis XIV', 'unknown__louis_xiv'),
+                               ('Henry VI', 'unknown__henry_vi'),
                                ('John Smith VII', 'smith__john_vii')):
             with self.subTest(name=name):
                 self.assertEqual(_slots(stub_filename(name, PID)), expected)
@@ -59,13 +61,13 @@ class RegnalNumberTests(unittest.TestCase):
                 self.assertEqual(_slots(stub_filename(name, PID)), expected)
 
     def test_existing_suffixes_unchanged(self) -> None:
-        self.assertEqual(_slots(stub_filename('Henry V', PID)), '__henry_v')
+        self.assertEqual(_slots(stub_filename('Henry V', PID)), 'unknown__henry_v')
         self.assertEqual(_slots(stub_filename('Roy Eugene Dodson Jr', PID)),
                          'dodson__roy_eugene_jr')
 
     def test_every_consumer_shares_the_rule(self) -> None:
         self.assertEqual(strip_generational_suffix(['Louis', 'XIV']), (['Louis'], 'xiv'))
-        self.assertEqual(lint._person_filename_parts('Henry VII', 'x'), ('', 'henry_vii'))
+        self.assertEqual(lint._person_filename_parts('Henry VII', 'x'), ('unknown', 'henry_vii'))
         self.assertEqual(gedcom_import._parse_gedcom_name('Henry VII')[1:], ('Henry VII', ''))
         self.assertEqual(gedcom._gedcom_name('Henry VII', None), ('Henry // VII', 'VII'))
 
@@ -160,7 +162,7 @@ class OldFileNamesExportByNameTests(unittest.TestCase):
 class SuffixEdgeTests(unittest.TestCase):
 
     def test_trailing_comma_does_not_hide_the_suffix(self) -> None:
-        self.assertEqual(_slots(stub_filename('Henry VII,', PID)), '__henry_vii')
+        self.assertEqual(_slots(stub_filename('Henry VII,', PID)), 'unknown__henry_vii')
         self.assertEqual(_slots(stub_filename('Roy Dodson Jr.,', PID)), 'dodson__roy_jr')
         self.assertEqual(strip_generational_suffix(['Henry', 'VII,']), (['Henry'], 'vii'))
 
