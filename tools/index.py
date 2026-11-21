@@ -2076,74 +2076,75 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
             # parent/child bond (biological, adoptive, step, …; SPEC §8.2). A
             # claim naming a child and a parent is a parent/child edge whatever
             # its nature.
-            # Which tie the claim records, and who is in it, is one rule
+            # Which ties the claim records, and who is in each, is one rule
             # shared with `fha lint` W159 (_lib.relationship_claim_parties),
-            # so lint never calls a tie missing that the tree holds.
-            kind, parties = relationship_claim_parties(all_persons, subtype)
-
-            if kind == 'parentage':
-                child_ids, parent_ids = parties
-                _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
-            elif kind == 'spouse':
-                # A relationship claim naming spouses yields reciprocal spouse
-                # edges, like a marriage claim - and obeys the same scoping
-                # rule (_lib.spouse_parties), for the same reason. The
-                # two-person fallback inside that rule is reached here by a
-                # claim whose roles: map resolves to fewer than two spouses (a
-                # map holding one typo'd id), and pairing off three or more
-                # people in that state would invent marriages exactly as the
-                # marriage branch used to.
-                spouse_pids = parties
-                for i, p1 in enumerate(spouse_pids):
-                    for p2 in spouse_pids[i+1:]:
-                        if p1 == p2:
-                            continue   # nobody is married to themselves
+            # so lint never calls a tie missing that the tree holds. One
+            # claim can record several ("Ann, daughter of Cara, married
+            # Bob"), and each one reaches the tree.
+            for kind, parties in relationship_claim_parties(all_persons, subtype):
+                if kind == 'parentage':
+                    child_ids, parent_ids = parties
+                    _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
+                elif kind == 'spouse':
+                    # A relationship claim naming spouses yields reciprocal spouse
+                    # edges, like a marriage claim - and obeys the same scoping
+                    # rule (_lib.spouse_parties), for the same reason. The
+                    # two-person fallback inside that rule is reached here by a
+                    # claim whose roles: map resolves to fewer than two spouses (a
+                    # map holding one typo'd id), and pairing off three or more
+                    # people in that state would invent marriages exactly as the
+                    # marriage branch used to.
+                    spouse_pids = parties
+                    for i, p1 in enumerate(spouse_pids):
+                        for p2 in spouse_pids[i+1:]:
+                            if p1 == p2:
+                                continue   # nobody is married to themselves
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (p1, 'spouse', p2, cid, dmin, None),
+                            )
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (p2, 'spouse', p1, cid, dmin, None),
+                            )
+                elif kind == 'social':
+                    # Only the people the claim calls friends were friends. Same
+                    # scoping rule as the couple branches above, same reason
+                    # (_lib.social_parties, issue #118): a friend claim can name a
+                    # third person the anecdote merely runs through, and pairing
+                    # every name mutually made that person a friend of both. Since
+                    # they are separately - and correctly - somebody's parent, the
+                    # page then showed one pair as parent AND friend at once, with
+                    # nothing to tell the reader which edge the archive has
+                    # evidence for. A claim with no roles: entry for its subtype
+                    # still pairs everyone named, so legacy claims are untouched.
+                    social_pids = parties
+                    for i, p1 in enumerate(social_pids):
+                        for p2 in social_pids[i+1:]:
+                            if p1 == p2:
+                                continue   # nobody is their own friend
+                            rel = subtype or 'associate'
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (p1, rel, p2, cid, dmin, dmax),
+                            )
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (p2, rel, p1, cid, dmin, dmax),
+                            )
+                else:
+                    # Directional power-tie roles: enslaved/enslaver, employer/employee.
+                    # Each directed pair gets an asymmetric edge so callers can
+                    # distinguish victim from perpetrator (SPEC §8.2).
+                    for pa, edge_a, pb, edge_b in parties:
                         conn.execute(
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                            (p1, 'spouse', p2, cid, dmin, None),
+                            (pa, edge_a, pb, cid, dmin, dmax),
                         )
                         conn.execute(
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                            (p2, 'spouse', p1, cid, dmin, None),
+                            (pb, edge_b, pa, cid, dmin, dmax),
                         )
-            elif kind == 'social':
-                # Only the people the claim calls friends were friends. Same
-                # scoping rule as the couple branches above, same reason
-                # (_lib.social_parties, issue #118): a friend claim can name a
-                # third person the anecdote merely runs through, and pairing
-                # every name mutually made that person a friend of both. Since
-                # they are separately - and correctly - somebody's parent, the
-                # page then showed one pair as parent AND friend at once, with
-                # nothing to tell the reader which edge the archive has
-                # evidence for. A claim with no roles: entry for its subtype
-                # still pairs everyone named, so legacy claims are untouched.
-                social_pids = parties
-                for i, p1 in enumerate(social_pids):
-                    for p2 in social_pids[i+1:]:
-                        if p1 == p2:
-                            continue   # nobody is their own friend
-                        rel = subtype or 'associate'
-                        conn.execute(
-                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                            (p1, rel, p2, cid, dmin, dmax),
-                        )
-                        conn.execute(
-                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                            (p2, rel, p1, cid, dmin, dmax),
-                        )
-            else:
-                # Directional power-tie roles: enslaved/enslaver, employer/employee.
-                # Each directed pair gets an asymmetric edge so callers can
-                # distinguish victim from perpetrator (SPEC §8.2).
-                for pa, edge_a, pb, edge_b in parties:
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                        (pa, edge_a, pb, cid, dmin, dmax),
-                    )
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                        (pb, edge_b, pa, cid, dmin, dmax),
-                    )
         elif ctype == 'birth':
             # "Born to X and Y" - the plainest parentage evidence an archive
             # ever holds, and the natural place to write it down. It reaches

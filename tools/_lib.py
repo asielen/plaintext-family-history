@@ -396,7 +396,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #
 #  Applying relationship claims to person records (SPEC §9; lint W115, fha claim)
 #    claim_owed_relationship_entries: every entry an accepted kin claim owes, on whom
-#    claim_backs_relationship_entry / claim_relationship_entry_type: the two
+#    claim_backs_relationship_entry / claim_relationship_entry_types: the two
 #                                 directions lint W115 checks, on the same rule
 #    claim_spouse_pids / claim_parentage_pids: the couple / the child and parents
 #    relationship_entry_applies: does an entry already apply one owed entry
@@ -1236,38 +1236,52 @@ POWER_TIE_ROLES: tuple[tuple[tuple[str, str], tuple[str, str]], ...] = (
 
 def relationship_claim_parties(
     persons_with_roles: Iterable[tuple[str, Any]], subtype: Any,
-) -> tuple[str, Any]:
-    """Which kind of tie an accepted `relationship` claim records, and who is
-    in it: the rule `fha index` derives its edges by, in one place so `fha
+) -> list[tuple[str, Any]]:
+    """Every kind of tie an accepted `relationship` claim records, and who is
+    in each: the rule `fha index` derives its edges by, in one place so `fha
     lint` (W159) asks the same question and never calls a tie missing that
     the tree holds.
 
-    The first branch that applies wins, as in the index:
+    One claim can record several ties at once. "Ann, daughter of Cara,
+    married Bob" is `parent: [Cara]`, `child: [Ann]`, `spouse: [Ann, Bob]`:
+    a parent tie and a marriage, and the tree gets both (SPEC §8.3). The list
+    holds, in this order, each tie the roles support:
       - ('parentage', (children, parents)) when the roles name both halves
         (`parentage_parties`);
       - ('spouse', people) when anyone carries a spouse role, the couple read
         by `spouse_parties` (two people named and one marked spouse is the
         couple, SPEC §8.3 "Who married");
-      - ('social', people) for a friend, associate or neighbor subtype
-        (`social_parties`);
-      - ('power', [(a, label_a, b, label_b), ...]) otherwise, one entry per
+      - ('social', people) for a friend, associate or neighbor subtype, when
+        `social_parties` finds two or more people (it finds none when the
+        claim calls someone a parent or spouse and names no friends);
+      - ('power', [(a, label_a, b, label_b), ...]) when the roles name a
         directed enslaved/enslaver or employee/employer pair.
+    A kind that yields nobody is left out, so a claim that records no tie
+    gives an empty list, and a claim whose roles support one kind of tie
+    gets exactly the edges it always did.
     Input is the claim's `(pid, role)` pairs as `claim_role_pairs` or
     `claim_persons_with_roles` gives them."""
     pairs = list(persons_with_roles)
+    ties: list[tuple[str, Any]] = []
     children, parents = parentage_parties(pairs)
     if children and parents:
-        return 'parentage', (children, parents)
+        ties.append(('parentage', (children, parents)))
     if any(role_meaning(r) == 'spouse' for _p, r in pairs):
-        return 'spouse', spouse_parties(pairs)
+        spouses = spouse_parties(pairs)
+        if spouses:
+            ties.append(('spouse', spouses))
     if subtype in SOCIAL_TIE_SUBTYPES:
-        return 'social', social_parties(pairs, subtype)
-    ties = []
+        social = social_parties(pairs, subtype)
+        if social:
+            ties.append(('social', social))
+    power = []
     for (role_a, edge_a), (role_b, edge_b) in POWER_TIE_ROLES:
         a_ids = [p for p, r in pairs if role_meaning(r) == role_a]
         b_ids = [p for p, r in pairs if role_meaning(r) == role_b]
-        ties += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
-    return 'power', ties
+        power += [(pa, edge_a, pb, edge_b) for pa in a_ids for pb in b_ids if pa != pb]
+    if power:
+        ties.append(('power', power))
+    return ties
 
 
 def relationship_claim_records_tie(
@@ -1277,10 +1291,13 @@ def relationship_claim_records_tie(
     `relationship` claim (`relationship_claim_parties`): a couple or social
     group of two or more different people, any parentage, or any power-tie
     pair."""
-    kind, parties = relationship_claim_parties(persons_with_roles, subtype)
-    if kind in ('spouse', 'social'):
-        return len(set(parties)) >= 2
-    return bool(parties)
+    for kind, parties in relationship_claim_parties(persons_with_roles, subtype):
+        if kind in ('spouse', 'social'):
+            if len(set(parties)) >= 2:
+                return True
+        elif parties:
+            return True
+    return False
 
 
 # The role a claim's OWN SUBJECT carries, per vital claim type. `birth` and
@@ -11140,38 +11157,52 @@ def claim_backs_relationship_entry(
     return True
 
 
-def claim_relationship_entry_type(
+def claim_relationship_entry_types(
     claim: dict, pid: str, alias_map: dict[str, str] | None = None,
-) -> str | None:
-    """The entry type (`parent`, `child` or `spouse`) a person's block owes
-    for `claim`, or None when the claim is not a kin tie naming them. Social
-    and power ties (employer, enslaver) are never owed, so an opted-in block
-    is not asked for them. A negated claim owes nothing: it records a tie the
+) -> list[str]:
+    """Every entry type (`parent`, `child`, `spouse`) a person's block owes
+    for `claim`, in that order, or [] when the claim is not a kin tie naming
+    them. One relationship claim can record two ties for one person: "Ann,
+    daughter of Cara, married Bob" owes Ann a `parent` entry and a `spouse`
+    entry (SPEC §8.3). A person the roles name as both child and parent is
+    read as the child, as `parentage_parties` reads them. Social and power
+    ties (employer, enslaver) are never owed, so an opted-in block is not
+    asked for them. A negated claim owes nothing: it records a tie the
     research found absent."""
     if claim.get('negated') in (True, 'true'):
-        return None
+        return []
     ctype = str(claim.get('type', ''))
     if ctype == 'marriage':
         # Only the couple owes a spouse entry, never a parent on the certificate.
-        return 'spouse' if pid in claim_spouse_pids(claim, alias_map) else None
+        return ['spouse'] if pid in claim_spouse_pids(claim, alias_map) else []
     if ctype == 'birth':
         children, parents = claim_parentage_pids(claim, alias_map)
         if not (children and parents):
-            return None
+            return []
         if pid in children:
-            return 'parent'     # the person was born: their entry names a parent
+            return ['parent']   # the person was born: their entry names a parent
         if pid in parents:
-            return 'child'
-        return None
+            return ['child']
+        return []
     if ctype != 'relationship':
-        return None
+        return []
+    types: list[str] = []
     if pid in claim_pids_in_role(claim, 'child', alias_map):
-        return 'parent'
-    if pid in claim_pids_in_role(claim, 'parent', alias_map):
-        return 'child'
+        types.append('parent')
+    elif pid in claim_pids_in_role(claim, 'parent', alias_map):
+        types.append('child')
     if pid in claim_pids_in_role(claim, 'spouse', alias_map):
-        return 'spouse'
-    return None
+        types.append('spouse')
+    return types
+
+
+def claim_relationship_entry_type(
+    claim: dict, pid: str, alias_map: dict[str, str] | None = None,
+) -> str | None:
+    """The first entry type `claim_relationship_entry_types` names for a
+    person, or None: the label a message uses for the tie."""
+    types = claim_relationship_entry_types(claim, pid, alias_map)
+    return types[0] if types else None
 
 
 def claim_owed_relationship_entries(
@@ -11180,9 +11211,9 @@ def claim_owed_relationship_entries(
     """Every `relationships:` entry an accepted kin claim owes, as
     `(person, entry type, other person, nature)`, in a stable order.
 
-    Each person the claim connects owes entries of the one type
-    `claim_relationship_entry_type` names, one per person on the other side
-    of the tie: a birth claim naming a child and two parents owes the child
+    Each person the claim connects owes entries of each type
+    `claim_relationship_entry_types` names, one per person on the other side
+    of that tie: a birth claim naming a child and two parents owes the child
     two `parent` entries and each parent a `child` entry. Every entry listed
     passes `claim_backs_relationship_entry`, so writing it can never produce
     a lint W115. A claim that is not accepted, is negated, or names only one
@@ -11204,19 +11235,17 @@ def claim_owed_relationship_entries(
     nature = claim_relationship_nature(claim)
     owed: list[tuple[str, str, str, str]] = []
     for pid in sorted(people):
-        entry_type = claim_relationship_entry_type(claim, pid, alias_map)
-        if entry_type is None:
-            continue
-        other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
-        if ctype == 'marriage':
-            others = people
-        elif ctype == 'birth':
-            others = parents if entry_type == 'parent' else children
-        else:
-            others = claim_pids_in_role(claim, other_role, alias_map)
-        for other in sorted(others - {pid}):
-            if claim_backs_relationship_entry(claim, pid, other, entry_type, alias_map):
-                owed.append((pid, entry_type, other, nature))
+        for entry_type in claim_relationship_entry_types(claim, pid, alias_map):
+            other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
+            if ctype == 'marriage':
+                others = people
+            elif ctype == 'birth':
+                others = parents if entry_type == 'parent' else children
+            else:
+                others = claim_pids_in_role(claim, other_role, alias_map)
+            for other in sorted(others - {pid}):
+                if claim_backs_relationship_entry(claim, pid, other, entry_type, alias_map):
+                    owed.append((pid, entry_type, other, nature))
     return owed
 
 
