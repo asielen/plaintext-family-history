@@ -10,7 +10,7 @@
 id: p-__________   # OPTIONAL. Leave it blank; `fha lint --fix-ids` fills it in. To make one yourself:
                    # p- and 10 characters, digits and a-z except i, l, o and u (e.g. p-de957bcda1).
                    # Pick at random, and never reuse a code another record already has.
-aliases:           # OPTIONAL: the same code again (the tools add the name below it)
+aliases:           # OPTIONAL: the same code again (the tools add the names below it)
   - p-__________   # paste the same code here too
 
 name: Full Name Here       # display name. Usually their name AT BIRTH, so the record

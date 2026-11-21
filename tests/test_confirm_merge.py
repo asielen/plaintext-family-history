@@ -623,6 +623,21 @@ class MergeArchiveTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_restricted_nickname_on_the_merged_record_never_joins_the_survivor(self) -> None:
+        # A hand edit had copied a private nickname into the merged record's
+        # aliases:; its marker sits in also_known_as:, which the merge does
+        # not fold, so the survivor would carry it as plain text.
+        text = self.merged_path.read_text(encoding='utf-8')
+        text = text.replace('aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy]',
+                            'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy, Quenby]\n'
+                            'also_known_as:\n  - {value: Quenby, restricted: true}')
+        self.merged_path.write_text(text, encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        aliases = [str(a) for a in read_record(self.survivor_path)['meta']['aliases']]
+        self.assertIn('Tommy', aliases)
+        self.assertNotIn('Quenby', aliases)
+
     # Full round trip -----------------------------------------------------------
 
     def test_merge_round_trip(self) -> None:

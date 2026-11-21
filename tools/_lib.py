@@ -450,11 +450,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forwards registry_error from the read above
 #
 #  Alias resolution / publication guards
-#    person_alias_mirror       : the names a person's aliases: carries: name + public variants
+#    person_alias_mirror       : the names a person's aliases: carries: name + public other names
+#    person_restricted_names   : the restricted other names that never sit in aliases:
 #    yaml_alias_entry          : one aliases: entry quoted for a YAML flow list
 #    flow_list_close           : where a one-line YAML flow list closes (not in a comment)
 #    merge_aliases_into_frontmatter: append missing entries to an aliases: list, in place
-#    sync_person_aliases       : keep a person's aliases: in step with name/name_variants
+#    sync_person_aliases       : keep a person's aliases: in step with name and other names
 #    resolve_typed_ref         - structured-field ref → typed canonical ID (K4 shared home)
 #    merge_survivor_map        - merged P-id -> the survivor its claims count for (SPEC §9)
 #    merge_pointer             - status: merged + merged_into -> the id claims move to
@@ -13056,44 +13057,75 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
 # Obsidian reads a note's frontmatter `aliases:` to offer the note while the
 # owner types `[[`: type "Tom" and Thomas Edward Hartley's record is offered,
 # and picking it writes a link to the file. The index already reads `name:` and
-# `name_variants:` directly, so this mirror is what makes the same names work in
+# the other-name fields directly, so this mirror is what makes the same names work in
 # an editor that reads only the file. Every verb that writes a person's name
 # keeps the mirror in step through `sync_person_aliases`, and `fha lint
 # --fix-aliases` brings older records up to date.
 
 
+# The fields that hold a person's other names, in the order the person
+# record lists them (SPEC §9). Each may be one string, a list, or carry
+# `{value:, restricted:}` entries; all of them resolve `[[name]]` links in
+# the index, and all of their public values are mirrored into `aliases:`.
+PERSON_OTHER_NAME_FIELDS = ('name_variants', 'name_at_birth', 'married_name',
+                            'also_known_as')
+
+
+def _person_other_names(meta: dict) -> list[tuple[str, bool]]:
+    """Every (value, restricted) a person's other-name fields carry, in
+    field order. A bare string is public; a `{value:, restricted:}` entry is
+    restricted unless its marker is absent or false (SPEC §19)."""
+    out: list[tuple[str, bool]] = []
+    for field in PERSON_OTHER_NAME_FIELDS:
+        raw = meta.get(field)
+        for item in (raw if isinstance(raw, list) else [raw]):
+            if isinstance(item, dict):
+                value = item.get('value')
+                restricted = item.get('restricted') not in (None, False, '', 'false')
+            else:
+                value, restricted = item, False
+            if value is None or isinstance(value, (dict, list)):
+                continue
+            text = str(value).strip()
+            if text:
+                out.append((text, restricted))
+    return out
+
+
+def person_restricted_names(meta: dict) -> set[str]:
+    """Lowercased values of every restricted entry in a person's other-name
+    fields (`name_variants`, `name_at_birth`, `married_name`,
+    `also_known_as`). These never sit in `aliases:`."""
+    return {v.lower() for v, restricted in _person_other_names(meta) if restricted}
+
+
 def person_alias_mirror(meta: dict) -> list[str]:
     """The names a person's `aliases:` carries besides the ID: `name:`, then
-    each public `name_variants:` entry, in that order, without repeats.
+    each public value of `name_variants:`, `name_at_birth:`, `married_name:`
+    and `also_known_as:`, in that order, without repeats. So typing "Peggy",
+    a maiden name or a married name after `[[` in Obsidian offers the person.
 
-    A restricted variant (`{value:, restricted: true}`, a private prior name)
-    is left out. It still resolves inside the archive, because the index reads
-    it from `name_variants:` where its restricted marker sits; copied into
-    `aliases:` it would be plain text with no marker, which every reader of the
-    file (an editor, a packet copy) would take as public. A `name:` of
-    `unknown` (an unnamed stub) is not a name and is left out too."""
+    A restricted value (`{value:, restricted: true}`, a private prior name)
+    is left out, and so is a public entry with the same text as a restricted
+    one: marking a name private anywhere keeps it out. It still resolves
+    inside the archive, because the index reads it from the field where its
+    restricted marker sits; copied into `aliases:` it would be plain text
+    with no marker, which every reader of the file (an editor, a packet copy)
+    would take as public. A `name:` of `unknown` (an unnamed stub) is not a
+    name and is left out too."""
     out: list[str] = []
     seen: set[str] = set()
     name = meta.get('name')
+    others = _person_other_names(meta)
+    private = {v.lower() for v, restricted in others if restricted}
     candidates = [str(name).strip()] if name else []
-    candidates += [str(v).strip() for v in public_name_variants(meta.get('name_variants'))]
+    candidates += [v for v, restricted in others if not restricted and v.lower() not in private]
     for value in candidates:
         key = value.lower()
         if not value or key == 'unknown' or key in seen:
             continue
         seen.add(key)
         out.append(value)
-    return out
-
-
-def _restricted_variant_values(meta: dict) -> set[str]:
-    """Lowercased values of a person's restricted `name_variants:` entries."""
-    out: set[str] = set()
-    raw = meta.get('name_variants')
-    for v in (raw if isinstance(raw, list) else []):
-        if isinstance(v, dict) and v.get('value') and \
-                v.get('restricted') not in (None, False, '', 'false'):
-            out.add(str(v['value']).strip().lower())
     return out
 
 
@@ -13429,11 +13461,12 @@ def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
     """Bring a person record's `aliases:` in step with its name fields.
 
     The rule (SPEC §9, §18): the ID first, then `name:`, then each public
-    `name_variants:` entry. Missing ones are added, and nothing else is
-    removed: a stem, a nickname or an old name (one a rename replaced) stays,
-    so a link written under it keeps resolving. The one thing taken out is
-    the value of a restricted variant, so a private name never sits in
-    `aliases:` as plain text.
+    value of `name_variants:`, `name_at_birth:`, `married_name:` and
+    `also_known_as:` (`person_alias_mirror`). Missing ones are added, and
+    nothing else is removed: a stem, a nickname or an old name (one a rename
+    replaced) stays, so a link written under it keeps resolving. The one
+    thing taken out is the value of a restricted entry in any of those
+    fields, so a private name never sits in `aliases:` as plain text.
 
     Left alone: a record with no frontmatter, no `id:`, no `aliases:` key (it
     never opted into the alias layer, the same scoping as lint W111), a
@@ -13456,7 +13489,7 @@ def sync_person_aliases(text: str) -> tuple[str, list[str], list[str]]:
     inner = fm.group(1)
     mirror = person_alias_mirror(meta)
     wanted = {v.lower() for v in mirror}
-    drop_keys = _restricted_variant_values(meta) - wanted
+    drop_keys = person_restricted_names(meta) - wanted
     drop_keys.discard(normalize_id(pid))
     inner, removed = _remove_aliases_from_frontmatter(inner, drop_keys)
     inner, added = merge_aliases_into_frontmatter(inner, pid, mirror, nl, id_first=True)

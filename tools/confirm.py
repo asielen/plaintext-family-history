@@ -200,6 +200,7 @@ from _lib import (
     alias_key_text,
     link_parts,
     strip_link_wrapper,
+    person_restricted_names,
     sync_person_aliases,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
@@ -2877,8 +2878,14 @@ def run_confirm_merge(
     ]
     merged_stems: list[str] = []
     fold_alias_items: list[str] = []
+    # A name the merged record marks restricted in any of its name fields
+    # stays off the survivor's aliases: even when a hand edit had put it in
+    # the merged record's own list: the survivor carries no marker for it.
+    merged_private = person_restricted_names(merged_meta)
     for a in _alias_strings(merged_meta):
         if not a or normalize_id(a) == pm or id_type_of(a):
+            continue
+        if a.lower() in merged_private:
             continue
         if a.lower() not in merged_variant_values:
             merged_stems.append(a)

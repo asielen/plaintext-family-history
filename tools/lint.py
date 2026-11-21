@@ -158,6 +158,7 @@ from _lib import (
     public_name_variants,
     merge_aliases_into_frontmatter,
     person_alias_mirror,
+    person_restricted_names,
     sync_person_aliases,
     yaml_alias_entry,
     reconcile_bracket_entries,
@@ -3113,10 +3114,12 @@ def _self_alias_ok(meta: dict, cid: str) -> bool:
 
 def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
     """What a person's `aliases:` lacks against SPEC §9's mirror, and whether
-    it holds a restricted name variant as plain text.
+    it holds a restricted name as plain text.
 
     Returns (missing, holds_restricted): `missing` is the own ID and then each
-    of `name:` and the public `name_variants:` not yet listed. Only a record
+    name `person_alias_mirror` gives (`name:` and the public values of
+    `name_variants:`, `name_at_birth:`, `married_name:` and `also_known_as:`)
+    not yet listed. Only a record
     that opted into the alias layer is checked (the same scoping as the
     self-ID check). A merged tombstone, or an `aliases:` written as a single
     value rather than a list, is checked for its own ID only: a tombstone's
@@ -3130,10 +3133,7 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
     public = {v.lower() for v in person_alias_mirror(meta)}
-    restricted = set()
-    for v in meta.get('name_variants') or []:
-        if isinstance(v, dict) and v.get('value') and _is_restricted(v.get('restricted')):
-            restricted.add(str(v['value']).strip().lower())
+    restricted = person_restricted_names(meta)
     return missing, bool((restricted - public) & present)
 
 
@@ -3141,8 +3141,9 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
     """The alias-layer maintenance + integrity checks (Pass 2).
 
       - W111 alias mirror: a record that uses `aliases:` but omits its own ID,
-        or a person whose `aliases:` lacks their `name:` or a public name
-        variant (SPEC §9, §18), or holds a restricted variant as plain text.
+        or a person whose `aliases:` lacks their `name:` or one of their
+        public other names (SPEC §9, §18), or holds a restricted one as
+        plain text.
         `fha lint --fix-aliases` brings each one into step.
       - W112 latent clash: one string names ≥2 records, but nothing links by it
         yet - normal in genealogy (same-name people), just a heads-up.
@@ -3164,11 +3165,11 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
         names = [m for m in missing if m != own]
         if names:
             which = 'that name' if len(names) == 1 else 'those names'
-            parts.append(f'aliases: does not list {", ".join(names)} from name: and '
-                         f'name_variants:, so typing [[ in Obsidian does not suggest '
+            parts.append(f'aliases: does not list {", ".join(names)} from the '
+                         f"person's names, so typing [[ in Obsidian does not suggest "
                          f'this person by {which}')
         if holds_restricted:
-            parts.append('aliases: holds a restricted name variant as plain text, '
+            parts.append('aliases: holds a restricted name as plain text, '
                          'where nothing marks it private')
         registry.alias_fixes.append(path)
         findings.append(Finding('W', 'W111', path,
@@ -4862,8 +4863,8 @@ def _fix_aliases(
     """W111 fix: bring each listed record's `aliases:` into step.
 
     A person gets the shared `_lib.sync_person_aliases` rule every name-writing
-    verb uses (own ID first, then `name:` and the public `name_variants:`; a
-    restricted variant taken out), so a backfilled record ends up exactly as
+    verb uses (own ID first, then `name:` and the person's other public
+    names; a restricted name taken out), so a backfilled record ends up exactly as
     a freshly written one would. A source, or a merged tombstone (whose list
     holds its bare ID only, SPEC §9), gets its own ID at the head of the
     list. Only the `aliases:` lines change; anything a human added stays.
@@ -8691,8 +8692,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                         'to preview)')
     p.add_argument('--fix-aliases', action='store_true',
                    help="Bring each W111 record's aliases: into step: its own ID, and for a "
-                        "person their name and public name variants, so typing [[ in "
-                        'Obsidian finds them by name (with --dry-run to preview)')
+                        "person their name and other public names (variants, nicknames, "
+                        "birth and married names), so typing [[ in Obsidian finds them by "
+                        'name (with --dry-run to preview)')
     # NOTE: the real E011 fixer shipped as the standalone `fha reconcile`
     # (reconcile.py, TOOLING §9) - deliberately NOT re-added here as a fix
     # flag: one owner per mutation, and E011's message names the tool.

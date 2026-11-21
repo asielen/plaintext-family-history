@@ -1,6 +1,6 @@
 ---
 id: p-7g8h9jkamb
-aliases: [p-7g8h9jkamb, Clara Mabel Frost]
+aliases: [p-7g8h9jkamb, Clara Mabel Frost, Clara Hartley]
 name: Clara Mabel Frost
 married_name: Clara Hartley
 profile_photo: clara-frost-portrait.jpg
