@@ -1,5 +1,5 @@
 """
-test_one_word_names.py - "surname not known" and "no surname" stay different
+test_one_word_names.py: "surname not known" and "no surname" stay different
 (SPEC §13).
 
 A one-word name ("Cher", "Caesar") says nothing about a surname, so it files

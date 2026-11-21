@@ -1,5 +1,5 @@
 """
-test_places_city_countries.py - a country that is its own capital city gets
+test_places_city_countries.py: a country that is its own capital city gets
 that city's coordinates (TOOLING §10).
 
 "Born in Luxembourg" names a country and a city at once. `fha places

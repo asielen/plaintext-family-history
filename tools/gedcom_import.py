@@ -647,7 +647,7 @@ def _person_filename(given: str, surname: str, pid: str, *,
     (`__caesar_P-….md`), SPEC §13's no-surname form. A person with no NAME at
     all files as `unknown__unknown_{P-id}.md`; and a person with a surname
     but no given name (`1 NAME /Dodson/`) takes 'unknown' in the given slot
-    rather than a second copy of the surname - the same answer
+    rather than a second copy of the surname, the same answer
     `_lib.stub_filename` gives for that name."""
     if not given and not surname:
         return f'unknown__unknown_{pid}.md'

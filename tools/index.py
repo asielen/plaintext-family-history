@@ -2087,7 +2087,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     _insert_parent_edges(conn, child_ids, parent_ids, cid, dmin, dmax)
                 elif kind == 'spouse':
                     # A relationship claim naming spouses yields reciprocal spouse
-                    # edges, like a marriage claim - and obeys the same scoping
+                    # edges, like a marriage claim, and obeys the same scoping
                     # rule (_lib.spouse_parties), for the same reason. The
                     # two-person fallback inside that rule is reached here by a
                     # claim whose roles: map resolves to fewer than two spouses (a
@@ -2113,7 +2113,7 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     # (_lib.social_parties, issue #118): a friend claim can name a
                     # third person the anecdote merely runs through, and pairing
                     # every name mutually made that person a friend of both. Since
-                    # they are separately - and correctly - somebody's parent, the
+                    # they are separately (and correctly) somebody's parent, the
                     # page then showed one pair as parent AND friend at once, with
                     # nothing to tell the reader which edge the archive has
                     # evidence for. A claim with no roles: entry for its subtype

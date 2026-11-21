@@ -1,5 +1,5 @@
 """
-test_relationship_all_ties.py - a relationship claim records every tie its
+test_relationship_all_ties.py: a relationship claim records every tie its
 roles name (SPEC §8.3).
 
 "Edith, daughter of Clara, married George" is one claim: `parent: [Clara]`,

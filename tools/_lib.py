@@ -16187,8 +16187,8 @@ def stub_slug_name(
     `dodson__roy_eugene_P-….md` (issue #53). Splitting then continues on
     whatever tokens remain: two or more -> the last is the surname as usual;
     exactly one -> the SAME treatment the one-word case below gets ("Roy
-    Jr" has no more of a known surname than "Roy" alone does - the suffix
-    does not promote "Roy" into one).
+    Jr" has no more of a known surname than "Roy" alone does, since the
+    suffix does not promote "Roy" into one).
 
     A SINGLE-token name (with no suffix to strip) says nothing about a
     surname: "Cher" may be a mononym, or the one name a record gave for a
