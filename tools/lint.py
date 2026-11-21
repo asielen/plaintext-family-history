@@ -159,6 +159,7 @@ from _lib import (
     merge_aliases_into_frontmatter,
     person_alias_mirror,
     person_restricted_names,
+    alias_entry_key,
     sync_person_aliases,
     yaml_alias_entry,
     reconcile_bracket_entries,
@@ -3128,7 +3129,9 @@ def _person_alias_gaps(meta: dict, pid: str) -> tuple[list[str], bool]:
         return [], False
     if not isinstance(aliases, list) or is_merged_meta(meta):
         return ([] if _self_alias_ok(meta, pid) else [fmt_id_display(pid)]), False
-    present = {alias_key_text(str(a)).strip().lower() for a in aliases if a is not None}
+    # A wikilink-form entry (`"[[Name]]"`, or an unquoted `[[Name]]` YAML
+    # reads as a nested list) is the same handle as the plain name.
+    present = {alias_entry_key(a) for a in aliases if a is not None}
     missing = [] if normalize_id(pid) in present else [fmt_id_display(pid)]
     missing += [v for v in person_alias_mirror(meta) if v.lower() not in present]
     public = {v.lower() for v in person_alias_mirror(meta)}
@@ -3305,7 +3308,7 @@ def _check_reciprocity(
         e_to = normalize_id(e_to) if e_to else None
         if e_to == owner_pid and str(e.get('type', '')).strip().lower() == mirror_role:
             if relationship_entry_is_guess(e):
-                if _entry_subtype(e) != (_claim_subtype_norm(claims[0]) or _entry_subtype(e)):
+                if _entry_subtype(e) != (_claim_subtype_norm(claims[0], mirror_role) or _entry_subtype(e)):
                     continue   # a guess of another nature: not this tie, no promise
                 # A guess is not a mirror of a sourced tie: left alone, the
                 # other side keeps drawing as a guess what the evidence has
@@ -3336,7 +3339,7 @@ def _check_reciprocity(
         'other_pid': other_pid,
         'owner_pid': owner_pid,
         'mirror_role': mirror_role,
-        'subtype': _claim_subtype_norm(claims[0]),
+        'subtype': _claim_subtype_norm(claims[0], mirror_role),
         'claim_ids': cids,
     })
 
@@ -3368,7 +3371,7 @@ def _entry_is_settled(registry: Registry, entry: Any, pid: str, alias_map) -> bo
         sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
         candidates += [c for c in registry.source_claims.get(sid, []) if isinstance(c, dict)]
     return any(claim and _claim_backs_edge(claim, pid, other, role, alias_map)
-               and _claim_subtype_norm(claim) in ('', nature)
+               and _claim_subtype_norm(claim, role) in ('', nature)
                for claim in candidates)
 
 
@@ -3650,7 +3653,7 @@ def _check_relationships_reconciliation(
 
             entry_subtype = _entry_subtype(entry)
             for matched in matched_claims:
-                claim_subtype = _claim_subtype_norm(matched)
+                claim_subtype = _claim_subtype_norm(matched, role)
                 if entry_subtype and claim_subtype and entry_subtype != claim_subtype \
                         and subtype_misuse(claim_subtype):
                     # The claim's word is not a nature at all (W158 on the
@@ -3684,10 +3687,16 @@ def _check_relationships_reconciliation(
             # applied once any entry cites it.
             if owed:
                 sid = registry.claim_ids.get(cid)
-                if all(any(relationship_entry_applies(e, cid, sid, other, etype, alias_map)
-                           for e in block)
-                       for _p, etype, other, _n in owed):
+                missing = [etype for _p, etype, other, _n in owed
+                           if not any(relationship_entry_applies(e, cid, sid, other, etype,
+                                                                 alias_map)
+                                      for e in block)]
+                if not missing:
                     continue
+                # Name the tie that is missing: a claim recording a parent
+                # tie and a marriage, with the parent entry already written,
+                # is asking for the spouse entry.
+                label = ' and '.join(dict.fromkeys(missing))
             elif cid in referenced_cids:
                 continue
             findings.append(Finding('W', 'W115', profile_path,

@@ -194,5 +194,103 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual([m.text for m in res.messages if m.code in ('W115', 'W159')], [])
 
 
+
+def _claim_yaml(subtype: str = '') -> str:
+    sub = f'  subtype: {subtype}\n' if subtype else ''
+    return CLAIM_YAML.replace('  type: relationship\n', '  type: relationship\n' + sub)
+
+
+class TieNatureTests(unittest.TestCase):
+    """The claim's `subtype:` names the parent tie's nature (SPEC §8.2). The
+    marriage the same claim records is never written or read as adoptive
+    or biological."""
+
+    def _archive(self, subtype='', george_rel='', edith_rel=''):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        stubs = root / 'people' / 'stubs'
+        stubs.mkdir(parents=True)
+        (stubs / f'hartley__edith_{EDITH}.md').write_text(
+            _person(EDITH, 'Edith', 'Hartley', edith_rel), encoding='utf-8')
+        george = stubs / f'bradford__george_{GEORGE}.md'
+        george.write_text(_person(GEORGE, 'George', 'Bradford', george_rel), encoding='utf-8')
+        (stubs / f'frost__clara_{CLARA}.md').write_text(
+            _person(CLARA, 'Clara', 'Frost'), encoding='utf-8')
+        src = root / 'sources' / 'notes'
+        src.mkdir(parents=True)
+        (src / f'family-note_{SOURCE}.md').write_text(
+            f'---\nid: {SOURCE}\ntitle: Family note\nsource_type: other\n---\n\n'
+            '## Claims\n\n```yaml\n' + _claim_yaml(subtype) + '```\n', encoding='utf-8')
+        return root, george
+
+    def test_owed_spouse_entries_carry_no_parentage_nature(self):
+        for subtype in ('', 'adoptive'):
+            with self.subTest(subtype=subtype):
+                claim = yaml.safe_load(_claim_yaml(subtype))[0]
+                owed = {(p, t, o): n for p, t, o, n in claim_owed_relationship_entries(claim)}
+                self.assertEqual(owed[(GEORGE, 'spouse', EDITH)], '')
+                self.assertEqual(owed[(EDITH, 'spouse', GEORGE)], '')
+                self.assertEqual(owed[(EDITH, 'parent', CLARA)], subtype or 'biological')
+
+    def test_fix_applied_writes_a_spouse_entry_with_no_subtype(self):
+        for subtype in ('', 'adoptive'):
+            with self.subTest(subtype=subtype):
+                root, george = self._archive(subtype, george_rel='relationships: []\n')
+                lint.run_lint(root, {}, fix_applied=True)
+                (entry,) = read_record(george)['meta']['relationships']
+                self.assertEqual(entry['type'], 'spouse')
+                self.assertNotIn('subtype', entry)
+
+    def test_an_existing_spouse_entry_takes_the_claim_without_a_new_nature(self):
+        for existing in ('', '    subtype: civil\n'):
+            with self.subTest(existing=existing):
+                root, george = self._archive('adoptive', george_rel=(
+                    'relationships:\n'
+                    f'  - to: "[[{EDITH}|Edith Hartley]]"\n'
+                    '    type: spouse\n' + existing))
+                lint.run_lint(root, {}, fix_applied=True)
+                block = read_record(george)['meta']['relationships']
+                self.assertEqual(len(block), 1, block)
+                self.assertEqual(block[0].get('subtype'), existing.split(':')[-1].strip() or None)
+                self.assertIn(CLAIM, str(block[0].get('claims')).lower())
+
+    def test_a_civil_spouse_entry_citing_the_claim_is_not_a_mismatch(self):
+        root, _george = self._archive('adoptive', george_rel=(
+            'relationships:\n'
+            f'  - to: "[[{EDITH}|Edith Hartley]]"\n'
+            '    type: spouse\n    subtype: civil\n'
+            f'    claims: ["[[{CLAIM}]]"]\n'))
+        res = lint.run_lint(root, {})
+        self.assertEqual([m.text for m in res.messages
+                          if m.code == 'W115' and 'subtype' in m.text], [])
+
+    def test_w115_names_the_missing_marriage_not_the_parent_tie(self):
+        root, _george = self._archive(edith_rel=(
+            'relationships:\n'
+            f'  - to: "[[{CLARA}|Clara Frost]]"\n'
+            '    type: parent\n'
+            f'    claims: ["[[{CLAIM}]]"]\n'))
+        res = lint.run_lint(root, {})
+        (w115,) = [m for m in res.messages if m.code == 'W115']
+        self.assertIn('a spouse edge', w115.text)
+        self.assertNotIn('parent edge', w115.text)
+
+    def test_tree_views_draw_the_marriage_without_the_parent_nature(self):
+        import views
+        root, _george = self._archive('adoptive')
+        index.build_index(root, {})
+        conn = sqlite3.connect(str(root / '.cache' / 'index.sqlite'))
+        conn.row_factory = sqlite3.Row
+        try:
+            edges = views._collect_edges(conn, EDITH, ['spouse', 'parent'])
+        finally:
+            conn.close()
+        by_type = {e['type']: e for e in edges}
+        self.assertIsNone(by_type['spouse']['subtype'])
+        self.assertTrue(by_type['spouse']['genetic'])
+        self.assertEqual(by_type['parent']['subtype'], 'adoptive')
+
+
 if __name__ == '__main__':
     unittest.main()

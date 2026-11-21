@@ -125,5 +125,40 @@ class OlderFilesStayQuietTests(_Archive):
         self.assertEqual(len(self._w138()[1]), 1)
 
 
+
+class GedcomExportTests(_Archive):
+    """In GEDCOM an empty slash field (`Cher //`) says "no surname", so a
+    one-word name whose surname is not known is exported with no slashes,
+    and a re-import files it under `unknown` again."""
+
+    def test_unknown_and_none_export_differently(self):
+        import gedcom
+        import index
+        stubs = self.root / 'people' / 'stubs'
+        (stubs / 'unknown__cher_p-aaaaaaaaaa.md').write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Cher\nliving: false\ntier: stub\n---\n',
+            encoding='utf-8')
+        (stubs / '__caesar_p-bbbbbbbbbb.md').write_text(
+            '---\nid: p-bbbbbbbbbb\nname: Caesar\nsurname: ""\nliving: false\n'
+            'tier: stub\n---\n', encoding='utf-8')
+        (stubs / 'unknown__henry_vii_p-cccccccccc.md').write_text(
+            '---\nid: p-cccccccccc\nname: Henry VII\nliving: false\ntier: stub\n---\n',
+            encoding='utf-8')
+        with contextlib.redirect_stdout(io.StringIO()):
+            index.build_index(self.root, {})
+        text = gedcom.run_gedcom(self.root, None, all_persons=True, include_living=True)['text']
+        names = sorted(l for l in text.splitlines() if l.startswith('1 NAME'))
+        self.assertEqual(names, ['1 NAME Caesar //', '1 NAME Cher', '1 NAME Henry VII'])
+
+    def test_gedcom_name_rule(self):
+        import gedcom
+        self.assertEqual(gedcom._gedcom_name('Cher', ''), ('Cher', None))
+        self.assertEqual(gedcom._gedcom_name('Cher', '', no_surname_recorded=True),
+                         ('Cher //', None))
+        self.assertEqual(gedcom._gedcom_name('Jon Thorsson', '', no_surname_recorded=True),
+                         ('Jon Thorsson //', None))
+        self.assertEqual(gedcom._gedcom_name('Roy Dodson', 'Dodson'), ('Roy /Dodson/', None))
+
+
 if __name__ == '__main__':
     unittest.main()

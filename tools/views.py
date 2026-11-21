@@ -3645,12 +3645,23 @@ def _collect_edges(
     placeholders = ','.join('?' * len(rels))
     rows = conn.execute(
         f"""
-        SELECT DISTINCT r.rel, r.other_id, r.claim_id, r.date_start, r.date_end, c.subtype
+        SELECT DISTINCT r.rel, r.other_id, r.claim_id, r.date_start, r.date_end, c.subtype,
+               EXISTS(SELECT 1 FROM relationships r2 WHERE r2.claim_id = r.claim_id
+                      AND r2.rel IN ('parent', 'child')) AS records_parentage
         FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
         WHERE r.person_id = ? AND r.rel IN ({placeholders})
         """,
         [pid] + rels,
     ).fetchall()
+
+    def nature(row) -> str | None:
+        # On a claim that also records a parent tie, `subtype:` is that
+        # tie's nature (SPEC §8.2): the marriage or friendship the same
+        # claim records is not "adoptive".
+        if row['rel'] not in ('parent', 'child') and row['records_parentage']:
+            return None
+        return (row['subtype'] or '').strip().lower() or None
+
     return [
         {
             'type': row['rel'],
@@ -3659,8 +3670,8 @@ def _collect_edges(
             'claim_id': row['claim_id'],
             # The bond's nature (SPEC §12.2): a non-genetic parent/child edge draws
             # distinctly; unset/legacy subtypes default to genetic, back-compatibly.
-            'subtype': (row['subtype'] or '').strip().lower() or None,
-            'genetic': is_genetic_parent_subtype(row['subtype']),
+            'subtype': nature(row),
+            'genetic': is_genetic_parent_subtype(nature(row)),
             'date_start': row['date_start'] or None,
             'date_end': row['date_end'] or None,
         }

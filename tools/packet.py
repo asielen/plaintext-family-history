@@ -53,7 +53,8 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     itself (the README counts what was left out, in plain words) - the withhold
     never requires the claim to carry an `id:`, because id-less claims are a
     valid hand-authored state. The profile copy likewise drops withheld
-    `name_variants` entries and their `aliases:` mirrors, matching mirrors
+    names (a restricted entry in `name_variants`, `name_at_birth`,
+    `married_name` or `also_known_as`) and their `aliases:` mirrors, matching mirrors
     through wikilink wrappers and the nested list an unquoted `[[name]]`
     YAML-parses to, the same forgiving forms every alias consumer resolves.
     A record that cannot be redacted safely - or whose claims cannot even be
@@ -217,6 +218,8 @@ import yaml
 
 from _lib import (
     claim_date_order_sql,
+    PERSON_OTHER_NAME_FIELDS,
+    person_other_name_entries,
     PARKED_CLAIM_SQL,
     # _AI_DRAFT_MARK_RE is _lib-private on purpose (the marker grammar has ONE
     # home, kept in sync with confirm.py's flip grammar); packet imports it for
@@ -344,8 +347,8 @@ def _record_restriction(path: Path) -> tuple[object, str | None]:
 # ── Privacy redaction of copied records ────────────────────────────────────────
 # A packet ships COPIES of record files, and a copy can leak what the gather
 # filters withheld: a restricted claim's YAML inside an otherwise-included
-# source, or a restricted `name_variants` entry (a private prior name) in the
-# profile's frontmatter. These helpers cut exactly those entries out of the
+# source, or a restricted name (a private prior name, in any of the person's
+# name fields) in the profile's frontmatter. These helpers cut exactly those entries out of the
 # copy - a surgical line-span removal, so the rest of the file stays
 # byte-faithful - and every doubt fails CLOSED: a copy that cannot be redacted
 # is not written at all.
@@ -861,12 +864,46 @@ def _flatten_alias_strings(value) -> list[str]:
     return [str(value)]
 
 
+def _strip_frontmatter_scalar_key(fm_text: str, key: str, should_strip) -> tuple[str, list] | None:
+    """Remove a top-level frontmatter key whose single value `should_strip`
+    matches: `name_at_birth: {value: …, restricted: true}`, or the same
+    mapping written as indented lines below the key. A list value is left
+    for `_strip_frontmatter_list_entries`.
+
+    Returns (new_fm_text, removed_values); (fm_text, []) when the key is
+    absent or kept; None when the key's lines do not read as YAML (the
+    caller fails closed)."""
+    lines = fm_text.splitlines(keepends=True)
+    key_re = re.compile(rf'^{re.escape(key)}\s*:')
+    offset = 0
+    for i, line in enumerate(lines):
+        if not line.startswith((' ', '\t')) and key_re.match(line):
+            start = offset
+            end = offset + len(line)
+            for nxt in lines[i + 1:]:
+                if nxt.startswith((' ', '\t')) or not nxt.strip():
+                    end += len(nxt)
+                    continue
+                break
+            try:
+                doc = safe_load_yaml(fm_text[start:end])
+            except yaml.YAMLError:
+                return None
+            value = doc.get(key) if isinstance(doc, dict) else None
+            if isinstance(value, list) or not should_strip(value):
+                return fm_text, []
+            return fm_text[:start] + fm_text[end:], [value]
+        offset += len(line)
+    return fm_text, []
+
+
 def _redact_profile_text(
     text: str, *, include_restricted: bool, include_dna: bool,
 ) -> tuple[str, int] | None:
-    """Strip withheld `name_variants` entries (and their `aliases:` mirrors)
-    and guessed `relationships:` entries (`status: hypothesis`) from a
-    profile copy's frontmatter.
+    """Strip withheld names (a restricted entry in `name_variants`,
+    `name_at_birth`, `married_name` or `also_known_as`, and their `aliases:`
+    mirrors) and guessed `relationships:` entries (`status: hypothesis`) from
+    a profile copy's frontmatter.
 
     A `{value:, restricted: …}` name variant is a private prior name (SPEC
     §19); TOOLING §8 applies the shared flag logic to a NAME like anything
@@ -919,10 +956,24 @@ def _redact_profile_text(
         return None
     fm_text, guess_count = guesses[0], guesses[1]
 
-    result = _strip_frontmatter_list_entries(fm_text, 'name_variants', _strip_variant)
-    if result is None:
-        return None
-    fm_text, removed, removed_items = result
+    # Every field that holds a person's other names (the shared
+    # `_lib.PERSON_OTHER_NAME_FIELDS`): a restricted birth or married name
+    # is as private as a restricted variant (SPEC §9).
+    removed = 0
+    removed_items: list = []
+    for field in PERSON_OTHER_NAME_FIELDS:
+        result = _strip_frontmatter_list_entries(fm_text, field, _strip_variant)
+        if result is None:
+            return None
+        fm_text, n, items = result
+        removed += n
+        removed_items += items
+        scalar = _strip_frontmatter_scalar_key(fm_text, field, _strip_variant)
+        if scalar is None:
+            return None
+        fm_text, items = scalar
+        removed += len(items)
+        removed_items += items
     if not removed:
         return text[:fm_start] + fm_text + text[fm_end:], 0, guess_count
 
@@ -1161,8 +1212,10 @@ class _WithheldLinkNames:
                 meta = read_record(self.archive_root / rel)['meta']
             except Exception:  # noqa: BLE001 (no record to read: the indexed name stands)
                 meta = {}
-            for raw in [*(meta.get('name_variants') or []), *(meta.get('aliases') or [])]:
-                value = raw.get('value') if isinstance(raw, dict) else raw
+            # Every name the record carries, birth and married names too.
+            values = [v for _f, v, _m in person_other_name_entries(meta)]
+            values += [raw for raw in (meta.get('aliases') or []) if not isinstance(raw, dict)]
+            for value in values:
                 text = ' '.join(str(value or '').split())
                 if text and not id_type_of(text):
                     names.add(text)

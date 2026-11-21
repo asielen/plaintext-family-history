@@ -10413,6 +10413,17 @@ def alias_key_text(ref: Any) -> str:
     return _split_link(ref)[0]
 
 
+def alias_entry_key(entry: Any) -> str:
+    """One `aliases:` entry, as parsed YAML, read as the lowercased handle
+    it names: `Edith`, `"[[Edith]]"` and an unquoted `[[Edith]]` (which YAML
+    reads as a nested list) all give `edith`. The alias mirror's checks and
+    edits compare entries this way, so a private name written as a wikilink
+    is found and taken out like a plain one."""
+    if isinstance(entry, list):
+        entry = yaml_list_link_text(entry)
+    return alias_key_text(str(entry)).strip().lower()
+
+
 def yaml_list_link_text(item: list) -> str:
     """The `[[…]]` link an unquoted YAML link became, written back as text.
 
@@ -11048,17 +11059,28 @@ def relationship_entry_nature(entry: dict) -> str:
     return 'biological' if role in ('parent', 'child') else ''
 
 
-def claim_relationship_nature(claim: dict) -> str:
-    """A claim's nature, for comparing with an entry's. A claim naming a
-    child and a parent with no `subtype:` is `biological`."""
+def claim_relationship_nature(claim: dict, entry_type: str | None = None) -> str:
+    """A claim's nature, for comparing with (or writing onto) an entry of
+    `entry_type`. A claim naming a child and a parent with no `subtype:` is
+    `biological`.
+
+    On a relationship claim that records a parent tie, `subtype:` names the
+    nature of that tie (SPEC §8.2). A marriage the same claim records
+    ("Edith, adopted daughter of Clara, married George") is not adoptive,
+    so a `spouse` entry reads no nature from such a claim: it is never
+    written `subtype: adoptive`, and an entry saying `civil` is not called a
+    mismatch. A claim recording only a marriage keeps its own subtype."""
+    roles = claim.get('roles')
+    meanings = ({role_meaning(k) for k, v in roles.items() if v}
+                if isinstance(roles, dict) else set())
+    records_parentage = {'child', 'parent'} <= meanings
+    if entry_type == 'spouse' and records_parentage \
+            and str(claim.get('type', '')).strip().lower() == 'relationship':
+        return ''
     st = relationship_nature_word(claim.get('subtype'))
     if st:
         return st
-    roles = claim.get('roles')
-    if not isinstance(roles, dict):
-        return ''
-    meanings = {role_meaning(k) for k, v in roles.items() if v}
-    if {'child', 'parent'} <= meanings:
+    if records_parentage and entry_type in (None, 'parent', 'child'):
         return 'biological'
     return ''
 
@@ -11232,10 +11254,12 @@ def claim_owed_relationship_entries(
         people = set()
         for meaning in ('child', 'parent', 'spouse'):
             people |= claim_pids_in_role(claim, meaning, alias_map)
-    nature = claim_relationship_nature(claim)
     owed: list[tuple[str, str, str, str]] = []
     for pid in sorted(people):
         for entry_type in claim_relationship_entry_types(claim, pid, alias_map):
+            # The nature belongs to the tie: a parentage subtype never
+            # reaches the spouse entry the same claim owes.
+            nature = claim_relationship_nature(claim, entry_type)
             other_role = RELATIONSHIP_ENTRY_ROLES[entry_type][1]
             if ctype == 'marriage':
                 others = people
@@ -13100,31 +13124,45 @@ PERSON_OTHER_NAME_FIELDS = ('name_variants', 'name_at_birth', 'married_name',
                             'also_known_as')
 
 
-def _person_other_names(meta: dict) -> list[tuple[str, bool]]:
-    """Every (value, restricted) a person's other-name fields carry, in
-    field order. A bare string is public; a `{value:, restricted:}` entry is
-    restricted unless its marker is absent or false (SPEC §19)."""
-    out: list[tuple[str, bool]] = []
+def person_other_name_entries(meta: dict) -> list[tuple[str, str, Any]]:
+    """Every `(field, value, restricted marker)` a person's other-name
+    fields carry, in field order (`PERSON_OTHER_NAME_FIELDS`). A bare string
+    has the marker None; a `{value:, restricted:}` entry has its marker as
+    written (`true`, `dna`, `by-request`, `false`, ...).
+
+    The one reader every surface that withholds a private name goes
+    through: the alias mirror, lint W111, the packet, WikiTree and the
+    site. A name marked restricted in `name_at_birth:` is as private as one
+    in `name_variants:` (SPEC §9), so no exporter may read only one field."""
+    out: list[tuple[str, str, Any]] = []
     for field in PERSON_OTHER_NAME_FIELDS:
         raw = meta.get(field)
         for item in (raw if isinstance(raw, list) else [raw]):
             if isinstance(item, dict):
-                value = item.get('value')
-                restricted = item.get('restricted') not in (None, False, '', 'false')
+                value, marker = item.get('value'), item.get('restricted')
             else:
-                value, restricted = item, False
+                value, marker = item, None
             if value is None or isinstance(value, (dict, list)):
                 continue
             text = str(value).strip()
             if text:
-                out.append((text, restricted))
+                out.append((field, text, marker))
     return out
+
+
+def _person_other_names(meta: dict) -> list[tuple[str, bool]]:
+    """Every (value, restricted) a person's other-name fields carry, in
+    field order. A bare string is public; a `{value:, restricted:}` entry is
+    restricted unless its marker is absent or false (SPEC §19)."""
+    return [(value, marker not in (None, False, '', 'false'))
+            for _field, value, marker in person_other_name_entries(meta)]
 
 
 def person_restricted_names(meta: dict) -> set[str]:
     """Lowercased values of every restricted entry in a person's other-name
     fields (`name_variants`, `name_at_birth`, `married_name`,
-    `also_known_as`). These never sit in `aliases:`."""
+    `also_known_as`). These never sit in `aliases:`, and no public export
+    prints them."""
     return {v.lower() for v, restricted in _person_other_names(meta) if restricted}
 
 
@@ -13280,12 +13318,12 @@ def _merge_aliases_unchecked(
         return fm_text, []
     raw = parsed.get('aliases')
     if isinstance(raw, list):
-        existing = [str(a) for a in raw if a is not None]
+        existing = [a for a in raw if a is not None]
     elif raw is None:
         existing = []
     else:
         return fm_text, []   # a scalar aliases: value is a hand form; leave it alone
-    have = {alias_key_text(a).strip().lower() for a in existing}
+    have = {alias_entry_key(a) for a in existing}
     head: list[str] = []
     if id_first and normalize_id(new_id) not in have:
         head = [new_id]
@@ -13392,10 +13430,12 @@ def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[s
             items = safe_load_yaml(head_line[flow_open.end() - 1:close + 1])
         except yaml.YAMLError:
             return fm_text, []
-        if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
+        if not isinstance(items, list):
             return fm_text, []
-        keep = [i for i in items if i.strip().lower() not in drop]
-        removed = [i for i in items if i.strip().lower() in drop]
+        keep = [i for i in items if alias_entry_key(i) not in drop]
+        removed = [i for i in items if alias_entry_key(i) in drop]
+        if not all(isinstance(i, str) for i in keep):
+            return fm_text, []   # a kept entry this rewrite could not write back as it was
         if not removed:
             return fm_text, []
         new_line = (head_line[:flow_open.end()]
@@ -13421,7 +13461,7 @@ def _remove_aliases_unchecked(fm_text: str, drop: set[str]) -> tuple[str, list[s
             value = safe_load_yaml(im.group(2))
         except yaml.YAMLError:
             value = None
-        if isinstance(value, str) and value.strip().lower() in drop:
+        if isinstance(value, (str, list)) and alias_entry_key(value) in drop:
             removed.append(value)
         else:
             out_parts.append(im.group(0))

@@ -519,5 +519,55 @@ class OtherNameFieldTests(unittest.TestCase):
         self.assertEqual(meta['aliases'], [PID, 'Thomas Hartly', 'Thomas Hartley', 'Ned'])
 
 
+
+class WikilinkAliasTests(unittest.TestCase):
+    """A private name written into `aliases:` as a wikilink (`"[[Name]]"`,
+    or an unquoted `[[Name]]` YAML reads as a nested list) is found by W111
+    and taken out by `--fix-aliases`, so the warning clears, and no line
+    prints the name."""
+
+    PRIVATE = 'Birthsecret'
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        self.people = self.root / 'people' / 'stubs'
+        self.people.mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _w111(self, **kw):
+        res = lint.run_lint(self.root, {}, **kw)
+        return res, [m for m in res.messages if m.code == 'W111']
+
+    def test_quoted_and_unquoted_wikilinks_are_taken_out(self):
+        for field in ('name_at_birth: {value: Birthsecret, restricted: true}\n',
+                      'name_variants: [{value: Birthsecret, restricted: true}]\n'):
+            for entry in ('"[[Birthsecret]]"', '[[Birthsecret]]'):
+                with self.subTest(field=field, entry=entry):
+                    path = self.people / f'hartley__thomas_edward_{PID}.md'
+                    path.write_text(_person(
+                        f'aliases:\n  - {PID}\n  - Thomas Edward Hartley\n  - {entry}\n'
+                        '  - grandpa-tom\n', extra=field), encoding='utf-8')
+                    _, found = self._w111()
+                    self.assertEqual(len(found), 1)
+                    self.assertIn('restricted name', found[0].text)
+                    res, _ = self._w111(fix_aliases=True)
+                    shown = ' '.join([found[0].text] + res.data['progress'])
+                    self.assertNotIn(self.PRIVATE, shown)
+                    self.assertEqual(read_record(path)['meta']['aliases'],
+                                     [PID, 'Thomas Edward Hartley', 'grandpa-tom'])
+                    self.assertEqual(self._w111()[1], [])
+
+    def test_a_public_name_written_as_a_wikilink_is_not_added_twice(self):
+        path = self.people / f'hartley__thomas_edward_{PID}.md'
+        path.write_text(_person(f'aliases:\n  - {PID}\n  - "[[Thomas Edward Hartley]]"\n'),
+                        encoding='utf-8')
+        self.assertEqual(self._w111()[1], [])
+
+
 if __name__ == '__main__':
     unittest.main()

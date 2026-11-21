@@ -133,6 +133,7 @@ from _lib import (
     carried_living_message,
     person_is_living,
     person_merge_chain,
+    person_restricted_names,
     read_record,
     read_restriction_marker,
     resolve_root_arg,
@@ -777,7 +778,8 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
     variant_cache: dict[str, set[str]] = {}
 
     def _restricted_variants(pid: str) -> set[str]:
-        """Lowercased restricted `name_variants` values from pid's record file
+        """Lowercased restricted name values from pid's record file (every
+        name field, `_lib.person_restricted_names`)
         (the index carries no name-level `restricted`), memoized per export. An
         absent or unreadable record contributes no variants here, but that is not
         a leak: every deadname reference resolves to a P-id (name-link alias or
@@ -795,11 +797,9 @@ def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: st
                     meta = read_record(archive_root / prow['path'])['meta']
                 except Exception:
                     meta = {}
-                for v in meta.get('name_variants') or []:
-                    if isinstance(v, dict) and _is_restricted_value(v.get('restricted')):
-                        value = str(v.get('value') or '').strip().lower()
-                        if value:
-                            values.add(value)
+                # Every name field, not only name_variants: a restricted
+                # birth or married name is as private (SPEC §9).
+                values |= person_restricted_names(meta)
             variant_cache[pid] = values
         return variant_cache[pid]
 

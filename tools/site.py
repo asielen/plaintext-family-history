@@ -326,6 +326,7 @@ from _lib import (
     photos_ignore_patterns,
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
+    person_restricted_names,
     read_record,
     read_restriction_marker,
     read_text_or_report,
@@ -4435,11 +4436,11 @@ class _SiteBuilder:
             meta = rec['meta']
             if _is_restricted_value(meta.get('restricted')):
                 self.restricted_persons.add(pid)
-            for v in meta.get('name_variants') or []:
-                if isinstance(v, dict) and _is_restricted_value(v.get('restricted')):
-                    value = v.get('value')
-                    if value:
-                        self.restricted_names.setdefault(pid, set()).add(str(value).strip().lower())
+            # Every name field (`_lib.person_restricted_names`): a restricted
+            # birth or married name is as private as a restricted variant.
+            private = person_restricted_names(meta)
+            if private:
+                self.restricted_names.setdefault(pid, set()).update(private)
         # A restricted record merged into someone else still governs: the
         # index hands its claims to the survivor (SPEC §9), so the survivor
         # is withheld too, or those claims would publish under his name
