@@ -27,26 +27,36 @@ Obsidian link mode makes the tools write every link by file name, so Obsidian fo
 - a person: `[[hartley__thomas_edward_p-de957bcda1|Thomas Edward Hartley]]`
 - a source: `[[1880-census-fairview-hartley-household_s-4f5f215e60|s-4f5f215e60]]` (the ID stays the words you see, so a citation still reads as one)
 - a claim: `[[1880-census-fairview-hartley-household_s-4f5f215e60#Claims|c-bdfbce2a11]]`, which opens the source at its Claims section
+- a place: `[[fairview_l-7c1a9f4e22|Fairview]]`, which opens the place's note (see "Place notes" below)
 
 The file name ends in the record's ID, so every `fha` tool, the family website and the exports read these links exactly as they read the ID form, and what the exports leave out for privacy is the same in both modes.
 
 To turn it on:
 
 1. Open `fha.yaml` and add the line `links: obsidian`.
-2. Preview the change to the links already in your records: `fha normalize-links --obsidian`. It lists every file it would change and what each link becomes. Words you wrote after the `|` stay as they are.
-3. Write it: `fha normalize-links --obsidian --write`.
-4. Run `fha index`, then `fha views refresh`, so the generated pages and the `## Sources` lists use the new links too.
+2. Run `fha index`, then `fha views places`, so every place gets its note.
+3. Preview the change to the links already in your records: `fha normalize-links --obsidian`. It lists every file it would change and what each link becomes. Words you wrote after the `|` stay as they are.
+4. Write it: `fha normalize-links --obsidian --write`.
+5. Run `fha index`, then `fha views refresh`, so the generated pages and the `## Sources` lists use the new links too.
 
 From then on, every tool that writes a link writes it by file name. `fha lint` reports any link Obsidian cannot follow (warning W161): an ID link typed by hand, or a file name a rename has since changed. The fix it names is the same command, `fha normalize-links --obsidian --write`.
 
 A few links stay as they are in this mode:
 
-- **Places** keep the ID form, `[[l-…|Fairview]]`: every place lives in one `places/places.yaml` file, so there is no file name to point at yet.
+- **A place with no note yet** keeps the ID form, `[[l-…|Fairview]]`, until `fha views places` writes its note.
 - **Claims blocks and other code** keep the ID form. Obsidian does not follow a link inside a fenced or indented code block, so there is nothing to gain there.
 - **In a table**, a link is written the way Obsidian writes one there, `[[file name\|Name]]`, so the `|` does not end the cell.
 - **A claim link with its own words**, like `[[c-…|the census line]]`: Obsidian's form needs the claim ID as the words, so the tools leave it and lint names it. Rewrite it as `[[source file name#Claims|c-…]]` and put the words beside it.
 
-When a tool renames a record, it also updates the links to it across the archive, so Obsidian keeps following them. That covers `fha person rename` (a name corrected), `fha confirm merge` (two people made one: links to the merged person now go to the one kept), `fha source merge` (two source records made one: links to the removed record and to its claims now go to the one kept) and `fha lint --fix-ids` (a record you named by hand given its ID: a link like `[[grandmas-album]]` becomes `[[grandmas-album_s-…|grandmas-album]]`). Each one says how many links in how many files it updated, and `--dry-run` shows the same count before anything is written. Moving a record to another folder keeps its file name, so no link changes. A file renamed by hand outside the tools does not update its links: lint W161 names them and `fha normalize-links --obsidian --write` brings them up to date. The generated pages catch up when you run `fha views refresh`. Links written with an old file name still work in every `fha` tool meanwhile, because only the ID at the end is read. To go back to ID links, remove the `links:` line: the tools write ID links again, and the file-name links already written keep working.
+When a tool renames a record, it also updates the links to it across the archive, so Obsidian keeps following them. That covers `fha person rename` (a name corrected), `fha confirm merge` (two people made one: links to the merged person now go to the one kept), `fha source merge` (two source records made one: links to the removed record and to its claims now go to the one kept) and `fha lint --fix-ids` (a record you named by hand given its ID: a link like `[[grandmas-album]]` becomes `[[grandmas-album_s-…|grandmas-album]]`). Each one says how many links in how many files it updated, and `--dry-run` shows the same count before anything is written. Moving a record to another folder keeps its file name, so no link changes. A file renamed by hand outside the tools does not update its links: lint W161 names them and `fha normalize-links --obsidian --write` brings them up to date. The generated pages catch up when you run `fha views refresh`. Links written with an old file name still work in every `fha` tool meanwhile, because only the ID at the end is read. To go back to ID links, remove the `links:` line: the tools write ID links again, and the file-name links already written keep working. `fha views clean` removes the place notes.
+
+## Place notes
+
+Every place lives in one file, `places/places.yaml`, so in link mode the tools give each place a note of its own for Obsidian to open: `places/fairview_l-7c1a9f4e22.md`. `fha views places` writes them, and `fha views refresh` keeps them current. A note shows what places.yaml says about the place: its full name and the county and country it sits in, the place it is inside (a house in a town, say), its map coordinates, its other names, its history and your notes on it. Its other names are in its `aliases:`, so typing any of them after `[[` finds it. It does not list the people and sources that mention the place: Obsidian's backlinks pane shows those.
+
+The notes are generated: never edit one, because the next refresh writes over it. To change what a note says, edit the place in `places/places.yaml` and run `fha index`, then `fha views refresh`. If you rename a place there, run `fha index`, then `fha views refresh`: the note gets the new name, the old note is removed, and links to the old name are pointed at the new note. Pointing those links changes your records, so the refresh then asks you to run `fha index` once more. A file you made yourself in `places/` is never changed or removed, and links never point at it, even if its name has the place's code in it.
+
+The notes stay at home: the family website builds its place pages from places.yaml, and no packet or export copies `places/`.
 
 ## Searching your archive
 

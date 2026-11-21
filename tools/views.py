@@ -8,6 +8,7 @@ views.py - fha views: generate view files from the index.
   fha views draft-queue [P-id | --all-curated] [--format md|html]
   fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run] [--yes]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
+  fha views places [--dry-run]
   fha views clean [--dry-run]
   fha views refresh [--format md|html|both]
 
@@ -94,6 +95,17 @@ the blockquote is for a human reading the file in Obsidian preview or on
 GitHub, where an HTML comment is invisible. `fha site`/`fha packet` strip it
 before publication (see `packet.py`'s scaffolding stripper) - it is
 scaffolding for the working archive, not content for the family.
+
+**Place notes (SPEC §15)** exist only in Obsidian link mode (`links:
+obsidian` in fha.yaml): `fha views places` writes one GENERATED note per
+registered place, `places/{slug}_{l-id}.md`, so a place link has a file
+Obsidian can follow. Unlike a companion, the note opens with frontmatter
+(`aliases:`, which Obsidian reads only at the top of a file), so its marker
+is the first line AFTER the frontmatter and ownership is judged there
+(`after_frontmatter=True`). A rename in places.yaml removes the old note and
+re-points file-name links to it (`_lib.rewrite_stale_stem_links`). `refresh`
+runs the same pass first in that mode; `clean` sweeps the notes. In `id`
+mode nothing is written.
 
 `fha views brackets` is a maintenance view, not a content view.  It reads
 the index to derive expected bracket lists and Ahnentafel positions, then
@@ -196,7 +208,16 @@ from _lib import (
     SUMMARY_REGION,       # that region's name,
     humanize_edtf,        # an EDTF date as a reader says it ('3 March 1840'),
     link_writer,          # the archive's link form (SPEC §18 link mode)
+    link_mode,            # 'id' | 'obsidian' from fha.yaml's links:
     LinkWriter,
+    generated_text_differs,   # the date-masked "did anything change" test,
+    is_generated_file,
+    is_place_note_path,   # places/{slug}_{l-id}.md, the place-note name (SPEC §15),
+    is_owned_place_note,  # a place note views places wrote (marker after frontmatter),
+    is_template_file,
+    place_note_stem,      # a place's note stem from its id and name,
+    rewrite_stale_stem_links,  # re-point file-name links after a place rename,
+    strip_link_wrapper,
     rewrite_record_links_to_stems,
     link_entry,           # `[[p-…|Name]]` - the one written form of a person link,
     write_text_exact_atomic,  # atomic record writer: temp file + fsync + os.replace,
@@ -316,6 +337,15 @@ def _views_result(
 #    _tree_to_json                - serialize traversal to neutral JSON (TOOLING §7 D3)
 #    _tree_to_dot                 - serialize traversal to GraphViz DOT
 #    _cmd_tree                    - CLI handler: traversal + output
+#
+#  Place notes  (run_places; Obsidian link mode only, SPEC §15)
+#    _registered_places           - places + alt names + history from the index
+#    _place_note_text             - one note: frontmatter aliases, header, registry facts
+#    _owned_place_note            - views marker on the first line after the frontmatter
+#    _place_record_files          - records whose file-name place links follow a rename
+#    _place_notes_pass            - remove stale notes, write notes, re-point links
+#    _place_notes_summary         - the closing lines
+#    run_places, _cmd_places      - engine and CLI handler
 #
 #  CLI wiring
 #    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  - argparse handlers
@@ -4325,6 +4355,316 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+# ── Place notes (SPEC §15) ────────────────────────────────────────────────────
+# In Obsidian link mode every registered place gets one generated note,
+# places/{slug}_{l-id}.md, so a place link has a file Obsidian can follow and
+# the graph has one node per place. The note mirrors places.yaml (read here
+# through the index, like every view); places.yaml stays the only truth. It
+# opens with frontmatter (`aliases:`, which Obsidian reads only at the top of
+# a file), then the GENERATED header, so its ownership is judged after the
+# frontmatter (`after_frontmatter=True`). It lists no people or sources:
+# Obsidian's backlinks pane shows those, and a list here would change on
+# every refresh.
+
+
+def _registered_places(conn: sqlite3.Connection) -> list[dict] | None:
+    """Every registered place from the index, with its alt names and dated
+    history in places.yaml order; None when the index has no place tables
+    (built by an older tool: `fha index` adds them)."""
+    try:
+        rows = conn.execute(
+            'SELECT id, name, hierarchy, within, lat, lon, notes FROM places ORDER BY id'
+        ).fetchall()
+        alts: dict[str, list[str]] = {}
+        for r in conn.execute('SELECT place_id, alt_name FROM place_names ORDER BY rowid'):
+            alts.setdefault(r['place_id'], []).append(str(r['alt_name']))
+        history: dict[str, list[tuple]] = {}
+        for r in conn.execute(
+                'SELECT place_id, period_edtf, hierarchy FROM place_history ORDER BY rowid'):
+            history.setdefault(r['place_id'], []).append((r['period_edtf'], r['hierarchy']))
+    except sqlite3.Error:
+        return None
+    places = []
+    for r in rows:
+        name = ' '.join(str(r['name']).split()) if r['name'] else ''
+        places.append({
+            'id': normalize_id(r['id']), 'name': name or None,
+            'hierarchy': r['hierarchy'], 'within': r['within'],
+            'lat': r['lat'], 'lon': r['lon'], 'notes': r['notes'],
+            'alt_names': alts.get(r['id'], []), 'history': history.get(r['id'], []),
+        })
+    return places
+
+
+def _place_note_text(place: dict, names: dict[str, str]) -> str:
+    """One place note, in the ID link form (the caller converts it).
+
+    Frontmatter `aliases:` carries the place's ID, name and alt names, so
+    Obsidian suggests the note when any of them is typed after `[[`. The body
+    is what places.yaml says: the hierarchy, the place it sits inside, the
+    coordinates, the other names, the dated history and the notes. A field
+    the registry leaves out is left out here too."""
+    lid = place['id']
+    shown = fmt_id_display(lid)
+    title = place['name'] or shown
+    aliases: list[str] = []
+    for a in [place['name'], *place['alt_names']]:
+        a = ' '.join(str(a or '').split())
+        if a and a not in aliases and a.lower() != shown:
+            aliases.append(a)
+    out = ['---\n', 'aliases:\n', f'  - {shown}\n']
+    out += [f'  - {json.dumps(a, ensure_ascii=False)}\n' for a in aliases]
+    out += ['---\n', _gen_header('places'), f'# {title}\n', _purpose_block_md('places')]
+
+    facts: list[str] = []
+    if place['hierarchy']:
+        facts.append(f'- **Place:** {place["hierarchy"]}')
+    if place['within']:
+        within = normalize_id(strip_link_wrapper(str(place['within'])))
+        if within in names:
+            facts.append(f'- **Inside:** [[{fmt_id_display(within)}|{names[within]}]]')
+        else:
+            facts.append(f'- **Inside:** {place["within"]}')
+    if place['lat'] is not None and place['lon'] is not None:
+        facts.append(f'- **Coordinates:** {place["lat"]}, {place["lon"]}')
+    if place['alt_names']:
+        facts.append(f'- **Also called:** {", ".join(place["alt_names"])}')
+    if facts:
+        out.append('\n' + '\n'.join(facts) + '\n')
+    if place['history']:
+        out.append('\n## History\n\n')
+        for period, hierarchy in place['history']:
+            when = humanize_edtf(period) if period else ''
+            what = hierarchy or ''
+            out.append(f'- {when}: {what}\n' if when and what else f'- {when or what}\n')
+    notes = str(place['notes'] or '').strip()
+    if notes:
+        out.append(f'\n## Notes\n\n{notes}\n')
+    return ''.join(out)
+
+
+def _owned_place_note(path: Path) -> bool:
+    """True when `path` is a place note `fha views places` wrote: its first
+    line after the frontmatter is the places GENERATED marker. The same test
+    the link writer uses (`_lib.is_owned_place_note`), so the two never
+    disagree about which file is a place's note."""
+    return is_owned_place_note(path)
+
+
+def _place_record_files(archive_root: Path) -> list[Path]:
+    """The record files whose place links follow a rename: every .md under
+    people/, sources/ and notes/ that is not a template or a generated file
+    (a generated file is rebuilt, never edited)."""
+    files: list[Path] = []
+    for sub in ('people', 'sources', 'notes'):
+        base = archive_root / sub
+        if base.is_dir():
+            files += [p for p in sorted(walk_files(base, suffix='.md'))
+                      if not is_template_file(p) and not is_generated_file(p)]
+    return files
+
+
+def _place_notes_pass(conn: sqlite3.Connection, archive_root: Path,
+                      dry_run: bool = False) -> dict | None:
+    """Write every place's note, remove the notes no place owns any more,
+    and re-point file-name links left behind by a rename. Prints a line per
+    change; returns the tallies, or None when the index has no place tables.
+
+    The steps run in this order, each one safe to repeat:
+
+      1. A generated note whose name no longer matches its place (the place
+         was renamed in places.yaml) or whose place is gone is removed. A
+         hand-written file in places/ is never touched: it is named and
+         left.
+      2. Each place's note is written. A note whose only change would be the
+         date in its header is left alone, so a refresh on a new day
+         rewrites nothing.
+      3. Every link written with a place note's file name that is no longer
+         current (`[[old-name_l-…|Fairview]]`) is re-pointed at the current
+         one, in people/, sources/ and notes/. ID-form links are left for
+         `fha normalize-links --obsidian` and lint W161. Because this looks
+         for every stale name rather than only this run's renames, a run
+         that stopped partway finishes the job the next time.
+    """
+    places = _registered_places(conn)
+    if places is None:
+        return None
+    planned = {p['id']: place_note_stem(p['id'], p['name']) for p in places}
+    names = {p['id']: p['name'] for p in places if p['name']}
+    links = LinkWriter(archive_root, 'obsidian', place_stems=planned, place_names=names)
+    places_dir = archive_root / 'places'
+    stats = {'written': [], 'unchanged': 0, 'removed': [], 'skipped': 0,
+             'relinked': [], 'links': 0}
+    noted: dict[str, str] = {}      # l-id -> stem, for each place whose note is in place
+    would = 'would ' if dry_run else ''
+
+    existing: list[Path] = []
+    if places_dir.is_dir():
+        try:
+            existing = sorted(p for p in places_dir.iterdir()
+                              if p.is_file() and is_place_note_path(p, archive_root))
+        except OSError as e:
+            print(f'WARNING: could not list places/ ({e.strerror or e}); old place notes '
+                  'were left as they are.', file=sys.stderr)
+            stats['skipped'] += 1
+    for path in existing:
+        lid = path.stem.rsplit('_', 1)[-1].lower()
+        if planned.get(lid) == path.stem:
+            continue
+        rel = _rel_display(path, archive_root)
+        if not _owned_place_note(path):
+            # The owner's own file (research notes on the town, say). It is
+            # never a link target and never touched, so nothing is wrong:
+            # say what it is once, and carry on.
+            print(f'  note: {rel} carries place {fmt_id_display(lid)} in its name but is '
+                  'not its note, so it was left as it is and no link points at it.')
+            continue
+        why = (f'the place is now called {names.get(lid) or fmt_id_display(lid)}'
+               if lid in planned else 'that place is no longer in places.yaml')
+        if not dry_run:
+            try:
+                path.unlink()
+            except OSError as e:
+                print(f'WARNING: could not remove {rel} ({e.strerror or e}); it may be '
+                      'open in another program. Close it and run `fha views places` again.',
+                      file=sys.stderr)
+                stats['skipped'] += 1
+                continue
+        print(f'  {would}remove {rel} ({why})')
+        stats['removed'].append(path)
+
+    for place in places:
+        path = places_dir / f'{planned[place["id"]]}.md'
+        content = rewrite_record_links_to_stems(_place_note_text(place, names), links)[0]
+        rel = _rel_display(path, archive_root)
+        if path.exists():
+            if not _owned_place_note(path):
+                print(f'WARNING: skipped the note for {fmt_id_display(place["id"])}: '
+                      f'{rel} has no GENERATED header, so it is yours. Move or delete '
+                      'it, then run `fha views places` again.', file=sys.stderr)
+                stats['skipped'] += 1
+                continue
+            try:
+                same = not generated_text_differs(read_text_exact(path), content)
+            except (OSError, UnicodeDecodeError):
+                same = False
+            if same:
+                stats['unchanged'] += 1
+                noted[place['id']] = planned[place['id']]
+                continue
+        if not dry_run:
+            try:
+                write_generated_file(path, content, _GEN_MARKER, create_parents=True,
+                                     after_frontmatter=True)
+            except (GeneratedFileRefused, OSError) as e:
+                print(f'WARNING: skipped {rel} ({getattr(e, "strerror", None) or e}).',
+                      file=sys.stderr)
+                stats['skipped'] += 1
+                continue
+        print(f'  {would}write place note -> {rel}')
+        stats['written'].append(path)
+        noted[place['id']] = planned[place['id']]
+
+    # Only links to a note that is there (or, in a dry run, would be) move:
+    # a link re-pointed at a note that failed to write would lead nowhere.
+    for path in _place_record_files(archive_root) if noted else []:
+        try:
+            text = read_text_exact(path)
+        except (OSError, UnicodeDecodeError):
+            continue    # lint names a record it cannot read
+        new, count = rewrite_stale_stem_links(text, noted)
+        if not count:
+            continue
+        rel = _rel_display(path, archive_root)
+        if not dry_run:
+            try:
+                write_text_exact_atomic(path, new)
+            except OSError as e:
+                print(f'WARNING: could not update the place links in {rel} '
+                      f'({e.strerror or e}). Run `fha views places` again.', file=sys.stderr)
+                stats['skipped'] += 1
+                continue
+        print(f'  {would}re-point {count} place link(s) in {rel}')
+        stats['relinked'].append(path)
+        stats['links'] += count
+    return stats
+
+
+def _place_notes_summary(stats: dict, dry_run: bool) -> None:
+    """The closing lines of a place-notes pass."""
+    verb = 'Would write' if dry_run else 'Wrote'
+    print(f'{verb} {len(stats["written"])} place note(s); {stats["unchanged"]} already '
+          'up to date.')
+    if stats['relinked'] and not dry_run:
+        print(f'Re-pointed {stats["links"]} place link(s) in {len(stats["relinked"])} '
+              'record(s), so the index is now out of date. Run `fha index` before the '
+              'next `fha views` or `fha find`.')
+    if stats['skipped']:
+        print(f'{stats["skipped"]} item(s) skipped; see the warnings above.')
+
+
+def run_places(archive_root: Path, dry_run: bool = False) -> Result:
+    """`fha views places`: the place notes for Obsidian link mode (SPEC §15).
+
+    With `links: obsidian` in fha.yaml, writes one generated note per
+    registered place in places/, removes the notes a rename or a removed
+    place left behind, and re-points file-name links to a renamed place's
+    note (`_place_notes_pass`). In `id` mode it writes nothing at all: there
+    the tools write place links as IDs, so a note would have no links to
+    receive. `--dry-run` prints the same lines and writes nothing.
+
+    Exit codes: 0 done (or nothing to do), 1 something was skipped (each
+    skip printed its reason and fix), 3 no usable index."""
+    _VIEW_LINKS.clear()
+    dry_run = bool(dry_run)
+    if link_mode(load_fha_yaml(archive_root)) != 'obsidian':
+        print('Place notes are written only when fha.yaml says `links: obsidian`; '
+              'nothing was written.')
+        leftover = [p for p in ((archive_root / 'places').glob('*.md')
+                                if (archive_root / 'places').is_dir() else [])
+                    if is_place_note_path(p, archive_root) and _owned_place_note(p)]
+        if leftover:
+            print(f'{len(leftover)} place note(s) from Obsidian mode are still in places/. '
+                  '`fha views clean` removes them.')
+        return _views_result(EXIT_CLEAN, data={'count': 0, 'mode': 'id'})
+    conn = _open_index_or_explain(archive_root)
+    if conn is None:
+        return _views_result(EXIT_FAILURE)
+    try:
+        stats = _place_notes_pass(conn, archive_root, dry_run=dry_run)
+    finally:
+        conn.close()
+    if stats is None:
+        print('ERROR: the index has no place tables. Run `fha index`, then '
+              '`fha views places` again.', file=sys.stderr)
+        return _views_result(EXIT_FAILURE)
+    _place_notes_summary(stats, dry_run)
+    data = {'count': len(stats['written']), 'unchanged': stats['unchanged'],
+            'removed': len(stats['removed']), 'links': stats['links'],
+            'relinked': len(stats['relinked'])}
+    if stats['skipped']:
+        data['skipped'] = stats['skipped']
+    # A re-pointed link is an edit to a record the index read, and only a
+    # rebuild re-reads everything a record feeds (its search text, its
+    # citation and title columns, a question's text), so the run says the
+    # index is stale rather than leave it looking current.
+    stale = bool(stats['relinked']) and not dry_run
+    if stale:
+        data['index_stale'] = True
+    changed = [] if dry_run else [str(p) for p in
+                                  stats['written'] + stats['removed'] + stats['relinked']]
+    code = EXIT_WARNINGS if stats['skipped'] or stale else EXIT_CLEAN
+    return _views_result(code, changed=changed, data=data)
+
+
+def _cmd_places(args: argparse.Namespace) -> int:
+    """argparse → run_places bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_places(archive_root, dry_run=getattr(args, 'dry_run', False)).exit_code
+
+
 def _unreadable_summary(count: int, dirs: int = 0) -> str:
     """The one closing line for files (and folders) `clean` could not read.
 
@@ -4345,10 +4685,13 @@ def _unreadable_summary(count: int, dirs: int = 0) -> str:
 def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     """Delete GENERATED view files; return a Result (prints progress inline).
 
-    Two sweeps, one ownership test (the views marker on the first non-blank
+    Three sweeps, one ownership test (the views marker on the first non-blank
     line - marker-per-file, never folder ownership):
       1. companion `.md` files in the people/ tree, as always;
-      2. single-file `.html` views (and any stray `.md`) under generated/views/.
+      2. single-file `.html` views (and any stray `.md`) under generated/views/;
+      3. place notes in places/ (`{slug}_{l-id}.md`, Obsidian link mode),
+         whose marker is the first line after their frontmatter. They carry
+         no index rows, so nothing else needs cleaning up.
     Hand-authored files are never touched in either place.  Removed paths are
     recorded in `changed`; under --dry-run nothing is deleted, both sweeps are
     listed, and `changed` stays empty.
@@ -4437,7 +4780,27 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
             if _owned_by_views(p)
         ]
 
-    all_found = found + gen_found
+    # Third sweep: the place notes Obsidian link mode writes in places/
+    # (SPEC §15). Their marker follows the frontmatter, so ownership is
+    # judged there; places.yaml and any hand-written file stay.
+    place_found: list[Path] = []
+    places_dir = archive_root / 'places'
+    if places_dir.is_dir():
+        for p in sorted(places_dir.glob('*.md')):
+            if not is_place_note_path(p, archive_root):
+                continue
+            try:
+                text = p.read_text(encoding='utf-8', errors='ignore')
+            except OSError as e:
+                print(f'  ERROR could not read {_rel_display(p, archive_root)} '
+                      f'({e.strerror or e}); it may be open in another program. '
+                      'Close it and re-run; it was left alone.', file=sys.stderr)
+                unreadable.append(p)
+                continue
+            if is_generated_text(text, prefix=_GEN_MARKER, after_frontmatter=True):
+                place_found.append(p)
+
+    all_found = found + gen_found + place_found
     # A file it could not classify and a folder it could not open both mean
     # the same thing about the closing count: this sweep is not the complete
     # one it would otherwise claim to be.
@@ -4575,6 +4938,26 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
         if not person_ids and not region_only_ids:
             return _empty_curated_views_result(conn)
 
+        # Obsidian link mode: the place notes first (SPEC §15), so every
+        # view written below links places by their notes' current names.
+        place_changed: list[str] = []
+        place_skipped = 0
+        place_relinked = False
+        if 'md' in fmt_passes and link_mode(load_fha_yaml(archive_root)) == 'obsidian':
+            stats = _place_notes_pass(conn, archive_root)
+            if stats is None:
+                print('WARNING: the index has no place tables, so no place notes were '
+                      'written. Run `fha index`, then `fha views refresh` again.',
+                      file=sys.stderr)
+                place_skipped = 1
+            else:
+                _place_notes_summary(stats, dry_run=False)
+                place_changed = [str(p) for p in
+                                 stats['written'] + stats['removed'] + stats['relinked']]
+                place_skipped = stats['skipped']
+                place_relinked = bool(stats['relinked'])
+            _VIEW_LINKS.clear()
+
         records = _summary_completeness_context(conn, archive_root) if 'md' in fmt_passes else None
         _per_person = [
             (_generate_timeline,             'timeline      '),
@@ -4656,7 +5039,14 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
                 archive_root, [p for p in profiles_touched if p in profiles_written])
             if profile_sync != 'indexed' and sync == 'indexed':
                 sync = profile_sync
-        result = _batch_view_result(count, skipped, changed, 'view', sync)
+        # Re-pointed place links edited records the index read (see
+        # `run_places`): the batch contract's index_stale, not a clean exit.
+        result = _batch_view_result(count, skipped + place_skipped,
+                                    changed + place_changed, 'view',
+                                    'index_error' if place_relinked else sync)
+        if place_relinked:
+            print('Run `fha index` now: the place links re-pointed above changed '
+                  'records the index had read.')
         if not person_ids and result.exit_code == EXIT_CLEAN:
             # Every curated record parked under people/stubs/: the profiles'
             # regions were refreshed, but no companion view could be, and
@@ -4696,7 +5086,8 @@ def _cmd_views_help(args: argparse.Namespace) -> int:
         parser.print_help()
     else:
         print('Usage: fha views <subcommand> [options]')
-        print('Subcommands: timeline, sources-index, summary, draft-queue, brackets, tree')
+        print('Subcommands: timeline, sources-index, summary, draft-queue, places, '
+              'brackets, tree, clean, refresh')
     # Bare `fha views` (no verb) is a usage error, not clean success: exit 2,
     # matching `fha person`/`fha confirm`/`fha places` (audit flag 15).
     return EXIT_ERRORS
@@ -4713,6 +5104,8 @@ Build always-current summary pages from your records.
   fha views summary <p-id>         Born / Died / Married / Parents / Children
                                    lines under the person's name
   fha views draft-queue <p-id>     Accepted facts not yet written into the bio
+  fha views places                 One note per place, for Obsidian
+                                   (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
 
 Add --format html (refresh also takes --format both) for a printable
@@ -4823,6 +5216,27 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dq.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     dq.set_defaults(func=_cmd_draft_queue)
 
+    # ── places ────────────────────────────────────────────────────────────────
+    pl = vsubs.add_parser(
+        'places',
+        help='Write one note per place in places/, for Obsidian (links: obsidian only).',
+        description=(
+            'With links: obsidian in fha.yaml, write one generated note per place\n'
+            'in places/ (places/{name}_{l-id}.md), built from places/places.yaml,\n'
+            'so Obsidian can follow a place link and show what mentions the place.\n'
+            'A place renamed in places.yaml gets a note under its new name, the old\n'
+            'note is removed, and links to the old name are pointed at the new one.\n'
+            'places.yaml stays the record; edit the place there, never the note.\n'
+            'With links: id (the default) nothing is written.\n'
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
+    )
+    pl.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Show what would be written, removed and re-pointed, '
+                         'without writing.')
+    pl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    pl.set_defaults(func=_cmd_places)
+
     # ── brackets ──────────────────────────────────────────────────────────────
     br = vsubs.add_parser(
         'brackets',
@@ -4893,7 +5307,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=(
             'Delete all GENERATED-headed view files: companion .md files (timeline,\n'
             'draft-queue, and any old couple-folder sources-index.md) from the\n'
-            'people/ tree, and single-file HTML views under generated/views/. Uses the <!-- GENERATED\n'
+            'people/ tree, single-file HTML views under generated/views/, and the\n'
+            'place notes Obsidian link mode writes in places/. Uses the <!-- GENERATED\n'
             '… --> whole-file header as the sole signal, file by file; never touches\n'
             'profiles or manually authored files, including a profile whose own\n'
             '## Sources section is a GENERATED-BEGIN/END region: that region is\n'
@@ -4915,7 +5330,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=(
             'Regenerate timeline and draft-queue for every curated person, and\n'
             'refresh every person\'s own ## Sources section and summary lines\n'
-            '(stubs included).\n'
+            '(stubs included). With links: obsidian in fha.yaml, the place notes\n'
+            'are rebuilt first, as `fha views places` does.\n'
             '--format html regenerates the standalone generated/views/ pages\n'
             'instead; --format both writes the two sets in one pass.\n'
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'
@@ -4987,6 +5403,12 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     cl.add_argument('--dry-run', action='store_true', dest='dry_run', help='List what would be removed without writing.')
     cl.set_defaults(func=_cmd_clean)
+
+    pl = subs.add_parser('places', help='Write one note per place in places/, for Obsidian (links: obsidian only).')
+    pl.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Show what would be written, removed and re-pointed, without writing.')
+    pl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    pl.set_defaults(func=_cmd_places)
 
     rf = subs.add_parser('refresh', help='Regenerate all content views for every curated person.')
     rf.add_argument('--format', choices=['md', 'html', 'both'], default='md', dest='format')

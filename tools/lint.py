@@ -833,8 +833,9 @@ def _check_obsidian_links(registry: Registry, findings: list[Finding]) -> None:
     """W161: fha.yaml's `links:` is not a known value, or, with `links:
     obsidian` (SPEC §18), a record holds person, source or claim links that
     Obsidian cannot follow: an ID-form target (`[[p-…|Name]]`) or a file
-    name left stale by a rename. One finding per record, counting its links
-    and naming the command that rewrites them.
+    name left stale by a rename. A place link counts once its place note
+    exists in places/ (`fha views places`, SPEC §15). One finding per
+    record, counting its links and naming the command that rewrites them.
 
     The question asked is exactly "would `fha normalize-links --obsidian`
     change this file's links?" (`_lib.rewrite_record_links_to_stems`), so

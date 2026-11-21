@@ -11863,10 +11863,12 @@ def link_list_lines(key: str, ids: Iterable[str], names: dict[str, str] | None,
 #                     follow the link: `[[hartley__thomas_edward_p-…|Name]]`,
 #                     `[[letter_s-…|s-…]]`, `[[letter_s-…#Claims|c-…]]`
 #
-# Places stay in the ID form in both modes: a place has no file of its own
-# (they all live in places/places.yaml), so there is no stem to point at.
-# Links inside a fenced code block (the claims YAML) stay in the ID form too:
-# Obsidian follows no link there.
+# A place link takes the stem form only once its place note exists: every
+# place lives in places/places.yaml, and `fha views places` writes one
+# generated note per place in Obsidian mode (`places/{slug}_{l-id}.md`,
+# SPEC §15), which is the file such a link names. Until then a place link
+# keeps the ID form. Links inside a fenced code block (the claims YAML) stay
+# in the ID form too: Obsidian follows no link there.
 #
 # Every writer goes through one `LinkWriter`: it builds the ID form it has
 # always built and hands it to `LinkWriter.convert`, which returns it
@@ -11936,17 +11938,26 @@ class LinkWriter:
     read. In Obsidian mode the file stems are read from file names under
     people/ and sources/ the first time one is needed, and a claim's source
     is found by scanning sources/ for that claim (archive truth, never the
-    index). A caller that already holds these maps (lint's registry) passes
-    them in so nothing is scanned twice."""
+    index). A place's stem is its place note's, read from the file names in
+    places/; a place with no note keeps the ID form. A caller that already
+    holds these maps (lint's registry) passes them in so nothing is scanned
+    twice, and `fha views places` passes the place stems it is about to
+    write."""
 
     def __init__(self, archive_root: str | Path | None, mode: str = 'id', *,
                  stems: dict[str, str] | None = None,
                  claim_sources: dict[str, str] | None = None,
                  names: dict[str, str] | None = None,
-                 survivors: dict[str, str] | None = None):
+                 survivors: dict[str, str] | None = None,
+                 place_stems: dict[str, str] | None = None,
+                 place_names: dict[str, str] | None = None):
         self.archive_root = Path(archive_root) if archive_root is not None else None
         self.mode = mode if mode in LINK_MODES else 'id'
         self._stems = stems
+        self._place_stems = place_stems
+        self._place_names: dict[str, str | None] | None = (
+            {normalize_id(k): _usable_link_name(v) for k, v in place_names.items()}
+            if place_names is not None else None)
         self._survivors = survivors
         self._paths: dict[str, Path] = {}
         self._claim_sources: dict[str, str | None] = dict(claim_sources or {})
@@ -11958,6 +11969,7 @@ class LinkWriter:
         # a link written by one of these old file names counts as one.
         self._only: set[str] | None = None
         self._old_stems: dict[str, str] = {}
+        self._follow_only = False
 
     @property
     def obsidian(self) -> bool:
@@ -11999,12 +12011,30 @@ class LinkWriter:
         return stems
 
     def stem_of(self, rid: str | None) -> str | None:
-        """The current file stem of a person or source record, or None."""
+        """The current file stem of a person or source record, or of a
+        place's note, or None."""
         if not rid:
             return None
+        rid = normalize_id(str(rid))
+        if id_type_of(rid) == 'L':
+            if self._place_stems is None:
+                self._place_stems = (scan_place_note_stems(self.archive_root)
+                                     if self.archive_root is not None else {})
+            return self._place_stems.get(rid)
         if self._stems is None:
             self._stems = self._scan_stems()
-        return self._stems.get(normalize_id(str(rid)))
+        return self._stems.get(rid)
+
+    def place_name(self, lid: str) -> str | None:
+        """The usable `name:` of a registered place, read from places.yaml."""
+        if self._place_names is None:
+            self._place_names = {}
+            if self.archive_root is not None:
+                rows, _error = read_places_registry(self.archive_root)
+                for row in rows:
+                    self._place_names[normalize_id(str(row.get('id', '')))] = (
+                        _usable_link_name(row.get('name')))
+        return self._place_names.get(normalize_id(str(lid)))
 
     def _scan_survivors(self) -> dict[str, str]:
         """{merged id: the record it now counts as}. A merged person keeps a
@@ -12085,7 +12115,8 @@ class LinkWriter:
                        names: dict[str, str] | None = None,
                        survivors: dict[str, str] | None = None,
                        claim_sources: dict[str, str] | None = None,
-                       old_stems: dict[str, str] | None = None) -> None:
+                       old_stems: dict[str, str] | None = None,
+                       follow_only: bool = False) -> None:
         """Make this writer rewrite only the links to records a verb is
         renaming, as they will stand once the verb is done.
 
@@ -12098,15 +12129,27 @@ class LinkWriter:
         record that had no ID in its file name. From then on `convert_counted`
         touches only links that name one of `ids` (or one of the records the
         other arguments name), by ID or by file stem, and claim links whose
-        claim or source is one of them; every other link is left as written."""
+        claim or source is one of them; every other link is left as written.
+
+        With `follow_only` a link is re-pointed only when it is already
+        written with a file name, and its display stays exactly as written
+        (none is added): `rewrite_stale_stem_links`, which follows a rename
+        without converting ID-form links."""
         if self._stems is None:
             self._stems = self._scan_stems()
         if self._survivors is None:
             self._survivors = self._scan_survivors()
         only = {normalize_id(str(i)) for i in ids}
         for rid, stem in (stems or {}).items():
-            self._stems[normalize_id(str(rid))] = stem
-            only.add(normalize_id(str(rid)))
+            rid = normalize_id(str(rid))
+            if id_type_of(rid) == 'L':
+                if self._place_stems is None:
+                    self._place_stems = (scan_place_note_stems(self.archive_root)
+                                         if self.archive_root is not None else {})
+                self._place_stems[rid] = stem
+            else:
+                self._stems[rid] = stem
+            only.add(rid)
         for rid, name in (names or {}).items():
             self._names[normalize_id(str(rid))] = _usable_link_name(name)
         for rid, target in (survivors or {}).items():
@@ -12120,6 +12163,7 @@ class LinkWriter:
             self._old_stems[str(old).strip().lower()] = normalize_id(str(rid))
             only.add(normalize_id(str(rid)))
         self._only = only
+        self._follow_only = follow_only
 
     def _is_expected(self, tid: str, kind: str, written: str) -> bool:
         """True when a link is one `expect_renamed` asked for (always true
@@ -12160,18 +12204,21 @@ class LinkWriter:
           [[p-…]] / [[p-…|Tom]]            → [[person_stem|Name]] / [[person_stem|Tom]]
           [[s-…]] / [[s-…|the letter]]     → [[source_stem|s-…]] / [[source_stem|the letter]]
           [[c-…]] / [[s-…#Claims|c-…]]     → [[source_stem#Claims|c-…]]
+          [[l-…]] / [[l-…|Fairview]]       → [[place_note_stem|Name]] / [[place_note_stem|Fairview]]
           [[old_stem_p-…|Tom]]             → [[person_stem|Tom]] (renamed since)
 
         The display a person wrote is kept, and so is a `#heading`. A link
-        with no display gets the person's name or the source's ID (SPEC §18).
+        with no display gets the person's or place's name or the source's
+        ID (SPEC §18). A place link changes only when the place has a note.
         A link to a merged person or source points at the record it was
         merged into. With `yaml_values` (frontmatter) a link outside double
         quotes gets no display: unquoted, `[[p-…]]` is a YAML nested list, and
         a name with a comma would split it. In a Markdown table row the
         display is written `\\|` the way Obsidian writes it, since a bare `|`
         would end the cell; `table` says the text is a table row, and left
-        as None the rows are found in the text (`table_line_mask`). Places,
-        working answers, unknown IDs and names are left as written. So is a
+        as None the rows are found in the text (`table_line_mask`). Places
+        with no note, working answers, unknown IDs and names are left as
+        written. So is a
         claim link with words of its own (`[[c-…|the census entry]]`),
         counted in the third value: its stem form needs the claim ID as the
         display, so the words cannot stay."""
@@ -12225,10 +12272,12 @@ class LinkWriter:
             kind = id_type_of(tid)
             display = display if display is not None else written
             raw_display = display
-        if kind not in ('P', 'S', 'C'):
+        if kind not in ('P', 'S', 'C', 'L'):
             return None
         tid = normalize_id(tid)
         if not self._is_expected(tid, kind, written):
+            return None
+        if self._follow_only and not _STEM_TARGET_RE.match(written):
             return None
         # In a table, the separator is the escaped one Obsidian writes.
         bar = '\\|' if in_table else '|'
@@ -12236,9 +12285,14 @@ class LinkWriter:
             if display is not None:
                 unfixable.append(m.group(0))
                 return None
-            stem = self.stem_of(self.claim_source(tid))
+            source_id = self.claim_source(tid)
+            if source_id is None and self._follow_only:
+                source_id = link_parts(written)[0]
+            stem = self.stem_of(source_id)
             if not stem or (written == stem and escaped == in_table):
                 return None
+            if self._follow_only:
+                return f'[[{stem}{fragment}{bar}{raw_display}]]'
             return f'[[{stem}#Claims{bar}{fmt_id_display(tid)}]]'
         target = self.survivor_of(tid)
         stem = self.stem_of(target)
@@ -12248,8 +12302,16 @@ class LinkWriter:
             return None
         quoted = (m.start() > 0 and text[m.start() - 1] == '"'
                   and m.end() < len(text) and text[m.end()] == '"')
+        if self._follow_only:
+            shown = raw_display
+            return f'[[{stem}{fragment}{bar}{shown}]]' if shown is not None else f'[[{stem}{fragment}]]'
         if display is None and (quoted or not yaml_values):
-            default = self.person_name(target) if kind == 'P' else fmt_id_display(target)
+            if kind == 'P':
+                default = self.person_name(target)
+            elif kind == 'L':
+                default = self.place_name(target)
+            else:
+                default = fmt_id_display(target)
             if default and quoted and ('"' in default or '\\' in default):
                 default = None
             display = default
@@ -12262,6 +12324,101 @@ def link_writer(archive_root: str | Path | None, fha_config: dict | None = None)
     if fha_config is None and archive_root is not None:
         fha_config = load_fha_yaml(archive_root)
     return LinkWriter(archive_root, link_mode(fha_config))
+
+
+# ── Place notes: one generated file per place (SPEC §15) ─────────────────────
+#
+# In Obsidian link mode `fha views places` writes `places/{slug}_{l-id}.md`
+# for every registered place, so a place link has a file to name. The note is
+# a mirror of places.yaml, which stays the only truth. Its frontmatter comes
+# first (Obsidian reads `aliases:` only there), so its GENERATED marker is the
+# first line after the frontmatter rather than the file's first line.
+
+def place_note_slug(name: object) -> str:
+    """The `{slug}` of a place note's file name: the place's name folded to
+    plain lowercase letters and digits, hyphens between words, the way a
+    source record's slug is written (SPEC §13). Accents are folded first by
+    the same `fold_accents` person file names use, so `Suwałki` reads
+    `suwalki`, `Łódź` `lodz` and `Großdorf` `grossdorf` rather than losing
+    letters. A name with nothing left is `place`."""
+    text = fold_accents(str(name or '')).lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return slug or 'place'
+
+
+def place_note_stem(lid: str, name: object) -> str:
+    """`{slug}_{l-id}`, the stem of a place's note."""
+    return f'{place_note_slug(name)}_{fmt_id_display(lid)}'
+
+
+# The header `fha views places` writes on the first line after a place
+# note's frontmatter: what makes a file in places/ a place note.
+PLACE_NOTE_MARKER = '<!-- GENERATED by fha views places'
+
+
+def is_owned_place_note(path: str | Path) -> bool:
+    """True when `path` is a note `fha views places` wrote: the places
+    marker on the first line after its frontmatter. An unreadable file is
+    not one (it is treated as the human's)."""
+    try:
+        text = Path(path).read_text(encoding='utf-8', errors='ignore')
+    except OSError:
+        return False
+    return is_generated_text(text, prefix=PLACE_NOTE_MARKER, after_frontmatter=True)
+
+
+def scan_place_note_stems(archive_root: str | Path) -> dict[str, str]:
+    """{l-id: note stem} for each registered place whose own note is in
+    places/: the file named `place_note_stem(l-id, name)` that carries the
+    place-note header.
+
+    Only that file counts. A file the owner made with the place's ID in its
+    name (`fairview-research_l-….md`), or an old note left by a rename, is
+    never a link target: if it were, `fha views places` and `fha
+    normalize-links` would point the same links at two different files in
+    turn. With no note of its own, a place link keeps the ID form."""
+    stems: dict[str, str] = {}
+    root = Path(archive_root)
+    rows, _error = read_places_registry(root)
+    for row in rows:
+        lid = normalize_id(str(row.get('id', '')))
+        if id_type_of(lid) != 'L':
+            continue
+        stem = place_note_stem(lid, row.get('name'))
+        path = root / 'places' / f'{stem}.md'
+        if path.is_file() and is_owned_place_note(path):
+            stems[lid] = stem
+    return stems
+
+
+def is_place_note_path(path: str | Path, archive_root: str | Path) -> bool:
+    """True for a file named like a place note, directly in places/."""
+    path = Path(path)
+    if path.suffix.lower() != '.md' or path.parent != Path(archive_root) / 'places':
+        return False
+    parsed = parse_filename(path)
+    return bool(parsed and parsed.get('id_type') == 'L')
+
+
+def rewrite_stale_stem_links(text: str, stems: dict[str, str]) -> tuple[str, int]:
+    """(new text, links re-pointed): every link already written with a file
+    name (`[[old-name_l-…|Fairview]]`) whose ID is in `stems` but whose name
+    is no longer `stems[id]` now names the current file. The display, a
+    `#heading` and the table `\\|` stay as written, and ID-form links are left
+    alone: this follows a rename, it does not convert an archive (that is
+    `fha normalize-links --obsidian`).
+
+    It is the rename rewrite every renaming verb uses
+    (`rewrite_record_links_to_stems` through `LinkWriter.expect_renamed`, in
+    its `follow_only` form), so the same lines are skipped: frontmatter
+    `id:`/`aliases:`, code, inline `code` and GENERATED-BEGIN/END regions,
+    and a second run changes nothing."""
+    if '[[' not in text or not stems:
+        return text, 0
+    links = LinkWriter(None, 'obsidian', stems={}, claim_sources={}, names={}, survivors={})
+    links.expect_renamed(stems.keys(), stems=stems, follow_only=True)
+    new, count, _worded = rewrite_record_links_to_stems(text, links)
+    return new, count
 
 
 _CODE_FENCE_RE = re.compile(r'^\s{0,3}(`{3,}|~{3,})')
@@ -14012,9 +14169,16 @@ GENERATED_PREFIX = '<!-- GENERATED'
 _BOM = chr(0xfeff)
 
 
-def is_generated_text(text: str, prefix: str = GENERATED_PREFIX) -> bool:
+def is_generated_text(text: str, prefix: str = GENERATED_PREFIX, *,
+                      after_frontmatter: bool = False) -> bool:
     """True when `text` is a tool-generated file body: its first NON-BLANK
     line starts with `prefix`.
+
+    `after_frontmatter` is for a generated file that must open with
+    frontmatter (a place note: Obsidian reads `aliases:` only at the top of
+    a file). A leading `---` block is skipped and the test applies to the
+    first non-blank line after it. A file with no frontmatter is judged as
+    usual.
 
     Why first-non-blank rather than byte 0: a leading blank line or a UTF-8
     BOM (an editor re-save) must not flip a file's ownership. lint and views
@@ -14023,7 +14187,13 @@ def is_generated_text(text: str, prefix: str = GENERATED_PREFIX) -> bool:
     generated file that merely began with a blank line (round-2 finding 12).
     The BOM is stripped both at text start and at line start because
     `str.strip()` does not treat U+FEFF as whitespace."""
-    for line in text.lstrip(_BOM).splitlines():
+    lines = text.lstrip(_BOM).splitlines()
+    if after_frontmatter and lines and lines[0].strip() == '---':
+        close = next((k for k in range(1, len(lines)) if lines[k].strip() == '---'), None)
+        if close is None:
+            return False
+        lines = lines[close + 1:]
+    for line in lines:
         if line.strip():
             return line.lstrip(_BOM).startswith(prefix)
     return False
@@ -14083,6 +14253,7 @@ class GeneratedFileParentMissing(Exception):
 
 def write_generated_file(
     out_path: Path, content: str, marker_prefix: str, create_parents: bool = False,
+    *, after_frontmatter: bool = False,
 ) -> Path:
     """Write a GENERATED file, refusing to clobber a file it does not own.
 
@@ -14100,6 +14271,9 @@ def write_generated_file(
     folder that may legitimately not exist yet (generated/gallery/) pass
     create_parents=True; generated/views/ callers never need it - _html_out_path
     already creates that folder before this runs.
+
+    `after_frontmatter` is for a file whose marker follows its frontmatter
+    (a place note); ownership is then judged as `is_generated_text` says.
 
     Lifted from the byte-identical guards that used to live in views.py and
     photoindex.py; keeping one copy here (tools never import tools, so _lib is
@@ -14124,7 +14298,8 @@ def write_generated_file(
         # shared predicate (which also tolerates a leading blank line or UTF-8
         # BOM from an editor re-save). The per-tool prefix keeps one tool's
         # GENERATED file protected from another tool's overwrite.
-        if not is_generated_text(existing, prefix=marker_prefix):
+        if not is_generated_text(existing, prefix=marker_prefix,
+                                 after_frontmatter=after_frontmatter):
             raise GeneratedFileRefused(out_path)
         # Only the date in the marker would change: leave the file alone, so
         # its date keeps saying when its content last changed and a quiet
@@ -16646,6 +16821,12 @@ VIEW_PURPOSE_BLOCKS: dict[str, str] = {
         "are overwritten\n"
         "> on the next refresh; write the citation into the profile to clear "
         "an entry."
+    ),
+    'places': (
+        "> **Generated place note. Do not edit.** This place's page for Obsidian,\n"
+        "> rebuilt by `fha views places` from `places/places.yaml`. Your edits are\n"
+        "> overwritten on the next refresh; to change what it says, edit the place\n"
+        "> in places.yaml. Obsidian's backlinks list what mentions it."
     ),
 }
 

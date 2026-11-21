@@ -75,6 +75,7 @@ from _lib import (
     id_type_of,
     is_merged_meta,
     is_template_file,
+    is_place_note_path,
     is_valid_id,
     is_working_copy,
     link_field_refs,
@@ -1887,6 +1888,11 @@ def _index_citations(
         if '.cache' in path.parts:
             continue
         if path.is_relative_to(packet_out_root):
+            continue
+        # A place note (Obsidian link mode, SPEC §15) mirrors places.yaml,
+        # which is read as data, not prose: its links are not citations, and
+        # the index must read the same whether `fha views places` has run.
+        if is_place_note_path(path, archive_root):
             continue
         cited_cids |= _index_citations_for_file(conn, path, archive_root, alias_map)
 
