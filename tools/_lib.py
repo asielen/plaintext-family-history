@@ -6439,6 +6439,51 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
 
 
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> bool:
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
+
+    Adult means one of:
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the person's
+      own provisional `birth:` estimate, whose LATEST possible day is
+      `ADULT_AGE_YEARS` or more years before `today`; several birth dates
+      are all checked, and the youngest one decides;
+    - no birth date recorded at all, and at least one recorded child.
+
+    A known birth date always wins: someone under 18 by any recorded birth
+    is not an adult, even with a child of their own. No birth date and no
+    child means "not known to be an adult". The answer reads `today` (the
+    build date), so a child who turns 18 changes it on the next rebuild."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year with no leap day
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    latest: list[str] = []
+    for r in conn.execute(
+            "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "WHERE cp.person_id = ? AND c.type = 'birth' AND COALESCE(c.negated, 0) = 0",
+            (pid,)).fetchall():
+        if not (r[1] or '').strip():
+            continue
+        if not claim_is_own_vital(conn, pid, r[0], 'birth'):
+            continue
+        latest.append(edtf_bounds(r[1])[1])
+    row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
+    if row is not None and str(row[0] or '').strip():
+        latest.append(edtf_bounds(str(row[0]))[1])
+    if latest:
+        return max(latest) <= cutoff.isoformat()
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
+
+
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
     """Indexes of column-0 `key:` lines between two bounds (exclusive).
 
