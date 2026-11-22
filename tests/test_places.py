@@ -1722,5 +1722,81 @@ class PlaceSetNoteTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 3)
 
 
+class DmsCoordsTests(unittest.TestCase):
+    """A 75-year-old typing a gravestone's coordinates as the stone gives
+    them (degrees, minutes, seconds) gets the same pin as typing decimals.
+    Expected values are worked by hand: 39 + 33/60 + 47/3600 = 39.563056;
+    95 + 7/60 + 18/3600 = 95.121667."""
+
+    STONE = (39.563056, -95.121667)
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'places').mkdir(parents=True)
+        self.registry = self.root / 'places' / 'places.yaml'
+        self.registry.write_text(_SET_REGISTRY, encoding='utf-8', newline='')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _ok(self, text):
+        parsed = places._parse_coords_text(text)
+        self.assertNotIsInstance(parsed, str, parsed)
+        return parsed
+
+    def test_the_accepted_shapes(self) -> None:
+        rows = [
+            ('39°33\'47"N, 95°07\'18"W', self.STONE),
+            ('39 33 47 N, 95 7 18 W', self.STONE),
+            ('39°33\'47"N 95°07\'18"W', self.STONE),
+            ('N39.5631 W95.1216', (39.5631, -95.1216)),
+            ('95°07\'18"W, 39°33\'47"N', self.STONE),
+            ('39°33.783\'N, 95°7.3\'W', (39.56305, -95.121667)),
+            ('39º33′47″N, 95º07′18″W', self.STONE),
+            ('-39°33\'47", 95°07\'18"', (-39.563056, 95.121667)),
+            ('39.5631, -95.1216', (39.5631, -95.1216)),
+        ]
+        for text, want in rows:
+            with self.subTest(text=text):
+                self.assertEqual(self._ok(text), want)
+
+    def test_refusals_say_what_is_wrong(self) -> None:
+        rows = [
+            ('39°61\'N, 95°W', 'minutes'),
+            ('39°N, 40°N', 'north or south'),
+            ('-39°33\'N, 95°W', 'minus sign or a direction letter'),
+            ('394347N0950718W', 'comma between them'),
+            ('39-33-47-N, 95-07-18-W', 'hyphens'),
+        ]
+        for text, phrase in rows:
+            with self.subTest(text=text):
+                got = places._parse_coords_text(text)
+                self.assertIsInstance(got, str)
+                self.assertIn(phrase, got)
+
+    def test_set_writes_the_rounded_pair(self) -> None:
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22',
+                                      coords='39°33\'47"N, 95°07\'18"W')
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn('  coords: [39.563056, -95.121667]\n',
+                      self.registry.read_text(encoding='utf-8'))
+
+    def test_decimal_input_keeps_its_exact_bytes(self) -> None:
+        places.run_place_set(self.root, 'L-7c1a9f4e22', coords='39.5631, -95.1216')
+        self.assertIn('  coords: [39.5631, -95.1216]\n',
+                      self.registry.read_text(encoding='utf-8'))
+
+    def test_preview_shows_the_conversion_and_a_swap(self) -> None:
+        before = self.registry.read_bytes()
+        result = places.run_place_set(self.root, 'L-7c1a9f4e22', dry_run=True,
+                                      coords='95°07\'18"W, 39°33\'47"N')
+        self.assertEqual(self.registry.read_bytes(), before)
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('[39.563056, -95.121667]', text)
+        self.assertIn('from 95°07\'18"W, 39°33\'47"N', text)
+        self.assertIn('read as latitude 39.563056, longitude -95.121667', text)
+
+
 if __name__ == '__main__':
     unittest.main()

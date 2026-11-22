@@ -789,7 +789,7 @@ Set a place's coordinates, alt-names, or names-over-time (full replace per field
 | Argument | What it does |
 |---|---|
 | `l-id` | The place to update. |
-| `--coords` `"LAT, LON"` | New coordinates, latitude first, e.g. "39.8000, -95.6000". |
+| `--coords` `"LAT, LON"` | New coordinates, latitude first, e.g. "39.8000, -95.6000"; degrees, minutes and seconds work too, as a gravestone gives them, e.g. "39°33'47"N, 95°07'18"W". |
 | `--aka` `NAME` | One also-known-as name, taken verbatim, commas and all ("Washington, D.C." is one name); repeat the flag for more. The given set replaces the old list; a lone `--aka -` clears it. |
 | `--history` `"PERIOD | HIERARCHY"` | One names-over-time entry; repeat the flag for more (replaces the old list; a lone `--history -` clears it). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |

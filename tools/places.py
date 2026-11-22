@@ -117,6 +117,7 @@ CODE MAP
   Registry write-backs (set / note)
     _key_span, _set_block_key              - one key's span within a block; replace/insert
     _parse_coords_text, _parse_history_lines - human-typed field values → stored shapes
+    _parse_coords_detail, _parse_coord_half - decimal or degrees-minutes-seconds coordinates
     _place_write_result, _finish_place_write - shared head (validate/read) and tail (diff/write)
     run_place_set                          - coords / alt_names / history, full per-field replace
     run_place_note                         - dated research note appended to notes:
@@ -2835,29 +2836,152 @@ def _set_block_key(block: list[str], key: str, indent: str, value_lines: list[st
     block[insert_at:insert_at] = value_lines
 
 
-def _parse_coords_text(raw: str) -> tuple[float, float] | str:
-    """Parse a human-typed "lat, lon" pair; return (lat, lon) or a plain error.
+_COORD_HALF_RE = re.compile(
+    r'^(?P<pre>[NSEW])?\s*(?P<sign>[+-])?\s*(?P<deg>\d{1,3}(?:\.\d+)?)\s*°?\s*'
+    r'(?:(?P<min>\d{1,2}(?:\.\d+)?)\s*\'?\s*(?:(?P<sec>\d{1,2}(?:\.\d+)?)\s*"?)?)?'
+    r'\s*(?P<post>[NSEW])?$')
+_COORD_COMMA_HINT = 'Put a comma between them, like 39°33\'47"N, 95°07\'18"W.'
 
-    Forgiving on shape (comma or whitespace separated, stray brackets
-    tolerated) but strict on meaning: two numbers, latitude within +-90,
-    longitude within +-180 - a swapped pair is the classic error and the
-    range check catches half of those."""
-    cleaned = str(raw).strip().strip('[]()')
-    parts = [p for p in re.split(r'[,\s]+', cleaned) if p]
-    if len(parts) != 2:
-        return ('coordinates need two numbers - latitude, longitude - like '
-                '"39.8000, -95.6000".')
-    try:
-        lat, lon = float(parts[0]), float(parts[1])
-    except ValueError:
-        return (f'could not read {raw!r} as numbers. Coordinates look like '
-                '"39.8000, -95.6000" (latitude first).')
+
+def _normalise_coord_text(raw: str) -> str:
+    """Strip one pair of brackets and fold look-alike degree, minute and
+    second marks (a copied gravestone listing) to plain ones; uppercase the
+    direction letters."""
+    text = str(raw).strip()
+    if len(text) >= 2 and (text[0], text[-1]) in (('[', ']'), ('(', ')')):
+        text = text[1:-1].strip()
+    for odd in ('º', '˚'):
+        text = text.replace(odd, '°')
+    text = text.replace("''", '"')
+    for odd in ('′', '’', '‘'):
+        text = text.replace(odd, "'")
+    for odd in ('″', '”', '“'):
+        text = text.replace(odd, '"')
+    return text.upper()
+
+
+def _parse_coord_half(text: str, which: str) -> tuple[float, str | None] | str:
+    """One half of a degrees-minutes-seconds pair: return (signed value,
+    N/S/E/W letter or None) or a plain error naming the half (`which`)."""
+    half = text.strip()
+    m = _COORD_HALF_RE.match(half)
+    if not m:
+        if re.search(r'\d-\d', half):
+            return (f'the {which} part {half!r} has hyphens between degrees, minutes '
+                    'and seconds, which look like minus signs. Write it as '
+                    '39°33\'47"N or 39 33 47 N.')
+        return (f'could not read the {which} part {half!r} as degrees, minutes '
+                'and seconds. It looks like 39°33\'47"N or 39.5631.')
+    pre, post = m.group('pre'), m.group('post')
+    if pre and post:
+        return f'the {which} part {half!r} has two direction letters; give one.'
+    letter = pre or post
+    if letter and m.group('sign'):
+        return (f'the {which} part {half!r} has both a sign and a direction letter; '
+                'give either a minus sign or a direction letter, not both.')
+    deg, mins, secs = m.group('deg'), m.group('min'), m.group('sec')
+    if mins is not None and '.' in deg:
+        return f'the {which} part {half!r}: degrees must be a whole number when minutes are given.'
+    if secs is not None and '.' in mins:
+        return f'the {which} part {half!r}: minutes must be a whole number when seconds are given.'
+    if mins is not None and float(mins) >= 60:
+        return f'the {which} part {half!r}: minutes must be under 60.'
+    if secs is not None and float(secs) >= 60:
+        return f'the {which} part {half!r}: seconds must be under 60.'
+    value = (float(deg) + (float(mins) / 60 if mins is not None else 0.0)
+             + (float(secs) / 3600 if secs is not None else 0.0))
+    if letter in ('S', 'W') or m.group('sign') == '-':
+        value = -value
+    return value, letter
+
+
+def _split_dms_halves(text: str, raw: str) -> tuple[str, str] | str:
+    """Split a degrees-minutes-seconds pair into its two halves: at the one
+    comma or semicolon, else after the first direction letter that is
+    followed by more text (or before the second letter of `N39.5 W95.1`)."""
+    for sep in (',', ';'):
+        if text.count(sep) == 1:
+            a, b = text.split(sep)
+            return a, b
+    if text[:1] in ('N', 'S', 'E', 'W'):
+        m = re.match(r'^(?P<a>[NSEW][^NSEW]*?)\s+(?P<b>[NSEW].*)$', text)
+    else:
+        m = re.match(r'^(?P<a>.*?[NSEW])\s+(?P<b>[\d+\-NSEW].*)$', text)
+    if m:
+        return m.group('a'), m.group('b')
+    return (f'could not tell where latitude ends and longitude begins in {raw!r}. '
+            + _COORD_COMMA_HINT)
+
+
+def _check_coord_range(lat: float, lon: float) -> str | None:
     if not (-90.0 <= lat <= 90.0):
         return (f'latitude {lat} is out of range (-90 to 90). Latitude comes '
                 'first - the pair may be swapped.')
     if not (-180.0 <= lon <= 180.0):
         return f'longitude {lon} is out of range (-180 to 180).'
-    return lat, lon
+    return None
+
+
+def _parse_coords_detail(raw: str) -> tuple[float, float, str | None, bool] | str:
+    """Parse a human-typed coordinate pair; return (lat, lon, note, dms) or a
+    plain error. `dms` is True for degrees-minutes-seconds or direction-letter
+    input (stored rounded to 6 places); `note` says so when a longitude-first
+    pair was swapped.
+
+    Decimal input ("39.8, -95.6") keeps the original forgiving shape, byte for
+    byte. Anything with a degree, minute or second mark or an N/S/E/W letter
+    is read the way a gravestone or survey gives it."""
+    text = _normalise_coord_text(raw)
+    if not re.search(r'[°\'"NSEW]', text):
+        cleaned = str(raw).strip().strip('[]()')
+        parts = [p for p in re.split(r'[,\s]+', cleaned) if p]
+        if len(parts) != 2:
+            return ('coordinates need two numbers - latitude, longitude - like '
+                    '"39.8000, -95.6000".')
+        try:
+            lat, lon = float(parts[0]), float(parts[1])
+        except ValueError:
+            return (f'could not read {raw!r} as numbers. Coordinates look like '
+                    '"39.8000, -95.6000" (latitude first).')
+        err = _check_coord_range(lat, lon)
+        return err if err else (lat, lon, None, False)
+
+    halves = _split_dms_halves(text, str(raw).strip())
+    if isinstance(halves, str):
+        return halves
+    first = _parse_coord_half(halves[0], 'first')
+    if isinstance(first, str):
+        return first
+    second = _parse_coord_half(halves[1], 'second')
+    if isinstance(second, str):
+        return second
+    axes = {'N': 'lat', 'S': 'lat', 'E': 'lon', 'W': 'lon'}
+    ax1 = axes.get(first[1] or '')
+    ax2 = axes.get(second[1] or '')
+    if ax1 and ax1 == ax2:
+        which = 'north or south' if ax1 == 'lat' else 'east or west'
+        return (f'both parts say {which} in {str(raw).strip()!r}; one should be '
+                'latitude (N or S) and the other longitude (E or W).')
+    swap = ax1 == 'lon' or ax2 == 'lat'
+    lat, lon = (second[0], first[0]) if swap else (first[0], second[0])
+    lat, lon = round(lat, 6) + 0.0, round(lon, 6) + 0.0
+    err = _check_coord_range(lat, lon)
+    if err:
+        return err
+    note = f'read as latitude {lat}, longitude {lon}' if swap else None
+    return lat, lon, note, True
+
+
+def _parse_coords_text(raw: str) -> tuple[float, float] | str:
+    """Parse a human-typed coordinate pair; return (lat, lon) or a plain error.
+
+    Decimal degrees in any forgiving shape, or degrees, minutes and seconds
+    as a gravestone gives them (`_parse_coords_detail` has the grammar);
+    strict on meaning: latitude within +-90, longitude within +-180."""
+    parsed = _parse_coords_detail(raw)
+    if isinstance(parsed, str):
+        return parsed
+    return parsed[0], parsed[1]
 
 
 def _parse_history_lines(entries: list[str]) -> list[dict] | str:
@@ -3003,11 +3127,16 @@ def run_place_set(
                            'nothing to change - give --coords, --aka, and/or --history.')
 
     latlon: tuple[float, float] | None = None
+    coords_from = ''
     if coords is not None:
-        parsed = _parse_coords_text(coords)
+        parsed = _parse_coords_detail(coords)
         if isinstance(parsed, str):
             return result_fail(result, 'refused', parsed)
-        latlon = parsed
+        latlon = (parsed[0], parsed[1])
+        if parsed[3]:
+            coords_from = f'from {str(coords).strip()}'
+            if parsed[2]:
+                coords_from += f'; {parsed[2]}'
     history_entries: list[dict] | None = None
     if history is not None:
         parsed_history = _parse_history_lines(history)
@@ -3028,7 +3157,8 @@ def run_place_set(
     if latlon is not None:
         _set_block_key(block, 'coords', indent,
                        [f'{indent}coords: [{latlon[0]}, {latlon[1]}]'])
-        changed_fields.append(f'coordinates -> [{latlon[0]}, {latlon[1]}]')
+        changed_fields.append(f'coordinates -> [{latlon[0]}, {latlon[1]}]'
+                              + (f' ({coords_from})' if coords_from else ''))
     if aka is not None:
         cleaned = [a.strip() for a in aka if str(a).strip()]
         # An empty replacement of a key that was never there is already
@@ -3467,7 +3597,9 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'set', help="Set a place's coordinates, alt-names, or names-over-time (full replace per field)")
     set_p.add_argument('place_id', metavar='l-id', help='The place to update.')
     set_p.add_argument('--coords', metavar='"LAT, LON"',
-                       help='New coordinates, latitude first, e.g. "39.8000, -95.6000".')
+                       help='New coordinates, latitude first, e.g. "39.8000, -95.6000"; '
+                            'degrees, minutes and seconds work too, as a gravestone gives '
+                            'them, e.g. "39°33\'47"N, 95°07\'18"W".')
     set_p.add_argument('--aka', metavar='NAME', action='append',
                        help='One also-known-as name, taken verbatim, commas and all '
                             '("Washington, D.C." is one name); repeat the flag for more. '

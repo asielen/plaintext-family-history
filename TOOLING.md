@@ -1299,7 +1299,7 @@ fha places note <l-id> --text TEXT [--dry-run]
 fha places edit-note <l-id> --old-text TEXT --text TEXT [--dry-run]
 ```
 
-- `set` fully replaces each given field. `--coords`: forgiving shape, strict ±90/±180, catches a swapped pair. `--aka`: the whole `alt_names:` list, one verbatim name per flag ("Washington, D.C." is one alias). `--history`: the whole `history:` list; the period follows the claim-date rule (EDTF kept, loose wording normalized, unreadable refused).
+- `set` fully replaces each given field. `--coords`: decimal degrees in any forgiving shape ("39.5631, -95.1216"), or degrees, minutes and seconds as a gravestone or survey gives them ("39°33'47\"N, 95°07'18\"W", "N39.5631 W95.1216", minutes or seconds optional, a comma or the direction letter between the two); lettered parts are read by their letter, so a longitude-first pair is swapped and the preview says so; unlettered parts are latitude first. DMS is stored rounded to six decimal places. Strict ±90/±180, minutes and seconds under 60; a packed or hyphenated form is refused with the comma form to copy. `--aka`: the whole `alt_names:` list, one verbatim name per flag ("Washington, D.C." is one alias). `--history`: the whole `history:` list; the period follows the claim-date rule (EDTF kept, loose wording normalized, unreadable refused).
 - `note` appends a dated paragraph to `notes:` (SPEC §15), written as a `notes: |` block.
 - `edit-note` rewrites one entry named by its exact text, with `fha person edit-note`'s rules and reason codes (part of a note / several notes / not found / ambiguous / empty replacement) and workbench wording (§3c).
 - Surgical edits preserving comments. No `[y/N]` gate: the human supplied the values.
