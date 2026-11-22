@@ -2502,3 +2502,96 @@ test('a shared photo saved by hand joins the Ancestry queue as done, so a batch 
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [viewer(GAL_B)]);
   assert.strictEqual(p.written.length, 2);
 });
+
+// ── Newspapers.com clippings found on Ancestry ──────────────────────────────
+// A gallery item that is a copy of a clipping is never saved from Ancestry:
+// the archive holding the clipping makes it done, and otherwise the clipping
+// goes to the Newspapers.com batch with the person it was queued for. A
+// person's sources that link a clipping queue it there too. Whoever made it.
+
+const FOUND = 'https://www.newspapers.com/clip/303/hartley-barn-raising/';
+function clipGallerySite(clips) {
+  const base = gallerySite();
+  return (msg, tab) => {
+    const r = base(msg, tab);
+    const m = anc.ancParseMediaPage(tab.url);
+    if (msg.action === 'prefill' && m && clips[m.mediaId]) r.prefill.ancestryNewspapersClip = clips[m.mediaId];
+    return r;
+  };
+}
+
+test('a gallery item that is a Newspapers.com clipping goes to the Newspapers.com batch, never saved from Ancestry', async () => {
+  const p = await openPanel({ url: CALVIN, respond: clipGallerySite({ [GAL_A]: { clippingId: 303, url: FOUND } }),
+    storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_A, GAL_B]) }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [viewer(GAL_A), viewer(GAL_B)]);
+  assert.strictEqual(p.written.length, 1, 'Ancestry\'s copy of the clipping was saved');
+  assert.strictEqual(p.capJson(p.written[0]).url, viewer(GAL_B));
+  const L = p.storage.ancBatchLedger;
+  assert.deepStrictEqual([L.items['med:' + GAL_A].state, L.items['med:' + GAL_A].bundle], ['done', '(sent to the Newspapers.com batch)']);
+  const N = p.storage.npBatchLedger;
+  assert.deepStrictEqual(N.order, ['303']);
+  assert.deepStrictEqual([N.items['303'].url, N.items['303'].state, N.items['303'].persons], [FOUND, 'queued', ['Thomas Hartley']]);
+});
+
+test('a gallery item whose clipping the archive holds is done, and nothing is queued or saved', async () => {
+  const p = await openPanel({ url: CALVIN, respond: clipGallerySite({ [GAL_A]: { clippingId: 303, url: FOUND } }),
+    seenIt: { 'clip:303': { state: 'filed', sid: 'S-0a1b2c3d4e' } },
+    storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_A]) }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.written.length, 0);
+  assert.strictEqual(p.storage.ancBatchLedger.items['med:' + GAL_A].bundle,
+    '(already in the archive, source S-0a1b2c3d4e, as Newspapers.com clipping 303)');
+  assert.ok(!p.storage.npBatchLedger || !p.storage.npBatchLedger.order.length);
+});
+
+test('F3: a gallery item Ancestry sent on to another item that is a clipping is not marked done, and that clipping is not queued for her person', async () => {
+  const site = clipGallerySite({ [GAL_B]: { clippingId: 303, url: FOUND } });
+  const p = await openPanel({ url: CALVIN, respond: (msg, tab) => {
+    if (tab.url === viewer(GAL_A)) tab.url = viewer(GAL_B);
+    return site(msg, tab);
+  }, storage: Object.assign({}, ON, { ancBatchLedger: galleryLedger([GAL_A]) }) });
+  quick(p);
+  await start(p, 'anc');
+  const it = p.storage.ancBatchLedger.items['med:' + GAL_A];
+  assert.notStrictEqual(it.state, 'done', 'the queued item was marked done though never saved');
+  assert.match(it.lastError || '', /not the one queued/);
+  assert.strictEqual(p.written.length, 0);
+  assert.ok(!p.storage.npBatchLedger || !p.storage.npBatchLedger.order.length, 'the other item\'s clipping was queued');
+});
+
+test('the Newspapers.com batch saves a clipping found on Ancestry, another member\'s too, with its person ticked', async () => {
+  const theirs = Object.assign(npClip(303, 'Hartley barn raising', FOUND), { userId: 99, username: 'otherclipper' });
+  const base = npSite([]);
+  const respond = (msg, tab) => (msg.action === 'newspapersInfo' && tab.url === FOUND
+    ? Object.assign(npInfo(theirs), { focusOwner: 'otherclipper' }) : base(msg, tab));
+  const N = { version: 1, created: '2026-11-21T00:00:00.000Z', items: {}, order: [], log: [], listComplete: true, user: ME.username };
+  require('../src/lib/capture-batch.js').addFoundClippings(N,
+    [{ id: '303', url: FOUND, title: 'Hartley barn raising', persons: ['Thomas Hartley'] }], 'gallery');
+  const p = await openPanel({ url: NP_A, respond, storage: Object.assign({}, ON, { npBatchLedger: N }) });
+  quick(p);
+  await start(p, 'np');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [FOUND]);
+  assert.strictEqual(p.written.length, 1, p.batchEl('np-status').textContent);
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Thomas Hartley']);
+  assert.strictEqual(p.storage.npBatchLedger.items['303'].state, 'done');
+});
+
+test('"Add the sources of the person in front of you" queues the clippings they link in the Newspapers.com batch', async () => {
+  const FACTS = 'https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/facts';
+  const html = '<html><body><h1>Thomas Hartley</h1><section id="sourcesSection">' +
+    '<a href="/search/collections/90001/records/1000001">1880 United States Federal Census</a>' +
+    '<a href="' + FOUND + '">Hartley barn raising</a></section></body></html>';
+  const base = ancestrySite();
+  const p = await openPanel({ url: FACTS, storage: ON, respond: (msg, tab) => (msg.action === 'ancestryPersonSources'
+    ? BS.batchAncPersonSources(parse(html), tab.url) : base(msg, tab)) });
+  await p.batchEl('anc-page').fire('click');
+  await settle();
+  assert.deepStrictEqual(p.storage.ancBatchLedger.order, ['90001:1000001']);
+  const N = p.storage.npBatchLedger;
+  assert.deepStrictEqual(N.order, ['303']);
+  assert.deepStrictEqual(N.items['303'].persons, ['Thomas Hartley']);
+  assert.match(p.batchEl('anc-status').textContent, /1 Newspapers\.com clipping found, 1 new to the Newspapers\.com queue/);
+});

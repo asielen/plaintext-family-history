@@ -48,6 +48,7 @@
 //   newLedger                 an empty ledger (the archive copy's shape)
 //   addRecords                queue records; a done one stays done
 //   addClippings              queue the member's own Newspapers.com clippings
+//   addFoundClippings         queue clippings found on Ancestry, whoever made them
 //   markHeld / markDone / markPartial / markRetry / markSetAside   what became of one entry
 //   requeuePartials / requeueSetAside    a later Start; "Try the set-aside ones again"
 //   nextPending / counts      the next entry to try; the tally
@@ -111,6 +112,9 @@
   const FS_ID = /^[A-Z0-9]+(?:-[A-Z0-9]+)+$/i;
   const SLUG = /^[A-Za-z0-9_-]{1,120}$/;
 
+  // A clipping's own page: today's /article/{slug}/{id}/, or the older
+  // /clip/{id}/{slug}/ that Ancestry's copies of clippings still link to
+  // (Newspapers.com sends it on to the /article/ page).
   function npClipUrl(raw) {
     let u;
     try {
@@ -119,8 +123,21 @@
       return null;
     }
     if (u.protocol !== 'https:' || !/(^|\.)newspapers\.com$/i.test(u.hostname) ||
-        u.username || u.password || !/^\/article\//.test(u.pathname)) return null;
+        u.username || u.password || !/^\/(article|clip)\//.test(u.pathname)) return null;
     return 'https://www.newspapers.com' + u.pathname;
+  }
+
+  // The clipping id an address names, or null: /article/{slug}/{id}/,
+  // /article/{id}/ or /clip/{id}/{slug}/.
+  function npClipIdOf(url) {
+    let p = '';
+    try {
+      p = new URL(String(url || '')).pathname;
+    } catch (e) {
+      return null;
+    }
+    const m = /^\/article\/[^/]+\/(\d+)\/?$/.exec(p) || /^\/(?:article|clip)\/(\d+)(?:\/[^/]*)?\/?$/.exec(p);
+    return m ? String(Number(m[1])) : null;
   }
 
   // A photo, clipping or document in a tree person's Ancestry gallery is
@@ -299,6 +316,44 @@
         title: String(c.title || '').slice(0, 200),
         pageDate: c.page_date || null,
         created: c.created || null,
+        state: 'queued',
+        tries: 0,
+      };
+      added++;
+    }
+    sortClippings(L);
+    return added;
+  }
+
+  // Queue clippings found on Ancestry ({ id, url, title, persons }): a
+  // clipping a tree person's gallery holds a copy of, or one their sources
+  // link. Whoever made it (the owner: any clipping found through Ancestry
+  // that she chooses to save is included), but only at an address that
+  // names that same clipping. One already queued or done stays as it is;
+  // the people it was found for are added to it, and the panel ticks them
+  // when it is saved, so the clipping keeps its tie to the tree person.
+  function addFoundClippings(L, clippings, from) {
+    let added = 0;
+    for (const c of clippings || []) {
+      if (!c) continue;
+      const key = SITES.newspapers.keyOf({ id: c.id });
+      const url = npClipUrl(c.url);
+      if (!key || !url || npClipIdOf(url) !== key) continue;
+      const persons = (Array.isArray(c.persons) ? c.persons : []).filter(Boolean).map((p) => String(p).slice(0, 200));
+      const prev = L.items[key];
+      if (prev) {
+        prev.persons = Array.isArray(prev.persons) ? prev.persons : [];
+        for (const p of persons) if (prev.persons.indexOf(p) < 0) prev.persons.push(p);
+        if (!prev.url) prev.url = url;
+        continue;
+      }
+      L.items[key] = {
+        id: Number(key),
+        url,
+        pageId: null,
+        title: String(c.title || '').slice(0, 200),
+        persons,
+        from: from || null,
         state: 'queued',
         tries: 0,
       };
@@ -711,7 +766,7 @@
 
   const api = {
     PACING, SITES, NP_LIST_MAX_PAGES, MAX_PER_RUN, MAX_TRIES, MAX_PARTIAL, MAX_FAILS_IN_A_ROW, MAX_TROUBLE_TRIES,
-    between, npClipUrl, ancMediaUrl, newLedger, repair, logEvent, addRecords, addClippings,
+    between, npClipUrl, npClipIdOf, ancMediaUrl, newLedger, repair, logEvent, addRecords, addClippings, addFoundClippings,
     isDone, markDone, markHeld, markSetAside, markRetry, markPartial, markRefused, requeuePartials, requeueSetAside,
     isCooldown, nextPending, counts, stopRule, causeOf,
     ensurePacing, planRateLimit, planAfterCapture, classifyError,

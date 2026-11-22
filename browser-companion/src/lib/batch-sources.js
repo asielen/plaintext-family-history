@@ -46,6 +46,9 @@ const BATCH_FS_PERSON_RE = /\/tree\/person\/(?:[a-z-]+\/)?([A-Z0-9]{4}-[A-Z0-9]{
 const BATCH_ANC_HOST_RE = /(^|\.)ancestry\.[a-z.]+$/i;
 const BATCH_FS_HOST_RE = /(^|\.)familysearch\.org$/i;
 const BATCH_NP_HOST_RE = /(^|\.)newspapers\.com$/i;
+// A Newspapers.com clipping's own page: /article/{slug}/{id}/, /article/{id}/
+// or the older /clip/{id}/{slug}/.
+const BATCH_NP_CLIP_PATH_RE = /^\/article\/[^/]+\/(\d+)\/?$|^\/(?:article|clip)\/(\d+)(?:\/[^/]*)?\/?$/;
 
 // What a person's other sources are, counted: "links to example.org (2),
 // a note (1)". Labels only, for the panel to say what it did not queue.
@@ -60,9 +63,11 @@ function batchFirstLine(el) {
 }
 
 // An Ancestry tree person's Facts page (`root`, at `href`): the Ancestry
-// records its sources link to, as { dbId, recordId, title }, plus a count of
-// the sources that are something else (a clipping, a web link), so the panel
-// can say what it left out rather than "no sources". Read from the person's
+// records its sources link to, as { dbId, recordId, title }; the
+// Newspapers.com clippings they link to, as { id, url, title }, for the
+// Newspapers.com batch; and a count of the sources that are something else
+// (a web link), so the panel can say what it left out rather than "no
+// sources". Read from the person's
 // own sources list (#sourcesSection) and nowhere else on the page: a record
 // page links its household's records, which are not this person's sources
 // (PR #224 Codex 4504294850). No such list: nothing (`sectionFound: false`).
@@ -93,6 +98,7 @@ function batchAncPersonSources(root, href) {
     sources.push({ dbId: id.dbId, recordId: id.recordId, title: batchFirstLine(a) });
   }
   const others = [];
+  const clippings = [];
   for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
     let u;
     try {
@@ -101,15 +107,22 @@ function batchAncPersonSources(root, href) {
       continue;
     }
     if (!/^https?:$/.test(u.protocol)) continue;
-    if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com clippings');
+    const clip = BATCH_NP_HOST_RE.test(u.hostname) ? BATCH_NP_CLIP_PATH_RE.exec(u.pathname) : null;
+    const clipId = clip ? String(Number(clip[1] || clip[2])) : null;
+    if (clipId && clipId !== '0') {
+      if (!clippings.some((c) => c.id === clipId)) {
+        clippings.push({ id: clipId, url: 'https://www.newspapers.com' + u.pathname, title: batchFirstLine(a) });
+      }
+    } else if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com links');
     else if (!/(^|\.)(ancestry|ancestrycdn)\.[a-z.]+$/i.test(u.hostname)) others.push('links to ' + u.hostname.replace(/^www\./, ''));
   }
   return {
     ok: true,
     person: batchFirstLine(h1) || null,
     sources,
+    clippings,
     sectionFound: true,
-    total: sources.length + others.length,
+    total: sources.length + clippings.length + others.length,
     other: others.length,
     otherWhat: batchDescribeOthers(others),
   };

@@ -306,8 +306,11 @@ test('batchAncPersonSources: the Ancestry records a tree person cites, the rest 
     ['90002', '2000001', 'California, U.S., Death Index'],
     ['90003', '3000001', 'Kansas State Census'],
   ]);
-  assert.strictEqual(r.other, 3);
-  assert.strictEqual(r.otherWhat, 'Newspapers.com clippings, links to findagrave.com (2)');
+  // The clipping is for the Newspapers.com batch; the rest are counted.
+  assert.deepStrictEqual(r.clippings, [{ id: '101', url: 'https://www.newspapers.com/article/x/101/', title: 'clipping' }]);
+  assert.strictEqual(r.other, 2);
+  assert.strictEqual(r.otherWhat, 'links to findagrave.com (2)');
+  assert.strictEqual(r.total, 6);
 });
 
 function fsService(answers) {
@@ -913,4 +916,26 @@ test('one writer: an Ancestry photo saved by hand joins the queue as done, besid
   assert.deepStrictEqual(L.order, ['90001:1000001', 'med:' + GAL_A]);
   assert.deepStrictEqual([L.items['med:' + GAL_A].state, L.items['med:' + GAL_A].note], ['done', 'saved by hand']);
   assert.strictEqual(L.items['90001:1000001'].state, 'queued');
+});
+
+test('addFoundClippings: any member\'s clipping found on Ancestry, only at an address naming that clipping; done stays done', () => {
+  const L = CB.newLedger();
+  const n = CB.addFoundClippings(L, [
+    { id: 303, url: 'https://www.newspapers.com/clip/303/barn-raising/', title: 'Barn raising', persons: ['Thomas Hartley'] },
+    { id: 404, url: 'https://www.newspapers.com/clip/405/another/' },
+    { id: 505, url: 'https://evil.example/clip/505/' },
+    { id: 606, url: 'https://www.newspapers.com/image/5550001/' },
+  ], 'gallery: Thomas Hartley');
+  assert.strictEqual(n, 1);
+  assert.deepStrictEqual(L.order, ['303']);
+  assert.deepStrictEqual([L.items['303'].url, L.items['303'].persons, L.items['303'].from],
+    ['https://www.newspapers.com/clip/303/barn-raising/', ['Thomas Hartley'], 'gallery: Thomas Hartley']);
+  CB.markDone(L, '303', 'b1');
+  assert.strictEqual(CB.addFoundClippings(L, [{ id: 303, url: 'https://www.newspapers.com/clip/303/x/', persons: ['Margaret Hartley'] }]), 0);
+  assert.strictEqual(L.items['303'].state, 'done');
+  assert.deepStrictEqual(L.items['303'].persons, ['Thomas Hartley', 'Margaret Hartley']);
+  // Her own list read later leaves the entry as it is.
+  CB.addClippings(L, [{ clipping_id: 303, page_id: 1, url: '/article/x/303/', user_username: 'HartleyResearch' }], 'HartleyResearch');
+  assert.strictEqual(L.items['303'].state, 'done');
+  assert.strictEqual(CB.npClipUrl('https://www.newspapers.com/clip/303/x/'), 'https://www.newspapers.com/clip/303/x/');
 });

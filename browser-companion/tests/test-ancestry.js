@@ -866,3 +866,25 @@ test('#261: inside Ancestry\'s panel, only its own fields are read - never a lab
   const all = JSON.stringify(d);
   for (const never of OTHERS) assert.ok(!all.includes(never), 'kept from the page: ' + never);
 });
+
+// A clipping saved from Newspapers.com names its original in the sharer's
+// card ("originally shared <a>this article</a> … from Newspapers.com"): read
+// from that card alone, and only when it names one clipping.
+test('ancMediaNewspapersClip: the original clipping, from the sharer\'s card only', () => {
+  const want = { clippingId: 4321, url: 'https://www.newspapers.com/clip/4321/obituary-of-thomas-hartley/' };
+  assert.deepStrictEqual(anc.ancMediaNewspapersClip(parse(CLIP_HTML)), want);
+  const r = anc.ancMediaFrom(parse(CLIP_HTML), CLIP_URL, { origin: 'https://www.ancestry.com' });
+  assert.deepStrictEqual(r.newspapersClip, want);
+  // Today's address form, with its query dropped.
+  const article = CLIP_HTML.replace('https://www.newspapers.com/clip/4321/obituary-of-thomas-hartley/',
+    'https://newspapers.com/article/the-fairview-gazette-obituary/4321/?xid=1');
+  assert.deepStrictEqual(anc.ancMediaNewspapersClip(parse(article)),
+    { clippingId: 4321, url: 'https://www.newspapers.com/article/the-fairview-gazette-obituary/4321/' });
+  // A photo with no such card, and a clipping linked only in a comment.
+  assert.strictEqual(anc.ancMediaNewspapersClip(page('ancestry-media-photo')), null);
+  const inComment = CLIP_HTML.replace('class="mediaOriginallyShared"', 'class="mediaComment"');
+  assert.strictEqual(anc.ancMediaNewspapersClip(parse(inComment)), null);
+  // A card naming two different clippings cannot say which is this one.
+  const two = CLIP_HTML.replace('>this article</a>', '>this article</a> and <a href="https://www.newspapers.com/clip/4322/x/">another</a>');
+  assert.strictEqual(anc.ancMediaNewspapersClip(parse(two)), null);
+});

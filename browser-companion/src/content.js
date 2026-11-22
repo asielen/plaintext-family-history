@@ -1484,7 +1484,32 @@
         fileStem: ancPhotoFileStem(id.mediaId),
       }),
       details,
+      newspapersClip: ancMediaNewspapersClip(root),
     };
+  }
+
+  // A Newspapers.com clipping saved into a tree's gallery is an Ancestry copy:
+  // a picture about 1200 pixels tall, under a media id of its own. The original
+  // on Newspapers.com is better evidence (the whole page at full size, the
+  // clipping cut from it, the site's citation), and the archive may hold it
+  // already. The sharer's card says so: "originally shared <a>this article</a>
+  // on <date> from Newspapers.com", in span.mediaOriginallyShared. Its link to
+  // the clipping (/article/{slug}/{id}/, or the older /clip/{id}/{slug}/) gives
+  // { clippingId, url }; `url` is that address on www.newspapers.com, path only.
+  // Read from that card alone, never from a comment that links some other
+  // clipping, and only when the card names exactly one.
+  const ANC_NP_CLIP_RE = /^https?:\/\/(?:www\.)?newspapers\.com(\/(?:article\/[^/?#]+\/(\d+)|(?:article|clip)\/(\d+))(?:\/[^/?#]*)?\/?)(?:[?#]|$)/i;
+
+  function ancMediaNewspapersClip(root) {
+    const found = [];
+    for (const card of ancElements(root, (e) => ancClasses(e).indexOf('mediaOriginallyShared') >= 0)) {
+      for (const a of ancElements(card, (e) => ancTag(e) === 'A')) {
+        const m = ANC_NP_CLIP_RE.exec(String(a.getAttribute('href') || '').trim());
+        const id = m ? Number(m[2] || m[3]) : 0;
+        if (id > 0 && !found.some((f) => f.clippingId === id)) found.push({ clippingId: id, url: 'https://www.newspapers.com' + m[1] });
+      }
+    }
+    return found.length === 1 ? found[0] : null;
   }
 
   // What kind of source a shared item is, from the category its sharer chose
@@ -2748,6 +2773,9 @@
   const BATCH_ANC_HOST_RE = /(^|\.)ancestry\.[a-z.]+$/i;
   const BATCH_FS_HOST_RE = /(^|\.)familysearch\.org$/i;
   const BATCH_NP_HOST_RE = /(^|\.)newspapers\.com$/i;
+  // A Newspapers.com clipping's own page: /article/{slug}/{id}/, /article/{id}/
+  // or the older /clip/{id}/{slug}/.
+  const BATCH_NP_CLIP_PATH_RE = /^\/article\/[^/]+\/(\d+)\/?$|^\/(?:article|clip)\/(\d+)(?:\/[^/]*)?\/?$/;
 
   // What a person's other sources are, counted: "links to example.org (2),
   // a note (1)". Labels only, for the panel to say what it did not queue.
@@ -2762,9 +2790,11 @@
   }
 
   // An Ancestry tree person's Facts page (`root`, at `href`): the Ancestry
-  // records its sources link to, as { dbId, recordId, title }, plus a count of
-  // the sources that are something else (a clipping, a web link), so the panel
-  // can say what it left out rather than "no sources". Read from the person's
+  // records its sources link to, as { dbId, recordId, title }; the
+  // Newspapers.com clippings they link to, as { id, url, title }, for the
+  // Newspapers.com batch; and a count of the sources that are something else
+  // (a web link), so the panel can say what it left out rather than "no
+  // sources". Read from the person's
   // own sources list (#sourcesSection) and nowhere else on the page: a record
   // page links its household's records, which are not this person's sources
   // (PR #224 Codex 4504294850). No such list: nothing (`sectionFound: false`).
@@ -2795,6 +2825,7 @@
       sources.push({ dbId: id.dbId, recordId: id.recordId, title: batchFirstLine(a) });
     }
     const others = [];
+    const clippings = [];
     for (const a of ancElements(box, (e) => ancTag(e) === 'A' && !!e.getAttribute('href'))) {
       let u;
       try {
@@ -2803,15 +2834,22 @@
         continue;
       }
       if (!/^https?:$/.test(u.protocol)) continue;
-      if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com clippings');
+      const clip = BATCH_NP_HOST_RE.test(u.hostname) ? BATCH_NP_CLIP_PATH_RE.exec(u.pathname) : null;
+      const clipId = clip ? String(Number(clip[1] || clip[2])) : null;
+      if (clipId && clipId !== '0') {
+        if (!clippings.some((c) => c.id === clipId)) {
+          clippings.push({ id: clipId, url: 'https://www.newspapers.com' + u.pathname, title: batchFirstLine(a) });
+        }
+      } else if (BATCH_NP_HOST_RE.test(u.hostname) && /\/(clip|article)\//.test(u.pathname)) others.push('Newspapers.com links');
       else if (!/(^|\.)(ancestry|ancestrycdn)\.[a-z.]+$/i.test(u.hostname)) others.push('links to ' + u.hostname.replace(/^www\./, ''));
     }
     return {
       ok: true,
       person: batchFirstLine(h1) || null,
       sources,
+      clippings,
       sectionFound: true,
-      total: sources.length + others.length,
+      total: sources.length + clippings.length + others.length,
       other: others.length,
       otherWhat: batchDescribeOthers(others),
     };
@@ -3460,6 +3498,9 @@
       // Ancestry's Details still describe the item shown before (#261 audit
       // B1): the panel says to wait, and nothing of them fills the form.
       ancestryPhotoNotReady: photo && !photo.ok && photo.transient ? photo.error : null,
+      // A Newspapers.com clipping saved to the gallery: { clippingId, url } of
+      // the original, which the panel offers to open instead.
+      ancestryNewspapersClip: photoInfo && photoInfo.newspapersClip ? photoInfo.newspapersClip : null,
       // A FamilySearch record (or the image viewer opened from one): Capture
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),

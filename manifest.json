@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f9edc042b5d0b474429da4606b40443058211505da7bc96a29f5b6a84dc50187",
+      "sha256": "5b15672e019d076daa88d046f73d15dfd80f06755bd1ad3fbfd05c6b49aba13a",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -380,35 +380,35 @@
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
-      "sha256": "4ed8a13fb21a6fb4c793194b014f7358d9fb89115a4c04f0d8c65d22460e15ac",
+      "sha256": "033d4405724c693a7b009f26201645656cdf4d89cd5db9452c22c933ef050337",
       "spec_version": "2.19",
       "src": "browser-companion/src/batch.js"
     },
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "52ad40dfcf0b4e5346afe3bdc6604df75aeddbf50e3ebd77b8664476dd4b8bb4",
+      "sha256": "89ff896440f41c5fec73b234bce7da57b7339ad69ea5c68dcd8982f4c9634786",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "07cfed1d49ad239310e6182d2bdb8a9ad39c3fa696cf06d592a5782cbc08ef3a",
+      "sha256": "b626618d551654739b82e8e9f15c294c538f84ae528615db5fadbef6dd7fd681",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
       "category": "operating",
-      "sha256": "be8dbe38afee94a30496a61a494b1caed6f590c3ff8912cd206cc6e563045bda",
+      "sha256": "bcb097ea577a23744c47292acdc8dab3cc92bd386f9f1652d1ad544398e1390d",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/batch-sources.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-store.js",
       "category": "operating",
-      "sha256": "1bac184cd2e57687bb993f21a2028cacf6e998228915ae833b2b1dc35a040b10",
+      "sha256": "08da49808559d7ff9d2297d6173af0f401782b9a83a1c7d2a92663f919c417b3",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/batch-store.js"
     },
@@ -422,7 +422,7 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
-      "sha256": "8f936503f8e441841a5a7396bda299428465b1a66fa4327e1e932dda3cd2b25f",
+      "sha256": "10bbea9180374ab5aba5642b2a6fc525160e08b2f993fe700d95f7659dfeecbf",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
@@ -513,21 +513,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "0b825a517615821070ca7eb5bd256e5299d132b24f5b3b468a898a4d0dc78e1e",
+      "sha256": "9db164d1eeaa5981433c283cef3d6cafde89c866f2719d3f953fd4d32eda827c",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "b71220996205ffb68e56e9d1422c68d160f0b553c2ad6ae0ca36d889b29e7c9b",
+      "sha256": "08a851070b1ba724013d1ebdde5b755e6654068c38c69a619fe5fe9dabf6af56",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "1119e2c6289b270929bd7042b7a0db69b0c0108b7637b7d63a6aa31b880989be",
+      "sha256": "8a36dcc13982a3e7b6077a281d607d314b5a340eec39e98d6842a8b8ff014064",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "4c05e346c1a3dee3ad2c7900ab9ebae2bd9d97d76aec766ec8ee449b86b32d9b",
+      "sha256": "e492cfa4f8cd7729f09708f2143247b4fb2174b071fd9d0342da8a5d5aee147b",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "4ec91e7e189e45b323c0e6373391f1e475a9c77ed2fcbd881043024878f7bec2",
+      "sha256": "8305a685d71da0dabaa1d29e1ffdef5281991130480203397ab1d83cc42404eb",
       "spec_version": "2.19",
       "src": "tools/lint.py"
     },
@@ -859,6 +859,13 @@
       "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
       "spec_version": "2.19",
       "src": "tools/reconcile.py"
+    },
+    {
+      "path": ".fha/tools/record_collections.json",
+      "category": "operating",
+      "sha256": "3ebc3860559b307ee600e5a2ded68b964930913e444c93a79c82a267117e413d",
+      "spec_version": "2.19",
+      "src": "tools/record_collections.json"
     },
     {
       "path": ".fha/tools/relate.py",
@@ -1144,7 +1151,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "67361b0361f22488b21a20a42a9c8bb858d1f92bfefbb2d379f5e7e682f0e810",
+      "sha256": "bb33a45edf58b7f8522180c57209dec388a49a7cee911c30538884124fe259b0",
       "spec_version": "2.19"
     },
     {
@@ -1193,7 +1200,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "8332917879bdf5abdcde10eef7ab00531b9427dca91be14aeae89e5a7afba49e",
+      "sha256": "e60d0c465d225ee6d4634f1b8651345a69839fc713be4168f3cfbc9110f72934",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
