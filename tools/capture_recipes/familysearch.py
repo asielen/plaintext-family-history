@@ -177,15 +177,19 @@ def _ark_image(url: str | None) -> str | None:
 
 
 _IMAGE_OF_RE = re.compile(r'\bImage\s+([\d,]+)\s+of\s+([\d,]+)', re.I)
-_FILM_RE = re.compile(r'\b(?:micro)?film\s*(?:#|no\.?|number)?:?\s*(\d{5,9})\b', re.I)
-_DGS_RE = re.compile(r'\bDGS\s*(?:#|no\.?|number)?:?\s*(\d{5,9})\b', re.I)
-_TITLE_TAIL_RE = re.compile(r'\s*[|•-]\s*FamilySearch\s*$')
+# The live viewer's header says "Film # 008129459": that number is the DGS
+# (image group), padded to nine digits, not the microfilm number, which the
+# viewer does not show (checked on a live film image, 2026-11-22). So a page
+# gives the DGS only; the add-on's own citation, from FamilySearch's data, has
+# the film number too.
+_DGS_RE = re.compile(r'\b(?:DGS|Film)\s*(?:#|no\.?|number)?:?\s*(\d{7,9})\b', re.I)
+_TITLE_TAIL_RE = re.compile(r'\s*(?:;\s*ark:/61903/\S*|[|•–—]\s*(?:Film\s*#.*|FamilySearch))\s*$', re.I)
 
 
 def _extract_film_image(html: str, image_id: str) -> dict:
-    """A bare film image page: the film, DGS and image number the viewer shows,
+    """A bare film image page: the DGS and image number the viewer shows,
     and a citation that leads back to this exact image (the add-on's own
-    citation says the same; this is the fallback when its hints are missing)."""
+    citation, sent in capture.json, wins; this is the fallback without it)."""
     page = parse_html(html)
     text = page.text
     title = _TITLE_TAIL_RE.sub('', (page.title or '').strip()).strip() or f'FamilySearch image {image_id}'
@@ -194,10 +198,9 @@ def _extract_film_image(html: str, image_id: str) -> dict:
     of = _IMAGE_OF_RE.search(text)
     if of:
         parts.append(f'image {of.group(1)} of {of.group(2)}')
-    film, dgs = _FILM_RE.search(text), _DGS_RE.search(text)
-    cited = ', '.join(x for x in (f'film {film.group(1)}' if film else '', f'DGS {dgs.group(1)}' if dgs else '') if x)
-    if cited:
-        parts.append('citing ' + cited)
+    dgs = _DGS_RE.search(text)
+    if dgs:
+        parts.append(f'citing DGS {dgs.group(1).lstrip("0") or "0"}')
     return {
         'title': title,
         'source_type': 'other',

@@ -383,8 +383,6 @@ test('fsRecordFrom: a Find a Grave Index entry names the memorial it indexes; ot
 
 // ── a bare film image (#424): film, image number and citation ───────────────
 
-const FILM = JSON.parse(fs.readFileSync(
-  path.join(REPO, 'tests', 'fixtures', 'capture-samples', 'familysearch-film-images.json'), 'utf8')).images;
 const IMG = 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1';
 
 test('fsParseImagePage: a bare film image only; a viewer opened from a record stays that record', () => {
@@ -401,62 +399,122 @@ test('fsParseImagePage: a bare film image only; a viewer opened from a record st
   assert.strictEqual(fsr.fsParseRecordPage(IMG), null);
 });
 
-test('fsImageInfoFrom: film, DGS, image number and catalog title from the description', () => {
-  const info = fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'hrt2-film1');
-  assert.deepStrictEqual(info, {
-    imageId: 'HRT2-FILM1', dgs: '8123456', imageNumber: 2531, imageCount: 3120, filmNumber: '004012345',
-    catalogTitle: 'Deeds, v. 4, 1851-1860', catalogUrl: 'https://www.familysearch.org/search/catalog/1234567',
-    arkUrl: IMG,
+// The live film image (recorded 2026-11-22): its description, and the film
+// viewer's two answers, with the 689-entry image list expanded back.
+const LIVE = JSON.parse(fs.readFileSync(
+  path.join(REPO, 'tests', 'fixtures', 'capture-samples', 'familysearch-film-images.json'), 'utf8'));
+const LIVE_ID = '3Q9M-CSVG-HDJG';
+const LIVE_ARK = 'https://www.familysearch.org/ark:/61903/3:1:' + LIVE_ID;
+function liveFilm() {
+  const fd = JSON.parse(JSON.stringify(LIVE.filmData['008129459']));
+  fd.images = Array.from({ length: fd.imageCount },
+    (_, i) => fd.imagesKept[i] || 'https://familysearch.org/ark:/61903/3:1:TRIMMED-' + i + '/image.xml');
+  delete fd.imageCount;
+  delete fd.imagesKept;
+  return { imageData: JSON.parse(JSON.stringify(LIVE.imageData[LIVE_ID])), filmData: fd };
+}
+const LIVE_PAGE = { title: 'Deeds, 1785-1851; ark:/61903/3:1:' + LIVE_ID };
+
+test('fsImageInfoFrom: on the live film image, film, DGS, image number and catalog title from the viewer\'s answers', () => {
+  assert.deepStrictEqual(fsr.fsImageInfoFrom(LIVE_ID.toLowerCase(), liveFilm(), LIVE_PAGE), {
+    imageId: LIVE_ID, dgs: '8129459', imageNumber: 11, imageCount: 689, filmNumber: '27833',
+    filmNote: 'Deeds, v. 1-3 1785-1809', catalogTitle: 'Deeds, 1785-1851',
+    catalogUrl: 'https://www.familysearch.org/search/catalog/koha:24277', arkUrl: LIVE_ARK,
   });
 });
 
-test('fsImageInfoFrom: the viewer\'s own "Image N of M" wins; every missing field is null, never guessed', () => {
-  assert.strictEqual(fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1', 'Image 2,532 of 3120').imageNumber, 2532);
-  const bare = fsr.fsImageInfoFrom(FILM['HRT2-FILM2'], 'HRT2-FILM2');
-  assert.deepStrictEqual(bare, {
-    imageId: 'HRT2-FILM2', dgs: null, imageNumber: null, imageCount: null, filmNumber: null,
-    catalogTitle: 'Will book B', catalogUrl: null, arkUrl: 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2',
+test('fsImageInfoFrom: the image\'s own description names no film, so alone it gives nulls, never a guess', () => {
+  // What the builder first read: the GEDCOM X description. Live, it holds none of it.
+  const none = fsr.fsImageInfoFrom(LIVE_ID, { imageData: LIVE.images[LIVE_ID] });
+  assert.deepStrictEqual(none, {
+    imageId: LIVE_ID, dgs: null, imageNumber: null, imageCount: null, filmNumber: null, filmNote: null,
+    catalogTitle: null, catalogUrl: null, arkUrl: LIVE_ARK,
   });
-  assert.strictEqual(fsr.fsImageInfoFrom({}, 'X1').catalogTitle, null);
-  const F = 'http://familysearch.org/v1/Film';
-  const D = 'http://familysearch.org/v1/DGS';
-  for (const [drop, gone, kept] of [[F, 'filmNumber', 'dgs'], [D, 'dgs', 'filmNumber']]) {
-    const j = JSON.parse(JSON.stringify(FILM['HRT2-FILM1']));
-    delete j.sourceDescriptions[1].identifiers[drop];
-    const i = fsr.fsImageInfoFrom(j, 'HRT2-FILM1');
-    assert.strictEqual(i[gone], null);
-    assert.notStrictEqual(i[kept], null);
-  }
+  // FamilySearch did not answer: the page's own title is the catalog title, nothing more.
+  assert.strictEqual(fsr.fsImageInfoFrom(LIVE_ID, null, LIVE_PAGE).catalogTitle, 'Deeds, 1785-1851');
+  assert.strictEqual(fsr.fsImageInfoFrom(LIVE_ID, null, { title: 'Deeds, 1785-1851 – Film # 008129459' }).catalogTitle,
+    'Deeds, 1785-1851');
+  // Each part missing on its own leaves only that part out.
+  const f = liveFilm();
+  f.filmData.catalogs[0].data.film_note = [];
+  const noNote = fsr.fsImageInfoFrom(LIVE_ID, f);
+  assert.strictEqual(noNote.filmNumber, null);
+  assert.strictEqual(noNote.dgs, '8129459');
+  assert.strictEqual(noNote.catalogTitle, 'Deeds, 1785-1851');
+  const g = liveFilm();
+  g.filmData.images = g.filmData.images.filter((u) => u.indexOf(LIVE_ID) < 0);
+  const notListed = fsr.fsImageInfoFrom(LIVE_ID, g);
+  assert.strictEqual(notListed.imageNumber, null);
+  assert.strictEqual(notListed.imageCount, null);
+  assert.strictEqual(notListed.filmNumber, '27833');
+  // A film listed under two catalog entries: the one that lists this film.
+  const h = liveFilm();
+  h.filmData.catalogs.unshift({ path: '/search/catalog/info/koha:1', data: { title: 'Another', film_note: [{ digital_film_no: '1', filmno: '2' }] } });
+  assert.strictEqual(fsr.fsImageInfoFrom(LIVE_ID, h).catalogTitle, 'Deeds, 1785-1851');
+});
+
+test('fsFilmData asks the film viewer\'s two questions, signed in, and never fails the capture', async () => {
+  const calls = [];
+  const answer = (x) => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+  const d = (over = {}) => ({
+    base: LIVE_ARK, token: TOKEN,
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ url, method: init.method, auth: !!init.headers.Authorization, body });
+      if (over[body.type]) return { ok: false, status: over[body.type], text: async () => '' };
+      if (body.type === 'image-data') return answer(LIVE.imageData[LIVE_ID]);
+      return answer(liveFilm().filmData);
+    },
+  });
+  const film = await fsr.fsFilmData(LIVE_ID, d());
+  assert.strictEqual(film.error, null);
+  assert.strictEqual(fsr.fsImageInfoFrom(LIVE_ID, film).imageNumber, 11);
+  assert.deepStrictEqual(calls.map((c) => [c.url, c.method, c.auth]), [
+    ['https://www.familysearch.org/search/filmdatainfo/image-data', 'POST', true],
+    ['https://www.familysearch.org/search/filmdatainfo/film-data', 'POST', true],
+  ]);
+  assert.deepStrictEqual(calls[0].body.args, { imageURL: 'https://familysearch.org/ark:/61903/3:1:' + LIVE_ID, state: {}, locale: 'en' });
+  assert.deepStrictEqual(calls[1].body.args, { dgsNum: '008129459', state: {}, locale: 'en' });
+  calls.length = 0;
+  const slow = await fsr.fsFilmData(LIVE_ID, d({ 'image-data': 429 }));
+  assert.strictEqual(slow.slowDown, true);
+  assert.ok(slow.error);
+  assert.strictEqual(calls.length, 1, 'no second question after a slow down');
+  const noFilm = await fsr.fsFilmData(LIVE_ID, d({ 'film-data': 500 }));
+  assert.ok(noFilm.error);
+  assert.strictEqual(fsr.fsImageInfoFrom(LIVE_ID, noFilm).dgs, '8129459', 'the DGS that did come is kept');
 });
 
 test('fsImageCitation names the film, image number and the 3:1 link; a missing part is left out', () => {
-  const info = fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1');
+  const info = fsr.fsImageInfoFrom(LIVE_ID, liveFilm(), LIVE_PAGE);
   assert.strictEqual(fsr.fsImageCitation(info, '2026-11-22'),
-    '"Deeds, v. 4, 1851-1860," images, FamilySearch (' + IMG + ' : accessed 2026-11-22); image 2531 of 3120; ' +
-    'citing film 004012345, DGS 8123456.');
-  assert.strictEqual(fsr.fsImageCitation(fsr.fsImageInfoFrom(FILM['HRT2-FILM2'], 'HRT2-FILM2'), '2026-11-22'),
-    '"Will book B," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2 : accessed 2026-11-22).');
+    '"Deeds, 1785-1851," images, FamilySearch (' + LIVE_ARK + ' : accessed 2026-11-22); image 11 of 689; ' +
+    'citing film 27833, DGS 8129459.');
+  assert.strictEqual(fsr.fsImageCitation(fsr.fsImageInfoFrom(LIVE_ID, null, LIVE_PAGE), '2026-11-22'),
+    '"Deeds, 1785-1851," images, FamilySearch (' + LIVE_ARK + ' : accessed 2026-11-22).');
   assert.strictEqual(fsr.fsImageCitation({ arkUrl: IMG, filmNumber: '4012345', imageNumber: 9 }, '2026-11-22'),
     'images, FamilySearch (' + IMG + ' : accessed 2026-11-22); image 9; citing film 4012345.');
 });
 
 test('fsImageTitle: "{catalog title}, image {n}", else the image id', () => {
-  assert.strictEqual(fsr.fsImageTitle(fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1')), 'Deeds, v. 4, 1851-1860, image 2531');
+  assert.strictEqual(fsr.fsImageTitle(fsr.fsImageInfoFrom(LIVE_ID, liveFilm())), 'Deeds, 1785-1851, image 11');
   assert.strictEqual(fsr.fsImageTitle({ imageId: 'ABC' }), 'FamilySearch image ABC');
 });
 
 test('fsImageCheck and fsImage reuse a description already read, asking FamilySearch for it once', async () => {
   const calls = [];
   const d = {
-    base: IMG, token: TOKEN, toBase64: async () => 'AAAA',
+    base: LIVE_ARK, token: TOKEN, toBase64: async () => 'AAAA',
     fetch: async (url) => {
       calls.push(url);
-      if (/3:1:HRT2-FILM1$/.test(url)) return { ok: true, status: 200, text: async () => JSON.stringify(FILM['HRT2-FILM1']) };
+      if (url.endsWith('3:1:' + LIVE_ID)) return { ok: true, status: 200, text: async () => JSON.stringify(LIVE.images[LIVE_ID]) };
       return { ok: true, status: 200, body: null, blob: async () => new Blob([Buffer.alloc(40 * 1024)], { type: 'image/jpeg' }) };
     },
   };
-  const desc = await fsr.fsImageDescription('HRT2-FILM1', d);
-  assert.strictEqual((await fsr.fsImageCheck('HRT2-FILM1', d, desc)).available, true);
-  assert.strictEqual((await fsr.fsImage('HRT2-FILM1', d, desc)).ok, true);
-  assert.strictEqual(calls.filter((u) => /3:1:HRT2-FILM1$/.test(u)).length, 1);
+  const desc = await fsr.fsImageDescription(LIVE_ID, d);
+  assert.strictEqual((await fsr.fsImageCheck(LIVE_ID, d, desc)).available, true);
+  assert.strictEqual((await fsr.fsImage(LIVE_ID, d, desc)).ok, true);
+  assert.strictEqual(calls.filter((u) => u.endsWith('3:1:' + LIVE_ID)).length, 1);
+  // The live description's full image sits on a FamilySearch subdomain.
+  assert.ok(calls.some((u) => /^https:\/\/sg30p0\.familysearch\.org\/.*\/dist\.jpg$/.test(u)));
 });

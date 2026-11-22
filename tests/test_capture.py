@@ -686,15 +686,18 @@ class CaptureTestCase(unittest.TestCase):
         # A deed found by paging an unindexed film (ark 3:1, no record behind
         # it): the stub's citation names the film, image number and 3:1 link,
         # so it reads right even when the add-on's own hints are missing.
-        ark = 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1?i=2530'
+        # The fixture is the live viewer's header (2026-11-22): there "Film #"
+        # is the DGS number, padded to nine digits, not the microfilm number.
+        ark = 'https://www.familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HDJG?lang=en&i=10'
         rc = self._capture(_sample('familysearch-film-image'), url=ark)
         self.assertEqual(rc, EXIT_CLEAN)
         text = self._only_stub().read_text(encoding='utf-8')
-        self.assertIn('Deeds, v. 4, 1851-1860, image 2531', text)
-        self.assertIn('ark:/61903/3:1:HRT2-FILM1', text)
-        self.assertIn('image 2531 of 3120; citing film 004012345, DGS 8123456.', text)
-        citation = text.split('citation:', 1)[1].split('repository:', 1)[0]
-        self.assertNotIn('?i=2530', citation)  # the citation links the image, not the viewer's position
+        citation = ' '.join(text.split('citation:', 1)[1].split('repository:', 1)[0].split())
+        self.assertRegex(citation, r'^> "Deeds, 1785-1851," images, FamilySearch \(https://www\.familysearch\.org/ark:/61903/'
+                                   r'3:1:3Q9M-CSVG-HDJG : accessed [\d-]+\); citing DGS 8129459\.$')
+        self.assertNotIn('film 008129459', text)  # the viewer's "Film #" is never cited as the film
+        self.assertNotIn('ark:/61903/3:1:3Q9M-CSVG-HDJG;', text)  # the page title's ark tail is not in the title
+        self.assertNotIn('?i=10', citation)  # the citation links the image, not the viewer's position
 
     def test_familysearch_bare_film_image_with_no_film_text_leaves_parts_out(self) -> None:
         rc = self._capture('<html><head><title>Will book B | FamilySearch</title></head><body></body></html>',

@@ -2119,6 +2119,9 @@
       url: rec.url,
       title,
       accessed: captureJson.accessedDate(),
+      // FamilySearch's own citation, so the source file cites the record the
+      // way FamilySearch does rather than a generic guess from the page.
+      citation: info.citation || '',
       // What she typed wins; else what the record says about itself.
       sourceDate: form.date || hints.sourceDate || '',
       sourceType: form.type || hints.sourceType || '',
@@ -2190,7 +2193,7 @@
       } else {
         imageFlags = { transient: !img || !!img.transient, slowDown: !!(img && img.slowDown) };
         imageWarning = ((img && img.error) || 'no answer from the page') +
-          '. The film, image number and citation are saved. To add the image, use FamilySearch’s ' +
+          '. The image’s link and citation are saved. To add the image, use FamilySearch’s ' +
           'Download button, drop the file into the panel and press Capture again: that capture holds both.';
       }
     }
@@ -2216,13 +2219,15 @@
     const notes = [
       gatherNotes(provisional, ownNotes),
       'FamilySearch citation: ' + got.citation,
+      got.warning ? 'FamilySearch image ' + imageId + ': ' + got.warning + '. Checked ' + accessed + '.' : '',
       imageWarning && !saidAlready ? fsNoteMark(imageId) + '(' + info.arkUrl + ') could not be downloaded - ' +
-        imageWarning.split('. The film')[0] + '. Checked ' + accessed + '.' : '',
+        imageWarning.split('. The image’s link')[0] + '. Checked ' + accessed + '.' : '',
     ].filter((t) => t && t.trim()).join('\n\n');
     const fields = {
       url: info.arkUrl,
       title,
       accessed,
+      citation: got.citation,
       sourceDate: form.date || '',
       sourceType: form.type || '',
       repository: form.edited.has('f-repo') && form.repo ? form.repo : 'FamilySearch',
@@ -2235,6 +2240,7 @@
     const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
     if (hasImage && !provisional) state.fsImages[imageId] = { record: 'fsimg:' + imageId, url: info.arkUrl, name: title };
     reportStaged(st.where, st.viaHost, imageWarning, [st.hostWarning,
+      got.warning ? 'FamilySearch: ' + got.warning + '. The citation names the image and its link only.' : null,
       forcedCopy ? 'A copy of the web page was kept too: with no image, it is what this image’s film and citation are filed with.' : null]
       .filter(Boolean).join('\n') || null);
     return {
@@ -2243,8 +2249,8 @@
       bundle: st.bundle, where: st.where,
       imageKey: hasImage ? 'fsimg:' + imageId : null,
       partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),
-      slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
-      note: imageWarning ? 'image not saved: ' + imageWarning.split('. The film')[0] : null,
+      slowDown: imageFlags.slowDown || !!got.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
+      note: imageWarning ? 'image not saved: ' + imageWarning.split('. The image’s link')[0] : null,
     };
   }
 
