@@ -9625,8 +9625,8 @@ def _site_data_age(data: dict) -> int | None:
         or next((p for p in persons if isinstance(p, dict) and p.get('principal')), None)
     for f in person.get('fields') if isinstance(person, dict) and isinstance(person.get('fields'), list) else []:
         if isinstance(f, dict) and str(f.get('type', '')).endswith('/Age'):
-            for v in f.get('values') or []:
-                m = re.match(r'\s*(\d{1,3})\b', str((v or {}).get('text', '')))
+            for v in f.get('values') if isinstance(f.get('values'), list) else []:
+                m = re.match(r'\s*(\d{1,3})\b', str(v.get('text', ''))) if isinstance(v, dict) else None
                 if m:
                     return int(m.group(1))
     return None
@@ -9655,8 +9655,10 @@ def source_record_subjects(meta: dict, read_site_data) -> set[tuple[str, int | N
 
 def same_record_subject(a: set, b: set) -> bool:
     """Whether two sources' subjects (source_record_subjects) share one entry:
-    the same name, and the same age when both records give one."""
-    return any(na == nb and (aa is None or ab is None or aa == ab) for na, aa in a for nb, ab in b)
+    the same name and the same age. Two records that both give no age (a
+    birth index) agree; one that gives an age and one that does not do not,
+    since a son named for his father then cannot be told apart."""
+    return any(na == nb and aa == ab for na, aa in a for nb, ab in b)
 
 
 def source_site_collection(meta: dict, read_site_data) -> tuple[str, str] | None:

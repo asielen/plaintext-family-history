@@ -254,6 +254,19 @@ class SameRecordTwoSitesTests(unittest.TestCase):
         self.assertEqual(self._w162(), [])
         self._source('s-1b2c3d4e5f', site='fs', coll='1417683', people=(P1, P2), age=52)
         self.assertEqual(len(self._w162()), 1)
+        # One record giving an age and the other none cannot be told apart: not paired.
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', people=(P1, P2))
+        self.assertEqual(self._w162(), [])
+
+    def test_damaged_site_data_ages_do_not_stop_lint(self):
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', age=52)
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', age=52)
+        path = self.root / 'documents' / 'census' / 'record-data_S-1B2C3D4E5F.json'
+        data = json.loads(path.read_text(encoding='utf-8'))
+        for p in data['gedcomx']['persons']:
+            p['fields'][0]['values'] = ['52', 7]
+        path.write_text(json.dumps(data), encoding='utf-8')
+        self.assertEqual(self._w162(), [])
 
     def test_a_copy_whose_site_data_names_no_subject_is_never_paired(self):
         self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', name=None)
