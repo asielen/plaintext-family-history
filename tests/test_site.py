@@ -4874,6 +4874,24 @@ class StandaloneRedactionAuditTests(_Base):
                                     f'{data.name} node url -> missing page {n["url"]}')
 
 
+# XML namespace URIs are required string constants in an SVG library, not
+# network fetches; they are exempt only as a whole quoted literal.
+_XML_NAMESPACE_LITERALS = re.compile(
+    r'(["\'])http://www\.w3\.org/(?:2000/svg|1999/xhtml|1999/xlink|2000/xmlns/'
+    r'|XML/1998/namespace)\1')
+# A vendored library's licence banner on its first line names its home page.
+_BANNER_HOME_PAGE = re.compile(r'\A// https://d3js\.org v[0-9.]+ ')
+
+
+def _remote_urls_in_vendor_js(text):
+    """The http(s) addresses left in a vendored script once the namespace
+    constants and the banner's home page are set aside: any of these would be
+    a network load that breaks the site offline."""
+    text = _BANNER_HOME_PAGE.sub('', text)
+    text = _XML_NAMESPACE_LITERALS.sub('', text)
+    return re.findall(r'https?://\S*', text)
+
+
 class TreeTests(_Base):
     """Interactive trees (re-seeded by #115) - vendored renderer +
     adapter, build-time neutral tree JSON. The home page no longer carries
@@ -4904,18 +4922,22 @@ class TreeTests(_Base):
         self._run(linked=True)
         self.assertTrue((self.out_dir / 'vendor' / 'fha-tree.js').exists())
         self.assertTrue((self.out_dir / 'vendor' / 'tree-adapter.js').exists())
-        # No CDN / remote-loading references in the vendored bundle. XML
-        # namespace URIs (SVG, XHTML, XLINK, XMLNS) are required constants, not
-        # network fetches, so they are excluded before the check. D3's banner
-        # names its project home page, which is also not a fetch.
+        # No CDN / remote-loading references in the vendored bundle, so the
+        # charts keep working from a USB stick with no network.
         for js in (self.out_dir / 'vendor').glob('*.js'):
-            text = js.read_text(encoding='utf-8')
-            for constant in ('http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xhtml',
-                             'http://www.w3.org/1999/xlink', 'http://www.w3.org/2000/xmlns/',
-                             'http://www.w3.org/XML/1998/namespace', 'https://d3js.org'):
-                text = text.replace(constant, '')
-            self.assertNotIn('http://', text)
-            self.assertNotIn('https://', text)
+            with self.subTest(js.name):
+                self.assertEqual(_remote_urls_in_vendor_js(js.read_text(encoding='utf-8')), [])
+
+    def test_offline_check_still_catches_a_load_from_d3s_own_site(self):
+        # The exemptions above (XML namespace constants, D3's banner) must not
+        # wave through a real fetch that merely starts the same way.
+        banner = '// https://d3js.org v7.9.0 Copyright 2010-2023 Mike Bostock\n'
+        self.assertEqual(_remote_urls_in_vendor_js(banner + 'var n="http://www.w3.org/2000/svg";'), [])
+        for loader in ('s.src="https://d3js.org/d3.v7.min.js";',
+                       'fetch("https://d3js.org.example.net/x.js");',
+                       'fetch("http://www.w3.org/2000/svg/../evil.js");'):
+            with self.subTest(loader):
+                self.assertNotEqual(_remote_urls_in_vendor_js(banner + loader), [])
 
     def test_person_page_descendant_tree_opt_in_link(self):
         # #115: the descendant explorer is demoted from the home page to a
