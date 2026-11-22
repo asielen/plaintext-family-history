@@ -6929,8 +6929,16 @@ def replace_section_content(
 
 def append_paragraph_to_section(
     lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
+    is_placeholder: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[str], bool, str]:
     """Append `paragraph` to a `## {heading_text}` section; the shared engine.
+
+    For him: a first note in a section that still shows the scaffold's
+    "what goes here" instructions replaces them, so they are not published
+    above his words. `is_placeholder(heading, on_disk_content)` is how a
+    caller says what counts as that scaffold text (`fha person note` passes
+    `person_section_is_unfilled`); text that is not exactly the placeholder
+    is never removed.
 
     Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
     blank-line-separated paragraph at the END of the section, never touching
@@ -6958,11 +6966,13 @@ def append_paragraph_to_section(
     trimmed = list(old_content_lines)
     while trimmed and trimmed[-1].strip() == '':
         trimmed.pop()
-    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    is_empty = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    if not is_empty and is_placeholder is not None:
+        is_empty = is_placeholder(heading_text, old_content)
     has_next = content_end < len(lines)
 
     new_lines = list(lines[:content_start])
-    if trimmed and not is_placeholder:
+    if trimmed and not is_empty:
         new_lines.extend(trimmed)
         new_lines.append(cr)
     new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))

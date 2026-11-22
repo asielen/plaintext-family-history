@@ -277,6 +277,7 @@ from _lib import (
     append_paragraph_to_section,
     build_ahnentafel_map,
     claim_is_own_vital,
+    person_section_is_unfilled,
     configure_utf8_stdout,
     duplicate_name_problems,
     duplicate_person_name_message,
@@ -3355,7 +3356,9 @@ def _append_to_section(
     engine also treats a lone `*(none yet)*` placeholder as empty and creates
     the heading at EOF when absent - see its docstring in `_lib.py`.
     """
-    return append_paragraph_to_section(lines, body_start, heading_text, new_text, cr)
+    return append_paragraph_to_section(
+        lines, body_start, heading_text, new_text, cr,
+        is_placeholder=person_section_is_unfilled)
 
 
 def run_edit(
