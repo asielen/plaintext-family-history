@@ -11,5 +11,6 @@ The clean fixture is `../../example-archive/`. The folders here are smaller fixt
 | `capture-samples/` | `test_capture.py`, `test_capture_host.py`, `test_capture_ingest.py`, `test_browser_companion.py` and the browser-companion JS tests |
 | `gedcom/` | `test_gedcom_import.py` |
 | `legacy-export/` | `test_convert_mining.py` |
+| `relate-golden/` | `test_relate_golden.py` (every `fha relate` answer on example-archive) and `test_kinship.py` (the relationship words); regenerate with `py -3.14 tests/test_relate_golden.py --write` and `py -3.14 tests/test_kinship.py --write` only when an answer is meant to change |
 | `photo-fixture/` | `test_photoindex.py`, `test_process.py`, `test_originals_backup.py`, `test_reconcile.py`, `test_working_copy.py` |
 | `working-copy/` | `test_working_copy.py` |
