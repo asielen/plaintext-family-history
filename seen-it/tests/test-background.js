@@ -328,3 +328,21 @@ test('gallery pages read on two computers are all kept when their files are merg
   p = (await a.local.get('ancPeople')).ancPeople['111:222'];
   assert.deepStrictEqual(pageKeys(p.gallery), { 1: [G1, G2], 2: [G3, G4], 3: [G5] });
 });
+
+// A gallery photo that is a Newspapers.com clipping: the link is kept on the
+// photo, travels in a backup, and only well-formed ids are taken.
+const MEDK = 'med:abcdef01-2222-4333-8444-abcdefabcdef';
+test('a gallery photo remembers the Newspapers.com clipping it was saved from', async () => {
+  const h = load();
+  await h.send({ type: 'ancMedClip', key: MEDK, clip: 'clip:4321' });
+  await h.send({ type: 'ancMedClip', key: 'med:not-a-media-id', clip: 'clip:4321' });
+  await h.send({ type: 'ancMedClip', key: MEDK.replace('01-', '02-'), clip: 'clip:12abc' });
+  const { anc } = await h.local.get('anc');
+  assert.deepStrictEqual(Object.keys(anc), [MEDK]);
+  assert.strictEqual(anc[MEDK].clip, 'clip:4321');
+
+  const other = load();
+  const r = await other.send({ type: 'import', data: { app: 'newspapers-seen-it', anc: { [MEDK]: anc[MEDK] } } });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.strictEqual((await other.local.get('anc')).anc[MEDK].clip, 'clip:4321', 'the link was lost in a backup');
+});

@@ -423,3 +423,283 @@ test('Ancestry tree view: the chip still counts sources; its tooltip adds the ga
   assert.match(chip.title, /Gallery items: 1 of 3 saved/);
 });
 
+
+// A Newspapers.com clipping saved to an Ancestry gallery is an Ancestry photo
+// with its own media id. Its viewer page links the clipping back; once Seen
+// It has read that link, the photo counts as saved whenever the archive holds
+// the clipping. Made-up ids only.
+const CLIP = 'clip:4321';
+const npLink = (id) => tile('https://www.newspapers.com/clip/' + id + '/hartley-farm-sale/');
+
+// A photo's viewer page. `card` are the links in the sharer's card ("originally
+// shared this article ... from Newspapers.com"), `other` the links anywhere
+// else (a comment, the description). `pictures` are the viewer's <img>s, each
+// with the media id it carries as its id and its alt text (the carousel keeps
+// the neighbouring photos' pictures loaded); `panelTitle` is the title in the
+// Details panel.
+const TITLE = 'Hartley farm sale';
+async function viewerPage({ card = [], other = [], pictures = [{ id: GAL(1), alt: TITLE }], panelTitle = TITLE, path = GAL(1) } = {}) {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + path, origin: 'https://www.ancestry.com',
+    ...viewerDom(() => ({ card, other, pictures, panelTitle })),
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  return page.sent.filter((m) => m.type === 'ancMedClip');
+}
+
+// querySelector / querySelectorAll for that page, read afresh on each call
+// so a test can swap what it shows. img[id="..."] matches as a browser does:
+// with the ` i` flag in any letter case.
+function viewerDom(now) {
+  return {
+    querySelectorAll: (sel) => {
+      const { card, other = [], pictures } = now();
+      const img = /^img\[id="([^"]+)"( i)?\]$/.exec(sel);
+      if (img) {
+        return pictures.filter((p) => (img[2] ? p.id.toLowerCase() === img[1].toLowerCase() : p.id === img[1]))
+          .map((p) => ({ id: p.id, getAttribute: (n) => (n === 'alt' ? p.alt : n === 'id' ? p.id : null) }));
+      }
+      if (!sel.includes('newspapers.com/clip/') || sel.includes('/records/')) return [];
+      return sel.includes('.mediaOriginallyShared') ? card : card.concat(other);
+    },
+    querySelector: (sel) => {
+      const { panelTitle, pictures } = now();
+      const byId = /^\[id="([^"]+)" i\]$/.exec(sel); // any element with that id: the pictures are the page's only ones
+      if (byId) return pictures.find((p) => p.id.toLowerCase() === byId[1].toLowerCase()) || null;
+      return sel === '#mediaViewerDetailsPanel .mediaTitle .mediaDataFieldValue' && panelTitle ? { textContent: panelTitle } : null;
+    },
+  };
+}
+
+test('Ancestry photo viewer: a photo that links its Newspapers.com clipping is remembered as that clipping', async () => {
+  const sent = await viewerPage({ card: [npLink(4321), npLink(4321)] });
+  assert.ok(sent.length, 'the clipping link was not remembered');
+  assert.deepStrictEqual({ key: sent[0].key, clip: sent[0].clip }, { key: 'med:' + GAL(1), clip: CLIP });
+});
+
+test('Ancestry photo viewer: two different clippings on one page leave the photo as it was', async () => {
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321), npLink(4322)] }), []);
+});
+
+// Audit of #412: a headstone photo whose comment links the obituary clipping
+// was remembered as that clipping, and showed "In archive" for good.
+test('Ancestry photo viewer: a clipping linked only in a comment does not make a plain photo that clipping', async () => {
+  assert.deepStrictEqual(await viewerPage({ other: [npLink(4321)] }), []);
+});
+
+test('Ancestry photo viewer: a comment linking another clipping does not hide the sharer\'s own', async () => {
+  const sent = await viewerPage({ card: [npLink(4321)], other: [npLink(4322)] });
+  assert.deepStrictEqual(sent.map((m) => m.clip), [CLIP]);
+});
+
+// Audit of #412: the arrow to the next photo changes the address before the
+// picture and its details swap. A look in that gap filed the last photo's
+// clipping under the next one, a plain photo, which kept it for good.
+test('Ancestry photo viewer: while the last photo is still showing, its clipping is not filed under the next one', async () => {
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], path: GAL(2) }), []);
+});
+
+// Audit of #412: the viewer's carousel keeps the next photo's picture loaded,
+// so on the arrow to it the picture was already there while the Details
+// panel and sharer's card still showed the last photo, and its clipping was
+// filed under the next one.
+test('Ancestry photo viewer: a picture of the next photo in the carousel is not enough while the panel shows the last one', async () => {
+  const pictures = [{ id: GAL(1), alt: TITLE }, { id: GAL(2), alt: 'Hartley headstone' }];
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], pictures, path: GAL(2) }), []);
+  const sent = await viewerPage({ card: [npLink(4321)], pictures, path: GAL(1) });
+  assert.deepStrictEqual(sent.map((m) => [m.key, m.clip]), [['med:' + GAL(1), CLIP]]);
+});
+
+test('Ancestry photo viewer: letter case and spacing in the title do not matter; a panel with no title is not checked', async () => {
+  const pictures = [{ id: GAL(1), alt: 'Hartley  Farm Sale' }];
+  assert.strictEqual((await viewerPage({ card: [npLink(4321)], pictures })).length, 1);
+  assert.strictEqual((await viewerPage({ card: [npLink(4321)], pictures, panelTitle: null })).length, 1);
+});
+
+// The same on the viewer page saved from Ancestry (tests/fixtures): its
+// carousel holds the clipping's picture and a plain photo's.
+test('Ancestry photo viewer, saved page: the plain photo beside a clipping is not filed as that clipping', async () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures', 'capture-samples', 'ancestry-media-clipping.html'), 'utf8');
+  const pictures = [...html.matchAll(/<img id="([^"]+)"[^>]*\balt="([^"]*)"/g)].map((m) => ({ id: m[1], alt: m[2] }));
+  const panelTitle = /class="[^"]*\bmediaTitle\b[^"]*"[^>]*><span class="mediaDataFieldValue[^"]*">([^<]*)/.exec(html)[1];
+  const card = [.../<span class="mediaOriginallyShared">([\s\S]*?)<\/span><\/p>/.exec(html)[1].matchAll(/<a href="([^"]+)"/g)]
+    .map((m) => tile(m[1])).filter((a) => /newspapers\.com\/(clip|article)\//.test(a.getAttribute('href')));
+  const ids = [...new Set(pictures.map((p) => p.id))];
+  assert.strictEqual(ids.length, 2, 'the saved page no longer has two photos in its carousel');
+  const [clipping, plain] = ids;
+  assert.deepStrictEqual(await viewerPage({ card, pictures, panelTitle, path: plain }), []);
+  assert.deepStrictEqual((await viewerPage({ card, pictures, panelTitle, path: clipping })).map((m) => m.key), ['med:' + clipping]);
+});
+
+test('Ancestry photo viewer: the photo is recognised by its picture whatever the letter case of its id', async () => {
+  const sent = await viewerPage({ card: [npLink(4321)], pictures: [{ id: GAL(1).toUpperCase(), alt: TITLE }], path: GAL(1) });
+  assert.deepStrictEqual(sent.map((m) => m.key), ['med:' + GAL(1)]);
+});
+
+test('Ancestry photo viewer: moving to the next photo learns nothing until that photo shows', async () => {
+  let shown = { card: [npLink(4321)], pictures: [{ id: GAL(1), alt: TITLE }], panelTitle: TITLE };
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1), origin: 'https://www.ancestry.com',
+    ...viewerDom(() => shown),
+  });
+  try {
+    await wait(700);
+    page.location.pathname = '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2);
+    page.location.href = page.location.origin + page.location.pathname;
+    await wait(1400); // the address moved; photo 1 is still on the page
+    shown = { card: [], pictures: [{ id: GAL(2), alt: 'Hartley headstone' }], panelTitle: 'Hartley headstone' }; // photo 2: a plain photo
+    await wait(1400);
+  } finally {
+    page.stop();
+  }
+  const sent = page.sent.filter((m) => m.type === 'ancMedClip').map((m) => [m.key, m.clip]);
+  assert.deepStrictEqual(sent, [['med:' + GAL(1), CLIP]]);
+});
+
+// A gallery tile: a link inside .mediaGalleryItem, pills placed after it.
+function galleryTile(href) {
+  const a = tile(href);
+  a.textContent = a.innerText = 'Hartley farm sale';
+  a.inserted = [];
+  a.nextElementSibling = null;
+  a.classList = { contains: () => false };
+  a.closest = (sel) => (sel === '.mediaGalleryItem' ? {} : null);
+  a.insertAdjacentElement = (pos, el) => { a.inserted.push(el); a.nextElementSibling = el; };
+  return a;
+}
+
+async function galleryWith(storage, tiles) {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-tree/person/tree/111/person/222/gallery', search: '?tab=gallery', origin: 'https://www.ancestry.com', storage,
+    querySelector: (sel) => (sel === 'h1' ? { innerText: 'Thomas Hartley' } : null),
+    querySelectorAll: (sel) => (sel.includes('mediaGalleryItem') || sel.includes('mediaui-viewer') ? tiles : []),
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-person');
+  return { texts: badge ? badge.children[0].children.map((p) => p.textContent) : [] };
+}
+
+const pillTexts = (a) => (a.inserted[0] ? a.inserted[0].children.map((p) => p.textContent) : []);
+
+test('Ancestry gallery: a photo that is a clipping the archive holds counts as saved, on its tile and in the count', async () => {
+  const a = galleryTile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1));
+  const b = galleryTile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2));
+  const { texts } = await galleryWith({
+    settings: { advanced: true },
+    known: { [CLIP]: FILED },
+    anc: { ['med:' + GAL(1)]: { t: [], last: 0, mark: null, clip: CLIP } },
+  }, [a, b]);
+  assert.ok(texts.includes('1 of 2 gallery items saved'), JSON.stringify(texts));
+  assert.deepStrictEqual(pillTexts(a), ['📚 In archive · ' + FILED.sid]);
+  assert.deepStrictEqual(pillTexts(b), ['○ Not in archive'], 'an unsaved tile was left blank');
+});
+
+test('Ancestry gallery: outside advanced mode an unsaved tile stays blank', async () => {
+  const a = galleryTile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2));
+  await galleryWith({ known: { [CLIP]: FILED } }, [a]);
+  assert.deepStrictEqual(a.inserted, []);
+});
+
+// Audit of #412: switching advanced mode off while a page is open left the
+// archive pills up ("Not in archive" on every unsaved gallery tile), though
+// outside advanced mode nothing about the archive is shown.
+test('Ancestry gallery: switching advanced mode off takes "Not in archive" off the tiles', async () => {
+  const a = galleryTile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2));
+  a.insertAdjacentElement = (pos, el) => {
+    a.inserted.push(el);
+    a.nextElementSibling = el;
+    el.remove = () => { a.nextElementSibling = null; };
+  };
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-tree/person/tree/111/person/222/gallery', search: '?tab=gallery', origin: 'https://www.ancestry.com',
+    storage: { settings: { advanced: true }, known: { [CLIP]: FILED } },
+    querySelector: (sel) => (sel === 'h1' ? { innerText: 'Thomas Hartley' } : null),
+    querySelectorAll: (sel) => (sel.includes('mediaGalleryItem') || sel.includes('mediaui-viewer') ? [a] : []),
+  });
+  try {
+    await wait(700);
+    assert.deepStrictEqual(pillTexts(a), ['○ Not in archive']);
+    page.fireChange({ settings: { newValue: { advanced: false } } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.strictEqual(a.nextElementSibling, null, 'the tile still shows ' + JSON.stringify(pillTexts(a)));
+});
+
+// The same for the badge on a record's own page, on every site.
+for (const [label, file, pathname, origin] of [
+  ['Ancestry record', 'content-ancestry.js', '/search/collections/1001/records/2002', 'https://www.ancestry.com'],
+  ['FamilySearch record', 'content-familysearch.js', '/ark:/61903/1:1:ABCD-123', 'https://www.familysearch.org'],
+  ['Find a Grave memorial', 'content-findagrave.js', '/memorial/5505/thomas-hartley', 'https://www.findagrave.com'],
+]) {
+  test(label + ': switching advanced mode off takes "Not in archive" off the badge', async () => {
+    const page = loadContentScript(file, { pathname, origin, storage: { settings: { advanced: true }, known: { [CLIP]: FILED } } });
+    const badgeTexts = () => {
+      const box = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+      return box ? box.children[0].children.map((p) => p.textContent) : [];
+    };
+    try {
+      await wait(700);
+      assert.ok(badgeTexts().includes('○ Not in archive'), JSON.stringify(badgeTexts()));
+      page.fireChange({ settings: { newValue: { advanced: false } } });
+      await wait(700);
+    } finally {
+      page.stop();
+    }
+    assert.deepStrictEqual(badgeTexts(), []);
+  });
+}
+
+// On Newspapers.com: a page with your clippings, none in the archive.
+test('Newspapers.com page: switching advanced mode off takes "not in archive" off the page badge', async () => {
+  const page = loadContentScript(['cliplist.js', 'searchrun.js', 'content.js'], {
+    pathname: '/image/5150/', origin: 'https://www.newspapers.com',
+    storage: { settings: { advanced: true }, known: { [CLIP]: FILED }, clips: { 5150: [{ id: '4399', title: 'Hartley farm sale' }] } },
+  });
+  const texts = () => {
+    const box = page.document.body.children.find((c) => c.id === 'nsi-page-badge');
+    return box ? box.children[0].children.map((p) => p.textContent) : [];
+  };
+  try {
+    await wait(700);
+    assert.ok(texts().some((t) => /not in archive/.test(t)), JSON.stringify(texts()));
+    page.fireChange({ settings: { newValue: { advanced: false } } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.ok(!texts().some((t) => /in archive/.test(t)), JSON.stringify(texts()));
+});
+
+test('Ancestry tree view: a person whose Facts page was never opened gets a "?" chip that says how to fill it', async () => {
+  const host = { children: [] };
+  host.appendChild = (c) => { host.children.push(c); return c; };
+  host.querySelector = () => host.children[0] || null;
+  const node = { id: '333:0', querySelector: (sel) => (sel === '.vAlignContent' ? host : null) };
+  await personPage({
+    pathname: '/family-tree/tree/111/family', nodes: [node],
+    storage: { settings: { advanced: true }, ancPeople: { '111:222': hartley(null) } },
+  });
+  const chip = host.children[0];
+  assert.ok(chip, 'no chip on a person Seen It has not read');
+  assert.strictEqual(chip.textContent, '?');
+  assert.match(chip.title, /Open their Facts page/);
+});
+
+test('Ancestry tree view: an "Add mother" box gets no chip', async () => {
+  const host = { children: [] };
+  host.appendChild = (c) => { host.children.push(c); return c; };
+  host.querySelector = () => host.children[0] || null;
+  const node = { id: '1:4', classList: { contains: (c) => c === 'add' }, querySelector: (sel) => (sel === '.vAlignContent' ? host : null) };
+  await personPage({ pathname: '/family-tree/tree/111/family', nodes: [node], storage: { settings: { advanced: true } } });
+  assert.deepStrictEqual(host.children, []);
+});

@@ -140,8 +140,10 @@
     return wrap;
   }
 
+  // Advanced mode is part of what the pills show, so switching it off takes
+  // the badge's "Not in archive" down.
   function sigFor(key) {
-    return key + '|' + JSON.stringify(knownOf(key) || 0) + '|' + JSON.stringify(knownOf('fagidx:' + key.slice(4)) || 0) +
+    return key + '|' + adv() + '|' + JSON.stringify(knownOf(key) || 0) + '|' + JSON.stringify(knownOf('fagidx:' + key.slice(4)) || 0) +
       '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 

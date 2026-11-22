@@ -27,9 +27,12 @@
 //             'known') from capture bundles' data files - never written here.
 //             Keys: clip:{id} and page:{id} (Newspapers.com), rec:{dbId}:{recordId},
 //             img:{dbId}:{imageId} (Ancestry). Refreshed every 30 min and on demand.
-//   anc:      { [rec:… | img:…]: { t: [lookStartMs], last, title, collection, name,
-//                                   dwellMs, mark, markAt } }
-//             Ancestry records and images you opened, and your verdict on each.
+//   anc:      { [rec:… | img:… | med:…]: { t: [lookStartMs], last, title, collection, name,
+//                                   dwellMs, mark, markAt, clip? } }
+//             Ancestry records, images and photos you opened, and your verdict on each.
+//             `clip` (med: only): the Newspapers.com clipping, clip:{id}, that
+//             a gallery photo was saved from, read off its viewer page, so the
+//             photo counts as saved when the archive holds the clipping.
 //             Kept apart from the Newspapers.com page data so neither schema
 //             changes; it travels in backups and the data-folder files.
 //   ancPeople: { ['{treeId}:{personId}' | 'fs:{PID}' | 'ged:{xref}']: { name, keys: ['rec:…'], at,
@@ -227,6 +230,19 @@ function recordAncDwell(key, ms) {
   return update(['anc'], ({ anc }) => {
     const a = anc[key] || { t: [], last: 0, mark: null };
     a.dwellMs = (a.dwellMs || 0) + Math.round(ms);
+    anc[key] = a;
+  });
+}
+
+// A gallery photo (med:…) that is a Newspapers.com clipping (clip:…). Both
+// shapes are checked: the link decides what the archive is asked about.
+const MED_KEY_RE = /^med:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CLIP_KEY_RE = /^clip:\d{1,15}$/;
+function recordAncMedClip(key, clip) {
+  if (!MED_KEY_RE.test(key) || !CLIP_KEY_RE.test(String(clip))) return Promise.resolve();
+  return update(['anc'], ({ anc }) => {
+    const a = anc[key] || { t: [], last: 0, mark: null };
+    a.clip = String(clip);
     anc[key] = a;
   });
 }
@@ -617,6 +633,7 @@ async function importAll(obj) {
       a.last = Math.max(a.last || 0, ia.last || 0);
       a.dwellMs = Math.max(a.dwellMs || 0, ia.dwellMs || 0);
       for (const f of ['title', 'collection', 'name']) if (!a[f] && ia[f]) a[f] = ia[f];
+      if (!a.clip && MED_KEY_RE.test(k) && CLIP_KEY_RE.test(String(ia.clip || ''))) a.clip = ia.clip;
       if ((ia.markAt || 0) > (a.markAt || 0)) {
         a.mark = ia.mark || null;
         a.markAt = ia.markAt;
@@ -932,6 +949,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return msg.key ? reply(recordAncLook(String(msg.key), Date.now(), msg.info)) : undefined;
     case 'ancDwell':
       return reply(recordAncDwell(String(msg.key), msg.ms));
+    case 'ancMedClip':
+      return msg.key ? reply(recordAncMedClip(String(msg.key), msg.clip)) : undefined;
     case 'ancMark':
       return reply(recordAncMark(String(msg.key), msg.mark).then((mark) => ({ mark })));
     case 'refreshKnown':

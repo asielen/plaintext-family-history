@@ -546,10 +546,12 @@
     box.appendChild(markButtons(pageId));
   }
 
+  // What the archive pills show. Advanced mode is part of it, so switching
+  // it off takes "not in archive" down from the page and its search results.
   function knownSig(pageId) {
     const known = archiveKnown();
     const parts = (data.clips[pageId] || []).map((c) => (known['clip:' + c.id] || {}).state || '-');
-    return parts.join(',') + '/' + ((known['page:' + pageId] || {}).sid || '');
+    return !!(data.settings && data.settings.advanced) + '|' + parts.join(',') + '/' + ((known['page:' + pageId] || {}).sid || '');
   }
 
   // On a clipping's own page (/article/{slug}/{id}/): is it in the archive?
