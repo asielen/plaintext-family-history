@@ -144,6 +144,13 @@
         if (moved) L.listCursor = page.nextCursor;
         return { added, complete: L.listComplete };
       },
+      // Clippings found on Ancestry, queued in the Newspapers.com batch.
+      addFound(L, clippings, from, what) {
+        const list = Array.isArray(clippings) ? clippings : [];
+        const n = CB.addFoundClippings(L, list, from);
+        if (what) CB.logEvent(L, what + ': ' + list.length + ' found, ' + n + ' new to the queue');
+        return n;
+      },
       relist(L) {
         L.listComplete = false;
         L.listCursor = 0;

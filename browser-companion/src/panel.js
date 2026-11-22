@@ -3573,6 +3573,19 @@
       state, getTab, sendToTab, injectContent, queryActiveTab, seenItHeld, describeSameImage,
       readPage: batchReadPage,
       capture: (expectKey) => runCapture({ batch: { expectKey } }),
+      // The people a batch entry was queued for (a clipping found on
+      // Ancestry), ticked on the form if it does not list them yet.
+      addPeople(names) {
+        const have = new Set(Array.from($('people-list').querySelectorAll('input'))
+          .map((cb) => String(cb.dataset.name).toLowerCase()));
+        for (const name of names || []) {
+          const n = String(name || '').trim();
+          if (n && !have.has(n.toLowerCase())) {
+            addPersonRow(n, true);
+            have.add(n.toLowerCase());
+          }
+        }
+      },
       folder: () => state.folder,
       setDriving(on) {
         state.batchDriving = !!on;
