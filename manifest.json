@@ -842,7 +842,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "4680b5f7ce010b430ad45bdee4212cff427ed4684adad88d0690f733f585ed0f",
+      "sha256": "b42a9de823a09e51d3c74e150155f4c373a53c6fae2282662e9e71978eb2fc89",
       "spec_version": "2.19",
       "src": "tools/places.py"
     },
@@ -1052,7 +1052,7 @@
     {
       "path": ".fha/tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "7bf196d5345103e0d1c2204d4a7fa7485d82455e17fad6394aaef163c9299c54",
+      "sha256": "6c5a9c93684ece7cacce3864ae5815533d27cfed374a70fc75bef5c8430c2e37",
       "spec_version": "2.19",
       "src": "tools/templates/workbench/_modals.html"
     },
@@ -1154,7 +1154,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "31061029fe6ce78fe46d20c2fabd1e3e97fda8f7908405327410cde2048f9acc",
+      "sha256": "ef5377532b1d6cabec6501f6798191b5789737653cf7ccef5b9784efbdcc51df",
       "spec_version": "2.19"
     },
     {
@@ -1221,7 +1221,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "4d5d2d965a00f31aa8bd25604bec336a7175ef24c7cbb8c68693c7291d24fe6e",
+      "sha256": "7f43445b5d14abbbdd2e418a4afde0f7223a14fabf739081b2ecef93605ee7eb",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },

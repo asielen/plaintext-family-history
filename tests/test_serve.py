@@ -2209,6 +2209,17 @@ class PlaceVerbTests(_ServeCase):
                       payload['cli_echo'])
         self.assertEqual(_tree_hash(self.root), before)
 
+    def test_place_set_dry_run_previews_degrees_minutes_seconds_as_decimals(self):
+        before = _tree_hash(self.root)
+        s, d, _h = self.post_run('place.set',
+                                 {'place_id': self.LID, 'lat': '39°33\'47"N',
+                                  'lon': '95°07\'18"W'}, True)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertIn('[39.563056, -95.121667]', json.dumps(payload))
+        self.assertEqual(_tree_hash(self.root), before)
+
     def test_place_set_apply_moves_the_pin(self):
         s, d, _h = self.post_run('place.set',
                                  {'place_id': self.LID, 'lat': '40.1', 'lon': '-95.0'}, False)
