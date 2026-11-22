@@ -70,6 +70,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     SOURCE_FRONTMATTER_KEY_ORDER,
+    record_collection_group,
+    record_collection_index,
+    site_data_reader,
+    source_site_collection,
     RECIPROCAL_RELATIONSHIP_TYPE,     # relationships: entries an accepted claim owes (SPEC §9)
     RELATIONSHIP_ENTRY_ROLES,
     add_relationship_entry,
@@ -348,6 +352,8 @@ configure_utf8_stdout()
 #    _link_writer_for            - the run's _lib.LinkWriter, built from the registry
 #    _check_readme_age           - W108: README.md older than SPEC.md
 #    _check_agent_drift          - E018: deprecated commands in AGENTS.md
+#    _check_same_record_two_sites : W162: two sources that are one record saved
+#                                   from two sites (record_collections.json)
 #    _check_untranscribed_evidence - W124: accepted claims on evidence the
 #                                   archive holds no words for (no transcript)
 #    _check_evidence_paths       - W137: a claim/prose cites a photos- or documents-
@@ -4618,6 +4624,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     # W124: accepted claims resting on evidence nobody has written out
     _check_untranscribed_evidence(registry, findings)
+    _check_same_record_two_sites(registry, findings)
     _check_evidence_paths(registry, findings)
 
     # W136: an accepted death, but the person is still treated as living
@@ -4916,6 +4923,79 @@ def _fix_aliases(
         write_text_exact_atomic(path, new_text)
         changed.append(str(path))
         progress.append(f'aliases: in {rel}: {summary}')
+
+
+_SITE_NAMES = {'ancestry': 'Ancestry', 'fs': 'FamilySearch'}
+
+
+def _dates_agree(a: str, b: str, year) -> bool:
+    """Two sources' dates name one event: the same year (the collection's
+    own year, for a census, when a source gives none), and the same day when
+    both give a full date. A source with no date and no collection year to
+    stand in is never matched: nothing says it is the same event."""
+    ya, yb = (str(d)[:4] if str(d)[:4].isdigit() else None for d in (a, b))
+    ya = ya or (str(year) if year else None)
+    yb = yb or (str(year) if year else None)
+    if not ya or ya != yb:
+        return False
+    full = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+    return not (full.match(str(a)) and full.match(str(b)) and str(a) != str(b))
+
+
+def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) -> None:
+    """W162: two sources that are one record saved from two sites.
+
+    The same record set often sits on Ancestry and FamilySearch under different
+    collection numbers (the 1850 US census is Ancestry 8054 and FamilySearch
+    1401638), and the batch downloads save a person's sources from both. Two
+    copies of one record are one piece of evidence (SPEC §7): kept as two
+    sources, every claim is counted twice and the copies drift apart.
+
+    The rule: two sources from different sites whose collections are one set
+    in record_collections.json (WikiTree Sourcer's map, `_lib`), that name at
+    least one person in common (by ID), with dates that agree (`_dates_agree`).
+    Two sources from one site are never paired: the capture add-on keeps each
+    household member's record of one census page as its own source on purpose
+    (`same_image_as`). A source's collection comes from the structured data it
+    carries (Ancestry's record address, FamilySearch's saved site data), never
+    from its title. A warning, never a fix: which copy to keep is the owner's
+    call, and `fha source merge` does the folding.
+    """
+    index = record_collection_index()
+    if not index:
+        return
+    read = site_data_reader(registry.archive_root, registry.fha_config)
+    by_group: dict[str, list] = {}
+    for sid, meta in sorted(registry.source_meta.items()):
+        sc = source_site_collection(meta, read)
+        group = sc and record_collection_group(sc[0], sc[1], index)
+        if not group:
+            continue
+        people = {
+            fmt_id_display(m.group(0)) for p in (meta.get('people') or [])
+            for m in ID_RE.finditer(str(p)) if m.group(1).upper() == 'P'}
+        if people:
+            by_group.setdefault(group[0], []).append(
+                (sid, sc[0], sc[1], people, str(meta.get('source_date') or ''), group))
+    for members in by_group.values():
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                if a[1] == b[1] or not (a[3] & b[3]):
+                    continue
+                _gid, title, year = a[5]
+                if not _dates_agree(a[4], b[4], year):
+                    continue
+                first, second = sorted((a, b), key=lambda m: m[0])
+                path = registry.source_paths.get(second[0], registry.archive_root / str(second[0]))
+                shared = len(a[3] & b[3])
+                findings.append(Finding('W', 'W162', path, (
+                    f'{fmt_id_display(first[0])} ({_SITE_NAMES[first[1]]} collection {first[2]}) and '
+                    f'{fmt_id_display(second[0])} ({_SITE_NAMES[second[1]]} collection {second[2]}) look like one '
+                    f'record saved from two sites: both are the "{title}", they name {shared} '
+                    f'{"person" if shared == 1 else "people"} in common, and their dates agree. '
+                    'Compare the two. If they are one record, keep the one with the record\'s image '
+                    '(or the fuller one) and fold the other into it: '
+                    f'`fha source merge <the one to keep> <the other> --dry-run`, then without --dry-run.')))
 
 
 def _check_untranscribed_evidence(

@@ -9524,6 +9524,123 @@ def unsaved_image_checker(archive_root: Path, fha_config: dict):
     return image_unsaved
 
 
+# ── one record set on several sites (record_collections.json) ───────────────
+# The same record set often sits on several sites under different collection
+# numbers: the 1850 US census is Ancestry collection 8054 and FamilySearch
+# collection 1401638. tools/record_collections.json is WikiTree Sourcer's map
+# of about 135 such collections (MIT licence, notice in the file), rebuilt by
+# build_record_collections.py in the project repo. `fha lint` W162 reads it to
+# tell when two filed sources are one record saved from two sites.
+
+RECORD_COLLECTIONS_PATH = Path(__file__).resolve().parent / 'record_collections.json'
+
+# A source's Ancestry collection, from a record address it cites: the record
+# page (/search/collections/{db}/records/{id}), its older form
+# (/discoveryui-content/view/{id}:{db}) or an image-only collection's
+# /interactive/{db}/{image}/{id}.
+_ANCESTRY_COLLECTION_RES = (
+    re.compile(r'ancestry\.[a-z.]+/search/collections/(\d+)/records/\d+', re.I),
+    re.compile(r'ancestry\.[a-z.]+/discoveryui-content/view/\d+:(\d+)', re.I),
+    re.compile(r'ancestry\.[a-z.]+/interactive/(\d+)/[^/\s]+/\d+', re.I),
+)
+
+_record_collections_cache: dict | None = None
+
+
+def record_collection_index(path: Path | None = None) -> dict:
+    """{(site, collection id): (group id, group title, year or None)}.
+
+    A site's part of a larger set (Sourcer's `partOf`: Ancestry's 1837-1915
+    birth index is part of the England & Wales birth index FamilySearch holds
+    whole) belongs to that set's group, so the two match. Read once; a missing
+    or unreadable file gives an empty map, and W162 then finds nothing.
+    """
+    global _record_collections_cache
+    if path is None and _record_collections_cache is not None:
+        return _record_collections_cache
+    try:
+        data = json.loads((path or RECORD_COLLECTIONS_PATH).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        data = {}
+    rows = {}
+    for r in (data.get('collections') if isinstance(data, dict) else None) or []:
+        if isinstance(r, dict) and r.get('id') and isinstance(r.get('sites'), dict):
+            rows[str(r['id'])] = r
+
+    def group_of(rid: str) -> str:
+        seen = set()
+        while rid in rows and rows[rid].get('partOf') and rid not in seen:
+            seen.add(rid)
+            rid = str(rows[rid]['partOf'][0])
+        return rid
+
+    index: dict = {}
+    for rid, r in rows.items():
+        g = group_of(rid)
+        head = rows.get(g, r)
+        year = r.get('year') if isinstance(r.get('year'), int) else head.get('year')
+        for site, ids in r['sites'].items():
+            for cid in ids if isinstance(ids, list) else []:
+                index.setdefault((str(site), str(cid)), (g, str(head.get('title') or r.get('title') or g), year))
+    if path is None:
+        _record_collections_cache = index
+    return index
+
+
+def record_collection_group(site: str, collection_id: str, index: dict | None = None):
+    """(group id, title, year) for a site's collection, or None when unmapped."""
+    return (index if index is not None else record_collection_index()).get((site, str(collection_id)))
+
+
+def source_site_collection(meta: dict, read_site_data) -> tuple[str, str] | None:
+    """('ancestry' | 'fs', collection id) a filed source was saved from, or None.
+
+    Ancestry: the collection in the record addresses its citation and web links
+    name (one collection only). FamilySearch: its addresses carry no collection,
+    so it is read from the source's saved site data (`record.collectionId`,
+    which the capture add-on writes), through `read_site_data(path)` (a dict or
+    None). A source naming collections on both sites (one already merged from
+    two) gives None: it is no longer one site's copy.
+    """
+    found: set[tuple[str, str]] = set()
+    texts = [str(meta.get('citation') or '')]
+    for key in ('external_links', 'url'):
+        v = meta.get(key)
+        texts.extend(str(x) for x in (v if isinstance(v, list) else [v]) if x)
+    for text in texts:
+        for rx in _ANCESTRY_COLLECTION_RES:
+            for m in rx.finditer(text):
+                found.add(('ancestry', m.group(1)))
+    for f in meta.get('files') or []:
+        if not isinstance(f, dict) or 'site-data' not in str(f.get('role', '')):
+            continue
+        data = read_site_data(str(f.get('file', '')))
+        rec = data.get('record') if isinstance(data, dict) else None
+        if not isinstance(rec, dict):
+            continue
+        if re.search(r'familysearch\.org', str(rec.get('url') or ''), re.I) and re.fullmatch(r'\d+', str(rec.get('collectionId') or '')):
+            found.add(('fs', str(rec['collectionId'])))
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def site_data_reader(archive_root: Path, fha_config: dict):
+    """A `read_site_data(path)` for source_site_collection: a `.json` entry,
+    resolved through the archive's roots, read once; None when unreadable."""
+    seen: dict[str, dict | None] = {}
+
+    def read(path: str):
+        if _entry_suffix(path) != '.json':
+            return None
+        if path not in seen:
+            try:
+                seen[path] = json.loads(resolve_path(path, fha_config, archive_root).read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                seen[path] = None
+        return seen[path]
+
+    return read
+
+
 def unsaved_image_checker_for_index(conn: sqlite3.Connection):
     """The same checker for a caller that holds only the index connection.
 

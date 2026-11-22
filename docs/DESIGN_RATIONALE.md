@@ -313,6 +313,12 @@ Other limits:
 - **Guessing "different people" from names or dates in the text.** The accepted claims already say who each record is about; anything looser would grow exceptions.
 - **An `unmerge` verb now.** `merged_from:` makes an undo possible by hand; a verb waits until one is needed.
 
+**Finding one record saved from two sites (W162).** The same record set often sits on Ancestry and FamilySearch under different collection numbers, and the batch downloads save a person's sources from both. `fha lint` reports two sources from different sites whose collections are one set in `tools/record_collections.json` (WikiTree Sourcer's map, MIT), that name a person in common and whose dates agree. It reports and never merges: which copy to keep is the owner's call. A source's collection comes from the structured data it carries (Ancestry's record address, FamilySearch's saved site data), never from its title.
+
+- **Pairing two sources from one site.** The capture add-on keeps each household member's record of one census page as its own source, linked by `same_image_as`; those are not duplicates.
+- **Matching on titles or collection names.** Sites word them differently and change them; the collection number is what the record itself carries.
+- **Writing our own collection map.** Sourcer's is maintained and covers the sites the archive uses; `build_record_collections.py` refreshes our copy from it.
+
 ---
 
 ## 13. Linking place text: the hierarchy rule
