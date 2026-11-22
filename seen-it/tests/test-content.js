@@ -563,6 +563,78 @@ test('Ancestry gallery: outside advanced mode an unsaved tile stays blank', asyn
   assert.deepStrictEqual(a.inserted, []);
 });
 
+// Audit of #412: switching advanced mode off while a page is open left the
+// archive pills up ("Not in archive" on every unsaved gallery tile), though
+// outside advanced mode nothing about the archive is shown.
+test('Ancestry gallery: switching advanced mode off takes "Not in archive" off the tiles', async () => {
+  const a = galleryTile('/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2));
+  a.insertAdjacentElement = (pos, el) => {
+    a.inserted.push(el);
+    a.nextElementSibling = el;
+    el.remove = () => { a.nextElementSibling = null; };
+  };
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/family-tree/person/tree/111/person/222/gallery', search: '?tab=gallery', origin: 'https://www.ancestry.com',
+    storage: { settings: { advanced: true }, known: { [CLIP]: FILED } },
+    querySelector: (sel) => (sel === 'h1' ? { innerText: 'Thomas Hartley' } : null),
+    querySelectorAll: (sel) => (sel.includes('mediaGalleryItem') || sel.includes('mediaui-viewer') ? [a] : []),
+  });
+  try {
+    await wait(700);
+    assert.deepStrictEqual(pillTexts(a), ['○ Not in archive']);
+    page.fireChange({ settings: { newValue: { advanced: false } } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.strictEqual(a.nextElementSibling, null, 'the tile still shows ' + JSON.stringify(pillTexts(a)));
+});
+
+// The same for the badge on a record's own page, on every site.
+for (const [label, file, pathname, origin] of [
+  ['Ancestry record', 'content-ancestry.js', '/search/collections/1001/records/2002', 'https://www.ancestry.com'],
+  ['FamilySearch record', 'content-familysearch.js', '/ark:/61903/1:1:ABCD-123', 'https://www.familysearch.org'],
+  ['Find a Grave memorial', 'content-findagrave.js', '/memorial/5505/thomas-hartley', 'https://www.findagrave.com'],
+]) {
+  test(label + ': switching advanced mode off takes "Not in archive" off the badge', async () => {
+    const page = loadContentScript(file, { pathname, origin, storage: { settings: { advanced: true }, known: { [CLIP]: FILED } } });
+    const badgeTexts = () => {
+      const box = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+      return box ? box.children[0].children.map((p) => p.textContent) : [];
+    };
+    try {
+      await wait(700);
+      assert.ok(badgeTexts().includes('○ Not in archive'), JSON.stringify(badgeTexts()));
+      page.fireChange({ settings: { newValue: { advanced: false } } });
+      await wait(700);
+    } finally {
+      page.stop();
+    }
+    assert.deepStrictEqual(badgeTexts(), []);
+  });
+}
+
+// On Newspapers.com: a page with your clippings, none in the archive.
+test('Newspapers.com page: switching advanced mode off takes "not in archive" off the page badge', async () => {
+  const page = loadContentScript(['cliplist.js', 'searchrun.js', 'content.js'], {
+    pathname: '/image/5150/', origin: 'https://www.newspapers.com',
+    storage: { settings: { advanced: true }, known: { [CLIP]: FILED }, clips: { 5150: [{ id: '4399', title: 'Hartley farm sale' }] } },
+  });
+  const texts = () => {
+    const box = page.document.body.children.find((c) => c.id === 'nsi-page-badge');
+    return box ? box.children[0].children.map((p) => p.textContent) : [];
+  };
+  try {
+    await wait(700);
+    assert.ok(texts().some((t) => /not in archive/.test(t)), JSON.stringify(texts()));
+    page.fireChange({ settings: { newValue: { advanced: false } } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.ok(!texts().some((t) => /in archive/.test(t)), JSON.stringify(texts()));
+});
+
 test('Ancestry tree view: a person whose Facts page was never opened gets a "?" chip that says how to fill it', async () => {
   const host = { children: [] };
   host.appendChild = (c) => { host.children.push(c); return c; };

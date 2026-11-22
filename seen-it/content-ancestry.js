@@ -422,8 +422,11 @@
     return wrap;
   }
 
+  // Everything the pills show: when any of it changes they are drawn again.
+  // Advanced mode is part of it, so switching it off takes the archive pills
+  // ("Not in archive" on a gallery tile, "In archive" on the badge) down.
   function sigFor(key) {
-    return key + '|' + (clipOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
+    return key + '|' + adv() + '|' + (clipOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 
   function markButtons(key) {
