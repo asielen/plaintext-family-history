@@ -1,4 +1,4 @@
-/* fha-site.js - the print helper every site page loads.
+/* fha-site.js: the print helper every site page loads.
  *
  * For someone printing a page: charts folded shut on screen are opened so
  * they reach the paper, and a chart zoomed or dragged on screen prints whole.

@@ -1,5 +1,5 @@
 """
-test_site_print.py - pages print cleanly (TOOLING 12 "Pages", 7 D11 rule 2).
+test_site_print.py: pages print cleanly (TOOLING 12 "Pages", 7 D11 rule 2).
 
 What a relative sees: printing a person page gives the page, not the menu bar
 or the zoom buttons, with the family chart and the fan both on the paper. The
@@ -165,7 +165,7 @@ class PrintSiteTests(unittest.TestCase):
 class PrintWorkbenchTests(unittest.TestCase):
     """He prints Grandpa's page from `fha serve` to hand to a cousin: the
     paper carries no "edit", "add" or "change..." links, no "Add a
-    milestone..." buttons and no "Unknown - add" in the family chart."""
+    milestone..." buttons and no "add" beside an unknown ancestor in the family chart."""
 
     @classmethod
     def setUpClass(cls):
