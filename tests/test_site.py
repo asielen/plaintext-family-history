@@ -10922,14 +10922,19 @@ class ChartCaseTests(_Base):
                             self._parse_svg(svg)
 
     def test_the_child_of_an_uncle_and_niece_gets_a_family_chart_and_a_fan(self):
-        # C3: four grandparent slots filled by three people; both ancestor
-        # charts must draw. (Same colour for the repeated person: after 08-5.)
+        # C3: the uncle's parents are also the niece's grandparents, so they
+        # fill slots 4 and 5 and again 14 and 15. Both ancestor charts must
+        # draw, and the fan keeps both appearances. (Same colour for the
+        # repeated person: after 08-5.)
         case = self._case('C3')
         self._run(linked=True)
         page = self._read(f"persons/{case['seed']}.html")
         self.assertIn('class="pedigree"', page)
-        self.assertIn('class="fan-chart', page)
-        self.assertGreater(page.count('class="fan-seg'), 6)
+        fan = self._fan_svg(case)
+        # Slots 2 to 7 plus 14 and 15, and the subject.
+        self.assertEqual(fan.count('class="fan-seg'), 9)
+        self.assertEqual(fan.count('<title>Calvin Hartley</title>'), 2)
+        self.assertEqual(fan.count('<title>Edith Cole</title>'), 2)
 
     def test_a_person_who_is_their_own_ancestor_still_gets_a_finished_site(self):
         # C12: A's parent is B, B's parent is C, C's parent is A. The walks

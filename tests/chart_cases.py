@@ -176,9 +176,12 @@ def _c2(c: _Case) -> str:
     parentage. Explorer (after 08-9): joint children under the new couple,
     each step-child under their own genetic couple and again as a repeat card
     under the step-parent. DOT (after 08-11): step edges dashed."""
+    # Each step-parent is added before the genetic parent they stand beside,
+    # so a chart that sorts parents by id and forgets the genetic-only rule
+    # picks the step-parent and fails its test.
     c.person('widow', 'Ada Cole', 'F')
-    c.person('late_husband', 'Walter Cole')
     c.person('widower', 'Tom Webb')
+    c.person('late_husband', 'Walter Cole')
     c.person('late_wife', 'Nell Webb', 'F')
     c.marry('late_husband', 'widow', '1890')
     c.marry('widower', 'late_wife', '1888')
@@ -295,10 +298,12 @@ def _c7(c: _Case) -> str:
     never take a fan slot (genetic edges only, SPEC 12.2). Explorer (after
     08-9): the adoptive edge is a legal edge, the child under the biological
     couple and again as a repeat card under the adoptive parent."""
-    c.person('father', 'Walter Cole')
-    c.person('mother', 'Nell Cole', 'F')
+    # The adoptive parents are added first, so their ids sort before the
+    # birth parents': a fan that dropped the genetic-only rule would pick them.
     c.person('adopter', 'Hugh Ford')
     c.person('adopter_wife', 'Dora Ford', 'F')
+    c.person('father', 'Walter Cole')
+    c.person('mother', 'Nell Cole', 'F')
     c.person('child', 'Kit Cole')
     c.parents('child', 'father', 'mother')
     c.parents('child', 'adopter', 'adopter_wife', subtype='adoptive')
@@ -321,9 +326,16 @@ def _c8(c: _Case) -> str:
 
 
 def _c9(c: _Case) -> str:
-    """A widow marries her late husband's brother. Two families, both shown."""
+    """A widow marries her late husband's brother. Two families, both shown.
+    The brothers share recorded parents, so the widow's two sons are cousins
+    and half-brothers at once, and share grandparents."""
+    c.person('gf', 'Calvin Hartley')
+    c.person('gm', 'Edith Cole', 'F')
+    c.marry('gf', 'gm', '1850')
     c.person('brother1', 'Alan Hartley')
     c.person('brother2', 'Bert Hartley')
+    c.parents('brother1', 'gf', 'gm')
+    c.parents('brother2', 'gf', 'gm')
     c.person('widow', 'Cora Marr', 'F')
     c.marry('brother1', 'widow', '1880')
     c.died('brother1', '1890')
@@ -340,15 +352,17 @@ def _c10(c: _Case) -> str:
     father's father's father... line is recorded back to the 64th slot, each
     man with his wife; the seed's mother has no recorded parents. Fan (after
     08-3): sizes to depth 6 only where the line reaches, the other quarter
-    stays empty."""
+    stays empty. Only the one line is filled; a test that needs every slot
+    of a generation seeds its own full tree."""
     c.person('seed', 'Kit Hartley')
     c.person('mother', 'Ruth Reed', 'F')
-    c.parent('seed', 'mother')
     prev = 'seed'
     for gen in range(1, 7):
-        man, wife = f'man{gen}', f'wife{gen}'
+        man = f'man{gen}'
+        wife = 'mother' if gen == 1 else f'wife{gen}'   # gen 1's wife is the seed's mother
         c.person(man, f'Man{gen} Hartley')
-        c.person(wife, f'Wife{gen} Ford', 'F')
+        if gen > 1:
+            c.person(wife, f'Wife{gen} Ford', 'F')
         c.parents(prev, man, wife)
         prev = man
     return 'seed'
@@ -439,9 +453,11 @@ def _c17(c: _Case) -> str:
     """Genetic father and mother, and a stepfather married to the mother. The
     stepfather takes no fan slot; the explorer shows the child under father
     and mother, with a repeat card under mother and stepfather (after 08-9)."""
+    # The stepfather is added first, so his id sorts before the father's: a
+    # fan that dropped the genetic-only rule would put him in the father's slot.
+    c.person('stepfather', 'Hugh Ford')
     c.person('father', 'Walter Cole')
     c.person('mother', 'Nell Cole', 'F')
-    c.person('stepfather', 'Hugh Ford')
     c.marry('father', 'mother', '1900')
     c.marry('stepfather', 'mother', '1910')
     c.person('child', 'Kit Cole')
