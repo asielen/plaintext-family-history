@@ -1349,7 +1349,7 @@ One renderer: person page at 2 ancestor generations, Home at the configured dept
 - **Redaction-safe Home hub:** a redacted seed hands off to the closest unredacted ancestor on its line; failing that, a blank hub only (no ancestors, no family row) with a plain note.
 
 ### Interactive trees
-`site.py` builds a neutral tree JSON per seed (§14b), redacted server-side (living/unknown → "Living Person", no vitals, no link). Vendored `templates/vendor/tree-adapter.js` converts it to the renderer's hierarchy; vendored, dependency-free `templates/vendor/fha-tree.js` draws an SVG collapsible tree with pan/zoom in a viewport.
+`site.py` builds a neutral tree JSON per seed (§14b), redacted server-side (living/unknown → "Living Person", no vitals, no link). Vendored `templates/vendor/tree-adapter.js` converts it to the renderer's hierarchy; vendored `templates/vendor/fha-tree.js` draws an SVG collapsible tree with pan/zoom in a viewport. Third-party code in `templates/vendor/` is pinned and loaded with plain `<script>` tags (no CDN, no build step), so every chart works from `file://`: `d3.min.js` is D3 7.9.0 (ISC), unmodified, and each library's licence sits in `vendor/licenses/`. The static charts (family chart, home pedigree, fan) are drawn server-side and load no library.
 
 The JSON is inline in the page (read from the DOM, so `file://` works) and also written to `site/data/tree_{p-id}_descendants.json`. The adapter is the single seam: a new engine means rewriting only those two files. `fha-tree.js` also exports `wrapStatic(container, options)`, adding the same pan/zoom to a static SVG (the home pedigree).
 
