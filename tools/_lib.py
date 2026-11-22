@@ -18927,12 +18927,15 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # birth keeps those years open.
     births_by, _from_birth = _birth_by_years(ctx, pid, statuses)
     alive_cap = min(this_year, max(births_by) + END_OF_LIFE_YEARS) if births_by else this_year
-    # Asked and found years are kept per country: an English 1901 census does
-    # not fill the Canadian 1901 for someone the records place in both.
+    # Found years are merged across countries: a person is in one census on a
+    # census night, so an Irishman in the 1901 English census is not also
+    # missing from the Irish 1901 (the British, Irish and Canadian censuses
+    # shared their nights). Asked years are kept per country, to name the
+    # country of each year still missing.
     asked_by: dict[str, list[int]] = {}
     extras_all: list[int] = []
     later: list[int] = []
-    found_pairs: set[tuple[str, int]] = set()
+    found_all: set[int] = set()
     for key in countries:
         start = birth if (key in born_in and birth is not None) else first_in.get(key, birth)
         # Census years on file for this country: its own, plus unplaced ones
@@ -18952,19 +18955,17 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         extra_here = [y for y in list(table['extra']) + list(table['required'])
                       if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
         extras_all += [y for y in extra_here if y in here]
-        found_pairs.update((key, y) for y in asked if y in here)
+        found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
             # Extras count too: an Irish record after 1911 with no death leaves
             # the 1926 census to check, though it is never reported missing.
             later += [y for y in list(table['required']) + list(table['extra'])
                       if max(start, end) < y <= alive_cap]
     expected = sorted({y for asked in asked_by.values() for y in asked})
-    missing_by: dict[str, list[int]] = {
-        key: [y for y in asked if (key, y) not in found_pairs]
-        for key, asked in asked_by.items()}
-    missing_years = {y for ys in missing_by.values() for y in ys}
-    found = [y for y in expected if y not in missing_years]
-    missing = [y for y in expected if y in missing_years]
+    found = [y for y in expected if y in found_all]
+    missing = [y for y in expected if y not in found_all]
+    missing_by = {key: [y for y in asked if y not in found_all]
+                  for key, asked in asked_by.items()}
     # With more than one country asking years, say which country each
     # missing year is for, so he knows which census to search.
     if sum(1 for asked in asked_by.values() if asked) > 1:
