@@ -101,7 +101,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
    ```
    If `fha xref` proposes a link, present it plainly ("This now agrees with the 1871 marriage notice. Want to record that they back each other up?") and act on his pick.
 
-   Before offering `corroborates`, check the two sources are independent. An index and the record it indexes, two online trees, or two copies of one census page agree because one came from the other. Say so ("these two agree because one copied the other, so they count as one") and, for one record saved twice, offer `fha source merge <keep> <other> --dry-run` instead of a corroboration link. For two independent sources:
+   Before offering `corroborates`, check the two sources are independent. An index and the record it indexes, two online trees, or two copies of one census page agree because one came from the other. Say so ("these two agree because one copied the other, so they count as one") and, for one record saved twice, offer `fha source merge <keep> <other> --dry-run` instead of a corroboration link. This check is for `corroborates` only: a copy that disagrees with its record is still a contradiction worth linking.
    ```
    fha confirm xref <c-a> <c-b> --as corroborates --dry-run   # preview first (writes both sources)
    fha confirm xref <c-a> <c-b> --as corroborates             # or: --as contradicts

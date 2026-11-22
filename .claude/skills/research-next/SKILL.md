@@ -71,7 +71,7 @@ The archive already knows what it doesn't know: open questions, working answers 
    - date: 2026-07-01
      question: "[[h-…]] Thomas Hartley death record"
      repository: Kansas State Historical Society
-     collection: "Kansas death index, Breton County 1911–1925"
+     collection: "Kansas death index, Breton County 1911-1925"
      terms: "Hartley, Thomas"
      result: nil        # or found [[s-…]] / partial (note)
    ```
