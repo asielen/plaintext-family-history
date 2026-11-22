@@ -48,6 +48,15 @@ def _print_block(css: str) -> str:
     return ''
 
 
+def _hidden_selectors(block: str) -> list[str]:
+    """Every selector in a print-block rule that sets `display: none`."""
+    out = []
+    for sel, body in re.findall(r'([^{}]+)\{([^}]*)\}', block):
+        if re.search(r'display:\s*none', body):
+            out += [s.strip() for s in sel.split(',') if s.strip()]
+    return out
+
+
 class PrintStylesheetTests(unittest.TestCase):
     def test_stylesheet_has_a_print_section(self):
         block = _print_block(STYLES.read_text(encoding='utf-8'))
@@ -138,11 +147,69 @@ class PrintSiteTests(unittest.TestCase):
                          for p in (self.out1 / 'persons').glob('*.html'))
         self.assertIn('class="chart fha-tree-explorer"', html)
 
+    def test_calendar_keeps_its_all_months_heading_on_paper(self):
+        # The whole year prints under "All months"; without that heading the
+        # list reads as more of "This month in the family", current month twice.
+        block = _print_block(STYLES.read_text(encoding='utf-8'))
+        hidden = [re.sub(r'\s+', ' ', s) for s in _hidden_selectors(block)]
+        for sel in ('.cal-all', '.cal-all > summary', 'details.cal-all'):
+            self.assertNotIn(sel, hidden)
+
     def test_two_builds_are_byte_identical(self):
         a = {p.relative_to(self.out1): p.read_bytes() for p in self.out1.rglob('*') if p.is_file()}
         b = {p.relative_to(self.out2): p.read_bytes() for p in self.out2.rglob('*') if p.is_file()}
         self.assertEqual(sorted(a), sorted(b))
         self.assertEqual([k for k in a if a[k] != b[k]], [])
+
+
+class PrintWorkbenchTests(unittest.TestCase):
+    """He prints Grandpa's page from `fha serve` to hand to a cousin: the
+    paper carries no "edit", "add" or "change..." links, no "Add a
+    milestone..." buttons and no "Unknown - add" in the family chart."""
+
+    @classmethod
+    def setUpClass(cls):
+        import index as index_mod
+        cls._tmp = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmp.name)
+        root = tmp / 'archive'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        quiet = dict(stdout=io.StringIO(), stderr=io.StringIO())
+        with contextlib.redirect_stdout(quiet['stdout']), contextlib.redirect_stderr(quiet['stderr']):
+            index_mod.build_index(root, {})
+            cls.out = tmp / 'wb'
+            cls.res = site.run_site(root, cls.out, linked=True, workbench=True,
+                                    workbench_context={'port': 8765, 'csrf_token': '0' * 32,
+                                                       'review_count': 0, 'inbox_count': 0})
+        cls.hidden = _hidden_selectors(_print_block(STYLES.read_text(encoding='utf-8')))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_edit_controls_are_hidden_on_paper(self):
+        self.assertEqual(self.res['status'], 'ok', self.res['messages'])
+        for sel in ('[data-wb-open]:not(.ped-empty)', '[data-wb-open-file]', '.wb-record', '.wb-pointer',
+                    '.wb-fill', '.wb-fill-note', '[data-wb-open] + .wb-later', '.wb-add-hint'):
+            self.assertIn(sel, self.hidden)
+
+    def test_every_edit_control_is_one_the_print_rules_reach(self):
+        # A control the rules above do not reach would still print. The only
+        # data-wb-open element left on paper is the empty ancestor card, and
+        # its "add" words sit in .wb-add-hint so only "Unknown" prints.
+        pages = sorted(self.out.rglob('*.html'))
+        self.assertGreater(len(pages), 5)
+        for page in pages:
+            html = page.read_text(encoding='utf-8')
+            for tag in re.findall(r'<[a-z]+\b[^>]*\bdata-wb-open=[^>]*>', html):
+                if 'ped-empty' in tag:
+                    continue
+                self.assertRegex(tag, r'^<(a|button)\b', (page.name, tag))
+            self.assertNotIn('Unknown &mdash; add', html, page.name)
+            for card in re.findall(r'<div [^>]*class="ped-node ped-empty"[^>]*data-wb-open[^>]*>.*?</div>',
+                                   html, re.S):
+                self.assertIn('class="wb-add-hint"', card, page.name)
 
 
 if __name__ == '__main__':

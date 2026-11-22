@@ -3571,7 +3571,8 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 # live review 2026-07-16).
                 args = html.escape(json.dumps(
                     {'person_id': fmt_id_display(child_pid), 'relation_type': 'parent'}), quote=True)
-                inner = '<span class="ped-name">Unknown &mdash; add</span>'
+                # " - add" in its own span so a printed page says just "Unknown".
+                inner = '<span class="ped-name">Unknown<span class="wb-add-hint"> &mdash; add</span></span>'
                 div_attrs = (f' data-wb-open="tpl-add-family" data-wb-args=\'{args}\' '
                             'data-wb-fill="relation_type=parent" '
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')

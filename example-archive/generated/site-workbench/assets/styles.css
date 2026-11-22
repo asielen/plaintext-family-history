@@ -611,8 +611,13 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   @page { margin: 1.5cm; }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
-  .site-nav, .site-search, .fha-tree-controls, .wb-bar, .wb-add, .wb-fix,
-  .cal-all > summary, .fha-tree-explorer, noscript { display: none !important; }
+  .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, noscript,
+  .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
+  [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
+  .wb-add-hint { display: none !important; }
+  /* The whole year prints under its "All months" heading, without the arrow. */
+  .cal-all > summary { list-style: none; font-weight: 600; margin-top: var(--space-4); }
+  .cal-all > summary::-webkit-details-marker { display: none; }
   .site-header::after { border-color: #000; }
   a { color: inherit; text-decoration: none; }
   details.chart > summary.chart-title::before { content: none; }

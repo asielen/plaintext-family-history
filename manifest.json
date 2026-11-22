@@ -618,7 +618,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "740591b843001f27349a06bcce6a42523070c026c70bd3c6e40d00d3a129b6dd",
+      "sha256": "fbc9afc32a60b79d977d16469675805d903d3bb435f8e60de747a8467020177e",
       "spec_version": "2.19",
       "src": "design/styles.css"
     },
@@ -632,7 +632,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "d4c40afed123ad434c672369cbc71a3d59b301a2e1ce885264f7ccf036b6ba70",
+      "sha256": "7657a3681d19d9db84b4c83fb587419f288c9d82bcf8c35d780436dc044e3703",
       "spec_version": "2.19",
       "src": "docs/DESIGN.md"
     },
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "d8fcb3a76664a894a262c9a9160ddb2227489c6dedc29748ecfdc4670e32dc0b",
+      "sha256": "4bb2b1696f1636deee47f5a756bcf079a33ea704102e491cc43e92ea27624902",
       "spec_version": "2.19",
       "src": "tools/site.py"
     },
