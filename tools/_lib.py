@@ -17859,7 +17859,7 @@ CENSUS_YEARS: dict[str, dict[str, tuple[int, ...]]] = {
     # Scotland. Source: National Records of Scotland, "Census records"
     # (https://www.nrscotland.gov.uk/learning-and-events/research-guides/census-records):
     # open 1841-1921; census records are closed for 100 years, so 1931 (a return
-    # that exists) is not open until 2032 and is not asked for. 1941 was not taken.
+    # that exists) is not yet open and is not asked for. 1941 was not taken.
     'Scotland': {
         'required': (1841, 1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921),
         'extra': (),
@@ -17919,8 +17919,8 @@ _CENSUS_STATE_NAMES: dict[str, tuple[str, ...]] = {
         'northwest territories', 'nova scotia', 'nunavut', 'ontario',
         'prince edward island', 'quebec', 'québec', 'saskatchewan', 'yukon'),
 }
-# Left out on purpose, each with the reason. Not read by the code: kept so
-# the next person to touch the list sees why these are missing.
+# Left out on purpose, each with the reason. The census check shows the reason
+# beside "no census table for ..." so he knows what to write instead.
 _CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
     'georgia': 'also a country',
     'florida': 'also a department of Uruguay',
@@ -17976,13 +17976,23 @@ def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
     return None
 
 
+def _census_left_out_note(country: str) -> str:
+    """A country name as written, with the reason it has no table when it is
+    left out on purpose ("United Kingdom (names several census countries; ...)")."""
+    norm = unicodedata.normalize('NFC', country).lower().replace('.', '').strip()
+    reason = _CENSUS_STATE_NAMES_LEFT_OUT.get(norm)
+    return f'{country} ({reason})' if reason else country
+
+
 def census_country_key(country: str | None) -> str | None:
     """The CENSUS_YEARS key for a country name as written (or a U.S. state
     or Canadian province standing for it), or None when the archive has no
     census table for it."""
     if not country:
         return None
-    norm = country.lower().replace('.', '').strip()
+    # NFC: an accent typed or pasted as two characters ("E" + combining
+    # acute, as some Macs paste it) is the same name.
+    norm = unicodedata.normalize('NFC', country).lower().replace('.', '').strip()
     return _CENSUS_COUNTRY_NAMES.get(norm)
 
 
@@ -18441,7 +18451,8 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if other_countries:
             return {'check': 'census', 'state': 'na', 'countries': sorted(other_countries),
                     **empty,
-                    'detail': 'no census table for ' + ', '.join(sorted(other_countries))}
+                    'detail': 'no census table for ' + ', '.join(
+                        _census_left_out_note(name) for name in sorted(other_countries))}
         return {'check': 'census', 'state': 'missing', 'countries': [], **empty,
                 'detail': "can't tell which country they lived in: none of their "
                           'records sits at a registered place. `fha report --section '
@@ -18489,10 +18500,12 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # birth keeps those years open.
     births_by, _from_birth = _birth_by_years(ctx, pid, statuses)
     alive_cap = min(this_year, max(births_by) + END_OF_LIFE_YEARS) if births_by else this_year
-    expected: list[int] = []
+    # Asked and found years are kept per country: an English 1901 census does
+    # not fill the Canadian 1901 for someone the records place in both.
+    asked_by: dict[str, list[int]] = {}
     extras_all: list[int] = []
     later: list[int] = []
-    found_all: set[int] = set()
+    found_pairs: set[tuple[str, int]] = set()
     for key in countries:
         start = birth if (key in born_in and birth is not None) else first_in.get(key, birth)
         # Census years on file for this country: its own, plus unplaced ones
@@ -18507,17 +18520,32 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             continue
         table = CENSUS_YEARS[key]
         asked = [y for y in table['required'] if start <= y <= surely_alive_to]
-        expected += asked
+        asked_by[key] = asked
         # Extras: the table's own, plus required years inside the death window.
         extra_here = [y for y in list(table['extra']) + list(table['required'])
                       if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
         extras_all += [y for y in extra_here if y in here]
-        found_all.update(y for y in asked if y in here)
+        found_pairs.update((key, y) for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
-            later += [y for y in table['required'] if max(start, end) < y <= alive_cap]
-    expected = sorted(set(expected))
-    found = sorted(y for y in expected if y in found_all)
-    missing = [y for y in expected if y not in found_all]
+            # Extras count too: an Irish record after 1911 with no death leaves
+            # the 1926 census to check, though it is never reported missing.
+            later += [y for y in list(table['required']) + list(table['extra'])
+                      if max(start, end) < y <= alive_cap]
+    expected = sorted({y for asked in asked_by.values() for y in asked})
+    missing_by: dict[str, list[int]] = {
+        key: [y for y in asked if (key, y) not in found_pairs]
+        for key, asked in asked_by.items()}
+    missing_years = {y for ys in missing_by.values() for y in ys}
+    found = [y for y in expected if y not in missing_years]
+    missing = [y for y in expected if y in missing_years]
+    # With more than one country asking years, say which country each
+    # missing year is for, so he knows which census to search.
+    if sum(1 for asked in asked_by.values() if asked) > 1:
+        missing_text = '; '.join(
+            ', '.join(str(y) for y in ys) + f' in {key}'
+            for key, ys in sorted(missing_by.items()) if ys)
+    else:
+        missing_text = ', '.join(str(y) for y in missing)
     extras = sorted(set(extras_all))
     unchecked_after = end if later else None
     base = {'check': 'census', 'countries': countries, 'expected': expected,
@@ -18548,7 +18576,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     state = 'partial' if found else 'missing'
     return {**base, 'state': state,
             'detail': f'{len(found)} of {len(expected)} census years on file; missing '
-                      + ', '.join(str(y) for y in missing) + tail}
+                      + missing_text + tail}
 
 
 def _parent_claims(ctx: dict, pid: str, statuses: tuple[str, ...], *,
