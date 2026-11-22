@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "dd731bb775fd0494f76dd5997e94225311df6c198a7abbcec184f230184d4fed",
+      "sha256": "1a5d0034393b766678d3054c25ccc39a6482d93fff76833768d1033e402a89fa",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
@@ -450,7 +450,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "69db11b8e0e4fd5dd63249ed1b91c69097248797d13d9d272ffbce1fb7f1029a",
+      "sha256": "be6c21cd6c2c3035c38a184ae845fd057a95616bbfbc9d9656e5585cfcdaf302",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
