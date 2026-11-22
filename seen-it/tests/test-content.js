@@ -433,14 +433,15 @@ const npLink = (id) => tile('https://www.newspapers.com/clip/' + id + '/hartley-
 
 // A photo's viewer page. `card` are the links in the sharer's card ("originally
 // shared this article ... from Newspapers.com"), `other` the links anywhere
-// else (a comment, the description). `picture` is the media id the viewer's
-// <img> carries as its id: the photo the page is showing.
-async function viewerPage({ card = [], other = [], picture = GAL(1), path = GAL(1) } = {}) {
+// else (a comment, the description). `pictures` are the viewer's <img>s, each
+// with the media id it carries as its id and its alt text (the carousel keeps
+// the neighbouring photos' pictures loaded); `panelTitle` is the title in the
+// Details panel.
+const TITLE = 'Hartley farm sale';
+async function viewerPage({ card = [], other = [], pictures = [{ id: GAL(1), alt: TITLE }], panelTitle = TITLE, path = GAL(1) } = {}) {
   const page = loadContentScript('content-ancestry.js', {
     pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + path, origin: 'https://www.ancestry.com',
-    querySelectorAll: (sel) => (!sel.includes('newspapers.com/clip/') || sel.includes('/records/') ? []
-      : sel.includes('.mediaOriginallyShared') ? card : card.concat(other)),
-    querySelector: (sel) => idQuery(sel, picture),
+    ...viewerDom(() => ({ card, other, pictures, panelTitle })),
   });
   try {
     await wait(700);
@@ -450,13 +451,28 @@ async function viewerPage({ card = [], other = [], picture = GAL(1), path = GAL(
   return page.sent.filter((m) => m.type === 'ancMedClip');
 }
 
-// document.querySelector('[id="..."]') on a page whose only element with an
-// id is the viewer's picture; the ` i` flag matches in any letter case, as a
-// browser does.
-function idQuery(sel, id) {
-  const m = /^\[id="([^"]+)"( i)?\]$/.exec(sel);
-  if (!m || !id) return null;
-  return (m[2] ? m[1].toLowerCase() === id.toLowerCase() : m[1] === id) ? { id } : null;
+// querySelector / querySelectorAll for that page, read afresh on each call
+// so a test can swap what it shows. img[id="..."] matches as a browser does:
+// with the ` i` flag in any letter case.
+function viewerDom(now) {
+  return {
+    querySelectorAll: (sel) => {
+      const { card, other = [], pictures } = now();
+      const img = /^img\[id="([^"]+)"( i)?\]$/.exec(sel);
+      if (img) {
+        return pictures.filter((p) => (img[2] ? p.id.toLowerCase() === img[1].toLowerCase() : p.id === img[1]))
+          .map((p) => ({ id: p.id, getAttribute: (n) => (n === 'alt' ? p.alt : n === 'id' ? p.id : null) }));
+      }
+      if (!sel.includes('newspapers.com/clip/') || sel.includes('/records/')) return [];
+      return sel.includes('.mediaOriginallyShared') ? card : card.concat(other);
+    },
+    querySelector: (sel) => {
+      const { panelTitle, pictures } = now();
+      const byId = /^\[id="([^"]+)" i\]$/.exec(sel); // any element with that id: the pictures are the page's only ones
+      if (byId) return pictures.find((p) => p.id.toLowerCase() === byId[1].toLowerCase()) || null;
+      return sel === '#mediaViewerDetailsPanel .mediaTitle .mediaDataFieldValue' && panelTitle ? { textContent: panelTitle } : null;
+    },
+  };
 }
 
 test('Ancestry photo viewer: a photo that links its Newspapers.com clipping is remembered as that clipping', async () => {
@@ -484,29 +500,58 @@ test('Ancestry photo viewer: a comment linking another clipping does not hide th
 // picture and its details swap. A look in that gap filed the last photo's
 // clipping under the next one, a plain photo, which kept it for good.
 test('Ancestry photo viewer: while the last photo is still showing, its clipping is not filed under the next one', async () => {
-  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], picture: GAL(1), path: GAL(2) }), []);
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], path: GAL(2) }), []);
+});
+
+// Audit of #412: the viewer's carousel keeps the next photo's picture loaded,
+// so on the arrow to it the picture was already there while the Details
+// panel and sharer's card still showed the last photo, and its clipping was
+// filed under the next one.
+test('Ancestry photo viewer: a picture of the next photo in the carousel is not enough while the panel shows the last one', async () => {
+  const pictures = [{ id: GAL(1), alt: TITLE }, { id: GAL(2), alt: 'Hartley headstone' }];
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], pictures, path: GAL(2) }), []);
+  const sent = await viewerPage({ card: [npLink(4321)], pictures, path: GAL(1) });
+  assert.deepStrictEqual(sent.map((m) => [m.key, m.clip]), [['med:' + GAL(1), CLIP]]);
+});
+
+test('Ancestry photo viewer: letter case and spacing in the title do not matter; a panel with no title is not checked', async () => {
+  const pictures = [{ id: GAL(1), alt: 'Hartley  Farm Sale' }];
+  assert.strictEqual((await viewerPage({ card: [npLink(4321)], pictures })).length, 1);
+  assert.strictEqual((await viewerPage({ card: [npLink(4321)], pictures, panelTitle: null })).length, 1);
+});
+
+// The same on the viewer page saved from Ancestry (tests/fixtures): its
+// carousel holds the clipping's picture and a plain photo's.
+test('Ancestry photo viewer, saved page: the plain photo beside a clipping is not filed as that clipping', async () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures', 'capture-samples', 'ancestry-media-clipping.html'), 'utf8');
+  const pictures = [...html.matchAll(/<img id="([^"]+)"[^>]*\balt="([^"]*)"/g)].map((m) => ({ id: m[1], alt: m[2] }));
+  const panelTitle = /class="[^"]*\bmediaTitle\b[^"]*"[^>]*><span class="mediaDataFieldValue[^"]*">([^<]*)/.exec(html)[1];
+  const card = [.../<span class="mediaOriginallyShared">([\s\S]*?)<\/span><\/p>/.exec(html)[1].matchAll(/<a href="([^"]+)"/g)]
+    .map((m) => tile(m[1])).filter((a) => /newspapers\.com\/(clip|article)\//.test(a.getAttribute('href')));
+  const ids = [...new Set(pictures.map((p) => p.id))];
+  assert.strictEqual(ids.length, 2, 'the saved page no longer has two photos in its carousel');
+  const [clipping, plain] = ids;
+  assert.deepStrictEqual(await viewerPage({ card, pictures, panelTitle, path: plain }), []);
+  assert.deepStrictEqual((await viewerPage({ card, pictures, panelTitle, path: clipping })).map((m) => m.key), ['med:' + clipping]);
 });
 
 test('Ancestry photo viewer: the photo is recognised by its picture whatever the letter case of its id', async () => {
-  const sent = await viewerPage({ card: [npLink(4321)], picture: GAL(1).toUpperCase(), path: GAL(1) });
+  const sent = await viewerPage({ card: [npLink(4321)], pictures: [{ id: GAL(1).toUpperCase(), alt: TITLE }], path: GAL(1) });
   assert.deepStrictEqual(sent.map((m) => m.key), ['med:' + GAL(1)]);
 });
 
 test('Ancestry photo viewer: moving to the next photo learns nothing until that photo shows', async () => {
-  let picture = GAL(1);
-  let card = [npLink(4321)];
+  let shown = { card: [npLink(4321)], pictures: [{ id: GAL(1), alt: TITLE }], panelTitle: TITLE };
   const page = loadContentScript('content-ancestry.js', {
     pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1), origin: 'https://www.ancestry.com',
-    querySelectorAll: (sel) => (sel.includes('newspapers.com/clip/') && !sel.includes('/records/') ? card : []),
-    querySelector: (sel) => idQuery(sel, picture),
+    ...viewerDom(() => shown),
   });
   try {
     await wait(700);
     page.location.pathname = '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2);
     page.location.href = page.location.origin + page.location.pathname;
     await wait(1400); // the address moved; photo 1 is still on the page
-    picture = GAL(2); // photo 2 arrives: a plain photo
-    card = [];
+    shown = { card: [], pictures: [{ id: GAL(2), alt: 'Hartley headstone' }], panelTitle: 'Hartley headstone' }; // photo 2: a plain photo
     await wait(1400);
   } finally {
     page.stop();

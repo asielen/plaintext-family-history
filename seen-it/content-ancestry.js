@@ -579,14 +579,24 @@
     return found.size === 1 ? [...found][0] : null;
   }
 
-  // Whether the viewer is showing this photo yet. The arrow to the next photo
-  // changes the address before the picture and its details swap, and a read
-  // in that gap would file the last photo's clipping under this one. The
-  // viewer's <img> carries the photo's media id as its id, so the page shows
-  // this photo once an element with that id is there (in any letter case).
+  // Whether the viewer is showing this photo yet, Details panel and all. The
+  // arrow to the next photo changes the address before the picture and its
+  // details swap, and a read in that gap would file the last photo's
+  // clipping under this one. The viewer's <img> carries the photo's media id
+  // as its id (in any letter case) and the photo's title as its alt text; the
+  // carousel keeps the neighbouring photos' pictures loaded too, so the
+  // picture alone does not say the panel has caught up. The panel is for this
+  // photo when its title matches that alt text. With no title in the panel,
+  // or no alt text, nothing more is checked. Same rule as the capture add-on
+  // (browser-companion ancMediaPanelIsFor).
   function showsPhoto(key) {
     const id = key.slice(4).replace(/[^0-9a-f-]/gi, '');
-    return !!(id && document.querySelector('[id="' + id + '" i]'));
+    const pics = id ? [...document.querySelectorAll('img[id="' + id + '" i]')] : [];
+    if (!pics.length) return false;
+    const tidy = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const shown = document.querySelector('#mediaViewerDetailsPanel .mediaTitle .mediaDataFieldValue');
+    const title = shown ? tidy(shown.textContent) : '';
+    return !title || pics.every((img) => !tidy(img.getAttribute('alt')) || tidy(img.getAttribute('alt')) === title);
   }
 
   function learnClip(key) {
