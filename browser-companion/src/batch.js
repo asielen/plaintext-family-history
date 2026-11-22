@@ -21,6 +21,15 @@
 // is downloaded too, as a copy: Seen It knows a gallery item as held only
 // once it was saved from its Ancestry address, never as the file she had.
 //
+// A Newspapers.com clipping is the exception. A gallery item that turns out
+// to be a copy of one (its viewer page links the original) is not saved from
+// Ancestry: if the archive holds the clipping (Seen It, clip:{id}) the item
+// is done; otherwise the clipping goes to the Newspapers.com batch, which
+// saves the original at full size. A person's sources that link a clipping
+// are queued there too, by "Add the sources of the person in front of you".
+// Either way the clipping keeps the person it was found for: the
+// Newspapers.com batch ticks them on the clipping's form when it saves it.
+//
 // ── SWITCHED OFF unless this browser is told otherwise ──────────────────────
 // Batch downloads are a power tool. Nothing about them is shown in the panel
 // or described in the add-on's READMEs, and with the switch off this file
@@ -733,6 +742,19 @@
       if (!page.ok) throw new Stop(page.error + ' (' + url + ')');
       // The site served this record's page: what follows is its answer.
       active.answered = true;
+      // A gallery item that is a copy of a Newspapers.com clipping: the
+      // original is what is saved, by the Newspapers.com batch. Only when
+      // the tab still shows the item queued: one Ancestry sent on to another
+      // item is refused by Capture below, as it always was, and never marks
+      // this item done or queues the other item's clipping for her person.
+      if (item.mediaId && pageIsQueued(siteName, item, page.url) &&
+          page.prefill[SITE_UI[siteName].mediaPrefillFlag] && page.prefill.ancestryNewspapersClip &&
+          await sendToClippingBatch(siteName, L, item, page.prefill.ancestryNewspapersClip)) {
+        return finishRecord(siteName, L);
+      }
+      // A clipping found on Ancestry: the people it was found for are ticked
+      // on its form, as the panel's "Open it on Newspapers.com" does.
+      if (siteName === 'newspapers' && Array.isArray(item.persons) && item.persons.length) hooks.addPeople(item.persons);
       let out;
       const flag = item.mediaId ? SITE_UI[siteName].mediaPrefillFlag : SITE_UI[siteName].prefillFlag;
       if (!flag || !page.prefill[flag]) {
@@ -800,6 +822,51 @@
         }
       }
       return finishRecord(siteName, L);
+    }
+
+    // Whether the tab's address is the queued record's own page: a shortcut
+    // that acts on what the page says (it is a copy of a clipping) must never
+    // act for a record the site sent the tab away from. A gallery item: the
+    // media id in the viewer's /media/{id} path.
+    function pageIsQueued(siteName, item, url) {
+      let u;
+      try {
+        u = new URL(String(url || ''));
+      } catch (e) {
+        return false;
+      }
+      if (item.mediaId) {
+        const m = /\/media\/([0-9a-f-]{36})\/?$/i.exec(u.pathname);
+        return !!m && m[1].toLowerCase() === String(item.mediaId).toLowerCase();
+      }
+      return false;
+    }
+
+    // A gallery item whose viewer page links the Newspapers.com clipping it
+    // is a copy of. The archive holding that clipping makes the item done;
+    // otherwise the clipping is queued in the Newspapers.com batch (whoever
+    // made it), with the people the item was queued for, and the item is
+    // done here: its copy is never saved as well. False when the link names
+    // no clipping the Newspapers.com batch can open (the item is then saved
+    // from Ancestry as before).
+    async function sendToClippingBatch(siteName, L, item, clip) {
+      const url = CB().npClipUrl(clip && clip.url);
+      const id = url && CB().npClipIdOf(url);
+      if (!id || id !== String(clip.clippingId)) return false;
+      const ck = 'clip:' + id;
+      const held = (await hooks.seenItHeld([ck]))[ck];
+      if (held) {
+        await apply(siteName, L, [['markHeld', item.key, (held.where === 'archive'
+          ? 'in the archive' + (held.source ? ', source ' + held.source : '')
+          : 'waiting in the inbox to be filed') + ', as Newspapers.com clipping ' + id]], true);
+      } else {
+        await apply('newspapers', null, [['addFound', [{ id, url, title: item.title || '', persons: item.persons || [] }],
+          'gallery: ' + ((item.persons || [])[0] || item.key), 'from an Ancestry gallery']], true);
+        await apply(siteName, L, [['markDone', item.key, '(sent to the Newspapers.com batch)',
+          'a copy of Newspapers.com clipping ' + id + '; the Newspapers.com batch saves the original']], true);
+      }
+      active.fails = 0;
+      return true;
     }
 
     // After a record, whatever became of it: the gap before the next one.
@@ -956,6 +1023,22 @@
           'gallery: ' + (r.person || tab.url), whose + ', page ' + (r.page || 1), next);
         return;
       }
+      // The clippings a person's Ancestry sources link: the Newspapers.com
+      // batch saves them, whoever made them, ticked for this person.
+      let clipLine = '';
+      if (siteName === 'ancestry' && Array.isArray(r.clippings) && r.clippings.length) {
+        const NL = {};
+        const [n] = await apply('newspapers', NL, [['addFound',
+          r.clippings.map((c) => Object.assign({ persons: r.person ? [r.person] : [] }, c)),
+          'page: ' + (r.person || tab.url), (r.person || 'This page') + '’s sources']], true);
+        const k = r.clippings.length;
+        clipLine = k + ' Newspapers.com clipping' + (k === 1 ? '' : 's') + ' found, ' + n +
+          ' new to the Newspapers.com queue (press Start there to download ' + (k === 1 ? 'it' : 'them') + ').';
+        if (!r.sources.length) {
+          say(siteName, who + ' has no Ancestry records to queue. ' + clipLine, n ? 'ok' : '');
+          return;
+        }
+      }
       if (!r.sources.length) {
         say(siteName, r.sectionFound === false
           ? (siteName === 'findagrave'
@@ -967,7 +1050,7 @@
         return;
       }
       await queueRecords(siteName, r.sources.map((s) => Object.assign({ persons: r.person ? [r.person] : [] }, s)),
-        'page: ' + (r.person || tab.url), who + (r.other ? ' (also ' + r.otherWhat + ', not queued)' : ''));
+        'page: ' + (r.person || tab.url), who + (r.other ? ' (also ' + r.otherWhat + ', not queued)' : ''), clipLine);
     }
 
     // A Capture by hand that met a "slow down" (saved or not) holds that
