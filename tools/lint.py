@@ -73,6 +73,7 @@ from _lib import (
     record_collection_group,
     record_collection_index,
     site_data_reader,
+    same_record_subject,
     source_record_subjects,
     source_site_collection,
     RECIPROCAL_RELATIONSHIP_TYPE,     # relationships: entries an accepted claim owes (SPEC §9)
@@ -4955,9 +4956,10 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
     The rule: two sources from different sites whose collections are one set
     in record_collections.json (WikiTree Sourcer's map, `_lib`), whose saved
     site data shares a subject (`source_record_subjects`: whose entries they
-    are, so a wife's entry beside her husband's or one twin's beside the
-    other's is never paired, while a source holding a whole page's entries
-    pairs with a copy of any one of them), that name at least one person in common (by ID),
+    are, by name and, when both records give one, age, so a wife's entry
+    beside her husband's, one twin's beside the other's, or a son's beside
+    the father he is named for is never paired, while a source holding a
+    whole page's entries pairs with a copy of any one of them), that name at least one person in common (by ID),
     with dates that agree (`_dates_agree`). A source with no subject in its
     site data is never paired: a missed copy costs less than a wrong merge.
     Two sources from one site are never paired: the capture add-on keeps each
@@ -4988,7 +4990,7 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
     for members in by_group.values():
         for i, a in enumerate(members):
             for b in members[i + 1:]:
-                if a[1] == b[1] or not (a[6] & b[6]) or not (a[3] & b[3]):
+                if a[1] == b[1] or not same_record_subject(a[6], b[6]) or not (a[3] & b[3]):
                     continue
                 _gid, title, year = a[5]
                 if not _dates_agree(a[4], b[4], year):

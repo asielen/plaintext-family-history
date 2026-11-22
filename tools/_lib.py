@@ -9601,14 +9601,47 @@ def record_collection_group(site: str, collection_id: str, index: dict | None = 
     return (index if index is not None else record_collection_index()).get((site, str(collection_id)))
 
 
-def source_record_subjects(meta: dict, read_site_data) -> set[str]:
-    """Whose entries a captured source holds: the name the site gives each
-    record (`record.name` in the saved site data the capture add-on writes, on
-    Ancestry and FamilySearch alike), case, spacing and punctuation folded.
-    A source may hold several (household members' entries of one page folded
-    into one source); none when no site data names one. Two copies of one
-    record share a subject; a wife's entry beside her husband's does not."""
-    names = set()
+def _site_data_age(data: dict) -> int | None:
+    """The age a record gives its own subject, from the site data the capture
+    add-on saves, or None. Ancestry: the record's index field labelled "Age"
+    ("Age", "Age in 1870"). FamilySearch: the `Age` field on the record's own
+    person in its GEDCOM X, found as the add-on finds it (the person whose
+    identifiers name the record, else the principal one)."""
+    for f in data.get('fields') if isinstance(data.get('fields'), list) else []:
+        if isinstance(f, dict) and re.match(r'age\b', str(f.get('label', '')).strip(), re.I):
+            m = re.match(r'\s*(\d{1,3})\b', str(f.get('value', '')))
+            return int(m.group(1)) if m else None
+    g = data.get('gedcomx')
+    rec = data.get('record') if isinstance(data.get('record'), dict) else {}
+    persons = g.get('persons') if isinstance(g, dict) and isinstance(g.get('persons'), list) else []
+    want = '1:1:' + str(rec.get('fsId') or '').upper()
+
+    def ids(p):
+        out = []
+        for v in (p.get('identifiers') or {}).values() if isinstance(p.get('identifiers'), dict) else []:
+            out.extend(str(x).upper() for x in (v if isinstance(v, list) else [v]))
+        return out
+    person = (rec.get('fsId') and next((p for p in persons if isinstance(p, dict) and any(want in x for x in ids(p))), None)) \
+        or next((p for p in persons if isinstance(p, dict) and p.get('principal')), None)
+    for f in person.get('fields') if isinstance(person, dict) and isinstance(person.get('fields'), list) else []:
+        if isinstance(f, dict) and str(f.get('type', '')).endswith('/Age'):
+            for v in f.get('values') or []:
+                m = re.match(r'\s*(\d{1,3})\b', str((v or {}).get('text', '')))
+                if m:
+                    return int(m.group(1))
+    return None
+
+
+def source_record_subjects(meta: dict, read_site_data) -> set[tuple[str, int | None]]:
+    """Whose entries a captured source holds: for each record its saved site
+    data describes (the capture add-on writes `record.name` on Ancestry and
+    FamilySearch alike), (name, age): the name with case, spacing and
+    punctuation folded, and the age the record gives (`_site_data_age`, None
+    when it gives none). A source may hold several (household members'
+    entries of one page folded into one source); none when no site data names
+    one. A wife's entry beside her husband's differs by name; a son named for
+    his father, on the same page, differs by age."""
+    subjects = set()
     for f in meta.get('files') if isinstance(meta.get('files'), list) else []:
         if not isinstance(f, dict) or 'site-data' not in str(f.get('role', '')):
             continue
@@ -9616,8 +9649,14 @@ def source_record_subjects(meta: dict, read_site_data) -> set[str]:
         rec = data.get('record') if isinstance(data, dict) else None
         name = rec.get('name') if isinstance(rec, dict) else None
         if isinstance(name, str) and name.strip():
-            names.add(' '.join(re.sub(r'[^\w\s]', ' ', name.casefold()).split()))
-    return names
+            subjects.add((' '.join(re.sub(r'[^\w\s]', ' ', name.casefold()).split()), _site_data_age(data)))
+    return subjects
+
+
+def same_record_subject(a: set, b: set) -> bool:
+    """Whether two sources' subjects (source_record_subjects) share one entry:
+    the same name, and the same age when both records give one."""
+    return any(na == nb and (aa is None or ab is None or aa == ab) for na, aa in a for nb, ab in b)
 
 
 def source_site_collection(meta: dict, read_site_data) -> tuple[str, str] | None:

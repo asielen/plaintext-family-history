@@ -171,7 +171,7 @@ class SameRecordTwoSitesTests(unittest.TestCase):
         (self.root / 'people').mkdir()
         (self.root / 'sources' / 'census').mkdir(parents=True)
 
-    def _source(self, sid, *, site, coll, people=(P1,), date="'1880-06-04'", name='Calvin Hartley'):
+    def _source(self, sid, *, site, coll, people=(P1,), date="'1880-06-04'", name='Calvin Hartley', age=None):
         # Both sites' captures carry the site's data, naming whose entry it is.
         rel = f'documents/census/record-data_{sid.upper()}.json'
         (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -179,7 +179,18 @@ class SameRecordTwoSitesTests(unittest.TestCase):
                   if site == 'fs' else {'dbId': coll, 'recordId': '4321'})
         if name:
             record['name'] = name
-        (self.root / rel).write_text(json.dumps({'record': record}), encoding='utf-8')
+        data = {'record': record}
+        if age is not None and site == 'fs':
+            record['fsId'] = 'ABCD-123'
+            data['gedcomx'] = {'persons': [
+                {'identifiers': {'http://gedcomx.org/Persistent': ['https://familysearch.org/ark:/61903/1:1:ABCD-999']},
+                 'fields': [{'type': 'http://familysearch.org/types/fields/Age', 'values': [{'text': '70'}]}]},
+                {'identifiers': {'http://gedcomx.org/Persistent': ['https://familysearch.org/ark:/61903/1:1:ABCD-123']},
+                 'fields': [{'type': 'http://familysearch.org/types/fields/Age', 'values': [{'labelId': 'PR_AGE', 'text': str(age)}]}]},
+            ]}
+        elif age is not None:
+            data['fields'] = [{'label': 'Name', 'value': name}, {'label': 'Age in 1880', 'value': str(age)}]
+        (self.root / rel).write_text(json.dumps(data), encoding='utf-8')
         files = f'\n  - file: {rel}\n    role: site-data'
         if site == 'fs':
             citation = '"United States Census, 1880," database, FamilySearch (https://www.familysearch.org/ark:/61903/1:1:ABCD-123)'
@@ -233,6 +244,15 @@ class SameRecordTwoSitesTests(unittest.TestCase):
             '    role: site-data',
             '    role: site-data\n  - file: documents/census/record-data-2_S-1B2C3D4E5F.json\n    role: site-data', 1),
             encoding='utf-8')
+        self.assertEqual(len(self._w162()), 1)
+
+    def test_a_son_named_for_his_father_is_told_apart_by_age(self):
+        # Same name, same household, same page: the age each record gives
+        # its own subject tells the father's entry from the son's.
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', people=(P1, P2), age=52)
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', people=(P1, P2), age=24)
+        self.assertEqual(self._w162(), [])
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', people=(P1, P2), age=52)
         self.assertEqual(len(self._w162()), 1)
 
     def test_a_copy_whose_site_data_names_no_subject_is_never_paired(self):
