@@ -1185,6 +1185,87 @@ class LooseDateFallbackTestCase(unittest.TestCase):
                 self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
 
 
+class LenientLinesTestCase(_ArchiveCase):
+    """MyHeritage breaks long notes onto lines with no level number and double-
+    encodes web-page codes. His note text must arrive whole and clean."""
+
+    def _plan_text(self, body: str):
+        ged = Path(self._tmp.name) / 'odd.ged'
+        ged.write_text(body, encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def _mh(self):
+        return gedcom_import.build_plan(
+            self.archive, self.config, FIXTURES / 'myheritage-lines.ged')
+
+    def _note(self, plan):
+        return next(c for c in plan.claims if c.claim_type == 'note')
+
+    def test_no_level_lines_join_the_note(self) -> None:
+        plan = self._mh()
+        note = self._note(plan)
+        whole = f'{note.value} {note.notes}'
+        self.assertIn('and then to her granddaughter in Fairview', whole)
+        self.assertFalse(any('did not parse' in w for w in plan.warnings), plan.warnings)
+
+    def test_join_keeps_anchor(self) -> None:
+        plan = self._mh()
+        self.assertEqual(self._note(plan).anchor, 'line 8')
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 11')
+
+    def test_double_encoded_br_split(self) -> None:
+        plan = self._mh()
+        note = self._note(plan)
+        self.assertEqual(note.value, 'Rose Hartley: Rose kept the family bible')
+        self.assertTrue(note.notes.startswith('It passed to her eldest daughter'))
+        for c in plan.claims:
+            for text in (c.value, c.notes or ''):
+                for junk in ('&amp;', '&lt;', '<br'):
+                    self.assertNotIn(junk, text)
+
+    def test_citation_title_cleaned(self) -> None:
+        plan = self._mh()
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertIn('GEDCOM cites: Kansas Births & Baptisms', birth.notes)
+
+    def test_plan_text_counts_both(self) -> None:
+        plan = self._mh()
+        text = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('2 line(s) had no level number', text)
+        self.assertIn('value(s) carried web-page codes', text)
+
+    def test_plain_ampersand_untouched(self) -> None:
+        plan = gedcom_import.build_plan(
+            self.archive, self.config, FIXTURES / 'plain-ampersand.ged')
+        self.assertEqual(self._note(plan).value, 'Rose Hartley: Bought from Smith &amp; Sons')
+        text = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertNotIn('web-page codes', text)
+
+    def test_digit_garbage_still_malformed(self) -> None:
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Pat /Example/\n'
+            '1\n100 NAME x\n0 TRLR\n')
+        warn = next(w for w in plan.warnings if 'did not parse' in w)
+        self.assertIn('line 6', warn)
+        self.assertIn('line 7', warn)
+
+    def test_leading_text_before_head_malformed(self) -> None:
+        plan = self._plan_text(
+            'stray words\n0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n'
+            '1 NAME Pat /Example/\n0 TRLR\n')
+        warn = next(w for w in plan.warnings if 'did not parse' in w)
+        self.assertIn('line 1', warn)
+
+    def test_filed_copy_byte_identical(self) -> None:
+        fixture = FIXTURES / 'myheritage-lines.ged'
+        result, _out, _err = self._run(fixture, apply=True)
+        filed = list((self.archive / 'documents' / 'gedcom').glob('*.ged'))
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(hashlib.sha256(filed[0].read_bytes()).hexdigest(),
+                         hashlib.sha256(fixture.read_bytes()).hexdigest())
+
+
 class LooseDateImportTestCase(_ArchiveCase):
     """#293 end to end: t97.ged imports with every date in `date:`, and the
     plan says how many dates were read from free-form wording."""
