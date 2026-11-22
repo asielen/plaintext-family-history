@@ -143,6 +143,10 @@ The stylesheet also keeps `.fha-tree-edge-social` as an alias for `-legal`. The 
 
 ---
 
+## Print
+
+Every site page has print styles (`styles.css` section 10), so a relative can print a page and get the page. The menu, search box, zoom buttons and workbench bar are left off the paper. Charts folded shut on screen are opened for the printer, and a chart zoomed or dragged on screen prints whole (`vendor/fha-site.js` does both, then puts the page back). Colours that carry meaning, such as the branch colours on the family chart, print. The interactive descendant explorer is screen-only, because it draws itself only when opened on screen. A line at the foot says which site the page was printed from. Single-file views (`view.css`) print on white with the private banner kept, so a printed copy left on a table still says it is private.
+
 ## Accessibility floor
 
 Do not regress these:

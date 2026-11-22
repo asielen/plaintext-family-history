@@ -141,3 +141,14 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .status-accepted     { color: var(--status-accepted-fg); }
 .status-suggested    { color: var(--status-suggested-fg); }
 .status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }
+
+
+/* Print: white paper, black ink, no rows split across pages. The private
+   banner is left alone on purpose: a printed copy left on a table still
+   says it is private. */
+
+@media print {
+  @page { margin: 1.5cm; }
+  body { background: #fff; color: #000; }
+  li, tr { break-inside: avoid; }
+}

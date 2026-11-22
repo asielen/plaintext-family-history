@@ -543,6 +543,11 @@
     var vx0 = vb[0], vy0 = vb[1], contentW = vb[2], contentH = vb[3];
     if (contentW <= 0 || contentH <= 0) return;
 
+    // Printing: the server-drawn view box is the whole chart. Keep it where
+    // fha-site.js can put it back before the page goes to paper, so a chart
+    // zoomed on screen still prints whole.
+    s.dataset.fhaViewbox = vb.join(' ');
+
     var viewport = document.createElement('div');
     viewport.className = 'fha-tree-viewport';
     viewport.style.position = 'relative';
