@@ -513,7 +513,7 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "0b825a517615821070ca7eb5bd256e5299d132b24f5b3b468a898a4d0dc78e1e",
+      "sha256": "daefa1eb0ed1135289010bebce0d8460038101b070c7651797e53bba54721db0",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.css"
     },
