@@ -380,3 +380,83 @@ test('fsRecordFrom: a Find a Grave Index entry names the memorial it indexes; ot
   two.fields[0].values.push({ text: '5506' });
   assert.ok(!('memorialId' in fsr.fsRecordFrom(two, { fsId: 'ABCD-123' }).record));
 });
+
+// ── a bare film image (#424): film, image number and citation ───────────────
+
+const FILM = JSON.parse(fs.readFileSync(
+  path.join(REPO, 'tests', 'fixtures', 'capture-samples', 'familysearch-film-images.json'), 'utf8')).images;
+const IMG = 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1';
+
+test('fsParseImagePage: a bare film image only; a viewer opened from a record stays that record', () => {
+  assert.deepStrictEqual(fsr.fsParseImagePage(IMG + '?i=2530&cat=1234567'), { imageId: 'HRT2-FILM1' });
+  assert.deepStrictEqual(fsr.fsParseImagePage('https://www.familysearch.org/en/ark:/61903/3:1:hrt2-film1?view=fullText'),
+    { imageId: 'HRT2-FILM1' });
+  assert.strictEqual(fsr.fsParseImagePage(IMG + '?personArk=%2Fark%3A%2F61903%2F1%3A1%3AHRT1-CEN1&action=view'), null);
+  assert.strictEqual(fsr.fsParseImagePage(IMG + '?personArk=/ark:/61903/1:1:HRT1-CEN1'), null);
+  assert.strictEqual(fsr.fsParseImagePage('https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1'), null);
+  assert.strictEqual(fsr.fsParseImagePage('https://example.com/ark:/61903/3:1:HRT2-FILM1'), null);
+  assert.strictEqual(fsr.fsParseImagePage('https://familysearch.org.evil.com/ark:/61903/3:1:HRT2-FILM1'), null);
+  assert.strictEqual(fsr.fsParseImagePage('not a url'), null);
+  // fsParseRecordPage is unchanged: the bare image is not a record.
+  assert.strictEqual(fsr.fsParseRecordPage(IMG), null);
+});
+
+test('fsImageInfoFrom: film, DGS, image number and catalog title from the description', () => {
+  const info = fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'hrt2-film1');
+  assert.deepStrictEqual(info, {
+    imageId: 'HRT2-FILM1', dgs: '8123456', imageNumber: 2531, imageCount: 3120, filmNumber: '004012345',
+    catalogTitle: 'Deeds, v. 4, 1851-1860', catalogUrl: 'https://www.familysearch.org/search/catalog/1234567',
+    arkUrl: IMG,
+  });
+});
+
+test('fsImageInfoFrom: the viewer\'s own "Image N of M" wins; every missing field is null, never guessed', () => {
+  assert.strictEqual(fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1', 'Image 2,532 of 3120').imageNumber, 2532);
+  const bare = fsr.fsImageInfoFrom(FILM['HRT2-FILM2'], 'HRT2-FILM2');
+  assert.deepStrictEqual(bare, {
+    imageId: 'HRT2-FILM2', dgs: null, imageNumber: null, imageCount: null, filmNumber: null,
+    catalogTitle: 'Will book B', catalogUrl: null, arkUrl: 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2',
+  });
+  assert.strictEqual(fsr.fsImageInfoFrom({}, 'X1').catalogTitle, null);
+  const F = 'http://familysearch.org/v1/Film';
+  const D = 'http://familysearch.org/v1/DGS';
+  for (const [drop, gone, kept] of [[F, 'filmNumber', 'dgs'], [D, 'dgs', 'filmNumber']]) {
+    const j = JSON.parse(JSON.stringify(FILM['HRT2-FILM1']));
+    delete j.sourceDescriptions[1].identifiers[drop];
+    const i = fsr.fsImageInfoFrom(j, 'HRT2-FILM1');
+    assert.strictEqual(i[gone], null);
+    assert.notStrictEqual(i[kept], null);
+  }
+});
+
+test('fsImageCitation names the film, image number and the 3:1 link; a missing part is left out', () => {
+  const info = fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1');
+  assert.strictEqual(fsr.fsImageCitation(info, '2026-11-22'),
+    '"Deeds, v. 4, 1851-1860," images, FamilySearch (' + IMG + ' : accessed 2026-11-22); image 2531 of 3120; ' +
+    'citing film 004012345, DGS 8123456.');
+  assert.strictEqual(fsr.fsImageCitation(fsr.fsImageInfoFrom(FILM['HRT2-FILM2'], 'HRT2-FILM2'), '2026-11-22'),
+    '"Will book B," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2 : accessed 2026-11-22).');
+  assert.strictEqual(fsr.fsImageCitation({ arkUrl: IMG, filmNumber: '4012345', imageNumber: 9 }, '2026-11-22'),
+    'images, FamilySearch (' + IMG + ' : accessed 2026-11-22); image 9; citing film 4012345.');
+});
+
+test('fsImageTitle: "{catalog title}, image {n}", else the image id', () => {
+  assert.strictEqual(fsr.fsImageTitle(fsr.fsImageInfoFrom(FILM['HRT2-FILM1'], 'HRT2-FILM1')), 'Deeds, v. 4, 1851-1860, image 2531');
+  assert.strictEqual(fsr.fsImageTitle({ imageId: 'ABC' }), 'FamilySearch image ABC');
+});
+
+test('fsImageCheck and fsImage reuse a description already read, asking FamilySearch for it once', async () => {
+  const calls = [];
+  const d = {
+    base: IMG, token: TOKEN, toBase64: async () => 'AAAA',
+    fetch: async (url) => {
+      calls.push(url);
+      if (/3:1:HRT2-FILM1$/.test(url)) return { ok: true, status: 200, text: async () => JSON.stringify(FILM['HRT2-FILM1']) };
+      return { ok: true, status: 200, body: null, blob: async () => new Blob([Buffer.alloc(40 * 1024)], { type: 'image/jpeg' }) };
+    },
+  };
+  const desc = await fsr.fsImageDescription('HRT2-FILM1', d);
+  assert.strictEqual((await fsr.fsImageCheck('HRT2-FILM1', d, desc)).available, true);
+  assert.strictEqual((await fsr.fsImage('HRT2-FILM1', d, desc)).ok, true);
+  assert.strictEqual(calls.filter((u) => /3:1:HRT2-FILM1$/.test(u)).length, 1);
+});

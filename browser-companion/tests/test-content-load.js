@@ -142,6 +142,9 @@ test('prefill knows a FamilySearch record, the viewer opened from one, and a bar
   assert.strictEqual(r.prefill.familysearchRecord, false);
   assert.strictEqual(r.prefill.familysearchImageViewer, true);
   assert.strictEqual(r.prefill.familysearchImageId, 'HRT1-IMG1');
+  assert.strictEqual(r.prefill.familysearchImagePage, true, 'a bare film image');
+  r = await loadPage({ url: REC, fetch: familysearch() }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.familysearchImagePage, false);
 });
 
 test('a film viewer\'s image is the ONE image it links to; Seen It\'s badges are not its links', async () => {

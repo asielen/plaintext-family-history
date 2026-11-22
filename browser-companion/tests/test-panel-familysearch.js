@@ -40,6 +40,11 @@ const RESTRICTED = ark('HRT1-RST1'); // Calvin's record, pointing at a restricte
 const VIEWER = 'https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG1';
 const FROM_RECORD = VIEWER + '?view=index&personArk=%2Fark%3A%2F61903%2F1%3A1%3AHRT1-CEN1&action=view';
 
+// Bare film images (no record behind them): film, DGS and image number.
+Object.assign(FIX.images, JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
+  'capture-samples', 'familysearch-film-images.json'), 'utf8')).images);
+const FILM_IMAGE = 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1?i=2530&cat=1234567';
+
 // A record whose image is restricted: the census record, re-pointed at IMG2.
 FIX.records['HRT1-RST1'] = JSON.parse(JSON.stringify(FIX.records['HRT1-CEN1'])
   .replace(/1:1:HRT1-CEN1/g, '1:1:HRT1-RST1').replace(/3:1:HRT1-IMG1/g, '3:1:HRT1-IMG2'));
@@ -84,6 +89,7 @@ function holdOnce() {
 
 // The content script on these pages, as content.js composes the lib.
 function site(service) {
+  let cache = null; // the description content.js keeps between the check and the fetch
   return async (msg, tab) => {
     const deps = { fetch: service.fetch, base: tab.url, token: TOKEN,
       toBase64: async (b) => Buffer.from(await b.arrayBuffer()).toString('base64') };
@@ -95,6 +101,7 @@ function site(service) {
           prefill: {
             url: tab.url, title: 'Calvin Hartley • United States Census, 1880 • FamilySearch', people: [],
             recipeHint: 'familysearch', familysearchRecord: !!rec,
+            familysearchImagePage: !!fsr.fsParseImagePage(tab.url),
             familysearchImageViewer: !rec && !!fsr.fsImageIdFromHref(tab.url),
             familysearchImageId: rec ? null : fsr.fsImageIdFromHref(tab.url),
           },
@@ -107,15 +114,34 @@ function site(service) {
           return Object.assign({}, check, { record: true, fsId: info.record.fsId,
             title: [info.record.name, info.record.collection].filter(Boolean).join(' - ') || null });
         }
+        if (fsr.fsParseImagePage(tab.url)) {
+          const id = fsr.fsParseImagePage(tab.url).imageId;
+          const desc = await fsr.fsImageDescription(id, deps);
+          cache = { id, desc };
+          return Object.assign({ record: false, filmImage: true, title: fsr.fsImageTitle(fsr.fsImageInfoFrom(desc, id)) },
+            await fsr.fsImageCheck(id, deps, desc));
+        }
         return Object.assign({ record: false }, await fsr.fsImageCheck(fsr.fsImageIdFromHref(tab.url), deps));
+      }
+      case 'familysearchImageInfo': {
+        const id = fsr.fsParseImagePage(tab.url).imageId;
+        let desc;
+        try { desc = await fsr.fsImageDescription(id, deps); } catch (e) { return { ok: false, error: e.message }; }
+        cache = { id, desc };
+        const info = fsr.fsImageInfoFrom(desc, id);
+        return { ok: true, info, title: fsr.fsImageTitle(info), citation: fsr.fsImageCitation(info, msg.accessed) };
       }
       case 'familysearchRecordInfo': {
         const info = await fsr.fsRecordInfo(tab.url, deps);
         if (info.ok) info.bundleTitle = fsr.fsTitle(info.record, msg.formTitle, '');
         return info;
       }
-      case 'familysearchImage':
-        return fsr.fsImage(msg.imageId || fsr.fsImageIdFromHref(tab.url), deps);
+      case 'familysearchImage': {
+        const id = msg.imageId || fsr.fsImageIdFromHref(tab.url);
+        const r = await fsr.fsImage(id, deps, cache && cache.id === id ? cache.desc : undefined);
+        cache = null;
+        return r;
+      }
       case 'pagehtml': return { ok: true, html: '<html>FamilySearch page ' + tab.url + '</html>' };
       case 'singlefile': return { ok: true, html: '<html>copy of ' + tab.url + '</html>' };
       default: return { ok: false, error: 'unexpected ' + msg.action };
@@ -357,7 +383,8 @@ test('a bare image viewer saves the full image from FamilySearch\'s API, not the
   await p.capture();
   const b = p.written[0];
   assert.deepStrictEqual(b.captureJson.assets.map((a) => [a.file, a.role, a.mode]),
-    [['page-snapshot.html', 'webpage', 'singlefile'], ['record.jpg', 'record', 'familysearch-api']]);
+    [['page-snapshot.html', 'webpage', 'singlefile'], ['record.jpg', 'record', 'familysearch-api'],
+      ['record-data.json', 'site-data', 'familysearch-image-data']]);
   assert.ok(p.service.calls.some((c) => c.url === 'https://www.familysearch.org/das/v2/HRT1-IMG1/dist.jpg' && c.auth));
 });
 
@@ -366,7 +393,7 @@ test('a restricted bare image says so up front, and Capture keeps the page copy 
   assert.match(p.$('asset-status').textContent, /This image can’t be saved from here - it is restricted/);
   assert.match(p.$('asset-status').className, /warn/);
   await p.capture();
-  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html']);
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', 'record-data.json']);
   assert.match(p.result(), /restricted to a FamilySearch center or affiliate library/);
 });
 
@@ -510,7 +537,7 @@ test('a bare image that cannot be saved: the reason travels with the page copy',
   const p = await open('https://www.familysearch.org/ark:/61903/3:1:HRT1-IMG2');
   assert.match(p.$('f-notes').value, NOTE_RE);
   await p.capture();
-  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html']);
+  assert.deepStrictEqual(p.files(p.written[0]), ['page-snapshot.html', 'record-data.json']);
   assert.match(p.written[0].captureJson.notes, /Image not saved: FamilySearch image HRT1-IMG2 /);
 });
 
@@ -530,4 +557,55 @@ test('a new record takes the line away with the rest of the old notes', async ()
   await p.navigate(CALVIN);
   await settle();
   assert.strictEqual(p.$('f-notes').value, '');
+});
+
+// ── a bare film image (#424) ─────────────────────────────────────────────────
+
+test('a bare film image saves the image, its film, DGS and image number, and a citation naming the 3:1 link', async () => {
+  const p = await open(FILM_IMAGE);
+  assert.strictEqual(p.$('f-title').value, 'Deeds, v. 4, 1851-1860, image 2531');
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const b = p.written[0];
+  assert.deepStrictEqual(b.captureJson.assets.map((a) => [a.file, a.role, a.mode]), [
+    ['page-snapshot.html', 'webpage', 'singlefile'],
+    ['record.jpg', 'record', 'familysearch-api'],
+    ['record-data.json', 'site-data', 'familysearch-image-data'],
+  ]);
+  const cap = b.captureJson;
+  assert.strictEqual(cap.url, 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1');
+  assert.strictEqual(cap.title, 'Deeds, v. 4, 1851-1860, image 2531');
+  assert.strictEqual(cap.recipe_hint, 'familysearch');
+  assert.match(cap.notes, /FamilySearch citation: "Deeds, v\. 4, 1851-1860," images, FamilySearch \(https:\/\/www\.familysearch\.org\/ark:\/61903\/3:1:HRT2-FILM1 : accessed \d{4}-\d\d-\d\d\); image 2531 of 3120; citing film 004012345, DGS 8123456\./);
+  const data = await recordData(b);
+  assert.deepStrictEqual(Object.keys(data), ['note', 'image', 'citation']);
+  assert.strictEqual(data.image.filmNumber, '004012345');
+  assert.strictEqual(data.image.dgs, '8123456');
+  assert.strictEqual(data.image.imageNumber, 2531);
+  assert.ok(!(await everything(b)).includes(TOKEN));
+});
+
+test('a bare film image asks FamilySearch for its description once at Capture, and once for the picture', async () => {
+  const p = await open(FILM_IMAGE);
+  p.service.calls.length = 0;
+  await p.capture();
+  assert.strictEqual(p.service.calls.filter((c) => /3:1:HRT2-FILM1$/.test(c.url)).length, 1);
+  assert.strictEqual(fullImageFetches(p), 1);
+  assert.ok(p.service.calls.every((c) => !c.auth || /^https:\/\/www\.familysearch\.org\//.test(c.url)));
+});
+
+test('a bare film image FamilySearch will not hand over still saves its film and citation, with the page copy', async () => {
+  const p = await open(FILM_IMAGE, { over: { 'dist.jpg': 403 } });
+  await p.capture();
+  const b = p.written[0];
+  assert.deepStrictEqual(b.captureJson.assets.map((a) => a.role), ['webpage', 'site-data']);
+  assert.match(b.captureJson.notes, /citing film 004012345/);
+  assert.match(b.captureJson.notes, /could not be downloaded/);
+});
+
+test('a viewer opened from a record is still captured as that record, not as a bare image', async () => {
+  const p = await open(FROM_RECORD);
+  await p.capture();
+  assert.ok(asset(p.written[0], 'record-data.json'));
+  assert.deepStrictEqual(Object.keys(await recordData(p.written[0])).slice(0, 2), ['note', 'record']);
 });

@@ -1,0 +1,34 @@
+{
+  "_about": "Fictional (Hartley family) descriptions of bare FamilySearch film images (ark 3:1), in the shape of FamilySearch's GEDCOM X image description. Invented ARKs, film and DGS numbers. NOT recorded from a live page: where film, DGS and the image number sit is the add-on's best reading and must be re-checked against a live image (the builder could not reach Chrome).",
+  "images": {
+    "HRT2-FILM1": {
+      "sourceDescriptions": [
+        {
+          "id": "img",
+          "about": "https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1",
+          "resourceType": "http://gedcomx.org/DigitalArtifact",
+          "titles": [{ "value": "Deed book 4, 1851-1860" }],
+          "identifiers": { "http://gedcomx.org/Primary": ["https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1"] },
+          "citations": [{ "value": "\"Fairview County, Deed Books, 1851-1860,\" images, <i>FamilySearch</i>; image 2531 of 3120." }]
+        },
+        {
+          "id": "film",
+          "about": "https://www.familysearch.org/search/catalog/1234567",
+          "titles": [{ "value": "Deeds, v. 4, 1851-1860" }],
+          "identifiers": { "http://familysearch.org/v1/Film": ["004012345"], "http://familysearch.org/v1/DGS": ["8123456"] }
+        }
+      ],
+      "links": { "image-stream-image-dist": { "href": "https://www.familysearch.org/das/v2/HRT2-FILM1/dist.jpg?proxy=true" } }
+    },
+    "HRT2-FILM2": {
+      "sourceDescriptions": [
+        {
+          "about": "https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2",
+          "resourceType": "http://gedcomx.org/DigitalArtifact",
+          "titles": [{ "value": "Will book B" }]
+        }
+      ],
+      "links": { "image-stream-image-dist": { "href": "https://www.familysearch.org/das/v2/HRT2-FILM2/dist.jpg?proxy=true" } }
+    }
+  }
+}

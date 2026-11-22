@@ -682,6 +682,36 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['repository'], 'FamilySearch')
         self.assertIn('Harriet Webb', meta['people'])
 
+    def test_familysearch_bare_film_image_names_film_image_and_ark(self) -> None:
+        # A deed found by paging an unindexed film (ark 3:1, no record behind
+        # it): the stub's citation names the film, image number and 3:1 link,
+        # so it reads right even when the add-on's own hints are missing.
+        ark = 'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1?i=2530'
+        rc = self._capture(_sample('familysearch-film-image'), url=ark)
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self._only_stub().read_text(encoding='utf-8')
+        self.assertIn('Deeds, v. 4, 1851-1860, image 2531', text)
+        self.assertIn('ark:/61903/3:1:HRT2-FILM1', text)
+        self.assertIn('image 2531 of 3120; citing film 004012345, DGS 8123456.', text)
+        citation = text.split('citation:', 1)[1].split('repository:', 1)[0]
+        self.assertNotIn('?i=2530', citation)  # the citation links the image, not the viewer's position
+
+    def test_familysearch_bare_film_image_with_no_film_text_leaves_parts_out(self) -> None:
+        rc = self._capture('<html><head><title>Will book B | FamilySearch</title></head><body></body></html>',
+                           url='https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2')
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self._only_stub().read_text(encoding='utf-8')
+        self.assertIn('"Will book B," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2', text)
+        self.assertNotIn('citing', text)
+
+    def test_familysearch_viewer_opened_from_a_record_is_still_a_record_page(self) -> None:
+        from capture_recipes import familysearch as fsrecipe
+        self.assertTrue(fsrecipe._ark_image(
+            'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1'))
+        self.assertFalse(fsrecipe._ark_image(
+            'https://www.familysearch.org/ark:/61903/3:1:X?personArk=%2Fark%3A%2F61903%2F1%3A1%3AHRT1-CEN1'))
+        self.assertFalse(fsrecipe._ark_image('https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1'))
+
     def test_familysearch_recipe_label_value_fact_table(self) -> None:
         # A tree-person page lists facts as label/value rows (`Name | value`,
         # `Father's Name | value`) rather than the record-detail column shape;
