@@ -716,7 +716,8 @@ _FORBIDDEN = [
     (re.compile(r'/(?:Users|home)/(?!you\b)[A-Za-z]'), 'a home folder that is not the placeholder "you"'),
     (re.compile(r'(?<![0-9A-Za-z#.])[0-9]{7,}(?![0-9])'), 'a long number that could be a real record id'),
 ]
-_LONG_NUMBERS_OK = {'2147483000'}  # a CSS z-index
+# A CSS z-index, and FamilySearch's public Find a Grave Index collection.
+_LONG_NUMBERS_OK = {'2147483000', '2221801'}
 
 
 def privacy_findings(root):

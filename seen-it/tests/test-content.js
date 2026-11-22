@@ -785,6 +785,6 @@ test('FamilySearch: another collection is never asked; an entry of another colle
   let r = await fsRecord('Thomas Hartley, "California Death Index, 1940-1997" • FamilySearch', FS_ENTRY());
   assert.deepStrictEqual(r.calls, []);
   r = await fsRecord('Thomas Hartley, "Find a Grave Index" • FamilySearch',
-    FS_ENTRY({ sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/2015582' }] }));
+    FS_ENTRY({ sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/1001' }] }));
   assert.deepStrictEqual(r.sent, []);
 });
