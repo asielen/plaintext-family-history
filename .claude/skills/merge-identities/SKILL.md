@@ -37,11 +37,15 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    Read both records directly for their vitals, `name_variants`, and existing claims.
 
 2. **Lay out the evidence for and against, plainly.** Give the human a two-column read he can judge:
-   - **For same-person:** shared sources naming both, compatible or identical vitals (same birth year and place), the same associates, and no relationship path that would make them distinct (you don't merge a father into his son).
+   - **For same-person:** at least two independent facts beyond the name that agree (the same birth year and place, the same parents, spouse or children, shared sources naming both, the same associates), and no relationship path that would make them distinct (you don't merge a father into his son). A matching name alone never makes the case. Count each fact by where it came from: an index and the record it indexes, or two online trees, agree because one copied the other, and that is one fact.
    - **Against:** conflicting vitals (two different death dates), sources that place them in different places at the same time, an existing relationship edge between them.
+   - **What blocks a merge:** an impossibility that joining the two records would create in one life, until someone explains it. A child born after the mother's death, or more than about nine months after the father's; a parent younger than about 12 at a child's birth; a record of the person alive dated after their own burial; one person in two places on the same census day. Say what it is plainly and do not propose the merge. A softer oddity (census ages a few years apart, a household member who appears once and is gone) is something to weigh, never a block.
+   - **Not evidence against:** a different name (married name, later spelling, nickname, a translated or anglicized form, a clerk's misspelling), and a will, probate or burial-permit date that differs from the death date. Both are normal in one life; compare the other facts instead.
    - **For a split (one record, two people):** claims that don't fit one life (two incompatible birth years, two occupations one person couldn't hold, sources that clearly describe different individuals), and *which* claims belong to which person.
 
 3. **Propose, then wait.** State your read as a recommendation with its confidence ("These look like the same person: the same 1840 birth in New York, both in the 1880 Fairview household, and nothing in the records separating them. I'd fold the newer short record into Thomas's full page. Shall I?"), and **wait for explicit confirmation.** Do nothing to the records until he says yes to a specific decision. If he's unsure, leave both records as they are; not merging is always safe.
+
+   When the case rests on a few agreeing facts, also name the one record most likely to show they are two people, so he can check it before he says yes.
 
 4a. **On a confirmed MERGE, enact it with the verb (SPEC §9).** The **survivor** is the one that keeps the canonical home (prefer the curated record over a stub; the lower-numbered couple folder when both are placed). Then run the deterministic write. Never hand-edit the records:
    ```
@@ -82,6 +86,7 @@ Two *source* records that are one piece of evidence (an index entry and the docu
 
 - **Human-confirmed only.** No `merged_into` (or split reassignment) without an explicit decision in the transcript.
 - Evidence for **and against** is laid out before any proposal.
+- A name match alone is never the case for a merge, and an unexplained impossibility always blocks one.
 - The merge write belongs to `fha confirm merge` alone (SPEC §9 exactly: tombstone rename, four fields, folds, relinks), always dry-run first. The skill never hand-edits a merge and invents no mechanics.
 - Post-merge lint is clean of **new** W107/W115; merged files are renamed and kept, never deleted.
 - Any record ID written into prose (a split note on a record, a reason narrated into `## Notes`) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).

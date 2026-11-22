@@ -29,6 +29,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 
 import views
 import index as index_mod
@@ -548,6 +549,138 @@ class SummaryRecordsLineTests(SummaryRegionTests):
         self.assertIn('She lived.', pages)
         self.assertNotIn('Records:', pages)
         self.assertNotIn('census country unknown', pages)
+
+
+class _ChartCaseIndex(unittest.TestCase):
+    """A fresh archive and index per chart case (tests/chart_cases.py)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _index_case(self, name: str) -> dict:
+        import sqlite3
+        import time
+        import chart_cases
+        from _lib import (
+            index_manifest_path, record_path_manifest, write_path_manifest)
+        cache = self.root / '.cache'
+        cache.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(cache / 'index.sqlite'))
+        conn.executescript(index_mod._DDL)
+        case = chart_cases.build_case(conn, self.root, name)
+        conn.commit()
+        conn.close()
+        future = time.time() + 5
+        os.utime(cache / 'index.sqlite', (future, future))
+        write_path_manifest(index_manifest_path(self.root), record_path_manifest(self.root))
+        return case
+
+
+class TreeCaseTests(_ChartCaseIndex):
+    """`fha views tree` on the hard family shapes (tests/chart_cases.py, C1 to
+    C18): a man with five wives, a niece who married her uncle, a person who is
+    their own ancestor. Whoever asks for the tree of any of these families gets
+    an answer in both formats, never a hang or a crash. The later chart
+    changes (confidence on edges 08-6, union nodes in DOT 08-11) assert their
+    own output against the same cases."""
+
+    def _tree(self, seed: str, mode: str, fmt: str) -> str:
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = views.run_tree(self.root, seed, mode, None, fmt, None)
+        self.assertEqual(res.exit_code, 0, (mode, fmt))
+        return res['output']
+
+    def test_every_case_gives_a_tree_in_both_modes_and_both_formats(self) -> None:
+        import json
+        import chart_cases
+        for name in chart_cases.CASE_NAMES:
+            with self.subTest(case=name):
+                self._tmp.cleanup()
+                self.setUp()
+                case = self._index_case(name)
+                for mode in ('ancestors', 'descendants'):
+                    tree = json.loads(self._tree(case['seed'], mode, 'json'))
+                    ids = [n['p_id'] for n in tree['nodes']]
+                    self.assertEqual(len(ids), len(set(ids)))   # a person is one node
+                    self.assertIn(case['seed'], ids)
+                    dot = self._tree(case['seed'], mode, 'dot')
+                    self.assertTrue(dot.startswith('digraph'))
+
+    def test_a_person_who_is_their_own_ancestor_ends_the_walk_in_c12(self) -> None:
+        import json
+        case = self._index_case('C12')
+        tree = json.loads(self._tree(case['seed'], 'ancestors', 'json'))
+        self.assertEqual({n['p_id'] for n in tree['nodes']}, set(case['people'].values()))
+
+    def test_the_private_tool_shows_the_living_in_c13(self) -> None:
+        # views applies no redaction (the shared site does, see
+        # ChartCaseTests); a family researcher's own view names everyone.
+        import json
+        case = self._index_case('C13')
+        tree = json.loads(self._tree(case['seed'], 'descendants', 'json'))
+        ids = {n['p_id'] for n in tree['nodes']}
+        for pid in case['living']:
+            self.assertIn(pid, ids)
+        self.assertIn(case['people']['grandchild'], ids)
+
+
+class ChartCaseShapeTests(_ChartCaseIndex):
+    """The shared cases really are the families they claim to be. A case that
+    quietly holds an easier family (a third parent, two "brothers" with no
+    tie, a step-parent that the old id order would skip anyway) lets a chart
+    bug on a real family pass every test built on it."""
+
+    def _parents(self, name: str):
+        import sqlite3
+        from _lib import is_genetic_parent_subtype
+        case = self._index_case(name)
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        rows = conn.execute(
+            "SELECT r.person_id, r.other_id, c.subtype FROM relationships r "
+            "JOIN claims c ON c.id = r.claim_id WHERE r.rel = 'parent'").fetchall()
+        self.sex = dict(conn.execute('SELECT id, sex FROM persons'))
+        conn.close()
+        genetic, other = {}, {}
+        for child, parent, subtype in rows:
+            bucket = genetic if is_genetic_parent_subtype(subtype) else other
+            bucket.setdefault(child, set()).add(parent)
+        return case, genetic, other
+
+    def test_nobody_in_any_case_has_more_than_two_birth_parents(self) -> None:
+        import chart_cases
+        for name in chart_cases.CASE_NAMES:
+            with self.subTest(case=name):
+                self._tmp.cleanup()
+                self.setUp()
+                _, genetic, _ = self._parents(name)
+                for child, ps in genetic.items():
+                    self.assertLessEqual(len(ps), 2, (child, sorted(ps)))
+
+    def test_the_two_husbands_in_c9_are_brothers(self) -> None:
+        case, genetic, _ = self._parents('C9')
+        p = case['people']
+        self.assertEqual(genetic[p['brother1']], genetic[p['brother2']])
+        self.assertEqual(len(genetic[p['brother1']]), 2)
+
+    def test_a_step_or_adoptive_parent_sorts_before_the_birth_parent(self) -> None:
+        # A chart that orders parents by id and loses the genetic-only rule
+        # must pick the step-parent over the birth parent of the same sex,
+        # or the fan tests on C7 and C17 prove nothing.
+        for name in ('C2', 'C7', 'C17'):
+            with self.subTest(case=name):
+                self._tmp.cleanup()
+                self.setUp()
+                _, genetic, other = self._parents(name)
+                self.assertTrue(other)
+                for child, ps in other.items():
+                    for step in ps:
+                        same_sex = [g for g in genetic[child] if self.sex[g] == self.sex[step]]
+                        self.assertTrue(same_sex, (child, step))
+                        self.assertLess(step, min(same_sex), child)
 
 
 if __name__ == '__main__':
