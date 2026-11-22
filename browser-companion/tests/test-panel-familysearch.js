@@ -173,7 +173,7 @@ function site(service) {
 async function open(url, opts = {}) {
   const service = opts.service || familysearch(opts.over);
   const respond = opts.wrap ? opts.wrap(site(service)) : site(service);
-  const p = await openPanel({ url, respond, seenIt: opts.seenIt });
+  const p = await openPanel({ url, respond, seenIt: opts.seenIt, storage: opts.storage });
   p.service = service;
   return p;
 }
@@ -649,6 +649,24 @@ test('FamilySearch saying slow down at Capture still saves the file she dropped 
     assert.match(cap.citation, /^"Deeds, 1785-1851," images, FamilySearch \(https:\/\/www\.familysearch\.org\/ark:\/61903\/3:1:3Q9M-CSVG-HDJG : accessed [\d-]+\)/);
     assert.match(cap.notes, /the film and image number were not saved/);
   }
+});
+
+test('with batch downloads on, a bare film image saved by hand never joins the record batch (Codex 4660023408)', async () => {
+  // The record batch knows indexed records (1:1) only: an image id there would
+  // be retried as a 1:1 address that does not exist.
+  for (const over of [{}, { 'dist.jpg': 503 }]) {
+    const p = await open(FILM_IMAGE, { over, storage: { batchDownloads: true } });
+    await p.capture();
+    await settle();
+    assert.strictEqual(p.written.length, 1, p.result());
+    const L = p.storage.fsBatchLedger;
+    assert.ok(!L || !Object.keys(L.items || {}).length, JSON.stringify(L));
+  }
+  // ...while a record saved by hand still does.
+  const r = await open(CALVIN, { storage: { batchDownloads: true } });
+  await r.capture();
+  await settle();
+  assert.ok(Object.keys(r.storage.fsBatchLedger.items).includes('HRT1-CEN1'));
 });
 
 test('FamilySearch saying slow down to everything still saves the page copy and the image\'s link', async () => {

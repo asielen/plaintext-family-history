@@ -527,7 +527,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "d26f5720085f56c7d979f2c2683317f62397e24c5f98bced203b2102a061256c",
+      "sha256": "3721571d9fcfe57fe38c38e470896ae5c96474893ee06f8353ee559ab0ae9076",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },
@@ -695,7 +695,7 @@
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "4522ba0bc92eb04955917d471df822b579f65b56f300de9cc987afc46ff4ab64",
+      "sha256": "66921f3d9e5ead96e9c6b64972d769102b2c60181d07ba62b20e3a4fcc6de340",
       "spec_version": "2.19",
       "src": "tools/capture_recipes/familysearch.py"
     },

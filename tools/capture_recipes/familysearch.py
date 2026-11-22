@@ -183,7 +183,7 @@ _IMAGE_OF_RE = re.compile(r'\bImage\s+([\d,]+)\s+of\s+([\d,]+)', re.I)
 # gives the DGS only; the add-on's own citation, from FamilySearch's data, has
 # the film number too.
 _DGS_RE = re.compile(r'\b(?:DGS|Film)\s*(?:#|no\.?|number)?:?\s*(\d{7,9})\b', re.I)
-_TITLE_TAIL_RE = re.compile(r'\s*(?:;\s*ark:/61903/\S*|[|•–—]\s*(?:Film\s*#.*|FamilySearch))\s*$', re.I)
+_TITLE_TAIL_RE = re.compile(r'\s*(?:;\s*ark:/61903/\S*|[|•–—-]\s*(?:Film\s*#.*|FamilySearch))\s*$', re.I)
 
 
 def _extract_film_image(html: str, image_id: str) -> dict:

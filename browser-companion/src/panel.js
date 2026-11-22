@@ -2245,7 +2245,9 @@
       .filter(Boolean).join('\n') || null);
     return {
       key: 'fsimg:' + imageId,
-      record: { fsId: imageId, name: title },
+      // An image, not an indexed record: no fsId, so the record-only batch
+      // ledger never files it as a 1:1 record (PR #427 Codex 4660023408).
+      record: { imageId, name: title },
       bundle: st.bundle, where: st.where,
       imageKey: hasImage ? 'fsimg:' + imageId : null,
       partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),

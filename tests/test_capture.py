@@ -706,6 +706,10 @@ class CaptureTestCase(unittest.TestCase):
         text = self._only_stub().read_text(encoding='utf-8')
         self.assertIn('"Will book B," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2', text)
         self.assertNotIn('citing', text)
+        from capture_recipes import familysearch as fsrecipe
+        for page_title in ('Will book B - FamilySearch', 'Will book B | FamilySearch',
+                           'Will book B; ark:/61903/3:1:HRT2-FILM2', 'Will book B – Film # 008129459'):
+            self.assertEqual(fsrecipe._TITLE_TAIL_RE.sub('', page_title), 'Will book B', page_title)
 
     def test_familysearch_viewer_opened_from_a_record_is_still_a_record_page(self) -> None:
         from capture_recipes import familysearch as fsrecipe
