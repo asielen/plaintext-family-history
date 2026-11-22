@@ -24,6 +24,8 @@ The archive already knows what it doesn't know: open questions, working answers 
 - **Log-aware, always.** Check the research log **before** proposing anything. Never re-propose a search already logged unless its nil has aged past the re-run horizon (default **18 months**, because collections grow).
 - **Log executed searches back.** When the human actually runs a lead you proposed, append the entry to `notes/research-log.md` (date, question, repository, collection, terms, result including nil; SPEC §17c).
 - **Write it down before handing back** (_STANDARD.md §7): any working answer goes into the archive, in its question entry in the person's research file or `notes/questions.md`, and is not left in the chat.
+- **A nil is a statement about one search.** A logged nil is never written as a claim with `evidence: negative` or `negated: true`, and never said as "there is no record", until the lead also knows the record would have been made, survives for that place and those years, and could have been found by the search that was run (AGENTS.md §"You cannot conclude absence from a search").
+- **Mark what you have not checked.** Every repository a lead names comes from the research log, or is flagged as general knowledge. Hours, fees, addresses, web addresses and the years a collection covers carry "(check this)" unless they were confirmed this session. Every lead says free or paid, and online, in person or by letter.
 
 ## Flow
 
@@ -42,8 +44,10 @@ The archive already knows what it doesn't know: open questions, working answers 
 2. **Surface "already searched" before proposing anything.** For each gap you're about to address, state what's already been tried and when: *"You searched the 1870 Fairview census for the Coles in June 2026 and found nothing. That's recent, so I'd skip it."* Only re-propose a logged nil if it has aged past 18 months (*"…but that search is over two years old, and FamilySearch has added Kansas records since, so it's worth another pass"*).
 
 3. **Combine gaps, questions, working answers and thin facts with historical context into ranked leads.** An **accepted claim with `confidence: low`** is a lead too (SPEC §8.5: the human is building on it without being certain). Propose the record that would corroborate or supersede it: *"Thomas's bookkeeper occupation rests on one low-confidence directory mention; the 1885 Kansas state census would confirm it."* A **parked claim** (report §1b: `suggested`, with a `reviewed:` date) works the same way: name what would settle it. For each open thread, name a concrete lead: the record set, the holding repository, and the search terms, steered by what actually existed for that time and place:
-   - *"Thomas has no death record and the 1880 census puts him in Fairview about age 40, so he likely died in Breton County. Kansas kept statewide death records from 1911. Try the Kansas State Historical Society death index for Breton County, 1911–1925, searching 'Hartley, Thomas'. I've ranked this first because it fills a missing death date and the collection is online."*
+   - *"Thomas has no death record and the 1880 census puts him in Fairview about age 40, so he likely died in Breton County. Kansas kept statewide death records from 1911. Try the Kansas State Historical Society death index for Breton County, 1911-1925, searching 'Hartley, Thomas' (free, online; check this: which years the index covers). I've ranked this first because it fills a missing death date and the collection is online."*
    - Weigh eras and events: a burned county courthouse, a war that generated pension files, a migration that implies a passenger list. Rank leads by payoff (closes a vital gap or answers an open question) and by ease (is the collection online, indexed, nearby?).
+   - **One lead tries to prove the favourite answer wrong.** When the leads all aim to confirm a working answer or a likely identity, add one search that would turn up the other explanation if it were true: the other man of the same name in the next county, the death record of the child the guess says grew up, the census where the family should not appear if the guess is right. Label it plainly ("this one checks we have the right man").
+   - **DNA leads give ranges.** Never turn a DNA match into a percentage. Name the relationships the shared amount fits, ask whether the families married within a small community or married cousins, and look for the documents that would decide between the candidates.
 
 4. **Optionally write a guess as a working answer, on a question he asked.** When the evidence suggests a testable belief about a question the human has asked (in this session or already written down), it climbs the research ladder (SPEC §17a): the guess goes into that **question entry** as its working answer. If the question is already written, add the four lines to it. If he is asking it in this session, write one entry in SPEC §17b's form with `origin: human`, in the person's research file (`## Open Questions`; the file is created the first time something is written to it, SPEC §16b) or in `notes/questions.md` for a question spanning people. A gap the tools can compute (no death date, no parents) is never written as a question to hang a guess on (SPEC §17b): offer the guess in the briefing instead, and write it only if he then asks the question. Mint the id with `fha id mint h`:
    ```markdown
@@ -60,14 +64,14 @@ The archive already knows what it doesn't know: open questions, working answers 
    ```
    A working answer is a lead with a shape. It is never a claim. It settles one of three ways (§17a rung 4): a source says it (process the source; its claim carries the fact and may point back with `hypothesis: h-…`), the pieces add up (a proof-argument source), or it is wrong. When it is wrong, its `id`/`guess`/`basis`/`verify` lines leave the entry, one dated `context:` line records it (`ruled out h-…: <guess>: <why>`), and the question stays open; the next guess gets a new `h-` id. `refs:` holds bare IDs in single brackets. **Any ID cited in `basis:`, `verify:` or a context line is prose and takes the `[[s-…]]`/`[[c-…]]`/`[[p-…]]` wikilink form** (AGENTS.md §"Format quick reference" Citations). When a newly processed source turns up evidence bearing on an **open** working answer, append a dated context line to the entry in the same session, citing the new source or claim with `[[ ]]` links. Don't edit its `guess`/`basis`/`verify` in place: those stay as first written, and the context line adds the new information on top.
 
-5. **Emit a plan-shaped list.** Present the leads as a short ranked plan the human can act on, top pick first, each with its record set, repository, terms and reason. End with the single best next move.
+5. **Emit a plan-shaped list.** Present the leads as a short ranked plan the human can act on, top pick first. Each lead gives the record set, the repository, the search terms, the reason, and two labels: free or paid, and online, in person or by letter. Anything about the repository not confirmed this session carries "(check this)". End with the single best next move.
 
 6. **Log any executed search back.** If the human runs a lead (in this session, or reports back that he did), append one entry to **`notes/research-log.md`**, the archive's one search log (SPEC §17c). Put the working answer or the person in `question:`. A person ID there makes the search count for that person, so "already searched (date)" keeps working:
    ```yaml
    - date: 2026-07-01
      question: "[[h-…]] Thomas Hartley death record"
      repository: Kansas State Historical Society
-     collection: "Kansas death index, Breton County 1911–1925"
+     collection: "Kansas death index, Breton County 1911-1925"
      terms: "Hartley, Thomas"
      result: nil        # or found [[s-…]] / partial (note)
    ```
@@ -81,9 +85,12 @@ The archive already knows what it doesn't know: open questions, working answers 
 - A working answer is the question entry's `id`/`guess`/`basis`/`verify` lines on a question the human asked (`origin:` stays the question's origin; the guess is credited `(agent)` on its dated `context:` line), `status: open`, in the research file or `notes/questions.md`. It never goes into a source's `## Claims`.
 - Executed searches are logged in `notes/research-log.md` (including nils), since nothing said in the chat carries over to the next session.
 - Prose written into a question's `context:` lines or a working answer keeps each paragraph on one line, with a blank line between paragraphs: never hard-wrapped at a column and never one sentence per line (_STANDARD.md §4).
+- A nil is never turned into negative evidence by this skill, in a claim or in speech.
+- Every lead carries its cost and access labels, unchecked repository details say "(check this)", and a plan that argues for one answer includes one search that could prove it wrong.
 
 ## Done when
 
 - "Where should I look for X?" in a session on `example-archive` produces concrete, **ranked** leads with "already searched (date)" annotations present, and **no** lead duplicates a recent logged nil.
+- Every lead in the plan says free or paid and online, in person or by letter; unchecked repository details carry "(check this)"; a plan aimed at confirming a working answer includes one search that could disprove it.
 - Any guess written down is a working answer on a question entry (`status: open`, with `id`/`guess`/`basis`/`verify`, and the guess credited `(agent)` on its dated `context:` line), never a claim, and no computed gap was written as a question.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9).
