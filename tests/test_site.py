@@ -6468,9 +6468,14 @@ class HomeTreePrivateCardTests(_Base):
 
     def _all_output(self) -> str:
         """Every text file the shared build wrote (HTML, JSON, the search
-        index, CSS/JS), joined - a scan target for a leaked id or name."""
+        index, any script), joined - a scan target for a leaked id, name or
+        year. The copied library and stylesheet folders are skipped: they are
+        fixed files, never built from the archive, and a minified library is
+        full of four-digit numbers."""
         out = []
         for p in sorted(self.out_dir.rglob('*')):
+            if {'vendor', 'assets'} & set(p.relative_to(self.out_dir).parts[:1]):
+                continue
             if p.is_file() and p.suffix.lower() in {'.html', '.json', '.js', '.txt', '.css', '.xml'}:
                 out.append(p.read_text(encoding='utf-8', errors='replace'))
         return '\n'.join(out)
