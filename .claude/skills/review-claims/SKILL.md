@@ -45,6 +45,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
    - its **source link**: the anchored source file path (the asset file the claim's anchor points into when you can identify it, else the record `.md`; `fha find <c-id>` prints `source: <path>:<line>`), followed by the `[[s-id]]` token in parentheses. Path first, because that is what he clicks; the token is for search. Example: "`documents/census/1880-census-hartley.jpg`, page 2, line 31 (`[[s-fa1234567b]]`)".
    - the **source, date, and place** as written,
    - the **Mills fields** in plain terms when they matter ("this is *secondary* evidence, worked out from the age column rather than a birth record"), so a shaky inference reads as shaky.
+   - for a **claim built on absence** (`evidence: negative`, or `negated: true`, such as "no marriage found"), what the searches behind it covered before he decides: the research log entries it rests on, their collections and years, and whether that record would have been made and kept for that place and time. One empty index search is not enough. If the coverage is not shown, offer to park it with a question about what would settle it.
 
    While you're reading a claim's `value:` aloud, also check whether the draft (yours or a hand-typed one) wandered into the archive's own bookkeeping instead of the family's story: which transcription pass produced a reading, who verified something and when, a first-person note about the research process (AGENTS.md §"Speculation and storytelling" → "Keep the archive's own paperwork out of the family's story"). That content belongs in `notes:`, not `value:`. An **edit** (below) moves it there before you accept, so it never lands on the Timeline a family member reads.
 
@@ -98,7 +99,9 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
                                   # that created no people or places.
    fha xref                       # surface new corroboration / contradiction across sources
    ```
-   If `fha xref` proposes a link, present it plainly ("This now agrees with the 1871 marriage notice. Want to record that they back each other up?") and act on his pick:
+   If `fha xref` proposes a link, present it plainly ("This now agrees with the 1871 marriage notice. Want to record that they back each other up?") and act on his pick.
+
+   Before offering `corroborates`, check the two sources are independent. An index and the record it indexes, two online trees, or two copies of one census page agree because one came from the other. Say so ("these two agree because one copied the other, so they count as one") and, for one record saved twice, offer `fha source merge <keep> <other> --dry-run` instead of a corroboration link. For two independent sources:
    ```
    fha confirm xref <c-a> <c-b> --as corroborates --dry-run   # preview first (writes both sources)
    fha confirm xref <c-a> <c-b> --as corroborates             # or: --as contradicts
@@ -172,6 +175,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
 - Every claim presented, in any style, carries its source link (the anchored file path, then the `[[s-id]]` token).
 - **Rejected is not deleted.** Prefer `--status rejected`/`superseded` and keep the claim; the research trail matters (AGENTS.md §"Don'ts").
 - A contradiction always ends with an open question (E009-clean). Let `fha confirm xref … --as contradicts` spawn it.
+- Two sources that copy one record never corroborate each other, and a claim built on absence is shown with the coverage of the searches behind it.
 - The park offer, the promotion nudge, and the place nudge are **offers**: they write (a `## Q:` entry, with a working answer when he voices a guess) or run (`fha person promote`, `fha confirm place`) only on the human's explicit yes. No yes, no write: silence or a hedge is not a yes.
 - The place nudge only considers a cluster **this pass moved** (its `claim_ids` hold a claim decided on this session), names at most **one** of them (the largest), and fires at most once per session, the same cap as promotion. It never lists every returned cluster, never picks the archive's biggest untouched one, and is never repeated once declined.
 - The offer states the registry situation only after checking it: the town name goes through `fha find --json … --kind place` **before** the nudge is spoken, so "isn't on the list yet" is a checked fact and an already-registered town is offered as a link, not minted a second time.
