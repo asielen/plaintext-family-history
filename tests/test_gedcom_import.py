@@ -1295,6 +1295,37 @@ class LenientLinesTestCase(_ArchiveCase):
         birth = next(c for c in plan.claims if c.claim_type == 'birth')
         self.assertEqual(birth.anchor, 'line 12')
 
+    def test_note_line_starting_with_number_and_capital_joins(self) -> None:
+        # "2 I remember the farm" is a broken note line too: "I" is no tag.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Rose told her children\nthat summer:\n'
+            '2 I remember the farm\nshe said.\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Rose told her children that summer: '
+                         '2 I remember the farm she said.')
+
+    def test_lower_case_real_tags_still_read(self) -> None:
+        # A hand-edited file with lower-case tags keeps its birth and its
+        # CONT line break, even when the same file has a level-less line.
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+            '1 NOTE First line\nstill first\n2 cont Second line\n1 Birt\n'
+            '2 DATE 12 JAN 1878\n0 TRLR\n')
+        note = self._note(plan)
+        self.assertEqual(note.value, 'Rose Hartley: First line still first')
+        self.assertEqual(note.notes, 'Second line')
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 9')
+
+    def test_lower_case_tag_untouched_without_broken_lines(self) -> None:
+        # A file with no level-less lines parses exactly as before.
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+            '1 NOTE First line\n1 Birt\n2 DATE 12 JAN 1878\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value, 'Rose Hartley: First line')
+        self.assertEqual(plan.joined_lines, 0)
+        self.assertTrue(any(c.claim_type == 'birth' for c in plan.claims))
+
     def test_plan_line_shows_br_plainly(self) -> None:
         text = '\n'.join(gedcom_import._plan_lines(self._mh(), applied=False))
         self.assertIn('(like <br>)', text)

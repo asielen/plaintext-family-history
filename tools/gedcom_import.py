@@ -278,6 +278,23 @@ _GEDCOM_LINE_RE = re.compile(
 )
 
 
+# Every standard GEDCOM 5.5.1 tag, plus the 7.0 ones that are not everyday
+# words. A level-numbered line in a broken note whose first word is none of
+# these is read as part of the note (see parse_gedcom).
+_GEDCOM_TAGS = frozenset('''
+    ABBR ADDR ADR1 ADR2 ADR3 ADOP AFN AGE AGNC ALIA ANCE ANCI ANUL ASSO AUTH
+    BAPL BAPM BARM BASM BIRT BLES BLOB BURI CALN CAST CAUS CENS CHAN CHAR CHIL
+    CHR CHRA CITY CONC CONF CONL CONT COPR CORP CREA CREM CTRY DATA DATE DEAT
+    DESC DESI DEST DIV DIVF DSCR EDUC EMAIL EMIG ENDL ENGA EVEN EXID FACT FAM
+    FAMC FAMF FAMS FAX FCOM FILE FORM FONE GEDC GIVN GRAD HEAD HUSB IDNO IMMI
+    INDI INIL LANG LATI LONG MAP MARB MARC MARL MARR MARS MEDI MIME NAME NATI
+    NATU NCHI NICK NMR NOTE NPFX NSFX OBJE OCCU ORDI ORDN PAGE PEDI PHON PHRASE
+    PLAC POST PROB PROP PUBL QUAY REFN RELA RELI REPO RESI RESN RETI RFN RIN
+    ROLE ROMN SCHMA SDATE SEX SLGC SLGS SNOTE SOUR SPFX SSN STAE STAT SUBM SUBN
+    SURN TEMP TEXT TIME TITL TRAN TRLR TYPE UID VERS WIFE WWW
+'''.split())
+
+
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
     """Decode a GEDCOM file as UTF-8, refusing anything else with a plain fix.
 
@@ -315,7 +332,9 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     Returns (records, malformed, joined). `malformed` describes lines that fit
     no grammar (reported as warnings, never fatal - the filed copy keeps them);
     a line that starts with a digit, or text before any node, still lands there
-    because it looks like an attempt at a GEDCOM line. `joined` holds the line
+    because it looks like an attempt at a GEDCOM line (except, in a file that
+    has level-less lines, a line right after a NOTE/TEXT whose first word is
+    no GEDCOM tag, such as "2 brothers nearby"). `joined` holds the line
     number of every level-less line that was folded in.
     CONC appends to the last node's value with NO space (GEDCOM splits values
     mid-word); CONT appends a newline + text. Both attach to the most recently
@@ -326,17 +345,23 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     last: _Node | None = None
     malformed: list[str] = []
     joined: list[int] = []
+    lines = text.splitlines()
+    broken = any(ln.strip() and not _GEDCOM_LINE_RE.match(ln.strip('﻿'))
+                 and not ln.lstrip(' \t\ufeff')[:1].isdigit() for ln in lines)
 
-    for lineno, rawline in enumerate(text.splitlines(), start=1):
+    for lineno, rawline in enumerate(lines, start=1):
         if not rawline.strip():
             continue
         m = _GEDCOM_LINE_RE.match(rawline.strip('﻿'))
         # A broken note line that happens to start with a number ("2 brothers
-        # nearby", "1923 was a hard year") is prose, not a tag: GEDCOM tags
-        # are upper case, so a lower-case "tag" right after a NOTE/TEXT line
-        # joins the note instead of swallowing the words after it.
-        prose = (m is not None and last is not None and last.tag in ('NOTE', 'TEXT')
-                 and not m.group(3).startswith('_') and m.group(3) != m.group(3).upper())
+        # nearby", "1923 was a hard year", "2 I remember the farm") is prose,
+        # not a tag. Only in a file that already has level-less lines (so a
+        # tidy file parses exactly as before), and only when the "tag" is no
+        # GEDCOM tag in any case, so a hand-typed "2 cont" or "1 Birt" is
+        # still read as the tag it is.
+        prose = (broken and m is not None and last is not None
+                 and last.tag in ('NOTE', 'TEXT') and not m.group(3).startswith('_')
+                 and m.group(3).upper() not in _GEDCOM_TAGS)
         if not m or prose:
             if last is not None and (prose or not rawline.lstrip(' \t\ufeff')[:1].isdigit()):
                 last.value += ' ' + rawline.strip()
