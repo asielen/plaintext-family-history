@@ -337,3 +337,16 @@ Other limits:
 - **Breaking a tie by population or by the family's other places.** A confident wrong link is worse than an unlinked text the report keeps showing.
 - **Rewriting `place_text` to the registered name.** It records what the source says, which is evidence; the link is the interpretation.
 - **Downloading GeoNames data during `--register`.** It stays a quick, offline review; `fha places geocode` is the command that fetches and asks.
+
+## 14. One vendored D3 for interactive charts
+
+**The rule.** The interactive charts load one pinned copy of D3 7.9.0 from `templates/vendor/d3.min.js`, with a plain `<script>` tag. Its licence (ISC) sits beside it in `templates/vendor/licenses/`. There is no bundler, no npm step and no CDN, so every chart works from a file opened off the disk.
+
+**Why.** The explorer draws a tree from hierarchy data, and the map needs geographic projections; D3 provides both. D3 v7's browser build is one file that loads from `file://` and works offline, and its licence is permissive. The static charts (family chart, home pedigree, fan) are still drawn on the server, so printing and reading without scripts never depend on the library.
+
+**Rejected.**
+
+- **A bundler or npm at build time.** It would break the "no build step" rule that every other tool in the archive keeps.
+- **Several D3 module files.** More files to pin and check, and nothing gained for a page that loads them all.
+- **Loading D3 from a CDN.** It fails offline and on a machine without a network.
+- **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.

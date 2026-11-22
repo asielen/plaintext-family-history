@@ -1040,7 +1040,7 @@ Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `r
 - **Blood**: genetic edges only; lowest common ancestor(s); named by generation/removal (Nth cousin M-removed, great-…-grandparent).
 - **Social path**: BFS over all edges, rendered as role hops ("your brother's friend's sister's father").
 
-Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked.
+Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
 
 ## 7a. `fha metrics`: person completeness
 
@@ -1300,7 +1300,7 @@ fha places note <l-id> --text TEXT [--dry-run]
 fha places edit-note <l-id> --old-text TEXT --text TEXT [--dry-run]
 ```
 
-- `set` fully replaces each given field. `--coords`: forgiving shape, strict ±90/±180, catches a swapped pair. `--aka`: the whole `alt_names:` list, one verbatim name per flag ("Washington, D.C." is one alias). `--history`: the whole `history:` list; the period follows the claim-date rule (EDTF kept, loose wording normalized, unreadable refused).
+- `set` fully replaces each given field. `--coords`: decimal degrees in any forgiving shape ("39.5631, -95.1216"), or degrees, minutes and seconds as a gravestone or survey gives them ("39°33'47\"N, 95°07'18\"W", "N39.5631 W95.1216", minutes or seconds optional, a comma or the direction letter between the two); lettered parts are read by their letter, so a longitude-first pair is swapped and the preview says so; unlettered parts are latitude first. DMS is stored rounded to six decimal places. Strict ±90/±180, minutes and seconds under 60; a packed or hyphenated form is refused with the comma form to copy. `--aka`: the whole `alt_names:` list, one verbatim name per flag ("Washington, D.C." is one alias). `--history`: the whole `history:` list; the period follows the claim-date rule (EDTF kept, loose wording normalized, unreadable refused).
 - `note` appends a dated paragraph to `notes:` (SPEC §15), written as a `notes: |` block.
 - `edit-note` rewrites one entry named by its exact text, with `fha person edit-note`'s rules and reason codes (part of a note / several notes / not found / ambiguous / empty replacement) and workbench wording (§3c).
 - Surgical edits preserving comments. No `[y/N]` gate: the human supplied the values.
@@ -1350,7 +1350,7 @@ One renderer: person page at 2 ancestor generations, Home at the configured dept
 - **Redaction-safe Home hub:** a redacted seed hands off to the closest unredacted ancestor on its line; failing that, a blank hub only (no ancestors, no family row) with a plain note.
 
 ### Interactive trees
-`site.py` builds a neutral tree JSON per seed (§14b), redacted server-side (living/unknown → "Living Person", no vitals, no link). Vendored `templates/vendor/tree-adapter.js` converts it to the renderer's hierarchy; vendored, dependency-free `templates/vendor/fha-tree.js` draws an SVG collapsible tree with pan/zoom in a viewport.
+`site.py` builds a neutral tree JSON per seed (§14b), redacted server-side (living/unknown → "Living Person", no vitals, no link). Vendored `templates/vendor/tree-adapter.js` converts it to the renderer's hierarchy; vendored `templates/vendor/fha-tree.js` draws an SVG collapsible tree with pan/zoom in a viewport. Third-party code in `templates/vendor/` is pinned and loaded with plain `<script>` tags (no CDN, no build step), so every chart works from `file://`: `d3.min.js` is D3 7.9.0 (ISC), unmodified, and each library's licence sits in `vendor/licenses/`. The static charts (family chart, home pedigree, fan) are drawn server-side and load no library.
 
 The JSON is inline in the page (read from the DOM, so `file://` works) and also written to `site/data/tree_{p-id}_descendants.json`. The adapter is the single seam: a new engine means rewriting only those two files. `fha-tree.js` also exports `wrapStatic(container, options)`, adding the same pan/zoom to a static SVG (the home pedigree).
 
