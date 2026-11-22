@@ -4876,6 +4876,24 @@ class StandaloneRedactionAuditTests(_Base):
                                     f'{data.name} node url -> missing page {n["url"]}')
 
 
+# XML namespace URIs are required string constants in an SVG library, not
+# network fetches; they are exempt only as a whole quoted literal.
+_XML_NAMESPACE_LITERALS = re.compile(
+    r'(["\'])http://www\.w3\.org/(?:2000/svg|1999/xhtml|1999/xlink|2000/xmlns/'
+    r'|XML/1998/namespace)\1')
+# A vendored library's licence banner on its first line names its home page.
+_BANNER_HOME_PAGE = re.compile(r'\A// https://d3js\.org v[0-9.]+ ')
+
+
+def _remote_urls_in_vendor_js(text):
+    """The http(s) addresses left in a vendored script once the namespace
+    constants and the banner's home page are set aside: any of these would be
+    a network load that breaks the site offline."""
+    text = _BANNER_HOME_PAGE.sub('', text)
+    text = _XML_NAMESPACE_LITERALS.sub('', text)
+    return re.findall(r'https?://\S*', text)
+
+
 class TreeTests(_Base):
     """Interactive trees (re-seeded by #115) - vendored renderer +
     adapter, build-time neutral tree JSON. The home page no longer carries
@@ -4906,13 +4924,22 @@ class TreeTests(_Base):
         self._run(linked=True)
         self.assertTrue((self.out_dir / 'vendor' / 'fha-tree.js').exists())
         self.assertTrue((self.out_dir / 'vendor' / 'tree-adapter.js').exists())
-        # No CDN / remote-loading references in the vendored bundle. The SVG
-        # namespace URI (http://www.w3.org/2000/svg) is a required constant, not
-        # a network fetch, so it is excluded before the check.
+        # No CDN / remote-loading references in the vendored bundle, so the
+        # charts keep working from a USB stick with no network.
         for js in (self.out_dir / 'vendor').glob('*.js'):
-            text = js.read_text(encoding='utf-8').replace('http://www.w3.org/2000/svg', '')
-            self.assertNotIn('http://', text)
-            self.assertNotIn('https://', text)
+            with self.subTest(js.name):
+                self.assertEqual(_remote_urls_in_vendor_js(js.read_text(encoding='utf-8')), [])
+
+    def test_offline_check_still_catches_a_load_from_d3s_own_site(self):
+        # The exemptions above (XML namespace constants, D3's banner) must not
+        # wave through a real fetch that merely starts the same way.
+        banner = '// https://d3js.org v7.9.0 Copyright 2010-2023 Mike Bostock\n'
+        self.assertEqual(_remote_urls_in_vendor_js(banner + 'var n="http://www.w3.org/2000/svg";'), [])
+        for loader in ('s.src="https://d3js.org/d3.v7.min.js";',
+                       'fetch("https://d3js.org.example.net/x.js");',
+                       'fetch("http://www.w3.org/2000/svg/../evil.js");'):
+            with self.subTest(loader):
+                self.assertNotEqual(_remote_urls_in_vendor_js(banner + loader), [])
 
     def test_person_page_descendant_tree_opt_in_link(self):
         # #115: the descendant explorer is demoted from the home page to a
@@ -9921,6 +9948,75 @@ class TreeFitScaleTests(unittest.TestCase):
                 self.assertEqual(
                     (ROOT / rel).read_text(encoding='utf-8'), template,
                     f'{rel} is stale - copy tools/templates/vendor/fha-tree.js over it verbatim.')
+
+
+class VendoredLibraryTests(_Base):
+    """Third-party code in tools/templates/vendor/ ships pinned and unmodified,
+    with its licence beside it, so a reader of the site (or the person who
+    maintains the archive) can always see what they are running and under what
+    terms. D3 7.9.0 (ISC) is the first such library; the explorer (08-9) and the
+    family map (09) load it with a plain <script> tag."""
+
+    VENDOR = ROOT / 'tools' / 'templates' / 'vendor'
+    LICENCES = VENDOR / 'licenses'
+    # The project's own vendored code (MIT, part of Plaintext Family History)
+    # needs no third-party licence file.
+    OWN_CODE = {'fha-tree.js', 'tree-adapter.js'}
+
+    def _readme_entries(self):
+        # Lines of licenses/README.txt that name a vendored file and its licence,
+        # e.g. "d3.min.js: D3 7.9.0, ISC, see d3-ISC.txt".
+        readme = (self.LICENCES / 'README.txt').read_text(encoding='utf-8')
+        return dict(re.findall(r'^([\w.\-]+\.(?:js|css)): .*?see ([\w.\-]+\.txt)\s*$',
+                               readme, flags=re.MULTILINE))
+
+    def test_d3_is_vendored_at_the_pinned_version(self):
+        d3 = self.VENDOR / 'd3.min.js'
+        self.assertTrue(d3.is_file(), 'tools/templates/vendor/d3.min.js is missing')
+        first_line = d3.read_text(encoding='utf-8').splitlines()[0]
+        self.assertIn('v7.9.0', first_line)
+
+    def test_every_third_party_vendor_file_names_its_licence(self):
+        entries = self._readme_entries()
+        third_party = sorted(p.name for p in self.VENDOR.iterdir()
+                             if p.is_file() and p.name not in self.OWN_CODE)
+        self.assertTrue(third_party, 'expected at least d3.min.js in vendor/')
+        for name in third_party:
+            with self.subTest(name):
+                self.assertIn(name, entries,
+                              f'{name} has no line in vendor/licenses/README.txt')
+                self.assertTrue((self.LICENCES / entries[name]).is_file(),
+                                f'{entries[name]} named for {name} does not exist')
+
+    def test_the_licence_records_the_checksum_of_the_shipped_file(self):
+        licence = (self.LICENCES / 'd3-ISC.txt').read_text(encoding='utf-8')
+        m = re.search(r'sha256 ([0-9a-f]{64})', licence)
+        self.assertIsNotNone(m, 'd3-ISC.txt must record the sha256 of d3.min.js')
+        digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
+        self.assertEqual(m.group(1), digest,
+                         'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
+
+    def test_a_site_build_carries_d3_and_its_licence(self):
+        self._seed_person('p-aaaaaaaaaa', 'Solo')
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'vendor' / 'd3.min.js').is_file())
+        self.assertTrue((self.out_dir / 'vendor' / 'licenses' / 'd3-ISC.txt').is_file())
+        self.assertTrue((self.out_dir / 'vendor' / 'licenses' / 'README.txt').is_file())
+
+    def test_committed_showcase_vendor_folders_match_the_template(self):
+        # Every file under the template vendor folder (licences included) must
+        # match both committed showcase copies byte for byte, not only
+        # fha-tree.js (TreeFitScaleTests covers that one file).
+        for path in sorted(p for p in self.VENDOR.rglob('*') if p.is_file()):
+            rel_inside = path.relative_to(self.VENDOR).as_posix()
+            for showcase in ('example-archive/generated/site',
+                             'example-archive/generated/site-workbench'):
+                copy = ROOT / showcase / 'vendor' / rel_inside
+                with self.subTest(copy):
+                    self.assertTrue(copy.is_file(),
+                                    f'{copy} is missing - rebuild or copy the vendor folder.')
+                    self.assertEqual(copy.read_bytes(), path.read_bytes(),
+                                     f'{copy} is stale - copy {path} over it verbatim.')
 
 
 class FanChartStyleTests(unittest.TestCase):
