@@ -244,6 +244,28 @@ details#settings summary { cursor: pointer; color: var(--muted); font-size: 14px
 details#settings label { margin-top: 12px; }
 details#settings .hint code { background: #ece9e0; padding: 1px 5px; border-radius: 3px; font-size: 13px; }
 
+/* Batch downloads (built by batch.js and appended after <main>): it lines up
+   with Settings above it, each site is its own card, and the buttons sit in
+   one wrapping row of even, compact buttons instead of ragged full-size ones. */
+details.batch-box { margin: 0 18px 22px; border-top: 1px solid var(--line); padding-top: 12px; }
+details.batch-box > summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+details.batch-box > .mini { margin: 8px 0 4px; }
+.batch-site {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin: 12px 0 0; padding: 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.batch-site > strong { flex: 1 1 100%; font-size: 15px; line-height: 1.35; }
+.batch-site > .stage-result { flex: 1 1 100%; margin: 0; }
+.batch-site > label.mini { flex: 1 1 100%; margin: 0; }
+.batch-site > label.mini input[type="file"] { display: block; margin-top: 4px; max-width: 100%; font-size: 13px; }
+.batch-site > button { font-size: 14px; min-height: 40px; padding: 8px 12px; }
+.batch-site > button[data-batch$="-start"] {
+  background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600;
+}
+.batch-site > button[data-batch$="-start"]:hover { filter: brightness(1.05); }
+.batch-site > button[data-batch$="-start"]:disabled { filter: none; }
+
 /* Automatic saving: the box at the top of "Yes, save the actual file", and
    its one-line-per-fetch log. */
 .auto-box {
