@@ -853,3 +853,41 @@ test('FamilySearch Find a Grave Index entry: in the archive when the memorial is
 test('FamilySearch Find a Grave Index entry: a memorial the archive only cites says so, not "In archive"', async () => {
   assert.deepStrictEqual(await fsBadge({ 'fagidx:5505': FILED }), [[CITED_PILL, CITED_TITLE]]);
 });
+
+// Audit of #415: a citation of the memorial still waiting in the inbox
+// (fagidx: captured, nothing filed) showed "Memorial cited in archive", saying
+// a source in the archive cites it. It is "Captured, not filed" until filed,
+// on the index entry and on Find a Grave's own page.
+const CAPTURED = { state: 'captured', where: 'inbox' };
+const CAPTURED_PILL = ['📥 Captured, not filed', 'Captured into the inbox (inbox), waiting to be filed.'];
+
+test('Ancestry Find a Grave Index entry: a citation still in the inbox is "Captured, not filed"', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', null, {
+    settings: { advanced: true }, known: { 'fagidx:5505': CAPTURED },
+    anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+  });
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  assert.deepStrictEqual(badge.children[0].children.map((p) => [p.textContent, p.title]), [CAPTURED_PILL]);
+});
+
+test('FamilySearch Find a Grave Index entry: a citation still in the inbox is "Captured, not filed"', async () => {
+  assert.deepStrictEqual(await fsBadge({ 'fagidx:5505': CAPTURED }), [CAPTURED_PILL]);
+});
+
+async function fagBadge(known) {
+  const page = loadContentScript('content-findagrave.js', {
+    pathname: '/memorial/5505/thomas-hartley', origin: 'https://www.findagrave.com', storage: { settings: { advanced: true }, known },
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  return badge ? badge.children[0].children.map((p) => [p.textContent, p.title]) : [];
+}
+
+test('Find a Grave memorial: a citation in a filed source is "Index in archive"; one still in the inbox is "Captured, not filed"', async () => {
+  assert.deepStrictEqual((await fagBadge({ 'fagidx:5505': FILED })).map((p) => p[0]), ['📑 Index in archive · ' + FILED.sid]);
+  assert.deepStrictEqual(await fagBadge({ 'fagidx:5505': CAPTURED }), [CAPTURED_PILL]);
+});

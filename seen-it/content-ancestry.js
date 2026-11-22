@@ -69,9 +69,13 @@
   // its photos were never captured), the entry still counts as saved, since
   // its facts are in the archive, but its pill says so in those words rather
   // than "In archive", which on Find a Grave's own page reads "Index in
-  // archive". The fagidx: answer, or null.
-  const memorialCited = (key) => (!knownOf(key) && memorialOf(key) && !knownOf(memorialOf(key))
-    ? knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null);
+  // archive". The fagidx: answer, or null. Only a citation in a filed
+  // source counts: one still waiting in the inbox shows "Captured, not filed".
+  const memorialCited = (key) => {
+    const c = !knownOf(key) && memorialOf(key) && !knownOf(memorialOf(key))
+      ? knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null;
+    return c && (c.state === 'filed' || c.state === 'processed') ? c : null;
+  };
 
   // Which tree people each record is attached to, from every person whose page
   // you have opened (Ancestry Facts page, FamilySearch person page) and from a
