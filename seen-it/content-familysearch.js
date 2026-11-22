@@ -14,6 +14,11 @@
 // (read through FamilySearch's own data service - the Sources tab shows no
 // links), remembered so the tree view can show a chip on each person's card.
 //
+// An entry in FamilySearch's "Find a Grave Index" (collection 2221801) is
+// the index of one memorial: on its page Seen It reads the memorial's id from
+// the entry's own data (its ExtRecordId field, one read of the entry), and
+// from then on the entry counts as saved when the archive holds the memorial.
+//
 // It never clicks, saves or changes anything on the site.
 
 (function () {
@@ -37,6 +42,13 @@
   // archive is shown, only your own looks, marks and tree.
   const adv = () => !!(data.settings && data.settings.advanced);
   const knownOf = (key) => (adv() ? data.known[key] : null);
+
+  // A Find a Grave Index entry answers with what the archive knows of the
+  // memorial it indexes (anc[fsrec:…].fag): fag:{id}, or fagidx:{id} for one
+  // known without its photos.
+  const memorialOf = (key) => (key.startsWith('fsrec:') && (data.anc[key] || {}).fag) || null;
+  const knownFor = (key) => knownOf(key) ||
+    (memorialOf(key) ? knownOf(memorialOf(key)) || knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null);
 
   // Which tree people each record is attached to, from every person whose page
   // you have opened (Ancestry Facts page, FamilySearch person page) and from a
@@ -111,9 +123,9 @@
     return m ? decodeURIComponent(m[1]) : null;
   }
 
-  async function fsJson(path) {
+  async function fsJson(path, accept) {
     const tok = fsToken();
-    const headers = { Accept: 'application/x-fs-v1+json' };
+    const headers = { Accept: accept || 'application/x-fs-v1+json' };
     if (tok) headers.Authorization = 'Bearer ' + tok;
     const r = await fetch(path, { credentials: 'include', headers });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -141,11 +153,11 @@
   function pillsFor(key, full, thisVisit) {
     const wrap = document.createElement('span');
     wrap.className = 'nsi-pills';
-    const k = knownOf(key);
+    const k = knownFor(key);
     const a = data.anc[key] || {};
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));
-    const what = key.startsWith('fsimg:') ? 'image' : 'record';
+    const what = memorialOf(key) ? 'Find a Grave memorial' : key.startsWith('fsimg:') ? 'image' : 'record';
     if (k && k.state === 'filed') {
       wrap.appendChild(pill('nsi-archive', '📚 In archive' + (k.sid ? ' · ' + k.sid : ''),
         'This ' + what + ' is filed in the family archive' + (k.sid ? ' as ' + k.sid : '') + '.'));
@@ -173,7 +185,7 @@
   // Advanced mode is part of what the pills show, so switching it off takes
   // the badge's "Not in archive" down.
   function sigFor(key) {
-    return key + '|' + adv() + '|' + JSON.stringify(knownOf(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
+    return key + '|' + adv() + '|' + (memorialOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 
   function markButtons(key) {
@@ -228,7 +240,7 @@
         if (existing) existing.remove();
         continue;
       }
-      const has = knownOf(key) || treeOf(key) || looksOf(data.anc[key]) || (data.anc[key] || {}).mark;
+      const has = knownFor(key) || treeOf(key) || looksOf(data.anc[key]) || (data.anc[key] || {}).mark;
       const sig = sigFor(key);
       if (existing && existing.dataset.key === sig) continue;
       if (existing) existing.remove();
@@ -245,7 +257,7 @@
     keys = keys.filter((k) => k.startsWith('fsrec:'));
     const c = { total: keys.length, filed: 0, captured: 0, missing: 0 };
     for (const k of keys) {
-      const st = (knownOf(k) || {}).state;
+      const st = (knownFor(k) || {}).state;
       if (st === 'filed' || st === 'processed') c.filed++;
       else if (st === 'captured') c.captured++;
       else c.missing++;
@@ -356,6 +368,42 @@
     }
   }
 
+  // ── a Find a Grave Index entry: the memorial it indexes ──────────────────
+  // The entry's page does not show the memorial; its data does. A record of
+  // collection 2221801 ("Find a Grave Index") carries the memorial's id in
+  // its own ExtRecordId field. Read once per entry (the answer is kept, see
+  // background.js `fag`), only for an entry whose page title names that
+  // collection, so no other record page costs a request.
+  const FAG_INDEX_COLLECTION = '2221801';
+
+  // fag:{id} from the entry's GEDCOM X, or null: the collection must be the
+  // Find a Grave Index, and the entry's own ExtRecordId one memorial id.
+  function memorialFromGedcomx(g) {
+    if (!g || typeof g !== 'object') return null;
+    const inIndex = (g.sourceDescriptions || []).some((sd) =>
+      new RegExp('/collections/' + FAG_INDEX_COLLECTION + '$').test(String((sd && sd.about) || '')));
+    if (!inIndex) return null;
+    const ids = new Set();
+    for (const f of g.fields || []) {
+      if (!/\/ExtRecordId$/.test(String((f && f.type) || ''))) continue;
+      for (const v of f.values || []) if (/^\d{1,15}$/.test(String((v && v.text) || '').trim())) ids.add(String(Number(v.text)));
+    }
+    return ids.size === 1 ? 'fag:' + [...ids][0] : null;
+  }
+
+  const memorialAsked = new Set();
+  async function learnMemorial(key) {
+    if (!key || !key.startsWith('fsrec:') || memorialOf(key) || memorialAsked.has(key)) return;
+    if (!/"Find a Grave Index"/i.test(String(document.title || ''))) return;
+    memorialAsked.add(key);
+    try {
+      const fag = memorialFromGedcomx(await fsJson('/ark:/61903/1:1:' + key.slice(6), 'application/x-gedcomx-v1+json'));
+      if (fag) send({ type: 'ancRecFag', key, fag });
+    } catch (e) {
+      memorialAsked.delete(key); // asked again on the next visit
+    }
+  }
+
   let renderTimer = null;
   function scheduleRender() {
     clearTimeout(renderTimer);
@@ -401,6 +449,7 @@
         const title = String(document.title || '');
         const coll = /"([^"]+)"/.exec(title);
         send({ type: 'ancLook', key, info: { name: h1 ? h1.innerText.trim() : null, collection: coll ? coll[1] : null } });
+        learnMemorial(key);
       }, 1500);
     }
     scheduleRender();

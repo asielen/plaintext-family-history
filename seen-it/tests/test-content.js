@@ -703,3 +703,88 @@ test('Ancestry tree view: an "Add mother" box gets no chip', async () => {
   await personPage({ pathname: '/family-tree/tree/111/family', nodes: [node], storage: { settings: { advanced: true } } });
   assert.deepStrictEqual(host.children, []);
 });
+
+// An entry in a Find a Grave Index (Ancestry's collection 60525,
+// FamilySearch's 2221801) indexes one memorial: once read, it counts as
+// saved when the archive holds that memorial. Made-up ids only.
+const MEMORIAL = 'https://www.findagrave.com/memorial/5505/thomas-hartley';
+function recordFields(links) {
+  return { querySelectorAll: (sel) => (sel.includes('findagrave.com/memorial/') ? links : []) };
+}
+
+async function ancRecord(pathname, fields, storage) {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname, origin: 'https://www.ancestry.com', storage,
+    getElementById: (id) => (id === 'recordFieldsContainer' ? fields : null),
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  return page;
+}
+
+test('Ancestry Find a Grave Index entry: the memorial in its URL field is remembered for it', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', recordFields([tile(MEMORIAL), tile(MEMORIAL + '?x=1')]));
+  const sent = page.sent.filter((m) => m.type === 'ancRecFag');
+  assert.ok(sent.length, 'the memorial was not remembered');
+  assert.deepStrictEqual({ key: sent[0].key, fag: sent[0].fag }, { key: 'rec:60525:4321', fag: 'fag:5505' });
+});
+
+test('Ancestry: another collection, or two memorials in the fields, remembers nothing', async () => {
+  let page = await ancRecord('/search/collections/90001/records/4321', recordFields([tile(MEMORIAL)]));
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancRecFag'), []);
+  page = await ancRecord('/search/collections/60525/records/4321',
+    recordFields([tile(MEMORIAL), tile('https://www.findagrave.com/memorial/5506/margaret-hartley')]));
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancRecFag'), []);
+});
+
+test('Ancestry Find a Grave Index entry: in the archive when the memorial is, with or without its photos', async () => {
+  for (const known of [{ 'fag:5505': FILED }, { 'fagidx:5505': FILED }]) {
+    const page = await ancRecord('/search/collections/60525/records/4321', null, {
+      settings: { advanced: true }, known,
+      anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+    });
+    const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+    assert.ok(badge, 'no badge');
+    assert.deepStrictEqual(badge.children[0].children.map((p) => p.textContent), ['📚 In archive · ' + FILED.sid]);
+    assert.match(badge.children[0].children[0].title, /Find a Grave memorial/);
+  }
+});
+
+const FS_ENTRY = (extra) => Object.assign({
+  sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/2221801' }],
+  fields: [{ type: 'http://familysearch.org/types/fields/ExtRecordId', values: [{ labelId: 'EXT_RECORD_ID_ORIG', text: '5505' }] }],
+}, extra || {});
+
+async function fsRecord(title, answer) {
+  const calls = [];
+  const page = loadContentScript('content-familysearch.js', {
+    pathname: '/ark:/61903/1:1:ABCD-123', origin: 'https://www.familysearch.org', title,
+    fetch: async (url, init) => {
+      calls.push({ url, accept: init.headers.Accept });
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) };
+    },
+  });
+  try {
+    await wait(1900);
+  } finally {
+    page.stop();
+  }
+  return { sent: page.sent.filter((m) => m.type === 'ancRecFag'), calls };
+}
+
+test('FamilySearch Find a Grave Index entry: the memorial is read from the entry\'s own data, once', async () => {
+  const { sent, calls } = await fsRecord('Thomas Hartley, "Find a Grave Index" • FamilySearch', FS_ENTRY());
+  assert.deepStrictEqual(calls, [{ url: '/ark:/61903/1:1:ABCD-123', accept: 'application/x-gedcomx-v1+json' }]);
+  assert.deepStrictEqual(sent.map((m) => [m.key, m.fag]), [['fsrec:ABCD-123', 'fag:5505']]);
+});
+
+test('FamilySearch: another collection is never asked; an entry of another collection remembers nothing', async () => {
+  let r = await fsRecord('Thomas Hartley, "California Death Index, 1940-1997" • FamilySearch', FS_ENTRY());
+  assert.deepStrictEqual(r.calls, []);
+  r = await fsRecord('Thomas Hartley, "Find a Grave Index" • FamilySearch',
+    FS_ENTRY({ sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/2015582' }] }));
+  assert.deepStrictEqual(r.sent, []);
+});

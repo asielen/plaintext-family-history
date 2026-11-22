@@ -33,6 +33,10 @@
 //             `clip` (med: only): the Newspapers.com clipping, clip:{id}, that
 //             a gallery photo was saved from, read off its viewer page, so the
 //             photo counts as saved when the archive holds the clipping.
+//             `fag` (rec:60525:… and fsrec: only): the Find a Grave memorial,
+//             fag:{id}, that a Find a Grave Index entry (Ancestry's or
+//             FamilySearch's) indexes, so the entry counts as saved when the
+//             archive holds the memorial.
 //             Kept apart from the Newspapers.com page data so neither schema
 //             changes; it travels in backups and the data-folder files.
 //   ancPeople: { ['{treeId}:{personId}' | 'fs:{PID}' | 'ged:{xref}']: { name, keys: ['rec:…'], at,
@@ -238,6 +242,16 @@ function recordAncDwell(key, ms) {
 // shapes are checked: the link decides what the archive is asked about.
 const MED_KEY_RE = /^med:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CLIP_KEY_RE = /^clip:\d{1,15}$/;
+const FAG_INDEX_KEY_RE = /^(rec:60525:\d{1,15}|fsrec:[A-Z0-9]{4}-[A-Z0-9]{2,5})$/;
+const FAG_KEY_RE = /^fag:\d{1,15}$/;
+function recordAncRecFag(key, fag) {
+  if (!FAG_INDEX_KEY_RE.test(key) || !FAG_KEY_RE.test(String(fag))) return Promise.resolve();
+  return update(['anc'], ({ anc }) => {
+    const a = anc[key] || { t: [], last: 0, mark: null };
+    a.fag = String(fag);
+    anc[key] = a;
+  });
+}
 function recordAncMedClip(key, clip) {
   if (!MED_KEY_RE.test(key) || !CLIP_KEY_RE.test(String(clip))) return Promise.resolve();
   return update(['anc'], ({ anc }) => {
@@ -634,6 +648,7 @@ async function importAll(obj) {
       a.dwellMs = Math.max(a.dwellMs || 0, ia.dwellMs || 0);
       for (const f of ['title', 'collection', 'name']) if (!a[f] && ia[f]) a[f] = ia[f];
       if (!a.clip && MED_KEY_RE.test(k) && CLIP_KEY_RE.test(String(ia.clip || ''))) a.clip = ia.clip;
+      if (!a.fag && FAG_INDEX_KEY_RE.test(k) && FAG_KEY_RE.test(String(ia.fag || ''))) a.fag = ia.fag;
       if ((ia.markAt || 0) > (a.markAt || 0)) {
         a.mark = ia.mark || null;
         a.markAt = ia.markAt;
@@ -949,6 +964,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return msg.key ? reply(recordAncLook(String(msg.key), Date.now(), msg.info)) : undefined;
     case 'ancDwell':
       return reply(recordAncDwell(String(msg.key), msg.ms));
+    case 'ancRecFag':
+      return msg.key ? reply(recordAncRecFag(String(msg.key), msg.fag)) : undefined;
     case 'ancMedClip':
       return msg.key ? reply(recordAncMedClip(String(msg.key), msg.clip)) : undefined;
     case 'ancMark':

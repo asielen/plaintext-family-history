@@ -346,3 +346,17 @@ test('a gallery photo remembers the Newspapers.com clipping it was saved from', 
   assert.ok(r.ok, JSON.stringify(r));
   assert.strictEqual((await other.local.get('anc')).anc[MEDK].clip, 'clip:4321', 'the link was lost in a backup');
 });
+
+test('a Find a Grave Index entry remembers the memorial it indexes; only index entries, only memorial ids', async () => {
+  const h = load();
+  await h.send({ type: 'ancRecFag', key: 'rec:60525:4321', fag: 'fag:5505' });
+  await h.send({ type: 'ancRecFag', key: 'fsrec:ABCD-123', fag: 'fag:5505' });
+  await h.send({ type: 'ancRecFag', key: 'rec:90001:4321', fag: 'fag:5505' });
+  await h.send({ type: 'ancRecFag', key: 'rec:60525:4322', fag: 'clip:5505' });
+  const { anc } = await h.local.get('anc');
+  assert.deepStrictEqual(Object.keys(anc).sort(), ['fsrec:ABCD-123', 'rec:60525:4321']);
+  assert.strictEqual(anc['rec:60525:4321'].fag, 'fag:5505');
+  const other = load();
+  await other.send({ type: 'import', data: { app: 'newspapers-seen-it', anc } });
+  assert.strictEqual((await other.local.get('anc')).anc['fsrec:ABCD-123'].fag, 'fag:5505', 'the link was lost in a backup');
+});
