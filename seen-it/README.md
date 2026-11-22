@@ -77,7 +77,7 @@ At the bottom of the Seen It window. Off by default, and **nobody needs it to us
 
 - marks what the archive already holds (**📚 in archive**, **📥 captured, not filed**, **○ not in archive**) on all four sites;
 - shows, on each tree person and in the tree view, how many of their sources are saved; once you have opened an Ancestry person's **Gallery**, their gallery gets its own count beside it ("12 of 15 sources saved · 3 of 6 gallery items saved"), counting only the gallery pages you have opened, and each gallery photo is marked, saved or **○ not in archive**;
-- treats a Newspapers.com clipping saved to an Ancestry gallery as the clipping it is: once you have opened that photo on Ancestry, it counts as saved when the archive holds the clipping;
+- treats a Newspapers.com clipping saved to an Ancestry gallery as the clipping it is: once you have opened that photo on Ancestry, it counts as saved when the archive holds the clipping. Seen It goes by the sharer's line under the photo ("originally shared this article ... from Newspapers.com"), never by a clipping linked in a comment;
 - puts a **?** on a tree-view person whose Facts page you have not opened yet, since their sources are counted from that page;
 - keeps the add-on's data in a folder you choose, so a sync tool (OneDrive, Dropbox, a network drive) can share it between your computers.
 

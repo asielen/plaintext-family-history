@@ -560,21 +560,34 @@
   }
 
   // On a gallery photo's own viewer page: the Newspapers.com clipping it was
-  // saved from, as clip:{id}, when the page links exactly one. Ancestry shows
-  // the link under "originally shared this article … from Newspapers.com".
-  // Two different clippings on one page (a comment linking another) cannot
-  // say which is this photo's, so none is taken.
+  // saved from, as clip:{id}. Ancestry names it in the sharer's card,
+  // "originally shared this article on ... from Newspapers.com"
+  // (span.mediaOriginallyShared), and only that card is read: a comment or a
+  // description that links some other clipping would otherwise tie a plain
+  // photo (a headstone) to that clipping and show it "In archive" for good.
+  // The card must name exactly one clipping. Same rule as the capture add-on
+  // (browser-companion ancMediaNewspapersClip).
   function clipOfViewer() {
     const found = new Set();
-    for (const a of document.querySelectorAll('a[href*="newspapers.com/clip/"], a[href*="newspapers.com/article/"]')) {
+    for (const a of document.querySelectorAll('.mediaOriginallyShared a[href*="newspapers.com/clip/"], .mediaOriginallyShared a[href*="newspapers.com/article/"]')) {
       const k = keyFromHref(a.getAttribute('href'));
       if (k && k.startsWith('clip:')) found.add(k);
     }
     return found.size === 1 ? [...found][0] : null;
   }
 
+  // Whether the viewer is showing this photo yet. The arrow to the next photo
+  // changes the address before the picture and its details swap, and a read
+  // in that gap would file the last photo's clipping under this one. The
+  // viewer's <img> carries the photo's media id as its id, so the page shows
+  // this photo once an element with that id is there (in any letter case).
+  function showsPhoto(key) {
+    const id = key.slice(4).replace(/[^0-9a-f-]/gi, '');
+    return !!(id && document.querySelector('[id="' + id + '" i]'));
+  }
+
   function learnClip(key) {
-    if (!key || !key.startsWith('med:')) return;
+    if (!key || !key.startsWith('med:') || !showsPhoto(key)) return;
     const clip = clipOfViewer();
     if (clip && clipOf(key) !== clip) send({ type: 'ancMedClip', key, clip });
   }

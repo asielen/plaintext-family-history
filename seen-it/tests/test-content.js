@@ -431,10 +431,16 @@ test('Ancestry tree view: the chip still counts sources; its tooltip adds the ga
 const CLIP = 'clip:4321';
 const npLink = (id) => tile('https://www.newspapers.com/clip/' + id + '/hartley-farm-sale/');
 
-async function viewerPage(links) {
+// A photo's viewer page. `card` are the links in the sharer's card ("originally
+// shared this article ... from Newspapers.com"), `other` the links anywhere
+// else (a comment, the description). `picture` is the media id the viewer's
+// <img> carries as its id: the photo the page is showing.
+async function viewerPage({ card = [], other = [], picture = GAL(1), path = GAL(1) } = {}) {
   const page = loadContentScript('content-ancestry.js', {
-    pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1), origin: 'https://www.ancestry.com',
-    querySelectorAll: (sel) => (sel.includes('newspapers.com/clip/') && !sel.includes('/records/') ? links : []),
+    pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + path, origin: 'https://www.ancestry.com',
+    querySelectorAll: (sel) => (!sel.includes('newspapers.com/clip/') || sel.includes('/records/') ? []
+      : sel.includes('.mediaOriginallyShared') ? card : card.concat(other)),
+    querySelector: (sel) => idQuery(sel, picture),
   });
   try {
     await wait(700);
@@ -444,14 +450,69 @@ async function viewerPage(links) {
   return page.sent.filter((m) => m.type === 'ancMedClip');
 }
 
+// document.querySelector('[id="..."]') on a page whose only element with an
+// id is the viewer's picture; the ` i` flag matches in any letter case, as a
+// browser does.
+function idQuery(sel, id) {
+  const m = /^\[id="([^"]+)"( i)?\]$/.exec(sel);
+  if (!m || !id) return null;
+  return (m[2] ? m[1].toLowerCase() === id.toLowerCase() : m[1] === id) ? { id } : null;
+}
+
 test('Ancestry photo viewer: a photo that links its Newspapers.com clipping is remembered as that clipping', async () => {
-  const sent = await viewerPage([npLink(4321), npLink(4321)]);
+  const sent = await viewerPage({ card: [npLink(4321), npLink(4321)] });
   assert.ok(sent.length, 'the clipping link was not remembered');
   assert.deepStrictEqual({ key: sent[0].key, clip: sent[0].clip }, { key: 'med:' + GAL(1), clip: CLIP });
 });
 
 test('Ancestry photo viewer: two different clippings on one page leave the photo as it was', async () => {
-  assert.deepStrictEqual(await viewerPage([npLink(4321), npLink(4322)]), []);
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321), npLink(4322)] }), []);
+});
+
+// Audit of #412: a headstone photo whose comment links the obituary clipping
+// was remembered as that clipping, and showed "In archive" for good.
+test('Ancestry photo viewer: a clipping linked only in a comment does not make a plain photo that clipping', async () => {
+  assert.deepStrictEqual(await viewerPage({ other: [npLink(4321)] }), []);
+});
+
+test('Ancestry photo viewer: a comment linking another clipping does not hide the sharer\'s own', async () => {
+  const sent = await viewerPage({ card: [npLink(4321)], other: [npLink(4322)] });
+  assert.deepStrictEqual(sent.map((m) => m.clip), [CLIP]);
+});
+
+// Audit of #412: the arrow to the next photo changes the address before the
+// picture and its details swap. A look in that gap filed the last photo's
+// clipping under the next one, a plain photo, which kept it for good.
+test('Ancestry photo viewer: while the last photo is still showing, its clipping is not filed under the next one', async () => {
+  assert.deepStrictEqual(await viewerPage({ card: [npLink(4321)], picture: GAL(1), path: GAL(2) }), []);
+});
+
+test('Ancestry photo viewer: the photo is recognised by its picture whatever the letter case of its id', async () => {
+  const sent = await viewerPage({ card: [npLink(4321)], picture: GAL(1).toUpperCase(), path: GAL(1) });
+  assert.deepStrictEqual(sent.map((m) => m.key), ['med:' + GAL(1)]);
+});
+
+test('Ancestry photo viewer: moving to the next photo learns nothing until that photo shows', async () => {
+  let picture = GAL(1);
+  let card = [npLink(4321)];
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(1), origin: 'https://www.ancestry.com',
+    querySelectorAll: (sel) => (sel.includes('newspapers.com/clip/') && !sel.includes('/records/') ? card : []),
+    querySelector: (sel) => idQuery(sel, picture),
+  });
+  try {
+    await wait(700);
+    page.location.pathname = '/mediaui-viewer/collection/1030/tree/111/person/222/media/' + GAL(2);
+    page.location.href = page.location.origin + page.location.pathname;
+    await wait(1400); // the address moved; photo 1 is still on the page
+    picture = GAL(2); // photo 2 arrives: a plain photo
+    card = [];
+    await wait(1400);
+  } finally {
+    page.stop();
+  }
+  const sent = page.sent.filter((m) => m.type === 'ancMedClip').map((m) => [m.key, m.clip]);
+  assert.deepStrictEqual(sent, [['med:' + GAL(1), CLIP]]);
 });
 
 // A gallery tile: a link inside .mediaGalleryItem, pills placed after it.

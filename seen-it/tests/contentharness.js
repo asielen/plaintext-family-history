@@ -12,17 +12,30 @@ function fakeElement(tag) {
   const el = {
     tagName: String(tag || 'div').toUpperCase(), children: [], childNodes: [], style: {}, dataset: {},
     classList: { add() {}, remove() {}, toggle() {}, contains: (c) => String(el.className || '').split(/\s+/).includes(c) },
-    textContent: '', innerText: '', id: '',
+    innerText: '', id: '',
     appendChild(c) { el.children.push(c); c.parentNode = el; return c; },
     insertAdjacentElement() {}, setAttribute() {}, getAttribute: () => null,
     remove() { if (el.parentNode) el.parentNode.children = el.parentNode.children.filter((c) => c !== el); el.parentNode = null; },
     addEventListener() {}, querySelector: () => null, querySelectorAll: () => [], closest: () => null,
     getBoundingClientRect: () => ({ top: 0, left: 0, width: 0, height: 0 }),
   };
+  // As on a page, setting the text replaces what the element held, so a badge
+  // drawn again (box.textContent = '') shows only its new pills.
+  let text = '';
+  Object.defineProperty(el, 'textContent', {
+    get: () => text,
+    set: (v) => { text = String(v); el.children = []; },
+    enumerable: true,
+  });
   return el;
 }
 
 function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, getElementById, storage }) {
+  // The address, which a test may change (Ancestry's viewer moves to the next
+  // photo without loading a new page), and the storage listeners, which a
+  // test fires with fireChange (a setting switched in the toolbar window).
+  const location = { pathname, search, origin, href: origin + pathname + search, hostname: new URL(origin).hostname };
+  const changed = [];
   const queries = [];
   const listeners = {};
   const sent = [];
@@ -42,9 +55,9 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
   const keep = (t) => { timers.push(t); return t; };
   const context = vm.createContext({
     document,
-    location: { pathname, search, origin, href: origin + pathname + search, hostname: new URL(origin).hostname },
+    location,
     chrome: {
-      storage: { local: { get: async () => (storage || {}), set: async () => {} }, onChanged: { addListener() {} } },
+      storage: { local: { get: async () => (storage || {}), set: async () => {} }, onChanged: { addListener(fn) { changed.push(fn); } } },
       runtime: { sendMessage: async (m) => { sent.push(m); return null; }, getURL: (p) => p },
     },
     console: { log() {}, warn() {}, error() {} },
@@ -68,6 +81,8 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
     queries,
     listeners,
     sent,
+    location,
+    fireChange: (changes) => changed.forEach((fn) => fn(changes, 'local')),
     stop: () => { for (const t of timers) { clearTimeout(t); clearInterval(t); } },
   };
 }
