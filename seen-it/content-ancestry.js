@@ -7,7 +7,10 @@
 // Images are /imageviewer/collections/{dbId}/images/{imageId}. A photo or
 // story someone shared to their tree is a media item,
 // /mediaui-viewer/tree/{treeId}/person/{pid}/media/{mediaId} - one id
-// wherever that photo is offered (med:{mediaId}).
+// wherever that photo is offered (med:{mediaId}). A Newspapers.com clipping
+// saved to a gallery is such a photo; its viewer page links the clipping, and
+// once that page has been opened the photo counts as saved whenever the
+// archive holds the clipping (clip:{id}).
 //
 // On a record or image page:
 //   • records the look (and how long it was on screen),
@@ -46,6 +49,15 @@
   // archive is shown, only your own looks, marks and tree.
   const adv = () => !!(data.settings && data.settings.advanced);
   const knownOf = (key) => (adv() ? data.known[key] : null);
+
+  // A Newspapers.com clipping saved into an Ancestry gallery becomes an
+  // Ancestry photo with its own media id, so the archive's copy of the
+  // clipping (clip:{id}) never matched it and the photo showed as not saved.
+  // The photo's viewer page links back to the clipping; Seen It remembers that
+  // link (anc[med:…].clip, see clipOfViewer) and answers for the photo with
+  // what the archive knows of the clipping.
+  const clipOf = (key) => (key.startsWith('med:') && (data.anc[key] || {}).clip) || null;
+  const knownFor = (key) => knownOf(key) || (clipOf(key) ? knownOf(clipOf(key)) : null);
 
   // Which tree people each record is attached to, from every person whose page
   // you have opened (Ancestry Facts page, FamilySearch person page) and from a
@@ -184,7 +196,7 @@
   function coverage(keys) {
     const c = { total: keys.length, filed: 0, captured: 0, missing: 0, rec: [0, 0], clip: [0, 0], fag: [0, 0], webLinks: keys.webLinks || 0 };
     for (const k of keys) {
-      const st = (knownOf(k) || {}).state;
+      const st = (knownFor(k) || {}).state;
       const kind = k.startsWith('clip:') ? 'clip' : k.startsWith('fag:') ? 'fag' : 'rec';
       c[kind][1]++;
       if (st === 'filed' || st === 'processed') {
@@ -282,18 +294,31 @@
       const host = node.querySelector('.vAlignContent') || node.querySelector('.nodeContent');
       if (!host) continue;
       let chip = host.querySelector(':scope > .nsi-node-chip');
-      // The chip counts sources: none for a person whose Facts page was never
-      // opened (only their gallery), rather than a "–" that says they have none.
-      if (!p || !Array.isArray(p.keys)) {
+      // An "Add father" / "Add mother" box (class "add") is nobody yet.
+      if (node.classList && node.classList.contains('add')) {
         if (chip) chip.remove();
         continue;
       }
-      const c = coverage(p.keys);
-      const g = galleryOf(p, null);
-      const text = c.total ? (c.missing ? (c.filed + c.captured) + '/' + c.total : '✓ ' + c.total + '/' + c.total) : '–';
-      const cls = 'nsi-node-chip ' + (c.missing ? (c.filed + c.captured ? 'nsi-node-part' : 'nsi-node-none') : 'nsi-node-all');
-      const title = (p.name || 'This person') + ': ' + coverageTitle(c) + ' (sources as of ' + fmtDate(p.at) + ')' +
-        (g ? '\n' + galleryTitle(coverage(g.keys), g) : '');
+      let text;
+      let cls;
+      let title;
+      if (!p || !Array.isArray(p.keys)) {
+        // Sources are read from the person's Facts page and nowhere else. A
+        // person whose Facts page was never opened gets a "?" that says so,
+        // rather than no chip (which looked like Seen It skipped them) or a
+        // "–" (which would say they have no sources).
+        text = '?';
+        cls = 'nsi-node-chip nsi-node-unread';
+        title = 'Seen It has not read ' + ((p && p.name) || 'this person') + '’s sources yet. ' +
+          'Open their Facts page once and this shows how many are saved.';
+      } else {
+        const c = coverage(p.keys);
+        const g = galleryOf(p, null);
+        text = c.total ? (c.missing ? (c.filed + c.captured) + '/' + c.total : '✓ ' + c.total + '/' + c.total) : '–';
+        cls = 'nsi-node-chip ' + (c.missing ? (c.filed + c.captured ? 'nsi-node-part' : 'nsi-node-none') : 'nsi-node-all');
+        title = (p.name || 'This person') + ': ' + coverageTitle(c) + ' (sources as of ' + fmtDate(p.at) + ')' +
+          (g ? '\n' + galleryTitle(coverage(g.keys), g) : '');
+      }
       if (chip && chip.textContent === text && chip.className === cls && chip.title === title) continue;
       if (!chip) {
         chip = document.createElement('span');
@@ -368,11 +393,11 @@
   function pillsFor(key, full, thisVisit) {
     const wrap = document.createElement('span');
     wrap.className = 'nsi-pills';
-    const k = knownOf(key);
+    const k = knownFor(key);
     const a = data.anc[key] || {};
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));
-    const what = key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : key.startsWith('med:') ? 'photo' : 'record';
+    const what = clipOf(key) ? 'Newspapers.com clipping' : key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : key.startsWith('med:') ? 'photo' : 'record';
     if (k && k.state === 'filed') {
       wrap.appendChild(pill('nsi-archive', '📚 In archive' + (k.sid ? ' · ' + k.sid : ''),
         'This ' + what + ' is filed in the family archive' + (k.sid ? ' as ' + k.sid : '') + '.'));
@@ -398,7 +423,7 @@
   }
 
   function sigFor(key) {
-    return key + '|' + JSON.stringify(knownOf(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
+    return key + '|' + (clipOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 
   function markButtons(key) {
@@ -500,12 +525,16 @@
         if (existing) existing.remove();
         continue;
       }
-      const has = knownOf(key) || treeOf(key) || looksOf(data.anc[key]) || (data.anc[key] || {}).mark;
+      // A tile on a person's Gallery page also says "not in archive": there
+      // the badge counts every tile, so a blank tile would look like Seen It
+      // was not running rather than like a photo still to save.
+      const galleryTile = adv() && key.startsWith('med:') && !!(a.closest && a.closest('.mediaGalleryItem'));
+      const has = galleryTile || knownFor(key) || treeOf(key) || looksOf(data.anc[key]) || (data.anc[key] || {}).mark;
       const sig = sigFor(key);
       if (existing && existing.dataset.key === sig) continue;
       if (existing) existing.remove();
       if (!has) continue;
-      const pills = pillsFor(key, false, false);
+      const pills = pillsFor(key, galleryTile, false);
       pills.dataset.key = sig;
       pills.dataset.nsiFor = key;
       if (hintCard) pills.dataset.nsiOwner = ownerOf(a, linkKey);
@@ -530,8 +559,29 @@
     renderTimer = setTimeout(render, 300);
   }
 
+  // On a gallery photo's own viewer page: the Newspapers.com clipping it was
+  // saved from, as clip:{id}, when the page links exactly one. Ancestry shows
+  // the link under "originally shared this article … from Newspapers.com".
+  // Two different clippings on one page (a comment linking another) cannot
+  // say which is this photo's, so none is taken.
+  function clipOfViewer() {
+    const found = new Set();
+    for (const a of document.querySelectorAll('a[href*="newspapers.com/clip/"], a[href*="newspapers.com/article/"]')) {
+      const k = keyFromHref(a.getAttribute('href'));
+      if (k && k.startsWith('clip:')) found.add(k);
+    }
+    return found.size === 1 ? [...found][0] : null;
+  }
+
+  function learnClip(key) {
+    if (!key || !key.startsWith('med:')) return;
+    const clip = clipOfViewer();
+    if (clip && clipOf(key) !== clip) send({ type: 'ancMedClip', key, clip });
+  }
+
   function render() {
     renderBadge(keyFromPath(location.pathname) || openHint);
+    learnClip(keyFromPath(location.pathname));
     renderLinks();
     const person = personFromPath(location.pathname);
     if (person) trackPerson(person);

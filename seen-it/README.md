@@ -76,7 +76,9 @@ Search results, record pages and memorials show **🌳** on records already atta
 At the bottom of the Seen It window. Off by default, and **nobody needs it to use Seen It.** It connects the add-on to a family archive kept with [Plaintext Family History](https://github.com/asielen/plaintext-family-history) on this computer:
 
 - marks what the archive already holds (**📚 in archive**, **📥 captured, not filed**, **○ not in archive**) on all four sites;
-- shows, on each tree person and in the tree view, how many of their sources are saved; once you have opened an Ancestry person's **Gallery**, their gallery gets its own count beside it ("12 of 15 sources saved · 3 of 6 gallery items saved"), counting only the gallery pages you have opened;
+- shows, on each tree person and in the tree view, how many of their sources are saved; once you have opened an Ancestry person's **Gallery**, their gallery gets its own count beside it ("12 of 15 sources saved · 3 of 6 gallery items saved"), counting only the gallery pages you have opened, and each gallery photo is marked, saved or **○ not in archive**;
+- treats a Newspapers.com clipping saved to an Ancestry gallery as the clipping it is: once you have opened that photo on Ancestry, it counts as saved when the archive holds the clipping;
+- puts a **?** on a tree-view person whose Facts page you have not opened yet, since their sources are counted from that page;
 - keeps the add-on's data in a folder you choose, so a sync tool (OneDrive, Dropbox, a network drive) can share it between your computers.
 
 It needs a small local helper, which needs Python 3 ([python.org](https://www.python.org/downloads/); on Windows tick **"Add python.exe to PATH"** when installing).

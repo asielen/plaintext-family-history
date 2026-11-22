@@ -85,6 +85,7 @@
 .nsi-node-all  { background: #2e7d32; color: #fff; }
 .nsi-node-part { background: #ef6c00; color: #fff; }
 .nsi-node-none { background: #fff; color: #555; border: 1px dashed #999; }
+.nsi-node-unread { background: transparent; color: #888; border: 1px dotted #aaa; font-weight: 400; }
 
 /* A record attached to someone in your tree. */
 .nsi-tree { background: #2e7d32; color: #fff; }
