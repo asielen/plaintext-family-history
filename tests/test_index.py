@@ -3879,6 +3879,13 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         self.assertEqual(
             vital_subjects('death', [('p-a', None), ('p-b', 'child')]), ['p-a'])
 
+    def test_a_namesake_on_a_birth_claim_is_not_the_subject(self) -> None:
+        # The grandfather named for the baby has no `Born` of his own, and the
+        # baby keeps his. A namesake is placed, never a subject.
+        self.assertEqual(
+            vital_subjects('birth', [('p-baby', 'child'), ('p-gf', 'named_for')]),
+            ['p-baby'])
+
     def test_everyone_named_as_somebody_else_yields_nobody(self) -> None:
         # A birth certificate whose roles: map calls both people parents is
         # nobody's own birth record. This is the mother's `Born: 1888` bug.
@@ -4133,6 +4140,16 @@ class KinRoleSynonymTests(unittest.TestCase):
         root = self._build('birth', (
             f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
             f'    parent: [{_BIRTH_FATHER}]\n    grandparent: [{_BIRTH_MOTHER}]\n'),
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})
+
+    def test_birth_claim_naming_who_the_child_was_named_for_builds_no_edge(self) -> None:
+        # "Sam was named for his grandfather": the namesake is placed on the
+        # claim (`named_for:`) and is neither a parent nor a child of Sam.
+        root = self._build('birth', (
+            f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+            f'    parent: [{_BIRTH_FATHER}]\n    named_for: [{_BIRTH_MOTHER}]\n'),
             [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
         c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
         self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})

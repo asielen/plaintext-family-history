@@ -9660,6 +9660,20 @@ class VitalSubjectScopingTests(_Base):
         self.assertIn('<dt>Born</dt>', html)
         self.assertIn('1888', html)
 
+    def test_a_namesake_named_on_the_birth_gets_no_born_row_and_no_child_edge(self):
+        # "Peter was named for his grandfather": the grandfather is placed on
+        # the birth certificate with `named_for:`. He gets no Born row from it
+        # and no family tie to Peter.
+        gf = 'p-gggggggggg'
+        self._seed_person(gf, 'Elias Marr')
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent',
+                                      gf: 'named_for'})
+        self._run(linked=True)
+        gf_html = self._read(f'persons/{gf}.html')
+        self.assertNotIn('<dt>Born</dt>', gf_html)
+        self.assertNotIn(f'persons/{self.SON}.html', gf_html)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
+
     def test_an_unroled_baby_is_still_read_as_the_subject(self):
         # `roles: {parent: [mother]}` with the baby left unmarked is an
         # ordinary way to write the claim. The claim said what the OTHER person
