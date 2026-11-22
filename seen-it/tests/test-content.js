@@ -428,8 +428,8 @@ test('Ancestry tree view: the chip still counts sources; its tooltip adds the ga
 // with its own media id. Its viewer page links the clipping back; once Seen
 // It has read that link, the photo counts as saved whenever the archive holds
 // the clipping. Made-up ids only.
-const CLIP = 'clip:9100001';
-const npLink = (id) => tile('https://www.newspapers.com/clip/' + id + '/block-warden/');
+const CLIP = 'clip:4321';
+const npLink = (id) => tile('https://www.newspapers.com/clip/' + id + '/hartley-farm-sale/');
 
 async function viewerPage(links) {
   const page = loadContentScript('content-ancestry.js', {
@@ -445,19 +445,19 @@ async function viewerPage(links) {
 }
 
 test('Ancestry photo viewer: a photo that links its Newspapers.com clipping is remembered as that clipping', async () => {
-  const sent = await viewerPage([npLink(9100001), npLink(9100001)]);
+  const sent = await viewerPage([npLink(4321), npLink(4321)]);
   assert.ok(sent.length, 'the clipping link was not remembered');
   assert.deepStrictEqual({ key: sent[0].key, clip: sent[0].clip }, { key: 'med:' + GAL(1), clip: CLIP });
 });
 
 test('Ancestry photo viewer: two different clippings on one page leave the photo as it was', async () => {
-  assert.deepStrictEqual(await viewerPage([npLink(9100001), npLink(9100002)]), []);
+  assert.deepStrictEqual(await viewerPage([npLink(4321), npLink(4322)]), []);
 });
 
 // A gallery tile: a link inside .mediaGalleryItem, pills placed after it.
 function galleryTile(href) {
   const a = tile(href);
-  a.textContent = a.innerText = 'Block Warden';
+  a.textContent = a.innerText = 'Hartley farm sale';
   a.inserted = [];
   a.nextElementSibling = null;
   a.classList = { contains: () => false };

@@ -334,15 +334,15 @@ test('gallery pages read on two computers are all kept when their files are merg
 const MEDK = 'med:abcdef01-2222-4333-8444-abcdefabcdef';
 test('a gallery photo remembers the Newspapers.com clipping it was saved from', async () => {
   const h = load();
-  await h.send({ type: 'ancMedClip', key: MEDK, clip: 'clip:9100001' });
-  await h.send({ type: 'ancMedClip', key: 'med:not-a-media-id', clip: 'clip:9100001' });
+  await h.send({ type: 'ancMedClip', key: MEDK, clip: 'clip:4321' });
+  await h.send({ type: 'ancMedClip', key: 'med:not-a-media-id', clip: 'clip:4321' });
   await h.send({ type: 'ancMedClip', key: MEDK.replace('01-', '02-'), clip: 'clip:12abc' });
   const { anc } = await h.local.get('anc');
   assert.deepStrictEqual(Object.keys(anc), [MEDK]);
-  assert.strictEqual(anc[MEDK].clip, 'clip:9100001');
+  assert.strictEqual(anc[MEDK].clip, 'clip:4321');
 
   const other = load();
   const r = await other.send({ type: 'import', data: { app: 'newspapers-seen-it', anc: { [MEDK]: anc[MEDK] } } });
   assert.ok(r.ok, JSON.stringify(r));
-  assert.strictEqual((await other.local.get('anc')).anc[MEDK].clip, 'clip:9100001', 'the link was lost in a backup');
+  assert.strictEqual((await other.local.get('anc')).anc[MEDK].clip, 'clip:4321', 'the link was lost in a backup');
 });
