@@ -77,6 +77,27 @@
   </dl>
   
   
+  <details class="chart completeness" open>
+    <summary class="chart-title">How well documented: 0 of 5 found</summary>
+    <div class="chart-body" style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start">
+      <svg class="completeness-ring" xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="How well documented: 0 of 5 checks found" style="color: var(--accent, #6E3A26); vertical-align: middle"><title>How well documented: 0 of 5 checks found</title><g class="ring-missing" data-check="birth"><title>Birth record: not found yet - no birth record</title><path d="M33.60,1.54 A30.50,30.50 0 0 1 60.47,21.07 L49.08,25.44 A18.30,18.30 0 0 0 32.96,13.73 Z" fill="none" stroke="currentColor" stroke-width="1"/></g><g class="ring-missing" data-check="census"><title>Censuses: not found yet - can&#x27;t tell which country they lived in: none of their records sits at a registered place. `fha report --section place-candidates` lists the places to register, each with its ready-to-run command; then run `fha index`</title><path d="M61.46,24.11 A30.50,30.50 0 0 1 51.19,55.70 L43.52,46.22 A18.30,18.30 0 0 0 49.68,27.26 Z" fill="none" stroke="currentColor" stroke-width="1"/></g><g class="ring-missing" data-check="parents"><title>Parents: not found yet - no birth parents named by a sourced claim</title><path d="M48.61,57.58 A30.50,30.50 0 0 1 15.39,57.58 L22.03,47.35 A18.30,18.30 0 0 0 41.97,47.35 Z" fill="none" stroke="currentColor" stroke-width="1"/></g><g class="ring-missing" data-check="marriage"><title>Marriage records: not found yet - no marriage on file</title><path d="M12.81,55.70 A30.50,30.50 0 0 1 2.54,24.11 L14.32,27.26 A18.30,18.30 0 0 0 20.48,46.22 Z" fill="none" stroke="currentColor" stroke-width="1"/></g><g class="ring-missing" data-check="end-of-life"><title>Death or burial: not found yet - marked not living; no death or burial on file</title><path d="M3.53,21.07 A30.50,30.50 0 0 1 30.40,1.54 L31.04,13.73 A18.30,18.30 0 0 0 14.92,25.44 Z" fill="none" stroke="currentColor" stroke-width="1"/></g><text x="32.00" y="32.00" text-anchor="middle" dominant-baseline="central" font-size="16.6" font-family="system-ui, sans-serif" fill="currentColor" aria-hidden="true">0/5</text></svg>
+      <ul class="completeness-checks" style="margin:0">
+        <li class="completeness-missing"><strong>Birth record</strong>: not found yet - no birth record<br><span class="wb-later wb-fill">To fill it, look for a birth certificate, a baptism or christening entry, or a birth register entry.</span></li>
+        <li class="completeness-missing"><strong>Censuses</strong>: not found yet - can&#39;t tell which country they lived in: none of their records sits at a registered place. `fha report --section place-candidates` lists the places to register, each with its ready-to-run command; then run `fha index`<br><span class="wb-later wb-fill">To fill it, look for the census pages for the years still missing.</span></li>
+        <li class="completeness-missing"><strong>Parents</strong>: not found yet - no birth parents named by a sourced claim<br><span class="wb-later wb-fill">To fill it, look for a record that names the parents: a birth or baptism record, a marriage record, or a death certificate.</span></li>
+        <li class="completeness-missing"><strong>Marriage records</strong>: not found yet - no marriage on file<br><span class="wb-later wb-fill">To fill it, look for a marriage licence, certificate or church register entry.</span></li>
+        <li class="completeness-missing"><strong>Death or burial</strong>: not found yet - marked not living; no death or burial on file<br><span class="wb-later wb-fill">To fill it, look for a death certificate, a burial or cemetery record, a gravestone or an obituary.</span></li>
+        
+      </ul>
+    </div>
+    <p class="note">Each part of the ring is one kind of record. Filled means found, half filled
+    means partly found, an empty outline means not found yet, and a faint dotted outline means the
+    check does not apply to this person.</p>
+    <p class="note wb-fill-note">Found a record? Put it in the
+    <a href="../inbox">inbox</a> and process it. The ring counts accepted claims only,
+    so it fills in once you have reviewed and accepted what the record says.</p>
+  </details>
+  
   <p class="wb-milestone-add"><button class="btn btn-sm" data-wb-open="tpl-milestone" data-wb-args='{"person_id": "p-s5a8g87at3", "subject_name": "Susan Cole"}'>Add a milestone&hellip;</button>
     <span class="wb-later">Born &middot; Died &middot; Married &middot; Baptized &middot; Buried - each becomes a summary line, and (when sourced) a Timeline entry too.</span></p>
   
@@ -183,6 +204,7 @@
   or <code>fha packet</code>. Every button is an <code>fha</code> command; the equivalent is
   echoed after each apply, and anything a button can't do yet comes with the manual recipe.</p>
 
+  <p class="print-only">Printed from The Hartley Family Archive.</p>
   <p class="date-notation-note">Dates here are sometimes marked to show how certain they are.
   A <strong>~</strong> means "about this year" - close, but not exact (<strong>1891~</strong>).
   A <strong>?</strong> means the year is probably right but has not been confirmed
@@ -577,10 +599,7 @@
     <input type="hidden" name="section" value="biography">
     <div class="wb-field">
       <label>## Biography</label>
-      <textarea name="text" class="wb-target" style="min-height:12rem">Susan Cole lived near the Hartleys in [[l-7c1a9f4e22|Fairview]]. She may have been an older
-sister of [[p-cd795c61e0|Margaret A. Cole]]: Margaret was married &#34;at the residence of the bride&#39;s
-sister&#34; [[s-ea61339378]]. No record says so, so the tie is entered on her record as a guess
-(`status: hypothesis`) and followed while it is checked (notes/questions.md).</textarea>
+      <textarea name="text" class="wb-target" style="min-height:12rem">Susan Cole lived near the Hartleys in [[l-7c1a9f4e22|Fairview]]. She may have been an older sister of [[p-cd795c61e0|Margaret A. Cole]]: Margaret was married &#34;at the residence of the bride&#39;s sister&#34; [[s-ea61339378]]. No record says so, so the tie is entered on her record as a guess (`status: hypothesis`) and followed while it is checked (notes/questions.md).</textarea>
       <button type="button" class="wb-lookuptoggle" data-wb-lookuptoggle>&#128269; insert a link (person / source / place) at the cursor&hellip;</button>
       <div class="wb-lookup" hidden>
         <input type="text" class="wb-lookup-q" placeholder="Search the archive by name&hellip;">
@@ -957,5 +976,6 @@ sister&#34; [[s-ea61339378]]. No record says so, so the tie is entered on her re
 </template>
 <script src="../assets/workbench.js"></script>
 
+<script src="../vendor/fha-site.js" defer></script>
 </body>
 </html>

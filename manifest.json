@@ -618,21 +618,21 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "7fa8776f93add6d72a83e3980c248a6e96626a471cdd4fbfcf9fd732dd47bc7e",
+      "sha256": "fbc9afc32a60b79d977d16469675805d903d3bb435f8e60de747a8467020177e",
       "spec_version": "2.19",
       "src": "design/styles.css"
     },
     {
       "path": ".fha/design/view.css",
       "category": "operating",
-      "sha256": "03469e0f3c6ce53ea6003b5d5d131852bf57f9a4ba378422417ac957f49a31df",
+      "sha256": "a6193074926d72942aaafa16f2b7fcac7da9b12d3fa81f8f21120080aa702ba6",
       "spec_version": "2.19",
       "src": "design/view.css"
     },
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "e98a4d6f330ee30a3c9259195f012ae5ca231c4a1b295ec465049b2442d2a2f3",
+      "sha256": "bd2316fd9de1bd3fde3b78036e91c2c6474949d42f4ea5d1bcc450acd7558245",
       "spec_version": "2.19",
       "src": "docs/DESIGN.md"
     },
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "6bcf1568e111e8e533d52a15d97453311276c2b6186e6cab474456102625c205",
+      "sha256": "96f493d8006c7dd8302de43863127e76224dfe8339538e7608f74167bfb69783",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -842,7 +842,7 @@
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
-      "sha256": "4680b5f7ce010b430ad45bdee4212cff427ed4684adad88d0690f733f585ed0f",
+      "sha256": "b42a9de823a09e51d3c74e150155f4c373a53c6fae2282662e9e71978eb2fc89",
       "spec_version": "2.19",
       "src": "tools/places.py"
     },
@@ -870,7 +870,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "a2561fccdb11afca41bfc6b391a3f37de254ea220ee209df2ca4f0219b11f0cb",
+      "sha256": "4388382c17c53239f901897b329cde166b6ef22e4d68232c96d2d6d15bfece29",
       "spec_version": "2.19",
       "src": "tools/relate.py"
     },
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "d8fcb3a76664a894a262c9a9160ddb2227489c6dedc29748ecfdc4670e32dc0b",
+      "sha256": "eebeb17e4dfe42818a284984faa4d0dca02a30ff04fe448714d097840fcf53c5",
       "spec_version": "2.19",
       "src": "tools/site.py"
     },
@@ -947,7 +947,7 @@
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "556542b18d67ba9f1d7d89b2bd3e4eb363324548613adc6bb68d6a596be0b4ce",
+      "sha256": "2ab99f88ee55cccb045e1189735a292037e2b4def9756d43ac0966273379554c",
       "spec_version": "2.19",
       "src": "tools/templates/base.html"
     },
@@ -982,7 +982,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "62f8dcd1894b56821b22c5c5edaa41fc2b12a761a82ca8a760a025c41c69f4e6",
+      "sha256": "e5c84af8f4c2c2050e1acc4aa03da36b2dde6d586a1f560264ece3f73f2dc758",
       "spec_version": "2.19",
       "src": "tools/templates/person.html"
     },
@@ -1015,9 +1015,16 @@
       "src": "tools/templates/vendor/d3.min.js"
     },
     {
+      "path": ".fha/tools/templates/vendor/fha-site.js",
+      "category": "operating",
+      "sha256": "6b0e0afe4b747f7f70ef0671845e9c46b93e88bec6e9e79c60c31e005e6d3219",
+      "spec_version": "2.19",
+      "src": "tools/templates/vendor/fha-site.js"
+    },
+    {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "3d2b1b6b26af40f5c17893b663df56bf36b61debfa08845fc09197ea2ed91139",
+      "sha256": "8eafca6fa58b4ea8e4305c649eb979cdb7b50334520857c92f3657a6bb7a57d0",
       "spec_version": "2.19",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -1052,7 +1059,7 @@
     {
       "path": ".fha/tools/templates/workbench/_modals.html",
       "category": "operating",
-      "sha256": "7bf196d5345103e0d1c2204d4a7fa7485d82455e17fad6394aaef163c9299c54",
+      "sha256": "6c5a9c93684ece7cacce3864ae5815533d27cfed374a70fc75bef5c8430c2e37",
       "spec_version": "2.19",
       "src": "tools/templates/workbench/_modals.html"
     },
@@ -1154,7 +1161,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "31061029fe6ce78fe46d20c2fabd1e3e97fda8f7908405327410cde2048f9acc",
+      "sha256": "ef5377532b1d6cabec6501f6798191b5789737653cf7ccef5b9784efbdcc51df",
       "spec_version": "2.19"
     },
     {
@@ -1221,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "1deb224141d311aad55df920eb132fbf1a60215ccbf8e7706ab6c03e4ee891fa",
+      "sha256": "162bb5f5ca1b8b7a511ed8575da8d8a7d21ea452cce13f4b1a2c125fd0fa27a0",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
