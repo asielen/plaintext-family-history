@@ -3622,8 +3622,11 @@
     // it is not counted again by this page's Capture (second audit N1).
     const slowDown = !!state.preflightSlowDown;
     state.preflightSlowDown = false;
+    // `elsewhere`: the original this record is a copy or index of, as the
+    // panel's note names it (showElsewhere), once the page and its checks
+    // are read: { kind, id, url }, or null.
     return resp && resp.ok
-      ? { ok: true, prefill: resp.prefill, url: tab.url, slowDown }
+      ? { ok: true, prefill: resp.prefill, url: tab.url, slowDown, elsewhere: state.elsewhere || null }
       : { ok: false, error: 'could not read the page' };
   }
 

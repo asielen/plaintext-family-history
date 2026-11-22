@@ -918,6 +918,20 @@ test('one writer: an Ancestry photo saved by hand joins the queue as done, besid
   assert.strictEqual(L.items['90001:1000001'].state, 'queued');
 });
 
+test('F1: foundFor is unioned on each queueing that found the original, and never takes persons from other buttons', () => {
+  const L = CB.newLedger(0);
+  CB.addRecords('findagrave', L, [{ memorialId: '900000001', persons: ['Ethel Mae Hartley'] }], 'page: Ethel Mae Hartley');
+  assert.strictEqual(L.items['900000001'].foundFor, undefined);
+  CB.addRecords('findagrave', L, [{ memorialId: '900000001', persons: ['Calvin Hartley'], foundFor: ['Calvin Hartley'] }], 'index: Calvin Hartley');
+  CB.addRecords('findagrave', L, [{ memorialId: '900000001', persons: ['Calvin E. Hartley'], foundFor: ['Calvin E. Hartley', 'Calvin Hartley'] }], 'index: Calvin E. Hartley');
+  assert.deepStrictEqual(L.items['900000001'].foundFor, ['Calvin Hartley', 'Calvin E. Hartley']);
+  assert.deepStrictEqual(L.items['900000001'].persons, ['Ethel Mae Hartley', 'Calvin Hartley', 'Calvin E. Hartley']);
+  const N = CB.newLedger(0);
+  CB.addFoundClippings(N, [{ id: 303, url: 'https://www.newspapers.com/clip/303/x/', persons: ['Thomas Hartley'], foundFor: ['Thomas Hartley'] }]);
+  CB.addFoundClippings(N, [{ id: 303, url: 'https://www.newspapers.com/clip/303/x/', persons: ['Margaret Hartley'], foundFor: ['Margaret Hartley'] }]);
+  assert.deepStrictEqual(N.items['303'].foundFor, ['Thomas Hartley', 'Margaret Hartley']);
+});
+
 test('addFoundClippings: any member\'s clipping found on Ancestry, only at an address naming that clipping; done stays done', () => {
   const L = CB.newLedger();
   const n = CB.addFoundClippings(L, [

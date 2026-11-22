@@ -255,9 +255,22 @@
     if (L.log.length > 200) L.log.splice(0, L.log.length - 200);
   }
 
+  // The people an original was found for through another record (a gallery
+  // item that is a copy of a clipping, a Find a Grave Index entry, a person's
+  // sources): `foundFor`, unioned on each such queueing, and kept apart from
+  // `persons`, which every queueing adds to. The batch ticks only these on
+  // the original's form, so a name another button queued is never ticked on
+  // the wrong record.
+  function addFoundFor(entry, names) {
+    const list = (Array.isArray(names) ? names : []).filter(Boolean).map((p) => String(p).slice(0, 200));
+    if (!list.length) return;
+    entry.foundFor = Array.isArray(entry.foundFor) ? entry.foundFor : [];
+    for (const p of list) if (entry.foundFor.indexOf(p) < 0) entry.foundFor.push(p);
+  }
+
   // Queue records ({ dbId, recordId } | { fsId } | { memorialId, slug },
-  // with optional persons and title). An entry already there is never reset:
-  // a done record stays done however often it is queued again.
+  // with optional persons, foundFor and title). An entry already there is
+  // never reset: a done record stays done however often it is queued again.
   function addRecords(siteName, L, records, from) {
     const site = SITES[siteName];
     let added = 0;
@@ -268,6 +281,7 @@
       if (prev) {
         prev.persons = Array.isArray(prev.persons) ? prev.persons : [];
         for (const p of r.persons || []) if (p && prev.persons.indexOf(p) < 0) prev.persons.push(p);
+        addFoundFor(prev, r.foundFor);
         if (!prev.title && r.title) prev.title = String(r.title).slice(0, 200);
         continue;
       }
@@ -284,6 +298,7 @@
         state: 'queued',
         tries: 0,
       });
+      addFoundFor(L.items[key], r.foundFor);
       L.order.push(key);
       added++;
     }
@@ -325,13 +340,14 @@
     return added;
   }
 
-  // Queue clippings found on Ancestry ({ id, url, title, persons }): a
+  // Queue clippings found on Ancestry ({ id, url, title, persons, foundFor }): a
   // clipping a tree person's gallery holds a copy of, or one their sources
   // link. Whoever made it (the owner: any clipping found through Ancestry
   // that she chooses to save is included), but only at an address that
   // names that same clipping. One already queued or done stays as it is;
-  // the people it was found for are added to it, and the panel ticks them
-  // when it is saved, so the clipping keeps its tie to the tree person.
+  // the people it was found for are added to it (`foundFor`), and the panel
+  // ticks them when it is saved, so the clipping keeps its tie to the tree
+  // person.
   function addFoundClippings(L, clippings, from) {
     let added = 0;
     for (const c of clippings || []) {
@@ -344,6 +360,7 @@
       if (prev) {
         prev.persons = Array.isArray(prev.persons) ? prev.persons : [];
         for (const p of persons) if (prev.persons.indexOf(p) < 0) prev.persons.push(p);
+        addFoundFor(prev, c.foundFor);
         if (!prev.url) prev.url = url;
         continue;
       }
@@ -357,6 +374,7 @@
         state: 'queued',
         tries: 0,
       };
+      addFoundFor(L.items[key], c.foundFor);
       added++;
     }
     sortClippings(L);
