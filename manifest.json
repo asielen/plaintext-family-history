@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "5b15672e019d076daa88d046f73d15dfd80f06755bd1ad3fbfd05c6b49aba13a",
+      "sha256": "ba8e34a523e217ee6dd910ae7c6a9b31d4ea64c9a8c518ec096520c098a6b2bd",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -387,14 +387,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "89ff896440f41c5fec73b234bce7da57b7339ad69ea5c68dcd8982f4c9634786",
+      "sha256": "1bfb44b3e41d4f9041cc17031a29c8a77977e344e9588c395d2116e2d6a6dfbb",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "b626618d551654739b82e8e9f15c294c538f84ae528615db5fadbef6dd7fd681",
+      "sha256": "a2ce1248e28d78c19b01e8325cc68be148bb3dffc6e4cbe3018b2d236631c585",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -450,7 +450,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "83db5b0f89f1f89e105ced7c55e2483201f283dfa89b6f571844254f46a82927",
+      "sha256": "c138f499afe76aafc4a887fd5305c59e6678b587db3019e2dc4aaba11e6c29da",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -513,21 +513,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "9db164d1eeaa5981433c283cef3d6cafde89c866f2719d3f953fd4d32eda827c",
+      "sha256": "9ad64a6407cbc9bc5640a66810a89dcdc5c2d5ab7d685fa49e4d6295ad6081bc",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "08a851070b1ba724013d1ebdde5b755e6654068c38c69a619fe5fe9dabf6af56",
+      "sha256": "826fb2ab8017959b4af16f990cc600679bd69e887853595d7ffc5519677af5db",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "8a36dcc13982a3e7b6077a281d607d314b5a340eec39e98d6842a8b8ff014064",
+      "sha256": "1dda2a866bf9883304daed2b04a33f8f136a5cd5a27bf1da4892116b724cd2bb",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },

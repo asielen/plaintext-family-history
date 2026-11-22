@@ -163,6 +163,24 @@ function fsPersonName(p) {
   return (f && String(f.fullText || '').trim()) || null;
 }
 
+// An entry in FamilySearch's "Find a Grave Index" (collection 2221801)
+// indexes one memorial. The page does not show which; the entry's data does,
+// in its own ExtRecordId field. The memorial's id, when the entry is in that
+// collection and names exactly one; else null.
+const FS_FAG_INDEX_COLLECTION = '2221801';
+function fsIndexedMemorial(g, collectionId) {
+  if (collectionId !== FS_FAG_INDEX_COLLECTION) return null;
+  const ids = [];
+  for (const f of (g && Array.isArray(g.fields)) ? g.fields : []) {
+    if (!/\/ExtRecordId$/.test(String((f && f.type) || ''))) continue;
+    for (const v of (f.values || [])) {
+      const t = String((v && v.text) || '').trim();
+      if (/^\d{1,15}$/.test(t) && Number(t) > 0 && ids.indexOf(String(Number(t))) < 0) ids.push(String(Number(t)));
+    }
+  }
+  return ids.length === 1 ? ids[0] : null;
+}
+
 // The record from FamilySearch's data for it (`g`, GEDCOM X) and its identity
 // (`ids`, from fsParseRecordPage). Everything comes from the data, not the
 // page: a single-page site's title tags can still describe an earlier record.
@@ -177,19 +195,24 @@ function fsRecordFrom(g, ids) {
   const imageId = (image && ((/3:1:([A-Z0-9-]+)/i.exec(about(image)) || [])[1] || '').toUpperCase()) ||
     ids.viewerImageId || null;
   const cite = persona.citations && persona.citations[0] && persona.citations[0].value;
-  return {
+  const collectionId = coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null;
+  const out = {
     record: {
       fsId: ids.fsId,
       url: 'https://www.familysearch.org/ark:/61903/1:1:' + ids.fsId,
       imageId,
       recordArk: rec ? (/1:2:[A-Z0-9-]+/i.exec(about(rec)) || [])[0] || null : null,
-      collectionId: coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null,
+      collectionId,
       collection: fsFirstTitle(coll),
       name: fsPersonName(fsOpenedPerson(g, ids.fsId)),
     },
     citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
     title: fsFirstTitle(persona),
   };
+  // A Find a Grave Index entry: the memorial it indexes (only then).
+  const memorialId = fsIndexedMemorial(g, collectionId);
+  if (memorialId) out.record.memorialId = memorialId;
+  return out;
 }
 
 // recordHints over the record's own events: the opened person's facts (and
@@ -373,6 +396,7 @@ async function fsImage(imageId, d) {
 // FHA-SYNC-END familysearch
 
 module.exports = {
+  fsIndexedMemorial,
   fsParseRecordPage,
   fsImageIdFromHref,
   fsAuthHeaders,

@@ -630,3 +630,76 @@ test('PR #223 F3/F14: with many photos, a photo that failed stays in the log; th
   assert.match(log[0], /^\d+ earlier lines not shown - all of them worked$/);
   assert.match(p.autoBox().text, /not every try worked - see below/);
 });
+
+// ── a Find a Grave Index entry: the memorial is the original ────────────────
+// Ancestry (collection 60525) names the memorial in the entry's fields;
+// FamilySearch (2221801) in the entry's data. The panel points to the
+// memorial, says what the archive holds of it, and carries the people
+// ticked on the entry to the memorial's own form.
+
+const ANC_ENTRY = 'https://www.ancestry.com/search/collections/60525/records/4321';
+const FS_ENTRY = 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123';
+
+function indexSite(where, memorial) {
+  return (msg, tab) => {
+    if (tab.url === CALVIN) {
+      if (msg.action === 'prefill') {
+        return { ok: true, prefill: { url: CALVIN, title: 'Calvin George Hartley', people: ['Calvin George Hartley'],
+          recipeHint: 'findagrave', findagraveMemorial: true } };
+      }
+      return { ok: false, error: 'not needed here' };
+    }
+    if (msg.action === 'prefill') {
+      return { ok: true, prefill: Object.assign({ url: tab.url, title: 'Calvin George Hartley', people: ['Calvin Hartley'],
+        recipeHint: where }, where === 'ancestry'
+        ? { ancestryRecord: true, indexedMemorial: memorial }
+        : { familysearchRecord: true }) };
+    }
+    if (msg.action === 'familysearchImageCheck') {
+      return { ok: true, record: true, fsId: 'ABCD-123', memorialId: memorial ? memorial.memorialId : null,
+        imageId: null, available: false, reason: 'this record has no image' };
+    }
+    return { ok: false, error: 'unexpected ' + msg.action };
+  };
+}
+
+const MEM = { memorialId: '900000001', url: CALVIN };
+
+test('an Ancestry Find a Grave Index entry points to the memorial, and opens it with the people brought along', async () => {
+  const p = await openPanel({ url: ANC_ENTRY, respond: indexSite('ancestry', MEM) });
+  assert.strictEqual(p.$('orig-elsewhere').hidden, false);
+  assert.strictEqual(p.$('orig-elsewhere-head').textContent, 'This is an index of a Find a Grave memorial.');
+  assert.strictEqual(p.$('btn-open-original').textContent, 'Open it on Find a Grave');
+  await p.$('btn-open-original').fire('click');
+  await settle();
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [CALVIN]);
+  assert.strictEqual(p.$('orig-elsewhere').hidden, true);
+  assert.deepStrictEqual(p.$('people-list').children.map((row) => row.children[0].dataset.name),
+    ['Calvin George Hartley', 'Calvin Hartley']);
+});
+
+test('a FamilySearch Find a Grave Index entry points to the memorial once its data is read', async () => {
+  const p = await openPanel({ url: FS_ENTRY, respond: indexSite('familysearch', MEM) });
+  await settle();
+  assert.strictEqual(p.$('orig-elsewhere').hidden, false);
+  assert.strictEqual(p.$('orig-elsewhere-head').textContent, 'This is an index of a Find a Grave memorial.');
+  const none = await openPanel({ url: FS_ENTRY, respond: indexSite('familysearch', null) });
+  await settle();
+  assert.strictEqual(none.$('orig-elsewhere').hidden, true);
+});
+
+test('the note says when the archive holds the memorial, with its photos or without them', async () => {
+  const full = await openPanel({ url: ANC_ENTRY, respond: indexSite('ancestry', MEM),
+    seenIt: { 'fag:900000001': { state: 'filed', sid: 'S-0a1b2c3d4e' } } });
+  await settle();
+  assert.match(full.$('orig-elsewhere-text').textContent, /already has this memorial with its photos \(source S-0a1b2c3d4e\)/);
+  const bare = await openPanel({ url: ANC_ENTRY, respond: indexSite('ancestry', MEM),
+    seenIt: { 'fagidx:900000001': { state: 'filed', sid: 'S-0a1b2c3d4e' } } });
+  await settle();
+  assert.match(bare.$('orig-elsewhere-text').textContent, /knows this memorial \(source S-0a1b2c3d4e\) but not its photos yet/);
+});
+
+test('an address that is not a Find a Grave memorial gets no note', async () => {
+  const p = await openPanel({ url: ANC_ENTRY, respond: indexSite('ancestry', { memorialId: '900000001', url: 'https://evil.example/memorial/900000001' }) });
+  assert.strictEqual(p.$('orig-elsewhere').hidden, true);
+});

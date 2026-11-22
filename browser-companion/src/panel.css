@@ -61,16 +61,16 @@ h1 { font-size: 19px; margin: 0 0 4px; }
 
 main { padding: 6px 18px 22px; }
 
-/* A Newspapers.com clipping met on Ancestry: the original is the better
-   capture, so this sits above step 1. */
-.np-elsewhere {
+/* A copy or index of an original kept elsewhere (a clipping, a memorial):
+   the original is the better capture, so this sits above step 1. */
+.orig-elsewhere {
   margin: 14px 0 0; padding: 12px 14px; border: 1.5px solid var(--accent);
   border-radius: 10px; background: var(--accent-soft); font-size: 14.5px;
 }
-.np-elsewhere[hidden] { display: none; }
-.np-elsewhere strong { display: block; color: var(--accent); margin-bottom: 2px; }
-.np-elsewhere span { display: block; }
-.np-elsewhere button { margin-top: 10px; font-weight: 600; border-color: var(--accent); color: var(--accent); }
+.orig-elsewhere[hidden] { display: none; }
+.orig-elsewhere strong { display: block; color: var(--accent); margin-bottom: 2px; }
+.orig-elsewhere span { display: block; }
+.orig-elsewhere button { margin-top: 10px; font-weight: 600; border-color: var(--accent); color: var(--accent); }
 
 /* Numbered steps: a sense of "a few quick things, then the button". */
 section { margin: 18px 0; }

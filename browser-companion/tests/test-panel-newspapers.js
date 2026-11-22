@@ -631,12 +631,12 @@ function galleryClipSite(clip, npPeople) {
 
 test('a gallery clipping on Ancestry: the panel points to the original and opens it, bringing the people along', async () => {
   const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }) });
-  assert.strictEqual(p.$('np-elsewhere').hidden, false, 'no word that this is a Newspapers.com clipping');
-  assert.match(p.$('np-elsewhere-text').textContent, /smaller copy/);
-  await p.$('btn-open-clip').fire('click');
+  assert.strictEqual(p.$('orig-elsewhere').hidden, false, 'no word that this is a Newspapers.com clipping');
+  assert.match(p.$('orig-elsewhere-text').textContent, /smaller copy/);
+  await p.$('btn-open-original').fire('click');
   await settle();
   assert.deepStrictEqual(p.navigations.map((n) => n.url), [URL_A]);
-  assert.strictEqual(p.$('np-elsewhere').hidden, true, 'the note stayed on the Newspapers.com page');
+  assert.strictEqual(p.$('orig-elsewhere').hidden, true, 'the note stayed on the Newspapers.com page');
   const people = p.$('people-list').children.map((row) => [row.children[0].dataset.name, row.children[0].checked]);
   assert.deepStrictEqual(people, [['Thomas Hartley', true]]);
 });
@@ -645,19 +645,19 @@ test('a gallery clipping the archive already holds says so, with its source', as
   const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }),
     seenIt: { 'clip:101': { state: 'filed', sid: 'S-0a1b2c3d4e' } } });
   await settle();
-  assert.match(p.$('np-elsewhere-text').textContent, /already has this clipping \(source S-0a1b2c3d4e\)/);
+  assert.match(p.$('orig-elsewhere-text').textContent, /already has this clipping \(source S-0a1b2c3d4e\)/);
 });
 
 test('an Ancestry photo that is no clipping, or names an address off Newspapers.com, gets no such note', async () => {
   for (const clip of [null, { clippingId: 101, url: 'https://evil.example/article/x/101/' }]) {
     const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite(clip) });
-    assert.strictEqual(p.$('np-elsewhere').hidden, true, JSON.stringify(clip));
+    assert.strictEqual(p.$('orig-elsewhere').hidden, true, JSON.stringify(clip));
   }
 });
 
 test('people carried from Ancestry are not listed twice on the clipping page', async () => {
   const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }, ['thomas hartley']) });
-  await p.$('btn-open-clip').fire('click');
+  await p.$('btn-open-original').fire('click');
   await settle();
   assert.deepStrictEqual(p.$('people-list').children.map((row) => row.children[0].dataset.name), ['thomas hartley']);
 });
@@ -665,8 +665,8 @@ test('people carried from Ancestry are not listed twice on the clipping page', a
 test('the clipping note goes when the tab moves on to a page that cannot be read', async () => {
   const site = galleryClipSite({ clippingId: 101, url: URL_A });
   const p = await openPanel({ url: ANC_CLIP, respond: (msg, tab) => (tab.url === ANC_CLIP ? site(msg, tab) : { ok: false, error: 'not ready' }) });
-  assert.strictEqual(p.$('np-elsewhere').hidden, false);
+  assert.strictEqual(p.$('orig-elsewhere').hidden, false);
   await p.navigate('https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/facts');
   await settle();
-  assert.strictEqual(p.$('np-elsewhere').hidden, true);
+  assert.strictEqual(p.$('orig-elsewhere').hidden, true);
 });

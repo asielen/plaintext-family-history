@@ -31,13 +31,14 @@
       </header>
 
       <main>
-        <!-- A Newspapers.com clipping saved to an Ancestry gallery: Ancestry
-             keeps only a smaller copy, so the panel points to the original
-             (showClipElsewhere in panel.js). -->
-        <div id="np-elsewhere" class="np-elsewhere" role="note" hidden>
-          <strong>This is a Newspapers.com clipping.</strong>
-          <span id="np-elsewhere-text"></span>
-          <button id="btn-open-clip" type="button">Open it on Newspapers.com</button>
+        <!-- The record is a copy or an index of an original kept elsewhere (a
+             Newspapers.com clipping saved to an Ancestry gallery, a Find a
+             Grave Index entry): the panel points to the original
+             (showElsewhere in panel.js). -->
+        <div id="orig-elsewhere" class="orig-elsewhere" role="note" hidden>
+          <strong id="orig-elsewhere-head"></strong>
+          <span id="orig-elsewhere-text"></span>
+          <button id="btn-open-original" type="button"></button>
         </div>
 
         <!-- STEP 1 - Confirm, don't fill. Editable pre-filled fields. -->

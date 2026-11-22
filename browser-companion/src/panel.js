@@ -96,14 +96,14 @@
     // The shared item whose Capture last found Ancestry's Details behind its
     // picture (#261 audit C1): pressed again, it is saved without them.
     photoBehind: null,
-    // On a gallery clipping: { clippingId, url } of its original on
-    // Newspapers.com (showClipElsewhere), else null.
-    clipElsewhere: null,
-    // "Open it on Newspapers.com" was pressed: { clippingId, people, at }.
-    // When the panel reads that clipping on Newspapers.com, the people ticked
-    // on Ancestry are added to its form (carryClipPeople), so the tie to the
-    // tree person is not lost.
-    clipCarry: null,
+    // On a copy or index of an original kept elsewhere: { kind, id, url }
+    // (showElsewhere), kind 'clipping' (Newspapers.com) or 'memorial' (Find
+    // a Grave); else null.
+    elsewhere: null,
+    // "Open it on …" was pressed: { kind, id, people, at }. When the panel
+    // reads that original, the people ticked on the copy are added to its
+    // form (carryPeople), so the tie to the tree person is not lost.
+    carry: null,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -612,7 +612,8 @@
     }
     fill('f-type', prefill.sourceType || '');
     if (!keep.has('people')) renderPeople(prefill.people);
-    showClipElsewhere(prefill);
+    showElsewhere(elsewhereOf(prefill));
+    if (prefill.findagraveMemorial && memorialIdOf(prefill.url)) carryPeople('memorial', memorialIdOf(prefill.url));
     // On a shared photo: what of its Details the form now shows - the names
     // listed, the Details it was filled from - for Capture to compare with
     // the page as it is then (captureAncestryPhoto).
@@ -654,66 +655,119 @@
     updateAssetStatus();
   }
 
-  // ── a Newspapers.com clipping met on Ancestry ─────────────────────────────
-  // A clipping saved to a tree's gallery is Ancestry's smaller copy under a
-  // photo id of its own. Its original on Newspapers.com gives the whole page
-  // at full size, the clipping cut from it and the site's citation, and the
-  // archive may hold it already (Seen It, by clip:{id}). So the panel says
-  // so above step 1 and offers to open the original in this tab, where the
-  // panel follows it (refreshOnNavigation) and captures it as any clipping.
-  // Capturing Ancestry's copy stays possible: nothing is taken away.
-  const CLIP_CARRY_MS = 5 * 60 * 1000;
-  const NP_ORIGINAL_RE = /^https:\/\/www\.newspapers\.com\/(article|clip)\//;
+  // ── an original kept elsewhere ───────────────────────────────────────────
+  // Some records are a copy or an index of something kept on another site:
+  //   - a Newspapers.com clipping saved to a tree's Ancestry gallery is
+  //     Ancestry's smaller copy under a photo id of its own; the original
+  //     gives the whole page at full size, the clipping cut from it and the
+  //     site's citation (Seen It knows it as clip:{id});
+  //   - an entry in a Find a Grave Index (Ancestry's collection 60525,
+  //     FamilySearch's 2221801) indexes one memorial; the memorial has its
+  //     photos, the family it links and the volunteer's notes (fag:{id}, or
+  //     fagidx:{id} for one known without its photos).
+  // The panel says so above step 1, says whether the archive holds the
+  // original already, and offers to open it in this tab, where the panel
+  // follows it (refreshOnNavigation) and captures it as usual. Capturing
+  // the copy stays possible: nothing is taken away.
+  const CARRY_MS = 5 * 60 * 1000;
+  const ELSEWHERE = {
+    clipping: {
+      urlRe: /^https:\/\/www\.newspapers\.com\/(article|clip)\//,
+      head: 'This is a Newspapers.com clipping.',
+      text: 'Ancestry keeps only a smaller copy of it. The original on Newspapers.com gives you the whole ' +
+        'newspaper page and the clipping at full size, with its citation.',
+      button: 'Open it on Newspapers.com',
+      site: 'Newspapers.com',
+      keys: (id) => ['clip:' + id],
+      held: (h) => (h['clip:'] ? 'The archive already has this clipping' + src(h['clip:']) +
+        ', so there is nothing more to save here.' : null),
+    },
+    memorial: {
+      urlRe: /^https:\/\/www\.findagrave\.com\/memorial\/\d+/,
+      head: 'This is an index of a Find a Grave memorial.',
+      text: 'The memorial itself has more: its photos, the family it links and the volunteer’s notes.',
+      button: 'Open it on Find a Grave',
+      site: 'Find a Grave',
+      keys: (id) => ['fag:' + id, 'fagidx:' + id],
+      held: (h) => (h['fag:'] ? 'The archive already has this memorial with its photos' + src(h['fag:']) +
+        ', so there is nothing more to save here.'
+        : h['fagidx:'] ? 'The archive knows this memorial' + src(h['fagidx:']) + ' but not its photos yet: ' +
+          'open it on Find a Grave to save them.' : null),
+    },
+  };
+  function src(h) {
+    if (h.where !== 'archive') return ' (captured, waiting in the inbox to be filed)';
+    return h.source ? ' (source ' + h.source + ')' : '';
+  }
 
-  function showClipElsewhere(prefill) {
-    const clip = prefill && prefill.ancestryPhoto ? prefill.ancestryNewspapersClip : null;
-    const shown = clip && clip.clippingId > 0 && NP_ORIGINAL_RE.test(String(clip.url || '')) ? clip : null;
-    state.clipElsewhere = shown;
-    $('np-elsewhere').hidden = !shown;
+  // What the page read says is elsewhere: { kind, id, url }, or null.
+  function elsewhereOf(prefill) {
+    if (!prefill) return null;
+    const clip = prefill.ancestryPhoto ? prefill.ancestryNewspapersClip : null;
+    if (clip) return { kind: 'clipping', id: String(clip.clippingId), url: clip.url };
+    const mem = prefill.ancestryRecord ? prefill.indexedMemorial : null;
+    if (mem) return { kind: 'memorial', id: String(mem.memorialId), url: mem.url };
+    return null;
+  }
+
+  // Show (or, given null, hide) the note for `target`.
+  function showElsewhere(target) {
+    const kind = target && ELSEWHERE[target.kind];
+    const shown = kind && /^\d{1,15}$/.test(String(target.id)) && Number(target.id) > 0 &&
+      kind.urlRe.test(String(target.url || '')) ? target : null;
+    state.elsewhere = shown;
+    $('orig-elsewhere').hidden = !shown;
     if (!shown) return;
-    $('np-elsewhere-text').textContent = 'Ancestry keeps only a smaller copy of it. The original on ' +
-      'Newspapers.com gives you the whole newspaper page and the clipping at full size, with its citation. ' +
-      'The people ticked below come along.';
-    $('btn-open-clip').disabled = false;
-    seenItHeld(['clip:' + shown.clippingId]).then((held) => {
-      const h = held['clip:' + shown.clippingId];
-      if (!h || state.clipElsewhere !== shown) return;
-      $('np-elsewhere-text').textContent = h.where === 'archive'
-        ? 'The archive already has this clipping' + (h.source ? ' (source ' + h.source + ')' : '') +
-          ', so there is nothing more to save here.'
-        : 'This clipping is already captured and waiting in the inbox to be filed.';
+    $('orig-elsewhere-head').textContent = kind.head;
+    $('orig-elsewhere-text').textContent = kind.text + ' The people ticked below come along.';
+    $('btn-open-original').textContent = kind.button;
+    $('btn-open-original').disabled = false;
+    const keys = kind.keys(shown.id);
+    seenItHeld(keys).then((held) => {
+      if (state.elsewhere !== shown) return;
+      const byKind = {};
+      for (const k of keys) if (held[k]) byKind[k.replace(/\d+$/, '')] = held[k];
+      const said = kind.held(byKind);
+      if (said) $('orig-elsewhere-text').textContent = said;
     });
   }
 
-  function openClipOriginal() {
-    const clip = state.clipElsewhere;
-    if (!clip || state.busy || state.batchDriving || !state.tabId) return;
-    state.clipCarry = { clippingId: clip.clippingId, people: checkedPeople(), at: Date.now() };
-    $('btn-open-clip').disabled = true;
-    chrome.tabs.update(state.tabId, { url: clip.url }, () => {
+  function openOriginal() {
+    const target = state.elsewhere;
+    if (!target || state.busy || state.batchDriving || !state.tabId) return;
+    const site = ELSEWHERE[target.kind].site;
+    state.carry = { kind: target.kind, id: target.id, people: checkedPeople(), at: Date.now() };
+    $('btn-open-original').disabled = true;
+    chrome.tabs.update(state.tabId, { url: target.url }, () => {
       if (!chrome.runtime.lastError) return;
-      state.clipCarry = null;
-      $('btn-open-clip').disabled = false;
-      setStageResult('Could not open the clipping on Newspapers.com (' + chrome.runtime.lastError.message +
-        '). Open ' + clip.url + ' yourself, then press ↻ Re-read page.', 'error');
+      state.carry = null;
+      $('btn-open-original').disabled = false;
+      setStageResult('Could not open it on ' + site + ' (' + chrome.runtime.lastError.message +
+        '). Open ' + target.url + ' yourself, then press ↻ Re-read page.', 'error');
     });
   }
 
-  // On the clipping's own Newspapers.com page, once its clippings are read:
-  // add the people carried from Ancestry that the form does not list yet.
-  // Only that clipping's page takes them, and only for a few minutes.
-  function carryClipPeople(np) {
-    const carry = state.clipCarry;
-    if (!carry || !np) return;
-    if (Date.now() - carry.at > CLIP_CARRY_MS) {
-      state.clipCarry = null;
+  // On the original's own page, once it is read (`id`: the clipping or
+  // memorial that page shows): add the people carried from the copy that the
+  // form does not list yet. Only that page takes them, for a few minutes.
+  function carryPeople(kind, id) {
+    const carry = state.carry;
+    if (!carry) return;
+    if (Date.now() - carry.at > CARRY_MS) {
+      state.carry = null;
       return;
     }
-    if (np.kind !== 'article' || Number(np.focusClipId) !== carry.clippingId) return;
-    state.clipCarry = null;
+    if (carry.kind !== kind || String(id) !== carry.id) return;
+    state.carry = null;
     const have = new Set(Array.from($('people-list').querySelectorAll('input'))
       .map((cb) => String(cb.dataset.name).toLowerCase()));
     for (const name of carry.people) if (!have.has(String(name).toLowerCase())) addPersonRow(name, true);
+  }
+
+  // A Find a Grave memorial's id, from its page address.
+  function memorialIdOf(url) {
+    const m = /^https:\/\/(?:www\.)?findagrave\.com\/memorial\/(\d+)/i.exec(String(url || ''));
+    return m ? String(Number(m[1])) : null;
   }
 
   // The prefill's "Save the record" half: which automatic path applies, and
@@ -1052,7 +1106,7 @@
       return;
     }
     const np = state.np;
-    carryClipPeople(np);
+    if (np.kind === 'article') carryPeople('clipping', np.focusClipId);
     const own = np.ownClips;
     note.style.display = 'block';
     if (!own.length) {
@@ -1925,6 +1979,11 @@
     }
     state.fsCheck = r && r.ok ? r : { unknown: true, error: (r && r.error) || 'no answer from the page' };
     if (r && r.ok && r.title && !state.userEdited.has('f-title')) $('f-title').value = r.title;
+    // A Find a Grave Index entry: its memorial, from the record's own data.
+    if (r && r.ok && r.record && r.memorialId) {
+      showElsewhere({ kind: 'memorial', id: String(r.memorialId),
+        url: 'https://www.findagrave.com/memorial/' + String(r.memorialId).replace(/\D/g, '') });
+    }
     restrictedImageNote(r);
     updateAssetStatus();
   }
@@ -3414,7 +3473,7 @@
     state.fsNoteLine = null;
     $('f-url').value = url || '';
     renderPeople([]);
-    showClipElsewhere(null);
+    showElsewhere(null);
   }
 
   // "Re-read page": start again from the page in front of her. Everything
@@ -3751,7 +3810,7 @@
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-rescrape').addEventListener('click', rescrape);
-    $('btn-open-clip').addEventListener('click', openClipOriginal);
+    $('btn-open-original').addEventListener('click', openOriginal);
     $('btn-rescrape-file').addEventListener('click', rescrapeFile);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {

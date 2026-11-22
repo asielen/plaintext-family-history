@@ -360,3 +360,23 @@ test('Codex 4504508005: an answer whose body breaks off is a cause that passes -
   assert.deepStrictEqual([img.ok, img.transient], [false, true]);
   assert.match(img.error, /broke off/);
 });
+
+// FamilySearch's "Find a Grave Index" (2221801): the memorial is in the
+// entry's own ExtRecordId field, and the record carries it only then.
+test('fsRecordFrom: a Find a Grave Index entry names the memorial it indexes; other records do not', () => {
+  const entry = {
+    sourceDescriptions: [
+      { about: 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123', citations: [{ value: 'cite' }] },
+      { about: 'https://www.familysearch.org/platform/records/collections/2221801', resourceType: 'http://gedcomx.org/Collection',
+        titles: [{ value: 'Find a Grave Index' }] },
+    ],
+    fields: [{ type: 'http://familysearch.org/types/fields/ExtRecordId', values: [{ text: '5505' }] }],
+  };
+  assert.strictEqual(fsr.fsRecordFrom(entry, { fsId: 'ABCD-123' }).record.memorialId, '5505');
+  const other = JSON.parse(JSON.stringify(entry));
+  other.sourceDescriptions[1].about = 'https://www.familysearch.org/platform/records/collections/1001';
+  assert.ok(!('memorialId' in fsr.fsRecordFrom(other, { fsId: 'ABCD-123' }).record));
+  const two = JSON.parse(JSON.stringify(entry));
+  two.fields[0].values.push({ text: '5506' });
+  assert.ok(!('memorialId' in fsr.fsRecordFrom(two, { fsId: 'ABCD-123' }).record));
+});

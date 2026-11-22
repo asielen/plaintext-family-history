@@ -888,3 +888,18 @@ test('ancMediaNewspapersClip: the original clipping, from the sharer\'s card onl
   const two = CLIP_HTML.replace('>this article</a>', '>this article</a> and <a href="https://www.newspapers.com/clip/4322/x/">another</a>');
   assert.strictEqual(anc.ancMediaNewspapersClip(parse(two)), null);
 });
+
+// An entry in Ancestry's "U.S., Find a Grave Index" (60525) names the
+// memorial it indexes in its own URL field, and only there is it read.
+test('ancRecordMemorial: the memorial in a Find a Grave Index entry\'s own fields, and nowhere else', () => {
+  const page60525 = (fields, outside) => parse('<html><body><div id="recordFieldsContainer"><dl>' + fields +
+    '</dl></div>' + (outside || '') + '</body></html>');
+  const url = (id) => '<dt>URL</dt><dd><a class="externalLink" href="https://www.findagrave.com/memorial/' + id + '/thomas-hartley?x=1">link</a></dd>';
+  const ids = { dbId: '60525', recordId: '4321' };
+  assert.deepStrictEqual(anc.ancRecordMemorial(page60525(url(5505)), ids),
+    { memorialId: '5505', url: 'https://www.findagrave.com/memorial/5505/thomas-hartley' });
+  // Another collection, a link outside the fields, two memorials: none.
+  assert.strictEqual(anc.ancRecordMemorial(page60525(url(5505)), { dbId: '90001', recordId: '4321' }), null);
+  assert.strictEqual(anc.ancRecordMemorial(page60525('', '<a href="https://www.findagrave.com/memorial/5505/x">x</a>'), ids), null);
+  assert.strictEqual(anc.ancRecordMemorial(page60525(url(5505) + url(5506)), ids), null);
+});
