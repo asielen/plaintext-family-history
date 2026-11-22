@@ -107,7 +107,10 @@ def _string(raw: str) -> str:
     body = raw[1:-1]
     if raw[0] == "'":
         body = body.replace('\\\'', "'").replace('"', '\\"')
-    return json.loads('"' + body + '"')
+    try:
+        return json.loads('"' + body + '"')
+    except ValueError as e:
+        raise ReadError(f'a string this reader cannot decode: {raw[:40]!r} ({e})') from None
 
 
 def parse_value(toks: list, i: int):
@@ -177,8 +180,11 @@ def slim(entries: list[dict]) -> list[dict]:
         year = (e.get('dates') or {}).get('year') if isinstance(e.get('dates'), dict) else None
         if isinstance(year, int):
             row['year'] = year
-        if e.get('partOf'):
-            row['partOf'] = [str(p) for p in e['partOf']]
+        part = e.get('partOf')
+        if part:
+            if not isinstance(part, list):
+                raise ReadError(f'{e["wtsId"]}: partOf is {part!r}, not a list of collection ids')
+            row['partOf'] = [str(p) for p in part]
         row['sites'] = sites
         out.append(row)
     return out

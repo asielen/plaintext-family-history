@@ -73,6 +73,7 @@ from _lib import (
     record_collection_group,
     record_collection_index,
     site_data_reader,
+    source_record_subjects,
     source_site_collection,
     RECIPROCAL_RELATIONSHIP_TYPE,     # relationships: entries an accepted claim owes (SPEC §9)
     RELATIONSHIP_ENTRY_ROLES,
@@ -4952,8 +4953,13 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
     sources, every claim is counted twice and the copies drift apart.
 
     The rule: two sources from different sites whose collections are one set
-    in record_collections.json (WikiTree Sourcer's map, `_lib`), that name at
-    least one person in common (by ID), with dates that agree (`_dates_agree`).
+    in record_collections.json (WikiTree Sourcer's map, `_lib`), whose saved
+    site data shares a subject (`source_record_subjects`: whose entries they
+    are, so a wife's entry beside her husband's or one twin's beside the
+    other's is never paired, while a source holding a whole page's entries
+    pairs with a copy of any one of them), that name at least one person in common (by ID),
+    with dates that agree (`_dates_agree`). A source with no subject in its
+    site data is never paired: a missed copy costs less than a wrong merge.
     Two sources from one site are never paired: the capture add-on keeps each
     household member's record of one census page as its own source on purpose
     (`same_image_as`). A source's collection comes from the structured data it
@@ -4969,18 +4975,20 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
     for sid, meta in sorted(registry.source_meta.items()):
         sc = source_site_collection(meta, read)
         group = sc and record_collection_group(sc[0], sc[1], index)
-        if not group:
+        subjects = source_record_subjects(meta, read) if group else set()
+        if not subjects:
             continue
+        listed = meta.get('people')
         people = {
-            fmt_id_display(m.group(0)) for p in (meta.get('people') or [])
+            fmt_id_display(m.group(0)) for p in (listed if isinstance(listed, list) else [listed])
             for m in ID_RE.finditer(str(p)) if m.group(1).upper() == 'P'}
         if people:
             by_group.setdefault(group[0], []).append(
-                (sid, sc[0], sc[1], people, str(meta.get('source_date') or ''), group))
+                (sid, sc[0], sc[1], people, str(meta.get('source_date') or ''), group, subjects))
     for members in by_group.values():
         for i, a in enumerate(members):
             for b in members[i + 1:]:
-                if a[1] == b[1] or not (a[3] & b[3]):
+                if a[1] == b[1] or not (a[6] & b[6]) or not (a[3] & b[3]):
                     continue
                 _gid, title, year = a[5]
                 if not _dates_agree(a[4], b[4], year):
@@ -4991,11 +4999,12 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
                 findings.append(Finding('W', 'W162', path, (
                     f'{fmt_id_display(first[0])} ({_SITE_NAMES[first[1]]} collection {first[2]}) and '
                     f'{fmt_id_display(second[0])} ({_SITE_NAMES[second[1]]} collection {second[2]}) look like one '
-                    f'record saved from two sites: both are the "{title}", they name {shared} '
-                    f'{"person" if shared == 1 else "people"} in common, and their dates agree. '
-                    'Compare the two. If they are one record, keep the one with the record\'s image '
-                    '(or the fuller one) and fold the other into it: '
-                    f'`fha source merge <the one to keep> <the other> --dry-run`, then without --dry-run.')))
+                    f'record saved from two sites: both are the "{title}" entry for the same person (or page), '
+                    f'they name {shared} {"person" if shared == 1 else "people"} in common, and their dates '
+                    'agree. Compare the two. If they are one record, fold one into the other: '
+                    f'`fha source merge {fmt_id_display(first[0])} {fmt_id_display(second[0])} --dry-run` '
+                    'keeps the first (swap the two ids to keep the other; keep the one with the '
+                    'record\'s image), then run it again without --dry-run.')))
 
 
 def _check_untranscribed_evidence(

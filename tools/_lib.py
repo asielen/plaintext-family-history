@@ -9569,11 +9569,14 @@ def record_collection_index(path: Path | None = None) -> dict:
 
     def group_of(rid: str) -> str:
         seen = set()
-        while rid in rows and rows[rid].get('partOf') and rid not in seen:
+        while rid in rows and isinstance(rows[rid].get('partOf'), list) and rows[rid]['partOf'] and rid not in seen:
             seen.add(rid)
             rid = str(rows[rid]['partOf'][0])
         return rid
 
+    # A site number that stands for two record sets (FamilySearch keeps Nova
+    # Scotia's births, marriages and deaths under one) says nothing about
+    # which set a record is from, so it is left out: None, never the first.
     index: dict = {}
     for rid, r in rows.items():
         g = group_of(rid)
@@ -9581,7 +9584,13 @@ def record_collection_index(path: Path | None = None) -> dict:
         year = r.get('year') if isinstance(r.get('year'), int) else head.get('year')
         for site, ids in r['sites'].items():
             for cid in ids if isinstance(ids, list) else []:
-                index.setdefault((str(site), str(cid)), (g, str(head.get('title') or r.get('title') or g), year))
+                key = (str(site), str(cid))
+                entry = (g, str(head.get('title') or r.get('title') or g), year)
+                if key in index and (index[key] is None or index[key][0] != g):
+                    index[key] = None
+                else:
+                    index.setdefault(key, entry)
+    index = {k: v for k, v in index.items() if v is not None}
     if path is None:
         _record_collections_cache = index
     return index
@@ -9590,6 +9599,25 @@ def record_collection_index(path: Path | None = None) -> dict:
 def record_collection_group(site: str, collection_id: str, index: dict | None = None):
     """(group id, title, year) for a site's collection, or None when unmapped."""
     return (index if index is not None else record_collection_index()).get((site, str(collection_id)))
+
+
+def source_record_subjects(meta: dict, read_site_data) -> set[str]:
+    """Whose entries a captured source holds: the name the site gives each
+    record (`record.name` in the saved site data the capture add-on writes, on
+    Ancestry and FamilySearch alike), case, spacing and punctuation folded.
+    A source may hold several (household members' entries of one page folded
+    into one source); none when no site data names one. Two copies of one
+    record share a subject; a wife's entry beside her husband's does not."""
+    names = set()
+    for f in meta.get('files') if isinstance(meta.get('files'), list) else []:
+        if not isinstance(f, dict) or 'site-data' not in str(f.get('role', '')):
+            continue
+        data = read_site_data(str(f.get('file', '')))
+        rec = data.get('record') if isinstance(data, dict) else None
+        name = rec.get('name') if isinstance(rec, dict) else None
+        if isinstance(name, str) and name.strip():
+            names.add(' '.join(re.sub(r'[^\w\s]', ' ', name.casefold()).split()))
+    return names
 
 
 def source_site_collection(meta: dict, read_site_data) -> tuple[str, str] | None:
@@ -9611,7 +9639,7 @@ def source_site_collection(meta: dict, read_site_data) -> tuple[str, str] | None
         for rx in _ANCESTRY_COLLECTION_RES:
             for m in rx.finditer(text):
                 found.add(('ancestry', m.group(1)))
-    for f in meta.get('files') or []:
+    for f in meta.get('files') if isinstance(meta.get('files'), list) else []:
         if not isinstance(f, dict) or 'site-data' not in str(f.get('role', '')):
             continue
         data = read_site_data(str(f.get('file', '')))

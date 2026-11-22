@@ -81,6 +81,11 @@ class BuilderTests(unittest.TestCase):
         self.assertIn('line', str(cm.exception))
         with self.assertRaises(brc.ReadError):
             brc.build('const Other = [];', 'abc1234')
+        # A string escape JSON does not share, and a partOf that is no list.
+        with self.assertRaises(brc.ReadError):
+            brc.build(SAMPLE_MJS.replace('"Kansas, Birth Index",', '"Kansas\\x41",'), 'abc1234')
+        with self.assertRaises(brc.ReadError):
+            brc.build(SAMPLE_MJS.replace('partOf: ["HartleyBirthReg"]', 'partOf: "HartleyBirthReg"'), 'abc1234')
 
     def test_the_shipped_map_carries_the_notice_and_the_censuses(self):
         data = json.loads((ROOT / 'tools' / 'record_collections.json').read_text(encoding='utf-8'))
@@ -109,6 +114,17 @@ class LookupTests(unittest.TestCase):
         self.assertEqual(record_collection_group('ancestry', 'ksbirth', idx)[0], 'HartleyBirthReg')
         self.assertEqual(record_collection_group('fs', '1001', idx)[0], 'HartleyBirthReg')
         self.assertIsNone(record_collection_group('fs', '9999', idx))
+
+    def test_a_site_number_two_record_sets_share_is_left_unmapped(self):
+        # FamilySearch keeps one province's births, marriages and deaths under
+        # one number: it cannot say which set a record is from.
+        text = SAMPLE_MJS.replace('sites: { ancestry: { id: "6742" }, fs: { id: "1417683" } },',
+                                  'sites: { ancestry: { id: "6742" }, fs: { id: "1001" } },')
+        path = self.tmp / 'map2.json'
+        path.write_text(json.dumps(brc.build(text, 'abc1234')), encoding='utf-8')
+        idx = record_collection_index(path)
+        self.assertIsNone(record_collection_group('fs', '1001', idx))
+        self.assertEqual(record_collection_group('ancestry', '6742', idx)[0], 'UsCensus1880')
 
     def test_a_sources_collection_comes_from_its_record_address_or_its_site_data(self):
         none = lambda p: None  # noqa: E731
@@ -155,14 +171,17 @@ class SameRecordTwoSitesTests(unittest.TestCase):
         (self.root / 'people').mkdir()
         (self.root / 'sources' / 'census').mkdir(parents=True)
 
-    def _source(self, sid, *, site, coll, people=(P1,), date="'1880-06-04'"):
-        files = ''
+    def _source(self, sid, *, site, coll, people=(P1,), date="'1880-06-04'", name='Calvin Hartley'):
+        # Both sites' captures carry the site's data, naming whose entry it is.
+        rel = f'documents/census/record-data_{sid.upper()}.json'
+        (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+        record = ({'url': 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123', 'collectionId': coll}
+                  if site == 'fs' else {'dbId': coll, 'recordId': '4321'})
+        if name:
+            record['name'] = name
+        (self.root / rel).write_text(json.dumps({'record': record}), encoding='utf-8')
+        files = f'\n  - file: {rel}\n    role: site-data'
         if site == 'fs':
-            rel = f'documents/census/record-data_{sid.upper()}.json'
-            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
-            (self.root / rel).write_text(json.dumps({'record': {
-                'url': 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123', 'collectionId': coll}}), encoding='utf-8')
-            files = f'\n  - file: {rel}\n    role: site-data'
             citation = '"United States Census, 1880," database, FamilySearch (https://www.familysearch.org/ark:/61903/1:1:ABCD-123)'
             repo = 'FamilySearch'
         else:
@@ -187,7 +206,47 @@ class SameRecordTwoSitesTests(unittest.TestCase):
         self.assertIn('s-0a1b2c3d4e (Ancestry collection 6742)', msg)
         self.assertIn('s-1b2c3d4e5f (FamilySearch collection 1417683)', msg)
         self.assertIn('1880 United States Federal Census', msg)
-        self.assertIn('fha source merge', msg)
+        # The exact command, both ids filled in.
+        self.assertIn('`fha source merge s-0a1b2c3d4e s-1b2c3d4e5f --dry-run`', msg)
+
+    def test_the_same_subject_matches_whatever_case_or_punctuation_the_sites_use(self):
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', name='CALVIN HARTLEY')
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', name='Calvin  Hartley.')
+        self.assertEqual(len(self._w162()), 1)
+
+    def test_a_husbands_and_a_wifes_entries_on_one_page_are_two_records(self):
+        # Both list the whole household, so they name the same people; whose
+        # entry each is differs, and that is what makes them two records.
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', people=(P1, P2), name='Calvin Hartley')
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', people=(P1, P2), name='Margaret Hartley')
+        self.assertEqual(self._w162(), [])
+
+    def test_a_source_holding_a_whole_pages_entries_pairs_with_a_copy_of_one(self):
+        # One source per census page, its members' entries folded into it.
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', name='Calvin Hartley')
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683', name='Margaret Hartley')
+        more = self.root / 'documents' / 'census' / 'record-data-2_S-1B2C3D4E5F.json'
+        more.write_text(json.dumps({'record': {'url': 'https://www.familysearch.org/ark:/61903/1:1:ABCD-124',
+                                               'collectionId': '1417683', 'name': 'Calvin Hartley'}}), encoding='utf-8')
+        path = next((self.root / 'sources' / 'census').glob('*_s-1b2c3d4e5f.md'))
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            '    role: site-data',
+            '    role: site-data\n  - file: documents/census/record-data-2_S-1B2C3D4E5F.json\n    role: site-data', 1),
+            encoding='utf-8')
+        self.assertEqual(len(self._w162()), 1)
+
+    def test_a_copy_whose_site_data_names_no_subject_is_never_paired(self):
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', name=None)
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683')
+        self.assertEqual(self._w162(), [])
+
+    def test_a_people_field_that_is_not_a_list_does_not_stop_lint(self):
+        self._source('s-0a1b2c3d4e', site='ancestry', coll='6742')
+        self._source('s-1b2c3d4e5f', site='fs', coll='1417683')
+        path = next((self.root / 'sources' / 'census').glob('*_s-1b2c3d4e5f.md'))
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'people:\n  - "[[p-0a1b2c3d4e|Someone]]"\n', 'people: 5\n'), encoding='utf-8')
+        self.assertEqual(self._w162(), [])
 
     def test_a_census_source_with_no_date_takes_the_census_year(self):
         self._source('s-0a1b2c3d4e', site='ancestry', coll='6742', date=None)
