@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.19",
-  "generated": "2026-11-21",
+  "generated": "2026-11-22",
   "files": [
     {
       "path": ".agents/skills/README.md",
