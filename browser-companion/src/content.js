@@ -1484,7 +1484,32 @@
         fileStem: ancPhotoFileStem(id.mediaId),
       }),
       details,
+      newspapersClip: ancMediaNewspapersClip(root),
     };
+  }
+
+  // A Newspapers.com clipping saved into a tree's gallery is an Ancestry copy:
+  // a picture about 1200 pixels tall, under a media id of its own. The original
+  // on Newspapers.com is better evidence (the whole page at full size, the
+  // clipping cut from it, the site's citation), and the archive may hold it
+  // already. The sharer's card says so: "originally shared <a>this article</a>
+  // on <date> from Newspapers.com", in span.mediaOriginallyShared. Its link to
+  // the clipping (/article/{slug}/{id}/, or the older /clip/{id}/{slug}/) gives
+  // { clippingId, url }; `url` is that address on www.newspapers.com, path only.
+  // Read from that card alone, never from a comment that links some other
+  // clipping, and only when the card names exactly one.
+  const ANC_NP_CLIP_RE = /^https?:\/\/(?:www\.)?newspapers\.com(\/(?:article\/[^/?#]+\/(\d+)|(?:article|clip)\/(\d+))(?:\/[^/?#]*)?\/?)(?:[?#]|$)/i;
+
+  function ancMediaNewspapersClip(root) {
+    const found = [];
+    for (const card of ancElements(root, (e) => ancClasses(e).indexOf('mediaOriginallyShared') >= 0)) {
+      for (const a of ancElements(card, (e) => ancTag(e) === 'A')) {
+        const m = ANC_NP_CLIP_RE.exec(String(a.getAttribute('href') || '').trim());
+        const id = m ? Number(m[2] || m[3]) : 0;
+        if (id > 0 && !found.some((f) => f.clippingId === id)) found.push({ clippingId: id, url: 'https://www.newspapers.com' + m[1] });
+      }
+    }
+    return found.length === 1 ? found[0] : null;
   }
 
   // What kind of source a shared item is, from the category its sharer chose
@@ -3460,6 +3485,9 @@
       // Ancestry's Details still describe the item shown before (#261 audit
       // B1): the panel says to wait, and nothing of them fills the form.
       ancestryPhotoNotReady: photo && !photo.ok && photo.transient ? photo.error : null,
+      // A Newspapers.com clipping saved to the gallery: { clippingId, url } of
+      // the original, which the panel offers to open instead.
+      ancestryNewspapersClip: photoInfo && photoInfo.newspapersClip ? photoInfo.newspapersClip : null,
       // A FamilySearch record (or the image viewer opened from one): Capture
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),

@@ -96,6 +96,14 @@
     // The shared item whose Capture last found Ancestry's Details behind its
     // picture (#261 audit C1): pressed again, it is saved without them.
     photoBehind: null,
+    // On a gallery clipping: { clippingId, url } of its original on
+    // Newspapers.com (showClipElsewhere), else null.
+    clipElsewhere: null,
+    // "Open it on Newspapers.com" was pressed: { clippingId, people, at }.
+    // When the panel reads that clipping on Newspapers.com, the people ticked
+    // on Ancestry are added to its form (carryClipPeople), so the tie to the
+    // tree person is not lost.
+    clipCarry: null,
     // FamilySearch: a record (ark 1:1, or the viewer opened from one) and a
     // bare image viewer (ark 3:1). fsCheck is the answer to "can this page's
     // image be saved from here?", asked when the page is read (null until it
@@ -604,6 +612,7 @@
     }
     fill('f-type', prefill.sourceType || '');
     if (!keep.has('people')) renderPeople(prefill.people);
+    showClipElsewhere(prefill);
     // On a shared photo: what of its Details the form now shows - the names
     // listed, the Details it was filled from - for Capture to compare with
     // the page as it is then (captureAncestryPhoto).
@@ -643,6 +652,68 @@
       banner.classList.remove('warn', 'recipe');
     }
     updateAssetStatus();
+  }
+
+  // ── a Newspapers.com clipping met on Ancestry ─────────────────────────────
+  // A clipping saved to a tree's gallery is Ancestry's smaller copy under a
+  // photo id of its own. Its original on Newspapers.com gives the whole page
+  // at full size, the clipping cut from it and the site's citation, and the
+  // archive may hold it already (Seen It, by clip:{id}). So the panel says
+  // so above step 1 and offers to open the original in this tab, where the
+  // panel follows it (refreshOnNavigation) and captures it as any clipping.
+  // Capturing Ancestry's copy stays possible: nothing is taken away.
+  const CLIP_CARRY_MS = 5 * 60 * 1000;
+  const NP_ORIGINAL_RE = /^https:\/\/www\.newspapers\.com\/(article|clip)\//;
+
+  function showClipElsewhere(prefill) {
+    const clip = prefill && prefill.ancestryPhoto ? prefill.ancestryNewspapersClip : null;
+    const shown = clip && clip.clippingId > 0 && NP_ORIGINAL_RE.test(String(clip.url || '')) ? clip : null;
+    state.clipElsewhere = shown;
+    $('np-elsewhere').hidden = !shown;
+    if (!shown) return;
+    $('np-elsewhere-text').textContent = 'Ancestry keeps only a smaller copy of it. The original on ' +
+      'Newspapers.com gives you the whole newspaper page and the clipping at full size, with its citation. ' +
+      'The people ticked below come along.';
+    $('btn-open-clip').disabled = false;
+    seenItHeld(['clip:' + shown.clippingId]).then((held) => {
+      const h = held['clip:' + shown.clippingId];
+      if (!h || state.clipElsewhere !== shown) return;
+      $('np-elsewhere-text').textContent = h.where === 'archive'
+        ? 'The archive already has this clipping' + (h.source ? ' (source ' + h.source + ')' : '') +
+          ', so there is nothing more to save here.'
+        : 'This clipping is already captured and waiting in the inbox to be filed.';
+    });
+  }
+
+  function openClipOriginal() {
+    const clip = state.clipElsewhere;
+    if (!clip || state.busy || state.batchDriving || !state.tabId) return;
+    state.clipCarry = { clippingId: clip.clippingId, people: checkedPeople(), at: Date.now() };
+    $('btn-open-clip').disabled = true;
+    chrome.tabs.update(state.tabId, { url: clip.url }, () => {
+      if (!chrome.runtime.lastError) return;
+      state.clipCarry = null;
+      $('btn-open-clip').disabled = false;
+      setStageResult('Could not open the clipping on Newspapers.com (' + chrome.runtime.lastError.message +
+        '). Open ' + clip.url + ' yourself, then press ↻ Re-read page.', 'error');
+    });
+  }
+
+  // On the clipping's own Newspapers.com page, once its clippings are read:
+  // add the people carried from Ancestry that the form does not list yet.
+  // Only that clipping's page takes them, and only for a few minutes.
+  function carryClipPeople(np) {
+    const carry = state.clipCarry;
+    if (!carry || !np) return;
+    if (Date.now() - carry.at > CLIP_CARRY_MS) {
+      state.clipCarry = null;
+      return;
+    }
+    if (np.kind !== 'article' || Number(np.focusClipId) !== carry.clippingId) return;
+    state.clipCarry = null;
+    const have = new Set(Array.from($('people-list').querySelectorAll('input'))
+      .map((cb) => String(cb.dataset.name).toLowerCase()));
+    for (const name of carry.people) if (!have.has(String(name).toLowerCase())) addPersonRow(name, true);
   }
 
   // The prefill's "Save the record" half: which automatic path applies, and
@@ -981,6 +1052,7 @@
       return;
     }
     const np = state.np;
+    carryClipPeople(np);
     const own = np.ownClips;
     note.style.display = 'block';
     if (!own.length) {
@@ -3342,6 +3414,7 @@
     state.fsNoteLine = null;
     $('f-url').value = url || '';
     renderPeople([]);
+    showClipElsewhere(null);
   }
 
   // "Re-read page": start again from the page in front of her. Everything
@@ -3665,6 +3738,7 @@
     $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-rescrape').addEventListener('click', rescrape);
+    $('btn-open-clip').addEventListener('click', openClipOriginal);
     $('btn-rescrape-file').addEventListener('click', rescrapeFile);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {

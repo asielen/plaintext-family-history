@@ -786,6 +786,9 @@ test('#261: a shared newspaper clipping, whose picture has an image id of its ow
   const fetch = ancestryMedia({ [image]: { ok: true, status: 200, headers: { get: () => 'image/jpeg' },
     blob: async () => new Blob([SHARED_BYTES], { type: 'image/jpeg' }) } });
   const page = loadPage({ url: url + '?hid=h1', tree: parse(SAMPLE('ancestry-media-clipping')), fetch });
+  const pre = await page.ask({ action: 'prefill' });
+  assert.deepStrictEqual(pre.prefill.ancestryNewspapersClip,
+    { clippingId: 4321, url: 'https://www.newspapers.com/clip/4321/obituary-of-thomas-hartley/' });
   const info = await page.ask({ action: 'ancestryPhotoInfo' });
   assert.strictEqual(info.ok, true, info.error);
   assert.strictEqual(info.media.imageUrl, image);
