@@ -86,6 +86,7 @@ import csv
 import datetime
 import hashlib
 import html
+import html.entities
 import io
 import re
 import shutil
@@ -330,8 +331,14 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
         if not rawline.strip():
             continue
         m = _GEDCOM_LINE_RE.match(rawline.strip('﻿'))
-        if not m:
-            if last is not None and not rawline.lstrip(' \t\ufeff')[:1].isdigit():
+        # A broken note line that happens to start with a number ("2 brothers
+        # nearby", "1923 was a hard year") is prose, not a tag: GEDCOM tags
+        # are upper case, so a lower-case "tag" right after a NOTE/TEXT line
+        # joins the note instead of swallowing the words after it.
+        prose = (m is not None and last is not None and last.tag in ('NOTE', 'TEXT')
+                 and not m.group(3).startswith('_') and m.group(3) != m.group(3).upper())
+        if not m or prose:
+            if last is not None and (prose or not rawline.lstrip(' \t\ufeff')[:1].isdigit()):
                 last.value += ' ' + rawline.strip()
                 joined.append(lineno)
             else:
@@ -371,6 +378,15 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
 
 _DOUBLE_ENTITY_RE = re.compile(r'&amp;(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-f]+);', re.I)
 _BR_RE = re.compile(r'<br\s*/?>', re.I)
+# Only a complete entity (ending in ";") is decoded. html.unescape alone would
+# also turn "&region=" in a pasted web link into "®ion=", breaking the link.
+_ENTITY_RE = re.compile(r'&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([A-Za-z][A-Za-z0-9]{1,31}));')
+
+
+def _decode_entity(m: re.Match) -> str:
+    if m.group(3):
+        return html.entities.html5.get(m.group(3) + ';', m.group(0))
+    return html.unescape(m.group(0))
 
 
 def _clean_vendor_markup(text: str, records: list[_Node]) -> int:
@@ -394,9 +410,9 @@ def _clean_vendor_markup(text: str, records: list[_Node]) -> int:
         if old and ('&' in old or '<' in old):
             v = re.sub(r'&amp;(?=(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-f]+);)', '&',
                        old, flags=re.I)
-            v = html.unescape(v)
+            v = _ENTITY_RE.sub(_decode_entity, v)
             v = _BR_RE.sub('\n' if node.tag in ('NOTE', 'TEXT') else ' ', v)
-            v = re.sub(r'[ \t]+', ' ', v).strip()
+            v = re.sub(r'[ \t ]+', ' ', v).strip()
             if v != old:
                 node.value = v
                 changed += 1
@@ -1765,7 +1781,7 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
     if plan.markup_cleaned:
         lines.append('')
         lines.append(f'  {plan.markup_cleaned:,} value(s) carried web-page codes (like '
-                     '&lt;br&gt;) and were cleaned; the original file is kept as it was.')
+                     '<br>) and were cleaned; the original file is kept as it was.')
     if plan.date_downgrades and not capped:
         # The warning names three; the full plan names every date left out.
         lines.append('')

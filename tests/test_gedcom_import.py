@@ -1257,6 +1257,49 @@ class LenientLinesTestCase(_ArchiveCase):
         warn = next(w for w in plan.warnings if 'did not parse' in w)
         self.assertIn('line 1', warn)
 
+    _MH_HEAD = ('0 HEAD\n1 SOUR MYHERITAGE\n1 CHAR UTF-8\n0 @I1@ INDI\n'
+                '1 NAME Rose /Hartley/\n')
+
+    def test_link_in_note_kept_as_typed(self) -> None:
+        # A web link pasted into a MyHeritage note must arrive working:
+        # "&region=" and "&copy=" are not the "&reg"/"&copy" symbols.
+        url = ('https://www.familysearch.org/search?q=Hartley&region=Kansas'
+               '&copy=1&notes=yes&para=2')
+        plan = self._plan_text(self._MH_HEAD + f'1 NOTE See {url}\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value, f'Rose Hartley: See {url}')
+
+    def test_ampersand_words_kept(self) -> None:
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Hartley &sect 4 of the deed; Smith&times two\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Hartley &sect 4 of the deed; Smith&times two')
+
+    def test_complete_entities_still_decoded(self) -> None:
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Smith &amp; Sons &copy;&nbsp;1900 &#233;t&eacute;\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Smith & Sons © 1900 été')
+
+    def test_note_line_starting_with_a_number_joins(self) -> None:
+        # "2 brothers nearby" is a broken note line, not a GEDCOM tag: its
+        # words, and the words after it, must stay in the note.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Rose raised her family\nin Fairview with\n'
+            '2 brothers nearby\nand a sister.\n1923 was a hard year\nfor all.\n'
+            '1 BIRT\n2 DATE 12 JAN 1878\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Rose raised her family in Fairview with 2 brothers '
+                         'nearby and a sister. 1923 was a hard year for all.')
+        self.assertEqual(plan.joined_lines, 5)
+        self.assertFalse(plan.warnings, plan.warnings)
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 12')
+
+    def test_plan_line_shows_br_plainly(self) -> None:
+        text = '\n'.join(gedcom_import._plan_lines(self._mh(), applied=False))
+        self.assertIn('(like <br>)', text)
+        self.assertNotIn('&lt;', text)
+
     def test_filed_copy_byte_identical(self) -> None:
         fixture = FIXTURES / 'myheritage-lines.ged'
         result, _out, _err = self._run(fixture, apply=True)
