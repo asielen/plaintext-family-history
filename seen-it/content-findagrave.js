@@ -108,8 +108,11 @@
   function pillsFor(key, full, thisVisit) {
     const wrap = document.createElement('span');
     wrap.className = 'nsi-pills';
-    const k = knownOf(key);
-    const idx = knownOf('fagidx:' + key.slice(4));
+    // A citation of this memorial (fagidx:): "Index in archive" once it is in a
+    // filed source; one still waiting in the inbox is "Captured, not filed".
+    const cite = knownOf('fagidx:' + key.slice(4));
+    const idx = cite && (cite.state === 'filed' || cite.state === 'processed') ? cite : null;
+    const k = knownOf(key) || (cite && cite.state === 'captured' ? cite : null);
     const a = data.anc[key] || {};
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));

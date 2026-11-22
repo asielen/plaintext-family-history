@@ -30,7 +30,7 @@ function fakeElement(tag) {
   return el;
 }
 
-function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, getElementById, storage }) {
+function loadContentScript(file, { pathname, search = '', origin, querySelector, querySelectorAll, getElementById, storage, title = '', fetch: pageFetch }) {
   // The address, which a test may change (Ancestry's viewer moves to the next
   // photo without loading a new page), and the storage listeners, which a
   // test fires with fireChange (a setting switched in the toolbar window).
@@ -40,7 +40,7 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
   const listeners = {};
   const sent = [];
   const document = {
-    scripts: [], title: '', visibilityState: 'visible', readyState: 'complete',
+    scripts: [], title, visibilityState: 'visible', readyState: 'complete',
     body: fakeElement('body'), documentElement: fakeElement('html'),
     querySelectorAll: (sel) => { queries.push(sel); return querySelectorAll ? querySelectorAll(sel) : []; },
     querySelector: (sel) => { queries.push(sel); return querySelector ? querySelector(sel) : null; },
@@ -68,7 +68,7 @@ function loadContentScript(file, { pathname, search = '', origin, querySelector,
     MutationObserver: class { observe() {} disconnect() {} },
     IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} },
     URL, URLSearchParams,
-    fetch: async () => ({ ok: false, status: 0, json: async () => ({}) }),
+    fetch: pageFetch || (async () => ({ ok: false, status: 0, json: async () => ({}) })),
   });
   context.window = context;
   context.window.addEventListener = () => {};

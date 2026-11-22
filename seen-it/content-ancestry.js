@@ -10,7 +10,10 @@
 // wherever that photo is offered (med:{mediaId}). A Newspapers.com clipping
 // saved to a gallery is such a photo; its viewer page links the clipping, and
 // once that page has been opened the photo counts as saved whenever the
-// archive holds the clipping (clip:{id}).
+// archive holds the clipping (clip:{id}). Likewise an entry in Ancestry's
+// "U.S., Find a Grave Index" (rec:60525:{id}) is the index of one memorial:
+// once its page has been opened, it counts as saved when the archive holds
+// that memorial (fag:{id}, or fagidx:{id} for one known without its photos).
 //
 // On a record or image page:
 //   • records the look (and how long it was on screen),
@@ -57,7 +60,22 @@
   // link (anc[med:…].clip, see clipOfViewer) and answers for the photo with
   // what the archive knows of the clipping.
   const clipOf = (key) => (key.startsWith('med:') && (data.anc[key] || {}).clip) || null;
-  const knownFor = (key) => knownOf(key) || (clipOf(key) ? knownOf(clipOf(key)) : null);
+  // The same for an index entry of a Find a Grave memorial: anc[rec:…].fag.
+  const memorialOf = (key) => (key.startsWith('rec:') && (data.anc[key] || {}).fag) || null;
+  const knownFor = (key) => knownOf(key) || (clipOf(key) ? knownOf(clipOf(key)) : null) ||
+    (memorialOf(key) ? knownOf(memorialOf(key)) || knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null);
+
+  // When the archive only cites the memorial (fagidx:, a source links it but
+  // its photos were never captured), the entry still counts as saved, since
+  // its facts are in the archive, but its pill says so in those words rather
+  // than "In archive", which on Find a Grave's own page reads "Index in
+  // archive". The fagidx: answer, or null. Only a citation in a filed
+  // source counts: one still waiting in the inbox shows "Captured, not filed".
+  const memorialCited = (key) => {
+    const c = !knownOf(key) && memorialOf(key) && !knownOf(memorialOf(key))
+      ? knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null;
+    return c && (c.state === 'filed' || c.state === 'processed') ? c : null;
+  };
 
   // Which tree people each record is attached to, from every person whose page
   // you have opened (Ancestry Facts page, FamilySearch person page) and from a
@@ -397,8 +415,13 @@
     const a = data.anc[key] || {};
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));
-    const what = clipOf(key) ? 'Newspapers.com clipping' : key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : key.startsWith('med:') ? 'photo' : 'record';
-    if (k && k.state === 'filed') {
+    const what = clipOf(key) ? 'Newspapers.com clipping' : memorialOf(key) ? 'Find a Grave memorial' : key.startsWith('img:') ? 'image' : key.startsWith('clip:') ? 'clipping' : key.startsWith('med:') ? 'photo' : 'record';
+    const cited = memorialCited(key);
+    if (cited) {
+      wrap.appendChild(pill('nsi-archive', '📑 Memorial cited in archive' + (cited.sid ? ' · ' + cited.sid : ''),
+        'The archive has a source citing this Find a Grave memorial' + (cited.sid ? ' (' + cited.sid + ')' : '') +
+        ', so this index entry\'s facts are in it. The memorial itself (its photos) has not been captured yet.'));
+    } else if (k && k.state === 'filed') {
       wrap.appendChild(pill('nsi-archive', '📚 In archive' + (k.sid ? ' · ' + k.sid : ''),
         'This ' + what + ' is filed in the family archive' + (k.sid ? ' as ' + k.sid : '') + '.'));
     } else if (k && k.state === 'processed') {
@@ -426,7 +449,7 @@
   // Advanced mode is part of it, so switching it off takes the archive pills
   // ("Not in archive" on a gallery tile, "In archive" on the badge) down.
   function sigFor(key) {
-    return key + '|' + adv() + '|' + (clipOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
+    return key + '|' + adv() + '|' + (clipOf(key) || memorialOf(key) || '') + '|' + !!memorialCited(key) + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 
   function markButtons(key) {
@@ -605,9 +628,32 @@
     if (clip && clipOf(key) !== clip) send({ type: 'ancMedClip', key, clip });
   }
 
+  // An entry in Ancestry's "U.S., Find a Grave Index" (collection 60525):
+  // the memorial it indexes, as fag:{id}, from the record's own "URL" field
+  // (#recordFieldsContainer), when that names exactly one memorial. Never
+  // from a link elsewhere on the page.
+  const FAG_INDEX_DB = '60525';
+  function memorialOfRecord(key) {
+    if (!key || !key.startsWith('rec:' + FAG_INDEX_DB + ':')) return null;
+    const box = document.getElementById('recordFieldsContainer');
+    if (!box) return null;
+    const found = new Set();
+    for (const a of box.querySelectorAll('a[href*="findagrave.com/memorial/"]')) {
+      const k = keyFromHref(a.getAttribute('href'));
+      if (k && k.startsWith('fag:')) found.add(k);
+    }
+    return found.size === 1 ? [...found][0] : null;
+  }
+
+  function learnMemorial(key) {
+    const fag = memorialOfRecord(key);
+    if (fag && memorialOf(key) !== fag) send({ type: 'ancRecFag', key, fag });
+  }
+
   function render() {
     renderBadge(keyFromPath(location.pathname) || openHint);
     learnClip(keyFromPath(location.pathname));
+    learnMemorial(keyFromPath(location.pathname));
     renderLinks();
     const person = personFromPath(location.pathname);
     if (person) trackPerson(person);

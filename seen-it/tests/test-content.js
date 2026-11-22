@@ -703,3 +703,191 @@ test('Ancestry tree view: an "Add mother" box gets no chip', async () => {
   await personPage({ pathname: '/family-tree/tree/111/family', nodes: [node], storage: { settings: { advanced: true } } });
   assert.deepStrictEqual(host.children, []);
 });
+
+// An entry in a Find a Grave Index (Ancestry's collection 60525,
+// FamilySearch's 2221801) indexes one memorial: once read, it counts as
+// saved when the archive holds that memorial. Made-up ids only.
+const MEMORIAL = 'https://www.findagrave.com/memorial/5505/thomas-hartley';
+function recordFields(links) {
+  return { querySelectorAll: (sel) => (sel.includes('findagrave.com/memorial/') ? links : []) };
+}
+
+async function ancRecord(pathname, fields, storage) {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname, origin: 'https://www.ancestry.com', storage,
+    getElementById: (id) => (id === 'recordFieldsContainer' ? fields : null),
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  return page;
+}
+
+test('Ancestry Find a Grave Index entry: the memorial in its URL field is remembered for it', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', recordFields([tile(MEMORIAL), tile(MEMORIAL + '?x=1')]));
+  const sent = page.sent.filter((m) => m.type === 'ancRecFag');
+  assert.ok(sent.length, 'the memorial was not remembered');
+  assert.deepStrictEqual({ key: sent[0].key, fag: sent[0].fag }, { key: 'rec:60525:4321', fag: 'fag:5505' });
+});
+
+test('Ancestry: another collection, or two memorials in the fields, remembers nothing', async () => {
+  let page = await ancRecord('/search/collections/90001/records/4321', recordFields([tile(MEMORIAL)]));
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancRecFag'), []);
+  page = await ancRecord('/search/collections/60525/records/4321',
+    recordFields([tile(MEMORIAL), tile('https://www.findagrave.com/memorial/5506/margaret-hartley')]));
+  assert.deepStrictEqual(page.sent.filter((m) => m.type === 'ancRecFag'), []);
+});
+
+test('Ancestry Find a Grave Index entry: in the archive when the memorial is', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', null, {
+    settings: { advanced: true }, known: { 'fag:5505': FILED },
+    anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+  });
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  assert.ok(badge, 'no badge');
+  assert.deepStrictEqual(badge.children[0].children.map((p) => p.textContent), ['📚 In archive · ' + FILED.sid]);
+  assert.match(badge.children[0].children[0].title, /Find a Grave memorial/);
+});
+
+// Audit of #415: when the archive only cites the memorial (fagidx:, its
+// photos never captured), the index entry said "This Find a Grave memorial is
+// filed in the family archive", while Find a Grave's own page for the same
+// memorial says "Index in archive". The entry still counts as saved (its
+// facts are in the archive); its pill says what the archive has.
+const CITED_PILL = '📑 Memorial cited in archive · ' + FILED.sid;
+const CITED_TITLE = 'The archive has a source citing this Find a Grave memorial (' + FILED.sid + '), so this index entry\'s facts are in it. The memorial itself (its photos) has not been captured yet.';
+
+test('Ancestry Find a Grave Index entry: a memorial the archive only cites says so, not "In archive"', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', null, {
+    settings: { advanced: true }, known: { 'fagidx:5505': FILED },
+    anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+  });
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  assert.ok(badge, 'no badge');
+  assert.deepStrictEqual(badge.children[0].children.map((p) => [p.textContent, p.title]), [[CITED_PILL, CITED_TITLE]]);
+});
+
+test('Ancestry Facts page: an index entry whose memorial the archive cites still counts as saved', async () => {
+  const { texts } = await personPage({ ...FACTS, storage: {
+    settings: { advanced: true }, known: { 'rec:1001:2002': FILED, 'fagidx:5505': FILED },
+    anc: { 'rec:3003:4004': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+  } });
+  assert.strictEqual(texts[0], '✓ All 2 sources saved');
+});
+
+test('Ancestry Find a Grave Index entry: once the memorial itself is captured, the pill says "In archive"', async () => {
+  const page = loadContentScript('content-ancestry.js', {
+    pathname: '/search/collections/60525/records/4321', origin: 'https://www.ancestry.com',
+    storage: { settings: { advanced: true }, known: { 'fagidx:5505': FILED }, anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } } },
+  });
+  const texts = () => page.document.body.children.find((c) => c.id === 'nsi-anc-badge').children[0].children.map((p) => p.textContent);
+  try {
+    await wait(700);
+    assert.deepStrictEqual(texts(), [CITED_PILL]);
+    page.fireChange({ known: { newValue: { 'fag:5505': FILED } } });
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  assert.deepStrictEqual(texts(), ['📚 In archive · ' + FILED.sid]);
+});
+
+const FS_ENTRY = (extra) => Object.assign({
+  sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/2221801' }],
+  fields: [{ type: 'http://familysearch.org/types/fields/ExtRecordId', values: [{ labelId: 'EXT_RECORD_ID_ORIG', text: '5505' }] }],
+}, extra || {});
+
+async function fsRecord(title, answer) {
+  const calls = [];
+  const page = loadContentScript('content-familysearch.js', {
+    pathname: '/ark:/61903/1:1:ABCD-123', origin: 'https://www.familysearch.org', title,
+    fetch: async (url, init) => {
+      calls.push({ url, accept: init.headers.Accept });
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) };
+    },
+  });
+  try {
+    await wait(1900);
+  } finally {
+    page.stop();
+  }
+  return { sent: page.sent.filter((m) => m.type === 'ancRecFag'), calls };
+}
+
+test('FamilySearch Find a Grave Index entry: the memorial is read from the entry\'s own data, once', async () => {
+  const { sent, calls } = await fsRecord('Thomas Hartley, "Find a Grave Index" • FamilySearch', FS_ENTRY());
+  assert.deepStrictEqual(calls, [{ url: '/ark:/61903/1:1:ABCD-123', accept: 'application/x-gedcomx-v1+json' }]);
+  assert.deepStrictEqual(sent.map((m) => [m.key, m.fag]), [['fsrec:ABCD-123', 'fag:5505']]);
+});
+
+test('FamilySearch: another collection is never asked; an entry of another collection remembers nothing', async () => {
+  let r = await fsRecord('Thomas Hartley, "California Death Index, 1940-1997" • FamilySearch', FS_ENTRY());
+  assert.deepStrictEqual(r.calls, []);
+  r = await fsRecord('Thomas Hartley, "Find a Grave Index" • FamilySearch',
+    FS_ENTRY({ sourceDescriptions: [{ about: 'https://www.familysearch.org/platform/records/collections/1001' }] }));
+  assert.deepStrictEqual(r.sent, []);
+});
+
+async function fsBadge(known) {
+  const page = loadContentScript('content-familysearch.js', {
+    pathname: '/ark:/61903/1:1:ABCD-123', origin: 'https://www.familysearch.org',
+    storage: { settings: { advanced: true }, known, anc: { 'fsrec:ABCD-123': { t: [], last: 0, mark: null, fag: 'fag:5505' } } },
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  return badge ? badge.children[0].children.map((p) => [p.textContent, p.title]) : [];
+}
+
+test('FamilySearch Find a Grave Index entry: in the archive when the memorial is', async () => {
+  const pills = await fsBadge({ 'fag:5505': FILED });
+  assert.deepStrictEqual(pills.map((p) => p[0]), ['📚 In archive · ' + FILED.sid]);
+  assert.match(pills[0][1], /Find a Grave memorial/);
+});
+
+test('FamilySearch Find a Grave Index entry: a memorial the archive only cites says so, not "In archive"', async () => {
+  assert.deepStrictEqual(await fsBadge({ 'fagidx:5505': FILED }), [[CITED_PILL, CITED_TITLE]]);
+});
+
+// Audit of #415: a citation of the memorial still waiting in the inbox
+// (fagidx: captured, nothing filed) showed "Memorial cited in archive", saying
+// a source in the archive cites it. It is "Captured, not filed" until filed,
+// on the index entry and on Find a Grave's own page.
+const CAPTURED = { state: 'captured', where: 'inbox' };
+const CAPTURED_PILL = ['📥 Captured, not filed', 'Captured into the inbox (inbox), waiting to be filed.'];
+
+test('Ancestry Find a Grave Index entry: a citation still in the inbox is "Captured, not filed"', async () => {
+  const page = await ancRecord('/search/collections/60525/records/4321', null, {
+    settings: { advanced: true }, known: { 'fagidx:5505': CAPTURED },
+    anc: { 'rec:60525:4321': { t: [], last: 0, mark: null, fag: 'fag:5505' } },
+  });
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  assert.deepStrictEqual(badge.children[0].children.map((p) => [p.textContent, p.title]), [CAPTURED_PILL]);
+});
+
+test('FamilySearch Find a Grave Index entry: a citation still in the inbox is "Captured, not filed"', async () => {
+  assert.deepStrictEqual(await fsBadge({ 'fagidx:5505': CAPTURED }), [CAPTURED_PILL]);
+});
+
+async function fagBadge(known) {
+  const page = loadContentScript('content-findagrave.js', {
+    pathname: '/memorial/5505/thomas-hartley', origin: 'https://www.findagrave.com', storage: { settings: { advanced: true }, known },
+  });
+  try {
+    await wait(700);
+  } finally {
+    page.stop();
+  }
+  const badge = page.document.body.children.find((c) => c.id === 'nsi-anc-badge');
+  return badge ? badge.children[0].children.map((p) => [p.textContent, p.title]) : [];
+}
+
+test('Find a Grave memorial: a citation in a filed source is "Index in archive"; one still in the inbox is "Captured, not filed"', async () => {
+  assert.deepStrictEqual((await fagBadge({ 'fagidx:5505': FILED })).map((p) => p[0]), ['📑 Index in archive · ' + FILED.sid]);
+  assert.deepStrictEqual(await fagBadge({ 'fagidx:5505': CAPTURED }), [CAPTURED_PILL]);
+});
