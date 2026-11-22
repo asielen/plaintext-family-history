@@ -31,7 +31,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 
+import chart_cases
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
@@ -9973,7 +9975,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,
@@ -10985,6 +10987,142 @@ class SameNameHoldIsExplainedTests(_Base):
         self.assertTrue(self._published('picnic'), res['messages'])
         self.assertFalse([m for m in res['messages'] if 'left out of the site' in m],
                          res['messages'])
+
+
+class ChartCaseTests(_Base):
+    """The hard family shapes (tests/chart_cases.py, C1 to C18) through the
+    site build as it is today: a man with five wives, a niece who married her
+    uncle, a person who is their own ancestor must each still get a finished
+    site, pages that read, and charts that draw. These pin behaviour that must
+    never regress; the chart changes that follow (fan, fading, couples in the
+    explorer) add their own assertions against the same cases."""
+
+    def _case(self, name):
+        # A fresh archive per case: ids repeat from case to case.
+        self.tearDown()
+        self.setUp()
+        return chart_cases.build_case(self.conn, self.archive_root, name)
+
+    def _every_svg(self, page):
+        return re.findall(r'<svg\b.*?</svg>', page, flags=re.S)
+
+    def _parse_svg(self, svg):
+        # The family chart's cards are XHTML inside <foreignObject>, so bare
+        # ampersands are escaped before the XML parser sees them.
+        import xml.etree.ElementTree as ET
+        text = re.sub(r'&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)', '&amp;', svg)
+        return ET.fromstring(f'<root xmlns:xlink="http://www.w3.org/1999/xlink">{text}</root>')
+
+    def test_every_case_builds_a_site_with_readable_pages_and_charts(self):
+        from html.parser import HTMLParser
+        for name in chart_cases.CASE_NAMES:
+            for linked in (False, True):
+                with self.subTest(case=name, linked=linked):
+                    case = self._case(name)
+                    res = self._run(linked=linked)
+                    self.assertIn(res.exit_code, (site.EXIT_CLEAN, site.EXIT_WARNINGS))
+                    pages = sorted((self.out_dir / 'persons').glob('*.html'))
+                    self.assertTrue(pages)
+                    if linked:   # a linked build names everyone, so the seed has a page
+                        self.assertIn(case['seed'], {p.stem for p in pages})
+                    for page in pages:
+                        text = page.read_text(encoding='utf-8')
+                        HTMLParser(convert_charrefs=True).feed(text)
+                        for svg in self._every_svg(text):
+                            self._parse_svg(svg)
+
+    def test_the_child_of_an_uncle_and_niece_gets_a_family_chart_and_a_fan(self):
+        # C3: the uncle's parents are also the niece's grandparents, so they
+        # fill slots 4 and 5 and again 14 and 15. Both ancestor charts must
+        # draw, and the fan keeps both appearances. (Same colour for the
+        # repeated person: after 08-5.)
+        case = self._case('C3')
+        self._run(linked=True)
+        page = self._read(f"persons/{case['seed']}.html")
+        self.assertIn('class="pedigree"', page)
+        fan = self._fan_svg(case)
+        # Slots 2 to 7 plus 14 and 15, and the subject.
+        self.assertEqual(fan.count('class="fan-seg'), 9)
+        self.assertEqual(fan.count('<title>Calvin Hartley</title>'), 2)
+        self.assertEqual(fan.count('<title>Edith Cole</title>'), 2)
+
+    def test_a_person_who_is_their_own_ancestor_still_gets_a_finished_site(self):
+        # C12: A's parent is B, B's parent is C, C's parent is A. The walks
+        # that fill the fan and the explorer must stop.
+        case = self._case('C12')
+        res = self._run(linked=True)
+        self.assertIn(res.exit_code, (site.EXIT_CLEAN, site.EXIT_WARNINGS))
+        self.assertTrue((self.out_dir / 'persons' / f"{case['seed']}.html").exists())
+
+    def test_the_shared_site_never_names_or_links_the_living_in_c13(self):
+        case = self._case('C13')
+        self.assertEqual(len(case['living']), 2)
+        self._run(linked=False)
+        names = ('Jessamy Hartley', 'Fenwick Ford', 'Jessamy', 'Fenwick')
+        for path in sorted(p for p in self.out_dir.rglob('*') if p.is_file()):
+            try:
+                text = path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                continue
+            for pid in case['living']:
+                self.assertNotIn(pid, text, f'{pid} leaked into {path.name}')
+            for name in names:
+                self.assertNotIn(name, text, f'{name!r} leaked into {path.name}')
+        # The deceased grandchild is reachable only through the living, so the
+        # grandfather's explorer does not hold her.
+        data = self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json"
+        if data.exists():
+            ids = {n['p_id'] for n in json.loads(data.read_text(encoding='utf-8'))['nodes']}
+            self.assertNotIn(case['people']['grandchild'], ids)
+            self.assertIn(case['people']['dead_son'], ids)
+
+    def test_the_linked_preview_names_the_living_in_c13(self):
+        # The control for the test above: the names are in the archive.
+        case = self._case('C13')
+        self._run(linked=True)
+        page = self._read(f"persons/{case['people']['living_child']}.html")
+        self.assertIn('Jessamy Hartley', page)
+
+    def test_the_explorer_holds_a_cousin_marriage_child_once_in_c16(self):
+        # C16: the seed's grandchild is reached through both of the seed's
+        # children. Today the JSON lists her once; 08-9 turns the second route
+        # into a repeat card.
+        case = self._case('C16')
+        self._run(linked=True)
+        tree = json.loads((self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json")
+                          .read_text(encoding='utf-8'))
+        ids = [n['p_id'] for n in tree['nodes']]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn(case['people']['k'], ids)
+
+    def _fan_svg(self, case):
+        page = self._read(f"persons/{case['seed']}.html")
+        return next(s for s in self._every_svg(page) if 'class="fan-chart' in s[:200])
+
+    def test_a_stepfather_is_not_in_a_fan_slot_in_c17(self):
+        # SPEC 12.2: the fan draws genetic edges only.
+        case = self._case('C17')
+        self._run(linked=True)
+        fan = self._fan_svg(case)
+        self.assertNotIn('Hugh', fan)
+        self.assertIn('Walter', fan)
+
+    def test_adoptive_parents_are_not_in_a_fan_slot_in_c7(self):
+        case = self._case('C7')
+        self._run(linked=True)
+        fan = self._fan_svg(case)
+        self.assertNotIn('Hugh', fan)
+        self.assertIn('Walter', fan)
+
+    def test_two_builds_of_a_case_are_byte_identical(self):
+        # The determinism every chart change must keep, on the case with the
+        # most repeated people (C5).
+        outputs = []
+        for _ in range(2):
+            case = self._case('C5')
+            self._run(linked=True)
+            outputs.append(self._read(f"persons/{case['seed']}.html"))
+        self.assertEqual(outputs[0], outputs[1])
 
 
 if __name__ == '__main__':
