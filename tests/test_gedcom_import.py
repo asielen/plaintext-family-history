@@ -1317,6 +1317,17 @@ class LenientLinesTestCase(_ArchiveCase):
         birth = next(c for c in plan.claims if c.claim_type == 'birth')
         self.assertEqual(birth.anchor, 'line 9')
 
+    def test_record_line_after_broken_note_keeps_its_event(self) -> None:
+        # A real event line after a broken note (any tag, listed or not) is
+        # a record line, never note text: the will keeps its date.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Kept the family bible\nin Fairview.\n'
+            '1 WILL\n2 DATE 12 JAN 1910\n1 Xyzzy\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Kept the family bible in Fairview.')
+        self.assertTrue(any(c.anchor == 'line 8' for c in plan.claims),
+                        [(c.claim_type, c.anchor) for c in plan.claims])
+
     def test_lower_case_tag_untouched_without_broken_lines(self) -> None:
         # A file with no level-less lines parses exactly as before.
         plan = self._plan_text(
