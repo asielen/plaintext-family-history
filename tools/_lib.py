@@ -17797,6 +17797,10 @@ class KinshipGraph:
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
       half_sibling_pairs  pairs a source calls half-siblings (empty for now)
+
+    Read-only once built: `ancestors` and `genetic_children` remember their
+    answers, so an edge added afterwards would not be seen. Build a new graph
+    instead of changing one.
     """
     people: dict[str, dict] = dataclasses.field(default_factory=dict)
     genetic_parents: dict[str, set[str]] = dataclasses.field(default_factory=dict)
@@ -17908,7 +17912,12 @@ def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> K
     for child, parents in parents_any.items():
         for p in parents:
             children_of.setdefault(p, set()).add(child)
-    for kids in children_of.values():
+    # Sorted, not set order: set order follows Python's per-run hash seed, and
+    # the path search takes the first of two equally short chains it meets,
+    # so an unsorted walk could answer "brother's friend" on one run and
+    # "sister's friend" on the next.
+    for parent in sorted(children_of):
+        kids = sorted(children_of[parent])
         for a in kids:
             for b in kids:
                 if a != b:
@@ -17928,7 +17937,10 @@ def kin_graph(conn: sqlite3.Connection,
     row_factory is."""
     def _dicts(cur) -> list[dict]:
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, tuple(r))) for r in cur.fetchall()]
+        # A dict-like row (a caller's own row_factory) gives its keys when
+        # iterated, so read its values; sqlite3.Row and tuples iterate values.
+        return [dict(zip(cols, tuple(r.values()) if isinstance(r, dict) else tuple(r)))
+                for r in cur.fetchall()]
 
     people: dict[str, dict] = {}
     for row in _dicts(conn.execute('SELECT id, name, sex FROM persons')):
@@ -18125,7 +18137,7 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
       note   the honest caveat, or None
       kind   'blood' | 'none' (ties by marriage, step and social kinds come
              with the by-marriage answer)
-      path   the shortest chain from the anchor's side, hop words joined by
+      path   the blood line from the anchor's side, hop words joined by
              "'s", no names ("father's father's mother"); '' for kind 'none'
 
     Neither `words` nor `path` ever carries a name. `birth_year` is accepted
@@ -18136,9 +18148,37 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
     blood = blood_answer(graph, pid, anchor_pid)
     if not blood:
         return none
-    chain = kinship_path(graph, anchor_pid, pid)
-    path = "'s ".join(h['label'] for h in chain['path']) if chain else ''
+    path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
     return {'words': blood['relationship'], 'note': None, 'kind': 'blood', 'path': path}
+
+
+def _kin_blood_line(graph: KinshipGraph, anchor: str, pid: str, apex: str) -> list[str]:
+    """The hop words of the genetic line from `anchor` up to the common
+    ancestor `apex` and down to `pid` ("father's sister's daughter"), so a
+    blood word is always explained by the blood line behind it, never by a
+    shorter friendship or step tie. The two hops through the apex become one
+    sibling hop, as a person would say it. Each step takes the lowest P-id
+    when two parents are equally near, so the answer is the same every run."""
+    def climb(start: str) -> list[str]:
+        line = [start]
+        while line[-1] != apex:
+            here = line[-1]
+            need = graph.ancestors(here)[apex] - 1
+            line.append(min(p for p in graph.genetic_parents.get(here, ())
+                            if graph.ancestors(p).get(apex) == need))
+        return line
+
+    def sex(p: str) -> str:
+        return graph.people.get(p, {}).get('sex', '')
+
+    up = climb(anchor)          # anchor .. apex
+    down = climb(pid)[::-1]     # apex .. pid
+    words = [_kin_hop_label('parent', sex(p)) for p in up[1:]]
+    if len(up) > 1 and len(down) > 1:
+        words[-1] = _kin_hop_label('sibling', sex(down[1]))
+        down = down[1:]
+    words += [_kin_hop_label('child', sex(p)) for p in down[1:]]
+    return words
 
 
 # ── Person completeness (fha metrics; TOOLING §7a) ───────────────────────────

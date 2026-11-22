@@ -220,6 +220,96 @@ class RelateIsAThinCliTests(unittest.TestCase):
         self.assertIs(relate.blood_answer, _lib.blood_answer)
 
 
+class KinRelationshipPathFollowsBloodTests(unittest.TestCase):
+    """A page that says "first cousin" must not explain it as "friend": the
+    path of a blood answer is the blood line, even when a shorter social tie
+    joins the two people."""
+
+    def _cousins_who_are_friends(self):
+        people = {pid: {'name': _NAME[pid], 'sex': _SEX[pid]} for pid in _SEX}
+        parents = [
+            (XP, GF, 'biological'), (XP, GM, 'biological'),
+            (YP, GF, 'biological'), (YP, GM, 'biological'),
+            (A, XP, 'biological'), (B, YP, 'biological'),
+        ]
+        return KinshipGraph.from_edges(people, parent_edges=parents,
+                                       social_edges=[(A, B, 'friend')])
+
+    def test_cousin_path_is_the_blood_line(self):
+        g = self._cousins_who_are_friends()
+        r = kin_relationship(g, A, B)        # B is A's first cousin
+        self.assertEqual(r['words'], 'first cousin')
+        self.assertEqual(r['path'], "father's sister's daughter")
+
+    def test_lineal_path_goes_straight_up(self):
+        g = self._cousins_who_are_friends()
+        self.assertEqual(kin_relationship(g, B, GM)['path'], "mother's mother")
+        self.assertEqual(kin_relationship(g, GM, B)['path'], "daughter's daughter")
+
+    def test_path_never_uses_a_non_genetic_tie(self):
+        # A step-parent shortcut must not stand in for the blood line.
+        people = {pid: {'name': _NAME[pid], 'sex': _SEX[pid]} for pid in _SEX}
+        parents = [
+            (XP, GF, 'biological'), (YP, GF, 'biological'),
+            (A, XP, 'biological'), (B, YP, 'biological'), (B, XP, 'step'),
+        ]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        r = kin_relationship(g, A, B)
+        self.assertEqual(r['words'], 'first cousin')
+        self.assertEqual(r['path'], "father's sister's daughter")
+
+
+class SiblingOrderIsStableTests(unittest.TestCase):
+    """Asked the same question twice, he gets the same answer: when two equally
+    short chains join two people, which one he is shown must not depend on
+    Python's per-run hash seed."""
+
+    SCRIPT = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from _lib import KinshipGraph, kinship_path
+people = {p: {'name': p, 'sex': s} for p, s in
+          (('pa', 'M'), ('pb', 'M'), ('pc', 'F'), ('px', 'M'), ('pd', 'M'), ('pe', 'F'))}
+g = KinshipGraph.from_edges(
+    people,
+    parent_edges=[('pa', 'pd', None), ('pb', 'pd', None), ('pc', 'pd', None),
+                  ('pa', 'pe', None), ('pb', 'pe', None), ('pc', 'pe', None)],
+    social_edges=[('pb', 'px', 'friend'), ('pc', 'px', 'friend')])
+print(kinship_path(g, 'pa', 'px')['rendered'])
+'''
+
+    def test_same_chain_under_every_hash_seed(self):
+        import os
+        import subprocess
+        seen = set()
+        for seed in range(8):
+            env = dict(os.environ, PYTHONHASHSEED=str(seed))
+            out = subprocess.run([sys.executable, '-c', self.SCRIPT, str(ROOT / 'tools')],
+                                 env=env, capture_output=True, text=True, check=True)
+            seen.add(out.stdout.strip())
+        self.assertEqual(len(seen), 1, seen)
+
+
+class AnyRowFactoryTests(unittest.TestCase):
+    """kin_graph promises to work whatever row_factory a caller set."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tr._build()
+
+    def test_dict_row_factory(self):
+        import sqlite3
+        conn = sqlite3.connect(self.root / '.cache' / 'index.sqlite')
+        try:
+            plain = kin_graph(conn)
+            conn.row_factory = lambda cur, row: {d[0]: v for d, v in zip(cur.description, row)}
+            as_dicts = kin_graph(conn)
+        finally:
+            conn.close()
+        self.assertEqual(as_dicts.people, plain.people)
+        self.assertEqual(as_dicts.genetic_parents, plain.genetic_parents)
+
+
 def _word_grid() -> dict[str, str]:
     """Every (gens_a, gens_b) up to 7 for five sex spellings, plus far pairs."""
     grid = {f'{a} {b} {s}': kinship_word(a, b, s)
