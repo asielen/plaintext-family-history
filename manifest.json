@@ -632,7 +632,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "7657a3681d19d9db84b4c83fb587419f288c9d82bcf8c35d780436dc044e3703",
+      "sha256": "bd2316fd9de1bd3fde3b78036e91c2c6474949d42f4ea5d1bcc450acd7558245",
       "spec_version": "2.19",
       "src": "docs/DESIGN.md"
     },
