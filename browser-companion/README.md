@@ -156,6 +156,10 @@ On a memorial (`/memorial/{id}/{slug}`, not its gallery or flower pages) no logi
 - **Hints** (the shared `recordHints` rule, collection "Find a Grave"): `source_type: website`, `source_class: derivative`, and no `source_date`. A memorial is a volunteer's compilation rather than a vital record, and SPEC §8.5 would otherwise default its claims to high confidence. It was made long after the death, on a day the page does not give, so neither the death nor the birth dates it (SPEC §14: the date of the source itself).
 - Each photo in `record-data.json` carries `file` (or null with `same_image_as`, `error` or `skipped`); a photo already saved in the sitting or reported by the Seen It add-on (`fagphoto:{photoId}`, from a saved file only) is not downloaded again. Typed title/date/type/repository win.
 
+### West Virginia Archives image pages
+
+On a Vital Research Records image page (`archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=…&ImageNumber=…`) no login is used. The reader (`lib/wvculture-record.js`) takes the film and image numbers from the address and the image from the page's own `<img>` on `images.wvculture.org` (never a built URL), and downloads it once with `credentials: 'omit'`. A download under 30 KB is refused as not the full image. The bundle holds the image as `record.gif` or `record.jpg` (mode `wvculture`), `record-data.json` (role `site-data`: the numbers and both addresses) and the page copy if ticked. The citation names the archive, the page as opened, the film and the image. A FamilySearch record's "View on wvculture.org" badge is not followed yet.
+
 ### Newspapers.com
 
 Opening the panel on a clipping or a page reads the page's own embedded data (each clipping's rectangle, the page size, a day-long page pass) and the page's list of clippings, using the same request its viewer makes, at most a few pages of 25 (`lib/newspapers-page-data.js`). It offers the opened clipping whoever made it, plus your own clippings on the page, never one that marks no area to cut out.

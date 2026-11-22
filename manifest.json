@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f5ddcb3fd4089c85701cf6bc94c77950388885adb538f14e2f372a1883700e4e",
+      "sha256": "5dc8fd9c71c7ddeae4b4641992ec5cabffc5afb027403774470b04794011f78c",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "1bfb44b3e41d4f9041cc17031a29c8a77977e344e9588c395d2116e2d6a6dfbb",
+      "sha256": "8a8b4f7c8c31312183cec1d1cbc7cf7f42327d77b1b372900e07bdf342f98c67",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
@@ -511,6 +511,13 @@
       "src": "browser-companion/src/lib/srcset.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/wvculture-record.js",
+      "category": "operating",
+      "sha256": "5055fc1582774710ac8f75d69fd646b619c91f726be129a94ed3bf22825d46b9",
+      "spec_version": "2.19",
+      "src": "browser-companion/src/lib/wvculture-record.js"
+    },
+    {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
       "sha256": "9ad64a6407cbc9bc5640a66810a89dcdc5c2d5ab7d685fa49e4d6295ad6081bc",
@@ -527,7 +534,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "715f20266009072ea2e3d3d40ddf70d6540fee49782b9da4ff1153d14fdb5e82",
+      "sha256": "94237be63d531f1713c221b1736eb5e44f9c46abfe55d71d1e6af46245c5ff13",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },
@@ -712,6 +719,13 @@
       "sha256": "88f7135f90771f39f42855be6420073d601449ffd14c0e23e0d573e1299da72d",
       "spec_version": "2.19",
       "src": "tools/capture_recipes/newspapers.py"
+    },
+    {
+      "path": ".fha/tools/capture_recipes/wvculture.py",
+      "category": "operating",
+      "sha256": "f88982de92362c36520dfcda731db14488630e8b50c682de2c2dff4dfa555cf8",
+      "spec_version": "2.19",
+      "src": "tools/capture_recipes/wvculture.py"
     },
     {
       "path": ".fha/tools/claim.py",

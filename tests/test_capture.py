@@ -448,19 +448,21 @@ class CaptureTestCase(unittest.TestCase):
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
         recipes = capture._load_site_recipes()
         names = {getattr(m, 'SOURCE_NAME', m.__name__): m for m in recipes}
-        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave'})
+        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'WVCulture'})
 
         urls = {
             'Ancestry': 'https://www.ancestry.com/discoveryui-content/view/1:2',
             'FamilySearch': 'https://www.familysearch.org/ark:/61903/1:1:X',
             'Newspapers.com': 'https://www.newspapers.com/clip/1/x/',
             'FindAGrave': 'https://www.findagrave.com/memorial/1/x',
+            'WVCulture': 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
         }
         samples = {
             'Ancestry': _sample('ancestry'),
             'FamilySearch': _sample('familysearch'),
             'Newspapers.com': _sample('newspapers'),
             'FindAGrave': _sample('findagrave'),
+            'WVCulture': _sample('wvculture-view'),
         }
         # Each recipe detects its own sample and rejects the other three.
         for owner, mod in names.items():
@@ -964,6 +966,19 @@ class CaptureTestCase(unittest.TestCase):
         self.assertNotIn('Family Members', meta['people'])   # header row not a person
         self.assertIn('Fairview Cemetery', rec['body'])
         self.assertNotIn('source_date', meta)        # a memorial is never dated by the death
+
+    def test_wvculture_recipe_names_film_image_and_page(self) -> None:
+        # A West Virginia Archives view page is filed as one record image with
+        # its film and image number and the page it came from.
+        url = 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530'
+        rc = self._capture(_sample('wvculture-view'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta = rec['meta']
+        self.assertEqual(meta['repository'], 'West Virginia Archives and History')
+        self.assertEqual(meta['title'], 'West Virginia Vital Research Records, film 1984148, image 2530')
+        self.assertIn('Film 1984148, image 2530', rec['body'])
+        self.assertIn('https://images.wvculture.org/1984148/0002530.gif', rec['body'])
 
     def test_findagrave_date_from_title_and_memorial_park(self) -> None:
         # B2: lifespan only in the title → still read (the title shows it),

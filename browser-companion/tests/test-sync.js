@@ -277,6 +277,20 @@ test('content.js Find a Grave readers are a verbatim copy of lib/findagrave-reco
   assert.strictEqual(copy, canon);
 });
 
+test('content.js West Virginia Archives readers are a verbatim copy of lib/wvculture-record.js', () => {
+  // The image-host rule (wvImageUrl) decides what is fetched: a drift there
+  // could send the tab's reader to a host it must not.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'wvculture-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN wvculture\n';
+  const end = '// FHA-SYNC-END wvculture';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 500 && canon.includes('function wvImageUrl'), 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN wvculture\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
 test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagrave-record.js allows', () => {
   // The panel downloads the photos; the page lists them. One rule, two
   // copies (the panel is a classic script), so drive both through one battery.

@@ -212,6 +212,7 @@
     if (host.includes('familysearch.org')) return 'familysearch';
     if (host.includes('newspapers.com')) return 'newspapers';
     if (host.includes('findagrave.com')) return 'findagrave';
+    if (host.includes('wvculture.org')) return 'wvculture';
     return null;
   }
 
@@ -2470,6 +2471,113 @@
   }
   // FHA-SYNC-END findagrave
 
+  // FHA-SYNC-BEGIN wvculture
+  const WV_VIEW_HOST = 'archive.wvculture.org';
+  const WV_IMAGE_HOST = 'images.wvculture.org';
+  // A death certificate image is a 7-digit film path, a register page 5-digit;
+  // the extension is .gif or .jpg. Anything else is not an image of a record.
+  const WV_IMAGE_PATH_RE = /^\/\d+\/\d+\.(gif|jpe?g)$/i;
+
+  // The film and image numbers of a view page (va_view2.aspx), or null for any
+  // other address or a view page with no usable image number.
+  function wvParsePage(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    if (u.hostname.toLowerCase() !== WV_VIEW_HOST) return null;
+    if (!/^\/vrr\/va_view2\.aspx$/i.test(u.pathname)) return null;
+    let filmNumber = null;
+    let imageNumber = null;
+    for (const [k, v] of u.searchParams) {
+      const key = k.toLowerCase();
+      if (key === 'filmnumber') filmNumber = v;
+      else if (key === 'imagenumber') imageNumber = v;
+    }
+    if (!/^\d+$/.test(filmNumber || '') || !/^\d+$/.test(imageNumber || '')) return null;
+    return { filmNumber, imageNumber };
+  }
+
+  // The page's image: the first img src that is an image on images.wvculture.org,
+  // upgraded to https. `srcs` is the list of the page's img src values. Null when
+  // none is one (the page then gives nothing to save).
+  function wvImageUrl(srcs) {
+    for (const src of srcs || []) {
+      let u;
+      try {
+        u = new URL(String(src));
+      } catch (e) {
+        continue;
+      }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+      if (u.hostname.toLowerCase() !== WV_IMAGE_HOST || u.port || u.username || u.password) continue;
+      if (!WV_IMAGE_PATH_RE.test(u.pathname)) continue;
+      return 'https://' + WV_IMAGE_HOST + u.pathname;
+    }
+    return null;
+  }
+
+  // 'gif' or 'jpg' from an image address, or null.
+  function wvExtension(url) {
+    const m = /\.(gif|jpe?g)$/i.exec(String(url || ''));
+    if (!m) return null;
+    return m[1].toLowerCase() === 'gif' ? 'gif' : 'jpg';
+  }
+
+  // A full image is well over 30 KB (certificates are 100-200 KB, registers 1-2
+  // MB); a smaller answer is a placeholder or an error page, not the record.
+  function wvImageLargeEnough(bytes) {
+    return Number(bytes) >= 30 * 1024;
+  }
+
+  // The citation line: the archive, the page as the human opened it, the film and
+  // the image. `accessed` is YYYY-MM-DD.
+  function wvCitation(info, accessed) {
+    return 'West Virginia Archives and History, Vital Research Records (' + info.pageUrl +
+      ' : accessed ' + accessed + '), film ' + info.filmNumber + ', image ' + info.imageNumber + '.';
+  }
+  // FHA-SYNC-END wvculture
+
+  // ── West Virginia Archives view pages ──────────────────────────────────────
+  // A view page (archive.wvculture.org/vrr/va_view2.aspx) shows one image, an
+  // <img> on images.wvculture.org. The numbers come from the address, the image
+  // from the page's own img src (lib/wvculture-record.js: never a built URL).
+  function wvcultureImageInfo(today) {
+    const parsed = wvParsePage(location.href);
+    if (!parsed) return { ok: false, error: 'this is not a West Virginia Archives image page' };
+    const srcs = Array.prototype.map.call(document.querySelectorAll('img'),
+      (img) => absUrl(img.getAttribute('src') || '') || '');
+    const imageUrl = wvImageUrl(srcs);
+    if (!imageUrl) return { ok: false, error: 'the page shows no image the panel can save' };
+    const record = Object.assign({}, parsed, { pageUrl: location.href, imageUrl, ext: wvExtension(imageUrl) });
+    return { ok: true, record, citation: wvCitation(record, today) };
+  }
+
+  // The image itself, read with no login: { ok, record, base64, ext, contentType }
+  // or { ok:false, error }. A download under 30 KB is refused, not saved.
+  async function wvcultureImage(today) {
+    const info = wvcultureImageInfo(today);
+    if (!info.ok) return info;
+    let resp;
+    try {
+      resp = await fetch(info.record.imageUrl, { credentials: 'omit' });
+    } catch (e) {
+      return { ok: false, error: 'the image could not be reached (' + e.message + ')' };
+    }
+    if (!resp.ok) return { ok: false, error: 'the West Virginia Archives image server refused the picture (HTTP ' + resp.status + ')' };
+    const blob = await resp.blob();
+    if (!wvImageLargeEnough(blob.size)) {
+      return { ok: false, error: 'the picture is only ' + Math.round(blob.size / 1024) + ' KB, not the full image, so it was not saved' };
+    }
+    return {
+      ok: true, record: info.record, citation: info.citation, base64: await blobToBase64(blob),
+      ext: info.record.ext, contentType: blob.type || '',
+    };
+  }
+
   // The memorial page itself - not its photo gallery or its flowers.
   function fagMemorialPage(href) {
     if (!fagParseMemorial(href)) return false;
@@ -3528,6 +3636,8 @@
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
+      // A West Virginia Archives view page: Capture saves its image with its numbers.
+      wvcultureImagePage: !!wvParsePage(url),
       imageUrl: detectImage(stale),
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
@@ -4552,6 +4662,14 @@
         return;
       case 'fetchAsset':
         fetchAsset(msg.url).then(sendResponse);
+        return true; // async response
+      case 'wvcultureImageInfo':
+        sendResponse(wvcultureImageInfo(msg.today));
+        return;
+      case 'wvcultureImage':
+        wvcultureImage(msg.today)
+          .then(sendResponse)
+          .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
       case 'familysearchRecordInfo':
         familysearchRecordInfo(msg.formTitle)
