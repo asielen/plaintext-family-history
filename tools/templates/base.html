@@ -42,6 +42,7 @@
 {% else %}
   <p>{{ footer_note }}</p>
 {% endif %}
+  <p class="print-only">Printed from {{ site_title }}.</p>
   {#- The reader's legend for the marks a date can carry (issue #131). `fha
       site` prints a claim's date exactly as the record stores it, so every
       form SPEC.md 11 allows is a form a visitor can meet - each one gets a
@@ -61,5 +62,6 @@
 {% include "workbench/_modals.html" %}
 <script src="{{ root_prefix }}/assets/workbench.js"></script>
 {% endif %}
+<script src="{{ root_prefix }}/vendor/fha-site.js" defer></script>
 </body>
 </html>
