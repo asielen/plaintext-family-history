@@ -50,6 +50,14 @@
   const knownFor = (key) => knownOf(key) ||
     (memorialOf(key) ? knownOf(memorialOf(key)) || knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null);
 
+  // When the archive only cites the memorial (fagidx:, a source links it but
+  // its photos were never captured), the entry still counts as saved, since
+  // its facts are in the archive, but its pill says so in those words rather
+  // than "In archive", which on Find a Grave's own page reads "Index in
+  // archive". The fagidx: answer, or null.
+  const memorialCited = (key) => (!knownOf(key) && memorialOf(key) && !knownOf(memorialOf(key))
+    ? knownOf(memorialOf(key).replace(/^fag:/, 'fagidx:')) : null);
+
   // Which tree people each record is attached to, from every person whose page
   // you have opened (Ancestry Facts page, FamilySearch person page) and from a
   // GEDCOM file loaded in the toolbar window.
@@ -158,7 +166,12 @@
     const tree = treeOf(key);
     if (tree) wrap.appendChild(treePill(tree));
     const what = memorialOf(key) ? 'Find a Grave memorial' : key.startsWith('fsimg:') ? 'image' : 'record';
-    if (k && k.state === 'filed') {
+    const cited = memorialCited(key);
+    if (cited) {
+      wrap.appendChild(pill('nsi-archive', '📑 Memorial cited in archive' + (cited.sid ? ' · ' + cited.sid : ''),
+        'The archive has a source citing this Find a Grave memorial' + (cited.sid ? ' (' + cited.sid + ')' : '') +
+        ', so this index entry\'s facts are in it. The memorial itself (its photos) has not been captured yet.'));
+    } else if (k && k.state === 'filed') {
       wrap.appendChild(pill('nsi-archive', '📚 In archive' + (k.sid ? ' · ' + k.sid : ''),
         'This ' + what + ' is filed in the family archive' + (k.sid ? ' as ' + k.sid : '') + '.'));
     } else if (k && k.state === 'processed') {
@@ -185,7 +198,7 @@
   // Advanced mode is part of what the pills show, so switching it off takes
   // the badge's "Not in archive" down.
   function sigFor(key) {
-    return key + '|' + adv() + '|' + (memorialOf(key) || '') + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
+    return key + '|' + adv() + '|' + (memorialOf(key) || '') + '|' + !!memorialCited(key) + '|' + JSON.stringify(knownFor(key) || 0) + '|' + JSON.stringify(data.anc[key] || 0) + '|' + (treeOf(key) || []).join(',');
   }
 
   function markButtons(key) {
