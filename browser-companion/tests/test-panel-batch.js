@@ -2533,6 +2533,7 @@ test('a gallery item that is a Newspapers.com clipping goes to the Newspapers.co
   const N = p.storage.npBatchLedger;
   assert.deepStrictEqual(N.order, ['303']);
   assert.deepStrictEqual([N.items['303'].url, N.items['303'].state, N.items['303'].persons], [FOUND, 'queued', ['Thomas Hartley']]);
+  assert.deepStrictEqual(N.items['303'].foundFor, ['Thomas Hartley']);
 });
 
 test('a gallery item whose clipping the archive holds is done, and nothing is queued or saved', async () => {
@@ -2569,7 +2570,7 @@ test('the Newspapers.com batch saves a clipping found on Ancestry, another membe
     ? Object.assign(npInfo(theirs), { focusOwner: 'otherclipper' }) : base(msg, tab));
   const N = { version: 1, created: '2026-11-21T00:00:00.000Z', items: {}, order: [], log: [], listComplete: true, user: ME.username };
   require('../src/lib/capture-batch.js').addFoundClippings(N,
-    [{ id: '303', url: FOUND, title: 'Hartley barn raising', persons: ['Thomas Hartley'] }], 'gallery');
+    [{ id: '303', url: FOUND, title: 'Hartley barn raising', persons: ['Thomas Hartley'], foundFor: ['Thomas Hartley'] }], 'gallery');
   const p = await openPanel({ url: NP_A, respond, storage: Object.assign({}, ON, { npBatchLedger: N }) });
   quick(p);
   await start(p, 'np');
@@ -2593,5 +2594,195 @@ test('"Add the sources of the person in front of you" queues the clippings they 
   const N = p.storage.npBatchLedger;
   assert.deepStrictEqual(N.order, ['303']);
   assert.deepStrictEqual(N.items['303'].persons, ['Thomas Hartley']);
+  assert.deepStrictEqual(N.items['303'].foundFor, ['Thomas Hartley']);
   assert.match(p.batchEl('anc-status').textContent, /1 Newspapers\.com clipping found, 1 new to the Newspapers\.com queue/);
+});
+
+// ── Find a Grave Index entries: the memorial is saved, not the entry ────────
+
+const ANC_IDX = 'https://www.ancestry.com/search/collections/60525/records/4321';
+const FS_IDX = 'https://www.familysearch.org/ark:/61903/1:1:ABCD-123';
+const MEM_URL = 'https://www.findagrave.com/memorial/900000001/calvin-george-hartley';
+function indexEntrySite() {
+  const base = ancestrySite();
+  return (msg, tab) => {
+    if (tab.url === ANC_IDX && msg.action === 'prefill') {
+      return { ok: true, prefill: { url: tab.url, title: 'Calvin Hartley', people: [], recipeHint: 'ancestry',
+        ancestryRecord: true, indexedMemorial: { memorialId: '900000001', url: MEM_URL } } };
+    }
+    if (tab.url === FS_IDX) {
+      if (msg.action === 'prefill') {
+        return { ok: true, prefill: { url: tab.url, title: 'Calvin Hartley', people: [], recipeHint: 'familysearch',
+          familysearchRecord: true } };
+      }
+      if (msg.action === 'familysearchImageCheck') {
+        return { ok: true, record: true, fsId: 'ABCD-123', memorialId: '900000001', imageId: null, available: false,
+          reason: 'this record has no image' };
+      }
+    }
+    return base(msg, tab);
+  };
+}
+const idxLedger = () => {
+  const L = ancLedger([ANC_IDX]);
+  L.items['60525:4321'].persons = ['Calvin Hartley'];
+  return L;
+};
+
+test('an Ancestry Find a Grave Index entry sends its memorial to the Find a Grave batch; the entry is never saved', async () => {
+  const p = await openPanel({ url: CALVIN, respond: indexEntrySite(),
+    storage: Object.assign({}, ON, { ancBatchLedger: idxLedger() }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [ANC_IDX]);
+  assert.strictEqual(p.written.length, 0, 'the index entry was saved');
+  assert.deepStrictEqual([p.storage.ancBatchLedger.items['60525:4321'].state, p.storage.ancBatchLedger.items['60525:4321'].bundle],
+    ['done', '(sent to the Find a Grave batch)']);
+  const F = p.storage.fagBatchLedger;
+  assert.deepStrictEqual(F.order, ['900000001']);
+  assert.deepStrictEqual([F.items['900000001'].url, F.items['900000001'].persons, F.items['900000001'].from],
+    [MEM_URL, ['Calvin Hartley'], 'index: Calvin Hartley']);
+  assert.deepStrictEqual(F.items['900000001'].foundFor, ['Calvin Hartley']);
+});
+
+test('an index entry whose memorial the archive holds with its photos is done; one held without them still goes on', async () => {
+  const full = await openPanel({ url: CALVIN, respond: indexEntrySite(),
+    seenIt: { 'fag:900000001': { state: 'filed', sid: 'S-0a1b2c3d4e' } },
+    storage: Object.assign({}, ON, { ancBatchLedger: idxLedger() }) });
+  quick(full);
+  await start(full, 'anc');
+  assert.strictEqual(full.storage.ancBatchLedger.items['60525:4321'].bundle,
+    '(already in the archive, source S-0a1b2c3d4e, as Find a Grave memorial 900000001)');
+  assert.ok(!full.storage.fagBatchLedger || !full.storage.fagBatchLedger.order.length);
+  const bare = await openPanel({ url: CALVIN, respond: indexEntrySite(),
+    seenIt: { 'fagidx:900000001': { state: 'filed', sid: 'S-0a1b2c3d4e' } },
+    storage: Object.assign({}, ON, { ancBatchLedger: idxLedger() }) });
+  quick(bare);
+  await start(bare, 'anc');
+  assert.deepStrictEqual(bare.storage.fagBatchLedger.order, ['900000001']);
+});
+
+test('a FamilySearch Find a Grave Index entry sends its memorial to the Find a Grave batch', async () => {
+  const L = { version: 1, created: '2026-11-01T00:00:00.000Z', items: {}, order: [], pacing: null, log: [] };
+  L.items['ABCD-123'] = { key: 'ABCD-123', fsId: 'ABCD-123', url: FS_IDX, persons: ['Calvin Hartley'], title: '',
+    state: 'queued', tries: 0 };
+  L.order.push('ABCD-123');
+  const p = await openPanel({ url: FS_IDX, respond: indexEntrySite(), storage: Object.assign({}, ON, { fsBatchLedger: L }) });
+  quick(p);
+  await start(p, 'fs');
+  assert.strictEqual(p.written.length, 0, p.batchEl('fs-status').textContent);
+  assert.strictEqual(p.storage.fsBatchLedger.items['ABCD-123'].bundle, '(sent to the Find a Grave batch)');
+  assert.deepStrictEqual(p.storage.fagBatchLedger.order, ['900000001']);
+});
+
+// The site sending the tab on to another index entry (a renumbered record):
+// the shortcut acts only for the entry queued, so the other entry's memorial
+// is never queued for her person, and the entry is never marked done unsaved.
+const HARRIET_IDX = 'https://www.ancestry.com/search/collections/60525/records/4322';
+const MEM_HARRIET = 'https://www.findagrave.com/memorial/900000002/harriet-frances-hartley';
+function sentOnSite(from, to, prefill) {
+  const base = indexEntrySite();
+  return (msg, tab) => {
+    if (tab.url === from) tab.url = to;
+    if (tab.url === to && prefill[msg.action]) return prefill[msg.action](tab);
+    return base(msg, tab);
+  };
+}
+
+test('F2: an Ancestry index entry the site sends on to another entry is not marked done, and the other memorial is not queued', async () => {
+  const respond = sentOnSite(ANC_IDX, HARRIET_IDX, { prefill: (tab) => ({ ok: true, prefill: { url: tab.url,
+    title: 'Harriet Hartley', people: [], recipeHint: 'ancestry', ancestryRecord: true,
+    indexedMemorial: { memorialId: '900000002', url: MEM_HARRIET } } }) });
+  const p = await openPanel({ url: CALVIN, respond, storage: Object.assign({}, ON, { ancBatchLedger: idxLedger() }) });
+  quick(p);
+  await start(p, 'anc');
+  const it = p.storage.ancBatchLedger.items['60525:4321'];
+  assert.notStrictEqual(it.state, 'done', 'the queued entry was marked done though never saved');
+  assert.ok(!p.storage.fagBatchLedger || !p.storage.fagBatchLedger.order.length, 'the other entry\'s memorial was queued');
+});
+
+test('F2: a FamilySearch index entry the site sends on to another record is not marked done, and its memorial is not queued', async () => {
+  const OTHER = 'https://www.familysearch.org/ark:/61903/1:1:WXYZ-999';
+  const respond = sentOnSite(FS_IDX, OTHER, {
+    prefill: (tab) => ({ ok: true, prefill: { url: tab.url, title: 'Harriet Hartley', people: [], recipeHint: 'familysearch',
+      familysearchRecord: true } }),
+    familysearchImageCheck: () => ({ ok: true, record: true, fsId: 'WXYZ-999', memorialId: '900000002', imageId: null,
+      available: false, reason: 'this record has no image' }),
+  });
+  const L = { version: 1, created: '2026-11-01T00:00:00.000Z', items: {}, order: [], pacing: null, log: [] };
+  L.items['ABCD-123'] = { key: 'ABCD-123', fsId: 'ABCD-123', url: FS_IDX, persons: ['Calvin Hartley'], title: '',
+    state: 'queued', tries: 0 };
+  L.order.push('ABCD-123');
+  const p = await openPanel({ url: FS_IDX, respond, storage: Object.assign({}, ON, { fsBatchLedger: L }) });
+  quick(p);
+  await start(p, 'fs');
+  const it = p.storage.fsBatchLedger.items['ABCD-123'];
+  assert.notStrictEqual(it.state, 'done', 'the queued entry was marked done though never saved');
+  assert.ok(!p.storage.fagBatchLedger || !p.storage.fagBatchLedger.order.length, 'the other record\'s memorial was queued');
+});
+
+test('F2: an index entry shown at its other Ancestry address (/discoveryui-content/view) still sends its memorial on', async () => {
+  const VIEW = 'https://www.ancestry.com/discoveryui-content/view/4321:60525';
+  const respond = sentOnSite(ANC_IDX, VIEW, { prefill: (tab) => ({ ok: true, prefill: { url: tab.url,
+    title: 'Calvin Hartley', people: [], recipeHint: 'ancestry', ancestryRecord: true,
+    indexedMemorial: { memorialId: '900000001', url: MEM_URL } } }) });
+  const p = await openPanel({ url: CALVIN, respond, storage: Object.assign({}, ON, { ancBatchLedger: idxLedger() }) });
+  quick(p);
+  await start(p, 'anc');
+  assert.strictEqual(p.storage.ancBatchLedger.items['60525:4321'].bundle, '(sent to the Find a Grave batch)');
+  assert.deepStrictEqual(p.storage.fagBatchLedger.order, ['900000001']);
+});
+
+// F1: a memorial queued both through an index entry and by another button
+// (the memorials a spouse's page links) ticks only the index entry's person,
+// whichever queueing came first.
+test('F1: an index entry\'s memorial that a spouse\'s page also links ticks only the entry\'s person', async () => {
+  const CBL = require('../src/lib/capture-batch.js');
+  const L = { version: 1, items: {}, order: [], log: [] };
+  CBL.addRecords('findagrave', L, [{ memorialId: '900000001', slug: 'calvin-george-hartley', persons: ['Calvin Hartley'],
+    foundFor: ['Calvin Hartley'] }], 'index: Calvin Hartley');
+  CBL.addRecords('findagrave', L, [{ memorialId: '900000001', slug: 'calvin-george-hartley',
+    persons: ['Ethel Mae Hartley'] }], 'page: Ethel Mae Hartley');
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), fetch: PHOTO_OK,
+    storage: Object.assign({}, ON, { fagBatchLedger: L }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.written.length, 1, p.batchEl('fag-status').textContent);
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Calvin George Hartley', 'Calvin Hartley']);
+});
+
+test('F1: a memorial a spouse\'s page queued first, then an index entry, ticks the entry\'s person', async () => {
+  const CBL = require('../src/lib/capture-batch.js');
+  const L = { version: 1, items: {}, order: [], log: [] };
+  CBL.addRecords('findagrave', L, [{ memorialId: '900000001', slug: 'calvin-george-hartley',
+    persons: ['Ethel Mae Hartley'] }], 'page: Ethel Mae Hartley');
+  CBL.addRecords('findagrave', L, [{ memorialId: '900000001', slug: 'calvin-george-hartley', persons: ['Calvin E. Hartley'],
+    foundFor: ['Calvin E. Hartley'] }], 'index: Calvin E. Hartley');
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), fetch: PHOTO_OK,
+    storage: Object.assign({}, ON, { fagBatchLedger: L }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.written.length, 1, p.batchEl('fag-status').textContent);
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Calvin George Hartley', 'Calvin E. Hartley']);
+});
+
+test('the Find a Grave batch ticks the person an index entry was queued for; other memorials keep their own people', async () => {
+  const L = { version: 1, items: {}, order: [], log: [] };
+  require('../src/lib/capture-batch.js').addRecords('findagrave', L,
+    [{ memorialId: '900000001', slug: 'calvin-george-hartley', persons: ['Calvin Hartley'], foundFor: ['Calvin Hartley'] }],
+    'index: Calvin Hartley');
+  const p = await openPanel({ url: FAG_CALVIN, respond: fagSite(), fetch: PHOTO_OK,
+    storage: Object.assign({}, ON, { fagBatchLedger: L }) });
+  quick(p);
+  await start(p, 'fag');
+  assert.strictEqual(p.written.length, 1, p.batchEl('fag-status').textContent);
+  assert.deepStrictEqual(p.capJson(p.written[0]).people, ['Calvin George Hartley', 'Calvin Hartley']);
+  const M = { version: 1, items: {}, order: [], log: [] };
+  require('../src/lib/capture-batch.js').addRecords('findagrave', M,
+    [{ memorialId: '900000001', slug: 'calvin-george-hartley', persons: ['Calvin Hartley'] }], 'page: Calvin Hartley');
+  const q = await openPanel({ url: FAG_CALVIN, respond: fagSite(), fetch: PHOTO_OK,
+    storage: Object.assign({}, ON, { fagBatchLedger: M }) });
+  quick(q);
+  await start(q, 'fag');
+  assert.deepStrictEqual(q.capJson(q.written[0]).people, ['Calvin George Hartley']);
 });

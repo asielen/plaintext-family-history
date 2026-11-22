@@ -27,8 +27,22 @@
 // is done; otherwise the clipping goes to the Newspapers.com batch, which
 // saves the original at full size. A person's sources that link a clipping
 // are queued there too, by "Add the sources of the person in front of you".
-// Either way the clipping keeps the person it was found for: the
+// Either way the clipping keeps the person it was found for (its
+// `foundFor`, apart from the people any other queueing adds): the
 // Newspapers.com batch ticks them on the clipping's form when it saves it.
+//
+// A Find a Grave Index entry (Ancestry's collection 60525, FamilySearch's
+// 2221801) is the same again: it indexes one memorial. The Ancestry and
+// FamilySearch batches do not save the entry; if the archive holds the
+// memorial with its photos (Seen It, fag:{id}) the entry is done, and
+// otherwise the memorial goes to the Find a Grave batch, which saves it with
+// its photos and ticks the person the entry was queued for (its `foundFor`
+// too: a name another button queued the memorial for is never ticked).
+//
+// Either shortcut, a clipping's copy or an index entry, is taken only while
+// the tab shows the record queued (pageIsQueued): a page the site sent on to
+// another record is refused by Capture, as any page showing the wrong record
+// is, and never marks the queued one done.
 //
 // ── SWITCHED OFF unless this browser is told otherwise ──────────────────────
 // Batch downloads are a power tool. Nothing about them is shown in the panel
@@ -752,9 +766,23 @@
           await sendToClippingBatch(siteName, L, item, page.prefill.ancestryNewspapersClip)) {
         return finishRecord(siteName, L);
       }
-      // A clipping found on Ancestry: the people it was found for are ticked
-      // on its form, as the panel's "Open it on Newspapers.com" does.
-      if (siteName === 'newspapers' && Array.isArray(item.persons) && item.persons.length) hooks.addPeople(item.persons);
+      // A Find a Grave Index entry: the memorial is what is saved, by the
+      // Find a Grave batch. Only when the tab still shows the entry queued,
+      // as for a clipping above: one the site sent on to another entry is
+      // refused by Capture below, never marked done for the other's memorial.
+      const other = page.elsewhere;
+      if (!item.mediaId && other && other.kind === 'memorial' && (siteName === 'ancestry' || siteName === 'familysearch') &&
+          pageIsQueued(siteName, item, page.url) &&
+          await sendToMemorialBatch(siteName, L, item, other)) {
+        return finishRecord(siteName, L);
+      }
+      // An original found through another record (a clipping on Ancestry, a
+      // memorial an index entry names): the people it was found for
+      // (`foundFor`, kept apart from the people every other queueing adds)
+      // are ticked on its form, as the panel's "Open it on …" does. A
+      // memorial queued only some other way keeps the memorial's own people.
+      if ((siteName === 'newspapers' || siteName === 'findagrave') && Array.isArray(item.foundFor) &&
+          item.foundFor.length) hooks.addPeople(item.foundFor);
       let out;
       const flag = item.mediaId ? SITE_UI[siteName].mediaPrefillFlag : SITE_UI[siteName].prefillFlag;
       if (!flag || !page.prefill[flag]) {
@@ -825,9 +853,12 @@
     }
 
     // Whether the tab's address is the queued record's own page: a shortcut
-    // that acts on what the page says (it is a copy of a clipping) must never
-    // act for a record the site sent the tab away from. A gallery item: the
-    // media id in the viewer's /media/{id} path.
+    // that acts on what the page says (it is a copy of a clipping, an index
+    // of a memorial) must never act for a record the site sent the tab away
+    // from. A gallery item: the media id in the viewer's /media/{id} path. An
+    // Ancestry record: /search/collections/{dbId}/records/{recordId}, or
+    // /discoveryui-content/view/{recordId}:{dbId}. A FamilySearch record:
+    // ark:/61903/1:1:{fsId}, in any case. Anything else is not the one queued.
     function pageIsQueued(siteName, item, url) {
       let u;
       try {
@@ -835,9 +866,24 @@
       } catch (e) {
         return false;
       }
+      const path = u.pathname;
       if (item.mediaId) {
-        const m = /\/media\/([0-9a-f-]{36})\/?$/i.exec(u.pathname);
+        const m = /\/media\/([0-9a-f-]{36})\/?$/i.exec(path);
         return !!m && m[1].toLowerCase() === String(item.mediaId).toLowerCase();
+      }
+      const num = (v) => (/^\d+$/.test(String(v)) ? String(Number(v)) : null);
+      if (siteName === 'ancestry') {
+        let db = null;
+        let rid = null;
+        let m = /^\/search\/collections\/(\d+)\/records\/(\d+)\/?$/.exec(path);
+        if (m) [db, rid] = [m[1], m[2]];
+        m = /^\/discoveryui-content\/view\/(\d+):(\d+)\/?$/.exec(path);
+        if (m) [rid, db] = [m[1], m[2]];
+        return db != null && num(db) === num(item.dbId) && num(rid) === num(item.recordId);
+      }
+      if (siteName === 'familysearch') {
+        const m = /\/ark:\/61903\/1:1:([A-Za-z0-9-]+)\/?$/.exec(decodeURIComponent(path));
+        return !!m && m[1].toUpperCase() === String(item.fsId || '').toUpperCase();
       }
       return false;
     }
@@ -860,10 +906,39 @@
           ? 'in the archive' + (held.source ? ', source ' + held.source : '')
           : 'waiting in the inbox to be filed') + ', as Newspapers.com clipping ' + id]], true);
       } else {
-        await apply('newspapers', null, [['addFound', [{ id, url, title: item.title || '', persons: item.persons || [] }],
+        await apply('newspapers', null, [['addFound', [{ id, url, title: item.title || '', persons: item.persons || [],
+          foundFor: item.persons || [] }],
           'gallery: ' + ((item.persons || [])[0] || item.key), 'from an Ancestry gallery']], true);
         await apply(siteName, L, [['markDone', item.key, '(sent to the Newspapers.com batch)',
           'a copy of Newspapers.com clipping ' + id + '; the Newspapers.com batch saves the original']], true);
+      }
+      active.fails = 0;
+      return true;
+    }
+
+    // A Find a Grave Index entry whose memorial is known (`mem`, the panel's
+    // note: { kind: 'memorial', id, url }). The archive holding the memorial
+    // with its photos makes the entry done; otherwise the memorial is queued
+    // in the Find a Grave batch, with the people the entry was queued for,
+    // and the entry is done here. A memorial known without its photos
+    // (fagidx:) is queued too: the Find a Grave batch saves the photos.
+    // False when the note names no memorial the Find a Grave batch can open.
+    async function sendToMemorialBatch(siteName, L, item, mem) {
+      const m = /^https:\/\/www\.findagrave\.com\/memorial\/(\d+)(?:\/([A-Za-z0-9_-]{1,120}))?/.exec(String(mem.url || ''));
+      if (!m || String(Number(m[1])) !== String(mem.id)) return false;
+      const id = String(Number(m[1]));
+      const fk = 'fag:' + id;
+      const held = (await hooks.seenItHeld([fk]))[fk];
+      if (held) {
+        await apply(siteName, L, [['markHeld', item.key, (held.where === 'archive'
+          ? 'in the archive' + (held.source ? ', source ' + held.source : '')
+          : 'waiting in the inbox to be filed') + ', as Find a Grave memorial ' + id]], true);
+      } else {
+        await apply('findagrave', null, [['addRecords', [{ memorialId: id, slug: m[2] || '', title: item.title || '',
+          persons: item.persons || [], foundFor: item.persons || [] }],
+          'index: ' + ((item.persons || [])[0] || item.key), 'from a Find a Grave Index entry']], true);
+        await apply(siteName, L, [['markDone', item.key, '(sent to the Find a Grave batch)',
+          'an index of Find a Grave memorial ' + id + '; the Find a Grave batch saves the memorial and its photos']], true);
       }
       active.fails = 0;
       return true;
@@ -1029,7 +1104,7 @@
       if (siteName === 'ancestry' && Array.isArray(r.clippings) && r.clippings.length) {
         const NL = {};
         const [n] = await apply('newspapers', NL, [['addFound',
-          r.clippings.map((c) => Object.assign({ persons: r.person ? [r.person] : [] }, c)),
+          r.clippings.map((c) => Object.assign({ persons: r.person ? [r.person] : [], foundFor: r.person ? [r.person] : [] }, c)),
           'page: ' + (r.person || tab.url), (r.person || 'This page') + '’s sources']], true);
         const k = r.clippings.length;
         clipLine = k + ' Newspapers.com clipping' + (k === 1 ? '' : 's') + ' found, ' + n +
