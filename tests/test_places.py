@@ -1775,6 +1775,23 @@ class DmsCoordsTests(unittest.TestCase):
                 self.assertIsInstance(got, str)
                 self.assertIn(phrase, got)
 
+    def test_run_together_or_mismarked_digits_are_refused_not_guessed(self) -> None:
+        # A slipped shift key ("39°33"N" for 39°33') or a half-packed GNIS
+        # figure must not be split into some other degrees/minutes/seconds:
+        # each of these used to store a pin 10 to 4,000 km from the stone.
+        rows = [
+            '39°33"N, 95°07\'18"W',
+            '39°33\'47"N, 95°07"W',
+            '39\'N, 95W',
+            '012345N, 0950718W',
+            '082347N, 0950718W',
+            '0533N, 09507W',
+            '39°3347\'N, 95°W',
+        ]
+        for text in rows:
+            with self.subTest(text=text):
+                self.assertIsInstance(places._parse_coords_text(text), str)
+
     def test_set_writes_the_rounded_pair(self) -> None:
         result = places.run_place_set(self.root, 'L-7c1a9f4e22',
                                       coords='39°33\'47"N, 95°07\'18"W')

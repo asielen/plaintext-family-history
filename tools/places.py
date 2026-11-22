@@ -2836,9 +2836,14 @@ def _set_block_key(block: list[str], key: str, indent: str, value_lines: list[st
     block[insert_at:insert_at] = value_lines
 
 
+# Minutes start only after a degree mark or a space, seconds only after a
+# minute mark or a space: with every separator optional, a slipped mark
+# ("39°33"N") or a run of digits ("012345N") was split into some other
+# degrees/minutes/seconds and stored as a wrong pin that looked right.
 _COORD_HALF_RE = re.compile(
     r'^(?P<pre>[NSEW])?\s*(?P<sign>[+-])?\s*(?P<deg>\d{1,3}(?:\.\d+)?)\s*°?\s*'
-    r'(?:(?P<min>\d{1,2}(?:\.\d+)?)\s*\'?\s*(?:(?P<sec>\d{1,2}(?:\.\d+)?)\s*"?)?)?'
+    r'(?:(?<=[°\s])(?P<min>\d{1,2}(?:\.\d+)?)\s*\'?\s*'
+    r'(?:(?<=[\'\s])(?P<sec>\d{1,2}(?:\.\d+)?)\s*"?)?)?'
     r'\s*(?P<post>[NSEW])?$')
 _COORD_COMMA_HINT = 'Put a comma between them, like 39°33\'47"N, 95°07\'18"W.'
 
