@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.19",
-  "generated": "2026-11-20",
+  "generated": "2026-11-22",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "4c05e346c1a3dee3ad2c7900ab9ebae2bd9d97d76aec766ec8ee449b86b32d9b",
+      "sha256": "c52b5fb375de04117f41e58145082c12b9ff558531acf2d0996da0484967063e",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "4ec91e7e189e45b323c0e6373391f1e475a9c77ed2fcbd881043024878f7bec2",
+      "sha256": "332759e7c6991f4d324360e570898f2e24254fc4f3cd88ac3e6aa8f0bc8edf3a",
       "spec_version": "2.19",
       "src": "tools/lint.py"
     },
@@ -859,6 +859,13 @@
       "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
       "spec_version": "2.19",
       "src": "tools/reconcile.py"
+    },
+    {
+      "path": ".fha/tools/record_collections.json",
+      "category": "operating",
+      "sha256": "3ebc3860559b307ee600e5a2ded68b964930913e444c93a79c82a267117e413d",
+      "spec_version": "2.19",
+      "src": "tools/record_collections.json"
     },
     {
       "path": ".fha/tools/relate.py",
@@ -1144,7 +1151,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "67361b0361f22488b21a20a42a9c8bb858d1f92bfefbb2d379f5e7e682f0e810",
+      "sha256": "120f8b35dd36f5947b9d02aef5d518a2538730937c77907de81fedbbc9fd6d9d",
       "spec_version": "2.19"
     },
     {
@@ -1193,7 +1200,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "8332917879bdf5abdcde10eef7ab00531b9427dca91be14aeae89e5a7afba49e",
+      "sha256": "04dbf07748fc8860ea0093f3152c66b8c35e304efea4f680c72a31dbb5b00459",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
