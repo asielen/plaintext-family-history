@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f9edc042b5d0b474429da4606b40443058211505da7bc96a29f5b6a84dc50187",
+      "sha256": "23c8587da0d7b2bd9c687070207e16c4b76d5c9d27ffbe9df4a23bcaef46320f",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -387,14 +387,14 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "52ad40dfcf0b4e5346afe3bdc6604df75aeddbf50e3ebd77b8664476dd4b8bb4",
+      "sha256": "ea8dde786cb4e3fc86d946d05c7b74185db1be47ded6eded80a9d7b37046e1a9",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
-      "sha256": "07cfed1d49ad239310e6182d2bdb8a9ad39c3fa696cf06d592a5782cbc08ef3a",
+      "sha256": "b626618d551654739b82e8e9f15c294c538f84ae528615db5fadbef6dd7fd681",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
@@ -513,21 +513,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "daefa1eb0ed1135289010bebce0d8460038101b070c7651797e53bba54721db0",
+      "sha256": "9db164d1eeaa5981433c283cef3d6cafde89c866f2719d3f953fd4d32eda827c",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "b71220996205ffb68e56e9d1422c68d160f0b553c2ad6ae0ca36d889b29e7c9b",
+      "sha256": "08a851070b1ba724013d1ebdde5b755e6654068c38c69a619fe5fe9dabf6af56",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "1119e2c6289b270929bd7042b7a0db69b0c0108b7637b7d63a6aa31b880989be",
+      "sha256": "1902d5f55264bfe5caedcf9bbdba029550037821de696adb557ae4c9ac19fe5a",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },

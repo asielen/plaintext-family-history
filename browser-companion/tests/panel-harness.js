@@ -63,6 +63,7 @@ function makeEl(id, tag) {
       if (sel === 'input:checked') {
         return this.descendants().filter((e) => e.tagName === 'input' && e.checked);
       }
+      if (sel === 'input') return this.descendants().filter((e) => e.tagName === 'input');
       return [];
     },
     querySelector() { return null; },

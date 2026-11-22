@@ -602,3 +602,71 @@ test('Codex 4503601729: leaving for a page that is not a newspaper, or Re-read p
   await settle();
   assert.deepStrictEqual(locked(p), [false, false, false]);
 });
+
+// ── a Newspapers.com clipping met in an Ancestry gallery ─────────────────────
+// Ancestry keeps a smaller copy under its own photo id; the panel points to
+// the original, says when the archive has it already, and carries the people
+// ticked on Ancestry to the clipping's own page.
+
+const ANC_CLIP = 'https://www.ancestry.com/mediaui-viewer/collection/90003/tree/90000001/person/90000002/media/' +
+  '5eed0000-1234-4abc-8def-0123456789ab';
+
+function galleryClipSite(clip, npPeople) {
+  const np = scripted({ [URL_A]: { title: 'Obituary', info: npInfo('article', [clipObj(101, 'Obituary')]) } });
+  return (msg, tab) => {
+    if (tab.url !== ANC_CLIP) {
+      const r = np(msg, tab);
+      if (msg.action === 'prefill' && npPeople) r.prefill.people = npPeople.slice();
+      return r;
+    }
+    if (msg.action !== 'prefill') return { ok: false, error: 'unexpected ' + msg.action };
+    return { ok: true, prefill: {
+      url: ANC_CLIP, title: 'Obituary of Thomas Hartley', sourceDate: '1958-02-04', repository: 'ancestry.com',
+      people: ['Thomas Hartley'], recipeHint: 'ancestry', sourceType: 'newspaper',
+      ancestryPhoto: true, ancestryMediaId: '5eed0000-1234-4abc-8def-0123456789ab', ancestryPhotoShown: ['title'],
+      ancestryNewspapersClip: clip,
+    } };
+  };
+}
+
+test('a gallery clipping on Ancestry: the panel points to the original and opens it, bringing the people along', async () => {
+  const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }) });
+  assert.strictEqual(p.$('np-elsewhere').hidden, false, 'no word that this is a Newspapers.com clipping');
+  assert.match(p.$('np-elsewhere-text').textContent, /smaller copy/);
+  await p.$('btn-open-clip').fire('click');
+  await settle();
+  assert.deepStrictEqual(p.navigations.map((n) => n.url), [URL_A]);
+  assert.strictEqual(p.$('np-elsewhere').hidden, true, 'the note stayed on the Newspapers.com page');
+  const people = p.$('people-list').children.map((row) => [row.children[0].dataset.name, row.children[0].checked]);
+  assert.deepStrictEqual(people, [['Thomas Hartley', true]]);
+});
+
+test('a gallery clipping the archive already holds says so, with its source', async () => {
+  const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }),
+    seenIt: { 'clip:101': { state: 'filed', sid: 'S-0a1b2c3d4e' } } });
+  await settle();
+  assert.match(p.$('np-elsewhere-text').textContent, /already has this clipping \(source S-0a1b2c3d4e\)/);
+});
+
+test('an Ancestry photo that is no clipping, or names an address off Newspapers.com, gets no such note', async () => {
+  for (const clip of [null, { clippingId: 101, url: 'https://evil.example/article/x/101/' }]) {
+    const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite(clip) });
+    assert.strictEqual(p.$('np-elsewhere').hidden, true, JSON.stringify(clip));
+  }
+});
+
+test('people carried from Ancestry are not listed twice on the clipping page', async () => {
+  const p = await openPanel({ url: ANC_CLIP, respond: galleryClipSite({ clippingId: 101, url: URL_A }, ['thomas hartley']) });
+  await p.$('btn-open-clip').fire('click');
+  await settle();
+  assert.deepStrictEqual(p.$('people-list').children.map((row) => row.children[0].dataset.name), ['thomas hartley']);
+});
+
+test('the clipping note goes when the tab moves on to a page that cannot be read', async () => {
+  const site = galleryClipSite({ clippingId: 101, url: URL_A });
+  const p = await openPanel({ url: ANC_CLIP, respond: (msg, tab) => (tab.url === ANC_CLIP ? site(msg, tab) : { ok: false, error: 'not ready' }) });
+  assert.strictEqual(p.$('np-elsewhere').hidden, false);
+  await p.navigate('https://www.ancestry.com/family-tree/person/tree/90000001/person/90000002/facts');
+  await settle();
+  assert.strictEqual(p.$('np-elsewhere').hidden, true);
+});
