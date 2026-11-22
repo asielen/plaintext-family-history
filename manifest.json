@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "4554af38b23db063e5cab091c4bfcbc176f2cfc7f51eadf753490bb526e83b5a",
+      "sha256": "1a75361da66ac172002603cf4095e782f4dad1faf3db4633b91154b6ccf9cc70",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
