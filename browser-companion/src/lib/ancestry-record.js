@@ -994,6 +994,30 @@ function ancMediaFrom(root, href, opts) {
 // { clippingId, url }; `url` is that address on www.newspapers.com, path only.
 // Read from that card alone, never from a comment that links some other
 // clipping, and only when the card names exactly one.
+// An entry in Ancestry's "U.S., Find a Grave Index" (collection 60525) is an
+// index of one memorial. The memorial itself is the better evidence (its
+// photos, the family it links, the volunteer's notes), and the archive may
+// hold it already. The entry names it in its own "URL" field, a link inside
+// the record's fields (#recordFieldsContainer): { memorialId, url }, read
+// from there alone and only when the fields name exactly one memorial.
+const ANC_FAG_INDEX_DB = '60525';
+const ANC_FAG_MEMORIAL_RE = /^https?:\/\/(?:www\.)?findagrave\.com(\/memorial\/(\d+)(?:\/[^/?#]*)?\/?)(?:[?#]|$)/i;
+
+function ancRecordMemorial(root, ids) {
+  if (!ids || ids.dbId !== ANC_FAG_INDEX_DB) return null;
+  const box = ancById(root, 'recordFieldsContainer');
+  if (!box) return null;
+  const found = [];
+  for (const a of ancElements(box, (e) => ancTag(e) === 'A')) {
+    const m = ANC_FAG_MEMORIAL_RE.exec(String(a.getAttribute('href') || '').trim());
+    const id = m ? String(Number(m[2])) : '';
+    if (id && id !== '0' && !found.some((f) => f.memorialId === id)) {
+      found.push({ memorialId: id, url: 'https://www.findagrave.com' + m[1] });
+    }
+  }
+  return found.length === 1 ? found[0] : null;
+}
+
 const ANC_NP_CLIP_RE = /^https?:\/\/(?:www\.)?newspapers\.com(\/(?:article\/[^/?#]+\/(\d+)|(?:article|clip)\/(\d+))(?:\/[^/?#]*)?\/?)(?:[?#]|$)/i;
 
 function ancMediaNewspapersClip(root) {
@@ -1077,6 +1101,7 @@ module.exports = {
   ancMediaLabel,
   ancMediaFrom,
   ancMediaNewspapersClip,
+  ancRecordMemorial,
   ancMediaHints,
   ancMediaKind,
   ancPhotoFileStem,
