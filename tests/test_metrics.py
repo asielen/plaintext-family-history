@@ -604,6 +604,89 @@ class CensusCheckTests(_Base):
         for name in _lib._CENSUS_STATE_NAMES_LEFT_OUT:
             self.assertIsNone(_lib.census_country_key(name), name)
 
+    def test_born_in_england_expects_every_census_from_1851_to_death(self):
+        # 1841 is the first census that names everyone; 1931 for England and
+        # Wales was destroyed in 1942 (not asked), 1941 was not taken.
+        self._register('L-eeeeeeeeee', 'Bristol', 'Bristol, England')
+        self.a.source('vital-record', [_birth(KID, '1850', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1900'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['countries'], ['England and Wales'])
+        self.assertEqual(c['expected'], [1851, 1861, 1871, 1881, 1891])
+
+    def test_born_in_wales_skips_the_destroyed_1931_and_untaken_1941(self):
+        self._register('L-eeeeeeeeee', 'Cardiff', 'Cardiff, Wales')
+        self.a.source('vital-record', [_birth(KID, '1900', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1950'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1901, 1911, 1921])
+        self.assertNotIn(1931, c['expected'] + c['missing'])
+        self.assertNotIn(1941, c['expected'] + c['missing'])
+
+    def test_born_in_scotland_expects_the_1921_census(self):
+        # Scotland's 1931 return is closed until 2032 (100-year rule), so
+        # the table stops at 1921 (the latest released).
+        self._register('L-eeeeeeeeee', 'Perth', 'Perth, Scotland')
+        self.a.source('vital-record', [_birth(KID, '1915', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1960'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['countries'], ['Scotland'])
+        self.assertEqual(c['expected'], [1921])
+
+    def test_born_in_ireland_expects_1901_and_1911_and_1851_is_an_extra(self):
+        # 1861-1891 returns were destroyed; 1821-1851 survive only in
+        # fragments, so they count when found and are never asked for.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1880', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1851',
+                                  'place': 'L-eeeeeeeeee'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1901, 1911])
+        self.assertEqual(c['extras'], [1851])
+        self.assertEqual(c['missing'], [1901, 1911])
+
+    def test_irish_1926_census_on_file_is_an_extra_never_missing(self):
+        # The Irish Free State 1926 return was released 18 April 2026; the
+        # Northern Ireland 1926 returns are lost, so it is never asked for.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1880', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1926',
+                                  'place': 'L-eeeeeeeeee'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1901, 1911])
+        self.assertIn(1926, c['extras'])
+        self.assertNotIn(1926, c['missing'])
+
+    def test_a_place_ending_northern_ireland_uses_the_irish_table(self):
+        self._register('L-eeeeeeeeee', 'Belfast', 'Belfast, Northern Ireland')
+        self.a.source('vital-record', [_birth(KID, '1880', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['countries'], c['expected']), (['Ireland'], [1901, 1911]))
+
+    def test_a_place_ending_united_kingdom_has_no_table(self):
+        # "United Kingdom" could mean any of the three tables: not guessed.
+        self._register('L-eeeeeeeeee', 'Leeds', 'Leeds, United Kingdom')
+        self.a.source('vital-record', [_birth(KID, '1880', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['state'], c['expected']), ('na', []))
+
+    def test_british_and_irish_country_names_map_to_their_tables(self):
+        import _lib
+        cases = {'England': 'England and Wales', 'Wales': 'England and Wales',
+                 'England and Wales': 'England and Wales', 'Scotland': 'Scotland',
+                 'Ireland': 'Ireland', 'Northern Ireland': 'Ireland',
+                 'Republic of Ireland': 'Ireland', 'Irish Free State': 'Ireland',
+                 'Eire': 'Ireland', 'Éire': 'Ireland',
+                 'United Kingdom': None, 'UK': None, 'Great Britain': None,
+                 'Britain': None}
+        for name, key in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(_lib.census_country_key(name), key)
+
     def test_an_exact_death_outranks_an_approximate_one(self):
         # Died 19 Jan 1941 by the certificate; a recollection says "funeral
         # about 1940" (read as 1939 to 1941). The exact date decides, so the

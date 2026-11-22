@@ -17847,6 +17847,35 @@ CENSUS_YEARS: dict[str, dict[str, tuple[int, ...]]] = {
         'required': (1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921, 1931),
         'extra': (1906, 1916, 1926),
     },
+    # England and Wales. Sources: The National Archives, "Census records"
+    # research guide (https://www.nationalarchives.gov.uk/help-with-your-research/research-guides/census-records)
+    # and the 1931 fire, RG 20/109 "Destruction of 1931 census schedules by fire".
+    # 1841 is the first census that names everyone, not only the heads.
+    # 1931 was destroyed in a fire at Hayes on 19 December 1942; 1941 was not taken.
+    'England and Wales': {
+        'required': (1841, 1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921),
+        'extra': (),
+    },
+    # Scotland. Source: National Records of Scotland, "Census records"
+    # (https://www.nrscotland.gov.uk/learning-and-events/research-guides/census-records):
+    # open 1841-1921; census records are closed for 100 years, so 1931 (a return
+    # that exists) is not open until 2032 and is not asked for. 1941 was not taken.
+    'Scotland': {
+        'required': (1841, 1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921),
+        'extra': (),
+    },
+    # Ireland (the island). Source: National Archives of Ireland, "Census records
+    # 1821-1891" (https://nationalarchives.ie/?p=696) and "History of Irish census
+    # records": 1901 and 1911 survive complete for all of Ireland. 1821-1851
+    # survive only in fragments (most lost in the 1922 fire). 1861 and 1871 were
+    # destroyed in 1877 after analysis; 1881 and 1891 in the First World War
+    # (paper shortage). No Irish census was taken in 1921. The Irish Free State's
+    # 1926 census was released on 18 April 2026 (National Archives of Ireland);
+    # Northern Ireland's 1926 household returns are lost, so 1926 is an extra.
+    'Ireland': {
+        'required': (1901, 1911),
+        'extra': (1821, 1831, 1841, 1851, 1926),
+    },
 }
 
 # The last part of a place's `hierarchy:` (largest last, SPEC §15), as people
@@ -17855,6 +17884,16 @@ _CENSUS_COUNTRY_NAMES: dict[str, str] = {
     'usa': 'United States', 'us': 'United States', 'united states': 'United States',
     'united states of america': 'United States',
     'canada': 'Canada',
+    # England and Wales: 1841 to 1921 (see CENSUS_YEARS).
+    'england': 'England and Wales', 'wales': 'England and Wales',
+    'england and wales': 'England and Wales',
+    # Scotland: 1841 to 1921.
+    'scotland': 'Scotland',
+    # Ireland: 1901 and 1911 required (see CENSUS_YEARS). "Eire" and "Éire" are
+    # the state's Irish-language name, written in English and in Irish.
+    'ireland': 'Ireland', 'northern ireland': 'Ireland',
+    'republic of ireland': 'Ireland', 'irish free state': 'Ireland',
+    'eire': 'Ireland', 'éire': 'Ireland',
 }
 
 # A hand-registered or GEDCOM-derived place often stops at the state or
@@ -17891,6 +17930,11 @@ _CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
     'hawaii': 'a kingdom and republic with its own censuses until 1898',
     'newfoundland': 'not part of Canada until 1949, after most of its table',
     'newfoundland and labrador': 'not part of Canada until 1949, after most of its table',
+    # Names that could mean any of the three UK census tables (or none).
+    'united kingdom': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'uk': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'great britain': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'britain': 'names several census countries; write England, Wales, Scotland or Ireland',
 }
 _CENSUS_COUNTRY_NAMES.update(
     {state: country for country, states in _CENSUS_STATE_NAMES.items() for state in states})
