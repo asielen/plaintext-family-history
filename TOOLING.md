@@ -1040,7 +1040,7 @@ Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `r
 - **Blood**: genetic edges only; lowest common ancestor(s); named by generation/removal (Nth cousin M-removed, great-…-grandparent).
 - **Social path**: BFS over all edges, rendered as role hops ("your brother's friend's sister's father").
 
-Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked.
+Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
 
 ## 7a. `fha metrics`: person completeness
 
