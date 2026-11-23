@@ -924,11 +924,193 @@
       "src": "tools/report.py"
     },
     {
+      "path": ".fha/tools/repositories.json",
+      "category": "operating",
+      "sha256": "59ac7420d1fc42c0b05ab4cae3bbcae318177eeab5df446d542107b1308639b0",
+      "spec_version": "2.24",
+      "src": "tools/repositories.json"
+    },
+    {
       "path": ".fha/tools/requirements.txt",
       "category": "operating",
       "sha256": "546a4f6a6463d0b9e4603340501d620684ca67ebb372e259fd21af12f9138c00",
       "spec_version": "2.24",
       "src": "tools/requirements.txt"
+    },
+    {
+      "path": ".fha/tools/research_guides/LICENSE-autoresearch-genealogy.txt",
+      "category": "operating",
+      "sha256": "3fdc90d2fa46e6412b9e612fb7ada2e1365882570d12747b82a26fb5c1e5af79",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/LICENSE-autoresearch-genealogy.txt"
+    },
+    {
+      "path": ".fha/tools/research_guides/african-american.md",
+      "category": "operating",
+      "sha256": "9afa0f22d310e4f5ad6fafa4cfdbefd8d01a2ff89c6dd56c3095c84284181346",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/african-american.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/australia-nz.md",
+      "category": "operating",
+      "sha256": "eed33b209168f5201392a13be36d9fe5e7b8775dab05fd7fe8353c55c65593c4",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/australia-nz.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/austria.md",
+      "category": "operating",
+      "sha256": "6a34acb5d93bfa062098dc3ce2cb8e79028458c08ed851c5beffb96102ea4c17",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/austria.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/canada.md",
+      "category": "operating",
+      "sha256": "95c8e9457a892f1216fc52b732cdf3422b10549ada9f83e58a11faecee311189",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/canada.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/england-wales.md",
+      "category": "operating",
+      "sha256": "466734246be8103163e07aa09f05ca7655fb36be908426f9e3c58231132775c7",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/england-wales.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/france.md",
+      "category": "operating",
+      "sha256": "5683517cec6ae04553cc9501dbe341e2ff8d1ae848738edac1b6a2b5d90f81f2",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/france.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/germany.md",
+      "category": "operating",
+      "sha256": "babe3ec66fc651c6de93e739ffdb8762063051312fa78cfd37be794a364044fc",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/germany.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/hungary.md",
+      "category": "operating",
+      "sha256": "02ca9d04a3a64838dc4dcaec96450e57d38f3d06402b0e4d999785e204a697d4",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/hungary.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/ireland.md",
+      "category": "operating",
+      "sha256": "266358c633534b88aece91aeb02e1417d7bee6ca993ce0a15d89e784b089d3bc",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/ireland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/italy.md",
+      "category": "operating",
+      "sha256": "378ed337af41248c972c24fd7fc465f5a2617a7643a5ff96b51c3cecc4c83ff1",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/italy.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/jewish-genealogy.md",
+      "category": "operating",
+      "sha256": "b27253539509eca91e089a7c4c97de58f4512e2ce4a9f59a32c33d6c6ede088c",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/jewish-genealogy.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/mexico-latin-america.md",
+      "category": "operating",
+      "sha256": "022256dda0c109ca91457b21d3edd1fa0fd0ce63fea4e34c79081cf871267c51",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/mexico-latin-america.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/netherlands.md",
+      "category": "operating",
+      "sha256": "182813933b7fc923af39ee3be88292fcccb1a3f51ca10fddb439c24aa883c881",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/netherlands.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/norway.md",
+      "category": "operating",
+      "sha256": "324d97e26f0d29692415ea582955bfd2941a5afdcad37e692a6b231a80e82fd9",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/norway.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/poland.md",
+      "category": "operating",
+      "sha256": "7d15a66b9168de185a0a233153eb4352795d8a2f38f7666bd29e746daf5c9dcf",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/poland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/russia-ukraine.md",
+      "category": "operating",
+      "sha256": "eb0330b94166e04d6e635932648197d91382a633a1f02cce933613910a29f5b5",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/russia-ukraine.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/scotland.md",
+      "category": "operating",
+      "sha256": "92d648881cb901673b33a0f519a2992c3c544eec6b30096cae348411fda8b09d",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/scotland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/spain-portugal.md",
+      "category": "operating",
+      "sha256": "1cf175bec8201d1880a0695057bf5265a48a15d61d9ba1065f3476a141e9828a",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/spain-portugal.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/sweden.md",
+      "category": "operating",
+      "sha256": "0433e51dca9ab76075bcbf1bc7dfd9b54a67264ca44195bcfae18d054d71fd1d",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/sweden.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-census.md",
+      "category": "operating",
+      "sha256": "367efc9627f0a9f824d798aef9efc627fe9fc46d46eb21bf13cce2c6c5d03bfd",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/usa-census.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-colonial.md",
+      "category": "operating",
+      "sha256": "dd33d97bb3ac62296c066b9ff371db51ad888bcd226a90b12190ef82446904af",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/usa-colonial.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-immigration.md",
+      "category": "operating",
+      "sha256": "1ffc79817ce94104a8099bae0241f6cd9015ac7fae4c8bd7ee41b241d7c94537",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/usa-immigration.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-military.md",
+      "category": "operating",
+      "sha256": "fb38a237cc3abc6de2ec35ab1a5453078785981421a14b3a29772fb1ca3d0aa3",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/usa-military.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-vital-records.md",
+      "category": "operating",
+      "sha256": "e9df750f8a98070deb9dbb7b25cd5f902108f8bc57fc2f2d8f76b825b6500f1f",
+      "spec_version": "2.24",
+      "src": "tools/research_guides/usa-vital-records.md"
     },
     {
       "path": ".fha/tools/scaffold.py",
@@ -1284,7 +1466,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "f9dddcb9007c8b98d343eb805ac6fbe8d0d543fb50791db39ae24760cf613a75",
+      "sha256": "7417bcba47dbbf69c9e3ff6f24c65d9f6b60bf4269f2f2f0f2707b30bb497dcb",
       "spec_version": "2.24",
       "src": "TOOLING.md"
     },
