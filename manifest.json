@@ -744,7 +744,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "f5a5097d5a41a5c50bd30b0d659baae95ddcae4bd15b7df3ff6e1769c76fdea9",
+      "sha256": "3afc3180323b564a0cc91c089f5105bb8ee1ebdf2a8a7a34b05d99d115cbd50b",
       "spec_version": "2.20",
       "src": "tools/confirm.py"
     },
@@ -1249,7 +1249,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "26639f494ad364aa36a7fcabb5ab54684d6fbdf50c47b8fb2c044724c8e1bc6d",
+      "sha256": "0230fdb1e47637462b89341ad13158950e93fc49e410f019c50f1d960ed4330e",
       "spec_version": "2.20",
       "src": "TOOLING.md"
     },

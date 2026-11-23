@@ -2776,12 +2776,12 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
     for _field, value, marker in person_other_name_entries(merged_meta):
         key = strip_link_wrapper(value).strip().lower()
         if marker not in (None, False, '', 'false') and key not in private_markers:
-            private_markers[key] = marker
+            private_markers[key] = (marker, strip_link_wrapper(value).strip())
 
     def with_marker(item):
         """`item`, as a `{value:, restricted:}` mapping when the merged
         record marks its name private anywhere and this copy is plain."""
-        marker = private_markers.get(_name_key(item))
+        marker = private_markers.get(_name_key(item), (None,))[0]
         if marker is None or (isinstance(item, dict) and item.get('restricted')
                               not in (None, False, '', 'false')):
             return item
@@ -2830,6 +2830,22 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
         item = with_marker(item)
         plan['name_variants'].append(_render_scalar(item))
         place(item, 'name_variants')
+
+    # A name the survivor shows plain but the merged record marks private:
+    # the skip above leaves the survivor's plain copy and the tombstone's
+    # private entry is stripped, so the marker would be lost. A private entry
+    # in the survivor's name_variants keeps it private there, as it was on
+    # the merged record. Not for the survivor's own `name:`, which is public.
+    survivor_private = person_restricted_names(survivor_meta)
+    survivor_name = _name_key(survivor_meta.get('name'))
+    for key, (marker, text) in private_markers.items():
+        if key in plan['prefold_known'] and key not in survivor_private \
+                and key != survivor_name:
+            item = {'value': text, 'restricted': marker}
+            plan['name_variants'].append(_render_scalar(item))
+            place(item, 'name_variants',
+                  note='; the survivor lists it without the marker, which now '
+                       'keeps it private there too')
     return plan
 
 

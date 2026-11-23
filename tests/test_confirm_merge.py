@@ -1339,6 +1339,30 @@ class MergeNameFieldTests(unittest.TestCase):
                 self.assertIn('Tommy Hartley (from p-bbbbbbbbbb, restricted)',
                               self._infos(result))
 
+    def test_a_name_the_survivor_shows_plain_keeps_the_merged_records_marker(self) -> None:
+        # The survivor lists "Tommy Hartley" as a plain nickname; the merged
+        # record marks it private (the fixture's name_variants). The merge
+        # strips the tombstone's name_variants, so without a private entry on
+        # the survivor the marker would be gone from both records.
+        for field, line in (('also_known_as', 'also_known_as: [Tommy Hartley]'),
+                            ('married_name', 'married_name: Tommy Hartley')):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.survivor_path, [line])
+                result = run_merge(self.root, dry_run=True)
+                self.assertIn('name_variants: Tommy Hartley (from p-bbbbbbbbbb, '
+                              'restricted; the survivor lists it without the marker',
+                              self._infos(result))
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertIn('tommy hartley', person_restricted_names(smeta))
+                self.assertNotIn('tommy hartley',
+                                 {v.lower() for v in person_alias_mirror(smeta)})
+                self.assertNotIn('tommy hartley',
+                                 {str(a).lower() for a in smeta['aliases']})
+
     def test_a_one_name_also_known_as_says_how_to_write_it_as_a_list(self) -> None:
         # `also_known_as: Ned` typed by hand cannot be extended in place; the
         # merge stops with nothing written and tells him the exact line to
