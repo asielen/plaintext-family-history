@@ -174,7 +174,7 @@
     {
       "path": ".agents/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
       "spec_version": "2.19",
       "src": ".claude/skills/write-biography/SKILL.md"
     },
@@ -325,7 +325,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
       "spec_version": "2.19"
     },
     {
@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f5ddcb3fd4089c85701cf6bc94c77950388885adb538f14e2f372a1883700e4e",
+      "sha256": "5dc8fd9c71c7ddeae4b4641992ec5cabffc5afb027403774470b04794011f78c",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "1bfb44b3e41d4f9041cc17031a29c8a77977e344e9588c395d2116e2d6a6dfbb",
+      "sha256": "cda06c0d62a948b9245667ba831e7fd70966d9ccdb381ef7515836115173ada3",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
@@ -450,7 +450,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "c138f499afe76aafc4a887fd5305c59e6678b587db3019e2dc4aaba11e6c29da",
+      "sha256": "87941bf211f117074acce44211225e122176381bbcf44ea91e82ecf627b61fef",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -527,7 +527,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "715f20266009072ea2e3d3d40ddf70d6540fee49782b9da4ff1153d14fdb5e82",
+      "sha256": "3721571d9fcfe57fe38c38e470896ae5c96474893ee06f8353ee559ab0ae9076",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "3c6abf1d02dbe4da5833e5ab11fcf6a2d690dc9cdd9b8b58186b58e9cc41b3b7",
+      "sha256": "ee9841c55a660c8141e17fba7c3e51f3e9ac9b59c47581b1eb88cdffb235a16d",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -695,7 +695,7 @@
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "68b18daf5fba76f225cb31818b166f320fb0fac77c24f82d80297628bbe59fbc",
+      "sha256": "66921f3d9e5ead96e9c6b64972d769102b2c60181d07ba62b20e3a4fcc6de340",
       "spec_version": "2.19",
       "src": "tools/capture_recipes/familysearch.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "9ba9411476851237d493ed0e1ab4e4ef5ad03a36abeb160ba76cb319f7e75a39",
+      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "0d078f19643b5babb4d04f76460936d65a9a51073b40493701123c457c0249f7",
+      "sha256": "6162288309032fd743dde789e90590bad76d8edf781c7b6ada7a56a59281a393",
       "spec_version": "2.19",
       "src": "tools/person.py"
     },
@@ -849,7 +849,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "127141ad143326e2de251f3ec2eb53fcfabbc7492a0c4ac3b3ee50adb4d6e51d",
+      "sha256": "f6dfdf5016a8bacc23e6e9402a588fe9841be752473d8aa10079626de9f6b647",
       "spec_version": "2.19",
       "src": "tools/process.py"
     },
@@ -919,7 +919,7 @@
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "d6259feb6058863dfda37fe24bea911f015805c864cf1c0bda27ca33a8a28974",
+      "sha256": "db1c9d1819689c061e2c4b87903efd09286d3f0a639faff427e8b5132265aede",
       "spec_version": "2.19",
       "src": "tools/source.py"
     },
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "162bb5f5ca1b8b7a511ed8575da8d8a7d21ea452cce13f4b1a2c125fd0fa27a0",
+      "sha256": "c1ffa77082015413e8d16207903fff7437f758bcdf27b81600c5e9c2b9d8ca18",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },

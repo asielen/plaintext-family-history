@@ -37,6 +37,7 @@
 //
 // Code map:
 //   fsParseRecordPage    the record's identity from an address (record, or viewer + personArk)
+//   fsParseImagePage     a bare film image (3:1, no record behind it) from an address
 //   fsImageIdFromHref    an image id (3:1) named in an address
 //   fsAuthHeaders        the login header, for FamilySearch https addresses only
 //   fsStatusMessage      what an HTTP answer means, and what to do next
@@ -46,7 +47,10 @@
 //   fsHints              recordHints over the record's own GEDCOM X facts
 //   fsTitle              "{name} - {collection}", unless the human typed a title
 //   fsImageLink          the full-image link in an image description
-//   fsJson / fsRecordInfo / fsImageCheck / fsImage   the data-service calls
+//   fsImageInfoFrom      film, image number and catalog title from the film viewer's answers
+//   fsImageCitation      the citation for a bare film image
+//   fsImageTitle         "{catalog title}, image {n}"
+//   fsJson / fsRecordInfo / fsImageDescription / fsFilmData / fsImageCheck / fsImage   the data-service calls
 
 'use strict';
 
@@ -74,6 +78,31 @@ function fsParseRecordPage(href) {
     if (p) return { fsId: p[1].toUpperCase(), viewerImageId: img[1].toUpperCase() };
   }
   return null;
+}
+
+// A bare film image: ark:/61903/3:1:{id} with NO record behind it (no
+// personArk), as reached by paging an unindexed film from the catalog. A viewer
+// opened from a record is still that record (fsParseRecordPage). null for
+// anything else. { imageId }.
+function fsParseImagePage(href) {
+  let u;
+  try {
+    u = new URL(href);
+  } catch (e) {
+    return null;
+  }
+  if (!FS_HOST_RE.test(u.hostname) || fsParseRecordPage(href)) return null;
+  const m = /\/ark:\/61903\/3:1:([A-Z0-9-]+)/i.exec(u.pathname);
+  if (!m) return null;
+  let q = u.search;
+  try {
+    q = decodeURIComponent(q);
+  } catch (e) {
+    /* a stray % that is not valid encoding: read the query as it is */
+  }
+  // A personArk in the query, however it is written, makes it a record's image.
+  if (/personArk=[^&]*1:1:[A-Z0-9-]+/i.test(q)) return null;
+  return { imageId: m[1].toUpperCase() };
 }
 
 // The image (ark:/61903/3:1:{id}) an address names, in its path or query.
@@ -248,6 +277,69 @@ function fsTitle(record, formTitle, pageTitle) {
   return !typed || typed === page || /\bFamilySearch\s*$|•/.test(typed) ? auto : typed;
 }
 
+// Where a film image sits, from the two answers FamilySearch's own film viewer
+// asks for (fsFilmData): `film.imageData` names the image's film by its DGS
+// number, and `film.filmData` holds the film's catalog entry (title, film
+// numbers) and its images in order. The image's GEDCOM X description says
+// none of this (checked on a live film image, 2026-11-22). `page.title` is the
+// page's own title ("Deeds, 1785-1851; ark:/61903/3:1:…"), used for the
+// catalog title only when FamilySearch's answer did not come.
+// { imageId, dgs, imageNumber, imageCount, filmNumber, filmNote, catalogTitle,
+// catalogUrl, arkUrl }. A value not found is null, never guessed.
+function fsImageInfoFrom(imageId, film, page) {
+  const id = String(imageId || '').toUpperCase();
+  const f = film || {};
+  const fd = f.filmData && typeof f.filmData === 'object' ? f.filmData : {};
+  const text = (v) => (v == null || typeof v === 'object' ? '' : String(v).replace(/\s+/g, ' ').trim());
+  const unpad = (v) => text(v).replace(/^0+(?=\d)/, '');
+  const rawDgs = text((f.imageData && f.imageData.dgsNum) || fd.dgsNum);
+  // The viewer pads the DGS to nine digits ("008129459"); the catalog does not.
+  const dgs = /^\d+$/.test(rawDgs) ? unpad(rawDgs) : null;
+  const cats = Array.isArray(fd.catalogs) ? fd.catalogs.filter((c) => c && c.data && typeof c.data === 'object') : [];
+  const notesOf = (c) => (Array.isArray(c.data.film_note) ? c.data.film_note : []);
+  const isOurs = (n) => !!dgs && !!n && unpad(n.digital_film_no) === dgs;
+  // A film can sit under more than one catalog entry: the one that lists this film.
+  const cat = cats.find((c) => notesOf(c).some(isOurs)) || cats[0] || null;
+  const note = cat ? notesOf(cat).find(isOurs) || null : null;
+  const fromPage = text(page && page.title).replace(/\s*;\s*ark:\/61903\/.*$/i, '')
+    .replace(/\s*[|–—]\s*(?:Film\s*#.*|FamilySearch)\s*$/i, '').trim();
+  const catalogId = cat && /^\/(?:[a-z]{2}\/)?search\/catalog\/(?:info\/)?([A-Za-z0-9:._-]+)$/.exec(text(cat.path));
+  const images = Array.isArray(fd.images) ? fd.images : [];
+  const at = images.findIndex((u) => {
+    const m = /\/3:1:([A-Z0-9-]+)/i.exec(text(u));
+    return !!m && m[1].toUpperCase() === id;
+  });
+  return {
+    imageId: id,
+    dgs,
+    imageNumber: at >= 0 ? at + 1 : null,
+    imageCount: at >= 0 ? images.length : null,
+    filmNumber: (note && /^\d+$/.test(text(note.filmno)) && text(note.filmno)) || null,
+    filmNote: (note && (text(note.text) || text(note.public_note))) || null,
+    catalogTitle: (cat && (text(cat.data.title) || text(cat.data.display_title))) || fromPage || null,
+    catalogUrl: catalogId ? 'https://www.familysearch.org/search/catalog/' + catalogId[1] : null,
+    arkUrl: 'https://www.familysearch.org/ark:/61903/3:1:' + id,
+  };
+}
+
+// The citation for a bare film image; a part that is not known is left out.
+// `accessed` is the date text (YYYY-MM-DD).
+function fsImageCitation(info, accessed) {
+  const i = info || {};
+  const where = 'FamilySearch (' + [i.arkUrl, accessed ? 'accessed ' + accessed : ''].filter(Boolean).join(' : ') + ')';
+  const lead = i.catalogTitle ? '"' + i.catalogTitle + ',"' : '';
+  const n = i.imageNumber ? 'image ' + i.imageNumber + (i.imageCount ? ' of ' + i.imageCount : '') : '';
+  const from = [i.filmNumber ? 'film ' + i.filmNumber : '', i.dgs ? 'DGS ' + i.dgs : ''].filter(Boolean).join(', ');
+  return [[lead, 'images,', where].filter(Boolean).join(' '), n, from ? 'citing ' + from : ''].filter(Boolean).join('; ') + '.';
+}
+
+// The panel's title for a bare film image: "{catalog title}, image {n}".
+function fsImageTitle(info) {
+  const i = info || {};
+  const parts = [i.catalogTitle, i.imageNumber ? 'image ' + i.imageNumber : ''].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'FamilySearch image ' + (i.imageId || '');
+}
+
 // The full-image link in an image description; null when there is none
 // (a restricted image often has none).
 function fsImageLink(j) {
@@ -271,12 +363,16 @@ function fsFailure(message, status) {
 // fsStatusMessage's words (never the token or the address). `what` is what
 // she is told was refused: 'record' (the default) or 'image' (an image's
 // description), so a refused image is never reported as a refused record.
-async function fsJson(path, accept, d, what) {
+// `body`, when given, makes it a POST of that JSON (the film viewer's own
+// questions, fsFilmData), under the same login rule.
+async function fsJson(path, accept, d, what, body) {
   const headers = Object.assign({ Accept: accept || 'application/x-gedcomx-v1+json' },
-    fsAuthHeaders(path, d.base, d.token));
+    body ? { 'Content-Type': 'application/json' } : {}, fsAuthHeaders(path, d.base, d.token));
+  const init = body ? { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) }
+    : { credentials: 'include', headers };
   let r;
   try {
-    r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
+    r = await d.fetch(new URL(path, d.base).href, init);
   } catch (e) {
     throw fsFailure('could not reach FamilySearch - check your internet connection, then press Capture again', null);
   }
@@ -312,14 +408,45 @@ async function fsRecordInfo(href, d) {
   }
 }
 
+// An image's description (GEDCOM X), once. The check before Capture reads it
+// and hands it to fsImageCheck and fsImage rather than asking again.
+async function fsImageDescription(imageId, d) {
+  return fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image');
+}
+
+// Which film a bare image is on, and where on it: the same two questions
+// FamilySearch's own film viewer asks when it shows the image (image-data
+// names the film's DGS; film-data, for that DGS, its catalog entry and its
+// images in order). Checked on a live film image, 2026-11-22. Never throws:
+// { imageData, filmData, error, slowDown }, a part not answered is null and
+// `error` says why, so the image and its link are still saved without them.
+async function fsFilmData(imageId, d) {
+  const out = { imageData: null, filmData: null, error: null, slowDown: false };
+  const ask = (type, args) => fsJson('/search/filmdatainfo/' + type, 'application/json', d, 'image',
+    { type, args: Object.assign(args, { state: {}, locale: 'en' }) });
+  try {
+    out.imageData = await ask('image-data', { imageURL: 'https://familysearch.org/ark:/61903/3:1:' + imageId });
+    const dgs = String((out.imageData && out.imageData.dgsNum) || '');
+    if (!/^\d+$/.test(dgs)) {
+      out.error = 'FamilySearch did not say which film this image is on';
+      return out;
+    }
+    out.filmData = await ask('film-data', { dgsNum: dgs });
+  } catch (e) {
+    out.error = e.message;
+    out.slowDown = !!e.slowDown;
+  }
+  return out;
+}
+
 // Before Capture: can this page's image be saved from here? Reads the image's
 // description and asks for its first kilobyte, never the whole picture.
 // `imageId` is the record's or the viewer's. { ok, imageId, available, reason? }.
-async function fsImageCheck(imageId, d) {
+async function fsImageCheck(imageId, d, desc) {
   if (!imageId) return { ok: true, imageId: null, available: false, reason: 'there is no image for it on FamilySearch' };
   let link;
   try {
-    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
+    link = fsImageLink(desc || await fsImageDescription(imageId, d));
   } catch (e) {
     // `slowDown`: FamilySearch said slow down or busy even before Capture;
     // the owner's batch downloads take their break (PR #224 Codex 4504294846).
@@ -349,11 +476,11 @@ async function fsImageCheck(imageId, d) {
 
 // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,
 // contentType } or { ok:false, error }.
-async function fsImage(imageId, d) {
+async function fsImage(imageId, d, desc) {
   if (!imageId) return { ok: false, error: 'no image named' };
   let link;
   try {
-    link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
+    link = fsImageLink(desc || await fsImageDescription(imageId, d));
   } catch (e) {
     return { ok: false, error: e.message, transient: !!e.transient, slowDown: !!e.slowDown };
   }
@@ -398,6 +525,12 @@ async function fsImage(imageId, d) {
 module.exports = {
   fsIndexedMemorial,
   fsParseRecordPage,
+  fsParseImagePage,
+  fsImageInfoFrom,
+  fsImageCitation,
+  fsImageTitle,
+  fsImageDescription,
+  fsFilmData,
   fsImageIdFromHref,
   fsAuthHeaders,
   fsStatusMessage,
