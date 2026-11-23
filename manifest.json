@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "f63c3a7639506d29d772020ab9c3c4be61fdb190d2b816c2b89c7771ef00e9f4",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.23",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -76,7 +76,7 @@
     {
       "path": ".agents/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "15da03e594ceaa3b521ae68408b433f6b1625d26c2ce999d6624ebdfce75ab00",
+      "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
       "spec_version": "2.23",
       "src": ".claude/skills/photo-context/SKILL.md"
     },
@@ -223,7 +223,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "f63c3a7639506d29d772020ab9c3c4be61fdb190d2b816c2b89c7771ef00e9f4",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.23"
     },
     {
@@ -241,7 +241,7 @@
     {
       "path": ".claude/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "15da03e594ceaa3b521ae68408b433f6b1625d26c2ce999d6624ebdfce75ab00",
+      "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
       "spec_version": "2.23"
     },
     {
@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "fe70f9f7cb9b454be63b99fb88fbf6ba9abda738bb536d5c28773220a8c5676c",
+      "sha256": "297b1a2f406a74e188c3b0d15ccac4b09c3cf4bac64267c65a0a672c7fb0b3b5",
       "spec_version": "2.23",
       "src": "tools/_lib.py"
     },
@@ -807,7 +807,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "9723eda7b87951027b45840e7875b0d5222db7a20792fe1b428d10f78d8c6a35",
+      "sha256": "15f38b2f361b11eb8d291cba2ea03fcbf2ee027c2d95c0115e356f330a67173e",
       "spec_version": "2.23",
       "src": "tools/gedcom_import.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "64543894f384d99df1ae48d611b5eea1fd6372c3df322fc2be4e4b5293784b7f",
+      "sha256": "0b1489c40d6d6a03d65c3d1148077120b1fd41805e2940745b0c7f9e04f56dd9",
       "spec_version": "2.23",
       "src": "tools/lint.py"
     },
@@ -905,7 +905,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "be419a8571cd90983ae73bdad640190df882eea88be2cc4b9e2eef25d2a4cb27",
+      "sha256": "3f310353462c889b93319bbe826f0eb6aac6809f7eacda0e8d2c4ae5c7ca5908",
       "spec_version": "2.23",
       "src": "tools/relate.py"
     },
@@ -924,11 +924,193 @@
       "src": "tools/report.py"
     },
     {
+      "path": ".fha/tools/repositories.json",
+      "category": "operating",
+      "sha256": "59ac7420d1fc42c0b05ab4cae3bbcae318177eeab5df446d542107b1308639b0",
+      "spec_version": "2.23",
+      "src": "tools/repositories.json"
+    },
+    {
       "path": ".fha/tools/requirements.txt",
       "category": "operating",
       "sha256": "546a4f6a6463d0b9e4603340501d620684ca67ebb372e259fd21af12f9138c00",
       "spec_version": "2.23",
       "src": "tools/requirements.txt"
+    },
+    {
+      "path": ".fha/tools/research_guides/LICENSE-autoresearch-genealogy.txt",
+      "category": "operating",
+      "sha256": "3fdc90d2fa46e6412b9e612fb7ada2e1365882570d12747b82a26fb5c1e5af79",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/LICENSE-autoresearch-genealogy.txt"
+    },
+    {
+      "path": ".fha/tools/research_guides/african-american.md",
+      "category": "operating",
+      "sha256": "9afa0f22d310e4f5ad6fafa4cfdbefd8d01a2ff89c6dd56c3095c84284181346",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/african-american.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/australia-nz.md",
+      "category": "operating",
+      "sha256": "eed33b209168f5201392a13be36d9fe5e7b8775dab05fd7fe8353c55c65593c4",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/australia-nz.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/austria.md",
+      "category": "operating",
+      "sha256": "6a34acb5d93bfa062098dc3ce2cb8e79028458c08ed851c5beffb96102ea4c17",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/austria.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/canada.md",
+      "category": "operating",
+      "sha256": "95c8e9457a892f1216fc52b732cdf3422b10549ada9f83e58a11faecee311189",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/canada.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/england-wales.md",
+      "category": "operating",
+      "sha256": "466734246be8103163e07aa09f05ca7655fb36be908426f9e3c58231132775c7",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/england-wales.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/france.md",
+      "category": "operating",
+      "sha256": "5683517cec6ae04553cc9501dbe341e2ff8d1ae848738edac1b6a2b5d90f81f2",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/france.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/germany.md",
+      "category": "operating",
+      "sha256": "babe3ec66fc651c6de93e739ffdb8762063051312fa78cfd37be794a364044fc",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/germany.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/hungary.md",
+      "category": "operating",
+      "sha256": "02ca9d04a3a64838dc4dcaec96450e57d38f3d06402b0e4d999785e204a697d4",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/hungary.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/ireland.md",
+      "category": "operating",
+      "sha256": "266358c633534b88aece91aeb02e1417d7bee6ca993ce0a15d89e784b089d3bc",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/ireland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/italy.md",
+      "category": "operating",
+      "sha256": "378ed337af41248c972c24fd7fc465f5a2617a7643a5ff96b51c3cecc4c83ff1",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/italy.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/jewish-genealogy.md",
+      "category": "operating",
+      "sha256": "b27253539509eca91e089a7c4c97de58f4512e2ce4a9f59a32c33d6c6ede088c",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/jewish-genealogy.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/mexico-latin-america.md",
+      "category": "operating",
+      "sha256": "022256dda0c109ca91457b21d3edd1fa0fd0ce63fea4e34c79081cf871267c51",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/mexico-latin-america.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/netherlands.md",
+      "category": "operating",
+      "sha256": "182813933b7fc923af39ee3be88292fcccb1a3f51ca10fddb439c24aa883c881",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/netherlands.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/norway.md",
+      "category": "operating",
+      "sha256": "324d97e26f0d29692415ea582955bfd2941a5afdcad37e692a6b231a80e82fd9",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/norway.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/poland.md",
+      "category": "operating",
+      "sha256": "7d15a66b9168de185a0a233153eb4352795d8a2f38f7666bd29e746daf5c9dcf",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/poland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/russia-ukraine.md",
+      "category": "operating",
+      "sha256": "eb0330b94166e04d6e635932648197d91382a633a1f02cce933613910a29f5b5",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/russia-ukraine.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/scotland.md",
+      "category": "operating",
+      "sha256": "92d648881cb901673b33a0f519a2992c3c544eec6b30096cae348411fda8b09d",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/scotland.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/spain-portugal.md",
+      "category": "operating",
+      "sha256": "1cf175bec8201d1880a0695057bf5265a48a15d61d9ba1065f3476a141e9828a",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/spain-portugal.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/sweden.md",
+      "category": "operating",
+      "sha256": "0433e51dca9ab76075bcbf1bc7dfd9b54a67264ca44195bcfae18d054d71fd1d",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/sweden.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-census.md",
+      "category": "operating",
+      "sha256": "367efc9627f0a9f824d798aef9efc627fe9fc46d46eb21bf13cce2c6c5d03bfd",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/usa-census.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-colonial.md",
+      "category": "operating",
+      "sha256": "dd33d97bb3ac62296c066b9ff371db51ad888bcd226a90b12190ef82446904af",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/usa-colonial.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-immigration.md",
+      "category": "operating",
+      "sha256": "1ffc79817ce94104a8099bae0241f6cd9015ac7fae4c8bd7ee41b241d7c94537",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/usa-immigration.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-military.md",
+      "category": "operating",
+      "sha256": "fb38a237cc3abc6de2ec35ab1a5453078785981421a14b3a29772fb1ca3d0aa3",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/usa-military.md"
+    },
+    {
+      "path": ".fha/tools/research_guides/usa-vital-records.md",
+      "category": "operating",
+      "sha256": "e9df750f8a98070deb9dbb7b25cd5f902108f8bc57fc2f2d8f76b825b6500f1f",
+      "spec_version": "2.23",
+      "src": "tools/research_guides/usa-vital-records.md"
     },
     {
       "path": ".fha/tools/scaffold.py",
@@ -1013,6 +1195,27 @@
       "sha256": "d1af8497d8a35b4a139023f0f292b22f8bb5a341746693264dbbb51cc91912a4",
       "spec_version": "2.23",
       "src": "tools/templates/index.html"
+    },
+    {
+      "path": ".fha/tools/templates/obsidian/People.base",
+      "category": "operating",
+      "sha256": "15a41429316d375267494765302476a8483348b52d157836ec0f26f9b7ab5771",
+      "spec_version": "2.23",
+      "src": "tools/templates/obsidian/People.base"
+    },
+    {
+      "path": ".fha/tools/templates/obsidian/Places.base",
+      "category": "operating",
+      "sha256": "3598b133881140d8ecd0852eff12b4b07225951a66d7d0c8bb96df5a9b3c9397",
+      "spec_version": "2.23",
+      "src": "tools/templates/obsidian/Places.base"
+    },
+    {
+      "path": ".fha/tools/templates/obsidian/Sources.base",
+      "category": "operating",
+      "sha256": "86b8cfbb4f99823e2cfdd9911da98d8383c7f6d78bcb778cd033dc6620c8bd94",
+      "spec_version": "2.23",
+      "src": "tools/templates/obsidian/Sources.base"
     },
     {
       "path": ".fha/tools/templates/person.html",
@@ -1122,7 +1325,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "0e187cbffb30d801e3aad8539cbbd5f3e4c3fa728393fe139e5f67faef388130",
+      "sha256": "43968ed0bfabb735b47176e383f0a66dee1f53bfe10075a9a28c8ff8f949bf12",
       "spec_version": "2.23",
       "src": "tools/views.py"
     },
@@ -1171,7 +1374,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8881fc2cebfbc5c279614158029e82261e8f57af633878c543791aab21baf99c",
+      "sha256": "b96f2ac54e5117f55928b993c4c15f557b1ead496999b4dd05dcc7f0e41680cb",
       "spec_version": "2.23"
     },
     {
@@ -1196,7 +1399,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "de949f96eb6b114657c1167b6de81198b50c2f8367f97a133aabb23af139baef",
+      "sha256": "9c9d80d047565afb9f234369a8f79d247d4379e82ea6e587f3ee0072b12889c4",
       "spec_version": "2.23"
     },
     {
@@ -1214,7 +1417,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "59e8299b0eff5800016b14d53589e9565a495e118357dad668075cc41aa458a0",
+      "sha256": "1b23bb44eb47c8e810d1188de62b63306874e01ed52c906fb7710f385116278f",
       "spec_version": "2.23"
     },
     {
@@ -1238,7 +1441,7 @@
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "56f7ed576f8e85d1d56643275d1301f2feed68aa65a08f0518d5ac1df5df2a2e",
+      "sha256": "84aa5ecb71ec1e5e3a15ea24f35992b56caa845abad82a107d093aab2b3149d8",
       "spec_version": "2.23"
     },
     {
@@ -1256,14 +1459,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "df5d3f22ee978b373b548be9247c9cc25b7cfc3008c3b8b10aa6ae51ad12423e",
+      "sha256": "0fa9aec07411c6249eb0371ddd8ff369fc2816eec778a3bd41d1d0dc82a3fc99",
       "spec_version": "2.23",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "fa1e88b6fff44e1713f41cc5b2bcf4babaf5d963bc07d13145e434eb424d6123",
+      "sha256": "71333b1b4a653e10ab9cec07fce365fb7755a0a8a09f7295fb6fe2416c8e410c",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },
@@ -1282,7 +1485,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "779a0cc736720797879aecea1d6bb493f2b6f6c0bf74d6174f81392f1b6382ed",
+      "sha256": "c9f7567e2455e19a2ea0dba632c06e06dc36922f4f8e5f2ddd2478955daa3c7c",
       "spec_version": "2.23"
     },
     {

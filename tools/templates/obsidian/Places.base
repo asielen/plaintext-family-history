@@ -1,0 +1,28 @@
+filters:
+  and:
+    - file.ext == "md"
+    - file.inFolder("places")
+properties:
+  note.location:
+    displayName: Coordinates
+views:
+  - type: table
+    name: All places
+    order:
+      - file.name
+      - note.location
+  - type: table
+    name: With coordinates
+    filters:
+      and:
+        - '!location.isEmpty()'
+    order:
+      - file.name
+      - note.location
+  - type: table
+    name: No coordinates yet
+    filters:
+      and:
+        - 'location.isEmpty()'
+    order:
+      - file.name

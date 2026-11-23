@@ -410,6 +410,7 @@ family_archive/              ← the root (default name; rename freely - nothing
   places/places.yaml         ← single-file place registry (§15)
   places/{slug}_{l-id}.md    ←   generated place notes, Obsidian link mode only (§15)
   notes/                     ← general research workspace (§17)
+  notes/obsidian/*.base      ←   ready-made Obsidian tables (Bases), Obsidian link mode only; written once, then the owner's
   ── assets (mappable elsewhere via fha.yaml; not git-pushed if local) ──
   photos/{year}/             ← ASSET TREE: all photos, by year (§12.4 - often external)
   documents/{type}/          ← ASSET TREE: scans, clippings, recordings, transcripts
@@ -431,6 +432,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, written by `fha confirm dismiss`, so the report stops suggesting them.
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
+- `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
 
 Each is optional; a missing file means "nothing recorded yet".
 
