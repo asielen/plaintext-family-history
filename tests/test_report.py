@@ -955,6 +955,51 @@ class ReportTests(unittest.TestCase):
         self.assertIn(who + 'Newspaper archive (1875): already searched 2020-04-04', lines)
         self.assertFalse(any('worth re-running' in l and 'register' in l for l in lines))
 
+    def test_search_log_years_read_through_the_date_helpers(self) -> None:
+        # A loose or mistyped years value is shown as he wrote it and flagged,
+        # never dropped; EDTF forms read in plain words.
+        self.assertEqual(report._years_label('1880/1890'), '1880-1890')
+        self.assertEqual(report._years_label('1875'), '1875')
+        self.assertEqual(report._years_label('188X'), '1880s')
+        self.assertEqual(report._years_label('1880?/1890'), '1880 (unconfirmed) to 1890')
+        self.assertEqual(report._years_label('191/1925'), '191/1925, check the years')
+        self.assertEqual(report._years_label('1911 to 1925'), '1911 to 1925, check the years')
+        self.assertEqual(report._years_label(''), '')
+
+    def test_search_log_reads_the_result_word_whatever_punctuation_follows(self) -> None:
+        # He writes "Unavailable: courthouse burned" or "requested: letter to
+        # the state archive"; neither may read "already searched".
+        report.run_report(self.archive_root, {}, full=True)
+
+        db_path = self.archive_root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = [
+                ('2020-01-02', 'Court records', 'Unavailable: courthouse burned 1888'),
+                ('2020-01-03', 'Parish register', 'unavailable(closed)'),
+                ('2020-01-04', 'Land records', 'unavailable,\tthe records burned'),
+                ('2020-01-06', 'State archive', 'requested: letter to the state archive'),
+                ('2020-01-08', 'County probate index', 'nil, nothing indexed'),
+            ]
+            for d, coll, result in rows:
+                conn.execute(
+                    "INSERT INTO search_log(date, person_id, collection, result) "
+                    "VALUES (?,?,?,?)", (d, 'p-aaaaaaaaaa', coll, result))
+            conn.commit()
+            lines = report._section_search_log(
+                conn, {'vitals_gap_person_ids': ['p-aaaaaaaaaa']})
+        finally:
+            conn.close()
+
+        who = '- Test Person [p-aaaaaaaaaa] - '
+        self.assertIn(who + 'Court records: could not be searched 2020-01-02: courthouse burned 1888', lines)
+        self.assertIn(who + 'Parish register: could not be searched 2020-01-03: closed', lines)
+        self.assertIn(who + 'Land records: could not be searched 2020-01-04: the records burned', lines)
+        self.assertIn(who + 'State archive: asked 2020-01-06, waiting for a reply', lines)
+        self.assertIn(who + 'County probate index: worth re-running (stale nil search)', lines)
+        self.assertFalse(any('already searched' in l for l in lines))
+
     def test_search_log_calls_out_recent_unreconciled_captures(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
 

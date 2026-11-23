@@ -132,6 +132,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    humanize_edtf,
+    is_valid_edtf,
     PARKED_CLAIM_SQL as _PARKED_SQL,
     claim_role_pairs,
     format_date_spread,
@@ -690,12 +692,18 @@ def _section_contradictions(findings: list) -> list[str]:
 
 def _years_label(years) -> str:
     """A research-log `years:` value for a line: `1880/1890` reads `1880-1890`,
-    a single year reads as itself, anything looser is shown as written."""
+    a single year reads as itself, other EDTF reads in plain words (`188X` is
+    `1880s`), and a value the date helpers can't read is shown as written and
+    flagged, so a typo is seen rather than silently trusted or dropped."""
     text = str(years or '').strip()
+    if not text:
+        return ''
     m = re.fullmatch(r'(\d{4})\s*/\s*(\d{4})', text)
     if m:
         return f'{m.group(1)}-{m.group(2)}'
-    return text
+    if is_valid_edtf(text):
+        return humanize_edtf(text)
+    return f'{text}, check the years'
 
 
 def _section_search_log(conn, current: dict) -> list[str]:
@@ -748,7 +756,10 @@ def _section_search_log(conn, current: dict) -> list[str]:
                     stale = False
                 raw_result = str(row['result'] or '').strip()
                 result = raw_result.lower()
-                kind = result.split(' ', 1)[0]
+                # The leading word decides, whatever follows it: he writes
+                # "unavailable (closed)" as often as "Unavailable: closed".
+                word = re.match(r'[a-z]+', result)
+                kind = word.group(0) if word else ''
                 nil_result = (
                     result in {'nil', 'none', 'no results', 'not found', 'negative'}
                     or kind == 'nil'
@@ -756,9 +767,10 @@ def _section_search_log(conn, current: dict) -> list[str]:
                 if kind == 'unavailable':
                     # Could not be searched at all: still to do, never a nil
                     # and never "already searched" (SPEC §17c).
-                    why = re.match(r'\S+\s*\((.*)\)\s*$', raw_result, re.S)
-                    note = f"could not be searched {row['date']}" + (
-                        f': {why.group(1).strip()}' if why and why.group(1).strip() else '')
+                    why = raw_result[len(kind):].strip(' \t\r\n:,;-')
+                    if why.startswith('(') and why.endswith(')'):
+                        why = why[1:-1].strip()
+                    note = f"could not be searched {row['date']}" + (f': {why}' if why else '')
                 elif kind == 'requested':
                     note = f"asked {row['date']}, waiting for a reply"
                 elif stale and nil_result:

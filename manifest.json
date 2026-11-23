@@ -27,7 +27,7 @@
     {
       "path": ".agents/skills/import-notes/SKILL.md",
       "category": "operating",
-      "sha256": "0f28a97a8de4377264d713c22c08bf87dfbe6076b8737998a71639dbee8ab0d8",
+      "sha256": "b2a3c9c792eae7212e0e3b5fa15da54983c1c001e87756416e891e84d76195c9",
       "spec_version": "2.21",
       "src": ".claude/skills/import-notes/SKILL.md"
     },
@@ -199,7 +199,7 @@
     {
       "path": ".claude/skills/import-notes/SKILL.md",
       "category": "operating",
-      "sha256": "0f28a97a8de4377264d713c22c08bf87dfbe6076b8737998a71639dbee8ab0d8",
+      "sha256": "b2a3c9c792eae7212e0e3b5fa15da54983c1c001e87756416e891e84d76195c9",
       "spec_version": "2.21"
     },
     {
@@ -884,7 +884,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "9b955c807762bdd81d366fb1cbcddf76560588e4cd3dc050d2d7869851e2f32c",
+      "sha256": "8d02291d4106259268e34f4d68528efa89e4b75618f8979582245cc7d5c1278d",
       "spec_version": "2.21",
       "src": "tools/report.py"
     },
