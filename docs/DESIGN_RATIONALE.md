@@ -21,6 +21,8 @@ Contents:
 11. Geocoding: one table, one yes
 12. Merging two sources
 13. Linking place text: the hierarchy rule
+14. One vendored D3 for interactive charts
+15. Dates that cannot all be true
 
 ---
 
@@ -351,3 +353,16 @@ Other limits:
 - **Several D3 module files.** More files to pin and check, and nothing gained for a page that loads them all.
 - **Loading D3 from a CDN.** It fails offline and on a machine without a network.
 - **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.
+
+## 15. Dates that cannot all be true
+
+**The rule.** `fha lint` warns when one person's own accepted dates cannot all be true: a death before the birth, a lifespan over 120 years, a residence or census record after the death. Every accepted claim of one fact for one person is merged into one range, from its earliest start to its latest end, and a warning fires only when the conflict holds for every date that range allows. An open side (the start of "before 1890") is unknown and never fires one. The rules live in one `_lib` engine that lint and other tools call, and each message names every claim involved and the file it sits in.
+
+**Why.** A warning against a correct record teaches him to ignore lint, and then he misses the real ones. The real conflicts come from imports that attach the wrong record and from merges of two people with one name, and those are certain: a death in 1850 and a birth in 1871 cannot both be one woman's. Two disagreeing readings of one birth are a different question, answered by `fha xref`'s contradiction pass, so merging them into one range keeps the two tools from reporting the same thing twice.
+
+**Rejected.**
+
+- **Point estimates** ("about 1870" read as the middle of 1870). They fire on correct records whenever the truth sits at the edge of the range.
+- **"Two siblings share a given name."** Reusing a dead child's name was normal.
+- **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
+- **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
