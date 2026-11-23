@@ -20,7 +20,7 @@
     {
       "path": ".agents/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "3b9caf262bf4b4118beee924f4ed791474803f0d72343c873795f11bbf52c50e",
       "spec_version": "2.23",
       "src": ".claude/skills/find-photos/SKILL.md"
     },
@@ -193,7 +193,7 @@
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "3b9caf262bf4b4118beee924f4ed791474803f0d72343c873795f11bbf52c50e",
       "spec_version": "2.23"
     },
     {
@@ -660,7 +660,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "1708e8b63732abf324899d7a6e40a2fb959916c3659d268e7855ff833eadf79a",
+      "sha256": "3ae24b5b1752ad1f77df6472218f0834a3fe3921a369ce9437164f782994c527",
       "spec_version": "2.23",
       "src": "tools/_lib.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "ce4714bee28d5f97fac1285e8f10ef6d6370f619335c12a2ae10f05250d831cf",
+      "sha256": "9723eda7b87951027b45840e7875b0d5222db7a20792fe1b428d10f78d8c6a35",
       "spec_version": "2.23",
       "src": "tools/gedcom_import.py"
     },
@@ -814,7 +814,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8305a685d71da0dabaa1d29e1ffdef5281991130480203397ab1d83cc42404eb",
+      "sha256": "64543894f384d99df1ae48d611b5eea1fd6372c3df322fc2be4e4b5293784b7f",
       "spec_version": "2.23",
       "src": "tools/lint.py"
     },
@@ -877,7 +877,7 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
+      "sha256": "11e2959c09cdcb0e25940ba0ad85f61bdff3051e99faa445c4b5e93c9276c088",
       "spec_version": "2.23",
       "src": "tools/reconcile.py"
     },
@@ -1203,7 +1203,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "9af41819004ef5acd6edf095f1c195382a8d016e76a024ce047c202eee471584",
+      "sha256": "9c9d80d047565afb9f234369a8f79d247d4379e82ea6e587f3ee0072b12889c4",
       "spec_version": "2.23"
     },
     {
@@ -1239,7 +1239,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
+      "sha256": "da00c8cab1777bc02af6e3d5bd6d96e69dcc5c9dca7f2be366088ac00433b432",
       "spec_version": "2.23"
     },
     {
@@ -1270,7 +1270,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "ddd12521671d780f35a8ad7fc0ba88cda05f33961cacf58d123c6ba22423a21c",
+      "sha256": "807b5b362dbb2e5f305db93b9c3be8621fcc2b4d5826822df5751f02b7fa9aff",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },
