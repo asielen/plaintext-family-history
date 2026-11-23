@@ -8400,13 +8400,21 @@ class _SiteBuilder:
 
     def _has_public_child(self, pid: str) -> bool:
         """Whether `pid` has a recorded child the shared site may show: the
-        tie backed by a publishable claim (`_has_public_claim`) and the child
-        not restricted or by-request (anyone on their merge chain)."""
+        claim behind THAT child link is publishable (`_claim_row_is_publishable`,
+        never pair-wide: a shared public census or address must not vouch for
+        a parent-child tie the owner kept private), and the child is not
+        restricted or by-request (anyone on their merge chain). A link with
+        no claim row behind it is judged as the site's other walks judge one."""
         for r in self.conn.execute(
-                "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'child'",
+                "SELECT r.other_id, r.claim_id, c.id, c.source_id, c.status "
+                "FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+                "WHERE r.person_id = ? AND r.rel = 'child'",
                 (pid,)):
             child = r[0]
-            if not self._has_public_claim(pid, child):
+            if r[2] is None:
+                if not self._has_public_claim(pid, child):
+                    continue
+            elif not self._claim_row_is_publishable(r[2], r[3], r[4]):
                 continue
             meta = self.person_meta.get(child)
             chain = self._merge_chain(meta) if meta is not None else []

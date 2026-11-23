@@ -6632,6 +6632,12 @@ class HomeTreePrivateCardTests(_Base):
                          persons=('p-kaaaaaaaaa', 'p-zaaaaaaaaa'))
         self._seed_rel('p-zaaaaaaaaa', 'parent', 'p-kaaaaaaaaa', claim_id='c-rr00000001')
         self._seed_rel('p-kaaaaaaaaa', 'child', 'p-zaaaaaaaaa', claim_id='c-rr00000001')
+        # An unrelated public record naming both (a shared address) must
+        # not vouch for the private parent-child tie: only the claim behind
+        # the child link itself counts.
+        self._seed_source('s-pu00000001', 'Town directory', source_type='directory')
+        self._seed_claim('c-pu00000001', 's-pu00000001', 'residence', 'Robin and Sky lived in Fairview',
+                         persons=('p-kaaaaaaaaa', 'p-zaaaaaaaaa'))
         self._home()
         self._run(linked=False)
         self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
