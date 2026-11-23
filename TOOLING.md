@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.22, 2026-11-22 · companion to SPEC.md v2.22 (versions track the SPEC)**
+**Version 2.23, 2026-11-23 · companion to SPEC.md v2.23 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -89,7 +89,7 @@ CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 - Enforced by ID in `site`, `wikitree`, `packet`, `gedcom`: the person's record, page, tree position, facts and `[[p-id]]` links (shown as the redaction label). Names in free text are not matched.
 - **Privacy carries through a merge** (`_lib.carry_to_survivors`). A tombstone's `restricted:` or explicit `living: true` (`living_carried_to_survivors`) keeps its survivor out of `site`, `packet`, `gedcom` and `wikitree` too: the claims `fha index` hands the survivor are about the same human. A tombstone's `unknown` or missing `living:` carries nothing; the survivor's own `living: false` wins. A refusal names the tombstone file whose `living: true` holds the survivor back (`living_tombstones_of`), since `fha person set-living` on a merged record acts on the survivor.
 - An unreadable `restricted:` marker means restricted (`read_restriction_marker`): non-UTF-8, no or invalid frontmatter, or frontmatter that is not a mapping. `fha index` still keeps such a person's row from the filename's p-id (name `unknown`, `living: unknown`).
-- **A shared privacy reader for GEDCOM and new exporters** (`_lib.export_privacy`): `gedcom`, and any new exporter that is not the site, reads what the record files withhold through it, once per run (`packet` and `wikitree` still keep their own readers): restricted people, sources and claims, the files that would not read, and the survivors a restricted tombstone speaks through. Beside it, `public_source_sql` is the index's own source filter, `person_withheld` is the site's redaction rule (living, unknown or restricted, merges followed), and `export_tie_ok` is the family-walk rule: a relationship line or tree number may pass through a living or unknown relative, never named, but not through a restricted one or on withheld evidence.
+- **A shared privacy reader for GEDCOM and new exporters** (`_lib.export_privacy`): `gedcom`, and any new exporter that is not the site, reads what the record files withhold through it, once per run (`packet` and `wikitree` still keep their own readers): restricted people, sources and claims, the files that would not read, and the survivors a restricted tombstone speaks through. Beside it, `public_source_sql` is the index's own source filter, `person_withheld` is the site's redaction rule (living, unknown or restricted, merges followed), and `export_tie_ok` is the family-walk rule: a relationship line or tree number may pass through a living or unknown relative, never named, but not through a restricted one or on withheld evidence. `fha views family-sheet` and the printed reports that follow read through all of them.
 
 ---
 
@@ -949,7 +949,7 @@ Flags `crosses_midnight` when local and UTC dates differ. Exit: 0 offset settled
 
 ## 7. View generators: `fha views`
 
-All views derive purely from the index. `fha views places` writes the place notes of Obsidian link mode into `places/` (below). Timeline and draft-queue write GENERATED-headed `.md` companions into the `people/` tree; their per-person forms skip a stub with a plain note (exit 1), since companion views are curated-person files (SPEC §16). `sources-index` and `summary` write no companion: each rewrites a region of the profile itself and does not skip stubs. Content views and `refresh` take `--format md|html` (default `md`; `refresh` also `both`); `html` writes a standalone page under `generated/views/` (D11).
+All views derive purely from the index. `fha views places` writes the place notes of Obsidian link mode into `places/` (below). Timeline and draft-queue write GENERATED-headed `.md` companions into the `people/` tree; their per-person forms skip a stub with a plain note (exit 1), since companion views are curated-person files (SPEC §16). `sources-index` and `summary` write no companion: each rewrites a region of the profile itself and does not skip stubs. Printed reports (`fha views family-sheet`) are described below. Content views and `refresh` take `--format md|html` (default `md`; `refresh` also `both`); `html` writes a standalone page under `generated/views/` (D11).
 
 ### Content views
 
@@ -1018,6 +1018,20 @@ Four checks, all previewed. `--fix` applies 1-3, `--fix-promote` applies 4, `--r
 
 Deletes GENERATED-headed files: companion `.md` files under `people/`, `.html` (or stray `.md`) under `generated/views/`, and the place notes in `places/` (judged on the first line after their frontmatter; `places.yaml` is never touched). The first-line marker is the only signal, file by file; profiles, research files, authored files and the inline `## Sources` region are never touched. A hand-written file in `generated/views/` survives. `--dry-run` lists both sweeps. A `people/` companion's index rows (`person_files`, `notes_fts`) are deleted in the same pass, so a clean sweep exits 0. Exit 1 when something is left for the human: a file that would not delete or read (named, skipped; `data['failures']`, `data['unreadable']`) or a failed row cleanup (`data['index_stale']`). An unreadable file is unknown, never "not ours". Uses: compacting for sharing; resetting before a full refresh.
 
+### Printed reports (`fha views family-sheet`; the Ahnentafel, register and descendant reports follow on the same shell)
+
+A page to hand to a relative who has no computer. One report is one file under `generated/views/`, named `report_{kind}_{p-id}.md` or `.html` (`kind` is `family-sheet`, `ahnentafel`, `register` or `descendants`), with the GENERATED marker, so `fha views clean` sweeps it. They are not part of `refresh`: a report is asked for by name.
+
+**`fha views family-sheet <p-id> [--spouse <p-id>] [--format md|html] [--root PATH]`**: the person, one spouse, each spouse's parents (genetic edges first), the marriage and every child, one sheet per couple. With several spouses and no `--spouse` the sheets come in marriage-date order (undated last, then id) in one file, a page break between sheets in HTML. A person with no spouse gets one sheet that says so. Each sheet numbers its notes from 1; a fact line is `Born: 14 June 1840, Fairview, Breton County, Ohio [1]` and the note is the source's title plus its `citation:`. A child with no recorded other parent among the subject's spouses is listed on the subject's first sheet only, so none go missing. A row with no shown claim is left out (no "Born: unknown").
+
+Privacy (SPEC §21, "Printed reports"): everything goes through `_lib.export_privacy`, `person_withheld` and `export_tie_ok`, behind one class, `_ReportPrivacy`, so every report kind agrees with the GEDCOM file.
+- A living or unknown person is never named: a living parent or spouse is the label `Living Person` with none of their facts; a living child is counted (`and 2 living children (not named)`). The summary line says how many living relatives the sheet counts. A restricted person (any `restricted:` value) is left out and not counted.
+- A tie to a living relative may be walked; a tie to a restricted person, or one with no accepted claim behind it (a hand-written `relationships:` entry has nothing to cite), may not.
+- A fact is shown only from an accepted, non-negated claim that is not marked restricted, is on a source an export may use, and names no living or restricted person. A source withheld only because it names a living person is cited by one shared note, `A record that is not included in this report (it names a living relative or is private).`
+- The subject must be deceased: a living or unknown subject is refused (exit 2) with the `fha person set-living` command to run if they have died; a restricted subject is refused without printing the name.
+
+Exit codes: 0 written; 1 person not in the index; 2 refused (living or restricted subject, or `--spouse` not a recorded spouse); 3 no usable index. Reports carry their own banner (`Prepared for family. Living relatives are counted but not named, and private records are left out. A number after a fact points to the record it comes from, listed at the end.`), passed to the shared HTML shell as `banner`; every other view keeps the private-companion banner.
+
 ### `fha views refresh [--format md|html|both] [--root PATH]`
 
 Regenerates timeline and draft-queue for every curated person (`md`: plus every person's `## Sources` and summary regions, stubs included, a stub reads like any profile; `html`: the `generated/views/` set). With `links: obsidian`, the `md` pass first does what `fha views places` does, so the views written after it link places by their notes' current names; when that pass re-points links, the run exits 1 with `data['index_stale']` and says to run `fha index`. Needs a fresh index. One person's failure warns and skips; the run then exits 1 with `data['skipped']`. A failed index-row update exits 1 with `data['index_stale']`.
@@ -1028,7 +1042,7 @@ HTML views re-render the finished `.md` lines, so formats cannot drift. They are
 
 1. **Marker** `<!-- GENERATED by fha <tool> <subcommand> on <date> - do not edit; regenerate instead -->` is line 1, before `<!DOCTYPE html>`. The first non-blank line decides ownership for `.md` and `.html`; the writer never overwrites a file without it. The date there, and in the visible "Generated by" line, is when the content last changed (§1).
 2. **CSS**: inlined `design/view.css` (~5 KB subset of `design/styles.css`), system fonts. No `<link>`, no external requests; works from `file://`, mail, and prints cleanly (`@media print` in `view.css`).
-3. **Banner**: *"Private research companion - generated from the archive; not redacted for publication. Share through `fha site` instead."* Views are unredacted (SPEC §21 scope).
+3. **Banner**: *"Private research companion - generated from the archive; not redacted for publication. Share through `fha site` instead."* Views are unredacted (SPEC §21 scope). Printed reports carry their own banner (above): they are redacted for relatives.
 4. **Naming**: `generated/<area>/{stem}.html`. Embedded data in `<script type="application/json">`.
 5. **Exit codes**: `generated/` writes never stale the index; exit 0. A `.md` companion (under `people/`, GENERATED-headed, p-id-named) is outside the freshness watermark and updates its own index rows; a human file borrowing such a name counts toward freshness. No index: print "run `fha index` when convenient", exit 0. A failed row update: exit 1, `data['index_stale']`.
 6. **`[[ID]]`** renders as `<span class="cite">`, never a link.

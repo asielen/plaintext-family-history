@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.22, 2026-11-22**
+**Version 2.23, 2026-11-23**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -1017,6 +1017,12 @@ Generated output that leaves the archive falls into two categories with differen
 - The packet *subject* is held to a stricter rule than the cited-other-people case: `living: true` and `living: unknown` subjects are refused before any output is written, with no opt-in.
 - Anything `restricted` is excluded by default (restricted sources named by ID only in the README); `--include-restricted` overrides, except the **no-override** types: `restricted: dna` stays excluded until `--include-dna` is also passed, and `restricted: by-request` is never included by any flag. A `restricted: by-request` *person* vanishes from packet content.
 
+**Printed reports (`fha views family-sheet` and the other printed reports), their own rules, per TOOLING §7:**
+- A printed report is made to hand to relatives, so it follows the public-output rules for evidence: only `accepted` claims; no `restricted` claim, person, name or source; no DNA source; no claim naming a living person. A source withheld only because it names a living person is cited by a shared placeholder, never by its title.
+- A person whose `living` flag is `true` or `unknown` is never named: a living parent or spouse appears only as "Living Person", with none of their own facts, and a living child is counted ("and 2 living children"). A living person's own descendants are neither named nor counted. A `restricted` person is left out and not counted.
+- A report about a living or unknown subject is refused; a `restricted` subject is refused without printing the name.
+- Reports are written under `generated/views/` with the GENERATED marker and are swept by `fha views clean`. They carry a banner saying living relatives are counted, not named.
+
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite`; it is as live as the last `fha index` run.
 - Biography, Stories, and Research Notes prose are read from the curated person `.md` file directly. Friends & Family, by contrast, is *not* read as prose: that page section is independently derived from relationship claims (§9), the same as every other structured-data section; a human's own free text under the profile's `## Friends & Family` heading is for the working archive, not the site.
@@ -1053,7 +1059,7 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **ID mint** | Generate spec-conformant IDs with existence checking; batch capable. |
 | **Stub minter** | Create person stubs in bulk from claims that reference unresolved people. |
 | **Processing assistant** | Given a file or folder: mint s-id, mark identity (documents: rename, plus the keyword where the format holds metadata; photos: keyword only, never rename under Lightroom), scaffold the source record; folder mode triages candidates first. |
-| **View generators** | Per-person timelines; each person's own inline `## Sources` region (a couple folder has no separate sources index: its two profiles already list their sources); refreshed folder bracket lists; **relationship views** (ancestor / descendant / FAN trees for any person) all derived from accepted claims, never stored. |
+| **View generators** | Per-person timelines; each person's own inline `## Sources` region (a couple folder has no separate sources index: its two profiles already list their sources); refreshed folder bracket lists; **relationship views** (ancestor / descendant / FAN trees for any person) all derived from accepted claims, never stored; **printed reports** (a family group sheet, and the other printed reports) for relatives, every fact cited, living relatives never named (§21). |
 | **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges), at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only: never the corpus, never re-imported as truth. |
 | **GEDCOM importer** | File a *foreign* GEDCOM (an Ancestry download, another program's export) as ONE source record whose every assertion enters as a `suggested` claim with a line anchor, plus a person stub per individual (provisional vitals, safe `living:` defaults). Plan-then-apply with a one-shot re-run guard and full rollback; the archive's own export is refused (one-way bridge, no round-trip); duplicates are reported, never auto-merged. Writes only forms §8/§9/§14 already define; no schema additions. |
