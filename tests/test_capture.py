@@ -142,10 +142,11 @@ class CaptureTestCase(unittest.TestCase):
 
         conn = sqlite3.connect(str(cache / 'index.sqlite'))
         rows = conn.execute(
-            'SELECT question, result, path, source_id FROM search_log').fetchall()
+            'SELECT question, result, path, source_id, years FROM search_log').fetchall()
         conn.close()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0][0], 'Indexed')
+        self.assertIsNone(rows[0][4])                        # capture never writes years
         self.assertTrue(rows[0][1].startswith('staged inbox/'))
         self.assertIsNone(rows[0][3])                        # no S-id at capture time
         # Always also appended to the research log (durability across a

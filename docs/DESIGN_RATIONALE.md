@@ -271,7 +271,7 @@ Claims sit in a fenced YAML block under `## Claims` in their source's record.
 
 **Why the fence.** A claim belongs beside the evidence it rests on, in that source's own file. An unfenced YAML list renders as garbled Markdown, so the claims block is fenced to stay readable in any viewer.
 
-**What the fence costs.** Obsidian's query plugins (Dataview, Bases) read frontmatter, not the inside of a fenced block, so they cannot query claims. Claims are queried through the `fha` tools and the index instead. The person record's frontmatter (vitals, the `relationships:` list, flags) is ordinary frontmatter and answers the common questions ("everyone with no death date"). In the tools a link to a single claim resolves to its source's record, not the claim itself.
+**What the fence costs.** Obsidian's query plugins (Dataview, Bases) read frontmatter, not the inside of a fenced block, so they cannot query claims. Claims are queried through the `fha` tools and the index instead. The person record's frontmatter (the `relationships:` list, flags such as `living:` and `tier:`, and any estimated `birth:`/`death:`) is ordinary frontmatter and answers the common questions ("everyone whose living status is unknown"). Sourced vitals are claims, so they are queried through the tools. In the tools a link to a single claim resolves to its source's record, not the claim itself.
 
 Other limits:
 
