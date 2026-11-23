@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.22",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -223,7 +223,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.22"
     },
     {
@@ -744,7 +744,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "497953bc264508c4982d9cb57b96067dfec62519e27333baaea6f89267766bd3",
+      "sha256": "3afc3180323b564a0cc91c089f5105bb8ee1ebdf2a8a7a34b05d99d115cbd50b",
       "spec_version": "2.22",
       "src": "tools/confirm.py"
     },
@@ -1249,7 +1249,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "bc4bcadae4d28ee583f152010f710e09d7a5dc8cf73caad7b1952553e83c862c",
+      "sha256": "d3d6583cb675232929ba60c74f5bcca15ae26801b1244fdb044d365ca8b9bdf9",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },
