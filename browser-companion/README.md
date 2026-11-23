@@ -170,6 +170,10 @@ On a page of a book in the Internet Archive's reader (`archive.org/details/{id}`
 
 The whole book's text or PDF is not saved yet; that waits for a new file role.
 
+### West Virginia Archives image pages
+
+On a Vital Research Records image page (`archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=…&ImageNumber=…`) no login is used. The reader (`lib/wvculture-record.js`) takes the film and image numbers from the address and the image address from the page's own `<img>` on `images.wvculture.org` (never a built URL). The panel (`lib/wvculture.js`) downloads it once, because that host refuses a fetch made from the page: https only, without cookies or a referrer, redirects never followed. An answer that is not an image, or is under 30 KB, is refused. When the image cannot be saved, the panel says to drop it in and press Capture again, and a dropped image is saved with the page's numbers and citation. The bundle holds the image as `record.gif` or `record.jpg` (mode `wvculture`), `record-data.json` (role `site-data`: the numbers and both addresses) and the page copy if ticked. The citation names the archive, the page as opened, the film and the image. A FamilySearch record's "View on wvculture.org" badge is not followed yet.
+
 ### Newspapers.com
 
 Opening the panel on a clipping or a page reads the page's own embedded data (each clipping's rectangle, the page size, a day-long page pass) and the page's list of clippings, using the same request its viewer makes, at most a few pages of 25 (`lib/newspapers-page-data.js`). It offers the opened clipping whoever made it, plus your own clippings on the page, never one that marks no area to cut out.

@@ -448,13 +448,15 @@ class CaptureTestCase(unittest.TestCase):
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
         recipes = capture._load_site_recipes()
         names = {getattr(m, 'SOURCE_NAME', m.__name__): m for m in recipes}
-        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'InternetArchive'})
+        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'WVCulture',
+                                      'InternetArchive'})
 
         urls = {
             'Ancestry': 'https://www.ancestry.com/discoveryui-content/view/1:2',
             'FamilySearch': 'https://www.familysearch.org/ark:/61903/1:1:X',
             'Newspapers.com': 'https://www.newspapers.com/clip/1/x/',
             'FindAGrave': 'https://www.findagrave.com/memorial/1/x',
+            'WVCulture': 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
             'InternetArchive': 'https://archive.org/details/historyofamadorc00maso/page/n20',
         }
         samples = {
@@ -462,6 +464,7 @@ class CaptureTestCase(unittest.TestCase):
             'FamilySearch': _sample('familysearch'),
             'Newspapers.com': _sample('newspapers'),
             'FindAGrave': _sample('findagrave'),
+            'WVCulture': _sample('wvculture-view'),
             'InternetArchive': _sample('archiveorg-bookreader'),
         }
         # Each recipe detects its own sample and rejects the others.
@@ -1003,6 +1006,47 @@ class CaptureTestCase(unittest.TestCase):
         self.assertNotIn('Family Members', meta['people'])   # header row not a person
         self.assertIn('Fairview Cemetery', rec['body'])
         self.assertNotIn('source_date', meta)        # a memorial is never dated by the death
+
+    def test_wvculture_recipe_names_film_image_and_page(self) -> None:
+        # A West Virginia Archives view page is filed as one record image with
+        # its film and image number and the page it came from.
+        url = 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530'
+        rc = self._capture(_sample('wvculture-view'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta = rec['meta']
+        self.assertEqual(meta['repository'], 'West Virginia Archives and History')
+        self.assertEqual(meta['title'], 'West Virginia Vital Research Records, film 1984148, image 2530')
+        self.assertIn('Film 1984148, image 2530', rec['body'])
+        self.assertIn('https://images.wvculture.org/1984148/0002530.gif', rec['body'])
+        # A death certificate or register page is a vital record, not a web page.
+        self.assertEqual(meta['source_type'], 'vital-record')
+
+    def test_wvculture_recipe_leaves_other_archive_pages_to_the_generic_recipe(self) -> None:
+        # Codex 4660426755: another page on the archive's site keeps its own
+        # title and text instead of a fixed "image page" title and no body.
+        from capture_recipes import wvculture
+        html = '<html><head><title>Marriage Records Search</title></head><body><p>Search by county</p></body></html>'
+        for url in ('https://archive.wvculture.org/vrr/va_select.aspx',
+                    'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148',
+                    'https://www.wvculture.org/history/',
+                    'https://images.wvculture.org/1984148/0002530.gif'):
+            self.assertFalse(wvculture.detect(html, url), url)
+        self.assertTrue(wvculture.detect(
+            html, 'https://archive.wvculture.org/vrr/va_view2.aspx?filmnumber=1984148&imagenumber=2530'))
+        rc = self._capture(html, url='https://archive.wvculture.org/vrr/va_select.aspx')
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['title'], 'Marriage Records Search')
+
+    def test_wvculture_recipe_reads_the_image_the_add_on_reads(self) -> None:
+        # The add-on resolves a protocol-relative src or one with a query
+        # string to the same image; the stub names it too.
+        from capture_recipes import wvculture
+        for src in ('//images.wvculture.org/1984148/0002530.gif',
+                    'https://images.wvculture.org/1984148/0002530.gif?t=1'):
+            self.assertEqual(wvculture._image_src(f'<img alt="x" src="{src}">'),
+                             'https://images.wvculture.org/1984148/0002530.gif', src)
 
     def test_internet_archive_book_page_is_filed_as_a_book_with_a_citation(self) -> None:
         # A page of a county history on archive.org, saved without the add-on's

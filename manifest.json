@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "2682f6b034a9c5f5ef17a3910d2b42c3729cb28c5fa110ee0c3a27b1c7fe5226",
+      "sha256": "390c29a33f13f3f9d25be586535644cf2ecc3d59d58929ce7473db21392d1350",
       "spec_version": "2.20",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "28acb1fdfd10c4a982dbdf4209305cef3318f06875feb7fce6c5e9f3bc3adc0d",
+      "sha256": "85421bf9515db2a8c26b8df699a949540f363d944717eedca0ff45e2ddc770ef",
       "spec_version": "2.20",
       "src": "browser-companion/src/content.js"
     },
@@ -518,6 +518,20 @@
       "src": "browser-companion/src/lib/srcset.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/wvculture-record.js",
+      "category": "operating",
+      "sha256": "d59a9cc6d127b93fe2797f3ded78abe4738764616c452429e03d7380cf26824c",
+      "spec_version": "2.20",
+      "src": "browser-companion/src/lib/wvculture-record.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/wvculture.js",
+      "category": "operating",
+      "sha256": "d457d93bd6e37c84b39d1fcce4cc41502ebbd285d133daa586b0f3d913b439f4",
+      "spec_version": "2.20",
+      "src": "browser-companion/src/lib/wvculture.js"
+    },
+    {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
       "sha256": "9ad64a6407cbc9bc5640a66810a89dcdc5c2d5ab7d685fa49e4d6295ad6081bc",
@@ -527,14 +541,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "83d855d44205cf22da4a644d1ee6c753f01d5bc9a80164d48f445b2dedb1e7bd",
+      "sha256": "50df6d074fe2c3f44cbf7c943f6e72e672f4009658d0fbeb4c32663d8a671bb0",
       "spec_version": "2.20",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "336d9366b4d2e35aec81bd5b404771eba27fd9b4565e4d064827b8709cf08e3f",
+      "sha256": "eabaa1acfc5c47d6c2614030779c901d4b10aae9c70895721b8b997963d44c57",
       "spec_version": "2.20",
       "src": "browser-companion/src/panel.js"
     },
@@ -726,6 +740,13 @@
       "sha256": "88f7135f90771f39f42855be6420073d601449ffd14c0e23e0d573e1299da72d",
       "spec_version": "2.20",
       "src": "tools/capture_recipes/newspapers.py"
+    },
+    {
+      "path": ".fha/tools/capture_recipes/wvculture.py",
+      "category": "operating",
+      "sha256": "50199aaec52efaa1bca3feff42836546097c23e6190fb8dbde581d976baa076c",
+      "spec_version": "2.20",
+      "src": "tools/capture_recipes/wvculture.py"
     },
     {
       "path": ".fha/tools/claim.py",

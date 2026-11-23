@@ -213,6 +213,7 @@
     if (host.includes('newspapers.com')) return 'newspapers';
     if (host.includes('findagrave.com')) return 'findagrave';
     if (iaParsePage(url)) return 'archiveorg';
+    if (host.includes('wvculture.org')) return 'wvculture';
     return null;
   }
 
@@ -2858,6 +2859,90 @@
   }
   // FHA-SYNC-END archiveorg
 
+  // FHA-SYNC-BEGIN wvculture
+  const WV_VIEW_HOST = 'archive.wvculture.org';
+  const WV_IMAGE_HOST = 'images.wvculture.org';
+  // A death certificate image is a 7-digit film path, a register page 5-digit;
+  // the extension is .gif or .jpg. Anything else is not an image of a record.
+  const WV_IMAGE_PATH_RE = /^\/\d+\/\d+\.(gif|jpe?g)$/i;
+
+  // The film and image numbers of a view page (va_view2.aspx), or null for any
+  // other address or a view page with no usable image number.
+  function wvParsePage(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    if (u.hostname.toLowerCase() !== WV_VIEW_HOST) return null;
+    if (!/^\/vrr\/va_view2\.aspx$/i.test(u.pathname)) return null;
+    let filmNumber = null;
+    let imageNumber = null;
+    for (const [k, v] of u.searchParams) {
+      const key = k.toLowerCase();
+      if (key === 'filmnumber') filmNumber = v;
+      else if (key === 'imagenumber') imageNumber = v;
+    }
+    if (!/^\d+$/.test(filmNumber || '') || !/^\d+$/.test(imageNumber || '')) return null;
+    return { filmNumber, imageNumber };
+  }
+
+  // The page's image: the first img src that is an image on images.wvculture.org,
+  // upgraded to https. `srcs` is the list of the page's img src values. Null when
+  // none is one (the page then gives nothing to save).
+  function wvImageUrl(srcs) {
+    for (const src of srcs || []) {
+      let u;
+      try {
+        u = new URL(String(src));
+      } catch (e) {
+        continue;
+      }
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+      if (u.hostname.toLowerCase() !== WV_IMAGE_HOST || u.port || u.username || u.password) continue;
+      if (!WV_IMAGE_PATH_RE.test(u.pathname)) continue;
+      return 'https://' + WV_IMAGE_HOST + u.pathname;
+    }
+    return null;
+  }
+
+  // 'gif' or 'jpg' from an image address, or null.
+  function wvExtension(url) {
+    const m = /\.(gif|jpe?g)$/i.exec(String(url || ''));
+    if (!m) return null;
+    return m[1].toLowerCase() === 'gif' ? 'gif' : 'jpg';
+  }
+
+  // The citation line: the archive, the page as the human opened it, the film and
+  // the image. `accessed` is YYYY-MM-DD.
+  function wvCitation(info, accessed) {
+    return 'West Virginia Archives and History, Vital Research Records (' + info.pageUrl +
+      ' : accessed ' + accessed + '), film ' + info.filmNumber + ', image ' + info.imageNumber + '.';
+  }
+  // FHA-SYNC-END wvculture
+
+  // ── West Virginia Archives view pages ──────────────────────────────────────
+  // A view page (archive.wvculture.org/vrr/va_view2.aspx) shows one image, an
+  // <img> on images.wvculture.org. The numbers come from the address, the image
+  // from the page's own img src (lib/wvculture-record.js: never a built URL).
+  // The panel downloads the image (lib/wvculture.js): the image host sends no
+  // cross-origin permission, so a fetch from here fails on the live site.
+  // imageUrl is null when the page shows no image this recognises; the numbers
+  // and the citation still stand, so an image he drops in is saved with them.
+  function wvcultureImageInfo(today) {
+    const parsed = wvParsePage(location.href);
+    if (!parsed) return { ok: false, error: 'this is not a West Virginia Archives image page' };
+    const srcs = Array.prototype.map.call(document.querySelectorAll('img'),
+      (img) => absUrl(img.getAttribute('src') || '') || '');
+    const imageUrl = wvImageUrl(srcs);
+    const record = Object.assign({}, parsed, {
+      pageUrl: location.href, imageUrl, ext: imageUrl ? wvExtension(imageUrl) : null,
+    });
+    return { ok: true, record, citation: wvCitation(record, today) };
+  }
+
   // The memorial page itself - not its photo gallery or its flowers.
   function fagMemorialPage(href) {
     if (!fagParseMemorial(href)) return false;
@@ -3924,6 +4009,8 @@
       // A page of an Internet Archive book: Capture saves the page image, its
       // OCR text, the book's details and a citation (the panel reads them).
       archiveorgPage: iaPage,
+      // A West Virginia Archives view page: Capture saves its image with its numbers.
+      wvcultureImagePage: !!wvParsePage(url),
       imageUrl: detectImage(stale),
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
@@ -4952,6 +5039,9 @@
       case 'fetchAsset':
         fetchAsset(msg.url).then(sendResponse);
         return true; // async response
+      case 'wvcultureImageInfo':
+        sendResponse(wvcultureImageInfo(msg.today));
+        return;
       case 'familysearchRecordInfo':
         familysearchRecordInfo(msg.formTitle)
           .then(sendResponse)
