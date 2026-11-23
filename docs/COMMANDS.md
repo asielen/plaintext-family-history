@@ -404,6 +404,7 @@ Locate anything in the archive, or search its full text.
   fha find --text "phrase"   Full-text search across records, notes, captions
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
+  fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`.
@@ -414,10 +415,11 @@ as `fha find --text`.
 | `--root` `PATH` | Archive root |
 | `--text` `PHRASE` | Full-text search across records, notes, transcripts |
 | `--related` `[ID]` | Neighborhood of an ID: the people, places and sources next to it. Combine with --date for a time slice, or pass --related --date EDTF alone for the standalone time-slice neighborhood. |
+| `--sounds-like` `NAME` | People whose names sound like NAME in any spelling (Kowalski, Kowalska, Kovalsky), grouped by spelling, with the Daitch-Mokotoff and census Soundex codes. Works with --json and --limit. |
 | `--date` `EDTF` | Time-slice filter. With --related <ID>, narrows that neighborhood to the given EDTF range; with --related and no ID, reports everything active in that range. |
-| `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query or --text; combine with --kind/--limit to narrow it. Not yet valid with --related. |
+| `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query, --text or --sounds-like; combine with --kind/--limit to narrow it. Not yet valid with --related. |
 | `--kind` `KIND[,KIND...]` | With --json: only these result kinds (person, source, place, hypothesis, claim, text (comma list; photo-source = only sources that have photo files)). Default: every kind. |
-| `--limit` `N` | With --json: maximum number of results (default 20). |
+| `--limit` `N` | Maximum number of results: with --json (default 20), or the people --sounds-like lists (default 50). |
 | `[ID_OR_TEXT]` | Archive ID (P-/S-/C-/L-/H-) or text to search |
 
 ## `fha search`
