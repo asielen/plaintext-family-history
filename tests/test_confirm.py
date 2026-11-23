@@ -1695,6 +1695,17 @@ class DismissNotSamePersonTests(unittest.TestCase):
         self.assertNotIn('not valid JSON', self._texts(r))
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_an_odd_pairs_value_does_not_hide_different_person_notes(self) -> None:
+        # Emptying the "not connected" list by hand must not make the archive
+        # forget which people he said are different.
+        for odd in (None, {}, ''):
+            self._write({'pairs': odd, 'not_same_person': [
+                {'persons': [NSP_A, NSP_B], 'date': '2026-11-01'}]})
+            self.assertEqual(load_not_same_person(self.root),
+                             {frozenset((NSP_A, NSP_B)): '2026-11-01'})
+            r = confirm.run_list_dismissed(self.root)
+            self.assertEqual(len(r['not_same_person']), 1)
+
     def test_damaged_file_is_refused_and_left_alone(self) -> None:
         self.path.write_bytes(b'{not json')
         for run in (

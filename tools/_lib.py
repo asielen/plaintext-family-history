@@ -4263,7 +4263,9 @@ def load_cooccur_dismissed(
 NOT_SAME_PERSON_KEY = 'not_same_person'
 
 
-def read_dismissed_file(archive_root: str | Path) -> tuple[dict | None, str | None]:
+def read_dismissed_file(
+    archive_root: str | Path, *, check_lists: bool = True,
+) -> tuple[dict | None, str | None]:
     """The current dismissal file as a dict, for a writer that must keep every key.
 
     Returns `(data, None)`, with `data` `{}` when the file does not exist yet,
@@ -4272,6 +4274,9 @@ def read_dismissed_file(archive_root: str | Path) -> tuple[dict | None, str | No
     must stop instead of replacing it with something shorter; `problem` is the
     plain sentence to show. Readers that can live with an empty answer use
     `load_cooccur_dismissed` / `load_not_same_person` instead.
+
+    `check_lists=False` is for a reader of one key: an odd value under the
+    OTHER key must not hide the decisions it reads.
     """
     path = cooccur_dismissed_paths(archive_root)[0]
     if not path.exists():
@@ -4287,7 +4292,7 @@ def read_dismissed_file(archive_root: str | Path) -> tuple[dict | None, str | No
     if not isinstance(data, dict):
         return None, (f'{name} could not be read (it should start with {{ and hold '
                       f'named lists), {fix}')
-    for list_key in ('pairs', NOT_SAME_PERSON_KEY):
+    for list_key in ('pairs', NOT_SAME_PERSON_KEY) if check_lists else ():
         if list_key in data and not isinstance(data[list_key], list):
             # Writing a list over it would erase what he wrote there.
             return None, (f'{name} could not be read ("{list_key}" should be a list '
@@ -4318,7 +4323,7 @@ def load_not_same_person(archive_root: str | Path) -> dict[frozenset[str], str |
     that is not an object with two different valid person ids. A file without
     the key, or a damaged one, reads as no decisions.
     """
-    data, _problem = read_dismissed_file(archive_root)
+    data, _problem = read_dismissed_file(archive_root, check_lists=False)
     out: dict[frozenset[str], str | None] = {}
     entries = (data or {}).get(NOT_SAME_PERSON_KEY)
     for entry in entries if isinstance(entries, list) else []:
