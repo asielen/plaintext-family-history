@@ -2956,6 +2956,41 @@ class ReimportPlanTestCase(_ReimportCase):
         self.assertEqual(result.data['changed'], 0)
         self.assertIn('may be listed as new', out)
 
+    def test_codex_a_reworded_occupation_the_tree_also_corrects_is_not_new(self) -> None:
+        # He corrected Bookkeeper to Carpenter here, and later in the tree too.
+        self._edit_record1("Thomas Hartley: occupation Bookkeeper",
+                           "Thomas Hartley: occupation Carpenter")
+        later = self._edited('later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+                             ('1 OCCU Bookkeeper', '1 OCCU Carpenter'))
+        plan = self._plan(later)
+        self.assertEqual(self._fact(plan, 'occupation', 'Thomas Hartley').outcome, 'same')
+        self.assertEqual(plan.claims, [])
+        self.assertEqual(plan.gone_facts, [])
+
+    def test_codex_an_earlier_record_missing_its_id_stops_the_apply(self) -> None:
+        text = self.record1.read_text(encoding='utf-8')
+        line = next(ln for ln in text.splitlines() if ln.startswith('id: s-'))
+        self._edit_record1(line + '\n', '')
+        before = _tree_digest(self.archive)
+        result, _out, err = self._run(SMALL_V2, apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('could not be read', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_codex_a_working_copy_previews_without_its_documents(self) -> None:
+        (self.archive / 'WORKING_COPY').write_text('', encoding='utf-8')
+        shutil.rmtree(self.archive / 'documents')
+        result, out, _err = self._run(self._same_tree_redownloaded())
+        self.assertEqual(result.data['mode'], 'update')
+        self.assertIn('could not be read', out)
+
+    def test_codex_a_name_the_newer_file_adds_is_listed(self) -> None:
+        later = self._edited('later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+                             ('1 NAME Rose /Hartley/\n', '1 NAME Rose /Hartley/\n'
+                                                       '1 NAME Rose /Winters/\n'))
+        plan = self._plan(later)
+        self.assertTrue(any('Rose Winters' in n for n in plan.name_changes), plan.name_changes)
+
     def test_date_disagreements_are_listed_for_new_people_only(self) -> None:
         # A matched person keeps the record he already has, so "the new record
         # shows" is said only of someone the plan would add.
@@ -3317,6 +3352,50 @@ class ReimportMatchingTestCase(_ArchiveCase):
         plan = self._plan(later)
         self.assertIn('@I1@', plan.matches)
         self.assertTrue(any(c.claim_type == 'residence' for c in plan.claims))
+
+    def test_a_son_shifted_onto_his_fathers_number_at_the_end_of_the_file_is_held(self) -> None:
+        # The father and son are the last people in the tree. Sr is deleted
+        # and the gap closed: Jr takes Sr's number and nobody has Jr's.
+        first = self._tree('first.ged', [('@I1@', 'Rose /Hartley/', 'F', '1878'),
+                                         ('@I2@', 'John /Hartley/', 'M', '', '1 OCCU Farmer'),
+                                         ('@I3@', 'John /Hartley/', 'M', '1850',
+                                          '1 OCCU Blacksmith')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', [('@I1@', 'Rose /Hartley/', 'F', '1878'),
+                                         ('@I2@', 'John /Hartley/', 'M', '1850',
+                                          '1 OCCU Blacksmith')])
+        plan = self._plan(later)
+        self.assertNotIn('@I2@', plan.matches)
+        self.assertEqual(plan.claims, [])
+
+    def test_codex_a_program_id_that_disagrees_stops_a_number_match(self) -> None:
+        # Two cousins of one name born a year apart, renumbered so their
+        # numbers swapped. The program's own ids say who is who.
+        first = self._tree('first.ged', [
+            ('@I1@', 'John /Hartley/', 'M', '1880', '1 _UID AAAA1', '1 OCCU Miner'),
+            ('@I2@', 'John /Hartley/', 'M', '1881', '1 _UID BBBB2', '1 OCCU Farmer')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        ids = self._ids()
+        later = self._tree('later.ged', [
+            ('@I1@', 'John /Hartley/', 'M', '1881', '1 _UID BBBB2', '1 OCCU Farmer'),
+            ('@I2@', 'John /Hartley/', 'M', '1880', '1 _UID AAAA1', '1 OCCU Miner')])
+        plan = self._plan(later)
+        self.assertEqual(plan.matches['@I1@'].pid, ids['John Hartley 1881'][0])
+        self.assertEqual(plan.matches['@I2@'].pid, ids['John Hartley 1880'][0])
+        self.assertEqual((plan.claims, plan.questions), ([], []))
+
+    def test_codex_a_removed_parent_beside_a_kept_one_is_a_change(self) -> None:
+        people = [('@I1@', 'Thomas /Hartley/', 'M', '1875'),
+                  ('@I2@', 'Rose /Hartley/', 'F', '1878'),
+                  ('@I3@', 'Ada /Hartley/', 'F', '1901')]
+        first = self._tree('first.ged', people,
+                           ('0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@'))
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', people, ('0 @F1@ FAM', '1 HUSB @I1@', '1 CHIL @I3@'))
+        plan = self._plan(later)
+        rel = [f for f in plan.facts if f.claim.claim_type == 'relationship']
+        self.assertEqual([f.outcome for f in rel], ['changed'])
+        self.assertEqual(len(plan.questions), 1)
 
     def test_a_cousin_of_the_same_name_given_a_birth_year_still_matches(self) -> None:
         # Two cousins named John Hartley, one born 1849, one undated. The

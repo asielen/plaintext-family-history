@@ -1686,6 +1686,10 @@ class _OldFact:
     # claim that is now about someone else.
     orig_key: tuple | None = None
     orig_only: bool = False        # this copy is filed under `orig_key`
+    # A repeatable statement (an occupation, a residence) he reworded: also
+    # filed under its wording now, so a tree that makes the same correction
+    # is not planned as a second claim.
+    now_key: tuple | None = None
 
 
 @dataclass(eq=False)
@@ -1908,8 +1912,13 @@ def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list
         if rec.get('parse_errors') and (not meta or not rec.get('claims')):
             unreadable.append(path)
             continue
-        if (not sid or str(meta.get('source_type') or '').strip().lower() != 'other'
+        if (str(meta.get('source_type') or '').strip().lower() != 'other'
                 or str(meta.get('subtype') or '').strip().lower() != 'gedcom'):
+            continue
+        if not sid:
+            # Its id line lost in a hand edit: still an earlier import of a
+            # tree, and skipped quietly its people would all be planned again.
+            unreadable.append(path)
             continue
         priors.append(_read_prior_import(
             archive_root, fha_config, path, rec, sid, alias_map, by_pid,
@@ -2190,6 +2199,7 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
     value = str(claim.get('value') or '')
     parents = orig_parents = frozenset()
     orig_key: tuple | None = None
+    now_key: tuple | None = None
     if ctype == 'relationship':
         child = sorted(claim_role_pids(claim, 'child', alias_map))
         if len(child) != 1:
@@ -2229,6 +2239,12 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
             kind, key = 'single', (ctype, who)
         else:
             kind, key = 'multi', (ctype, who, subtype, text)
+            if source is not None:
+                now = _statement_text(value, labels.get(who, []))
+                if ctype == 'note' and claim.get('notes'):
+                    now = _norm_text(f'{now} {claim.get("notes")}')
+                if now != text:
+                    now_key = (ctype, who, subtype, now)
         if source is not None:
             orig_key = (key[:1] + (source.persons[0],)
                         + ((_norm_text(source.subtype), text) if kind == 'multi' else ()))
@@ -2242,7 +2258,7 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
         live=status not in _SETTLED_STATUSES,
         cid=normalize_id(str(claim.get('id') or '')), people=people, value=value,
         parents=parents, orig_parents=orig_parents, joined=source is not None,
-        orig_key=orig_key)
+        orig_key=orig_key, now_key=now_key)
 
 
 # ── Who is who ───────────────────────────────────────────────────────────────
@@ -2287,6 +2303,14 @@ def _birth_fits(new: _Incoming, old: _PriorPerson) -> bool:
     return new.window is not None and bool(old.windows) and not _birth_differs(new, old)
 
 
+def _stays(new: _Incoming, old: _PriorPerson) -> bool:
+    """The person at this number shows they are the one who was: a name they
+    had, the sex not differing, and a birth that agrees outright (or is
+    missing on both sides)."""
+    return bool(new.names & old.names) and not _sex_differs(new, old) and (
+        _birth_fits(new, old) or (new.window is None and not old.windows))
+
+
 def _name_shared(new: _Incoming, old: _PriorPerson) -> bool:
     """Part of the name is the same: the first given name or the last word."""
     return any(a and b and (a[0] == b[0] or a[-1] == b[-1])
@@ -2295,7 +2319,8 @@ def _name_shared(new: _Incoming, old: _PriorPerson) -> bool:
 
 def _number_doubt(new: _Incoming, old: _PriorPerson,
                   by_name: dict[tuple[str, ...], list[_PriorPerson]],
-                  moved: frozenset[str] = frozenset()) -> str:
+                  moved: frozenset[str] = frozenset(),
+                  gone: frozenset[str] = frozenset()) -> str:
     """Why the person holding this record number may not be the same person,
     or '' when they certainly are.
 
@@ -2323,6 +2348,10 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
         # had a number is no rival. A dated newcomer needs their birth to agree.
         apart = _birth_differs(new, old)
         if apart or not _birth_fits(new, old):
+            # A namesake could have moved here when someone else now holds
+            # their number, or when their number is gone from this file and
+            # nothing here shows this is the person who was at this number.
+            could_move = moved | (frozenset() if _stays(new, old) else gone)
             for key in sorted(new.names):
                 for other in by_name.get(key, []):
                     if other.ident == old.ident or _sex_differs(new, other):
@@ -2330,12 +2359,11 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
                     if apart:
                         rival = not _birth_differs(new, other)
                     elif new.window is not None:
-                        rival = _birth_fits(new, other) and other.ident in moved
+                        rival = _birth_fits(new, other) and other.ident in could_move
                     else:
                         # Undated here: nothing can show which of the two he
-                        # is, so a namesake whose number someone else now
-                        # holds is doubt.
-                        rival = other.ident in moved
+                        # is, so a namesake who could have moved is doubt.
+                        rival = other.ident in could_move
                     if rival:
                         return (f'{was}, but another earlier person of this name '
                                 f'({_who(other)}) may be this one'
@@ -2382,18 +2410,22 @@ def _match_people(incoming: list[_Incoming],
     doubts: dict[str, tuple[str, _PriorPerson]] = {}
     # Earlier people still at their own number, under a name they had.
     # Moved: earlier people whose number someone in this file holds without
-    # showing they are them (another name, another sex, or a birth that does
-    # not agree outright; missing on both sides counts as agreeing).
-    def stays(n: _Incoming, old: _PriorPerson) -> bool:
-        return bool(n.names & old.names) and not _sex_differs(n, old) and (
-            _birth_fits(n, old) or (n.window is None and not old.windows))
-
+    # showing they are them. Gone: earlier people whose number is not in this
+    # file at all (deleted, or shifted past its end).
     moved = frozenset(by_xref[n.xref].ident for n in incoming
-                      if n.xref in by_xref and not stays(n, by_xref[n.xref]))
+                      if n.xref in by_xref and not _stays(n, by_xref[n.xref]))
+    here = {n.xref for n in incoming}
+    gone = frozenset(old.ident for xref, old in by_xref.items() if xref not in here)
     for new in incoming:
         old = by_xref.get(new.xref)
         if old is not None:
-            doubt = _number_doubt(new, old, by_name, moved)
+            doubt = _number_doubt(new, old, by_name, moved, gone)
+            if not doubt and new.uid and old.uid and new.uid != old.uid:
+                # The program's own id for a person never changes; a number
+                # can. When they disagree, the number is not trusted.
+                doubt = (f'record number {new.xref} belonged to {_who(old)} in the '
+                         'earlier download, but the program\'s own id for this person '
+                         'is a different one')
             if not doubt:
                 found[new.xref] = (old, 'record number')
                 continue
@@ -2619,7 +2651,8 @@ def _judge(fact: _Fact, olds: list[_OldFact], parents_now: frozenset[str]) -> No
             named = o.orig_parents if o.orig_only else o.parents
             return bool(named) and named <= fact.parents
 
-        if any(said(o) or (not o.orig_only and o.parents >= fact.parents) for o in live):
+        if any(said(o) or (not o.orig_only and o.parents >= fact.parents
+                           and not o.parents - parents_now) for o in live):
             fact.outcome = 'same'
         elif any(said(o) or (not o.orig_only and o.parents == fact.parents) for o in settled):
             fact.outcome = 'decided'
@@ -2728,6 +2761,8 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
             if old.orig_key is not None:
                 olds.setdefault(old.orig_key, []).append(
                     replace(old, key=old.orig_key, orig_only=True))
+            if old.now_key is not None:
+                olds.setdefault(old.now_key, []).append(replace(old, key=old.now_key))
     parents_now: dict[tuple, frozenset[str]] = {}
     for fact in facts:
         if fact.kind == 'parents':
@@ -2779,7 +2814,7 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
             # gone; without the filed copy every claim of the record is tried.
             if (old.live and old.cid and (old.joined or not prior.copy_read)
                     and old.people <= matched_here and old.key not in keys_now
-                    and old.orig_key not in keys_now):
+                    and old.orig_key not in keys_now and old.now_key not in keys_now):
                 gone_facts.append(_GEDCOM_TAIL_RE.sub('', old.value))
         for person in prior.people:
             if person.state == 'present' and person.pid not in spoken_for:
@@ -2796,6 +2831,10 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
         stub = stub_of[xref]
         if stub.name and _name_key(stub.name) not in match.person.names:
             name_changes.append(f'{pid} {name_of(match.pid)}: the newer file says {stub.name}')
+        for variant in stub.variants:
+            if variant and _name_key(variant) not in match.person.names:
+                name_changes.append(f'{pid} {name_of(match.pid)}: the newer file also gives '
+                                    f'the name {variant}')
         living = str((record or {}).get('meta', {}).get('living', '')).strip().lower()
         if match.pid in has_death and living != 'false':
             death_now.append(f'{pid} {name_of(match.pid)}: to change, run '
@@ -3505,7 +3544,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
         incoming = _incoming_people(indis, probe.stubs)
         lineage, others, tree_note = _same_tree(incoming, priors)
         away = [p.copy_folder_missing for p in lineage if p.copy_folder_missing]
-        if away:
+        if away and not is_working_copy(archive_root):
             # Without the filed copy the plan cannot see the statements he
             # deleted, and would offer them all again as new. A drive that is
             # only unplugged is worth plugging in first.
