@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *intake* side of the `fha` tool suite: anything that puts material into an archive's inbox for `fha process` to turn into a source. To use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-**Version 2.24, companion to SPEC.md v2.24 and TOOLING.md v2.24 (versions track the SPEC).**
+**Version 2.25, companion to SPEC.md v2.25 and TOOLING.md v2.25 (versions track the SPEC).**
 
 This document defines one thing first and everything else after it: **what a source waiting in the inbox looks like**, and how `fha process` reads it (§1). That shape is the contract. A person dropping a scan and typing a note, the `fha capture` engine (§2), the browser companion (§5), a script someone writes for their own scanner: each is only a front end, and **any front end that produces the §1 shape is conforming**. SPEC.md §12.1 states what a source stub is; TOOLING.md §13b names the `fha capture` engine; this document specifies the contract and the engine in enough detail to build a new front end in any language.
 
