@@ -20178,7 +20178,16 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
     An open side ("before 1920" has no start, "1920 or later" no end) is
     None, so no rule can read it as a known day. None for an undated claim
     or one whose date cannot be read, including an impossible day like
-    `1900-02-31` (E014 already reports that one)."""
+    `1900-02-31` or an interval that runs backwards like `1890/1850` (E014
+    already reports both).
+
+    "About 20 May 1850" must not read as exactly 20 May, or an infant who
+    died on 19 May would be told the two dates cannot both be true. So a date
+    carrying `~`, `?` or `%` anywhere (on the day, the month or the whole
+    date, written so or reached from a loose form like "about ...") widens
+    to at least a year each way, the widening `1850~` already gets.
+    `edtf_bounds` keeps the narrow day for sorting; only this certainty
+    reading widens it."""
     text = optional_scalar(claim.get('date')) if isinstance(claim, dict) else None
     if not text:
         return None
@@ -20190,6 +20199,20 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
     hi_known = None if hi == _EDTF_CEILING else hi
     if lo_known is None and hi_known is None:
         return None
+    if lo_known is not None and hi_known is not None and lo_known > hi_known:
+        return None
+    written = normalize_date(text) or text
+    if any(mark in written for mark in '~?%'):
+        # Widen from the date with its marks taken off, so `1880?` (already
+        # 1879 to 1881) is not widened twice.
+        try:
+            plain_lo, plain_hi = edtf_bounds(re.sub(r'[~?%]', '', written))
+        except ValueError:
+            plain_lo, plain_hi = lo, hi
+        if lo_known is not None and plain_lo != _EDTF_FLOOR:
+            lo_known = min(lo_known, f'{max(int(plain_lo[:4]) - 1, 1):04d}-01-01')
+        if hi_known is not None and plain_hi != _EDTF_CEILING:
+            hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
     return (lo_known, hi_known)
 
 
@@ -20364,7 +20387,10 @@ def one_person_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
         died_hi, died_hi_from = bounds['died_hi']
         if died_hi is not None:
             for event in data.life_events.get(pid, []):
-                if event.ctype == 'census' and re.search(r'\bmortality\b', event.subtype):
+                # `in`, not a word match: `mortality_schedule` holds no
+                # word boundary before the underscore, and an 1850 mortality
+                # schedule for someone who died in 1849 is not a ghost record.
+                if event.ctype == 'census' and 'mortality' in event.subtype.lower():
                     continue
                 if event.lo is not None and event.lo > died_hi:
                     problems.append(PlausibilityProblem(

@@ -57,6 +57,24 @@ class DateRangeTests(unittest.TestCase):
     def test_impossible_day_is_skipped_not_raised(self) -> None:
         self.assertIsNone(claim_date_range({'date': '1900-02-31'}))
 
+    def test_an_approximate_day_or_month_widens_a_year_each_way(self) -> None:
+        # "About 20 May 1850" is not exactly 20 May: a death on 19 May is
+        # possible, so the range must hold more than the one day. Any `~`,
+        # `?` or `%` widens a date at least a year each way, like `1850~`.
+        for date in ('1850-05-~20', '1850-05-20~', '1850-05-20?', '1850-~05-20',
+                     'about 20 May 1850', '1850-05~', '1850-~05'):
+            with self.subTest(date=date):
+                self.assertEqual(claim_date_range({'date': date}),
+                                 ('1849-01-01', '1851-12-31'))
+        # An exact day stays one day.
+        self.assertEqual(claim_date_range({'date': '1850-05-20'}),
+                         ('1850-05-20', '1850-05-20'))
+
+    def test_a_backwards_interval_is_not_read(self) -> None:
+        # `1890/1850` runs backwards (E014 says so); its intended range is
+        # unknown, so no rule may read it.
+        self.assertIsNone(claim_date_range({'date': '1890/1850'}))
+
     def test_plus_years_keeps_leap_day_safe(self) -> None:
         self.assertEqual(iso_plus_years('1896-02-29', 1), '1897-02-28')
         self.assertEqual(iso_plus_years('1896-02-29', 4), '1900-02-28')

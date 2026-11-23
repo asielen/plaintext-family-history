@@ -227,6 +227,28 @@ class OnePersonDatesTests(_PlausibilityBase):
                                           subtype='mortality schedule'))
         self.assertEqual(self._codes('W165'), [])
 
+    def test_mortality_census_is_exempt_however_the_subtype_is_spelled(self) -> None:
+        for subtype in ('mortality_schedule', 'Mortality-Schedule', 'US mortality'):
+            with self.subTest(subtype=subtype):
+                self._person(self.ADA, 'Ada Hartley')
+                self._source(self.S1, self._claim('C-1111111111', 'death', [self.ADA],
+                                                  date='1849-11'))
+                self._source(self.S2, self._claim('C-2222222222', 'census', [self.ADA],
+                                                  date='1850-06-01', subtype=subtype))
+                self.assertEqual(self._codes('W165'), [])
+
+    def test_an_approximate_birth_day_does_not_fire_against_a_day_earlier_death(self) -> None:
+        # An infant born "about 20 May 1850" who died 19 May 1850: both can
+        # be true, so lint must not say they cannot.
+        self._person(self.ADA, 'Ada Hartley')
+        self._birth_and_death('1850-05-~20', '1850-05-19')
+        self.assertEqual(self._codes('W163'), [])
+
+    def test_an_approximate_day_still_fires_when_a_year_apart(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._birth_and_death('1850-05-~20', '1848-05-19')
+        self.assertEqual(len(self._codes('W163')), 1)
+
     def test_a_parent_named_on_a_later_record_is_not_its_subject(self) -> None:
         self._person(self.ADA, 'Ada Hartley', sex='M')
         self._person(self.BEN, 'Ben Hartley', sex='M')
