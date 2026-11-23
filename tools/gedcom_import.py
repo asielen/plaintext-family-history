@@ -126,6 +126,7 @@ from _lib import (
     is_template_file,
     is_valid_edtf,
     is_working_copy,
+    LinkWriter,
     link_entry,
     link_writer,
     load_fha_yaml,
@@ -1408,7 +1409,8 @@ def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
     Inline `OBJE` carries `FILE` children; a pointer `OBJE @O1@` names a level-0
     record that does. The OBJE/FILE/FORM/TITL/_PRIM lines read are marked
     consumed so the plan stops calling them unread. Media under a source
-    citation or a family is not read."""
+    citation (on the person or on one of their events) or a family is not
+    read."""
     objects = {r.xref: r for r in records if r.tag == 'OBJE' and r.xref}
     links: list[_PhotoLink] = []
     seen: set[tuple[str, str]] = set()
@@ -1427,7 +1429,10 @@ def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
         primary_target = photo_ptr.value.strip() if photo_ptr else ''
         if photo_ptr is not None:
             consumed.add(id(photo_ptr))
-        holders = [indi] + [c for c in indi.children if c.tag != 'OBJE']
+        # The person and their events/attributes. A source citation's media
+        # (`1 SOUR` / `2 OBJE`) is a scan of the record that supports them,
+        # not a photo of them, so it is never offered for tagging.
+        holders = [indi] + [c for c in indi.children if c.tag not in ('OBJE', 'SOUR')]
         for holder in holders:
             for obje in holder.children_tagged('OBJE'):
                 ref = obje.value.strip()
@@ -1494,8 +1499,10 @@ def _match_photo_links(archive_root: Path, fha_config: dict, links: list[_PhotoL
         return state
     db = archive_root / '.cache' / 'photos.sqlite'
     try:
-        conn = sqlite3.connect(f'file:{db.as_posix()}?mode=ro', uri=True)
-    except sqlite3.Error:
+        # as_uri() percent-encodes the path: a '#' or '%' in a folder name
+        # written raw would cut the URI, drop `mode=ro` and create a file.
+        conn = sqlite3.connect(f'{db.resolve().as_uri()}?mode=ro', uri=True)
+    except (sqlite3.Error, OSError, ValueError):
         return 'unreadable'
     try:
         rows = conn.execute(
@@ -1617,8 +1624,10 @@ def _photo_notes_lines(plan: 'ImportPlan', links_writer) -> list[str]:
     Matched photos are named by alias path; ambiguous and not-found ones by file
     name only; web links are counted, never listed. It survives a cache wipe and
     reads without any tool."""
+    unchecked = plan.photo_catalog != 'ready'
     pending = [lk for lk in plan.photo_links
-               if lk.kind == 'local' and lk.status in ('matched', 'ambiguous', 'not found')]
+               if lk.kind == 'local' and (unchecked or lk.status in (
+                   'matched', 'ambiguous', 'not found'))]
     web = sum(1 for lk in plan.photo_links if lk.kind == 'web')
     if not pending and not web:
         return []
@@ -1634,6 +1643,9 @@ def _photo_notes_lines(plan: 'ImportPlan', links_writer) -> list[str]:
         elif lk.status == 'ambiguous':
             lines.append(f'- {who}: {lk.basename}{title} (matches more than one '
                          'photo: ' + ', '.join(lk.candidates) + ')')
+        elif unchecked:
+            lines.append(f'- {who}: {lk.basename}{title} (not looked for: the photo '
+                         'catalog was not built when imported)')
         else:
             lines.append(f'- {who}: {lk.basename}{title} (not in the photo folders '
                          'when imported)')
@@ -1647,7 +1659,9 @@ _PHOTO_HANDOFF = """\
 {n:,} {photos} your old program linked {are} already in your photo folders. To put each
 person's name on their photo (one photo at a time, each with your yes):
   "go through the photos my old tree linked"
-or run, for example:
+or run, for example (the first line brings the photo catalog up to date
+with the people just added; tag-person needs that):
+  fha photoindex
   {command}
 The full list is in the new source's Notes."""
 
@@ -2042,9 +2056,21 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         for title, count in plan.cited_sources:
             plural = 's' if count != 1 else ''
             lines.append(f'- {title} (cited by {count} event{plural})')
-    lines.extend(_photo_notes_lines(plan, link_writer(plan.archive_root)))
+    lines.extend(_photo_notes_lines(plan, _planned_link_writer(plan)))
     lines.append('')
     return '\n'.join(lines)
+
+
+def _planned_link_writer(plan: ImportPlan) -> LinkWriter:
+    """The link writer for the source record, which is rendered before any
+    person file exists: in Obsidian mode a `[[stem|Name]]` link has to name
+    the file this import is about to write, so the planned stems are given
+    rather than scanned. Every person the record links is one of these stubs."""
+    links = link_writer(plan.archive_root)
+    if not links.obsidian:
+        return links
+    return LinkWriter(plan.archive_root, links.mode,
+                      stems={s.pid: _planned_stub_path(plan, s).stem for s in plan.stubs})
 
 
 def _render_audit_csv(plan: ImportPlan, today: str) -> str:

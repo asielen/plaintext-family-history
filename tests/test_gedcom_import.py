@@ -1533,14 +1533,11 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
         self.assertIn('    child: p-aaaaaaaaaa', lines)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 # ── Photos the old program linked ──────────────────────────────────────────────
 
 import photoindex
-from _lib import shell_quote
+from _lib import photoindex_status, shell_quote
 
 PHOTO_LINKS = FIXTURES / 'photo-links.ged'
 
@@ -1700,3 +1697,69 @@ class PhotoLinksTestCase(_ArchiveCase):
         hal = [lk for lk in plan.photo_links if lk.person_xref == '@I10@']
         self.assertEqual([lk.basename for lk in hal], ['rose_wedding.jpg'])   # the PDF is not a photo
         self.assertEqual(hal[0].folder, 'Old Pics')
+
+    def test_catalog_absent_keeps_the_list_in_notes(self) -> None:
+        """Importing before the photo catalog exists still records which photos
+        the old tree linked (a re-import is refused, so this is the only copy)."""
+        _, out, _ = self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertRegex(record, r'Rose Hartley\]\]: rose_wedding\.jpg .*not looked for')
+        self.assertRegex(record, r'Thomas Hartley\]\]: thomas\.jpg .*not looked for')
+        self.assertNotIn('Users', record)
+        self.assertNotIn('fha photoindex tag-person', out)
+
+    def test_handoff_refreshes_the_catalog_before_tagging(self) -> None:
+        """The import adds people, which makes the photo catalog read stale, and
+        tag-person refuses a stale catalog: the command list refreshes it first."""
+        self._scan()
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertEqual(photoindex_status(self.archive, self.config)[0], 'stale')
+        self.assertRegex(out, r'\n  fha photoindex\n  fha photoindex tag-person ')
+
+    def test_citation_media_is_not_a_person_photo(self) -> None:
+        """A census scan attached to a citation is not a photo of the person."""
+        census = self.photos / '1900' / 'census.jpg'
+        census.parent.mkdir(parents=True)
+        census.write_bytes(b'scan')
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Hal /Hartley/\n'
+                 '1 SOUR @S1@\n2 OBJE\n3 FILE census.jpg\n'
+                 '1 RESI\n2 SOUR @S1@\n3 OBJE\n4 FILE census.jpg\n'
+                 '0 @S1@ SOUR\n1 TITL 1900 census\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual([lk for lk in plan.photo_links if lk.person_xref == '@I10@'], [])
+
+    def test_obsidian_links_name_the_new_person_file(self) -> None:
+        """With Obsidian links, a name in the photo list opens the person's file."""
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\nlinks: obsidian\n',
+            encoding='utf-8')
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self._scan()
+        self._run(self.ged, apply=True)
+        m = re.search(r'- \[\[([^|\]]+)\|Rose Hartley\]\]: photos/1950/', self._record_text())
+        self.assertIsNotNone(m)
+        self.assertTrue(list(self.archive.glob(f'people/**/{m.group(1)}.md')), m.group(1))
+
+    def test_catalog_read_only_in_a_folder_with_a_hash(self) -> None:
+        """An archive in a folder like "Family #2" is matched, and the read-only
+        catalog open creates nothing beside it."""
+        parent = Path(self._tmp.name) / 'Family #2 100%'
+        parent.mkdir()
+        shutil.move(str(self.archive), str(parent / 'archive'))
+        self.archive = parent / 'archive'
+        self.photos = self.archive / 'photos'
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self._scan()
+        before = sorted(p.name for p in Path(self._tmp.name).iterdir())
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual(plan.photo_catalog, 'ready')
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual(rose.status, 'matched')
+        self.assertEqual(before, sorted(p.name for p in Path(self._tmp.name).iterdir()))
+
+
+if __name__ == '__main__':
+    unittest.main()

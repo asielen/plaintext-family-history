@@ -20,7 +20,7 @@
     {
       "path": ".agents/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "acb791a82f0828b86fe37abe2d966ab2ab99ee34d19cc25f17df68d9524eb81d",
+      "sha256": "75739b80019e7c22539f8d61f45c01f0d646aa7f8186627b1f04ed0c9eadfc77",
       "spec_version": "2.19",
       "src": ".claude/skills/find-photos/SKILL.md"
     },
@@ -193,7 +193,7 @@
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "acb791a82f0828b86fe37abe2d966ab2ab99ee34d19cc25f17df68d9524eb81d",
+      "sha256": "75739b80019e7c22539f8d61f45c01f0d646aa7f8186627b1f04ed0c9eadfc77",
       "spec_version": "2.19"
     },
     {
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "86102572c8708cd09bf81fe1488954e5d435a79496c0e216044130ddab0e6910",
+      "sha256": "10f330c64011fd9c68fd59e6f9a00167d7562f3a87473ddf38c406e515227f21",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8305a685d71da0dabaa1d29e1ffdef5281991130480203397ab1d83cc42404eb",
+      "sha256": "28ff8fd0cc33d80ebcfeb1a4ac630692fecd7953b60b88686cda608fa31cc7cd",
       "spec_version": "2.19",
       "src": "tools/lint.py"
     },

@@ -5197,7 +5197,9 @@ def _w137_keyworded_photos(registry: Registry) -> set[str]:
     if not db.is_file():
         return set()
     try:
-        conn = sqlite3.connect(f'file:{db.as_posix()}?mode=ro', uri=True)
+        # as_uri() percent-encodes the path: a '#' or '%' in a folder name
+        # written raw would cut the URI, drop `mode=ro` and create a file.
+        conn = sqlite3.connect(f'{db.resolve().as_uri()}?mode=ro', uri=True)
         try:
             rows = conn.execute(
                 "SELECT path FROM photos WHERE source_id IS NOT NULL AND source_id != ''"
