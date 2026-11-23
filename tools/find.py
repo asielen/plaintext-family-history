@@ -3154,14 +3154,15 @@ def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
     return people
 
 
-def _record_public_names(archive_root: Path, person: dict) -> tuple[str, list[str]]:
+def _record_public_names(archive_root: Path, person: dict) -> tuple[str, list[str]] | None:
     """The names of one person that may be shown, read from their record:
     `name:`, each public other name (`person_alias_mirror`, which leaves out
     a value marked restricted in any field, even where another field lists
     it as public), then any other name typed into `aliases:` that is neither
     ID-shaped nor restricted. A name still sitting in `aliases:` from before
     it was marked private is not shown (SPEC §9). A record that cannot be
-    read gives only the index's `name:`.
+    read gives None: its names cannot be checked, and the index's copies may
+    be ones he has since marked private, so none of them is shown.
 
     Returns (the name to label them with, the names). The label is the
     record's `name:` as it is now, not the index's copy: a main name made
@@ -3170,7 +3171,7 @@ def _record_public_names(archive_root: Path, person: dict) -> tuple[str, list[st
     if person.get('path'):
         meta = _person_frontmatter_all(archive_root / person['path'])
     if meta is None:
-        return person['name'], [] if is_placeholder_name(person['name']) else [person['name']]
+        return None
     label = str(meta.get('name') or '').strip() or person['name']
     # Compared by `_name_key`, so a copy that differs from the private value
     # only by accent encoding or spacing is still taken as that value.
@@ -3342,10 +3343,15 @@ def run_find_sounds_like(archive_root: Path, fha_config: dict, query: str,
             readings = _sounds_like_readings(query, terms)
             word_codes: dict[str, set[str]] = {}
             found = []
+            unreadable: list[str] = []
             for pid, person in people.items():
                 if _best_sound_match(person['names'], readings, word_codes) is None:
                     continue
-                label, public = _record_public_names(archive_root, person)
+                record = _record_public_names(archive_root, person)
+                if record is None:
+                    unreadable.append(pid)
+                    continue
+                label, public = record
                 best = _best_sound_match(public, readings, word_codes)
                 if best is None:
                     continue
@@ -3375,7 +3381,7 @@ def run_find_sounds_like(archive_root: Path, fha_config: dict, query: str,
     hits = [{'id': p['id'], 'type': 'person', 'label': p['name'],
              'detail': years.get(p['id'], ''), 'matched': p['matched']} for p in kept]
     data = {'query': query, 'codes': codes_data, 'groups': list(groups.values()),
-            'hits': hits, 'more': len(found) - len(kept)}
+            'hits': hits, 'more': len(found) - len(kept), 'unreadable': sorted(unreadable)}
     if not found:
         return Result(ok=True, exit_code=EXIT_WARNINGS, data=data).add(
             'warning',
@@ -3406,6 +3412,11 @@ def _cmd_find_sounds_like(result: Result, as_json: bool, limit: int) -> int:
     name that was widened to its other forms, the groups, how many more were
     left out, and the "only a hint" lines."""
     data = result.data
+    if data.get('unreadable'):
+        # Only the IDs: the names in the index may be ones since made private.
+        print(f"NOTE: left out {len(data['unreadable'])} record(s) that could not be read, "
+              f"so their names could not be checked: {', '.join(data['unreadable'])}. "
+              'Run `fha lint` to see what is wrong with them.', file=sys.stderr)
     if as_json:
         for m in result.messages:
             prefix = {'error': 'ERROR', 'warning': 'NOTE'}.get(m.level, 'NOTE')

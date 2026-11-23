@@ -2807,6 +2807,24 @@ class SoundsLikeTests(unittest.TestCase):
         finally:
             path.write_bytes(before)
 
+    def test_an_unreadable_record_is_left_out_and_named_by_id(self) -> None:
+        # Renamed, the old name made private, and the YAML broken by the
+        # same edit: the index's old name cannot be checked, so it is not shown.
+        path = self.root / 'people' / 'stubs' / 'hartly__ann_p-snd0000001.md'
+        before = path.read_bytes()
+        path.write_text(
+            '---\nid: p-snd0000001\nname: Ann Smith\nname_variants:\n'
+            '  - {value: Ann Hartly, restricted: true\n---\n\n# Ann Smith\n', encoding='utf-8')
+        try:
+            for argv in (['--sounds-like', 'Hartly'], ['--sounds-like', 'Hartly', '--json']):
+                rc, out, err = self._find(argv)
+                self.assertNotIn('Ann Hartly', out + err, argv)
+                self.assertNotIn('p-snd0000001', out, argv)
+                self.assertIn('p-snd0000001', err, argv)
+                self.assertIn('fha lint', err, argv)
+        finally:
+            path.write_bytes(before)
+
     def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Jovanović'])
         self.assertEqual(rc, EXIT_CLEAN, out)
