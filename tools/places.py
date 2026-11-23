@@ -194,6 +194,7 @@ from _lib import (
     yaml_inline,
     safe_load_yaml,
     shell_quote,
+    fha_launcher,
 )
 
 configure_utf8_stdout()
@@ -1830,7 +1831,7 @@ def run_geocode(
                     'candidates': [{
                         'describe': gaz.describe(g),
                         'coords': f'{_fmt_coord(g.lat)}, {_fmt_coord(g.lon)}',
-                        'command': (f'fha places set {pid_disp} --coords '
+                        'command': (f'{fha_launcher()} places set {pid_disp} --coords '
                                     + shell_quote(f'{_fmt_coord(g.lat)}, {_fmt_coord(g.lon)}')),
                     } for g in match.candidates[:shown]],
                 })
@@ -2110,7 +2111,7 @@ def _plural(n: int, word: str, many: str | None = None) -> str:
 
 def _confirm_place_commands(claim_ids: list[str], place_ids: list[str]) -> list[str]:
     ids = ' '.join(fmt_id_display(c) for c in claim_ids)
-    return [f'fha confirm place {ids} --into {pid}' for pid in place_ids]
+    return [f'{fha_launcher()} confirm place {ids} --into {pid}' for pid in place_ids]
 
 
 def _skipped_lines(skipped: list[dict]) -> list[str]:
@@ -2463,13 +2464,13 @@ def _register_review_lines(review: list[dict], planned_ids: dict[str, str]) -> l
                     where = f'{cand["where"]}; ' if cand['where'] else ''
                     review_lines.append(f'{head} may be {cand["name"]} ({where}'
                                         f'{cand["place_id"]}); it is not registered yet.')
-                    review_lines.append(f'    If it is the same place: fha confirm place {ids} '
+                    review_lines.append(f'    If it is the same place: {fha_launcher()} confirm place {ids} '
                                         f'--into {cand["place_id"]}')
                     if cand['lacks']:
                         review_lines.append(
                             f'      (its hierarchy has no {", ".join(cand["lacks"])}; adding '
                             'that, if it is the same place, lets text like this link by itself)')
-                review_lines.append(f'    If it is a different place: fha confirm place {ids} '
+                review_lines.append(f'    If it is a different place: {fha_launcher()} confirm place {ids} '
                                     f'--name={shell_quote(r["label"])}')
                 continue
             what = 'is close to' if r['near'] else 'fits'

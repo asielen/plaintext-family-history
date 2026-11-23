@@ -164,6 +164,7 @@ from _lib import (
     resolve_root_generation,
     root_generation_seed_position,
     shell_quote,
+    fha_launcher,
 )
 
 import cooccur
@@ -1102,7 +1103,7 @@ def _section_photo_triage(
         # does not exist.
         lines.append(
             f"- {c['path']}  score={c['score']:+d}  [{signals}] - "
-            f"suggested: fha process {shell_quote(c['path'])}"
+            f"suggested: {fha_launcher()} process {shell_quote(c['path'])}"
         )
     return lines
 
@@ -1220,7 +1221,7 @@ def _place_text_group_line(
         # resolving the clash itself either way.
         shown_ids = ambiguous_ids[:5]
         commands = '; '.join(
-            f'`fha confirm place {ids} --into={pid}`' for pid in shown_ids
+            f'`{fha_launcher()} confirm place {ids} --into={pid}`' for pid in shown_ids
         )
         if len(ambiguous_ids) > 5:
             commands += f', or one of {len(ambiguous_ids) - 5} more (see `fha places lint`)'
@@ -1232,7 +1233,7 @@ def _place_text_group_line(
         )
     return (
         f"{name} - {g['claim_count']} claim(s), {spread} - "
-        f'register with `fha confirm place {ids} --name={shell_quote(name)}`'
+        f'register with `{fha_launcher()} confirm place {ids} --name={shell_quote(name)}`'
     )
 
 

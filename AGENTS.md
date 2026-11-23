@@ -277,7 +277,7 @@ fha find --related <ID>      neighborhood of any ID: people/places/sources/claim
                             adjacent to a person, place, source, claim, or working answer
 fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
                             --kind/--limit narrow it
-fha relate <p-A> <p-B>       how two people are related: blood degree + shortest social path
+fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
