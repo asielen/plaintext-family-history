@@ -8,9 +8,11 @@ Answers two questions, both derived from accepted relationship claims and never
 stored (a layer-3 generated view, SPEC §3 / Part IV):
 
   Blood:  the genealogical relationship (second cousin once removed,
-          great-grandmother, brother, ...) found via the lowest common ancestor
-          over GENETIC parent edges only - adoptive / step / foster / guardian
-          parents are not counted into the blood answer (SPEC §12.2).
+          great-grandmother, half-brother, ...) found via the lowest common
+          ancestor over GENETIC parent edges only - adoptive / step / foster /
+          guardian parents are not counted into the blood answer (SPEC §12.2).
+          When a parent on the connecting line is unrecorded, a second line
+          says the tie may be half.
   Path:   the shortest readable chain between the two over ALL relationship edges
           (parent / child / spouse / sibling / friend / associate / neighbor),
           e.g. "your brother's friend's sister's father".
@@ -31,8 +33,9 @@ command around it:
     `claims` for each edge's nature): a GENETIC parent map for the blood
     answer, and an undirected adjacency (every parent/child/spouse/social
     edge, plus derived sibling edges from shared parents) for the path.
-  * `blood_answer` is the lowest common ancestor over the genetic map, named
-    by the classic generation/removal formula (`kinship_word`).
+  * `blood_answer` is the nearest blood route over the genetic map (one
+    common ancestor or a couple), named by generation and removal
+    (`kinship_word`), with its half state and, when half is open, a note.
   * `kinship_path` is a BFS over the adjacency, rendered hop by hop.
 """
 
@@ -81,7 +84,7 @@ configure_utf8_stdout()
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
-_REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'aliases')
+_REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'claim_persons', 'aliases')
 
 
 # ── Engine / interface ────────────────────────────────────────────────────────
@@ -207,6 +210,10 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
             print(f'Blood:  {data["a_name"]} is {data["b_name"]}\'s {rel}  ({label}: {anc})')
         else:
             print(f'Blood:  {data["a_name"]} is {data["b_name"]}\'s {rel}')
+        # With a parent unrecorded he hears, in the same breath, that the
+        # tie may be half, instead of a plain "sister" he would repeat.
+        if blood.get('note'):
+            print(f'        {blood["note"]}')
     else:
         print('Blood:  no blood relationship found in the recorded tree')
 

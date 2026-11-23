@@ -1037,10 +1037,10 @@ HTML views re-render the finished `.md` lines, so formats cannot drift. They are
 Either person may be a full name instead of an ID, resolved as `fha metrics` resolves one (§7a): exactly one person carrying it, or a refusal (exit `3`, as for a bad ID) listing everyone who shares it, or pointing to `fha find` when nobody does.
 
 Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `roles:`). Reports separately:
-- **Blood**: genetic edges only; lowest common ancestor(s); named by generation/removal (Nth cousin M-removed, great-…-grandparent).
+- **Blood**: genetic edges only. Common ancestors that are not themselves ancestors of another common ancestor, grouped into routes (one ancestor, or a couple who share a child on both lines), nearest first. Named by generation and removal in everyday words (great-aunt, great-great-nephew, first cousin once removed, great-…-grandparent); a sex other than `M` or `F` takes both words ("aunt or uncle"). A route through one ancestor is *half* when the two connecting children's other parents are both recorded and differ, or an accepted `subtype: half` sibling claim names them; with an other parent unrecorded the answer keeps the full word and a second line says it may be half.
 - **Social path**: BFS over all edges, rendered as role hops ("your brother's friend's sister's father").
 
-Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
+Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b, half, half_relationship, note}, any: {path, rendered}}` (`half` is `true`, `false` or `null` for may be half; `note` is the may-be-half sentence or `null`); the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
 
 ## 7a. `fha metrics`: person completeness
 
