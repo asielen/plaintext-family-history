@@ -639,7 +639,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "0a9d2f10cf0f2a49084247fbce75badd60cd0bbc762b2f78bce04ad1ef051dd3",
+      "sha256": "5a89173dea1762bf60fad60e32263f06fc40d600088cd774706c7ab3cbdc9fd8",
       "spec_version": "2.27",
       "src": "design/styles.css"
     },
@@ -653,7 +653,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "bd2316fd9de1bd3fde3b78036e91c2c6474949d42f4ea5d1bcc450acd7558245",
+      "sha256": "ca2116dbc9222185ee20307728aaa91b594efb83eb23ed9fd92a913aea4e9b20",
       "spec_version": "2.27",
       "src": "docs/DESIGN.md"
     },
@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "a8698cafe15fe66cdd56b0320009bd854161b7ad6914024a92d769b93d1f862d",
+      "sha256": "03a7470a7b362e796578bdd69ba54515148b953182736317c2162c8c73592f6f",
       "spec_version": "2.27",
       "src": "tools/_lib.py"
     },
@@ -1129,7 +1129,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "c5e7c6455a264705e509ffef10abcf160cc2cef8ee6a675f1aa1e0f6f6d52311",
+      "sha256": "3157af413ad7505dc0e3e8fdcc3c44b10777258e2ef9266ec24817b1a0e19f9c",
       "spec_version": "2.27",
       "src": "tools/site.py"
     },
@@ -1220,7 +1220,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "e5c84af8f4c2c2050e1acc4aa03da36b2dde6d586a1f560264ece3f73f2dc758",
+      "sha256": "be781ad9e61e5bd5a9bbae26cf09e79f18a44fe686e8a14ca083cf60c23bbf8f",
       "spec_version": "2.27",
       "src": "tools/templates/person.html"
     },
@@ -1311,7 +1311,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "d12af70e1a3d94068bb5ede41df26e1d4f9d21a6f1c9f543a46cee428cb42f16",
+      "sha256": "8455e9dd85eedfb767429a6b3453b8d64fe83bfefc1e07c4a6ad3567fefc794e",
       "spec_version": "2.27",
       "src": "tools/templates/workbench/workbench.css"
     },
@@ -1417,7 +1417,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "24719f46341128998d6dc98a49cffab85a99fd4ae79036b6ca2b197f70eb7ef2",
+      "sha256": "fa24c13bcbc5d868eb13626f1d00baabca0e62186804b51a60b38965ffd3029e",
       "spec_version": "2.27"
     },
     {
@@ -1466,7 +1466,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "88eef88074229b4ed57696a247055c9036b57572c8b22edd8c1d71d4de67e1bd",
+      "sha256": "2f3acf084a4a60fa31427be350a88316341cc828758cb0c70075f8f14cbe8c2d",
       "spec_version": "2.27",
       "src": "TOOLING.md"
     },

@@ -70,6 +70,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 from collections import deque
 from html.parser import HTMLParser
 from collections.abc import Iterable
@@ -9943,6 +9944,301 @@ def record_collection_index(path: Path | None = None) -> dict:
 def record_collection_group(site: str, collection_id: str, index: dict | None = None):
     """(group id, title, year) for a site's collection, or None when unmapped."""
     return (index if index is not None else record_collection_index()).get((site, str(collection_id)))
+
+
+# ── search links for other genealogy websites (workbench person page) ───────
+# What the owner notices: a relative's page on `fha serve` lists "FamilySearch",
+# "Find a Grave", "Geneteka" and so on, each opening that website's own search
+# already filled in with what the archive knows, so he stops retyping a name,
+# years and parents into ten search forms. `research_search_links` only builds
+# the addresses; nothing is fetched, and the caller decides whose details may go
+# into them (the workbench keeps every living or restricted person out).
+#
+# Ported, rewritten in Python, from:
+#   * wikitree/wikitree-dynamic-tree, views/research/research.js and
+#     views/research/sites/{familysearch,ancestry,myheritage,findmypast,
+#     billiongraves,chroniclingamerica,newspapers,uknationalarchives}.js
+#     (commit 4ea9002), MIT, Copyright (c) 2022 Interesting.com Inc
+#   * rootsdev/gensearch (commit 1bc3cbd), which research.js is based on, MIT,
+#     Copyright (c) 2015 RootsDev
+#   * RobPavey/wikitree-sourcer, extension/site/fg/core/fg_uri_builder.mjs and
+#     extension/site/geneteka/core/geneteka_{build_search_url,search_menu_data}.mjs,
+#     MIT, Copyright (c) 2020 Robert M Pavey
+# Changes: Python instead of JavaScript; Ancestry's affiliate redirect removed
+# (the search address is returned itself); years are widened by two as
+# FamilySearch's builder does; Find a Grave uses its current search address.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions: The above copyright
+# notices and this permission notice shall be included in all copies or
+# substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+# WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+# TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+# FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+# THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+# The subject a search is built from. Every key is optional; a builder uses
+# what is there and leaves the rest out of the address.
+#   given, surname           first given name only, and the surname
+#   married_surname          a later surname (grave sites index women by it)
+#   birth_year, death_year   one year each, the centre of the claim's dates
+#   birth_place, death_place plain place text
+#   father_given, father_surname, mother_given, mother_surname (her birth
+#                            surname), spouse_given, spouse_surname,
+#                            marriage_year, marriage_place
+#   places                   every place text on the page, for Geneteka's
+#                            Polish province
+RESEARCH_SEARCH_FIELDS = (
+    'given', 'surname', 'married_surname', 'birth_year', 'birth_place',
+    'death_year', 'death_place', 'father_given', 'father_surname',
+    'mother_given', 'mother_surname', 'spouse_given', 'spouse_surname',
+    'marriage_year', 'marriage_place', 'places',
+)
+
+# Geneteka's provinces as WikiTree Sourcer lists them. A province is found by
+# its whole name in a place text (any case ending), so "zachodniopomorskie"
+# is never read as "pomorskie" or "dolnośląskie" as "śląskie".
+_GENETEKA_PROVINCES = (
+    ('01ds', 'dolnośląskie'), ('02kp', 'kujawsko-pomorskie'), ('03lb', 'lubelskie'),
+    ('04ls', 'lubuskie'), ('05ld', 'łódzkie'), ('06mp', 'małopolskie'),
+    ('07mz', 'mazowieckie'), ('71wa', 'Warszawa'), ('08op', 'opolskie'),
+    ('09pk', 'podkarpackie'), ('10pl', 'podlaskie'), ('11pm', 'pomorskie'),
+    ('12sl', 'śląskie'), ('13sk', 'świętokrzyskie'), ('14wm', 'warmińsko-mazurskie'),
+    ('15wp', 'wielkopolskie'), ('16zp', 'zachodniopomorskie'), ('21uk', 'Ukraina'),
+    ('22br', 'Białoruś'), ('23lt', 'Litwa'), ('25po', 'Pozostałe'),
+)
+
+
+def _rs_url(base: str, params: dict, sep: str = '?') -> str:
+    """`base` plus `params` encoded the way JavaScript's URLSearchParams does
+    (a space is `+`), in the dict's own order, empty values dropped."""
+    q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, '')})
+    return f'{base}{sep}{q}' if q else base
+
+
+def _rs_name(s: dict) -> str:
+    return ' '.join(w for w in (s.get('given'), s.get('surname')) if w)
+
+
+def _search_url_familysearch(s: dict) -> str:
+    p = {
+        'q.givenName': s.get('given'), 'q.surname': s.get('surname'),
+        'q.birthLikePlace': s.get('birth_place'), 'q.deathLikePlace': s.get('death_place'),
+        'q.fatherGivenName': s.get('father_given'), 'q.fatherSurname': s.get('father_surname'),
+        'q.motherGivenName': s.get('mother_given'), 'q.motherSurname': s.get('mother_surname'),
+        'q.spouseGivenName': s.get('spouse_given'), 'q.spouseSurname': s.get('spouse_surname'),
+        'q.marriageLikePlace': s.get('marriage_place'),
+    }
+    for key, field in (('birth', 'birth_year'), ('death', 'death_year'),
+                       ('marriage', 'marriage_year')):
+        year = s.get(field)
+        if year:
+            p[f'q.{key}LikeDate.from'], p[f'q.{key}LikeDate.to'] = year - 2, year + 2
+    return _rs_url('https://www.familysearch.org/search/record/results', p)
+
+
+def _search_url_ancestry(s: dict) -> str:
+    p = {
+        'rank': '1', 'gsfn': s.get('given'), 'gsln': s.get('surname'),
+        'msbpn__ftp': s.get('birth_place'), 'msdpn__ftp': s.get('death_place'),
+        'msfng0': s.get('father_given'), 'msfns0': s.get('father_surname'),
+        'msmng0': s.get('mother_given'), 'msmns0': s.get('mother_surname'),
+        'mssng0': s.get('spouse_given'), 'mssns0': s.get('spouse_surname'),
+        'msgpn__ftp': s.get('marriage_place'),
+        'msbdy': s.get('birth_year'), 'msddy': s.get('death_year'),
+        'msgdy': s.get('marriage_year'), 'gl': 'allgs',
+    }
+    return _rs_url('https://search.ancestry.com/cgi-bin/sse.dll', p)
+
+
+def _search_url_myheritage(s: dict) -> str:
+    """Built by hand as upstream does: MyHeritage reads `+` between the parts
+    of a value and `%2F3` for a space inside one."""
+    def fix(v) -> str:
+        return urllib.parse.quote(str(v), safe=' ').replace(' ', '%2F3')
+
+    def name(who: str) -> str:
+        """`who` is '' for the subject, else father, mother or spouse."""
+        given = s.get(f'{who}_given' if who else 'given')
+        surname = s.get(f'{who}_surname' if who else 'surname')
+        return ((f'+fn.{fix(given)}' if given else '')
+                + (f'+ln.{fix(surname)}' if surname else ''))
+
+    def event(kind: str, year, place) -> str:
+        body = (f'+ey.{year}' if year else '') + (f'+ep.{fix(place)}' if place else '')
+        return f'Event+et.{kind}{body}+epmo.similar' if body else ''
+
+    q = '?formId=master&formMode=1&action=query&catId=1'
+    if name(''):
+        q += '&qname=Name' + name('')
+    for param, ev in (
+            ('qevents-event1', event('birth', s.get('birth_year'), s.get('birth_place'))),
+            ('qevents-any%2F1event_1', event('death', s.get('death_year'), s.get('death_place'))),
+            ('qevents-any%2F1event_2', event('marriage', s.get('marriage_year'),
+                                             s.get('marriage_place')))):
+        if ev:
+            q += f'&{param}={ev}'
+    q += '&qevents=List'
+    for who, slot, rel in (('father', 'qrelative_relativeName', 'qrelatives-relative'),
+                           ('mother', 'qaddRelative_1_addRelativeName', 'qrelatives-addRelative_1'),
+                           ('spouse', 'qaddRelative_2_addRelativeName', 'qrelatives-addRelative_2')):
+        if name(who):
+            q += f'&{slot}=Name{name(who)}+lnmsrs.false&{rel}=Relative+rt.{who}+rn.*{slot}'
+    q += '&qrelatives=List'
+    return 'https://www.myheritage.com/research' + q
+
+
+def _search_url_findmypast(s: dict) -> str:
+    p = {'firstname': s.get('given'), 'lastname': s.get('surname')}
+    if s.get('birth_year'):
+        p['yearofbirth'], p['yearofbirth_offset'] = s['birth_year'], '2'
+    if s.get('death_year'):
+        p['yearofdeath'], p['yearofdeath_offset'] = s['death_year'], '2'
+    return _rs_url('https://www.findmypast.co.uk/search/results', p)
+
+
+def _search_url_findagrave(s: dict) -> str:
+    p = {'firstname': s.get('given'),
+         'lastname': s.get('married_surname') or s.get('surname')}
+    if s.get('birth_year'):
+        p['birthyear'], p['birthyearfilter'] = s['birth_year'], '2'
+    if s.get('death_year'):
+        p['deathyear'], p['deathyearfilter'] = s['death_year'], '2'
+    return _rs_url('https://www.findagrave.com/memorial/search', p)
+
+
+def _search_url_billiongraves(s: dict) -> str:
+    p = {'year_range': '2', 'lim': '0', 'action': 'search', 'exact': 'false',
+         'country': '0', 'state': '0', 'county': '0',
+         'given_names': s.get('given'),
+         'family_names': s.get('married_surname') or s.get('surname'),
+         'birth_year': s.get('birth_year'), 'death_year': s.get('death_year')}
+    return _rs_url('https://billiongraves.com/pages/search/index.php', p, '#')
+
+
+def _search_url_chroniclingamerica(s: dict) -> str:
+    """His lifetime: birth to death, or birth to ninety years on when no
+    death is on file (upstream searched only the birth year then, which can
+    never find a marriage notice or an obituary)."""
+    p = {'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': _rs_name(s)}
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        p['start_date'] = f'{birth}-01-01'
+    elif death:
+        p['start_date'] = f'{death - 90}-01-01'
+    if death or birth:
+        p['end_date'] = f'{death or birth + 90}-12-31'
+    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+
+
+def _search_url_newspapers(s: dict) -> str:
+    """Newspapers.com reads `keyword` and `date-start`/`date-end` (checked by
+    hand 2026-11-23; upstream's `query`/`year-start` now drop the years)."""
+    p = {'keyword': _rs_name(s)}
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        start, end = birth - 5, (death + 5 if death else birth + 90)
+    elif death:
+        start, end = death - 90, death + 5
+    else:
+        start = end = None
+    if start and end:
+        p['date-start'], p['date-end'] = start, end
+    return _rs_url('https://www.newspapers.com/search/results/', p)
+
+
+def _search_url_geneteka(s: dict) -> str | None:
+    """Geneteka cannot search without a province, so no province in any place
+    text means no link (never a guess)."""
+    text = ' '.join(str(x) for x in (s.get('places') or ()))
+    words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
+
+    def names(word: str, province: str) -> bool:
+        # The whole word, or the same word with a Polish case ending:
+        # "woj. podlaskiego", "w Warszawie" are "podlaskie", "Warszawa". Only
+        # the real endings, so the English "Ukrainian" is not "Ukraina".
+        stem = province[:-1]
+        if province.endswith('e'):          # podlaskie, podlaskiego, podlaskim
+            forms = (province, stem + 'ego', stem + 'm')
+        elif province.endswith('a'):        # Warszawa, Warszawy, Warszawie
+            forms = (province, stem + 'y', stem + 'ie', stem + 'e')
+        else:                               # Białoruś, Białorusi
+            forms = (province, province + 'i')
+        return word in forms
+
+    province = next((code for code, name in _GENETEKA_PROVINCES
+                     if any(names(w, fold_accents(name).lower()) for w in words)), None)
+    if not province:
+        return None
+    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
+         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
+    if s.get('birth_year'):
+        # The registration may fall in the year after the birth.
+        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
+    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+
+
+def _search_url_ukdiscovery(s: dict) -> str:
+    return _rs_url('https://discovery.nationalarchives.gov.uk/results/r', {'_q': _rs_name(s)})
+
+
+# Each URL shape is the upstream builder's own unless a builder says otherwise.
+# Opened by hand in Chrome on 2026-11-23 with Thomas Hartley (Geneteka with a
+# Polish name): FamilySearch, Ancestry, Find a Grave, BillionGraves, Chronicling
+# America, Newspapers.com, Geneteka and Discovery land on a search with the
+# fields filled; Findmypast runs the search, then asks him to sign in to see it.
+# MyHeritage could not be opened from the checking browser (it blocks automated
+# visits), so its shape is upstream's, unchecked. Sites change their search
+# addresses; a link that stops pre-filling still opens the site, which is the
+# graceful failure.
+RESEARCH_SITES: tuple = (
+    {'key': 'familysearch', 'label': 'FamilySearch', 'group': 'General',
+     'note': 'free, needs a free login to see records', 'build': _search_url_familysearch},
+    {'key': 'ancestry', 'label': 'Ancestry', 'group': 'General',
+     'note': 'subscription', 'build': _search_url_ancestry},
+    {'key': 'myheritage', 'label': 'MyHeritage', 'group': 'General',
+     'note': 'subscription; free to search', 'build': _search_url_myheritage},
+    {'key': 'findmypast', 'label': 'Findmypast (UK)', 'group': 'General',
+     'note': 'subscription; asks you to sign in to see results; strong for '
+             'England, Wales, Scotland, Ireland',
+     'build': _search_url_findmypast},
+    {'key': 'findagrave', 'label': 'Find a Grave', 'group': 'Graves',
+     'note': 'free', 'build': _search_url_findagrave},
+    {'key': 'billiongraves', 'label': 'BillionGraves', 'group': 'Graves',
+     'note': 'free', 'build': _search_url_billiongraves},
+    {'key': 'chroniclingamerica', 'label': 'Chronicling America', 'group': 'Newspapers',
+     'note': 'Library of Congress, free US newspapers to 1963',
+     'build': _search_url_chroniclingamerica},
+    {'key': 'newspapers', 'label': 'Newspapers.com', 'group': 'Newspapers',
+     'note': 'subscription', 'build': _search_url_newspapers},
+    {'key': 'geneteka', 'label': 'Geneteka (Poland)', 'group': 'Poland',
+     'note': 'free index of Polish parish records', 'build': _search_url_geneteka},
+    {'key': 'ukdiscovery', 'label': 'The National Archives (UK)', 'group': 'Archives',
+     'note': 'free catalogue; some records to buy', 'build': _search_url_ukdiscovery},
+)
+
+
+def research_search_links(subject: dict) -> list[dict]:
+    """The searches to offer for one person: `[{key, label, group, note, url}]`.
+
+    Pure: no files, no index, no network. A subject with neither a given name
+    nor a surname gets none. The subject carries only what the caller chose to
+    share, so a name-only dict gives name-only addresses."""
+    if not (subject.get('given') or subject.get('surname')):
+        return []
+    out = []
+    for site in RESEARCH_SITES:
+        url = site['build'](subject)
+        if url:
+            out.append({'key': site['key'], 'label': site['label'],
+                        'group': site['group'], 'note': site['note'], 'url': url})
+    return out
 
 
 def _site_data_age(data: dict) -> int | None:

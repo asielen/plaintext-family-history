@@ -367,3 +367,18 @@ Other limits:
 - **"Two siblings share a given name."** Reusing a dead child's name was normal.
 - **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
 - **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
+
+## 16. Search links on the workbench person page
+
+**The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
+
+**Why.** Opening a relative and wondering whether she is on FamilySearch or has a grave listed meant retyping her name, years and parents into each site. The archive's knowledge now goes into the search, not the other way round. A click is the only thing that sends anything to a website, and the server fetches nothing.
+
+**Sources.** The address shapes come from WikiTree's research tool and RootsDev's gensearch (MIT) and from WikiTree Sourcer's Find a Grave and Geneteka builders (MIT); the notices sit above the code in `_lib.py`.
+
+**Rejected.**
+
+- **Links on the shared site.** A relative's name and dates would go to third parties from a page meant for reading.
+- **A JavaScript port.** Two copies of every address, and none of it testable from Python.
+- **Affiliate links.** Ancestry's address is returned as the search itself, with no redirect through an affiliate network.
+- **Putting living relatives' names in a link.** A click would send a living person's name to a company that was never asked.
