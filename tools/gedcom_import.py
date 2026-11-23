@@ -2295,7 +2295,7 @@ def _name_shared(new: _Incoming, old: _PriorPerson) -> bool:
 
 def _number_doubt(new: _Incoming, old: _PriorPerson,
                   by_name: dict[tuple[str, ...], list[_PriorPerson]],
-                  kept: frozenset[str] = frozenset()) -> str:
+                  moved: frozenset[str] = frozenset()) -> str:
     """Why the person holding this record number may not be the same person,
     or '' when they certainly are.
 
@@ -2317,9 +2317,10 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
     if new.names & old.names:
         # Another earlier person of this name fits better when the births
         # here disagree and theirs does not, or when a birth is missing on one
-        # side here and their own number no longer holds them (an undated
-        # father whose number his dated son now carries; a cousin still at his
-        # own number is no rival). A dated newcomer needs their birth to agree.
+        # side here and their own number is now held by someone else (an
+        # undated father whose number his dated son now carries). A cousin
+        # still at his own number, one deleted from the tree, or one who never
+        # had a number is no rival. A dated newcomer needs their birth to agree.
         apart = _birth_differs(new, old)
         if apart or not _birth_fits(new, old):
             for key in sorted(new.names):
@@ -2329,11 +2330,12 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
                     if apart:
                         rival = not _birth_differs(new, other)
                     elif new.window is not None:
-                        rival = _birth_fits(new, other) and other.ident not in kept
+                        rival = _birth_fits(new, other) and other.ident in moved
                     else:
                         # Undated here: nothing can show which of the two he
-                        # is, so a namesake whose own number is gone is doubt.
-                        rival = other.ident not in kept
+                        # is, so a namesake whose number someone else now
+                        # holds is doubt.
+                        rival = other.ident in moved
                     if rival:
                         return (f'{was}, but another earlier person of this name '
                                 f'({_who(other)}) may be this one'
@@ -2379,18 +2381,19 @@ def _match_people(incoming: list[_Incoming],
     found: dict[str, tuple[_PriorPerson, str]] = {}
     doubts: dict[str, tuple[str, _PriorPerson]] = {}
     # Earlier people still at their own number, under a name they had.
-    # Kept means the birth agrees outright, or is missing on both sides: an
-    # undated newcomer at a dated person's number has not shown he is them.
-    kept = frozenset(
-        by_xref[n.xref].ident for n in incoming
-        if n.xref in by_xref and n.names & by_xref[n.xref].names
-        and not _sex_differs(n, by_xref[n.xref])
-        and (_birth_fits(n, by_xref[n.xref])
-             or (n.window is None and not by_xref[n.xref].windows)))
+    # Moved: earlier people whose number someone in this file holds without
+    # showing they are them (another name, another sex, or a birth that does
+    # not agree outright; missing on both sides counts as agreeing).
+    def stays(n: _Incoming, old: _PriorPerson) -> bool:
+        return bool(n.names & old.names) and not _sex_differs(n, old) and (
+            _birth_fits(n, old) or (n.window is None and not old.windows))
+
+    moved = frozenset(by_xref[n.xref].ident for n in incoming
+                      if n.xref in by_xref and not stays(n, by_xref[n.xref]))
     for new in incoming:
         old = by_xref.get(new.xref)
         if old is not None:
-            doubt = _number_doubt(new, old, by_name, kept)
+            doubt = _number_doubt(new, old, by_name, moved)
             if not doubt:
                 found[new.xref] = (old, 'record number')
                 continue
@@ -2456,7 +2459,8 @@ def _match_people(incoming: list[_Incoming],
         elif fit:
             shown = ', '.join(_who(old) for old in fit[:3])
             more = f', and {len(fit) - 3} more' if len(fit) > 3 else ''
-            why = ('more than one person in your archive fits this name and birth date'
+            why = ((f'more than one person in your archive fits this name'
+                    f'{" and birth date" if new.birth else ""}')
                    if len(fit) > 1 else
                    'more than one person in the newer file fits the same record')
             lead = f'{doubt}. Also, ' if doubt else ''

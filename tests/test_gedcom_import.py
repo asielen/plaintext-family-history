@@ -3288,6 +3288,36 @@ class ReimportMatchingTestCase(_ArchiveCase):
         self.assertNotIn('@I2@', plan.matches)
         self.assertEqual(plan.claims, [])
 
+    def test_an_undated_person_still_matches_when_a_namesake_is_deleted(self) -> None:
+        # He deletes the 1850 John Hartley from the tree (a duplicate). The
+        # undated John, unchanged at his own number, keeps his match.
+        first = self._tree('first.ged', [('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Miner'),
+                                         ('@I2@', 'John /Hartley/', 'M', '1850'),
+                                         ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', [('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Miner',
+                                          '1 RESI', '2 PLAC Fairview'),
+                                         ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertEqual(sorted(plan.matches), ['@I1@', '@I3@'])
+        self.assertEqual(plan.held, {})
+
+    def test_an_undated_father_beside_a_name_only_son_still_matches(self) -> None:
+        # On a new computer (no cache) the son, who has a name and nothing
+        # else, is known to no record. The father, unchanged, keeps his match.
+        people = [('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Miner', '1 FAMS @F1@'),
+                  ('@I2@', 'Rose /Hartley/', 'F', '1878', '1 FAMS @F1@'),
+                  ('@I3@', 'John /Hartley/', 'M', '', '1 FAMC @F1@')]
+        fam = ('0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@')
+        self.assertTrue(self._run(self._tree('first.ged', people, fam),
+                                  apply=True)[0].data['applied'])
+        shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        later = self._tree('later.ged', [people[0] + ('1 RESI', '2 PLAC Fairview')]
+                           + people[1:], fam)
+        plan = self._plan(later)
+        self.assertIn('@I1@', plan.matches)
+        self.assertTrue(any(c.claim_type == 'residence' for c in plan.claims))
+
     def test_a_cousin_of_the_same_name_given_a_birth_year_still_matches(self) -> None:
         # Two cousins named John Hartley, one born 1849, one undated. The
         # tree keeps every number and gives the undated one a year, 1850.
