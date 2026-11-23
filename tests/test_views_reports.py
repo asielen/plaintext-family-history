@@ -593,6 +593,26 @@ class FamilySheetReviewFixTests(_SheetBase):
         self.assertIn('Ada Hartley (adopted by Thomas Edward Hartley)', text)
         self.assertNotIn('Bella Birth', text)
 
+    def test_his_child_whose_other_parent_is_private_stays_on_his_sheet(self):
+        # Ada's mother is a private person on a separate record: Ada must not
+        # vanish from Thomas's report, and Margaret must not be implied.
+        ada = 'p-yyyyyyyyyy'
+        self.add_person(ada, 'Ada Hartley', 'F', 'false')
+        self.add_source('ada', 's-qqqqqqqqqq', 'Ada birth', 'Breton County Birth Register vol. 9.',
+                        _rel('c-parAda0000', ada, [T]))
+        self.add_source('adamom', 's-rrrrrrrrrr', 'Ada mother', 'A private letter.',
+                        _rel('c-momAda0000', ada, [CR]))
+        self.reindex()
+        text = self.sheet_text()
+        self.assertEqual(text.count('Ada Hartley'), 1)
+        self.assertIn('Ada Hartley (child of Thomas Edward Hartley)', text)
+        self.assertNotIn('Hidden Hartley', text)
+
+    def test_no_spouse_sheet_never_calls_her_a_wife(self):
+        text = self.sheet_text(pid=NEWSPOUSE)
+        self.assertNotIn('Wife:', text)
+        self.assertNotIn('Husband:', text)
+
     def test_parents_never_married_are_father_and_mother_not_husband_and_wife(self):
         jane, zeke = 'p-ssssssssss', 'p-tttttttttt'
         self.add_person(jane, 'Jane Doe', 'F', 'false')

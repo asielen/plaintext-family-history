@@ -5653,10 +5653,6 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
                     sources |= t['sources']
         return {'date': None, 'subtypes': subtypes, 'sources': sources}
 
-    def own_tie_genetic(c: str) -> bool:
-        own = [kids(subject).get(c), parents(c).get(subject)]
-        return any(is_genetic_parent_subtype(s) for t in own if t for s in t['subtypes'])             or not any(t and t['subtypes'] for t in own)
-
     out = []
     for c in candidates:
         if not is_child_of(subject, c):
@@ -5665,10 +5661,11 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
             out.append((c, tie_info(c, [subject, spouse])))
         elif not all_spouses or (first_sheet and not rp.other_parent_recorded(c, subject)):
             out.append((c, tie_info(c, [subject])))
-        elif first_sheet and not own_tie_genetic(c) and not (set(parents(c)) & set(all_spouses)):
-            # A child he adopted (or raised) alone, whose other parents share
-            # no sheet with him, would vanish from every sheet: keep her on his
-            # first one, marked as his alone so the spouse is not implied.
+        elif first_sheet and not (set(parents(c)) & set(all_spouses)):
+            # A child he adopted alone, or whose other parent is private,
+            # shares no sheet with any partner of his and would vanish from
+            # every sheet: keep her on his first one, marked as his alone so
+            # the spouse is not implied (the private parent is never named).
             info = tie_info(c, [subject])
             info['only'] = subject
             out.append((c, info))
@@ -5690,8 +5687,13 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
     for p in couple:
         # Two parents with no marriage on record are Father and Mother,
         # never Husband and Wife: the sheet must not state a marriage.
-        label = ({'M': 'Husband', 'F': 'Wife'}.get(rp.sex(p), 'Spouse') if married
-                 else {'M': 'Father', 'F': 'Mother'}.get(rp.sex(p), 'Parent'))
+        # With no spouse on record she is never called a wife either.
+        if married and spouse:
+            label = {'M': 'Husband', 'F': 'Wife'}.get(rp.sex(p), 'Spouse')
+        elif spouse or rp.ties(p, 'child') or rp.parented_by(p):
+            label = {'M': 'Father', 'F': 'Mother'}.get(rp.sex(p), 'Parent')
+        else:
+            label = 'Person'
         body += _report_person_block(rp, fn, tally, h2, label, p)
     if not spouse:
         body += [f'{h2} Spouse', '', 'No spouse is recorded.', '']
@@ -5718,11 +5720,13 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
         for n, (_key, name, c, info, birth) in enumerate(listed, 1):
             subtypes = info.get('subtypes') or []
             mark = ''
+            kind = None
             if subtypes and not any(is_genetic_parent_subtype(s) for s in subtypes):
                 kind = nonbirth_bracket_label(subtypes[0])
-                if kind and spouse and info.get('only'):
-                    kind = f'{kind} by {rp.name(info["only"])}'
-                mark = f' ({kind})' if kind else ''
+            if spouse and info.get('only'):
+                only = rp.name(info['only'])
+                kind = f'{kind} by {only}' if kind else f'child of {only}'
+            mark = f' ({kind})' if kind else ''
             born_cell = _fact_text(rp, fn, birth) if birth else ''
             death = _report_pick_vital(rp, c, 'death')
             died_cell = _fact_text(rp, fn, death, with_place=False) if death else ''
