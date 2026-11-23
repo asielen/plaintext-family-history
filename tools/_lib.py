@@ -6459,24 +6459,43 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
     A known birth date always wins: someone under 18 by any recorded birth
     is not an adult, even with a child of their own. No birth date and no
     child means "not known to be an adult". The answer reads `today` (the
-    build date), so a child who turns 18 changes it on the next rebuild."""
+    build date), so a child who turns 18 changes it on the next rebuild.
+
+    With no birth date at all, a baptism of theirs stands in for one (born
+    by then), as in the archive's other age rules. A date typed wrong
+    ("2010-02-30") is read by its year; one with no readable year still
+    counts as a birth on file, so it never falls through to the has-a-child
+    rule and is read as "not known to be an adult"."""
     try:
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
     except ValueError:                      # 29 February, in a year with no leap day
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
-    latest: list[str] = []
-    for r in conn.execute(
-            "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
-            "WHERE cp.person_id = ? AND c.type = 'birth' AND COALESCE(c.negated, 0) = 0",
-            (pid,)).fetchall():
-        if not (r[1] or '').strip():
-            continue
-        if not claim_is_own_vital(conn, pid, r[0], 'birth'):
-            continue
-        latest.append(edtf_bounds(r[1])[1])
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its year still bounds the birth; no year at all reads
+        # as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            m = re.match(r'\s*(\d{4})(?!\d)', value)
+            return f'{m.group(1)}-12-31' if m else '9999-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    latest = own_dates('birth')
     row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
     if row is not None and str(row[0] or '').strip():
-        latest.append(edtf_bounds(str(row[0]))[1])
+        latest.append(latest_day(str(row[0])))
+    if not latest:
+        latest = own_dates('baptism')
     if latest:
         return max(latest) <= cutoff.isoformat()
     return conn.execute(

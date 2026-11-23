@@ -8466,6 +8466,12 @@ class _SiteBuilder:
                         continue
                     if not self.linked and not self._has_public_claim(cur, other):
                         continue
+                    # A restricted or by-request ancestor is left out of the
+                    # home tree, and the search does not climb past them
+                    # either: opening the page on their parent would show
+                    # their line (review of PR #436, D16).
+                    if self._tree_card_kind(other) == 'omit':
+                        continue
                     seen.add(other)
                     level.append(other)
             for pid in sorted(level):

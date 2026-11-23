@@ -13,6 +13,7 @@ path under the private name `fha_site` (the same trick fha.py uses).
 
 import argparse
 import contextlib
+import datetime
 import hashlib
 import importlib.util
 import io
@@ -33,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests'))
 
+import _lib
 import chart_cases
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
@@ -6623,6 +6625,59 @@ class HomeTreePrivateCardTests(_Base):
         self.assertEqual(self._ped().count('tree-card-private'), 1)
         self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
 
+    def test_a_mistyped_birth_on_a_living_relative_does_not_stop_the_site(self):
+        # Review of PR #436: one impossible date typed into a living child's
+        # record ("2010-02-30") stopped the whole shared site from building.
+        # The year still says "a child", so the child stays out.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self.conn.execute("UPDATE persons SET birth = '2010-02-30' WHERE id = 'p-kaaaaaaaaa'")
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')   # has a child, but the year wins
+        self._home()
+        result = self._run(linked=False)
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
+
+    def test_a_birth_too_garbled_to_read_keeps_a_living_relative_out(self):
+        # A birth date with no readable year still says "a birth is on
+        # file": not read as "no birth, has a child, so an adult".
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
+        today = datetime.date(2026, 11, 22)
+        self.conn.execute("UPDATE persons SET birth = '1950-02-30' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = '2008-21' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = 'xx-30' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+
+    def test_a_teen_parent_known_only_by_a_baptism_is_left_out(self):
+        # Review of PR #436: the age test read birth records only, so a
+        # living 14-year-old with a child and only a 2012 baptism on file
+        # got a "Private" card. A baptism bounds the birth (born by then),
+        # the same fallback the archive's other age rules use.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self._seed_source('s-bp00000001', 'Baptism register', source_type='church')
+        self._seed_claim('c-bp00000001', 's-bp00000001', 'baptism', 'Robin was baptised',
+                         date_edtf='2012', persons=('p-kaaaaaaaaa',))
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
+        # A birth record, when there is one, decides over a late baptism.
+        self._seed_claim('c-bb00000001', 's-bp00000001', 'birth', 'Robin was born',
+                         date_edtf='1990', persons=('p-kaaaaaaaaa',))
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa',
+                                            datetime.date(2026, 11, 22)))
+
     def test_a_living_sibling_with_no_birth_and_no_children_is_left_out(self):
         self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
         self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
@@ -6657,6 +6712,30 @@ class HomeTreePrivateCardTests(_Base):
         self.assertEqual(ped.count('tree-card-private'), 1)     # the hub only
         self.assertNotIn('Calvin Hartley', ped)
         self.assertNotIn('Walter Hartley', ped)                 # not reached through him
+
+    def test_the_fallback_for_a_minor_root_does_not_climb_through_a_by_request_parent(self):
+        # Review of PR #436: when the home person is a child (left out), the
+        # chart starts at the nearest dead ancestor, and that search climbed
+        # through a by-request father to open the page on HIS father. The
+        # rule "the walk does not pass through them" holds here too.
+        self._person('p-aaaaaaaaaa', 'Robin Hartley', living='true', born='2015')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950',
+                     frontmatter_extra='restricted: by-request')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-g4aaaaaaaa', 'Walter Hartley', born='1900')
+        self._parent('p-faaaaaaaaa', 'p-g4aaaaaaaa')
+        # A living adult mother: the search passes her (her card is
+        # private), but not the by-request father.
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', born='1980', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1901')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertNotIn('Walter Hartley', ped)
+        self.assertNotIn('Calvin Hartley', ped)
+        self.assertIn('Frank Cole', ped)        # reached through the mother instead
 
     def test_a_living_minor_root_still_falls_back_to_an_ancestor(self):
         # Not known to be an adult: no hub card of their own, so the chart
