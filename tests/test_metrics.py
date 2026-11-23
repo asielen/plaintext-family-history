@@ -793,6 +793,45 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertEqual((c['expected'], c['missing']), ([1900, 1901], [1901]))
 
+    def test_a_record_later_in_the_census_year_does_not_move_him_back(self):
+        # Born in Kansas 1880, in Kansas 1899, in Toronto from 1 December
+        # 1900, died there 1905; the 1880 US and 1901 Canadian censuses on
+        # file. On the US census night (1 June 1900) he was last seen in
+        # Kansas, so the US 1900 is still missing: never "complete".
+        self.a.source('vital-record', [_birth(KID, '1880', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '1905',
+                                        'place': CA}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1899',
+                                 'place': US},
+                                {'type': 'residence', 'persons': [KID], 'date': '1900-12-01',
+                                 'place': CA}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1880',
+                                  'place': US},
+                                 {'type': 'census', 'persons': [KID], 'date': '1901',
+                                  'place': CA}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['missing'], c['state']), ([1900], 'partial'))
+
+    def test_a_record_in_the_census_year_moves_him_only_by_census_night(self):
+        # Born in Cork 1870, died in Kansas 1930, with one Kansas record in
+        # 1901. The Irish census night was 31 March 1901: a record dated on
+        # it moves him; one dated the day after, in August, or only "1901"
+        # cannot say he had left by then, so Ireland's 1901 stays asked.
+        for date, asked in (('1901-03-31', False), ('1901-04-01', True),
+                            ('1901-08-15', True), ('1901', True), ('1900-12-01', False)):
+            with self.subTest(date=date):
+                self.a.cleanup()
+                self.a = _Archive()
+                self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+                self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee'),
+                                               {'type': 'death', 'persons': [KID],
+                                                'date': '1930', 'place': US}])
+                self.a.source('other', [{'type': 'residence', 'persons': [KID],
+                                         'date': date, 'place': US}])
+                c = self.a.check(KID, 'census')
+                self.assertEqual(1901 in c['expected'], asked)
+                self.assertNotIn(1911, c['expected'])
+
     def test_a_census_placed_by_its_source_counts_after_a_move(self):
         # Born in Kansas 1850, in Toronto 1875, then an 1880 census whose
         # place is on the source (`places:`), not the claim; died 1890. The
