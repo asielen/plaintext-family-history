@@ -480,7 +480,13 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
              text-anchor: middle; dominant-baseline: middle; }
 .fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
              fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }
+/* The years under a fan name. Sized by the renderer like .fan-label, so no
+   font-size here. */
+.fan-years { font-family: var(--font-sans); fill: var(--muted);
+             text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
+/* A living adult in a shared site: a neutral cell reading "Private". */
+.fan-label-private { font-style: italic; fill: var(--muted); }
 
 /* 8. PEDIGREE — horizontal family chart: children (left) - subject + spouse(s)
    - parents - grandparents (right); ancestors step right (genealogical
@@ -568,6 +574,10 @@ a.fan-link, a.fan-link:hover { text-decoration: none; }
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 a.ped-name:hover { text-decoration: underline; }
 .ped-empty .ped-name { font-style: italic; color: var(--muted); }
+/* A living adult in a shared site: a card reading "Private", the same size as
+   the others so the chart keeps its shape. */
+.ped-node.tree-card-private { background: var(--surface-sunken); box-shadow: none; }
+.tree-card-private .ped-name { font-style: italic; color: var(--muted); }
 .ped-empty[data-wb-open] { cursor: pointer; }
 .ped-empty[data-wb-open]:hover { border-color: var(--accent); }
 .ped-empty[data-wb-open]:hover .ped-name { color: var(--accent); }

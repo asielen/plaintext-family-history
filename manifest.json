@@ -618,7 +618,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "fbc9afc32a60b79d977d16469675805d903d3bb435f8e60de747a8467020177e",
+      "sha256": "c4d05c0bc64df30050b6295bd6a6a19a7e106b75b418d2cfbb87bbf231bab47c",
       "spec_version": "2.19",
       "src": "design/styles.css"
     },
@@ -632,7 +632,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "bd2316fd9de1bd3fde3b78036e91c2c6474949d42f4ea5d1bcc450acd7558245",
+      "sha256": "890074628dee282a744c61d02de0e27d15dfcacb24006fa5c4af0801388ab9a1",
       "spec_version": "2.19",
       "src": "docs/DESIGN.md"
     },
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "277c0d0526c096358e874086da2c863357993e8fe7866fbcc64d171aa98938bb",
+      "sha256": "b469ad215e3ffe20232997c156774b8362d38aaa49117e9de6e81fd57a52abff",
       "spec_version": "2.19",
       "src": "tools/_lib.py"
     },
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "eebeb17e4dfe42818a284984faa4d0dca02a30ff04fe448714d097840fcf53c5",
+      "sha256": "d5a54dd7720476e0bfc15ffafb1b792d3c4aa02191f2a7f69e92495ebd090030",
       "spec_version": "2.19",
       "src": "tools/site.py"
     },
@@ -982,7 +982,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "e5c84af8f4c2c2050e1acc4aa03da36b2dde6d586a1f560264ece3f73f2dc758",
+      "sha256": "2dbfb59f697ae64921f667c06e7abdee179c2f9e92a465a42b6a21dd1075b26b",
       "spec_version": "2.19",
       "src": "tools/templates/person.html"
     },
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "c1ffa77082015413e8d16207903fff7437f758bcdf27b81600c5e9c2b9d8ca18",
+      "sha256": "e5205dcd6878e369da8c02ed4c2b6a194aa834d7c0837ab0be0237f0ad9bfd23",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
