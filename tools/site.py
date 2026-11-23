@@ -4343,10 +4343,17 @@ class _SiteBuilder:
             # only the people `_shown_claim_people` allows). A source with no
             # such accepted record, or naming a restricted person, keeps the
             # rule above: a living son's own birth certificate gets no page.
+            # Nor does a photograph naming a living person: its picture is of
+            # him, not a record that prints his name, and SPEC §21 withholds
+            # the photos naming him (the photo catalog's living-tag check
+            # fails open when there is no catalog, so it cannot stand guard).
             restricted_claim_ids = self.restricted_claims
             for row in self.conn.execute(
                     "SELECT id, source_id FROM claims "
                     "WHERE status = 'accepted' AND source_id IS NOT NULL"):
+                meta = self.source_meta.get(row['source_id'])
+                if meta is None or (meta['source_type'] or '').strip().lower() == 'photo':
+                    continue
                 if (self._claim_verdicts.get(row['id']) == CLAIM_UNWORDED
                         and normalize_id(str(row['id'])) not in restricted_claim_ids
                         and row['source_id'] not in self.restricted_person_sources):

@@ -396,6 +396,22 @@ class SharedSiteTests(_SiteBase):
             if rel != 'sources/s-8888888888.html':
                 self.assertNotIn('Pip', text, rel)
 
+    def test_a_photograph_naming_a_living_grandson_stays_home(self):
+        # A snapshot of Grandpa with his living grandson is a picture of the
+        # grandson, not a record printing his name: SPEC §21 withholds the
+        # photos naming him, kept claim or not, catalog or not.
+        self.seed()
+        self.source('s-9999999999', 'On the porch')
+        self.conn.execute("UPDATE sources SET source_type = 'photo' WHERE id = 's-9999999999'")
+        self.conn.execute('INSERT INTO source_files(source_id, path, role, is_primary) '
+                          "VALUES ('s-9999999999', 'photos/porch.jpg', 'front', 1)")
+        self.claim('c-9999999999', 's-9999999999', 'residence', '1958',
+                   [(CALVIN, 'subject'), (PIP, 'grandchild')], 'Calvin and Pip on the porch')
+        self.build()
+        self.assertFalse((self.out / 'sources' / 's-9999999999.html').exists())
+        self.assertNotIn('s-9999999999.html', self.page(f'persons/{CALVIN}.html'))
+        self.assertFalse((self.out / 'media' / 's-9999999999').exists())
+
     def test_a_living_sons_own_birth_certificate_still_gets_no_page(self):
         self.census()
         self.assertFalse((self.out / 'sources' / 's-4444444444.html').exists())
