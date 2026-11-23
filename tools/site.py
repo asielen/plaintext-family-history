@@ -3996,12 +3996,24 @@ def _search_fold_table() -> dict:
             'pairs': [list(p) for p in _SEARCH_FOLD_PAIRS]}
 
 
+# Apostrophes old records write, leave out, or space: O'Brien, OBrien, O Brien.
+_SEARCH_APOSTROPHES = ("'", '’', 'ʼ', '`')
+
+
 def _search_tokens(*texts) -> str:
     """The folded words of `texts`, each once, in first-seen order, joined
-    by spaces: the `t` field of one search entry."""
+    by spaces: the `t` field of one search entry.
+
+    A name with an apostrophe also gives its joined word, so a cousin who
+    types "OBrien" finds Mary O'Brien as surely as one who types "O'Brien"
+    ("o brien" already finds her through the two split words)."""
     out: list[str] = []
     for text in texts:
-        for tok in _search_fold(text):
+        text = str(text or '')
+        joined = text
+        for mark in _SEARCH_APOSTROPHES:
+            joined = joined.replace(mark, '')
+        for tok in _search_fold(text) + (_search_fold(joined) if joined != text else []):
             if tok not in out:
                 out.append(tok)
     return ' '.join(out)
@@ -9749,7 +9761,7 @@ class _SiteBuilder:
                         continue
                     if not self._has_public_claim(pid, r['other_id']):
                         continue
-                tokens = [t for t in _search_fold(spouse['surname']) if t not in own]
+                tokens = [t for t in _search_tokens(spouse['surname']).split() if t not in own]
                 if tokens:
                     found[spouse['id']] = {'t': ' '.join(tokens),
                                            'label': f'married {spouse["name"]}'}

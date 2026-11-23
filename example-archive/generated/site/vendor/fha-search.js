@@ -26,13 +26,22 @@
    * letters once, split on anything that is not a-z or 0-9. The same steps
    * as site.py's _search_fold. */
   function fold(text, table) {
+    return finish(plain(text, table), table);
+  }
+
+  /* The first steps of fold(): accents folded, lower case. */
+  function plain(text, table) {
     var chars = (table && table.chars) || {};
-    var pairs = (table && table.pairs) || [];
     var s = '';
     for (var ch of String(text == null ? '' : text)) {
       s += Object.prototype.hasOwnProperty.call(chars, ch) ? chars[ch] : ch;
     }
-    s = s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+    return s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  }
+
+  /* The rest of fold(): the pairs in order, doubled letters once, split. */
+  function finish(s, table) {
+    var pairs = (table && table.pairs) || [];
     for (var i = 0; i < pairs.length; i++) {
       s = s.split(pairs[i][0]).join(pairs[i][1]);
     }
@@ -40,29 +49,61 @@
     return s.split(/[^a-z0-9]+/).filter(Boolean);
   }
 
+  /* The query as a list of words, each a list of the folded forms that may
+   * start a word of an entry. The box searches as she types, so a word can
+   * stop partway through a spelling the fold rewrites: "Step" is on its way
+   * to "Stephen", shipped as "stefen". Such a word also tries each way of
+   * finishing that spelling ("Steph" -> "stef"), so it keeps finding the
+   * name while she types. These forms only add matches, never lose one. */
+  function queryWords(query, table) {
+    var pairs = (table && table.pairs) || [];
+    return plain(query, table).split(/[^a-z0-9]+/).filter(Boolean).map(function (raw) {
+      var forms = [];
+      var add = function (text) {
+        var f = finish(text, table);
+        if (f.length === 1 && forms.indexOf(f[0]) < 0) forms.push(f[0]);
+      };
+      add(raw);
+      pairs.forEach(function (pair) {
+        for (var n = 1; n < pair[0].length; n++) {
+          if (raw.slice(-n) === pair[0].slice(0, n)) add(raw + pair[0].slice(n));
+        }
+      });
+      return forms;
+    });
+  }
+
   function tokensOf(t) {
     return t ? t.split(' ') : [];
   }
 
-  /* How well one entry matches the query words: 3 for each word that is a
-   * whole word of the entry, 2 for each that starts one, 1 for each found
-   * only in a married surname. 0 when any word matches nothing. */
+  /* How well one entry matches the query words (from queryWords()): 3 for
+   * each word that is a whole word of the entry, 2 for each that starts
+   * one, 1 for each found only in a married surname. A word typed partway
+   * through a folded spelling counts as starting one. 0 when any word
+   * matches nothing. */
   function score(words, entry) {
     var own = tokensOf(entry.t);
     var total = 0;
     var married = null;
     for (var i = 0; i < words.length; i++) {
-      var w = words[i];
+      var forms = words[i];
       var best = 0;
       for (var j = 0; j < own.length && best < 3; j++) {
-        if (own[j] === w) best = 3;
-        else if (own[j].indexOf(w) === 0) best = 2;
+        for (var f = 0; f < forms.length && best < 3; f++) {
+          if (own[j].indexOf(forms[f]) !== 0) continue;
+          best = Math.max(best, f === 0 && own[j] === forms[0] ? 3 : 2);
+        }
       }
       if (!best && entry.m) {
         for (var k = 0; k < entry.m.length && !best; k++) {
           var mt = tokensOf(entry.m[k].t);
-          for (var n = 0; n < mt.length; n++) {
-            if (mt[n].indexOf(w) === 0) { best = 1; married = married || entry.m[k].label; break; }
+          for (var n = 0; n < mt.length && !best; n++) {
+            for (var g = 0; g < forms.length; g++) {
+              if (mt[n].indexOf(forms[g]) === 0) {
+                best = 1; married = married || entry.m[k].label; break;
+              }
+            }
           }
         }
       }
@@ -90,11 +131,18 @@
     return hits.map(function (h) { return h.entry; });
   }
 
+  /* Whether `query` is long enough to search: two letters or digits as
+   * typed, before the fold ("Yi" folds to one letter and still counts). */
+  function longEnough(query, table) {
+    return plain(query, table).replace(/[^a-z0-9]+/g, '').length >= MIN_LETTERS;
+  }
+
   /* {people, places, sources}: the matches for `query` in `data`
    * (window.FHA_SEARCH). Fewer than two letters finds nothing. */
   function search(data, query) {
-    var words = fold(query, data && data.fold);
-    if (words.join('').length < MIN_LETTERS) return { people: [], places: [], sources: [] };
+    var table = data && data.fold;
+    var words = queryWords(query, table);
+    if (!words.length || !longEnough(query, table)) return { people: [], places: [], sources: [] };
     return {
       people: rank(words, data.people, true),
       places: rank(words, data.places, false),
@@ -163,7 +211,7 @@
         'The list of names for this search is missing from this copy of the site.'));
       return;
     }
-    if (fold(query, data.fold).join('').length < MIN_LETTERS) return;
+    if (!longEnough(query, data.fold)) return;
     var found = search(data, query);
     var groups = [['People', found.people, 'people'], ['Places', found.places, 'places'],
                   ['Records', found.sources, 'sources']];

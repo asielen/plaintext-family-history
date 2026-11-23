@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -933,7 +933,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "fb05b16dbd77bffd306bf60b3af83157d894adf9f2932d13c723030e172eaf9c",
+      "sha256": "2555feb130950e7bce17a5f3b15bebee621f9448aa7783bb105de406308ef522",
       "spec_version": "2.22",
       "src": "tools/site.py"
     },
@@ -1045,7 +1045,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-search.js",
       "category": "operating",
-      "sha256": "70ebae72b2eadb23f12f92226ac068c963514e2ba6321bdcbb29be980ce7b9ac",
+      "sha256": "dead35aec0e9d715228858aa1bea7e71adba95525d0c29a5616862c6f94e673a",
       "spec_version": "2.22",
       "src": "tools/templates/vendor/fha-search.js"
     },
@@ -1263,7 +1263,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "7b91ef6a90e2f082ae97be2f5a7fff7ffd021855004451af78dc455837ade531",
+      "sha256": "7c1b5863363a1466b19ec69081fa38215a8949e853ec7189d2bb0b240cff939e",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },
@@ -1307,7 +1307,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "9adaba2c63d9ea197999983751d75e44a87e00df52a89ec659c8019e0716cb0e",
+      "sha256": "3960a6e79a82eadd41bcd9a2d4f16019b743d6c00ef20a1cfdbe9d3c8a01cae6",
       "spec_version": "2.22",
       "src": "archive-template/fha.yaml"
     },

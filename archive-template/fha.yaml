@@ -162,8 +162,11 @@
 # promotion:
 #   claims_threshold: 5    # default 5 when the key is absent
 
-# ── Family website extras (optional, both off unless you turn them on) ──
-#   `fha site` builds the family website. Two extra panels can be switched on:
+# ── Family website extras (optional) ──
+#   `fha site` builds the family website. Every page has a search box that
+#   finds people, places and records by name, even spelled differently; it
+#   lists only who the site already shows. It is on unless you set
+#   `search: false`. Two extra panels are off unless you switch them on:
 #     completeness_rings - each person's page shows a small ring of five
 #       parts (birth record, censuses, parents, marriage records, death or
 #       burial) with a list saying what is found and what is still missing.

@@ -545,6 +545,36 @@ class QueryTests(_Base):
         found = self.query('m')
         self.assertEqual((found['people'], found['places'], found['sources']), ([], [], []))
 
+    def test_a_name_typed_partway_through_a_folded_spelling_still_finds_him(self):
+        # The box searches as she types. "Step" is on its way to "Stephen",
+        # whose shipped word is "stefen": stopping after the p must not say
+        # "Nothing matches". Same for tsch (Deutsch) and ph (Raphael).
+        self.person(MARGARET, 'Stephen Cole', sex='M')
+        self.person(THOMAS, 'Hans Deutsch', sex='M')
+        self.person(JOSEFA, 'Raphael Hartley', sex='M')
+        self.build()
+        for typed, name in (('Step', 'Stephen Cole'), ('Deut', 'Hans Deutsch'),
+                            ('Deuts', 'Hans Deutsch'), ('Deutsc', 'Hans Deutsch'),
+                            ('Rap', 'Raphael Hartley'), ('step cole', 'Stephen Cole')):
+            with self.subTest(typed):
+                self.assertEqual([p['name'] for p in self.query(typed)['people']], [name])
+        # Completing the pair adds only names that carry it: "Cos" is not Cole.
+        self.assertEqual(self.query('Cos')['people'], [])
+
+    def test_a_name_joined_or_split_at_an_apostrophe_finds_her(self):
+        self.person(MARGARET, "Mary O'Brien")
+        self.build()
+        for typed in ('OBrien', "O'Brien", 'O Brien', 'brien', 'mary obr'):
+            with self.subTest(typed):
+                self.assertEqual([p['name'] for p in self.query(typed)['people']],
+                                 ["Mary O'Brien"])
+
+    def test_a_two_letter_name_that_folds_to_one_letter_is_found(self):
+        self.person(MARGARET, 'Soon Yi')
+        self.person(THOMAS, 'Ivan Cole', sex='M')
+        self.build()
+        self.assertEqual([p['name'] for p in self.query('Yi')['people']][0], 'Soon Yi')
+
     def test_a_whole_word_ranks_above_a_prefix(self):
         self.person(MARGARET, 'Ann Coleman')
         self.person(THOMAS, 'John Cole', sex='M')
