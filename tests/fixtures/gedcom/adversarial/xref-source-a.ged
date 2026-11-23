@@ -1,0 +1,13 @@
+0 HEAD
+1 SOUR AdversarialFixtureA
+1 GEDC
+2 VERS 5.5.5
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Aster /Fiction/
+1 FAMS @F1@
+1 _TEXT literal @I1@ and @I99@
+0 @F1@ FAM
+1 HUSB @I1@
+1 CHIL @I99@
+0 TRLR

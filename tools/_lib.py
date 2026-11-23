@@ -62,6 +62,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import urllib.parse
 import shlex
 import stat
 import subprocess
@@ -3229,6 +3230,23 @@ def db_mtime(db_path: Path) -> float | None:
         return db_path.stat().st_mtime
     except OSError:
         return None
+
+
+def sqlite_readonly_uri(db_path: str | Path) -> str:
+    """The `file:` URI that opens db_path read-only (`sqlite3.connect(uri, uri=True)`).
+
+    For him: an archive in a folder named "Family #2", or on a network share,
+    can still read its caches, and a read-only look never creates a file. The
+    path is percent-encoded (a raw '#' or '%' would cut the URI before
+    `mode=ro`, and sqlite would then create an empty file at the cut-off
+    path), and it is made absolute without `resolve()`, which would turn a
+    mapped network drive into a network-share path. A share path keeps its
+    leading `//` after an empty authority (`file:////server/share/...`),
+    the one form sqlite accepts for it."""
+    path = Path(db_path).absolute().as_posix()
+    if not path.startswith('/'):
+        path = '/' + path                      # D:/x -> /D:/x
+    return 'file://' + urllib.parse.quote(path, safe='/:$') + '?mode=ro'
 
 
 def probe_sqlite(db_path: str | Path, probe_sql: str) -> bool:
