@@ -2305,9 +2305,15 @@ def _fold_fm_list(text: str, key: str, rendered_items: list[str],
                 insert_at -= 1
             lines[insert_at:insert_at] = [f'{item_indent}- {item}' for item in rendered_items]
         else:
+            # A hand-typed `also_known_as: Ned` is one name, not a list. Say
+            # the line to write rather than leave him guessing which entries
+            # "by hand" means: once it is a list, the merge runs as usual.
+            example = (f' ({key}: [{stripped}])'
+                       if re.fullmatch(r'[^\[\]{}#,&*!|>\'"%@`]+', stripped) else '')
             raise _EditRefused(
-                f'the {key}: value is not a list this tool can extend; add the '
-                'folded entries by hand'
+                f'the {key}: value is one entry, not a list this tool can '
+                f'extend. Write it as a list in square brackets{example} and '
+                'run the merge again'
             )
     return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
 
@@ -2761,6 +2767,25 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
         'counts': {'name_variants': 0, 'name_at_birth': 0, 'married_name': 0,
                    'also_known_as': 0},
     }
+    # A name the merged record marks private in any one field is private in
+    # all of them (`person_alias_mirror`). Each field is placed separately
+    # and a repeat is skipped, so a plain copy placed first would otherwise
+    # carry the name over with no marker. Every placed copy of such a name
+    # takes the marker its private entry has.
+    private_markers: dict[str, object] = {}
+    for _field, value, marker in person_other_name_entries(merged_meta):
+        key = strip_link_wrapper(value).strip().lower()
+        if marker not in (None, False, '', 'false') and key not in private_markers:
+            private_markers[key] = marker
+
+    def with_marker(item):
+        """`item`, as a `{value:, restricted:}` mapping when the merged
+        record marks its name private anywhere and this copy is plain."""
+        marker = private_markers.get(_name_key(item))
+        if marker is None or (isinstance(item, dict) and item.get('restricted')
+                              not in (None, False, '', 'false')):
+            return item
+        return {'value': _variant_value(item), 'restricted': marker}
 
     def place(item, field: str, origin: str = '', note: str = '') -> None:
         """Record one placed name: its count and its preview line,
@@ -2779,6 +2804,7 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
         for item in _name_items(merged_meta.get(field)):
             if not _name_key(item) or _name_key(item) in known:
                 continue
+            item = with_marker(item)
             if held is None:
                 plan['set'][field] = _render_scalar(item)
                 held = _variant_value(item)
@@ -2792,6 +2818,7 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
     for item in _name_items(merged_meta.get('also_known_as')):
         if not _name_key(item) or _name_key(item) in known:
             continue
+        item = with_marker(item)
         plan['also_known_as'].append(_render_scalar(item))
         place(item, 'also_known_as')
 
@@ -2800,6 +2827,7 @@ def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
     for item in candidates:
         if not _name_key(item) or _name_key(item) in known:
             continue
+        item = with_marker(item)
         plan['name_variants'].append(_render_scalar(item))
         place(item, 'name_variants')
     return plan

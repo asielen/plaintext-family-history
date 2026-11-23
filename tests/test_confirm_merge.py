@@ -57,7 +57,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import confirm
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, normalize_id, read_record
+from _lib import (EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, normalize_id, person_alias_mirror,
+                  person_restricted_names, read_record)
 
 EXAMPLE = ROOT / 'example-archive'
 
@@ -1313,6 +1314,45 @@ class MergeNameFieldTests(unittest.TestCase):
         self.assertEqual(len(moved), 1)
         self.assertEqual(str(moved[0]['restricted']), 'true')
         self.assertNotIn('tom quenby', {str(a).lower() for a in smeta['aliases']})
+
+    def test_a_name_private_in_one_field_stays_private_when_another_lists_it_plain(self) -> None:
+        # The merged record marks "Tommy Hartley" private in name_variants
+        # (the fixture) and also lists it as a plain nickname. On the merged
+        # record that keeps it private everywhere; the merge must not hand
+        # the survivor a plain copy that its aliases and exports read as
+        # public.
+        for field, line in (('also_known_as', 'also_known_as: [Tommy Hartley]'),
+                            ('name_at_birth', 'name_at_birth: Tommy Hartley'),
+                            ('married_name', 'married_name: Tommy Hartley')):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.merged_path, [line])
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertIn('tommy hartley', person_restricted_names(smeta))
+                self.assertNotIn('tommy hartley',
+                                 {str(a).lower() for a in smeta['aliases']})
+                self.assertNotIn('tommy hartley',
+                                 {v.lower() for v in person_alias_mirror(smeta)})
+                self.assertIn('Tommy Hartley (from p-bbbbbbbbbb, restricted)',
+                              self._infos(result))
+
+    def test_a_one_name_also_known_as_says_how_to_write_it_as_a_list(self) -> None:
+        # `also_known_as: Ned` typed by hand cannot be extended in place; the
+        # merge stops with nothing written and tells him the exact line to
+        # write so it can run.
+        self._edit(self.survivor_path, ['also_known_as: Ned'])
+        self._edit(self.merged_path, ['also_known_as: [Tad]'])
+        before = self.survivor_path.read_bytes()
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'refused')
+        errors = '\n'.join(m.text for m in result.messages)
+        self.assertIn('also_known_as: [Ned]', errors)
+        self.assertIn('run the merge again', errors)
+        self.assertEqual(self.survivor_path.read_bytes(), before)
+        self.assertTrue(self.merged_path.exists())
 
     # Aliases: a mirrored name is not a hand-typed stem -------------------------------
 
