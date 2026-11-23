@@ -33,7 +33,7 @@ Two rules follow from that:
 
 ## Set up your computer (one time)
 
-You install four things. After each one there's a "did it work?" check: a single command to run in a **terminal**. On Windows use **PowerShell**; on a Mac use the Terminal app. Type the command, press Enter, and compare what you see with what's described.
+You install four things. After each one there's a "did it work?" check: a single command to run in a **terminal**. On Windows use **PowerShell**: click Start, type `PowerShell` and press Enter. On a Mac use the Terminal app. Type the command, press Enter, and compare what you see with what's described.
 
 ### 1. Python (required)
 
@@ -58,7 +58,7 @@ The tools use a few small, free helper packages. Python's built-in installer (`p
 
 The project folder is your copy of Plaintext Family History: either a clone made with git, or the zip from the project's GitHub page (the green "Code" button, then "Download ZIP"), unzipped somewhere permanent such as your Documents folder. [`SETUP_FROM_ZIP.md`](SETUP_FROM_ZIP.md) walks through the zip.
 
-To open PowerShell in a folder on Windows, open the folder in File Explorer, click the address bar, type `powershell` and press Enter. (Or hold Shift, right-click the folder and choose "Open PowerShell window here"; on Windows 11 choose "Open in Terminal".) Command Prompt runs most commands too, but it can garble a name that has quotation marks or symbols in it, so use PowerShell. On a Mac, open Terminal, type `cd ` (with a space), drag the folder onto the window and press Enter.
+To open PowerShell in a folder on Windows, open the folder in File Explorer, click the address bar, type `powershell` and press Enter. (Or hold Shift, right-click an empty spot inside the folder and choose "Open PowerShell window here". On Windows 11, just right-click and choose "Open in Terminal".) Command Prompt runs most commands too, but it can garble a name that has quotation marks or symbols in it, so use PowerShell. On a Mac, open Terminal, type `cd ` (with a space), drag the folder onto the window and press Enter.
 
 In a terminal opened in the project folder (the one with `tools/` inside), run:
 

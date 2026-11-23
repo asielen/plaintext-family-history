@@ -24,7 +24,7 @@ The tools run on Python, which is free and is the only program you install. (A f
 1. Go to **<https://www.python.org/downloads/>** and click "Download Python."
 2. Run the installer. **On Windows, tick "Add Python to PATH"** before clicking Install.
 
-**Did it work?** Open a terminal (PowerShell on Windows, Terminal on Mac) and type:
+**Did it work?** Open a terminal and type the line below. On Windows that is PowerShell: click Start, type `PowerShell` and press Enter. On a Mac it is the Terminal app.
 
 ```
 python --version
@@ -38,7 +38,7 @@ A line like `Python 3.12.1` (3.10 or newer) means it worked. On a Mac you may ne
 
 Open a terminal **in your workshop folder**:
 
-- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `powershell` and press Enter. A PowerShell window opens in that folder. (Or hold Shift, right-click the folder and choose "Open PowerShell window here"; on Windows 11 choose "Open in Terminal".) Command Prompt runs most commands too, but it can garble a name that has quotation marks or symbols in it, so use PowerShell.
+- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `powershell` and press Enter. A PowerShell window opens in that folder. (Or hold Shift, right-click an empty spot inside the folder and choose "Open PowerShell window here". On Windows 11, just right-click and choose "Open in Terminal".) Command Prompt runs most commands too, but it can garble a name that has quotation marks or symbols in it, so use PowerShell.
 - **Mac:** in Terminal, type `cd ` (with a space), drag the unzipped folder onto the window and press Enter.
 
 Then run:
