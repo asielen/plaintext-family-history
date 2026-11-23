@@ -443,12 +443,13 @@ Same as `fha find --text "..."`.
 
 ## `fha relate`
 
-How are two people related? Blood degree + shortest social path.
+How are two people related? Blood degree, tie by marriage, shortest path.
 
 ```text
 Show how two people are related.
 
-  fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate P-A P-B          Blood degree, the tie by marriage (brother-in-law,
+                              stepmother) and the shortest social path
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON

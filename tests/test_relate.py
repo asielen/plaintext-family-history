@@ -75,6 +75,38 @@ def _half_siblings(cid: str, a: str, b: str) -> str:
     )
 
 
+def _married(cid: str, p1: str, p2: str, date: str | None = None) -> str:
+    """Two people married, with the year when the record gives one."""
+    when = f'  date: "{date}"\n' if date else ''
+    return (
+        f'- value: "{p1} married {p2}"\n'
+        f'  id: {cid}\n  type: marriage\n'
+        f'  persons: [{p1}, {p2}]\n  roles: {{spouse: [{p1}, {p2}]}}\n{when}'
+        f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+        f'  information: primary\n  evidence: direct\n  notes: x.\n'
+    )
+
+
+def _born(cid: str, child: str, date: str) -> str:
+    return (
+        f'- value: "{child} born {date}"\n'
+        f'  id: {cid}\n  type: birth\n'
+        f'  persons: [{child}]\n  roles: {{child: [{child}]}}\n  date: "{date}"\n'
+        f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+        f'  information: primary\n  evidence: direct\n  notes: x.\n'
+    )
+
+
+def _died(cid: str, pid: str, date: str) -> str:
+    return (
+        f'- value: "{pid} died {date}"\n'
+        f'  id: {cid}\n  type: death\n'
+        f'  persons: [{pid}]\n  roles: {{deceased: [{pid}]}}\n  date: "{date}"\n'
+        f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+        f'  information: primary\n  evidence: direct\n  notes: x.\n'
+    )
+
+
 def _write_archive(claims: str, sexes: dict[str, str], names: dict[str, str]) -> Path:
     """A temp archive holding these people and one source with these claims,
     indexed."""
@@ -112,16 +144,31 @@ R1 = 'P-zzzzzzzzzz'      # (M) child of GF only, nothing said about halves
 R2 = 'P-2222222222'      # (F) child of GF only
 RC1 = 'P-3333333333'     # (M) child of R1
 RC2 = 'P-4444444444'     # (F) child of R2: RC1 may be her half first cousin
+# Ties by marriage, in the same family (`_build_family`).
+AW = 'P-5555555555'      # (F) A's wife
+AWF = 'P-6666666666'     # (M) AW's father, and AWB's
+AWB = 'P-7777777777'     # (M) AW's brother: A's brother-in-law
+SH = 'P-8888888888'      # (M) SIB's husband: A's brother-in-law
+XW0 = 'P-9999999999'     # (F) XP's wife 1880, died 1885, before A was born (1900)
+XW3 = 'P-1111111111'     # (F) XP's wife, no dates recorded
+AD = 'P-a1a1a1a1a1'      # (F) XP's adopted daughter
+STEPKID = 'P-b1b1b1b1b1'  # (M) child of XW2 and EH, born 1905: A's stepbrother
+EH = 'P-c1c1c1c1c1'      # (M) XW2's earlier husband
 
 _FAMILY_SEX = {GF: 'M', GM: 'F', XP: 'M', YP: 'F', A: 'M', B: 'F', SIB: 'F',
                XW: 'F', XW2: 'F', HALF: 'M', MAYBE: 'F', YH: 'M', HP: 'M',
                PA: 'M', PB: 'F', Q1: 'M', Q2: 'F', QC1: 'M', QC2: 'F',
-               R1: 'M', R2: 'F', RC1: 'M', RC2: 'F'}
+               R1: 'M', R2: 'F', RC1: 'M', RC2: 'F',
+               AW: 'F', AWF: 'M', AWB: 'M', SH: 'M', XW0: 'F', XW3: 'F',
+               AD: 'F', STEPKID: 'M', EH: 'M'}
 _FAMILY_NAME = dict(_NAME, **{
     XW: 'Wren Aye', XW2: 'Willa Aye', HALF: 'Hal Aye', MAYBE: 'May Aye',
     YH: 'Hugh Bee', HP: 'Hap Pea', PA: 'Pat Pea', PB: 'Pam Pea',
     Q1: 'Quin Cue', Q2: 'Quilla Cue', QC1: 'Cal Cue', QC2: 'Cora Cue',
-    R1: 'Rory Are', R2: 'Rita Are', RC1: 'Ross Are', RC2: 'Rose Are'})
+    R1: 'Rory Are', R2: 'Rita Are', RC1: 'Ross Are', RC2: 'Rose Are',
+    AW: 'Wanda Aye', AWF: 'Walt Wells', AWB: 'Wes Wells', SH: 'Sam Hill',
+    XW0: 'Olive Aye', XW3: 'Thea Aye', AD: 'Ruth Aye', STEPKID: 'Stan Eby',
+    EH: 'Earl Eby'})
 
 
 def _build_family() -> Path:
@@ -145,6 +192,21 @@ def _build_family() -> Path:
         + _child_of('C-a00000000h', R2, [GF])
         + _child_of('C-a00000000j', RC1, [R1])
         + _child_of('C-a00000000k', RC2, [R2])
+        # Ties by marriage.
+        + _married('C-b000000001', A, AW)
+        + _child_of('C-b000000002', AW, [AWF])
+        + _child_of('C-b000000003', AWB, [AWF])
+        + _married('C-b000000004', SH, SIB)
+        + _married('C-b000000005', YH, YP)
+        + _born('C-b000000006', A, '1900')
+        + _died('C-b000000007', XW, '1910')
+        + _married('C-b000000008', XP, XW2, '1912')
+        + _married('C-b000000009', XP, XW0, '1880')
+        + _died('C-b00000000a', XW0, '1885')
+        + _married('C-b00000000b', XP, XW3)
+        + _child_of('C-b00000000c', AD, [XP], subtype='adoptive')
+        + _child_of('C-b00000000d', STEPKID, [XW2, EH])
+        + _born('C-b00000000e', STEPKID, '1905')
     )
     return _write_archive(claims, _FAMILY_SEX, _FAMILY_NAME)
 
@@ -248,8 +310,8 @@ class HalfSiblingTests(unittest.TestCase):
                          'Only one parent is recorded for at least one of them, '
                          "so Ann Aye may be May Aye's half-brother.")
         text = self._text(A, MAYBE)
-        self.assertIn("Blood:  Ann Aye is May Aye's brother  (common ancestor:", text)
-        self.assertIn("\n        Only one parent is recorded for at least one of them, "
+        self.assertIn("Blood:        Ann Aye is May Aye's brother  (common ancestor:", text)
+        self.assertIn("\n              Only one parent is recorded for at least one of them, "
                       "so Ann Aye may be May Aye's half-brother.\n", text)
 
     def test_half_sibling_claim_says_half_with_parents_unrecorded(self):
@@ -269,7 +331,7 @@ class HalfSiblingTests(unittest.TestCase):
         self.assertEqual(blood['relationship'], 'first cousin')
         self.assertIsNone(blood['half'])
         self.assertEqual(blood['half_relationship'], 'half first cousin')
-        self.assertIn("\n        A parent on the line that connects them isn't recorded, "
+        self.assertIn("\n              A parent on the line that connects them isn't recorded, "
                       "so Ross Are may be Rose Are's half first cousin.\n",
                       self._text(RC1, RC2))
 
@@ -296,7 +358,256 @@ class HalfSiblingTests(unittest.TestCase):
         self.assertEqual(blood['half_relationship'], 'half-uncle')
 
     def test_path_line_still_says_brother(self):
-        self.assertIn('Path:   your brother', self._text(MAYBE, A))
+        self.assertIn('Path:         your brother', self._text(MAYBE, A))
+
+
+
+class ByMarriageTests(unittest.TestCase):
+    """His wife's brother is "brother-in-law", his father's second wife is
+    "stepmother" (or, when the dates say she was married to his father only
+    before he was born, "father's earlier wife"), and his aunt's husband is
+    "uncle by marriage". A blood tie always wins over a tie by marriage."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _build_family()
+
+    def _run(self, a, b):
+        return relate.run_relate(self.root, load_fha_yaml(self.root), a, b)
+
+    def _bm(self, a, b):
+        return self._run(a, b).data['by_marriage']
+
+    def _text(self, a, b):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(self._run(a, b))
+        return out.getvalue()
+
+    def test_wifes_brother_is_brother_in_law(self):
+        bm = self._bm(AWB, A)
+        self.assertEqual(bm['relationship'], 'brother-in-law')
+        self.assertEqual(bm['kind'], 'in-law')
+        self.assertEqual(bm['explain'], "Ann Aye's wife's brother")
+        self.assertEqual(bm['via'], [AW.lower()])
+
+    def test_sisters_husband_is_brother_in_law(self):
+        bm = self._bm(SH, A)
+        self.assertEqual(bm['relationship'], 'brother-in-law')
+        self.assertEqual(bm['explain'], "Ann Aye's sister's husband")
+
+    def test_wifes_father_is_father_in_law(self):
+        self.assertEqual(self._bm(AWF, A)['relationship'], 'father-in-law')
+
+    def test_husband_is_son_in_law(self):
+        self.assertEqual(self._bm(A, AWF)['relationship'], 'son-in-law')
+
+    def test_aunts_husband_is_uncle_by_marriage(self):
+        bm = self._bm(YH, A)
+        self.assertEqual(bm['relationship'], 'uncle by marriage')
+        self.assertEqual(bm['kind'], 'by-marriage')
+        self.assertEqual(bm['explain'], "Ann Aye's aunt's husband")
+
+    def test_second_wife_married_after_birth_is_stepmother(self):
+        bm = self._bm(XW2, A)
+        self.assertEqual(bm['relationship'], 'stepmother')
+        self.assertEqual(bm['kind'], 'step')
+        self.assertIs(bm['certain'], True)
+        self.assertIsNone(bm['hedge'])
+        self.assertEqual(bm['explain'], "Ann Aye's father's wife")
+
+    def test_stepmother_the_other_way_is_stepson(self):
+        bm = self._bm(A, XW2)
+        self.assertEqual(bm['relationship'], 'stepson')
+        self.assertIs(bm['certain'], True)
+
+    def test_wife_who_died_before_birth_is_earlier_wife(self):
+        bm = self._bm(XW0, A)
+        self.assertEqual(bm['relationship'], "father's earlier wife")
+        self.assertNotIn('step', bm['relationship'])
+        self.assertIs(bm['certain'], True)
+        self.assertEqual(bm['explain'], 'married to Ex Parent before Ann Aye was born')
+
+    def test_undated_wife_is_hedged_stepmother(self):
+        bm = self._bm(XW3, A)
+        self.assertEqual(bm['relationship'], 'stepmother')
+        self.assertIs(bm['certain'], False)
+        self.assertEqual(
+            bm['hedge'],
+            "The marriage and birth dates that would settle this aren't all recorded, "
+            "so Thea Aye may instead have been Ex Parent's wife only before Ann Aye was born.")
+        text = self._text(XW3, A)
+        self.assertIn("\nBy marriage:  Thea Aye is Ann Aye's stepmother  "
+                      "(Ann Aye's father's wife)\n", text)
+        self.assertIn('\n              The marriage and birth dates', text)
+
+    def test_adoptive_edge_names_the_kind(self):
+        self.assertEqual(self._bm(XP, AD)['relationship'], 'adoptive father')
+        self.assertEqual(self._bm(XP, AD)['kind'], 'adoptive')
+        self.assertEqual(self._bm(AD, XP)['relationship'], 'adopted daughter')
+        self.assertEqual(self._bm(A, AD)['relationship'], 'adoptive brother')
+        self.assertEqual(self._bm(AD, A)['relationship'], 'adoptive sister')
+
+    def test_adoption_makes_no_blood_tie(self):
+        self.assertIsNone(self._run(XP, AD).data['blood'])
+        self.assertIsNone(self._run(A, AD).data['blood'])
+
+    def test_step_sibling(self):
+        bm = self._bm(STEPKID, A)
+        self.assertEqual(bm['relationship'], 'stepbrother')
+        self.assertEqual(bm['kind'], 'step')
+        self.assertIs(bm['certain'], True)
+        self.assertEqual(bm['explain'], "Ann Aye's father's wife's son")
+
+    def test_spouse(self):
+        bm = self._bm(AW, A)
+        self.assertEqual((bm['relationship'], bm['kind']), ('wife', 'spouse'))
+        self.assertIsNone(bm['explain'])
+
+    def test_blood_tie_suppresses_by_marriage(self):
+        r = self._run(A, B)
+        self.assertEqual(r.data['blood']['relationship'], 'first cousin')
+        self.assertIsNone(r.data['by_marriage'])
+        self.assertNotIn('By marriage:', self._text(A, B))
+
+    def test_father_is_never_his_mothers_husband_by_marriage(self):
+        # A parent is married to the other parent, but blood wins.
+        r = self._run(YH, B)
+        self.assertEqual(r.data['blood']['relationship'], 'father')
+        self.assertIsNone(r.data['by_marriage'])
+
+    def test_path_hop_names_adoptive_kind(self):
+        self.assertEqual(self._run(AD, XP).data['any']['rendered'], 'your adoptive father')
+        self.assertEqual(self._run(XP, AD).data['any']['rendered'], 'your adopted daughter')
+
+    def test_text_output_has_by_marriage_line(self):
+        text = self._text(AWB, A)
+        self.assertIn('Blood:        no blood relationship found in the recorded tree\n', text)
+        self.assertIn("By marriage:  Wes Wells is Ann Aye's brother-in-law  "
+                      "(Ann Aye's wife's brother)\n", text)
+        self.assertIn('Path:         your', text)
+
+    def test_names_cover_the_people_in_the_chain(self):
+        r = self._run(AWB, A)
+        self.assertEqual(r.data['names'][AW.lower()], 'Wanda Aye')
+
+    def test_json_round_trip(self):
+        import json
+        r = self._run(XW3, A)
+        back = json.loads(json.dumps(r.as_dict()))
+        self.assertEqual(back['data']['by_marriage']['relationship'], 'stepmother')
+
+
+class StepDatesTests(unittest.TestCase):
+    """A father's later wife is called the child's stepmother as fact only when
+    the dates show the marriage and the child's life overlapped. A birth
+    written as "before 1910" or "190X", a wife who died months before the
+    birth in the same year, and a baby who died before his father remarried
+    must never come out as a certain "stepmother"."""
+
+    F, W, K = 'P-ffffffffff', 'P-wwwwwwwwww', 'P-kkkkkkkkkk'
+    SEXES = {F: 'M', W: 'F', K: 'M'}
+    NAMES = {F: 'Frank Ames', W: 'Wilma Ames', K: 'Baby Ames'}
+
+    def _bm(self, *claims, a=W, b=K):
+        body = _child_of('C-0000000001', self.K, [self.F]) + ''.join(claims)
+        root = _write_archive(body, self.SEXES, self.NAMES)
+        return relate.run_relate(root, load_fha_yaml(root), a, b).data['by_marriage']
+
+    def test_married_after_birth_child_alive_is_certain_stepmother(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', True))
+
+    def test_birth_before_a_year_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1905'),
+                      _born('C-0000000003', self.K, '[..1910]'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_decade_birth_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1905'),
+                      _born('C-0000000003', self.K, '190X'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_wife_dead_months_before_birth_same_year_is_earlier_wife(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '1903-01-15'),
+                      _born('C-0000000003', self.K, '1903-12-01'))
+        self.assertEqual(bm['relationship'], "father's earlier wife")
+        self.assertNotIn('step', bm['relationship'])
+
+    def test_decade_death_of_wife_is_not_proof_she_died_before_birth(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '190X'),
+                      _born('C-0000000003', self.K, '1904'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_child_dead_before_the_marriage_has_no_stepmother(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'))
+        self.assertEqual(bm['relationship'], "father's later wife")
+        self.assertEqual(bm['explain'], 'married to Frank Ames after Baby Ames died')
+        # And the other way: the baby is not her stepson.
+        back = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                        _born('C-0000000003', self.K, '1899'),
+                        _died('C-0000000004', self.K, '1900'), a=self.K, b=self.W)
+        self.assertNotIn('step', back['relationship'])
+
+    def test_child_death_decade_overlapping_marriage_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '190X'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+        self.assertIn('or only after Baby Ames died', bm['hedge'])
+
+    @staticmethod
+    def _undated(cid, ctype, pid):
+        """A second record of the event that gives no date (a birthplace
+        from a census, a death noted in a letter)."""
+        role = 'child' if ctype == 'birth' else 'deceased'
+        return (f'- value: "{pid} {ctype}, no date"\n'
+                f'  id: {cid}\n  type: {ctype}\n'
+                f'  persons: [{pid}]\n  roles: {{{role}: [{pid}]}}\n'
+                f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: low\n'
+                f'  information: secondary\n  evidence: direct\n  notes: x.\n')
+
+    def test_undated_second_death_record_keeps_the_dated_death(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'),
+                      self._undated('C-0000000005', 'death', self.K))
+        self.assertEqual(bm['relationship'], "father's later wife")
+
+    def test_undated_second_birth_record_keeps_the_dated_birth(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '1901-03-01'),
+                      _born('C-0000000003', self.K, '1905-06-01'),
+                      self._undated('C-0000000005', 'birth', self.K))
+        self.assertEqual((bm['relationship'], bm['certain']), ("father's earlier wife", True))
+
+    def test_spouse_tie_from_a_relationship_claim_reads_its_whole_date(self):
+        # The pair's first spouse row comes from a relationship claim dated
+        # "before 1920"; it proves nothing about when the marriage began.
+        spouses = (f'- value: "{self.F} and {self.W} were husband and wife"\n'
+                   f'  id: C-0000000001a\n  type: relationship\n  subtype: spouse\n'
+                   f'  persons: [{self.F}, {self.W}]\n'
+                   f'  roles: {{spouse: [{self.F}, {self.W}]}}\n  date: "[..1920]"\n'
+                   f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+                   f'  information: primary\n  evidence: direct\n  notes: x.\n')
+        bm = self._bm(spouses,
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'),
+                      _died('C-0000000007', self.W, '1925-05-01'))
+        self.assertNotEqual((bm['relationship'], bm['certain']), ('stepmother', True))
+
+    def test_child_alive_long_after_marriage_is_certain(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1960'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', True))
 
 
 class SocialPathTests(unittest.TestCase):

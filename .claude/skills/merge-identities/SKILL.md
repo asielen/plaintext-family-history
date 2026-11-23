@@ -32,7 +32,7 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    fha find --related <p-a>          # A's world: sources, vitals, co-occurring people, places, edges
    fha find --related <p-b>          # B's world
    fha cooccur                        # shared-source signal (do they keep appearing together?)
-   fha relate <p-a> <p-b>             # is there already a relationship path between them?
+   fha relate <p-a> <p-b>             # is there already a blood, marriage or social tie between them?
    fha find --sounds-like "<surname>"  # a third record, spelled differently, that belongs in the comparison?
    ```
    Read both records directly for their vitals, `name_variants`, and existing claims. A name that only sounds alike is a reason to look, never evidence for the merge.
