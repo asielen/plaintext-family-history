@@ -403,5 +403,132 @@ class FamilySheetHtmlTests(_SheetBase):
         self.assertEqual(list(folder.iterdir()), [])
 
 
+class FamilySheetReviewFixTests(_SheetBase):
+    """Review round 1 of the family sheet: what a relative reading the printout
+    would have been told wrongly, or not told at all."""
+
+    def add_source(self, name: str, sid: str, title: str, citation: str, claims: str) -> None:
+        (self.root / 'sources' / 'vital-record' / f'x_{name}.md').write_text(
+            _source(sid, title, citation, claims), encoding='utf-8')
+
+    def add_person(self, pid: str, name: str, sex: str, living: str) -> None:
+        (self.root / 'people' / 'stubs' / f'x__{pid}.md').write_text(
+            _person(pid, name, sex, living), encoding='utf-8')
+
+    def reindex(self) -> None:
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def line(self, text: str, start: str) -> str:
+        return next(ln for ln in text.splitlines() if ln.startswith(start))
+
+    def test_parent_years_keep_about_unconfirmed_and_ranges(self):
+        # His cousin must not read an exact year the records do not give.
+        self.add_source('annyears', 's-nnnnnnnnnn', 'Price vitals', 'Price family Bible.',
+                        _claim('c-birthTM000', 'birth', [TM], '1815~', roles=f'{{child: {TM}}}')
+                        + _claim('c-deathTM000', 'death', [TM], '1890?', roles=f'{{deceased: {TM}}}')
+                        + _claim('c-birthMM000', 'birth', [MM], '1818/1820', roles=f'{{child: {MM}}}'))
+        self.reindex()
+        text = self.sheet_text()
+        mother = self.line(text, 'Mother: Ann Price')
+        self.assertIn('about 1815', mother)
+        self.assertIn('1890 (unconfirmed)', mother)
+        self.assertNotIn('(1815-1890)', mother)
+        self.assertIn('1818 to 1820', self.line(text, 'Mother: Sarah Cole'))
+        self.assertIn('Father: John Hartley (1810-1881)', text)   # plain years stay short
+
+    def notes(self, text: str) -> dict[int, str]:
+        return {int(m.group(1)): m.group(2)
+                for m in re.finditer(r'^(\d+)\. (.*)$', text, re.M)}
+
+    def cited_titles(self, text: str, line: str) -> list[str]:
+        notes = self.notes(text)
+        nums = [int(n) for m in re.finditer(r'\[(\d+(?:, \d+)*)\]', line)
+                for n in m.group(1).split(', ')]
+        return [notes[n] for n in nums]
+
+    def test_parent_child_and_married_lines_cite_the_record_of_the_tie(self):
+        # A relative can look up where "Ann Price was his mother" comes from.
+        text = self.sheet_text()
+        mother = self.line(text, 'Mother: Ann Price')
+        self.assertTrue(any(t.startswith('Thomas parentage proof')
+                            for t in self.cited_titles(text, mother)), mother)
+        father = self.line(text, 'Father: John Hartley')
+        self.assertTrue(any(t.startswith('Thomas parentage proof')
+                            for t in self.cited_titles(text, father)), father)
+        row = self.line(text, '| 1 | John Hartley Junior')
+        name_cell = row.split('|')[2]
+        # The family Bible also names the living children, so it is the shared note.
+        self.assertEqual(self.cited_titles(text, name_cell),
+                         ['A record that is not included in this report '
+                          '(it names a living relative or is private).'], row)
+        married_cell = row.split('|')[5]
+        self.assertTrue(any(t.startswith('John junior marriage')
+                            for t in self.cited_titles(text, married_cell)), row)
+
+    def test_adoptive_parent_is_listed_after_the_birth_parents_and_labelled(self):
+        adp = 'p-rrrrrrrrrr'
+        self.add_person(adp, 'George Lowe', 'M', 'false')
+        self.add_source('adopt', 's-xxxxxxxxxx', 'Adoption decree', 'Breton County Orphans Court.',
+                        _claim('c-adopt00000', 'relationship', [T, adp], '',
+                               roles=f'{{child: {T}, parent: [{adp}]}}', subtype='adoptive'))
+        self.reindex()
+        text = self.sheet_text()
+        husband = text.split('## Wife:')[0]
+        self.assertIn('Father (adoptive): George Lowe', husband)
+        self.assertLess(husband.index('Father: John Hartley'), husband.index('George Lowe'))
+        # From the adoptive father's side, Thomas is his (adopted) child.
+        self.assertIn('Thomas Edward Hartley (adopted)', self.sheet_text(pid=adp))
+
+    def test_child_of_another_recorded_parent_is_not_put_under_this_couple(self):
+        # The sheet must not tell his cousin that Margaret was Zeke's mother.
+        jane, zeke, young = 'p-ssssssssss', 'p-tttttttttt', 'p-wwwwwwwwww'
+        self.add_person(jane, 'Jane Doe', 'F', 'false')
+        self.add_person(zeke, 'Zeke Hartley', 'M', 'false')
+        self.add_person(young, 'Young Hartley', 'M', 'false')
+        self.add_source('zeke', 's-pppppppppp', 'Zeke birth', 'Breton County Birth Register vol. 4.',
+                        _rel('c-parZ000000', zeke, [T, jane]))
+        self.add_source('young', 's-qqqqqqqqqq', 'Young birth', 'Breton County Birth Register vol. 5.',
+                        _rel('c-parY000000', young, [T]))
+        self.reindex()
+        text = self.sheet_text()
+        self.assertNotIn('Zeke Hartley', text)
+        self.assertIn('Young Hartley', text)   # no other parent recorded: still listed
+        # On Jane's own sheet (no spouse recorded) Zeke is her child.
+        self.assertIn('Zeke Hartley', self.sheet_text(pid=jane))
+
+    def break_file(self, pid: str) -> None:
+        path = self.root / 'people' / 'stubs' / f'x__{pid}.md'
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'tier: stub\n', 'tier: stub\nnotes: [unclosed\n'), encoding='utf-8')
+        self.reindex()
+
+    def test_unreadable_person_file_is_named_with_the_fix(self):
+        # Sarah's file has a typo; her line vanishing with no word would leave
+        # him wondering why Margaret's mother is missing.
+        self.break_file(MM)
+        result, out, err = self.run_sheet()
+        self.assertEqual(result.exit_code, EXIT_CLEAN, err)
+        self.assertIn(f'x__{MM}.md', err)
+        self.assertIn('fha index', err)
+
+    def test_unreadable_subject_file_is_not_called_private(self):
+        self.break_file(T)
+        result, out, err = self.run_sheet()
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertNotIn('is marked private', err)
+        self.assertIn(f'x__{T}.md', err)
+        self.assertIn('Nothing was written', err)
+        self.assertFalse((self.root / 'generated' / 'views').exists())
+
+    def test_living_refusal_reads_right_with_no_sex_recorded(self):
+        nosex = 'p-vvvvvvvvvv'
+        self.add_person(nosex, 'Pat Hartley', 'U', 'true')
+        self.reindex()
+        result, out, err = self.run_sheet(pid=nosex)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('If they have died', err)
+        self.assertNotIn('they has', err)
+
+
 if __name__ == '__main__':
     unittest.main()

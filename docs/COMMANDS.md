@@ -203,6 +203,9 @@ Build always-current summary pages from your records.
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
 visible not-for-publication banner); share through `fha site` instead.
+The family sheet is the exception: it is made to hand to relatives, so
+living relatives are counted but never named and private records are
+left out.
 
 These pages are generated and rebuildable; edit the records, not the pages.
 ```

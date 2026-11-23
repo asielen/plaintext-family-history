@@ -224,6 +224,7 @@ from _lib import (
     export_tie_ok,        # may a walk over the family use this tie (D16),
     person_restricted,    # asked to be left out (any `restricted:` value),
     person_withheld,      # living, unknown or restricted: not named in an export,
+    read_restriction_marker,  # why a record's privacy marker would not read,
     public_source_sql,    # the sources an export may use,
     merge_chain,
     merge_survivor,
@@ -5173,6 +5174,17 @@ class _ReportPrivacy:
         self._states: dict[str, str] = {}
         self._claims: dict[str, bool] = {}
         self._sources: dict[str, tuple[bool, bool]] = {}
+        # Files left out only because they would not read: a report names the
+        # ones it actually left something out for, with the fix, so a missing
+        # grandmother is never a silent mystery (or a subject "marked private").
+        bad = set(self.privacy.unreadable_persons)
+        self._unreadable_by_person: dict[str, set[str]] = {}
+        for r in self._rows.values():
+            if r['path'] in bad:
+                key = self.canon(r['id']) or normalize_id(str(r['id']))
+                self._unreadable_by_person.setdefault(key, set()).add(str(r['path']))
+        self._unreadable_sources = dict(self.privacy.unreadable_sources)
+        self.unreadable_hit: set[str] = set()
 
     def lookup(self, pid):
         return self._rows.get(normalize_id(str(pid or '')))
@@ -5195,6 +5207,7 @@ class _ReportPrivacy:
                 self._states[key] = _PERSON_LIVING
             elif person_restricted(row, self.privacy, self.lookup):
                 self._states[key] = _PERSON_RESTRICTED
+                self.unreadable_hit |= self.unreadable_paths(key)
             elif person_withheld(self.conn, row, self.privacy, self.lookup):
                 self._states[key] = _PERSON_LIVING
             else:
@@ -5213,6 +5226,27 @@ class _ReportPrivacy:
         row = self.lookup(pid)
         return str(row['sex'] or '') if row is not None else ''
 
+    def unreadable_paths(self, pid) -> set[str]:
+        """The person files that would not read and so made `pid` restricted
+        (their own, or one merged into the same survivor)."""
+        key = self.canon(pid) or normalize_id(str(pid or ''))
+        return set(self._unreadable_by_person.get(key, ()))
+
+    def unreadable_warnings(self) -> list[str]:
+        """One warning per file this report left something out for only
+        because it would not read, saying what is wrong and how to fix it."""
+        out = []
+        for path in sorted(self.unreadable_hit):
+            _value, trouble = read_restriction_marker(self.archive_root / path, missing_ok=True)
+            out.append(
+                f'WARNING: could not read {path} for its privacy marker'
+                + (f' ({trouble})' if trouble else '')
+                + ', so there is no way to tell whether it was marked private '
+                '(restricted:). Everything it touches was left out of this report. '
+                'Repair the file (`fha lint` points at what is wrong), run '
+                '`fha index`, then print the report again.')
+        return out
+
     def source_info(self, sid: str) -> tuple[bool, bool]:
         """`(public, citable)` for a source. Public: an export may use it and it
         names no restricted person. Citable: public, and it names no living or
@@ -5223,6 +5257,8 @@ class _ReportPrivacy:
                 f"SELECT {public_source_sql('s')} FROM sources s WHERE s.id = ?",
                 (sid,)).fetchone()
             public = (row is None or bool(row[0])) and sid not in self.privacy.restricted_sources
+            if sid in self._unreadable_sources:
+                self.unreadable_hit.add(str(self._unreadable_sources[sid]))
             ids = {r[0] for r in self.conn.execute(
                 'SELECT person_id FROM source_people WHERE source_id = ? '
                 'UNION SELECT cp.person_id FROM claim_persons cp '
@@ -5258,15 +5294,30 @@ class _ReportPrivacy:
         with no accepted claim behind it, is cut (`export_tie_ok`)."""
         out: dict[str, dict] = {}
         for r in self.conn.execute(
-                'SELECT r.person_id, r.other_id, r.claim_id, r.date_start, c.subtype '
+                'SELECT r.person_id, r.other_id, r.claim_id, r.date_start, c.subtype, c.source_id '
                 'FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id '
                 'WHERE r.person_id = ? AND r.rel = ?', (pid, rel)):
             if not export_tie_ok(self.conn, r, self.privacy, self.lookup, unclaimed_ok=False):
+                # Asking each person on the cut tie notes any file that cut
+                # it only because it would not read (the run warns about it).
+                for who in (r['person_id'], r['other_id']):
+                    self.state(who)
+                if r['claim_id']:
+                    for cp in self.conn.execute(
+                            'SELECT person_id FROM claim_persons WHERE claim_id = ?',
+                            (r['claim_id'],)):
+                        self.state(cp[0])
+                    if r['source_id']:
+                        self.source_info(r['source_id'])
                 continue
             other = self.canon(r['other_id'])
             if other is None or other == pid:
                 continue
-            info = out.setdefault(other, {'date': None, 'subtypes': []})
+            # `sources`: the records the tie rests on, cited beside it so a
+            # relative can look up where "his mother was Ann Price" comes from.
+            info = out.setdefault(other, {'date': None, 'subtypes': [], 'sources': set()})
+            if r['source_id']:
+                info['sources'].add(r['source_id'])
             start = r['date_start'] or None
             if start and (info['date'] is None or start < info['date']):
                 info['date'] = start
@@ -5285,6 +5336,20 @@ class _ReportPrivacy:
             if child and child != pid:
                 found.append(child)
         return found
+
+    def other_parent_recorded(self, child: str, parent: str) -> bool:
+        """Whether the records name any parent of `child` besides `parent`,
+        private or not. A child with another recorded parent is not that
+        parent's child with a different spouse, so must not be printed under
+        a couple it does not belong to."""
+        for r in self.conn.execute(
+                "SELECT other_id FROM relationships WHERE person_id = ? AND rel = 'parent' "
+                "UNION SELECT person_id FROM relationships WHERE other_id = ? AND rel = 'child'",
+                (child, child)):
+            other = self.canon(r[0]) or normalize_id(str(r[0] or ''))
+            if other and other != parent:
+                return True
+        return False
 
 
 class _Footnotes:
@@ -5371,9 +5436,24 @@ def _living_count_phrase(n: int, noun_one: str, noun_many: str) -> str:
     return f'and {n} living {noun_one if n == 1 else noun_many} (not named)'
 
 
+_PLAIN_DATE_RE = re.compile(r'^\d{4}(-\d{2}){0,2}$')
+
+
 def _claim_year(claim) -> str:
-    year = str(claim['date_edtf'] or claim['date_min'] or '')[:4]
-    return year if year.isdigit() else ''
+    """The year printed beside a parent's name: the bare year for a plain
+    date, the date in words when the record hedges it (`about 1815`,
+    `1818 to 1820`), so a relative never reads an exact year the records do
+    not give."""
+    edtf = str(claim['date_edtf'] or '').strip()
+    if _PLAIN_DATE_RE.match(edtf):
+        return edtf[:4]
+    return humanize_edtf(edtf) if edtf else ''
+
+
+def _cite_all(fn: '_Footnotes', sources) -> str:
+    """` [3, 5]` for the records a line rests on, or ''."""
+    notes = sorted({fn.cite(sid) for sid in sources if sid})
+    return f" [{', '.join(str(n) for n in notes)}]" if notes else ''
 
 
 class _SheetTally:
@@ -5398,32 +5478,44 @@ _SEX_ORDER = {'M': 0, 'F': 1}
 
 def _report_parent_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
                          pid: str) -> list[str]:
-    """`Father: John Hartley (1810-1881) [5, 6]` for each genetic parent. A
-    living parent is the shared label; a restricted one is left out."""
-    parents = [other for other, info in rp.ties(pid, 'parent').items()
-               if any(is_genetic_parent_subtype(s) for s in info['subtypes'])]
-    parents.sort(key=lambda p: (_SEX_ORDER.get(rp.sex(p), 2), p))
+    """`Father: John Hartley (1810-1881) [5, 6]` for each parent: birth
+    parents first, then an adoptive, step or other parent labelled so
+    (`Father (adoptive): ...`). Each line cites the record of the tie and of
+    the years. A living parent is the shared label; a restricted one is left
+    out."""
+    ties = rp.ties(pid, 'parent')
+
+    def genetic(p: str) -> bool:
+        return any(is_genetic_parent_subtype(s) for s in ties[p]['subtypes'])
+
+    parents = sorted(ties, key=lambda p: (not genetic(p), _SEX_ORDER.get(rp.sex(p), 2), p))
     lines = []
     for other in parents:
         state = tally.see(other)
         if state == _PERSON_RESTRICTED:
             continue
         label = {'M': 'Father', 'F': 'Mother'}.get(rp.sex(other), 'Parent')
+        if not genetic(other):
+            kind = next((s for s in ties[other]['subtypes'] if s), '')
+            label += f' ({kind})' if kind else ''
+        sources = set(ties[other]['sources'])
         if state == _PERSON_LIVING:
-            lines.append(f'{label}: {_REPORT_LIVING_LABEL}')
+            lines.append(f'{label}: {_REPORT_LIVING_LABEL}{_cite_all(fn, sources)}')
             continue
         born = _report_pick_vital(rp, other, 'birth')
         died = _report_pick_vital(rp, other, 'death')
+        by, dy = (_claim_year(born) if born else ''), (_claim_year(died) if died else '')
         years = ''
-        if born and _claim_year(born) and died and _claim_year(died):
-            years = f' ({_claim_year(born)}-{_claim_year(died)})'
-        elif born and _claim_year(born):
-            years = f' (born {_claim_year(born)})'
-        elif died and _claim_year(died):
-            years = f' (died {_claim_year(died)})'
-        notes = sorted({fn.cite(c['source_id']) for c in (born, died) if c and _claim_year(c)})
-        tag = f" [{', '.join(str(n) for n in notes)}]" if notes else ''
-        lines.append(f'{label}: {rp.name(other)}{years}{tag}')
+        if by.isdigit() and dy.isdigit():
+            years = f' ({by}-{dy})'
+        elif by and dy:
+            years = f' (born {by}, died {dy})'
+        elif by:
+            years = f' (born {by})'
+        elif dy:
+            years = f' (died {dy})'
+        sources |= {c['source_id'] for c in (born, died) if c and _claim_year(c)}
+        lines.append(f'{label}: {rp.name(other)}{years}{_cite_all(fn, sources)}')
     return lines
 
 
@@ -5459,8 +5551,10 @@ def _report_marriage(rp: _ReportPrivacy, subject: str, spouse: str):
 def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
                      all_spouses: list[str], first_sheet: bool) -> list[tuple[str, dict]]:
     """The children this sheet lists, as `(child id, tie info)`: the couple's
-    own, plus (on the subject's first sheet only) children with no recorded
-    other parent among the subject's spouses, so none go missing."""
+    own, plus (on the subject's first sheet only) children with no other
+    parent recorded at all. A child whose other recorded parent is not this
+    spouse is left off rather than printed as this couple's child. With no
+    spouse on record, every child of the subject is listed."""
     children_of: dict[str, dict] = {}
     parents_of: dict[str, dict] = {}
 
@@ -5483,14 +5577,26 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
             candidates.setdefault(c, info)
     for c in rp.parented_by(subject):
         candidates.setdefault(c, {'date': None, 'subtypes': list(parents(c).get(subject, {}).get('subtypes', []))})
+    def tie_info(c: str, ps: list[str]) -> dict:
+        # The subject's own tie decides the (adopted) mark; every record of
+        # the tie, from either side and either parent, is cited.
+        own = [kids(subject).get(c), parents(c).get(subject)]
+        subtypes = [s for t in own if t for s in t['subtypes']]
+        sources: set[str] = set()
+        for p in ps:
+            for t in (kids(p).get(c), parents(c).get(p)):
+                if t:
+                    sources |= t['sources']
+        return {'date': None, 'subtypes': subtypes, 'sources': sources}
+
     out = []
-    for c, info in candidates.items():
+    for c in candidates:
         if not is_child_of(subject, c):
             continue
         if spouse and is_child_of(spouse, c):
-            out.append((c, info))
-        elif first_sheet and not any(is_child_of(sp, c) for sp in all_spouses):
-            out.append((c, info))
+            out.append((c, tie_info(c, [subject, spouse])))
+        elif not all_spouses or (first_sheet and not rp.other_parent_recorded(c, subject)):
+            out.append((c, tie_info(c, [subject])))
     return out
 
 
@@ -5540,9 +5646,12 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
             born_cell = _fact_text(rp, fn, birth) if birth else ''
             death = _report_pick_vital(rp, c, 'death')
             died_cell = _fact_text(rp, fn, death, with_place=False) if death else ''
-            married = [rp.name(sp) for sp in sorted(rp.ties(c, 'spouse'))
+            spouse_ties = rp.ties(c, 'spouse')
+            married = [rp.name(sp) + _cite_all(fn, spouse_ties[sp]['sources'])
+                       for sp in sorted(spouse_ties)
                        if tally.see(sp) != _PERSON_RESTRICTED]
-            cells = [name + mark, born_cell, died_cell, '; '.join(married)]
+            cells = [name + mark + _cite_all(fn, info.get('sources') or ()),
+                     born_cell, died_cell, '; '.join(married)]
             body.append(f'| {n} | ' + ' | '.join(x.replace('|', '/') for x in cells) + ' |')
         body.append('')
     if living_n:
@@ -5685,15 +5794,25 @@ def run_family_sheet(
         shown_id = fmt_id_display(pid)
         state = rp.state(pid)
         if state == _PERSON_RESTRICTED:
-            print(f'{shown_id} is marked private (restricted), so it is left out of '
-                  f'printed reports. Nothing was written.', file=sys.stderr)
+            unread = sorted(rp.unreadable_paths(pid))
+            if unread:
+                # A damaged file is not a request for privacy: say which file
+                # and the fix, never "marked private".
+                print(f'Could not read {", ".join(unread)} to check whether {shown_id} '
+                      f'asked to be kept private, so no report about them can be printed. '
+                      f'Nothing was written. Repair the file (`fha lint` points at '
+                      f'what is wrong), run `fha index`, then try again.', file=sys.stderr)
+            else:
+                print(f'{shown_id} is marked private (restricted), so it is left out of '
+                      f'printed reports. Nothing was written.', file=sys.stderr)
             return _views_result(EXIT_ERRORS)
         name = rp.lookup(pid)['name']
         if state == _PERSON_LIVING:
             they, them = _pronouns(rp.sex(pid))
+            has = 'have' if they == 'they' else 'has'
             print(f'{name} is recorded as living, or nobody has recorded yet whether '
                   f'{they} died, so a printed report about {them} would name a living '
-                  f'person. Choose a deceased ancestor instead. If {they} has died, '
+                  f'person. Choose a deceased ancestor instead. If {they} {has} died, '
                   f'record it first: fha person set-living {shown_id} false',
                   file=sys.stderr)
             return _views_result(EXIT_ERRORS)
@@ -5723,6 +5842,8 @@ def run_family_sheet(
         else:
             lines = built[0]
         out = _render_report(archive_root, 'family-sheet', pid, lines, fmt)
+        for warning in rp.unreadable_warnings():
+            print(warning, file=sys.stderr)
         rel = _rel_display(out, archive_root)
         if fmt == 'html':
             print(f'Wrote {rel}. Open it in a browser and print it, or choose Save as PDF '
@@ -5772,6 +5893,9 @@ Build always-current summary pages from your records.
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
 visible not-for-publication banner); share through `fha site` instead.
+The family sheet is the exception: it is made to hand to relatives, so
+living relatives are counted but never named and private records are
+left out.
 
 These pages are generated and rebuildable; edit the records, not the pages."""
 
