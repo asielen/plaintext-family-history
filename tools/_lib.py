@@ -19561,7 +19561,10 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     dated_countries = {key for _lo, _hi, key in dated_places}
 
     def counted_in(key: str, year: int) -> bool:
-        if key not in dated_countries or year in found_by.get(None, ()):
+        # A census on file in this country for this year is the record of
+        # that night itself, whatever day the enumerator wrote on it.
+        if (key not in dated_countries or year in found_by.get(None, ())
+                or year in found_by.get(key, ())):
             return True
         night = CENSUS_NIGHTS.get(key, {}).get(year)
         there = _census_night_countries(

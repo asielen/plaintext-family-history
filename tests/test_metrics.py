@@ -832,6 +832,19 @@ class CensusCheckTests(_Base):
                 self.assertEqual(1901 in c['expected'], asked)
                 self.assertNotIn(1911, c['expected'])
 
+    def test_a_census_dated_by_its_enumeration_day_still_counts(self):
+        # Born in Toronto 1895, in Toronto 1 March 1900, then a US census entry
+        # dated 15 June 1900 (the day the enumerator called, after the 1 June
+        # census night), died 1905: the filed US 1900 census counts.
+        self.a.source('vital-record', [_birth(KID, '1895', CA),
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1900-03-01',
+                                 'place': CA}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1900-06-15',
+                                  'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['expected'], c['found']), ([1900], [1900]))
+
     def test_a_census_placed_by_its_source_counts_after_a_move(self):
         # Born in Kansas 1850, in Toronto 1875, then an 1880 census whose
         # place is on the source (`places:`), not the claim; died 1890. The
