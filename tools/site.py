@@ -294,6 +294,7 @@ from _lib import (
     claim_people_verdict,
     claim_subjects,
     claim_role_pairs,
+    SOURCE_TYPES,
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
@@ -564,6 +565,13 @@ _ACCEPTED_OR_PARKED_SQL = f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})"
 # duplicate's old id is held to the living person it was merged into (#237),
 # the same as a photo tag is (#236).
 _NO_REDACTED_PERSON_SQL = "AND NOT fha_claim_withheld(c.id)"
+
+# The source types whose page a kept claim may bring back when the source
+# names a living person (`prepare`): records that print a name, such as a
+# census. Not `photo` or `artifact`, which picture the people they name
+# (SPEC §21 withholds the photos naming a living person), and not a type the
+# archive does not know, which cannot say it is a document.
+_REPUBLISHABLE_SOURCE_TYPES = SOURCE_TYPES - {'photo', 'artifact', 'dna'}
 
 # Ownership stamp written into the output dir after every successful build.
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
@@ -4359,12 +4367,16 @@ class _SiteBuilder:
             # him, not a record that prints his name, and SPEC §21 withholds
             # the photos naming him (the photo catalog's living-tag check
             # fails open when there is no catalog, so it cannot stand guard).
+            # An `artifact` (a framed print, an heirloom) is pictured the same
+            # way, and a type the archive does not know (`photograph`, a typo
+            # lint reports) cannot say it is a document, so neither comes back.
             restricted_claim_ids = self.restricted_claims
             for row in self.conn.execute(
                     "SELECT id, source_id FROM claims "
                     "WHERE status = 'accepted' AND source_id IS NOT NULL"):
                 meta = self.source_meta.get(row['source_id'])
-                if meta is None or (meta['source_type'] or '').strip().lower() == 'photo':
+                stype = (meta['source_type'] or '').strip().lower() if meta is not None else ''
+                if stype not in _REPUBLISHABLE_SOURCE_TYPES:
                     continue
                 if (self._claim_verdicts.get(row['id']) == CLAIM_UNWORDED
                         and normalize_id(str(row['id'])) not in restricted_claim_ids

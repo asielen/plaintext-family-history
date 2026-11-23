@@ -399,10 +399,20 @@ class SharedSiteTests(_SiteBase):
     def test_a_photograph_naming_a_living_grandson_stays_home(self):
         # A snapshot of Grandpa with his living grandson is a picture of the
         # grandson, not a record printing his name: SPEC §21 withholds the
-        # photos naming him, kept claim or not, catalog or not.
+        # photos naming him, kept claim or not, catalog or not. A framed
+        # print filed as an `artifact`, or a type lint does not know
+        # (`photograph`), is held back the same way.
+        for stype in ('photo', 'Photo', 'artifact', 'photograph'):
+            with self.subTest(stype=stype):
+                self.tearDown()
+                self.setUp()
+                self._photo_stays_home(stype)
+
+    def _photo_stays_home(self, stype):
         self.seed()
         self.source('s-9999999999', 'On the porch')
-        self.conn.execute("UPDATE sources SET source_type = 'photo' WHERE id = 's-9999999999'")
+        self.conn.execute("UPDATE sources SET source_type = ? WHERE id = 's-9999999999'",
+                          (stype,))
         self.conn.execute('INSERT INTO source_files(source_id, path, role, is_primary) '
                           "VALUES ('s-9999999999', 'photos/porch.jpg', 'front', 1)")
         self.claim('c-9999999999', 's-9999999999', 'residence', '1958',
