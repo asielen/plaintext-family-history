@@ -46,7 +46,6 @@ Nothing moves on its own; your archive has no background programs watching folde
 ```sh
 ./fha capture --ingest      # macOS / Linux
 .\fha capture --ingest      # Windows PowerShell
-fha capture --ingest        # Windows Command Prompt
 ```
 
 `fha` is the small launcher file sitting in your archive folder. Your computer does not know it by name, so type the one line your own terminal wants, and type it from inside the archive folder. (The [everyday commands sheet](../../docs/CHEATSHEET.md) has the same table.)
