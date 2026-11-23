@@ -292,7 +292,12 @@ from _lib import (
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
+    bracket_given_name,
     claim_is_own_vital,
+    edtf_bounds,
+    is_placeholder_name,
+    person_surname,
+    research_search_links,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -719,6 +724,17 @@ def _restricted_type(value) -> str | None:
     if value in (True, 'true'):
         return 'plain'
     return str(value).strip().lower() or 'plain'
+
+
+def _research_public_name(value) -> str:
+    """A name from a frontmatter field that may be plain text or a
+    `{value, restricted}` mapping; '' when it is empty or restricted (a
+    restricted name never goes into a search link)."""
+    if isinstance(value, dict):
+        if _is_restricted_value(value.get('restricted')):
+            return ''
+        value = value.get('value')
+    return str(value).strip() if value else ''
 
 
 # ── Prose / HTML ────────────────────────────────────────────────────────────
@@ -6139,6 +6155,7 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -6345,6 +6362,180 @@ class _SiteBuilder:
         """
         return claim_is_own_vital(
             self.conn, pid, claim_id, claim_type, self._vital_subjects)
+
+    # - searches on other websites (workbench only) -
+
+    def _research_meta(self, pid: str) -> dict | None:
+        """The person's frontmatter, or None when it cannot be read.
+
+        Reads through `_provisional_vital`'s record cache, so a person whose
+        file is read for several things on one page is parsed once."""
+        self._provisional_vital(pid, 'restricted')    # fills the cache
+        rec = self._provisional_record_cache.get(pid)
+        return rec['meta'] if rec else None
+
+    def _research_person_ok(self, pid: str, *, deceased_only: bool) -> bool:
+        """May this person's details go into a link to another website?
+
+        Never for a restricted or by-request person, and a record that cannot
+        be read counts as restricted (the same fail-closed rule the shared
+        site uses). With `deceased_only`, never for a living or unknown person
+        either: a relative's name goes into a search only when `living:` says
+        false."""
+        row = self.person_meta.get(pid)
+        meta = self._research_meta(pid)
+        if row is None or meta is None or row['merged_into']:
+            return False
+        if _is_restricted_value(meta.get('restricted')):
+            return False
+        return not deceased_only or (row['living'] or 'unknown') == 'false'
+
+    def _research_name(self, pid: str, *, birth_name: bool = False) -> tuple[str, str]:
+        """(first given name, surname) of a person for a search. For a woman
+        the surname her records name her at birth (`name_at_birth`) when she
+        has one, since that is what the records of her family use."""
+        row = self.person_meta[pid]
+        name = (row['name'] or '').strip()
+        if is_placeholder_name(name):
+            return '', ''
+        meta = self._research_meta(pid) or {}
+        surname = person_surname(name, row['surname']) or ''
+        if birth_name and isinstance(meta.get('name_at_birth'), str):
+            surname = person_surname(meta['name_at_birth']) or surname
+        given = bracket_given_name(name)
+        if ' ' in given:          # "Mrs. Doe": a title and a surname, no given name
+            given = ''
+        return given, surname
+
+    @staticmethod
+    def _research_year(date_min: str | None, date_max: str | None) -> int | None:
+        """The middle year of a claim's date range ("about 1840" is 1840)."""
+        try:
+            lo, hi = int(str(date_min)[:4]), int(str(date_max or date_min)[:4])
+        except ValueError:
+            return None
+        return (lo + hi) // 2
+
+    def _person_research_ctx(self, pid: str, name: str) -> dict:
+        """The page's "Look for ... on other websites" keys. Empty outside the
+        workbench: the shared site never carries a link to another website's
+        search, because a reader's page must not send a relative's name anywhere."""
+        subject = self._person_research_subject(pid) if self.workbench else None
+        if not subject:
+            return {'research_links': [], 'research_living': False, 'research_given': ''}
+        return {
+            'research_links': research_search_links(subject),
+            'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
+            'research_given': subject.get('given') or name,
+        }
+
+    def _person_research_subject(self, pid: str) -> dict | None:
+        """What a search on another website may say about this person, or None
+        when no search should be offered at all.
+
+        For the owner: the workbench page offers links to other genealogy
+        websites, and a click sends what is in the link to that website. So a
+        living or unknown person goes out as a name and nothing else (no years,
+        places or relatives), a restricted or by-request person is never
+        offered, and a parent or spouse is named only when `living:` says
+        false. The caller passes the result to `_lib.research_search_links`."""
+        row = self.person_meta.get(pid)
+        if row is None or not self._research_person_ok(pid, deceased_only=False):
+            return None
+        given, surname = self._research_name(pid)
+        if not (given or surname):
+            return None
+        subject: dict = {'given': given, 'surname': surname}
+        if (row['living'] or 'unknown') != 'false':
+            return subject                            # name only
+        meta = self._research_meta(pid) or {}
+        if _research_public_name(meta.get('married_name')):
+            subject['married_surname'] = person_surname(_research_public_name(meta['married_name'])) or ''
+
+        # Own vitals: the best accepted birth (else baptism) and death (else burial).
+        rows = [r for r in self.conn.execute(
+            "SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.place_id, c.place_text, "
+            "c.confidence FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "WHERE cp.person_id = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0 "
+            "AND c.type IN ('birth','death','marriage','baptism','burial') ORDER BY c.id",
+            (pid,)) if self._claim_is_own_vital(pid, r['id'], r['type'])]
+        best: dict[str, sqlite3.Row] = {}
+        for r in sorted(rows, key=vital_pick_key):
+            best.setdefault(r['type'], r)
+        places: list[str] = []
+        for kind, fallbacks in (('birth', ('birth', 'baptism')), ('death', ('death', 'burial'))):
+            claim = next((best[t] for t in fallbacks if t in best), None)
+            year = place = None
+            if claim is not None:
+                bounds = (claim['date_min'], claim['date_max'])
+                if not bounds[0] and claim['date_edtf']:
+                    bounds = edtf_bounds(claim['date_edtf'])
+                year = self._research_year(*bounds)
+                place = self._place_label(claim['place_text'], claim['place_id'])
+            else:                                     # the unsourced estimate on the record
+                est = self._provisional_vital(pid, kind)
+                if est:
+                    year = self._research_year(*edtf_bounds(est))
+                place = self._provisional_vital(pid, f'{kind}_place')
+            if year:
+                subject[f'{kind}_year'] = year
+            if place:
+                subject[f'{kind}_place'] = place
+                places.append(place)
+
+        # Parents (genetic first) and the first spouse, only when deceased.
+        parents = self.conn.execute(
+            "SELECT r.other_id, c.subtype FROM relationships r "
+            "LEFT JOIN claims c ON c.id = r.claim_id "
+            "WHERE r.person_id = ? AND r.rel = 'parent'", (pid,)).fetchall()
+        for p in sorted(parents, key=lambda x: (not is_genetic_parent_subtype(x['subtype']),
+                                                x['other_id'])):
+            prow = self.person_meta.get(p['other_id'])
+            if prow is None or not self._research_person_ok(p['other_id'], deceased_only=True):
+                continue
+            role = {'m': 'father', 'f': 'mother'}.get((prow['sex'] or '').strip().lower())
+            if role is None or f'{role}_given' in subject or f'{role}_surname' in subject:
+                continue
+            g, sn = self._research_name(p['other_id'], birth_name=(role == 'mother'))
+            if g:
+                subject[f'{role}_given'] = g
+            if sn:
+                subject[f'{role}_surname'] = sn
+        spouses = self.conn.execute(
+            "SELECT r.other_id, r.claim_id, c.type, c.date_min, c.date_max, c.place_id, "
+            "c.place_text FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+            "WHERE r.person_id = ? AND r.rel = 'spouse' "
+            "ORDER BY r.date_start IS NULL, r.date_start, r.other_id", (pid,)).fetchall()
+        for sp in spouses:
+            srow = self.person_meta.get(sp['other_id'])
+            if srow is None or not self._research_person_ok(sp['other_id'], deceased_only=True):
+                continue
+            g, sn = self._research_name(
+                sp['other_id'], birth_name=(srow['sex'] or '').strip().lower() == 'f')
+            if g:
+                subject['spouse_given'] = g
+            if sn:
+                subject['spouse_surname'] = sn
+            if sp['type'] == 'marriage':
+                year = self._research_year(sp['date_min'], sp['date_max'])
+                place = self._place_label(sp['place_text'], sp['place_id'])
+                if year:
+                    subject['marriage_year'] = year
+                if place:
+                    subject['marriage_place'] = place
+                    places.append(place)
+            break
+        # Every place the page's own accepted claims name, for Geneteka's province.
+        for r in self.conn.execute(
+                "SELECT DISTINCT c.place_id, c.place_text FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.status = 'accepted'", (pid,)):
+            label = self._place_label(r['place_text'], r['place_id'])
+            if label and label not in places:
+                places.append(label)
+        if places:
+            subject['places'] = places
+        return subject
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
