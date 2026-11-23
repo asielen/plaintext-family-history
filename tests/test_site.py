@@ -13,6 +13,7 @@ path under the private name `fha_site` (the same trick fha.py uses).
 
 import argparse
 import contextlib
+import datetime
 import hashlib
 import importlib.util
 import io
@@ -33,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(ROOT / 'tests'))
 
+import _lib
 import chart_cases
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
@@ -6218,6 +6220,11 @@ class HomePedigreeTests(_Base):
         # The configured hub is living; standalone must not open on a card
         # naming them - it substitutes the closest non-living ancestor on
         # their recorded line instead (their own parent here).
+        #
+        # D16/D20 (2026-11-22, build doc 13-1): this fallback now applies
+        # only to a hub NOT known to be an adult - this one has no birth
+        # date and no child. A living adult hub stays the hub as a
+        # "Private" card (HomeTreePrivateCardTests).
         self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
         self._seed_person('p-bbbbbbbbbb', 'Deceased Parent')
         self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb')
@@ -6230,6 +6237,10 @@ class HomePedigreeTests(_Base):
         self.assertIn("Deceased Parent&#39;s family", home)
 
     def test_redaction_safe_hub_skips_a_parent_tie_backed_only_by_a_restricted_source(self):
+        # D16 (2026-11-22) keeps this: a tie through a living person may
+        # place someone on the tree, but a restricted or by-request tie
+        # never does. Alice has no birth date or child, so she is not known
+        # to be an adult and the fallback walk still runs.
         # Blocker fix (PR #152): `_apex_ancestor` walked `parent` edges to
         # find a publishable substitute hub but never checked whether the
         # TIE crossed was itself public - unlike every other ancestor walk
@@ -6291,6 +6302,11 @@ class HomePedigreeTests(_Base):
         # "dropped outright, no placeholder" rule already applied to every
         # OTHER redacted person), so the fallback shows nothing beside the
         # blank card at all.
+        #
+        # D16/D20 (2026-11-22, build doc 13-1) narrows #152's rule to a hub
+        # that is left out: this owner has no birth date and no child, so is
+        # not known to be an adult. A living ADULT hub is now a "Private"
+        # card with the spouse beside it - see the next test.
         self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
         self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
         self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
@@ -6306,6 +6322,26 @@ class HomePedigreeTests(_Base):
         self.assertIn('No ancestor eligible to publish was found', home)
         self.assertIn('cannot be shown here without naming a living person', home)
         self.assertIn('cannot be shown here without naming a living person', home)
+
+    def test_an_adult_living_hub_is_a_private_card_with_the_family_row(self):
+        # D16/D20 (2026-11-22, build doc 13-1) replaces #152's "withhold the
+        # whole family row" for an adult hub: a private card names nobody,
+        # so a dead spouse beside it is shown in full. Same shape as the
+        # test above, plus a birth date that makes the owner an adult.
+        self._seed_person('p-aaaaaaaaaa', 'Living Owner', living='true')
+        self._seed_source('s-3333333333', 'Birth record', source_type='vital')
+        self._seed_claim('c-3333333333', 's-3333333333', 'birth', 'Owner was born',
+                         date_edtf='1950', persons=('p-aaaaaaaaaa',))
+        self._seed_person('p-bbbbbbbbbb', 'Deceased Spouse')
+        self._seed_rel('p-aaaaaaaaaa', 'spouse', 'p-bbbbbbbbbb')
+        self._seed_home()
+        self._run(linked=False)
+        home = self._read('index.html')
+        ped = self._pedigree_section(home)
+        self.assertNotIn('Living Owner', home)
+        self.assertIn('ped-self tree-card-private', ped)
+        self.assertIn('Deceased Spouse', ped)
+        self.assertNotIn('No ancestor eligible to publish was found', home)
 
     def test_linked_mode_still_shows_the_hub_family_row_with_no_eligible_ancestor(self):
         # The silence rule above is standalone-only: `--linked`/workbench
@@ -6380,6 +6416,552 @@ def _ped_link_row_collisions(svg):
                 continue                                   # shared endpoint - an intentional fork
             collisions.append(((a1, b1), (a2, b2)))
     return collisions
+
+
+class HomeTreePrivateCardTests(_Base):
+    """A relative opening the shared site sees the family tree start where
+    the archive is centred - usually the owner - with both sides of the
+    family behind him, instead of one ancestor's line picked by id. He and
+    his living adult relatives show as plain "Private" cards with nothing
+    on them; living children are left out entirely (owner decisions D16 and
+    D20, 2026-11-22; build doc 13-1).
+
+    The build date is pinned (`site._today`) so the 18-year line is fixed."""
+
+    TODAY = '2026-11-22'
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._n = 0
+
+    # - fixture helpers -
+
+    def _person(self, pid, name, *, living='false', born=None, sex='M',
+                frontmatter_extra='', born_status='accepted'):
+        self._seed_person(pid, name, living=living, sex=sex, surname=name.split()[-1],
+                          frontmatter_extra=frontmatter_extra)
+        if born:
+            self._n += 1
+            sid = f's-b{self._n:09d}'
+            self._seed_source(sid, f'Birth record {self._n}', source_type='vital')
+            self._seed_claim(f'c-b{self._n:09d}', sid, 'birth', f'{name} was born',
+                             date_edtf=born, persons=(pid,), status=born_status)
+
+    def _parent(self, child, parent):
+        self._seed_rel(child, 'parent', parent)
+        self._seed_rel(parent, 'child', child)
+
+    def _spouse(self, a, b):
+        self._seed_rel(a, 'spouse', b)
+        self._seed_rel(b, 'spouse', a)
+
+    def _home(self, root='P-aaaaaaaaaa'):
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: {root}\nsite: {{}}\n', encoding='utf-8')
+
+    def _ped(self, page=None):
+        page = page if page is not None else self._read('index.html')
+        m = re.search(r'<h2 id="pedigree">.*?(?=<h2 )', page, re.S)
+        self.assertIsNotNone(m, 'no home pedigree section found on the page')
+        return m.group(0)
+
+    def _all_output(self) -> str:
+        """Every text file the shared build wrote (HTML, JSON, the search
+        index, any script), joined - a scan target for a leaked id, name or
+        year. The copied library and stylesheet folders are skipped: they are
+        fixed files, never built from the archive, and a minified library is
+        full of four-digit numbers."""
+        out = []
+        for p in sorted(self.out_dir.rglob('*')):
+            if {'vendor', 'assets'} & set(p.relative_to(self.out_dir).parts[:1]):
+                continue
+            if p.is_file() and p.suffix.lower() in {'.html', '.json', '.js', '.txt', '.css', '.xml'}:
+                out.append(p.read_text(encoding='utf-8', errors='replace'))
+        return '\n'.join(out)
+
+    def _assert_nowhere(self, *needles):
+        text = self._all_output()
+        for n in needles:
+            self.assertNotIn(n, text, f'{n!r} appears in the shared site output')
+            self.assertNotIn(n.upper(), text, f'{n.upper()!r} appears in the shared site output')
+
+    def _grandparents(self, father, mother):
+        """Four dead grandparents above `father` (slots 4/5) and `mother`
+        (slots 6/7)."""
+        self._person('p-g4aaaaaaaa', 'Walter Hartley', born='1900')
+        self._person('p-g5aaaaaaaa', 'Ruth Hartley', born='1902', sex='F')
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1901')
+        self._person('p-g7aaaaaaaa', 'Ida Cole', born='1903', sex='F')
+        self._parent(father, 'p-g4aaaaaaaa')
+        self._parent(father, 'p-g5aaaaaaaa')
+        self._parent(mother, 'p-g6aaaaaaaa')
+        self._parent(mother, 'p-g7aaaaaaaa')
+
+    # - the hub stays the home person -
+
+    def test_living_adult_root_with_two_dead_parents_is_a_private_hub(self):
+        # Before: the hub became whichever dead parent had the lower id, so
+        # only that parent's line showed. Now both sides show.
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1960-05-01')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1930')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', born='1932', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._grandparents('p-faaaaaaaaa', 'p-maaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 1)
+        self.assertIn('ped-self tree-card-private', ped)
+        for name in ('Calvin Hartley', 'Ethel Cole', 'Walter Hartley', 'Ruth Hartley',
+                     'Frank Cole', 'Ida Cole'):
+            self.assertIn(name, ped)
+        self.assertIn('The family, tracing back through the generations', ped)
+        self.assertNotIn('Calvin Hartley&#39;s family', ped)
+        self._assert_nowhere('Alex Hartley', 'p-aaaaaaaaaa', '1960')
+
+    def test_living_adult_parents_are_private_cards_with_named_grandparents(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', living='true', born='1950')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='unknown', born='1952', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._grandparents('p-faaaaaaaaa', 'p-maaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 3)
+        self.assertEqual(ped.count('>Private<'), 3)
+        for name in ('Walter Hartley', 'Ruth Hartley', 'Frank Cole', 'Ida Cole'):
+            self.assertIn(name, ped)
+        # A private parent's slot (2 or 3) is not evidence of sex on the
+        # page, so neither line is tinted paternal/maternal.
+        self.assertNotIn('ped-branch-', ped)
+        self._assert_nowhere('Alex Hartley', 'Calvin Hartley', 'Ethel Cole',
+                             'p-aaaaaaaaaa', 'p-faaaaaaaaa', 'p-maaaaaaaaa', '1950', '1952', '1980')
+
+    def test_living_parent_with_no_birth_date_but_a_child_is_a_private_card(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', living='true')     # no birth recorded
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-g4aaaaaaaa', 'Walter Hartley', born='1900')
+        self._parent('p-faaaaaaaaa', 'p-g4aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 2)
+        self.assertIn('Walter Hartley', ped)
+        self._assert_nowhere('Calvin Hartley', 'p-faaaaaaaaa')
+
+    def test_a_private_card_has_no_link_title_dates_or_id(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-saaaaaaaaa', 'Dana Hartley', living='true', born='1981', sex='F')
+        self._spouse('p-aaaaaaaaaa', 'p-saaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        cards = re.findall(r'<div [^>]*tree-card-private[^>]*>.*?</div>', ped, re.S)
+        self.assertEqual(len(cards), 2)
+        for card in cards:
+            self.assertEqual(re.sub(r'<div [^>]*>', '', card, count=1),
+                             '<span class="ped-name">Private</span></div>')
+            self.assertNotIn('title=', card)
+            self.assertNotIn('data-', card)
+            self.assertNotIn('href', card)
+        self._assert_nowhere('Alex Hartley', 'Dana Hartley', 'p-aaaaaaaaaa', 'p-saaaaaaaaa')
+
+    # - who is left out -
+
+    def _adult_root_with_spouse(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-saaaaaaaaa', 'Dana Hartley', born='1979', sex='F')   # dead spouse
+        self._spouse('p-aaaaaaaaaa', 'p-saaaaaaaaa')
+
+    def test_a_living_child_under_18_leaves_no_card_and_no_gap(self):
+        self._adult_root_with_spouse()
+        self._home()
+        self._run(linked=False)
+        without_child = self._ped()
+        shutil.rmtree(self.out_dir)
+
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2016-03-01')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._parent('p-kaaaaaaaaa', 'p-saaaaaaaaa')
+        self._run(linked=False)
+        with_child = self._ped()
+        # Byte-identical chart: no card, no slot, no wider children column.
+        self.assertEqual(with_child, without_child)
+        self.assertIn('Dana Hartley', with_child)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', '2016')
+
+    def test_a_living_16_year_old_with_a_child_is_a_private_card(self):
+        # Owner decision (D20, read literally, 2026-11-22): a recorded child
+        # makes an adult, whatever a recorded birth says. The card names
+        # nobody and dates nothing; the dead parents behind it show.
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', born='1952', sex='F')
+        self._parent('p-kaaaaaaaaa', 'p-faaaaaaaaa')
+        self._parent('p-kaaaaaaaaa', 'p-maaaaaaaaa')
+        self._home('p-kaaaaaaaaa')
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 1)     # Robin, the hub
+        self.assertIn('Calvin Hartley', ped)
+        self.assertIn('Ethel Cole', ped)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', '2010',
+                             'Sky Hartley', 'p-zaaaaaaaaa')
+
+    def test_a_child_the_owner_kept_private_does_not_make_a_teen_a_private_card(self):
+        # Delta review of PR #436: a 16-year-old whose only child is linked
+        # by a restricted record, or is a by-request person, drew a "Private"
+        # card. A relative who knows their age could read from the card the
+        # very tie the owner withheld. Only a child link the site may show
+        # counts toward "adult".
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._seed_source('s-rr00000001', 'Private letter', source_type='letter', restricted=1)
+        self._seed_claim('c-rr00000001', 's-rr00000001', 'relationship', 'Robin is Sky\'s parent',
+                         persons=('p-kaaaaaaaaa', 'p-zaaaaaaaaa'))
+        self._seed_rel('p-zaaaaaaaaa', 'parent', 'p-kaaaaaaaaa', claim_id='c-rr00000001')
+        self._seed_rel('p-kaaaaaaaaa', 'child', 'p-zaaaaaaaaa', claim_id='c-rr00000001')
+        # An unrelated public record naming both (a shared address) must
+        # not vouch for the private parent-child tie: only the claim behind
+        # the child link itself counts.
+        self._seed_source('s-pu00000001', 'Town directory', source_type='directory')
+        self._seed_claim('c-pu00000001', 's-pu00000001', 'residence', 'Robin and Sky lived in Fairview',
+                         persons=('p-kaaaaaaaaa', 'p-zaaaaaaaaa'))
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'Sky Hartley', 'p-zaaaaaaaaa')
+
+    def test_a_by_request_child_does_not_make_a_teen_a_private_card(self):
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true',
+                     frontmatter_extra='restricted: by-request')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'Sky Hartley', 'p-zaaaaaaaaa')
+
+    def test_an_unreviewed_birth_claim_still_keeps_a_minor_out(self):
+        # The age test reads birth claims of any status: a suggested claim
+        # saying "born 2015" is enough to leave a child out, though it is
+        # never printed.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2015',
+                     born_status='suggested')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
+
+    def test_a_mistyped_birth_on_a_living_relative_does_not_stop_the_site(self):
+        # Review of PR #436: one impossible date typed into a living child's
+        # record ("2010-02-30") stopped the whole shared site from building.
+        # The year still says "a child", so the child stays out.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self.conn.execute("UPDATE persons SET birth = '2010-02-30' WHERE id = 'p-kaaaaaaaaa'")
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._home()
+        result = self._run(linked=False)
+        self.assertEqual(result['status'], 'ok', result)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
+
+    def test_a_birth_too_garbled_to_read_keeps_a_living_relative_out(self):
+        # A birth date with no readable year still says "a birth is on
+        # file": never read as an adult's.
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        today = datetime.date(2026, 11, 22)
+        self.conn.execute("UPDATE persons SET birth = '1950-02-30' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = '2008-21' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = 'xx-30' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A mistyped range is read by its LATEST year: born by 2010 could be 16.
+        self.conn.execute("UPDATE persons SET birth = '2005-02-30/2010' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = '1950-02-30/..' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+
+    def test_a_recent_baptism_does_not_hide_a_parent_and_her_ancestors(self):
+        # Delta review of PR #436: reading a baptism as a birth date made a
+        # living mother baptised as an adult convert in 2015 "not an adult",
+        # so her card and both her dead parents vanished. Under D20 a
+        # recorded child makes an adult; a baptism only bounds the birth from
+        # above, so an old one proves an adult and a recent one proves nothing.
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._seed_source('s-bp00000001', 'Baptism register', source_type='church')
+        self._seed_claim('c-bp00000001', 's-bp00000001', 'baptism', 'Ethel was baptised',
+                         date_edtf='2015', persons=('p-maaaaaaaaa',))
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1901')
+        self._person('p-g7aaaaaaaa', 'Ida Cole', born='1903', sex='F')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._parent('p-maaaaaaaaa', 'p-g7aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 2)     # the hub and Ethel
+        self.assertIn('Frank Cole', ped)
+        self.assertIn('Ida Cole', ped)
+        self._assert_nowhere('Ethel Cole', 'p-maaaaaaaaa')
+
+    def test_a_young_birth_left_on_a_merged_duplicate_still_keeps_a_minor_out(self):
+        # Codex on PR #436: `fha confirm merge` leaves the merged record's own
+        # `birth:` on that record. A duplicate saying "born 2015", merged into
+        # a survivor saying "born 1980", is still a recorded birth of the same
+        # person; the youngest decides, so no "Private" card.
+        today = datetime.date(2026, 11, 22)
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self.conn.execute("UPDATE persons SET birth = '1980' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self._person('p-kbaaaaaaaa', 'Robin Hartley', living='true')
+        self.conn.execute("UPDATE persons SET birth = '2015', status = 'merged', "
+                          "merged_into = 'p-kaaaaaaaaa' WHERE id = 'p-kbaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+
+    def test_a_half_finished_merge_still_keeps_a_minor_off_the_tree(self):
+        # Review of PR #436: a record with `merged_into:` but no `status:
+        # merged` (a merge left half done by hand, lint W140) keeps its own
+        # claims, so its "born 2015" never reached the record it points at,
+        # and the tree asked only that record ("born 1980"). Every record on
+        # the chain that still holds its own evidence must be an adult.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2015')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-kbaaaaaaaa', 'Robin Hartley', living='true', born='1980')
+        self.conn.execute("UPDATE persons SET merged_into = 'p-kbaaaaaaaa' "
+                          "WHERE id = 'p-kaaaaaaaaa'")
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'p-kbaaaaaaaa')
+
+    def test_a_baptism_only_ever_proves_an_adult(self):
+        today = datetime.date(2026, 11, 22)
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self._seed_source('s-bp00000001', 'Baptism register', source_type='church')
+        self._seed_claim('c-bp00000001', 's-bp00000001', 'baptism', 'Robin was baptised',
+                         date_edtf='2015', persons=('p-kaaaaaaaaa',))
+        # A recent baptism and no child: not known to be an adult.
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A baptism 18+ years ago: born by then, so an adult, child or not.
+        self._seed_claim('c-bp00000002', 's-bp00000001', 'baptism', 'Robin was baptised',
+                         date_edtf='1990', persons=('p-kaaaaaaaaa',))
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A recorded birth still decides over any baptism.
+        self._seed_claim('c-bb00000001', 's-bp00000001', 'birth', 'Robin was born',
+                         date_edtf='2012', persons=('p-kaaaaaaaaa',))
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+
+    def test_a_living_sibling_with_no_birth_and_no_children_is_left_out(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-baaaaaaaaa', 'Jamie Hartley', living='true')
+        self._parent('p-baaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-caaaaaaaaa', 'Lee Hartley', living='true', born='1975')
+        self._parent('p-caaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-daaaaaaaaa', 'Pat Hartley', born='1970')     # dead sibling
+        self._parent('p-daaaaaaaaa', 'p-faaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertIn('Pat Hartley', ped)                       # shown in full
+        self.assertEqual(ped.count('ped-sibling'), 2)           # Pat, and Lee as a private card
+        self.assertEqual(ped.count('tree-card-private'), 2)     # hub + Lee
+        self._assert_nowhere('Jamie Hartley', 'p-baaaaaaaaa', 'Lee Hartley', 'p-caaaaaaaaa')
+
+    def test_a_by_request_parent_is_left_out_and_not_walked_through(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950',
+                     frontmatter_extra='restricted: by-request')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-g4aaaaaaaa', 'Walter Hartley', born='1900')
+        self._parent('p-faaaaaaaaa', 'p-g4aaaaaaaa')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', born='1952', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertIn('Ethel Cole', ped)
+        self.assertEqual(ped.count('tree-card-private'), 1)     # the hub only
+        self.assertNotIn('Calvin Hartley', ped)
+        self.assertNotIn('Walter Hartley', ped)                 # not reached through him
+
+    def test_the_fallback_for_a_minor_root_still_climbs_past_a_young_living_parent(self):
+        # Delta review of PR #436: the by-request skip must not also stop the
+        # search at a living parent who is merely too young to show. A child
+        # with a 17-year-old mother and a dead father still opens on the father.
+        self._person('p-aaaaaaaaaa', 'Robin Hartley', living='true', born='2025')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', born='2009', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1960')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertIn('Frank Cole', ped)
+        self._assert_nowhere('Ethel Cole', 'p-maaaaaaaaa', 'Robin Hartley', 'p-aaaaaaaaaa')
+
+    def test_the_fallback_for_a_minor_root_does_not_climb_through_a_by_request_parent(self):
+        # Review of PR #436: when the home person is a child (left out), the
+        # chart starts at the nearest dead ancestor, and that search climbed
+        # through a by-request father to open the page on HIS father. The
+        # rule "the walk does not pass through them" holds here too.
+        self._person('p-aaaaaaaaaa', 'Robin Hartley', living='true', born='2015')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950',
+                     frontmatter_extra='restricted: by-request')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-g4aaaaaaaa', 'Walter Hartley', born='1900')
+        self._parent('p-faaaaaaaaa', 'p-g4aaaaaaaa')
+        # A living adult mother: the search passes her (her card is
+        # private), but not the by-request father.
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', born='1980', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1901')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertNotIn('Walter Hartley', ped)
+        self.assertNotIn('Calvin Hartley', ped)
+        self.assertIn('Frank Cole', ped)        # reached through the mother instead
+
+    def test_a_living_minor_root_still_falls_back_to_an_ancestor(self):
+        # Not known to be an adult: no hub card of their own, so the chart
+        # starts at the closest dead ancestor, as before.
+        self._person('p-aaaaaaaaaa', 'Robin Hartley', living='true', born='2015')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertIn('Calvin Hartley&#39;s family', ped)
+        self.assertNotIn('tree-card-private', ped)
+        self._assert_nowhere('Robin Hartley', 'p-aaaaaaaaaa')
+
+    def test_no_private_photo_reaches_the_site(self):
+        self._image('photos/zqxface.png')
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980',
+                     frontmatter_extra='profile_photo: photos/zqxface.png')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertIn('tree-card-private', self._ped())
+        self.assertNotIn('<img', self._ped())
+        self.assertFalse((self.out_dir / 'media').exists()
+                         and any((self.out_dir / 'media').rglob('*.*')))
+        self._assert_nowhere('zqxface', 'Alex Hartley', 'p-aaaaaaaaaa')
+
+    def _image(self, rel):
+        from PIL import Image
+        img = self.archive_root / rel
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (40, 30), (120, 90, 60)).save(img)
+        return img
+
+    # - the age line moves with the build date -
+
+    def test_a_child_turning_18_appears_on_the_next_rebuild(self):
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2008-11-23')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)   # 17 today
+        shutil.rmtree(self.out_dir)
+        with unittest.mock.patch.object(site, '_today', return_value='2026-11-23'):
+            self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 2)   # 18 today
+
+    # - the workbench and --linked are unchanged -
+
+    def test_linked_build_shows_everyone_and_ignores_the_age_rule(self):
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', living='true', born='1950')
+        self._parent('p-aaaaaaaaaa', 'p-faaaaaaaaa')
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2016')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._home()
+        self._run(linked=True)
+        first = self._read('index.html')
+        ped = self._ped(first)
+        for name in ('Alex Hartley', 'Calvin Hartley', 'Robin Hartley'):
+            self.assertIn(name, ped)
+        self.assertNotIn('tree-card-private', first)
+        shutil.rmtree(self.out_dir)
+        with unittest.mock.patch.object(site, '_today', return_value='2040-01-01'):
+            self._run(linked=True)
+        # The build date only matters to the shared tree's age rule.
+        self.assertEqual(self._ped(self._read('index.html')), ped)
+
+    def test_person_page_charts_are_unchanged(self):
+        # A private card is a home-tree thing only: a dead person's own page
+        # still drops a living parent from its chart, as before.
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-daaaaaaaaa', 'Pat Hartley', born='2000')
+        self._parent('p-daaaaaaaaa', 'p-aaaaaaaaaa')
+        self._home('P-daaaaaaaaa')
+        self._run(linked=False)
+        self.assertNotIn('tree-card-private', self._read('persons/p-daaaaaaaaa.html'))
+
+
+class HomeTreeExampleArchiveTests(unittest.TestCase):
+    """The example archive seeded on its `root_person`, Alex Bradford
+    (`living: unknown`, no birth recorded, no children): not known to be an
+    adult, so the chart starts at his dead father, his living mother is a
+    private card beside him, and Alex himself is nowhere on the site."""
+
+    def test_example_archive_root_person_path(self):
+        import index as index_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'example'
+            shutil.copytree(ROOT / 'example-archive', root,
+                            ignore=shutil.ignore_patterns('generated', '.cache'))
+            cfg = root / 'fha.yaml'
+            text = cfg.read_text(encoding='utf-8')
+            self.assertIn('home_person: p-de957bcda1', text)
+            cfg.write_text(text.replace('home_person: p-de957bcda1', '# home_person:'),
+                           encoding='utf-8')
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                index_mod.build_index(root, {})
+                with unittest.mock.patch.object(site, '_today', return_value='2026-11-22'):
+                    out = Path(tmp) / 'site'
+                    res = site.run_site(root, out, linked=False)
+            self.assertEqual(res['status'], 'ok', res['messages'])
+            page = (out / 'index.html').read_text(encoding='utf-8')
+            ped = re.search(r'<h2 id="pedigree">.*?(?=<h2 )', page, re.S).group(0)
+            self.assertIn('James Robert Bradford&#39;s family', ped)
+            self.assertEqual(ped.count('tree-card-private'), 1)     # Carol, his wife
+            text = '\n'.join(p.read_text(encoding='utf-8', errors='replace')
+                             for p in out.rglob('*')
+                             if p.is_file() and p.suffix in {'.html', '.json', '.js'})
+            # Neither id anywhere in the shared output, and neither name on
+            # the home page. (James's own biography names his wife in prose
+            # the owner wrote; that is his text, not the tree's.)
+            for needle in ('p-0a1b2c3d4e', 'P-0A1B2C3D4E', 'p-3c4d5e6f7g', 'P-3C4D5E6F7G'):
+                self.assertNotIn(needle, text)
+            for needle in ('Alex James Bradford', 'Carol Anne Simmons', 'Carol Bradford'):
+                self.assertNotIn(needle, page)
 
 
 class FamilyChartTests(_Base):

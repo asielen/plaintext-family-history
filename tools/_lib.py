@@ -6663,6 +6663,95 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
 
 
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date,
+                   *, count_children: bool = True) -> bool:
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
+
+    Adult means one of (D20 read literally, owner decision 2026-11-22):
+    - at least one recorded child (`has_recorded_child`), whatever any
+      recorded birth says: a parent gets a blank card, which names and
+      dates nothing;
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the
+      provisional `birth:` estimate on their record or on any record merged
+      into them, whose LATEST possible day is `ADULT_AGE_YEARS` or more
+      years before `today`; several birth dates are all checked, and the
+      youngest one decides;
+    - no birth date at all, and a baptism 18 or more years ago (they were
+      born by then). A recent baptism says nothing.
+
+    `count_children=False` skips the child test, for a caller that must
+    count only the child links it may publish (the shared site: a child the
+    owner kept private must not be what earns a card).
+
+    Anyone else is "not known to be an adult". The answer reads `today`
+    (the build date), so a child who turns 18 changes it on the next
+    rebuild. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year with no leap day
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    if count_children and has_recorded_child(conn, pid):
+        return True
+    latest = own_dates('birth')
+    # The provisional `birth:` of the person AND of every record merged into
+    # them: `fha confirm merge` leaves a duplicate's estimate on the
+    # duplicate, and it is a recorded birth of the same human (Codex, PR
+    # #436). Claims and relationships already land on the survivor at index
+    # time, so only this record-level field needs the widening.
+    for rid in [pid, *merged_into_survivor(index_merge_survivors(conn), pid)]:
+        row = conn.execute('SELECT birth FROM persons WHERE id = ?', (rid,)).fetchone()
+        if row is not None and str(row[0] or '').strip():
+            latest.append(latest_day(str(row[0])))
+    if latest:
+        return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    return any(day <= cutoff.isoformat() for day in own_dates('baptism'))
+
+
+def has_recorded_child(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether the index records a child of `pid`. Child links are written
+    under the merge survivor at index time, so the survivor's id answers for
+    every finished merge into it."""
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
+
+
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
     """Indexes of column-0 `key:` lines between two bounds (exclusive).
 
