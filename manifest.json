@@ -1179,7 +1179,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "e362c6dce842314bc2190369d766e4701084255b1b006eac95690bafddf25c61",
+      "sha256": "f56153e15803b2bb35ee3f150f16861bfd37b294f49a7482178ee776346560a9",
       "spec_version": "2.19"
     },
     {
@@ -1247,7 +1247,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "6c0d232741da4998b7022c9a2eadbf240b18f1882747df137021dc67ea391fbd",
+      "sha256": "779a0cc736720797879aecea1d6bb493f2b6f6c0bf74d6174f81392f1b6382ed",
       "spec_version": "2.19"
     },
     {

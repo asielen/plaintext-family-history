@@ -60,7 +60,7 @@ The notes stay at home: the family website builds its place pages from places.ya
 
 ## Searching your archive
 
-Each person's frontmatter holds what the person record itself says: the names, `living:`, `sex:`, `gender:`, `restricted:`, `tags:`, `tier:` and the `relationships:` block, plus any `birth:` and `death:` you jotted as an estimate before you had a record. Dataview and Obsidian's Bases read these directly, so "everyone whose living status is unknown" or "every stub" is a plain frontmatter search. Sourced birth and death dates are not in frontmatter: they live in the claims (below), so a frontmatter search on `birth:` finds only the estimates.
+Each person's frontmatter holds what the person record itself says: the names, `living:`, `sex:`, `gender:`, `restricted:`, `tags:`, `tier:` and the `relationships:` block, plus any estimated `birth:` and `death:` (with `birth_place:` and `death_place:`): the dates you jotted before you had a record, or the ones a GEDCOM import brought in. Dataview and Obsidian's Bases read these directly, so "everyone whose living status is unknown" or "every stub" is a plain frontmatter search. Sourced birth and death dates are not in frontmatter: they live in the claims (below), so a frontmatter search on `birth:` finds the estimates, not what a record proved.
 
 The detailed facts (claims) are kept in fenced ` ```yaml ` blocks under `## Claims`. The fence keeps the note readable, since an unfenced YAML list displays as jumbled text, but it also means Dataview can't see inside it. Ask the assistant or use `fha` to search claims. There is no separate note that copies the claims out for Dataview: it would duplicate them and need keeping in step, and the person frontmatter already answers the common questions.
 
