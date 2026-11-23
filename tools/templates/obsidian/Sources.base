@@ -1,0 +1,44 @@
+filters:
+  and:
+    - file.ext == "md"
+    - file.inFolder("sources")
+    - 'id.startsWith("s-")'
+    - '!file.name.startsWith("_TEMPLATE")'
+properties:
+  note.title:
+    displayName: Title
+  note.source_type:
+    displayName: Type
+  note.source_date:
+    displayName: Date
+  note.repository:
+    displayName: Repository
+  note.source_class:
+    displayName: Class
+views:
+  - type: table
+    name: All sources
+    order:
+      - note.title
+      - note.source_type
+      - note.source_date
+      - note.repository
+      - note.source_class
+  - type: table
+    name: By type
+    groupBy:
+      property: note.source_type
+      direction: ASC
+    order:
+      - note.title
+      - note.source_date
+      - note.repository
+  - type: table
+    name: By repository
+    groupBy:
+      property: note.repository
+      direction: ASC
+    order:
+      - note.title
+      - note.source_type
+      - note.source_date

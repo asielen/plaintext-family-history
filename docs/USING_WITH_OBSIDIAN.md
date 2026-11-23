@@ -58,6 +58,16 @@ The notes are generated: never edit one, because the next refresh writes over it
 
 The notes stay at home: the family website builds its place pages from places.yaml, and no packet or export copies `places/`.
 
+## Ready-made tables (Bases)
+
+With `links: obsidian`, the first `fha views places` or `fha views refresh` also puts three files in `notes/obsidian/`: `People.base`, `Sources.base` and `Places.base`. Open one in Obsidian 1.9 or later (it is built in, no plugin) and you get a sortable table:
+
+- **People:** everyone; the direct line; stubs; and everyone still marked living or unknown. The birth and death columns say "(estimate)" because the dates in a person's frontmatter are the ones you jotted down before finding a record. The sourced dates are in the claims.
+- **Sources:** all of them, grouped by type, or grouped by repository.
+- **Places:** all of them, the ones with coordinates, and the ones still missing them. The coordinates come from the place note's `location:` line.
+
+A table holds nothing of its own. It only reads what your notes already say, so deleting one loses nothing. Change its columns, sorting or filters in Obsidian as you like. The tools write the files once and never touch them again, and a file you delete stays deleted. They sit in `notes/obsidian/`, not in `people/`, `sources/` or `places/`. To bring one back, copy it from `.fha/tools/templates/obsidian/`. To draw the places on a map, install Obsidian's Maps plugin and add a view of type `map` with `coordinates: note.location` to `Places.base`.
+
 ## Searching your archive
 
 Each person's frontmatter is where Obsidian can search: birth and death dates, the `relationships:` block, `gender:` and `restricted:` are all ordinary frontmatter that the Dataview plugin and Obsidian's Bases read directly. "Everyone without a death date" or "everyone born in Breton County" are plain frontmatter searches.

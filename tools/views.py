@@ -4614,6 +4614,49 @@ def _place_notes_summary(stats: dict, dry_run: bool) -> None:
         print(f'{stats["skipped"]} item(s) skipped; see the warnings above.')
 
 
+_OBSIDIAN_BASES = ('People.base', 'Sources.base', 'Places.base')
+_OBSIDIAN_BASES_DIR = Path('notes') / 'obsidian'
+
+
+def _write_obsidian_bases(archive_root: Path, dry_run: bool = False) -> list[Path]:
+    """Give an Obsidian owner ready-made tables of people, sources and places.
+
+    Opening `notes/obsidian/People.base` in Obsidian shows everyone as a
+    sortable table (the direct line, stubs, people still marked living or
+    unknown), with no plugin. They are written once, only with
+    `links: obsidian`, and only when `notes/obsidian/` does not exist yet:
+    Obsidian saves the owner's column and sort changes into the file, and a
+    file the owner deleted stays deleted, so nothing here is ever rewritten
+    or removed. The folder is outside people/, sources/ and places/, since a
+    table owns no data (SPEC §3). Returns the files written (or that would be).
+    """
+    folder = archive_root / _OBSIDIAN_BASES_DIR
+    if folder.exists():
+        return []
+    src_dir = Path(__file__).resolve().parent / 'templates' / 'obsidian'
+    written: list[Path] = []
+    for name in _OBSIDIAN_BASES:
+        src = src_dir / name
+        if not src.is_file():
+            continue
+        dest = folder / name
+        written.append(dest)
+        if dry_run:
+            continue
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(src.read_bytes())
+        except OSError as e:
+            print(f'WARNING: could not write {_OBSIDIAN_BASES_DIR.as_posix()}/{name} '
+                  f'({e.strerror or e}); the Obsidian tables were skipped.', file=sys.stderr)
+            return []
+    if written:
+        verb = 'would write' if dry_run else 'wrote'
+        print(f'{verb} the Obsidian tables in {_OBSIDIAN_BASES_DIR.as_posix()}/ '
+              f'({", ".join(_OBSIDIAN_BASES)}).')
+    return written
+
+
 def run_places(archive_root: Path, dry_run: bool = False) -> Result:
     """`fha views places`: the place notes for Obsidian link mode (SPEC §15).
 
@@ -4638,6 +4681,7 @@ def run_places(archive_root: Path, dry_run: bool = False) -> Result:
             print(f'{len(leftover)} place note(s) from Obsidian mode are still in places/. '
                   '`fha views clean` removes them.')
         return _views_result(EXIT_CLEAN, data={'count': 0, 'mode': 'id'})
+    _write_obsidian_bases(archive_root, dry_run=dry_run)
     conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
@@ -4929,6 +4973,8 @@ def run_refresh(archive_root: Path, fmt: str = 'md') -> Result:
     if precheck is not None:
         return precheck
     fmt_passes: tuple[str, ...] = ('md', 'html') if fmt == 'both' else (fmt,)
+    if 'md' in fmt_passes and link_mode(load_fha_yaml(archive_root)) == 'obsidian':
+        _write_obsidian_bases(archive_root)
     conn = _open_index_or_explain(archive_root)
     if conn is None:
         return _views_result(EXIT_FAILURE)
