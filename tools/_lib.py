@@ -6538,22 +6538,22 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
     (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
     the dates it reads are never printed.
 
-    Adult means one of:
+    Adult means one of (D20 read literally, owner decision 2026-11-22):
+    - at least one recorded child (`has_recorded_child`), whatever any
+      recorded birth says: a parent gets a blank card, which names and
+      dates nothing;
     - a recorded birth date, from a birth claim of ANY status (a suggested
-      or disputed one still says how old someone might be) or the person's
-      own provisional `birth:` estimate, whose LATEST possible day is
-      `ADULT_AGE_YEARS` or more years before `today`; several birth dates
-      are all checked, and the youngest one decides;
-    - no birth date recorded at all, and at least one recorded child.
+      or disputed one still says how old someone might be) or the
+      provisional `birth:` estimate on their record or on any record merged
+      into them, whose LATEST possible day is `ADULT_AGE_YEARS` or more
+      years before `today`; several birth dates are all checked, and the
+      youngest one decides;
+    - no birth date at all, and a baptism 18 or more years ago (they were
+      born by then). A recent baptism says nothing.
 
-    A known birth date always wins: someone under 18 by any recorded birth
-    is not an adult, even with a child of their own. No birth date and no
-    child means "not known to be an adult". The answer reads `today` (the
-    build date), so a child who turns 18 changes it on the next rebuild.
-
-    With no birth date at all, a baptism 18 or more years ago also makes an
-    adult (they were born by then); a recent baptism says nothing, and the
-    has-a-child rule decides. A date typed wrong ("2010-02-30") is read by
+    Anyone else is "not known to be an adult". The answer reads `today`
+    (the build date), so a child who turns 18 changes it on the next
+    rebuild. A date typed wrong ("2010-02-30") is read by
     its LATEST year, so a mistyped range reads as its young end; one with no
     readable year or an open end still counts as a birth on file, and is
     read as "not known to be an adult". A typo never makes an adult."""
@@ -6584,6 +6584,8 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
                 out.append(latest_day(str(r[1])))
         return out
 
+    if has_recorded_child(conn, pid):
+        return True
     latest = own_dates('birth')
     # The provisional `birth:` of the person AND of every record merged into
     # them: `fha confirm merge` leaves a duplicate's estimate on the
@@ -6599,8 +6601,13 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
     # No birth date: a baptism only bounds the birth from above (born on or
     # before it), so one 18+ years ago proves an adult, and a recent one
     # (an adult convert's, say) proves nothing either way.
-    if any(day <= cutoff.isoformat() for day in own_dates('baptism')):
-        return True
+    return any(day <= cutoff.isoformat() for day in own_dates('baptism'))
+
+
+def has_recorded_child(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether the index records a child of `pid`. Child links are written
+    under the merge survivor at index time, so the survivor's id answers for
+    every finished merge into it."""
     return conn.execute(
         "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
         (pid,)).fetchone() is not None

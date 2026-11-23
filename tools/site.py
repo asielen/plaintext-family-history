@@ -304,6 +304,7 @@ from _lib import (
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
+    has_recorded_child,
     is_known_adult,
     is_valid_edtf,
     is_valid_id,
@@ -8359,8 +8360,8 @@ class _SiteBuilder:
           chain, or an unreadable record): 'omit', and the ancestor walk does
           not pass through them;
         - living or unknown and known to be an adult (`_lib.is_known_adult`:
-          born 18+ years before the build date, or no birth recorded and a
-          recorded child): 'private', and their ancestors still draw;
+          a recorded child, or born 18+ years before the build date):
+          'private', and their ancestors still draw;
         - living or unknown and not known to be an adult: 'omit'.
 
         An id the index does not hold is 'omit' too. `--linked` (the local
@@ -8389,7 +8390,9 @@ class _SiteBuilder:
         asked = [survivor['id']] + [
             r['id'] for r in chain[:-1]
             if merge_pointer(r['status'], r['merged_into']) is None]
-        adult = all(is_known_adult(self.conn, rid, today) for rid in asked)
+        # A recorded child on any of them makes an adult (D20, owner).
+        adult = (any(has_recorded_child(self.conn, rid) for rid in asked)
+                 or all(is_known_adult(self.conn, rid, today) for rid in asked))
         return 'private' if adult else 'omit'
 
     def _tree_card_entry(self, pid: str, page_dir: Path) -> dict:

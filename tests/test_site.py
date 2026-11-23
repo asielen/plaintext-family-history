@@ -6597,18 +6597,25 @@ class HomeTreePrivateCardTests(_Base):
         self.assertIn('Dana Hartley', with_child)
         self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', '2016')
 
-    def test_a_living_16_year_old_with_a_child_is_left_out(self):
-        # The recorded birth date wins over the has-a-child rule.
-        self._adult_root_with_spouse()
+    def test_a_living_16_year_old_with_a_child_is_a_private_card(self):
+        # Owner decision (D20, read literally, 2026-11-22): a recorded child
+        # makes an adult, whatever a recorded birth says. The card names
+        # nobody and dates nothing; the dead parents behind it show.
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
-        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
         self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
         self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
-        self._home()
+        self._person('p-faaaaaaaaa', 'Calvin Hartley', born='1950')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', born='1952', sex='F')
+        self._parent('p-kaaaaaaaaa', 'p-faaaaaaaaa')
+        self._parent('p-kaaaaaaaaa', 'p-maaaaaaaaa')
+        self._home('p-kaaaaaaaaa')
         self._run(linked=False)
         ped = self._ped()
-        self.assertEqual(ped.count('tree-card-private'), 1)     # the hub only
-        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'Sky Hartley', 'p-zaaaaaaaaa')
+        self.assertEqual(ped.count('tree-card-private'), 1)     # Robin, the hub
+        self.assertIn('Calvin Hartley', ped)
+        self.assertIn('Ethel Cole', ped)
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', '2010',
+                             'Sky Hartley', 'p-zaaaaaaaaa')
 
     def test_an_unreviewed_birth_claim_still_keeps_a_minor_out(self):
         # The age test reads birth claims of any status: a suggested claim
@@ -6618,8 +6625,6 @@ class HomeTreePrivateCardTests(_Base):
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2015',
                      born_status='suggested')
         self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
-        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
-        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')   # has a child, but the birth wins
         self._home()
         self._run(linked=False)
         self.assertEqual(self._ped().count('tree-card-private'), 1)
@@ -6633,8 +6638,6 @@ class HomeTreePrivateCardTests(_Base):
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
         self.conn.execute("UPDATE persons SET birth = '2010-02-30' WHERE id = 'p-kaaaaaaaaa'")
         self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
-        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
-        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')   # has a child, but the year wins
         self._home()
         result = self._run(linked=False)
         self.assertEqual(result['status'], 'ok', result)
@@ -6643,10 +6646,8 @@ class HomeTreePrivateCardTests(_Base):
 
     def test_a_birth_too_garbled_to_read_keeps_a_living_relative_out(self):
         # A birth date with no readable year still says "a birth is on
-        # file": not read as "no birth, has a child, so an adult".
+        # file": never read as an adult's.
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
-        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
-        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
         today = datetime.date(2026, 11, 22)
         self.conn.execute("UPDATE persons SET birth = '1950-02-30' WHERE id = 'p-kaaaaaaaaa'")
         self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
@@ -6691,8 +6692,6 @@ class HomeTreePrivateCardTests(_Base):
         # person; the youngest decides, so no "Private" card.
         today = datetime.date(2026, 11, 22)
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
-        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
-        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')   # has a child
         self.conn.execute("UPDATE persons SET birth = '1980' WHERE id = 'p-kaaaaaaaaa'")
         self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
         self._person('p-kbaaaaaaaa', 'Robin Hartley', living='true')
