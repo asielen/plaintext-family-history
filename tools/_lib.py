@@ -466,6 +466,20 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
+#  Dates that cannot all be true (fha lint W163+, the GEDCOM import plan): one
+#  engine over plain data, firing only when a conflict holds for every reading
+#    PLAUSIBLE_MAX_LIFESPAN_YEARS, W165_LIFE_TYPES - the thresholds and types
+#    DatedClaim, FactRange     - one claim's day range; one fact's merged range
+#    PlausibilityInput         - per person: births, deaths, records of their life
+#    PlausibilityProblem       - one conflict: code, kind, people, claims per side
+#    claim_date_range          - a claim's date -> (first day, last day), open sides None
+#    iso_plus_years            - the same day N years later (29 February safe)
+#    merge_fact_range          - several readings of one fact -> one range
+#    plausibility_input_from_claims - raw claim dicts -> PlausibilityInput
+#                                 (survivors= also asks "could these be one person?")
+#    one_person_problems       - W163 out of order, W164 over 120 years, W165 life after death
+#    plausibility_message      - the plain sentence, with caller-supplied name and claim refs
+#
 #  Alias resolution / publication guards
 #    person_alias_mirror       : the names a person's aliases: carries: name + public other names
 #    person_restricted_names   : the restricted other names that never sit in aliases:
@@ -20073,6 +20087,404 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
                             'sources_with_text': len(with_text)},
         'thinnest_direct_line': thinnest,
     }
+
+
+# ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────
+#
+# "Ada Hartley's death (1850) is recorded before her birth (1871)": after a
+# GEDCOM import attaches the wrong record, or two people of one name are
+# merged, the archive can say things about one person that cannot all be
+# true, and nothing used to point at it. These are the rules, as plain
+# functions over plain data, so `fha lint` and the GEDCOM import plan (and a
+# duplicate finder asking whether two records could be one person) all ask
+# the question the same way. Lint attaches each problem to a file; another
+# caller prints it where it fits.
+#
+# A warning against a correct record teaches the owner to stop reading lint,
+# so a rule fires only when the conflict holds for EVERY date the claims
+# allow: "before" means the first fact's latest possible day is earlier than
+# the second's earliest possible day. Year-only dates span their year, `~`
+# and `?` widen a year each way (`edtf_bounds`), and an open side (the start
+# of "before 1920", an unreadable date) is unknown and never makes a rule
+# fire. Every claim of one type for one person is merged into one range, so
+# two disagreeing birth years widen the range rather than firing here; that
+# disagreement is `fha xref`'s to report.
+#
+#   PLAUSIBLE_MAX_LIFESPAN_YEARS - W164: nobody is taken to live longer
+#   W165_LIFE_TYPES        - the claim types that record something a living
+#                             person did, read by W165
+#   DatedClaim             - one claim reduced to its id, type and day range
+#   FactRange              - every claim of one fact for one person, merged
+#   PlausibilityInput      - who was born, baptized, died, buried when, and
+#                             the records of their life, per person
+#   PlausibilityProblem    - one conflict: its code, kind, people and claims
+#   claim_date_range       - a claim's date -> (first day, last day), open
+#                             sides None; None when undated or unreadable
+#   iso_plus_years         - the same day N years later (29 Feb safe)
+#   merge_fact_range       - several readings of one fact -> one range
+#   plausibility_input_from_claims - raw claim dicts -> PlausibilityInput
+#   one_person_problems    - W163 (out of order), W164 (over 120 years),
+#                             W165 (a record of life after death)
+#   plausibility_message   - the plain sentence for one problem
+
+PLAUSIBLE_MAX_LIFESPAN_YEARS = 120      # W164
+
+# The claim types that record something the person did while alive, so a
+# date after their death means the record is about someone else (W165).
+# Left out on purpose: `military` (a widow's pension application is often
+# written as a military claim dated after his death), and `event`, `note`,
+# `name` and `relationship`, whose dates often belong to the record (a
+# probate, a later index) rather than to an act of the living person. The
+# vital types have rules of their own.
+W165_LIFE_TYPES = frozenset({'residence', 'census', 'occupation', 'education', 'immigration'})
+
+# The roles that make a person the subject of a life-event claim (SPEC §8.3):
+# being named on a claim is not being located by it. A child named on his
+# father's residence is not the one who lived there.
+_LIFE_SUBJECT_ROLES = frozenset({'subject', 'head', 'household_member'})
+
+# The plain word a W165 message uses for each life-event type.
+_LIFE_TYPE_WORDS = {'education': 'school'}
+
+_PLAUSIBILITY_VITAL_TYPES = ('birth', 'baptism', 'death', 'burial')
+
+_EDTF_FLOOR, _EDTF_CEILING = '0001-01-01', '9999-12-31'
+
+
+@dataclasses.dataclass(frozen=True)
+class DatedClaim:
+    """One claim reduced to what the date rules read."""
+    claim_id: str          # normalized c-id
+    ctype: str             # lower-case claim type
+    lo: str | None         # ISO day; None when the start is open or unknown
+    hi: str | None         # ISO day; None when the end is open or unknown
+    date: str              # the claim's date as written, for messages
+    subtype: str           # lower-case, '' when unset
+
+
+@dataclasses.dataclass
+class FactRange:
+    """Every claim of one fact (one person's birth, say) merged into one range."""
+    lo: str | None
+    hi: str | None
+    claims: list[DatedClaim]
+
+
+@dataclasses.dataclass
+class PlausibilityInput:
+    """What the rules know, per person (ids as the caller resolved them)."""
+    sex: dict[str, str] = dataclasses.field(default_factory=dict)
+    # pid -> 'birth' | 'baptism' | 'death' | 'burial' -> the merged range
+    facts: dict[str, dict[str, FactRange]] = dataclasses.field(default_factory=dict)
+    # pid -> the W165_LIFE_TYPES claims they are the subject of
+    life_events: dict[str, list[DatedClaim]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class PlausibilityProblem:
+    """One set of dates that cannot all be true."""
+    code: str                                  # 'W163' ...; the caller emits it
+    kind: str                                  # e.g. 'death-before-birth'
+    pids: tuple[str, ...]                      # the person it is about first
+    claims: tuple[tuple[DatedClaim, ...], ...]  # one tuple per side, sentence order
+    numbers: dict                              # e.g. {'years': 130}
+
+
+def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
+    """A claim's `date:` as (first possible day, last possible day).
+
+    An open side ("before 1920" has no start, "1920 or later" no end) is
+    None, so no rule can read it as a known day. None for an undated claim
+    or one whose date cannot be read, including an impossible day like
+    `1900-02-31` or an interval that runs backwards like `1890/1850` (E014
+    already reports both).
+
+    "About 20 May 1850" must not read as exactly 20 May, or an infant who
+    died on 19 May would be told the two dates cannot both be true. So a date
+    carrying `~`, `?` or `%` anywhere (on the day, the month or the whole
+    date, written so or reached from a loose form like "about ...") widens
+    to at least a year each way, the widening `1850~` already gets.
+    `edtf_bounds` keeps the narrow day for sorting; only this certainty
+    reading widens it."""
+    text = optional_scalar(claim.get('date')) if isinstance(claim, dict) else None
+    if not text:
+        return None
+    try:
+        lo, hi = edtf_bounds(text)
+    except ValueError:
+        return None
+    lo_known = None if lo == _EDTF_FLOOR else lo
+    hi_known = None if hi == _EDTF_CEILING else hi
+    if lo_known is None and hi_known is None:
+        return None
+    if lo_known is not None and hi_known is not None and lo_known > hi_known:
+        return None
+    written = normalize_date(text) or text
+    # Each end widens by its own half's mark only: "about 1880 to 1885"
+    # (`1880~/1885`) still ends exactly in 1885.
+    start_half, _, end_half = written.partition('/')
+    end_half = end_half or start_half
+
+    def _plain(half: str) -> tuple[str, str]:
+        # The half with its marks taken off, so `1880?` (already 1879 to
+        # 1881) is not widened twice.
+        try:
+            return edtf_bounds(re.sub(r'[~?%]', '', half))
+        except ValueError:
+            return (_EDTF_FLOOR, _EDTF_CEILING)
+
+    if lo_known is not None and any(m in start_half for m in '~?%'):
+        plain_lo = _plain(start_half)[0]
+        if plain_lo != _EDTF_FLOOR:
+            lo_known = min(lo_known, f'{max(int(plain_lo[:4]) - 1, 1):04d}-01-01')
+    if hi_known is not None and any(m in end_half for m in '~?%'):
+        plain_hi = _plain(end_half)[1]
+        if plain_hi != _EDTF_CEILING:
+            hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
+    return (lo_known, hi_known)
+
+
+def iso_plus_years(iso: str, years: int) -> str:
+    """The same month and day `years` later, as an ISO day.
+
+    29 February becomes 28 February in a year that has none, and the result
+    never passes the archive's ceiling `9999-12-31`, so ISO strings can be
+    compared directly afterwards."""
+    year, month, day = int(iso[:4]), int(iso[5:7]), int(iso[8:10])
+    year += years
+    if year > 9999:
+        return _EDTF_CEILING
+    if month == 2 and day == 29 and not calendar.isleap(year):
+        day = 28
+    return f'{year:04d}-{month:02d}-{day:02d}'
+
+
+def merge_fact_range(claims: list[DatedClaim]) -> FactRange:
+    """Several claims of one fact -> one range: the earliest start and the
+    latest end. A start any one claim leaves open opens the merged start
+    (and the same for the end), so a merged range is never narrower than
+    what one of its claims allows."""
+    los = [c.lo for c in claims]
+    his = [c.hi for c in claims]
+    lo = None if (not los or any(v is None for v in los)) else min(los)
+    hi = None if (not his or any(v is None for v in his)) else max(his)
+    return FactRange(lo=lo, hi=hi, claims=list(claims))
+
+
+def plausibility_input_from_claims(
+    claims: Iterable[dict], persons: dict[str, dict], alias_map: dict | None,
+    survivors: dict[str, str] | None = None, *,
+    statuses: tuple[str, ...] = ('accepted',),
+) -> PlausibilityInput:
+    """Read raw claim dicts into what the date rules need.
+
+    `claims` are claim dicts as a source's claims block holds them; `persons`
+    is {pid: frontmatter dict}. Only claims whose `status` is in `statuses`
+    count (lint passes the default: a suggested claim is not yet a fact),
+    a `negated: true` claim says the event did not happen, and an undated
+    or id-less claim has nothing to compare.
+
+    Whose birth, baptism, death or burial a claim is comes from
+    `vital_subjects`, so a mother's birth is never read off her son's birth
+    record. A life-event claim (`W165_LIFE_TYPES`) belongs to its subject:
+    its only person, or the people under `subject`, `head` or
+    `household_member` (SPEC §8.3).
+
+    Every person id passes through `survivors` ({merged id: survivor}), so a
+    merged record's claims count for the person it was merged into. The same
+    map lets a caller ask whether two records could be one person: pass
+    `{b: a}` and the rules read b's claims as a's."""
+    # Ids come back from `resolve_claim_persons_with_roles` lower-cased
+    # (SPEC §10), so every map keyed by person is read the same way.
+    survivors = {normalize_id(str(k)): normalize_id(str(v))
+                 for k, v in (survivors or {}).items()}
+    wanted = {s.strip() for s in statuses}
+    raw_facts: dict[str, dict[str, list[DatedClaim]]] = {}
+    data = PlausibilityInput()
+    for pid, meta in (persons or {}).items():
+        sex = str((meta or {}).get('sex') or '').strip() if isinstance(meta, dict) else ''
+        data.sex[normalize_id(str(pid))] = sex if sex in ('M', 'F') else ''
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get('status', '')).strip() not in wanted:
+            continue
+        if str(claim.get('negated')).strip().lower() == 'true':
+            continue
+        ctype = str(claim.get('type', '')).strip().lower()
+        if ctype not in _PLAUSIBILITY_VITAL_TYPES and ctype not in W165_LIFE_TYPES:
+            continue
+        cid = normalize_id(str(claim.get('id') or ''))
+        span = claim_date_range(claim)
+        if not cid or span is None:
+            continue
+        dated = DatedClaim(
+            claim_id=cid, ctype=ctype, lo=span[0], hi=span[1],
+            date=optional_scalar(claim.get('date')) or '',
+            subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
+        pairs = resolve_claim_persons_with_roles(claim, alias_map)
+        named = list(dict.fromkeys(p for p, _role in pairs))
+        if ctype in _PLAUSIBILITY_VITAL_TYPES:
+            subjects = vital_subjects(ctype, pairs)
+            if subjects is None:
+                subjects = named if len(named) == 1 else []
+        elif len(named) == 1:
+            subjects = named
+        else:
+            subjects = [p for p, role in pairs
+                        if clean_role_word(role).lower() in _LIFE_SUBJECT_ROLES]
+        for pid in dict.fromkeys(survivors.get(p, p) for p in subjects):
+            if ctype in _PLAUSIBILITY_VITAL_TYPES:
+                raw_facts.setdefault(pid, {}).setdefault(ctype, []).append(dated)
+            else:
+                data.life_events.setdefault(pid, []).append(dated)
+    for pid, by_type in raw_facts.items():
+        data.facts[pid] = {t: merge_fact_range(cs) for t, cs in by_type.items()}
+    return data
+
+
+def _plausibility_bounds(facts: dict[str, FactRange]) -> dict:
+    """born_lo/born_hi/died_lo/died_hi for one person, with the claims behind
+    each. A baptism says when someone was born by, never how early; a burial
+    says when they had died by. Missing or open is None."""
+    birth, bapt = facts.get('birth'), facts.get('baptism')
+    death, burial = facts.get('death'), facts.get('burial')
+    born_hi_from = birth if birth else bapt
+    died_hi_from = death if death else burial
+    return {
+        'born_lo': (birth.lo, birth) if birth else (None, None),
+        'born_hi': (born_hi_from.hi, born_hi_from) if born_hi_from else (None, None),
+        'died_lo': (death.lo, death) if death else (None, None),
+        'died_hi': (died_hi_from.hi, died_hi_from) if died_hi_from else (None, None),
+    }
+
+
+def _certainly_before(first: FactRange | None, second: FactRange | None) -> bool:
+    """Every day `first` allows is earlier than every day `second` allows."""
+    return bool(first and second and first.hi is not None
+                and second.lo is not None and first.hi < second.lo)
+
+
+def _whole_years_between(earlier: str, later: str) -> int:
+    """Full years from one ISO day to a later one (an age on that day)."""
+    years = int(later[:4]) - int(earlier[:4])
+    if later[5:] < earlier[5:]:
+        years -= 1
+    return years
+
+
+def one_person_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """The rules about one person's own dates, each firing only when it holds
+    for every date the claims allow:
+
+    - W163: a death before the birth, a burial before the death, a baptism
+      before the birth, or (no death recorded) a burial before the birth;
+    - W164: a shortest possible lifespan over PLAUSIBLE_MAX_LIFESPAN_YEARS;
+    - W165: a residence, census, occupation, school or immigration record
+      that began after the person had certainly died (a census whose subtype
+      says `mortality` lists the year's dead and is skipped).
+
+    People in sorted id order, so the result is the same every run."""
+    problems: list[PlausibilityProblem] = []
+    for pid in sorted(set(data.facts) | set(data.life_events)):
+        facts = data.facts.get(pid, {})
+        b, bp = facts.get('birth'), facts.get('baptism')
+        d, u = facts.get('death'), facts.get('burial')
+
+        for kind, first, second, applies in (
+            ('death-before-birth', d, b, True),
+            ('burial-before-death', u, d, True),
+            ('baptism-before-birth', bp, b, True),
+            ('burial-before-birth', u, b, d is None),
+        ):
+            if applies and _certainly_before(first, second):
+                problems.append(PlausibilityProblem(
+                    'W163', kind, (pid,),
+                    (tuple(first.claims), tuple(second.claims)), {}))
+
+        bounds = _plausibility_bounds(facts)
+        born_hi, born_from = bounds['born_hi']
+        died_lo, died_from = bounds['died_lo']
+        if (born_hi is not None and died_lo is not None
+                and died_lo > iso_plus_years(born_hi, PLAUSIBLE_MAX_LIFESPAN_YEARS)):
+            problems.append(PlausibilityProblem(
+                'W164', 'long-life', (pid,),
+                (tuple(born_from.claims), tuple(died_from.claims)),
+                {'years': _whole_years_between(born_hi, died_lo)}))
+
+        died_hi, died_hi_from = bounds['died_hi']
+        if died_hi is not None:
+            for event in data.life_events.get(pid, []):
+                # `in`, not a word match: `mortality_schedule` holds no
+                # word boundary before the underscore, and an 1850 mortality
+                # schedule for someone who died in 1849 is not a ghost record.
+                if event.ctype == 'census' and 'mortality' in event.subtype.lower():
+                    continue
+                if event.lo is not None and event.lo > died_hi:
+                    problems.append(PlausibilityProblem(
+                        'W165', 'life-after-death', (pid,),
+                        (tuple(died_hi_from.claims), (event,)), {}))
+    return problems
+
+
+def _plausibility_side(claims: tuple[DatedClaim, ...], ref) -> str:
+    """'1850 (c-… (file))', two readings joined by 'or', then 'and N more'."""
+    shown = [f'{humanize_edtf(c.date)} ({ref(c.claim_id)})' for c in claims[:2]]
+    text = ' or '.join(shown)
+    if len(claims) > 2:
+        text += f', and {len(claims) - 2} more'
+    return text
+
+
+def _plausibility_verb(claims: tuple[DatedClaim, ...], birth_word: str, bapt_word: str) -> str:
+    """The word for a side read from births or (when none) baptisms."""
+    return bapt_word if claims and claims[0].ctype == 'baptism' else birth_word
+
+
+def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
+    """The plain sentence for one problem.
+
+    `who(pid)` names a person and `ref(claim_id)` names a claim and where it
+    sits (lint: `c-… (sources/…/file.md)`), so every caller can point at its
+    own files. The sentence names every claim involved and never calls one
+    side wrong: the owner opens both and decides."""
+    name = who(problem.pids[0])
+    kind = problem.kind
+    side = [_plausibility_side(c, ref) for c in problem.claims]
+    if kind == 'death-before-birth':
+        return (f'{name} is recorded as dying {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Often one of the two records is '
+                'about someone else with the same name, or a date was misread. Open both '
+                'records and compare them; the claim that does not fit can be disputed '
+                'with `fha claim <c-id> --status disputed`.')
+    if kind == 'burial-before-death':
+        return (f'{name} is recorded as buried {side[0]}, before the death recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records and compare the '
+                'dates; a burial is usually within days of the death.')
+    if kind == 'baptism-before-birth':
+        return (f'{name} is recorded as baptized {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records; one may be a '
+                "sibling's baptism, or a date was misread.")
+    if kind == 'burial-before-birth':
+        return (f'{name} is recorded as buried {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records and compare them.')
+    if kind == 'long-life':
+        born = _plausibility_verb(problem.claims[0], 'born', 'baptized')
+        return (f'{name} would have lived at least {problem.numbers["years"]} years: '
+                f'{born} {side[0]} and died {side[1]}. Hardly anyone lives past '
+                f'{PLAUSIBLE_MAX_LIFESPAN_YEARS}, so one of these records is probably about '
+                'a different person of the same name (a grandparent or grandchild, often), '
+                'or a date was misread. Open both and compare.')
+    if kind == 'life-after-death':
+        died = 'was buried' if problem.claims[0][0].ctype == 'burial' else 'died'
+        event = problem.claims[1][0]
+        word = _LIFE_TYPE_WORDS.get(event.ctype, event.ctype)
+        return (f'{name} {died} {side[0]}, but a {word} record dates {side[1]}. A record '
+                'of something they did after their death cannot be about them, unless the '
+                "record's date is when it was written down rather than when it happened. "
+                'Open both records; if the later one is about someone else, fix its people, '
+                "and if its date is a recording date, put the event's own date in the claim.")
+    raise ValueError(f'unknown plausibility problem kind {kind!r}')
 
 
 # ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────
