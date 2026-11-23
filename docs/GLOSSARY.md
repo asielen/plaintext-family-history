@@ -61,7 +61,7 @@
 **Provisional date:** a birth or death date you write down before you've found the record that proves it. Recording what you know now is a normal starting point, not an error: the tools remind you it still needs a source, and a sourced birth or death claim replaces it when you add one.
 *Example: you're fairly sure great-grandma was born around 1849, so you write `birth: 1849~` on her record, and it appears on the "still to source" list until a certificate turns up.*
 
-**Relationship calculator:** asking "how are these two people related?" It answers two ways: the blood relationship (second cousin, great-grandfather) by following the genetic line, and the plain-language path between any two people, even when they aren't related by blood.
+**Relationship calculator:** asking "how are these two people related?" It answers three ways: the blood relationship (second cousin, great-grandfather, half-sister) by following the genetic line, the tie by marriage when there is no blood tie (brother-in-law, stepmother, uncle by marriage), and the plain-language path between any two people, even when they aren't related at all.
 *Example: ask how two cousins connect and get "second cousin once removed"; ask about two acquaintances and get "your brother's friend's sister's father."*
 
 **Relationship subtype:** the *nature* of a tie between two people. A father can be a *biological* father or an *adoptive* one; both are real, and recording which keeps the archive from treating two true things as a contradiction. The same idea covers step, foster and guardian ties, surrogacy and donor conception, and ties that aren't family at all: an employer, a fellow member of a unit or lodge, or an enslaver and the person they enslaved.

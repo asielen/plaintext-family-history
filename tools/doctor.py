@@ -123,6 +123,7 @@ from _lib import (
     roots_change_orphans,
     select_variation_primary,
     shell_quote,
+    fha_launcher,
     sqlite_cache_schema_status,
     undecodable_file_recorder,
     VENDOR_DIR,
@@ -206,7 +207,9 @@ _WARN = '⚠'
 # convention commit 7c6ee13 settled for the browser companion's copy card and
 # f1a246d reused for transcribe-audio's attach line; GETTING_STARTED.md and
 # CHEATSHEET.md carry the same two spellings plus the bare cmd.exe one.
-_LAUNCHER = '.\\fha' if os.name == 'nt' else './fha'
+# `_lib.fha_launcher` holds the spelling, shared with every printed command
+# that carries a `shell_quote` value (#400).
+_LAUNCHER = fha_launcher()
 
 
 # ── Freshness helpers (db_mtime / probe_sqlite live in _lib, shared with find) ──

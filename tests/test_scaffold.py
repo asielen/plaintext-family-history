@@ -1548,6 +1548,215 @@ class PipCommandTest(unittest.TestCase):
         self.assertEqual(head.strip('\'"'), _lib.sys.executable)
 
 
+def _windows_quote(word: str) -> str:
+    """shell_quote's Windows spelling, on any machine: the branch is pure text
+    (list2cmdline is plain Python), so CI on Linux pins it too."""
+    import _lib
+    with mock.patch.object(_lib.os, 'name', 'nt'):
+        return _lib.shell_quote(word)
+
+
+class ShellQuotePowerShellTest(unittest.TestCase):
+    """#400: a command printed for him to paste into Windows PowerShell must
+    run the first time, with the place name or caption exactly as written.
+
+    PowerShell 5.1 hands an argument to `fha.cmd` without escaping the double
+    quotes inside it, and treats `$` and a backtick inside double quotes as
+    its own. A value carrying any of those is printed in single quotes around
+    a double-quoted value with each inner `"` doubled, the one spelling that
+    reached fha intact in the PowerShell 5.1 paste tests on #400."""
+
+    def test_a_double_quote_gets_the_powershell_spelling(self):
+        cases = {
+            'Springfield, "Old Town", Ohio': '\'"Springfield, ""Old Town"", Ohio"\'',
+            'Calvin "Cal" Hartley': '\'"Calvin ""Cal"" Hartley"\'',
+            'O\'Brien "Farm"': '\'"O\'\'Brien ""Farm"""\'',
+            'a"b': '\'"a""b"\'',
+            '"': '\'""""\'',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(_windows_quote(word), expected)
+
+    def test_dollar_backtick_and_curly_double_quotes_get_it_too(self):
+        # Inside PowerShell double quotes `$5` is an (empty) variable, a
+        # backtick escapes the next letter, and a curly double quote closes
+        # the string: each one saved different words, or split the value.
+        cases = {
+            'Cost $5 total': '\'"Cost $5 total"\'',
+            '$HOME': '\'"$HOME"\'',
+            'a`b c': '\'"a`b c"\'',
+            'The \u201cOld Manse\u201d': '\'"The \u201cOld Manse\u201d"\'',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(_windows_quote(word), expected)
+
+    def test_a_cmd_symbol_with_no_space_keeps_its_quotes_through_powershell(self):
+        # With no space in the value PowerShell strips the double quotes,
+        # so fha.cmd met a bare `A&B` and ran `B` as a second command.
+        for word in ('A&B', 'a|b', 'a<b', 'a>b', 'a^b'):
+            with self.subTest(word=word):
+                self.assertEqual(_windows_quote(word), f'\'"{word}"\'')
+
+    def test_curly_apostrophes_are_doubled_inside_the_single_quotes(self):
+        # PowerShell closes a single-quoted string on a curly apostrophe too.
+        self.assertEqual(_windows_quote('O\u2019Brien "Farm"'),
+                         '\'"O\u2019\u2019Brien ""Farm"""\'')
+
+    def test_backslashes_next_to_a_quote_or_at_the_end_are_doubled(self):
+        # The program reading the line takes `\"` as a literal quote and a
+        # trailing `\` as escaping the closing quote; doubling keeps both.
+        self.assertEqual(_windows_quote('a\\"b'), '\'"a\\\\""b"\'')
+        self.assertEqual(_windows_quote('C:\\Old "Town"\\'), '\'"C:\\Old ""Town""\\\\"\'')
+
+    def test_a_value_both_shells_take_keeps_the_double_quote_spelling(self):
+        # Command Prompt reads single quotes as part of the value, so the
+        # PowerShell-only spelling is kept to values that need it.
+        cases = {
+            'Old Town': '"Old Town"',
+            'A & B': '"A & B"',
+            'plain': 'plain',
+            "O'Brien-Farm_(1950).tif": '"O\'Brien-Farm_(1950).tif"',
+            'O\u2019Brien': '"O\u2019Brien"',
+            '#4': '"#4"',
+            'C:\\Old Town\\': '"C:\\Old Town\\\\"',
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(_windows_quote(word), expected)
+
+    def test_the_pip_line_keeps_the_command_prompt_spelling(self):
+        # The "install the missing package" line starts with a quoted
+        # interpreter path, which only Command Prompt runs, so an archive
+        # folder like `D:\Smith&Jones` must not get the PowerShell spelling:
+        # pip would be told to read a file named with apostrophes round it.
+        import _lib
+        with mock.patch.object(_lib.os, 'name', 'nt'), \
+                mock.patch.object(_lib.sys, 'executable', 'C:\\Program Files\\Py\\python.exe'):
+            cmd = _lib.pip_command('-r D:\\Smith&Jones\\requirements.txt')
+        self.assertEqual(cmd, '"C:\\Program Files\\Py\\python.exe" -m pip install '
+                              '-r "D:\\Smith&Jones\\requirements.txt"')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX branch')
+    def test_posix_shells_still_get_shlex_quoting(self):
+        import _lib
+        for word in ('Springfield, "Old Town", Ohio', 'Cost $5', 'A&B', 'a`b'):
+            with self.subTest(word=word):
+                self.assertEqual(_lib.shell_quote(word), shlex.quote(word))
+
+
+class PrintedCommandLauncherTest(unittest.TestCase):
+    """#400, owner's call: a printed command whose value may carry the
+    PowerShell-only spelling starts `.\\fha` on Windows, a line PowerShell
+    runs, never a bare `fha`, which only Command Prompt runs and which there
+    would save the value with stray apostrophes."""
+
+    BARE_FHA = re.compile(r'(?<![\\/.\w-])fha [a-z]')
+
+    def test_fha_launcher_is_the_spelling_each_shell_runs(self):
+        import _lib
+        with mock.patch.object(_lib.os, 'name', 'nt'):
+            self.assertEqual(_lib.fha_launcher(), '.\\fha')
+        with mock.patch.object(_lib.os, 'name', 'posix'):
+            self.assertEqual(_lib.fha_launcher(), './fha')
+
+    def test_no_command_built_with_shell_quote_starts_with_a_bare_fha(self):
+        # The class sweep: every statement in tools/ that quotes a value with
+        # shell_quote must spell the launcher, not type `fha ` by hand.
+        import ast
+        offenders = []
+        for path in sorted((ROOT / 'tools').glob('*.py')):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for stmt in ast.walk(tree):
+                if not isinstance(stmt, ast.stmt) or isinstance(
+                        stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                               ast.If, ast.For, ast.While, ast.With, ast.Try,
+                               ast.Match)):
+                    continue
+                calls = [n for n in ast.walk(stmt) if isinstance(n, ast.Call)
+                         and getattr(n.func, 'id', getattr(n.func, 'attr', None))
+                         == 'shell_quote']
+                if not calls:
+                    continue
+                texts = [n.value for n in ast.walk(stmt)
+                         if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+                if any(self.BARE_FHA.search(t) for t in texts):
+                    offenders.append(f'{path.name}:{stmt.lineno}')
+        self.assertEqual(offenders, [], 'print these with _lib.fha_launcher()')
+
+
+@unittest.skipUnless(os.name == 'nt' and shutil.which('powershell.exe')
+                     and (shutil.which('py') or shutil.which('python')),
+                     'pastes into Windows PowerShell 5.1 and Command Prompt')
+class ShellQuotePasteRoundTripTest(unittest.TestCase):
+    """#400, for real: paste the printed command into PowerShell 5.1 and into
+    Command Prompt, through the archive's own fha.cmd, and check what fha
+    receives. CI runs Linux, so this runs on a Windows machine only."""
+
+    POWERSHELL_WORDS = [
+        'Springfield, "Old Town", Ohio', 'Calvin "Cal" Hartley', 'O\'Brien "Farm"', 'a"b', '"',
+        'Cost $5 total', '$HOME', 'a`b c', 'The \u201cOld Manse\u201d', 'A&B', 'a|b',
+        '\u0141\u00f3d\u017a "\u00e9" \u4e2d', 'C:\\Old "Town"\\', 'O\u2019Brien "Farm"',
+        'a "b & c" d', 'x;y & "z" $w `v\'',
+    ]
+    BOTH_SHELL_WORDS = [
+        'Old Town', 'A & B', 'plain', "O'Brien-Farm_(1950).tif", 'O\u2019Brien',
+        '\u0141\u00f3d\u017a \u00e9 \u4e2d', 'C:\\Old Town\\', 'a;b', '-leading', '#4 Main St',
+    ]
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        shutil.copyfile(ROOT / 'fha.cmd', self.tmp / 'fha.cmd')
+        (self.tmp / 'tools').mkdir()
+        # Stands in for the real entrypoint: records the argv fha.cmd handed it.
+        (self.tmp / 'tools' / 'fha.py').write_text(
+            'import json, os, sys\n'
+            "with open(os.environ['ARGV_OUT'], 'w', encoding='utf-8') as f:\n"
+            '    json.dump(sys.argv[1:], f)\n', encoding='utf-8')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _cases(self, words):
+        for word in words:
+            q = _windows_quote(word)
+            yield f'place --name={q}', ['place', '--name=' + word]
+            yield f'place --name {q} --root x', ['place', '--name', word, '--root', 'x']
+
+    def _received(self, i):
+        out = self.tmp / f'{i}.json'
+        return json.loads(out.read_text(encoding='utf-8')) if out.exists() else None
+
+    def test_powershell_5_1_receives_every_value_intact(self):
+        cases = list(self._cases(self.POWERSHELL_WORDS + self.BOTH_SHELL_WORDS))
+        lines = self.tmp / 'lines.txt'
+        lines.write_text('\n'.join('.\\fha ' + args for args, _ in cases) + '\n', encoding='utf-8')
+        # Invoke-Expression parses each line exactly as a paste at the prompt.
+        script = (
+            f"Set-Location -LiteralPath '{self.tmp}'\n"
+            f"$lines = [IO.File]::ReadAllLines('{lines}', [Text.Encoding]::UTF8)\n"
+            'for ($i = 0; $i -lt $lines.Length; $i++) {\n'
+            f"  $env:ARGV_OUT = '{self.tmp}\\' + $i + '.json'\n"
+            '  try { Invoke-Expression $lines[$i] } catch { }\n'
+            '}\n')
+        (self.tmp / 'paste.ps1').write_bytes(b'\xef\xbb\xbf' + script.encode('utf-8'))
+        subprocess.run(['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                        '-File', str(self.tmp / 'paste.ps1')], capture_output=True, timeout=300)
+        for i, (args, expected) in enumerate(cases):
+            with self.subTest(line=args):
+                self.assertEqual(self._received(i), expected)
+
+    def test_command_prompt_still_receives_the_values_both_shells_take(self):
+        for i, (args, expected) in enumerate(self._cases(self.BOTH_SHELL_WORDS)):
+            env = dict(os.environ, ARGV_OUT=str(self.tmp / f'{i}.json'))
+            subprocess.run(f'cmd.exe /d /s /c ".\\fha {args}"', cwd=self.tmp, env=env,
+                           capture_output=True, timeout=60)
+            with self.subTest(line=args):
+                self.assertEqual(self._received(i), expected)
+
+
 class InstallTemplateHandCopyTest(unittest.TestCase):
     """The documented zip on-ramp: copy archive-template/, then run install.
 
