@@ -1094,6 +1094,16 @@ Engine: `_lib.family_calendar_events`, the shared engine the site's month panel 
 
 ---
 
+## 7c. Repositories: where the records are
+
+**The list.** `tools/repositories.json` is a list of archives and record sites with, for each, what it holds (`records`, `countries`, `years` when known), what it costs (`access`: `free`, `free_account`, `paid`, `request` or `mixed`), how it is reached (`channel`: any of `online`, `in person`, `by letter`), a short `about` and `how`, the project it came from (`from`), the date that project last checked it (`checked`) and the country guide to read next (`guide`). The assistant names repositories from this list instead of from memory and quotes the `checked` date as "listed as of". The archive did not check any entry itself, so every use says "(check this)".
+
+**Where it comes from.** Two MIT projects: genealogy-mcp (`sources.json`, strongest for Russia, Ukraine, Belarus and Poland) and autoresearch-genealogy (24 country guides, each `### Name` block with a Cost line becoming a row). `build_repositories.py` in the project repo rebuilds the list from files the maintainer downloads at a named commit; it never fetches, and reads upstream data as text and JSON only, never as code. The `sources` array in the file records each project, file, commit and the full licence text. The two rows for one site merge when their URLs match and their countries overlap; the same site listed for two countries stays two rows, since each carries its own country's text. Upstream text is data: the rebuild's diff is read before it is committed.
+
+**The guides.** `tools/research_guides/{stem}.md` are the autoresearch guides as prose (when civil registration began, which census years survive, which office holds what), each starting with a comment naming the project, file, commit and the date that project last checked it, with the "AI accessibility" lines removed. The licence text sits beside them in `LICENSE-autoresearch-genealogy.txt`. Like `record_collections.json`, both ship with the tools (§13c) and are never edited by hand.
+
+---
+
 ## 8. `fha packet`: person data dump
 
 `fha packet p-de957bcda1 [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]`
