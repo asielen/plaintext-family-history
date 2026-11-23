@@ -9634,7 +9634,7 @@ class VitalSubjectScopingTests(_Base):
     MOM = 'p-mmmmmmmmmm'
     SON = 'p-ssssssssss'
 
-    def _seed_birth_certificate(self, roles):
+    def _seed_birth_certificate(self, roles, also_named=()):
         """The son's birth certificate, naming his mother as the parent."""
         self._seed_person(self.SON, 'Peter Marr')
         self._seed_person(self.MOM, 'Iris Marr')
@@ -9642,8 +9642,8 @@ class VitalSubjectScopingTests(_Base):
                           source_type='vital-record')
         self._seed_claim('c-1111111111', 's-1111111111', 'birth',
                          'Born at Riverton', status='accepted', date_edtf='1888',
-                         place_text='Riverton', persons=(self.SON, self.MOM),
-                         roles=roles)
+                         place_text='Riverton',
+                         persons=(self.SON, self.MOM, *also_named), roles=roles)
 
     def test_mother_named_as_parent_gets_no_born_row_of_her_own(self):
         self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
@@ -9669,7 +9669,7 @@ class VitalSubjectScopingTests(_Base):
         gf = 'p-gggggggggg'
         self._seed_person(gf, 'Elias Marr')
         self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent',
-                                      gf: 'named_for'})
+                                      gf: 'named_for'}, also_named=(gf,))
         self._run(linked=True)
         gf_html = self._read(f'persons/{gf}.html')
         self.assertNotIn('<dt>Born</dt>', gf_html)
