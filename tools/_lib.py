@@ -22200,19 +22200,30 @@ def shell_quote(word: str) -> str:
     names a set variable is still expanded by `fha.cmd` either way.
     """
     if os.name == 'nt':
-        if any(ch in _PS_ONLY for ch in word) or (
-                any(ch in _CMD_SPECIAL for ch in word)
-                and not any(ch.isspace() for ch in word)):
+        if needs_powershell_quote(word):
             return _powershell_quote(word)
-        quoted = subprocess.list2cmdline([word])
-        if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
-            # No whitespace and no `"` (else list2cmdline had quoted it), so
-            # the only escape needed inside the quotes is a trailing
-            # backslash, which would otherwise escape the closing quote.
-            stripped = word.rstrip('\\')
-            quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
-        return quoted
+        return _windows_double_quote(word)
     return shlex.quote(word)
+
+
+def needs_powershell_quote(word: str) -> bool:
+    """True when `shell_quote` gives this value the PowerShell-only spelling on
+    Windows, the one Command Prompt would save with stray apostrophes (#400)."""
+    return any(ch in _PS_ONLY for ch in word) or (
+        any(ch in _CMD_SPECIAL for ch in word) and not any(ch.isspace() for ch in word))
+
+
+def _windows_double_quote(word: str) -> str:
+    """The double-quote spelling of one value, which Command Prompt takes, and
+    PowerShell too unless `needs_powershell_quote` says otherwise."""
+    quoted = subprocess.list2cmdline([word])
+    if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
+        # No whitespace and no `"` (else list2cmdline had quoted it), so
+        # the only escape needed inside the quotes is a trailing
+        # backslash, which would otherwise escape the closing quote.
+        stripped = word.rstrip('\\')
+        quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
+    return quoted
 
 
 # A name typed with a curly apostrophe (O'Brien as Word writes it) pastes
@@ -22280,11 +22291,16 @@ def pip_command(target: str) -> str:
     # archive path, and "Family Archive" is an ordinary folder name - quoting the
     # interpreter while leaving the requirements file bare just moves the split
     # one argument to the right.
-    exe = shell_quote(sys.executable)
+    # On Windows this line starts with a quoted interpreter path, which only
+    # Command Prompt runs, so it keeps the double-quote spelling: the
+    # PowerShell-only one would reach pip with apostrophes round an archive
+    # path like `D:\Smith&Jones\` (#400).
+    quote = _windows_double_quote if os.name == 'nt' else shell_quote
+    exe = quote(sys.executable)
     if target.startswith('-r '):
-        arg = f'-r {shell_quote(target[3:])}'
+        arg = f'-r {quote(target[3:])}'
     else:
-        arg = shell_quote(target)
+        arg = quote(target)
     return f'{exe} -m pip install {arg}'
 
 

@@ -249,6 +249,7 @@ from _lib import (
     sex_slot_is_defaulted,
     shell_quote,
     fha_launcher,
+    needs_powershell_quote,
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
@@ -1845,8 +1846,9 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
     line; a real comment can simply be deleted. Nothing here edits a claim.
 
     The command is offered only for text a pasted command carries intact in
-    every Windows shell: for a `$`, a backtick or a `"`, PowerShell and
-    Command Prompt need different spellings (`_lib.shell_quote` prints
+    every Windows shell: for a `$`, a backtick, a straight or curly `"`
+    (`_lib.needs_powershell_quote`), PowerShell and Command Prompt need
+    different spellings (`_lib.shell_quote` prints
     PowerShell's, #400), so for those the hand-quoted line is the one fix
     given (a command that saved different words would be worse than
     none)."""
@@ -1855,7 +1857,7 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
         who = f'Claim {fmt_id_display(cid)}' if cid else 'A claim'
         hand = f'`{key}: {yaml_inline(whole)}`'
         flag = _CLAIM_FIELD_FLAGS.get(key)
-        if cid and flag and not any(ch in whole for ch in '$`"'):
+        if cid and flag and not needs_powershell_quote(whole):
             fix = (f'run `{fha_launcher()} claim {fmt_id_display(cid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
@@ -1890,7 +1892,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     with no warning. The frontmatter twin of W156, found the same way
     (`_lib.text_fields_cut_by_hash` on the raw block) with the same fix
     rules: a command only when one rewrites just that field and the text
-    survives being pasted (no `$`, backtick or `"`), else the hand-quoted
+    survives being pasted (`_lib.needs_powershell_quote` false), else the hand-quoted
     line. A `#` two spaces or more past the text, with a space after it, is
     a comment written on purpose, as the templates do, and is left alone.
     `record` is `person`, `source`, `place` or `notes` (an inbox notes
@@ -1914,7 +1916,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
                 else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
         where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
-        if rid and flag and not any(ch in whole for ch in '$`"'):
+        if rid and flag and not needs_powershell_quote(whole):
             fix = (f'run `{fha_launcher()} person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:

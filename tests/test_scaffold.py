@@ -1626,6 +1626,18 @@ class ShellQuotePowerShellTest(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertEqual(_windows_quote(word), expected)
 
+    def test_the_pip_line_keeps_the_command_prompt_spelling(self):
+        # The "install the missing package" line starts with a quoted
+        # interpreter path, which only Command Prompt runs, so an archive
+        # folder like `D:\Smith&Jones` must not get the PowerShell spelling:
+        # pip would be told to read a file named with apostrophes round it.
+        import _lib
+        with mock.patch.object(_lib.os, 'name', 'nt'), \
+                mock.patch.object(_lib.sys, 'executable', 'C:\\Program Files\\Py\\python.exe'):
+            cmd = _lib.pip_command('-r D:\\Smith&Jones\\requirements.txt')
+        self.assertEqual(cmd, '"C:\\Program Files\\Py\\python.exe" -m pip install '
+                              '-r "D:\\Smith&Jones\\requirements.txt"')
+
     @unittest.skipIf(os.name == 'nt', 'POSIX branch')
     def test_posix_shells_still_get_shlex_quoting(self):
         import _lib
@@ -1663,7 +1675,8 @@ class PrintedCommandLauncherTest(unittest.TestCase):
                                ast.Match)):
                     continue
                 calls = [n for n in ast.walk(stmt) if isinstance(n, ast.Call)
-                         and isinstance(n.func, ast.Name) and n.func.id == 'shell_quote']
+                         and getattr(n.func, 'id', getattr(n.func, 'attr', None))
+                         == 'shell_quote']
                 if not calls:
                     continue
                 texts = [n.value for n in ast.walk(stmt)
