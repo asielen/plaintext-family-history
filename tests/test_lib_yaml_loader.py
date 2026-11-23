@@ -27,6 +27,7 @@ pin both halves of that promise:
 import datetime
 import io
 import math
+import os
 import re
 import shutil
 import sys
@@ -323,6 +324,15 @@ _RECORD = (
 )
 
 
+def _parser_kinds(loaders):
+    """'C' for libyaml's loader (or the helper's own subclass of it, which
+    hands flow lists holding a `?` to the Python parser), 'Python' for
+    PyYAML's pure-Python SafeLoader."""
+    return ['C' if HAS_LIBYAML and issubclass(L, yaml.CSafeLoader) else
+            'Python' if issubclass(L, yaml.SafeLoader) else repr(L)
+            for L in loaders]
+
+
 @unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
 class ReadRecordUsesLibyamlTests(unittest.TestCase):
     """The speed-up is real only if the record reader takes the fast path."""
@@ -346,8 +356,28 @@ class ReadRecordUsesLibyamlTests(unittest.TestCase):
             path.write_text(_RECORD, encoding='utf-8')
             used, rec = self._loaders_used_by(lambda: read_record(path))
         self.assertEqual(rec['parse_errors'], [])
-        self.assertEqual(used, [yaml.CSafeLoader, yaml.CSafeLoader],
+        self.assertEqual(_parser_kinds(used), ['C', 'C'],
                          'frontmatter and claims should both take the C parser')
+
+    def test_uncertain_date_takes_the_fast_parser(self):
+        """#392: a claim dated `1880?` (EDTF "uncertain"), a note asking a
+        question and a source link with a `?` query read with libyaml, the
+        same values as before. On a large archive these were about 690 of
+        10,000 blocks, and the slow parser cost about 5 s of every lint."""
+        record = (_RECORD
+                  .replace('date: 1880\n', 'date: 1880?\nnote: was it 1880? or 1881?\n')
+                  .replace('  status: suggested\n',
+                           '  date: 1880-05?\n  status: suggested\n'
+                           '  url: https://example.org/page?id=7&q=hartley\n'))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'rec.md'
+            path.write_text(record, encoding='utf-8')
+            used, rec = self._loaders_used_by(lambda: read_record(path))
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertEqual(rec['meta']['date'], '1880?')
+        self.assertEqual(rec['claims'][0]['date'], '1880-05?')
+        self.assertEqual(_parser_kinds(used), ['C', 'C'],
+                         'a ? in a value should not cost the slow parser')
 
     def test_broken_record_warning_is_the_safeloader_wording(self):
         """A malformed claims block falls back, and the E010 text the human
@@ -363,7 +393,7 @@ class ReadRecordUsesLibyamlTests(unittest.TestCase):
                 path, py_exc, section='claims'))
         self.assertIn(expected, rec['parse_errors'])
         self.assertIn('^', expected[1])   # PyYAML's snippet pointer survives
-        self.assertEqual(used, [yaml.CSafeLoader, yaml.CSafeLoader, yaml.SafeLoader])
+        self.assertEqual(_parser_kinds(used), ['C', 'C', 'Python'])
 
 
 # Text libyaml READS but PyYAML's own parser refuses, or reads to other
@@ -377,6 +407,16 @@ LIBYAML_LENIENT_DOCS = {
     'trailing Tab': 'title: census page\t\n',
     '? inside a flow list (a name)': 'persons: [Mary Ann?]\n',
     '? inside a flow list (a date)': 'dates: [1880?]\n',
+    # #392: the places a `?` still changes the reading. PyYAML ends a
+    # plain value at a `?` inside [ ] or { }; libyaml keeps it.
+    '? inside a flow map': 'born: {place: Ohio?, year: 1880}\n',
+    '? after a space in a flow list': 'persons: [Mary Ann ?]\n',
+    '? in a flow list that runs onto the next line':
+        'persons: [P-0123456789,\n  Mary Ann?]\n',
+    '? in a flow list whose first line has a quoted ]':
+        'persons: [Mary, "]",\n  Ann?]\n',
+    '? in a flow map inside a block list': '- {place: Ohio?}\n',
+    '? in a flow list nested in a flow map': 'x: {names: [Mary?]}\n',
     'BOM at the start of an indented line': 'a:\n\ufeff  b: 1\n',
     'BOM on a blank line': 'x: 1\n\ufeff\ny: 2\n',
     '# straight after |': 'note: |#\n  x\n',
@@ -437,6 +477,267 @@ class LibyamlLenientTextTests(unittest.TestCase):
         written = _lib.yaml_edtf('abt\t1880')
         self.assertNotEqual(written, 'abt\t1880')
         self.assertEqual(_python_load(f'date: {written}\n'), {'date': 'abt\t1880'})
+
+
+# #392: a `?` in a record. Each group pins what the helper does with it,
+# and every entry must read exactly as SafeLoader reads it.
+#
+# Read by libyaml alone: a `?` outside [ ] and { }. Both parsers agree
+# there, including on a real `? key` (checked case by case below and by
+# the slow sweep).
+QUESTION_FAST_DOCS = {
+    'EDTF uncertain year': 'date: 1880?\n',
+    'EDTF uncertain month': 'date: 1880-05?\n',
+    'EDTF uncertain year, known month': 'date: 1880?-05\n',
+    'EDTF approximate and uncertain': 'a: ~1880?\nb: 1880%\nc: 1880?~\nd: 1880-05-04?\n',
+    'a question in a plain value': 'note: was it 1880? or 1881?\n',
+    'a question in quoted values': 'a: "born 1880?"\nb: \'or 1881?\'\nc: "is it ? yes"\n',
+    'a question in a comment': '# was it 1880?\nname: Ada  # or Ida?\n',
+    'a web address with a query': 'url: https://example.org/page?id=7&q=hartley\n',
+    'a ? that starts a plain value': 'a: ?b\n?c: d\ne: ??\nf: -?\n',
+    'a ? in the middle of a value': 'a: b ? c\n',
+    'a block scalar': 'note: |\n  was it 1880?\n  ? a line that starts with one\n',
+    'a folded block scalar': 'note: >-\n  ? first\n  second?\n',
+    'a plain value continued on a ? line': 'note: first line\n  ? continues here\n',
+    'a quoted value continued on a ? line': 'note: "first\n  ? second"\n',
+    'a real complex key': '? a\n: b\n',
+    'a complex key with no value': '? a\n',
+    'a block-scalar complex key': '? |\n  x\n: y\n',
+    'a complex key inside a block list': '- ? a\n  : b\n- ? c\n',
+    'a complex key nested in a mapping': 'a:\n  ? b\n  : c\n',
+    'brackets inside a quoted value': 'title: "[[p-0123456789|Ada [?] Hartley]]"\n',
+    'a flow list, then a ? on a later line': 'persons: [P-0123456789]\ndate: 1880?\n',
+    'a flow list with a ? in a later comment': 'persons: [P-0123456789]\n# who?\n',
+    'a claims block with an uncertain date': (
+        '- id: C-0123456789\n  type: birth\n  persons: [P-0123456789]\n'
+        '  value: born about 1880?\n  date: 1880?\n  status: suggested\n'),
+    'CRLF line endings': 'date: 1880?\r\npersons: [P-0123456789]\r\n',
+    'an anchor and alias near a ?': 'a: &x 1880?\nb: *x\n',
+    'an anchored flow list, then a ?': 'a: &x [b, c]\nd: 1880?\ne: *x\n',
+    'a flow map with a ? in the comment after it': 'a: {b: c}  # c?\n',
+    'non-ASCII before a flow list': 'place: Kraków [P-0123456789]?\nb: [Łódź]\nc: 1880?\n',
+}
+
+# Handed to the Python parser: a `?` somewhere inside [ ] or { }, which
+# libyaml can read differently (see LIBYAML_LENIENT_DOCS), even where it
+# happens to agree. One rule, so no guessing which flow cases are safe.
+QUESTION_PYTHON_DOCS = {
+    **{label: text for label, text in LIBYAML_LENIENT_DOCS.items() if '?' in text},
+    'a quoted ? in a flow list': 'aka: ["Ada ??"]\n',
+    'a ? key in a flow list': 'x: [? a]\n',
+    'a ? key in a flow map': 'x: {? a}\n',
+    'a ? key after a comma': 'x: [a, ? b]\n',
+    'a ? straight before a flow value': 'x: [?a]\n',
+    'a ? in a comment inside a flow list': 'x: [a, # b?\n  c]\n',
+    'a ? in a flow list used as a key': '? [a?]\n: b\n',
+}
+
+# Refused by both parsers. libyaml words the error differently, so the
+# Python parser's words are the ones he reads.
+QUESTION_REFUSED_DOCS = {
+    'a bare ? as the value': 'date: ?\n',
+    'a ? key after a value': 'a: ? b\n',
+    'a ? after a quoted value': 'a: "x"?\n',
+    'a ? after a flow list': 'a: [b]?\n',
+    'a ? after a document start': '--- ? a\n',
+    'an escaped ? in a double-quoted value': 'a: "\\?"\n',
+    'a ? after a block-scalar indicator': 'a: |2?\n  x\n',
+}
+
+
+class QuestionMarkTests(unittest.TestCase):
+    """#392: a `?` in a record reads the same as before, and only a `?`
+    inside [ ] or { } still costs the slow parser."""
+
+    def _check_same(self, label, text):
+        expected = _outcome(_python_load, text)
+        got = _outcome(safe_load_yaml, text)
+        self.assertEqual(got[0], expected[0], label)
+        if got[0]:
+            self.assertTrue(_same(got[1], expected[1]),
+                            f'{label}: {got[1]!r} != {expected[1]!r}')
+        else:
+            self.assertEqual(got[1], expected[1], label)
+
+    def test_every_question_case_reads_the_safeloader_way(self):
+        for group in (QUESTION_FAST_DOCS, QUESTION_PYTHON_DOCS, QUESTION_REFUSED_DOCS):
+            for label, text in group.items():
+                with self.subTest(label):
+                    self._check_same(label, text)
+
+    def test_refused_cases_really_fail(self):
+        for label, text in QUESTION_REFUSED_DOCS.items():
+            with self.subTest(label):
+                self.assertFalse(_outcome(_python_load, text)[0])
+
+    def _kinds(self, text):
+        used = []
+        real_load = yaml.load
+
+        def spy(stream, Loader):
+            used.append(Loader)
+            return real_load(stream, Loader=Loader)
+        with unittest.mock.patch.object(yaml, 'load', spy):
+            _outcome(safe_load_yaml, text)
+        return _parser_kinds(used)
+
+    @unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
+    def test_a_question_outside_brackets_takes_the_fast_parser(self):
+        for label, text in QUESTION_FAST_DOCS.items():
+            with self.subTest(label):
+                self.assertEqual(self._kinds(text), ['C'], label)
+
+    @unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
+    def test_a_question_inside_brackets_goes_to_the_python_parser(self):
+        for label, text in {**QUESTION_PYTHON_DOCS, **QUESTION_REFUSED_DOCS}.items():
+            with self.subTest(label):
+                self.assertEqual(self._kinds(text)[-1], 'Python', label)
+
+    @unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
+    def test_marks_counted_some_other_way_hand_over_to_python(self):
+        """The bracket check slices the text by libyaml's marks. If a libyaml
+        build counted them in bytes rather than characters, a slice would
+        miss its brackets; the check must then answer "Python decides", not
+        "no ? here"."""
+        text = 'place: Łódź\npersons: [P-0123456789]\ndate: 1880?\n'
+        loader = yaml.CSafeLoader(text)
+        try:
+            node = loader.get_single_node()
+        finally:
+            loader.dispose()
+        self.assertFalse(_lib._flow_holds_question(node, text))
+        as_if_bytes = text.encode('utf-8').decode('latin-1')
+        self.assertTrue(_lib._flow_holds_question(node, as_if_bytes))
+
+    def test_same_answers_without_libyaml(self):
+        fake = _yaml_without_libyaml()
+        with unittest.mock.patch.object(_lib, 'yaml', fake):
+            for group in (QUESTION_FAST_DOCS, QUESTION_PYTHON_DOCS, QUESTION_REFUSED_DOCS):
+                for label, text in group.items():
+                    with self.subTest(label):
+                        self._check_same(label, text)
+        self.assertEqual(set(fake.loaders_used), {yaml.SafeLoader})
+
+
+# The #228 audit's sweep, rerun for #392 with `?` in play: about 5.9
+# million documents, half an hour on 12 cores, so it runs only with
+# FHA_SLOW_TESTS=1.
+_SWEEP_ALPHABET = list('!&*%@`|>\'"#?:-,[]{}\\') + ['\t', '\ufeff', ' ', '\r', '\n']
+_SWEEP_SYNTHETIC_BASES = [
+    'persons: [P-0123456789, P-0123456780]\ndate: 1880?\n',
+    'born: {place: Ohio, year: 1880?}\n',
+    'note: |\n  was it 1880?\n  yes\n',
+    'note: >-\n  folded?\n  text\n',
+    '- id: C-0123456789\n  persons: [P-0123456789]\n  date: 1880-05?\n',
+    '? a\n: b?\n',
+    'a: "quoted ?"\nb: \'single ?\'\n',
+    'url: https://example.org/p?id=7\npersons: [P-0123456789,\n  P-0123456780]\n',
+]
+
+
+def _sweep_shipped_bases(count=10):
+    """The `count` shortest shipped blocks with a flow list in them."""
+    fence = re.compile(r'^```ya?ml[^\n]*\n(.*?)^```', re.S | re.M)
+    found = []
+    for p in sorted((ROOT / 'example-archive').rglob('*.md')):
+        if '.cache' in p.parts or 'generated' in p.parts:
+            continue
+        text = p.read_text(encoding='utf-8')
+        fm = _lib.FRONT_RE.match(text)
+        if fm:
+            found.append(fm.group(1))
+        body = text[fm.end():] if fm else text
+        found.extend(m.group(1) for m in fence.finditer(body))
+    return sorted((b for b in found if '[' in b), key=lambda b: (len(b), b))[:count]
+
+
+def _questioned(block):
+    """The block with `?` written at the end of every `key: value` value."""
+    return re.sub(r'^(\s*(?:- )?[\w-]+: \S.*?)$', r'\1?', block, flags=re.M)
+
+
+def _sweep_parts():
+    """The sweep, cut into parts that can run side by side: (mode, base)."""
+    shipped = _sweep_shipped_bases()
+    return ([('insert', b) for b in _SWEEP_SYNTHETIC_BASES + [_questioned(b) for b in shipped]]
+            + [('insert-question', b) for b in shipped]
+            + [('replace-value', b) for b in shipped + _SWEEP_SYNTHETIC_BASES])
+
+
+def _sweep_documents(part):
+    mode, base = part
+    pairs = [a + b for a in _SWEEP_ALPHABET for b in _SWEEP_ALPHABET]
+    if mode == 'insert':
+        # 1. Every pair at every position of a `?`-bearing base.
+        for i in range(len(base) + 1):
+            for pair in pairs:
+                yield base[:i] + pair + base[i:]
+    elif mode == 'insert-question':
+        # 2. A plain shipped block: only insertions that add a `?` (without
+        #    one the rule is the #228 rule, which that sweep already proved),
+        #    so each pair with a `?` in it, and a `?` between each pair.
+        q_pairs = sorted({p for p in pairs if '?' in p} |
+                         {a + '?' + b for a in _SWEEP_ALPHABET for b in _SWEEP_ALPHABET})
+        for i in range(len(base) + 1):
+            for pair in q_pairs:
+                yield base[:i] + pair + base[i:]
+    else:
+        # 3. Every `key: value` value replaced whole by a pair with a `?`
+        #    before, after or in it, and each character as `[c?]`, `[?c]`,
+        #    `{c?}`, `{a: c?}`, `c?` and `?c`.
+        values = sorted(
+            {p + '?' for p in pairs} | {'?' + p for p in pairs} |
+            {p for p in pairs if '?' in p} |
+            {f(c) for c in _SWEEP_ALPHABET for f in (
+                lambda c: f'[{c}?]', lambda c: f'[?{c}]', lambda c: f'{{{c}?}}',
+                lambda c: f'{{a: {c}?}}', lambda c: f'{c}?', lambda c: f'?{c}')})
+        lines = base.split('\n')
+        for n, line in enumerate(lines):
+            m = re.match(r'(\s*(?:- )?[\w-]+: )\S', line)
+            if not m:
+                continue
+            for value in values:
+                yield '\n'.join(lines[:n] + [m.group(1) + value] + lines[n + 1:])
+
+
+def _check_sweep_part(part):
+    """(documents checked, disagreements, up to five disagreeing texts)."""
+    checked = disagree = 0
+    examples = []
+    for text in _sweep_documents(part):
+        if '?' not in text:
+            continue
+        checked += 1
+        expected = _outcome(_python_load, text)
+        got = _outcome(safe_load_yaml, text)
+        same = got[0] == expected[0] and (
+            _same(got[1], expected[1]) if got[0] else got[1] == expected[1])
+        if not same:
+            disagree += 1
+            if len(examples) < 5:
+                examples.append(text)
+    return checked, disagree, examples
+
+
+@unittest.skipUnless(HAS_LIBYAML, 'PyYAML installed without libyaml')
+@unittest.skipUnless(os.environ.get('FHA_SLOW_TESTS') == '1',
+                     'slow sweep: set FHA_SLOW_TESTS=1 to run it')
+class QuestionMarkSweepTests(unittest.TestCase):
+    """The helper matches SafeLoader on every swept document: same value,
+    type for type, or the same error, word for word."""
+
+    def test_sweep(self):
+        import concurrent.futures
+        checked = disagree = 0
+        examples = []
+        with concurrent.futures.ProcessPoolExecutor() as pool:
+            for c, d, ex in pool.map(_check_sweep_part, _sweep_parts()):
+                checked += c
+                disagree += d
+                examples.extend(ex)
+        print(f'\n#392 sweep: {checked} documents with a ?, {disagree} disagreements')
+        self.assertGreater(checked, 1000000)
+        self.assertEqual(disagree, 0, examples[:20])
 
 
 class TabEditStillWarnedEndToEndTests(unittest.TestCase):

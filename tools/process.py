@@ -228,6 +228,8 @@ from _lib import (
     OriginalBackup,
     ParsedName,
     append_paragraph_to_section,
+    source_notes_is_unfilled,
+    SOURCE_NOTES_PLACEHOLDER,
     bundle_role,
     claims_edit_problem,
     clear_read_only_bit,
@@ -1160,7 +1162,7 @@ def _scaffold_text(
     if notes_body:
         lines.append(notes_body.rstrip())
     else:
-        lines.append('*(none yet - drafted in the AI pass)*')
+        lines.append(SOURCE_NOTES_PLACEHOLDER)
     lines.append('')
     return '\n'.join(lines)
 
@@ -5780,7 +5782,8 @@ def process_refile(
     body_start = (bounds[1] + 1) if bounds is not None else 0
     cr = '\r' if '\r\n' in old_text else ''
     new_lines, _created, _old = append_paragraph_to_section(
-        rew_lines, body_start, 'Notes', note, cr)
+        rew_lines, body_start, 'Notes', note, cr,
+        is_placeholder=source_notes_is_unfilled)
     final_text = '\n'.join(new_lines)
 
     # Belt-and-braces guards (the run_source_note / claim-writer posture): the

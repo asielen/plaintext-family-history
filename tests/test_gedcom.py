@@ -1004,8 +1004,8 @@ class UnreadablePrivacyRecordTests(unittest.TestCase):
         conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
         conn.row_factory = sqlite3.Row
         try:
-            unread: list = []
-            withheld = gedcom._restricted_source_ids(conn, self.root, unread)
+            privacy = gedcom.export_privacy(conn, self.root)
+            withheld, unread = privacy.restricted_sources, privacy.unreadable_sources
         finally:
             conn.close()
         self.assertNotIn('s-0000000001', withheld)

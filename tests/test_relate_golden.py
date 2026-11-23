@@ -99,7 +99,7 @@ class RelateMatchesRecordedAnswersTests(unittest.TestCase):
         # of only "no blood". (example-archive has no cousins; the word grid in
         # test_kinship pins those.)
         texts = [v['text'] for v in self.expected.values()]
-        for word in ('grandaunt', 'grandniece', 'great-grandfather', 'your wife',
+        for word in ('great-aunt', 'great-niece', 'great-grandfather', 'your wife',
                      'no blood relationship'):
             with self.subTest(word=word):
                 self.assertTrue(any(word in t for t in texts))

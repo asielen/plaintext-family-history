@@ -252,6 +252,8 @@ from _lib import (
     yaml_inline,
     append_file_entry_to_record,
     append_paragraph_to_section,
+    source_notes_is_unfilled,
+    SOURCE_NOTES_PLACEHOLDER,
     claims_edit_problem,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -420,7 +422,8 @@ def run_source_note(
     paragraph = '\n'.join(ln.rstrip('\r') for ln in note_body.split('\n'))
 
     new_lines, _created, _old_content = append_paragraph_to_section(
-        lines, body_start, 'Notes', paragraph, cr)
+        lines, body_start, 'Notes', paragraph, cr,
+        is_placeholder=source_notes_is_unfilled)
     new_text = '\n'.join(new_lines)
     # A link in the note is written in the archive's link form (SPEC §18).
     new_text = convert_written_links(text_in, new_text, link_writer(archive_root))
@@ -1968,9 +1971,11 @@ def _trimmed(content: list[str]) -> list[str]:
 
 
 def _is_placeholder(content: list[str]) -> bool:
-    """True for an empty section or one holding only `(none yet)`."""
+    """True for an empty section or one holding only `(none yet)` or the
+    placeholder `fha process` writes under a new source's Notes."""
     body = _trimmed(content)
-    return not body or (len(body) == 1 and body[0].strip() in ('*(none yet)*', '(none yet)'))
+    return not body or (len(body) == 1 and body[0].strip() in (
+        '*(none yet)*', '(none yet)', SOURCE_NOTES_PLACEHOLDER))
 
 
 def _outside_fence(content: list[str]) -> list[str]:
@@ -2741,7 +2746,8 @@ def _run_source_merge(archive_root: Path, fha_config: dict, keeper_id: str,
         n_files=len(plans), n_claims=len(retiree_cids),
         differences=_differing_fields(keeper_meta, retiree_meta),
         comments=_frontmatter_comment_pairs(retiree_lines))
-    lines, _, _ = append_paragraph_to_section(lines, body_start, 'Notes', paragraph, cr)
+    lines, _, _ = append_paragraph_to_section(
+        lines, body_start, 'Notes', paragraph, cr, is_placeholder=source_notes_is_unfilled)
     for piece in private_pieces:
         lines, _, _ = append_paragraph_to_section(lines, body_start, 'Notes', piece, cr)
     # Prose above the first section is the human's, except the scaffold's

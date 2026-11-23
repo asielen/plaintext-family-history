@@ -300,6 +300,8 @@ class ProcessRefileTestCase(unittest.TestCase):
         self.assertEqual(rec['meta']['files'][0]['file'], f'documents/photos/portrait_{SID.lower()}.jpg')
         body = record.read_text(encoding='utf-8')
         self.assertIn('previously named portrait.jpg', body)
+        # #393: the refile note replaces the scaffold's "none yet" line.
+        self.assertNotIn('none yet', body)
         # The embedded SOURCE keyword is deliberately NOT stripped.
         self.assertEqual(store.keywords[str(asset)], [f'SOURCE: {SID}'])
         self.assertIn('Lightroom', out)
