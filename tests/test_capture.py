@@ -449,7 +449,8 @@ class CaptureTestCase(unittest.TestCase):
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
         recipes = capture._load_site_recipes()
         names = {getattr(m, 'SOURCE_NAME', m.__name__): m for m in recipes}
-        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'WVCulture'})
+        self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'WVCulture',
+                                      'InternetArchive'})
 
         urls = {
             'Ancestry': 'https://www.ancestry.com/discoveryui-content/view/1:2',
@@ -457,6 +458,7 @@ class CaptureTestCase(unittest.TestCase):
             'Newspapers.com': 'https://www.newspapers.com/clip/1/x/',
             'FindAGrave': 'https://www.findagrave.com/memorial/1/x',
             'WVCulture': 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
+            'InternetArchive': 'https://archive.org/details/historyofamadorc00maso/page/n20',
         }
         samples = {
             'Ancestry': _sample('ancestry'),
@@ -464,8 +466,9 @@ class CaptureTestCase(unittest.TestCase):
             'Newspapers.com': _sample('newspapers'),
             'FindAGrave': _sample('findagrave'),
             'WVCulture': _sample('wvculture-view'),
+            'InternetArchive': _sample('archiveorg-bookreader'),
         }
-        # Each recipe detects its own sample and rejects the other three.
+        # Each recipe detects its own sample and rejects the others.
         for owner, mod in names.items():
             for site, html in samples.items():
                 detected = mod.detect(html, urls[site])
@@ -1045,6 +1048,44 @@ class CaptureTestCase(unittest.TestCase):
                     'https://images.wvculture.org/1984148/0002530.gif?t=1'):
             self.assertEqual(wvculture._image_src(f'<img alt="x" src="{src}">'),
                              'https://images.wvculture.org/1984148/0002530.gif', src)
+
+    def test_internet_archive_book_page_is_filed_as_a_book_with_a_citation(self) -> None:
+        # A page of a county history on archive.org, saved without the add-on's
+        # own hints: still a book, still a citation that names the book and the
+        # link to the page - not a generic website with the viewer's text.
+        url = 'https://archive.org/details/historyofamadorc00maso/page/n20/mode/2up'
+        rc = self._capture(_sample('archiveorg-bookreader'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'History of Amador County, California')
+        self.assertEqual(meta['source_type'], 'book')
+        self.assertEqual(meta['source_class'], 'derivative')
+        self.assertEqual(meta['repository'], 'Internet Archive')
+        self.assertNotIn('source_date', meta)    # the book's year is the add-on's to give
+        self.assertTrue(meta['citation'].startswith(
+            'Jesse D. Mason, History of Amador County, California; digital images, Internet Archive '
+            '(https://archive.org/details/historyofamadorc00maso/page/n20 : accessed '), meta['citation'])
+        self.assertIn('https://archive.org/details/historyofamadorc00maso/page/n20',
+                      [x['url'] for x in meta['external_links']])
+
+    def test_internet_archive_recording_is_not_filed_as_a_book(self) -> None:
+        # Codex 4662757865: an oral-history recording saved from archive.org is
+        # captured as a plain page, never filed as a book.
+        from capture_recipes import archiveorg
+        html = ('<html><head><title>Oral history interview : Free Download, Borrow, and Streaming : Internet Archive'
+                '</title><meta property="mediatype" content="audio"></head><body><p>An interview</p></body></html>')
+        url = 'https://archive.org/details/oral-history-interview-01'
+        self.assertFalse(archiveorg.detect(html, url))
+        rc = self._capture(html, url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertNotEqual(meta.get('source_type'), 'book')
+
+    def test_internet_archive_other_pages_are_not_claimed(self) -> None:
+        from capture_recipes import archiveorg
+        for url in ('https://archive.org/search?query=hartley', 'https://archive.org/',
+                    'https://archive.org.evil.example/details/abc', 'https://example.com/details/abc'):
+            self.assertFalse(archiveorg.detect('<html></html>', url), url)
 
     def test_findagrave_date_from_title_and_memorial_park(self) -> None:
         # B2: lifespan only in the title → still read (the title shows it),
