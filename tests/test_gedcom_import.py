@@ -1732,7 +1732,9 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         # space is still prose: it joins the note above it, words kept.
         for line in ('- and her sister', '-30 degrees, the well froze',
                      '–1940 they stayed on the farm', '—1918 was the year of the flu',
-                     '\xa01937 the farm was sold', '+2 more cousins in Topeka'):
+                     '\xa01937 the farm was sold', '+2 more cousins in Topeka',
+                     '-1920 I started school in Fairview', '+2 US Army cousins came home',
+                     '\xa01918 A hard year for the family'):
             with self.subTest(line=line):
                 text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n' + line + '\n0 TRLR\n'
                 records, malformed, joined = gedcom_import.parse_gedcom(text)
@@ -1742,18 +1744,21 @@ class AdversarialFixtureTestCase(_ArchiveCase):
                                  'Rose kept the bible ' + line.strip())
 
     def test_sign_prose_keeps_the_numbered_prose_rule_on(self) -> None:
-        # "-5 below zero" is the file's only level-less line. It must still
-        # mark the file as having broken lines, so "2 brothers nearby" under
-        # the note joins too instead of becoming an unknown BROTHERS tag.
-        text = ('0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
-                '1 NOTE She remembered the winter of 1936\n-5 below zero that January\n'
-                '2 brothers nearby helped with the cattle\n0 TRLR\n')
-        records, malformed, joined = gedcom_import.parse_gedcom(text)
-        self.assertEqual(malformed, [])
-        self.assertEqual(joined, [5, 6])
-        note = records[1].children[1]
-        self.assertEqual(note.children, [])
-        self.assertTrue(note.value.endswith('helped with the cattle'), note.value)
+        # A "-5 below zero" line may be the file's only level-less line. It
+        # must still mark the file as having broken lines, so "2 brothers
+        # nearby" under the note joins too instead of becoming an unknown
+        # BROTHERS tag whose words appear in no warning.
+        for first in ('-5 below zero that January', '-1920 I started school',
+                      '-1 NAME x'):
+            with self.subTest(first=first):
+                text = ('0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+                        '1 NOTE She remembered the winter of 1936\n' + first + '\n'
+                        '2 brothers nearby helped with the cattle\n0 TRLR\n')
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                note = records[1].children[1]
+                self.assertEqual(note.children, [])
+                self.assertTrue(note.value.endswith('helped with the cattle'), note.value)
+                self.assertIn(6, joined)
 
 
 if __name__ == '__main__':

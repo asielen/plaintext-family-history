@@ -289,7 +289,10 @@ _LEVEL_SIGNS = '-+−‐‑‒–—﹣＋－'
 
 
 # After a sign or an odd space: digits, then a GEDCOM tag ("NAME", "@I1@ INDI").
-_BROKEN_LEVEL_RE = re.compile(r'\d+\s+(?:@[^@\s]+@\s+)?[A-Z_][A-Z0-9_]*(?:\s|$)')
+# A tag is 3-5 capitals or starts with "_", so "-1920 I started school" or
+# "+2 US Army cousins" in a note is prose, not a broken level.
+_BROKEN_LEVEL_RE = re.compile(
+    r'\d+\s+(?:@[^@\s]+@\s+)?(?:_[A-Z0-9_]+|[A-Z][A-Z0-9]{2,4})(?:\s|$)')
 
 
 def _looks_like_level(line: str) -> bool:
@@ -367,8 +370,11 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     malformed: list[str] = []
     joined: list[int] = []
     lines = text.splitlines()
+    # Whether the file has level-less lines at all. This keeps the plain
+    # "starts with a digit" test on purpose: a line reported by the stricter
+    # _looks_like_level must never switch the prose rule off for the file.
     broken = any(ln.strip() and not _GEDCOM_LINE_RE.match(ln.strip('﻿'))
-                 and not _looks_like_level(ln) for ln in lines)
+                 and not ln.lstrip(' 	﻿')[:1].isdigit() for ln in lines)
 
     for lineno, rawline in enumerate(lines, start=1):
         if not rawline.strip():
