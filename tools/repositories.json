@@ -5320,6 +5320,31 @@
    "guide": "australia-nz"
   },
   {
+   "id": "ar:australia-nz:familysearch-new-zealand-collections",
+   "name": "FamilySearch (New Zealand collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "AU",
+    "NZ"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "vital"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Church records, civil registration indexes, and other collections.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "australia-nz"
+  },
+  {
    "id": "ar:austria:anno-austrian-newspapers-online",
    "name": "ANNO (Austrian Newspapers Online)",
    "url": "https://anno.onb.ac.at/",
@@ -7125,6 +7150,55 @@
     "online"
    ],
    "about": "Each Comunidad Autonoma has its own archive system with significant holdings. Catalonia (Arxiu Nacional de Catalunya), Basque Country (Irargi), Galicia (Arquivo de Galicia), and Andalusia (Archivo General de Andalucia) have the most extensive online collections.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "spain-portugal"
+  },
+  {
+   "id": "ar:spain-portugal:familysearch-portugal-collections",
+   "name": "FamilySearch (Portugal collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "ES",
+    "PT"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "vital"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Extensive collection of Portuguese parish records, civil registration, and passport records. Strong coverage for the Azores and Madeira.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "spain-portugal"
+  },
+  {
+   "id": "ar:spain-portugal:ancestry-com-portugal-collections",
+   "name": "Ancestry.com (Portugal collections)",
+   "url": "https://www.ancestry.com/",
+   "countries": [
+    "ES",
+    "PT"
+   ],
+   "years": null,
+   "records": [
+    "church"
+   ],
+   "access": "paid",
+   "channel": [
+    "online"
+   ],
+   "about": "Some Portuguese collections including selected civil and church records",
    "how": "",
    "from": [
     "autoresearch-genealogy"

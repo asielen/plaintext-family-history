@@ -39,9 +39,10 @@ Everything else in a guide is kept as written.
 A guide's row and a genealogy-mcp row are one row when their URLs match
 (lower-case host, `www.` and trailing slash dropped) and they name a country in
 common (`*` alone is not one); a genealogy-mcp row takes in at most one guide row.
-Two genealogy-mcp rows never merge, nor do rows from two different guides, nor a
-row from a topic guide (Jewish, African American): each carries its own text, so
-the same site listed in the England and the Scotland guides stays two rows.
+No other rows merge: not two genealogy-mcp rows, not two guide rows (from one
+guide or two), not a row from a topic guide (Jewish, African American). Each
+carries its own text, so the England and the Scotland guides' Ancestry rows, or
+one guide's Spain and Portugal FamilySearch rows, stay two rows.
 """
 
 from __future__ import annotations
@@ -143,7 +144,9 @@ URL_FIXES = {
 # `##` section's heading instead ("Overview" under "NARA Access to Archival Databases").
 _GENERIC_HEADINGS = {'overview', 'summary', 'about', 'details'}
 # Text written to an AI assistant rather than to the person researching.
-_AI_WORDS = re.compile(r'\b(?:Claude|ChatGPT|GPT(?:-\d+)?|LLMs?|AI)\b')
+# "Claude" alone is a French given name and place name (Saint-Claude), so only the
+# phrases that mean the AI tool count.
+_AI_WORDS = re.compile(r'\b(?:Claude (?:multimodal|can|Code|AI)|ChatGPT|GPT-\d+|LLMs?|AI)\b')
 
 # Guide text keywords that add a record kind (heading and Coverage text).
 _RECORD_KEYWORDS = (
@@ -415,13 +418,11 @@ def merge_rows(rows: list[dict]) -> list[dict]:
     out, by_url, absorbed = [], {}, set()
 
     def joins(base: dict, row: dict) -> bool:
-        if row['id'].startswith('mcp:') or row.get('topics'):
+        # Only a genealogy-mcp row takes in a guide row. Two rows of one guide stay
+        # apart too: "FamilySearch (Portugal collections)" is not the Spain row.
+        if not base['id'].startswith('mcp:') or row['id'].startswith('mcp:') or row.get('topics'):
             return False
-        if not _shared_country(base['countries'], row['countries']):
-            return False
-        if base['id'].startswith('mcp:'):
-            return base['id'] not in absorbed
-        return base['guide'] == row['guide']
+        return base['id'] not in absorbed and _shared_country(base['countries'], row['countries'])
 
     for row in rows:
         key = normalize_url(row['url']) if row['url'] else None

@@ -260,6 +260,12 @@ class GuideFileTests(unittest.TestCase):
         self.assertNotIn('Claude', out.split('-->', 1)[1])
         self.assertNotIn('ChatGPT', out)
 
+    def test_a_person_or_place_named_claude_is_kept(self):
+        # Jean-Claude and Saint-Claude are people and places in his records, not the AI tool.
+        for line in ('Baptism of Jean-Claude Martin, 1802, in Saint-Claude (Jura).',
+                     'The parish priest, Fr. Claude Dupont, kept the register. Births are complete.'):
+            self.assertEqual(br.strip_ai_sentences(line), line)
+
     def test_a_guide_without_a_checked_date_stops_the_build(self):
         with self.assertRaises(br.BuildError):
             br.guide_file('usa-vital-records', SAMPLE_GUIDE.replace('last_verified: 2026-05-19\n', ''), 'x')
@@ -297,6 +303,14 @@ class BuildTests(unittest.TestCase):
         rows = {r['id']: r for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()}
         self.assertEqual(rows['ar:england-wales:fairview-search']['how'], 'English advice.')
         self.assertEqual(rows['ar:scotland:fairview-search']['how'], 'Scottish advice.')
+
+    def test_two_rows_of_one_guide_for_one_site_stay_apart(self):
+        # The Portugal collections row (Azores, Madeira) must not fold into the Spain row.
+        text = SAMPLE_GUIDE.replace('### Reed Reading Room\n- **URL**: https://reedroom.example/',
+                                    '### Reed Reading Room\n- **URL**: https://www.example-search.org/search')
+        catalog, _ = br.build([], 'c', '2026-11-15', {'spain-portugal': text}, 'd')
+        rows = {r['id'] for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()}
+        self.assertEqual(rows, {'ar:spain-portugal:fairview-search', 'ar:spain-portugal:reed-reading-room'})
 
     def test_a_topic_guide_row_and_a_second_mcp_row_stay_apart(self):
         aa = SAMPLE_GUIDE.replace('- **Note**: Open the image of every hit.', '- **Note**: Freedmen records.')
