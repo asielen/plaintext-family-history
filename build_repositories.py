@@ -114,6 +114,15 @@ STEM_COUNTRIES = {
     'usa-military': ['US'],
     'usa-vital-records': ['US'],
 }
+# For a guide about two countries, the words that tie one row to one of them.
+_STEM_COUNTRY_NAMES = {
+    'spain-portugal': {'ES': r'\bspa(?:in|nish)\b|\bespañ|\bcatal', 'PT': r'\bportug|\bazores\b|\bmadeira\b'},
+    'australia-nz': {'AU': r'\baustralia|\btasmania|\bnew south wales\b|\bvictoria|\bqueensland|'
+                           r'\bwestern australia|\bsouth australia|\bnorthern territory',
+                     'NZ': r'\bnew zealand|\bpapers past\b'},
+    'russia-ukraine': {'RU': r'\brussia', 'UA': r'\bukrain'},
+    'poland': {'PL': r'\bpol(?:and|ish)\b', 'BY': r'\bbelarus'},
+}
 STEM_TOPICS = {'jewish-genealogy': ['jewish'], 'african-american': ['african-american']}
 STEM_RECORDS = {
     'usa-census': ['census'],
@@ -299,7 +308,8 @@ def _channels(*texts: str) -> list[str]:
     t = ' '.join(texts).lower()
     out = []
     in_person = re.search(r'in-person|in person|on-site|on site', t) is not None
-    letter = re.search(r'\bmail\b|\bpost\b|by post|written request|by letter', t) is not None
+    # "post-1895" and "post-emancipation" are dates, not the post office.
+    letter = re.search(r'\bmail\b|\bpost\b(?!-)|written request|by letter', t) is not None
     if re.search(r'online|browser|web|searchable|ai-', t) or not (in_person or letter):
         out.append('online')
     if in_person:
@@ -307,6 +317,21 @@ def _channels(*texts: str) -> list[str]:
     if letter:
         out.append('by letter')
     return out
+
+
+def _row_countries(stem: str, heading: str, coverage: str) -> list[str]:
+    """A guide row's countries: the guide's, narrowed to the ones its heading (or,
+    failing that, its Coverage line) names, so "FamilySearch (Portugal collections)"
+    serves Portugal only and New Zealand's BDM Online is not offered for Australia."""
+    allc = list(STEM_COUNTRIES[stem])
+    names = _STEM_COUNTRY_NAMES.get(stem)
+    if not names:
+        return allc
+    for text in (heading, coverage):
+        named = [c for c in allc if re.search(names[c], text, re.IGNORECASE)]
+        if named:
+            return named
+    return allc
 
 
 def _records(stem: str, heading: str, coverage: str) -> list[str]:
@@ -360,7 +385,7 @@ def guide_rows(stem: str, text: str) -> list[dict]:
         url = URL_FIXES.get(url, url)
         coverage = bullets.get('Coverage') or next(
             (ln.strip() for ln in blk['lines'] if ln.strip() and not ln.lstrip().startswith(('-', '|', '#'))), '')
-        countries = list(STEM_COUNTRIES[stem])
+        countries = _row_countries(stem, heading, coverage)
         if stem == 'ireland' and re.search(r'Northern Ireland|PRONI', ' '.join(blk['lines']) + heading):
             countries.append('GB')
         if stem == 'mexico-latin-america':
@@ -379,7 +404,7 @@ def guide_rows(stem: str, text: str) -> list[dict]:
             'records': _records(stem, heading, coverage),
             'access': access,
             'channel': _channels(bullets.get('Searchable', ''), bullets.get('AI accessibility', ''),
-                                 bullets['Cost']),
+                                 bullets['Cost'], coverage),
             'about': strip_ai_sentences(coverage) or '',
             'how': strip_ai_sentences(bullets.get('Research tip') or bullets.get('Note') or '') or '',
             'from': ['autoresearch-genealogy'],
@@ -441,7 +466,8 @@ def merge_rows(rows: list[dict]) -> list[dict]:
             base['guide'] = row['guide']
         base['access'] = _access(base['access'], row['access'])
         base['from'] = _union(base['from'], row['from'])
-        base['countries'] = ['*'] if '*' in base['countries'] else _union(base['countries'], row['countries'])
+        # base['countries'] stays genealogy-mcp's own: the guide row adds text, not
+        # countries (Trove is not offered for New Zealand because a guide covers both).
         base['records'] = _union(base['records'], row['records'])
         base['channel'] = _union(base['channel'], row['channel'], CHANNELS)
         if row.get('topics'):

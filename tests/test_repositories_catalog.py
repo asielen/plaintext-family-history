@@ -231,6 +231,25 @@ class GuideRowTests(unittest.TestCase):
         rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
         self.assertEqual(rows['Fairview Search']['how'], 'Open the image of every hit.')
 
+    def test_a_two_country_guides_row_serves_the_country_it_names(self):
+        # A man with Azorean roots is not offered the Spain collections, and
+        # New Zealand's register is not offered for an Australian family.
+        text = SAMPLE_GUIDE.replace('### Fairview Search', '### Fairview Search (Portugal collections)')
+        text = text.replace('Local newspapers and cemetery lists.', 'Local newspapers for New Zealand.')
+        pt = {r['name']: r for r in br.guide_rows('spain-portugal', text)}
+        self.assertEqual(pt['Fairview Search (Portugal collections)']['countries'], ['PT'])
+        self.assertEqual(pt['Easton State Records Office']['countries'], ['ES', 'PT'])
+        nz = {r['name']: r for r in br.guide_rows('australia-nz', text)}
+        self.assertEqual(nz['Reed Reading Room']['countries'], ['NZ'])
+
+    def test_a_route_named_in_the_coverage_text_is_kept(self):
+        # "Most have online ordering" means he can order online, not only by letter.
+        text = SAMPLE_GUIDE.replace('Every state has an office.',
+                                    'Every state has an office. Most have online ordering, post-1900.')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertEqual(rows['Easton State Records Office']['channel'], ['online', 'by letter'])
+        self.assertEqual(br._channels('Indexed', 'Records post-1895 and post-emancipation'), ['online'])
+
     def test_topics_by_stem(self):
         rows = br.guide_rows('jewish-genealogy', SAMPLE_GUIDE)
         self.assertEqual(rows[0]['countries'], ['*'])
@@ -321,6 +340,14 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(sorted(rows), ['ar:african-american:fairview-search', 'mcp:fsearch', 'mcp:fsearch_latam'])
         self.assertNotIn('topics', rows['mcp:fsearch'])
         self.assertEqual(rows['mcp:fsearch_latam']['about'], 'Latin America.')
+
+    def test_merging_never_widens_a_sites_countries(self):
+        # Trove stays Australian even though the guide it merges with covers New Zealand too.
+        mcp = [dict(SAMPLE_MCP[0], countries=['AU'])]
+        catalog, _ = br.build(mcp, 'c', '2026-11-15', {'australia-nz': SAMPLE_GUIDE}, 'd')
+        r = [r for r in catalog['repositories'] if r['id'] == 'mcp:fsearch'][0]
+        self.assertEqual(r['from'], ['genealogy-mcp', 'autoresearch-genealogy'])
+        self.assertEqual(r['countries'], ['AU'])
 
     def test_two_listings_disagreeing_on_cost_never_say_free(self):
         mcp = [dict(SAMPLE_MCP[0], countries=['US'], access='free')]
@@ -422,6 +449,9 @@ class ShippedCatalogTests(unittest.TestCase):
         office = rows['ar:usa-vital-records:state-vital-records-offices']
         self.assertEqual(office['access'], 'paid')
         self.assertIn('by letter', office['channel'])
+        self.assertIn('online', office['channel'])
+        self.assertEqual(rows['ar:spain-portugal:familysearch-portugal-collections']['countries'], ['PT'])
+        self.assertEqual(rows['mcp:trove']['countries'], ['AU'])
 
 
 class ShippedGuideTests(unittest.TestCase):

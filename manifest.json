@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/repositories.json",
       "category": "operating",
-      "sha256": "4f66332f41cb6e43f1479017467dd014c7afc64928d3203e05a2d25cbcbece52",
+      "sha256": "096b225001ae8eca4a517a3655e31a959dd88ffd03610bbafc111942bcdb549d",
       "spec_version": "2.22",
       "src": "tools/repositories.json"
     },
@@ -1431,7 +1431,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "950b696f23b5f552581fb12284f4cecf4622be34dd145936145dd338f0e4454e",
+      "sha256": "a5046b0f4b285a4f768f98ed1821c9b58c0a89e69b0ff2cab63aa5e88228ea96",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },

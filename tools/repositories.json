@@ -311,7 +311,15 @@
    "name": "JewishGen",
    "url": "https://www.jewishgen.org",
    "countries": [
-    "*"
+    "*",
+    "RU",
+    "UA",
+    "BY",
+    "PL",
+    "LT",
+    "LV",
+    "MD",
+    "RO"
    ],
    "years": [
     1700,
@@ -375,7 +383,8 @@
    "name": "Geneanet",
    "url": "https://www.geneanet.org",
    "countries": [
-    "*"
+    "*",
+    "FR"
    ],
    "years": [
     1600,
@@ -514,6 +523,10 @@
    "name": "Memory of the People (Pamyat Naroda)",
    "url": "https://pamyat-naroda.ru",
    "countries": [
+    "RU",
+    "UA",
+    "BY",
+    "MD",
     "*"
    ],
    "years": [
@@ -541,6 +554,10 @@
    "name": "OBD Memorial",
    "url": "https://obd-memorial.ru",
    "countries": [
+    "RU",
+    "UA",
+    "BY",
+    "MD",
     "*"
    ],
    "years": [
@@ -1674,8 +1691,7 @@
    "name": "Szukajwarchiwach (Polish State Archives)",
    "url": "https://www.szukajwarchiwach.gov.pl",
    "countries": [
-    "PL",
-    "BY"
+    "PL"
    ],
    "years": [
     1600,
@@ -2330,8 +2346,7 @@
    "url": "https://digitarq.arquivos.pt",
    "countries": [
     "PT",
-    "BR",
-    "ES"
+    "BR"
    ],
    "years": [
     1500,
@@ -3026,8 +3041,7 @@
    "url": "https://www.geshergalicia.org",
    "countries": [
     "PL",
-    "UA",
-    "BY"
+    "UA"
    ],
    "years": [
     1772,
@@ -3086,7 +3100,10 @@
    "name": "Steve Morse One-Step tools",
    "url": "https://stevemorse.org",
    "countries": [
-    "*"
+    "US",
+    "*",
+    "RU",
+    "PL"
    ],
    "years": [
     1790,
@@ -3338,8 +3355,7 @@
    "name": "Trove (National Library of Australia)",
    "url": "https://trove.nla.gov.au",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": [
     1803,
@@ -3368,8 +3384,7 @@
    "name": "National Archives of Australia",
    "url": "https://www.naa.gov.au",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": [
     1860,
@@ -3397,8 +3412,7 @@
    "name": "Papers Past (New Zealand)",
    "url": "https://paperspast.natlib.govt.nz",
    "countries": [
-    "NZ",
-    "AU"
+    "NZ"
    ],
    "years": [
     1839,
@@ -5183,8 +5197,7 @@
    "name": "Ancestry.com.au",
    "url": "https://www.ancestry.com.au/",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": null,
    "records": [
@@ -5207,8 +5220,7 @@
    "name": "FamilySearch (Australia collections)",
    "url": "https://www.familysearch.org/",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": null,
    "records": [
@@ -5232,8 +5244,7 @@
    "name": "LINC Tasmania",
    "url": "https://libraries.tas.gov.au/",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": null,
    "records": [],
@@ -5254,8 +5265,7 @@
    "name": "Convict Records",
    "url": "https://convictrecords.com.au/",
    "countries": [
-    "AU",
-    "NZ"
+    "AU"
    ],
    "years": null,
    "records": [],
@@ -5300,7 +5310,6 @@
    "name": "Archives New Zealand",
    "url": "https://www.archives.govt.nz/",
    "countries": [
-    "AU",
     "NZ"
    ],
    "years": null,
@@ -5324,7 +5333,6 @@
    "name": "FamilySearch (New Zealand collections)",
    "url": "https://www.familysearch.org/",
    "countries": [
-    "AU",
     "NZ"
    ],
    "years": null,
@@ -6866,8 +6874,7 @@
    "name": "Mapa Nazwisk (Surname Map)",
    "url": "https://www.mapanazwisk.eu/en/",
    "countries": [
-    "PL",
-    "BY"
+    "PL"
    ],
    "years": null,
    "records": [],
@@ -6932,13 +6939,13 @@
    "name": "Ukrainian State Archives (various)",
    "url": "",
    "countries": [
-    "RU",
     "UA"
    ],
    "years": null,
    "records": [],
    "access": "paid",
    "channel": [
+    "online",
     "in person"
    ],
    "about": "The Central State Historical Archive of Ukraine in Kyiv (CDIAK) and Lviv (CDIAuL) hold the most extensive collections. Individual oblast archives hold records for their regions. Some have online catalogs; most require in-person or email research.",
@@ -7045,8 +7052,7 @@
    "name": "PARES (Portal de Archivos Españoles)",
    "url": "https://pares.mcu.es/",
    "countries": [
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [],
@@ -7067,8 +7073,7 @@
    "name": "FamilySearch (Spain collections)",
    "url": "https://www.familysearch.org/",
    "countries": [
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [
@@ -7092,8 +7097,7 @@
    "name": "Ancestry.com (Spain collections)",
    "url": "https://www.ancestry.com/",
    "countries": [
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [
@@ -7140,8 +7144,7 @@
    "name": "Regional Archives (Comunidades Autonomas)",
    "url": "",
    "countries": [
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [],
@@ -7162,7 +7165,6 @@
    "name": "FamilySearch (Portugal collections)",
    "url": "https://www.familysearch.org/",
    "countries": [
-    "ES",
     "PT"
    ],
    "years": null,
@@ -7187,7 +7189,6 @@
    "name": "Ancestry.com (Portugal collections)",
    "url": "https://www.ancestry.com/",
    "countries": [
-    "ES",
     "PT"
    ],
    "years": null,
@@ -7745,6 +7746,7 @@
    ],
    "access": "paid",
    "channel": [
+    "online",
     "in person",
     "by letter"
    ],
