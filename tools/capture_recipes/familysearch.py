@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 from capture import (
+    _today,
     domain_of,
     extract_tables,
     first_nonempty,
@@ -162,6 +163,59 @@ def _ark_record(url: str | None) -> bool:
     return bool(url and _ARK_RECORD_RE.search(url))
 
 
+_ARK_IMAGE_RE = re.compile(r'familysearch\.org/(?:[a-z]{2}/)?ark:/61903/3:1:([A-Z0-9-]+)', re.I)
+_PERSON_ARK_RE = re.compile(r'personArk=[^&\s]*1(?::|%3A)1(?::|%3A)[A-Z0-9-]+', re.I)
+
+
+def _ark_image(url: str | None) -> str | None:
+    """The image id when `url` is a bare film image (ark 3:1, no record behind
+    it), else None. A viewer opened from a record (`personArk=`) is that record."""
+    m = _ARK_IMAGE_RE.search(url or '')
+    if not m or _PERSON_ARK_RE.search(url or ''):
+        return None
+    return m.group(1).upper()
+
+
+_IMAGE_OF_RE = re.compile(r'\bImage\s+([\d,]+)\s+of\s+([\d,]+)', re.I)
+# The live viewer's header says "Film # 008129459": that number is the DGS
+# (image group), padded to nine digits, not the microfilm number, which the
+# viewer does not show (checked on a live film image, 2026-11-22). So a page
+# gives the DGS only; the add-on's own citation, from FamilySearch's data, has
+# the film number too.
+_DGS_RE = re.compile(r'\b(?:DGS|Film)\s*(?:#|no\.?|number)?:?\s*(\d{7,9})\b', re.I)
+_TITLE_TAIL_RE = re.compile(r'\s*(?:;\s*ark:/61903/\S*|[|•–—-]\s*(?:Film\s*#.*|FamilySearch))\s*$', re.I)
+
+
+def _extract_film_image(html: str, image_id: str) -> dict:
+    """A bare film image page: the DGS and image number the viewer shows,
+    and a citation that leads back to this exact image (the add-on's own
+    citation, sent in capture.json, wins; this is the fallback without it)."""
+    page = parse_html(html)
+    text = page.text
+    title = _TITLE_TAIL_RE.sub('', (page.title or '').strip()).strip() or f'FamilySearch image {image_id}'
+    ark = f'https://www.familysearch.org/ark:/61903/3:1:{image_id}'
+    parts = [f'"{title.rstrip(".,")}," images, FamilySearch ({ark} : accessed {_today()})']
+    of = _IMAGE_OF_RE.search(text)
+    if of:
+        parts.append(f'image {of.group(1)} of {of.group(2)}')
+    dgs = _DGS_RE.search(text)
+    if dgs:
+        parts.append(f'citing DGS {dgs.group(1).lstrip("0") or "0"}')
+    return {
+        'title': title,
+        'source_type': 'other',
+        'citation': '; '.join(parts) + '.',
+        'repository': 'FamilySearch',
+        'source_date': None,
+        'external_links': [{'url': ark}],
+        'people': [],
+        'body': visible_text(page),
+        'collection': title,
+        'terms': '',
+        'source_class': None,
+    }
+
+
 def detect(html: str, url: str | None) -> bool:
     if 'familysearch.org' in domain_of(url):
         return True
@@ -221,6 +275,11 @@ def _household_from_html(html: str) -> list[str]:
 
 def extract(html: str, url: str | None) -> dict:
     html = strip_seen_it(html)
+    image_id = _ark_image(url)
+    # A film image shows no record's facts; a record page reached through its
+    # image's address (a subject and "Others on This Record") is read as a record.
+    if image_id and not _GIVEN_SURNAME_RE.search(parse_html(html).text) and not _OTHERS_RE.search(html):
+        return _extract_film_image(html, image_id)
     page = parse_html(html)
     title, collection, title_person = _split_title_collection(page)
 

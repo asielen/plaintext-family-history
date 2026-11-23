@@ -277,6 +277,7 @@ from _lib import (
     append_paragraph_to_section,
     build_ahnentafel_map,
     claim_is_own_vital,
+    person_section_is_unfilled,
     configure_utf8_stdout,
     duplicate_name_problems,
     duplicate_person_name_message,
@@ -3350,12 +3351,16 @@ def _append_to_section(
     """Thin wrapper over `_lib.append_paragraph_to_section` (append mode).
 
     Adds `new_text` as a new, blank-line-separated paragraph at the END of
-    the section, never touching what was already there (the contract `note`
-    depends on: it is the human-written, nothing-ever-lost path). The shared
-    engine also treats a lone `*(none yet)*` placeholder as empty and creates
-    the heading at EOF when absent - see its docstring in `_lib.py`.
+    the section, never touching what he wrote there (the contract `note`
+    depends on: it is the human-written, nothing-ever-lost path). A section
+    holding only the scaffold's own placeholder (`*(none yet)*`, or the
+    "what goes here" text `person_section_is_unfilled` knows) is treated as
+    empty, so the first note replaces it; the engine creates the heading at
+    EOF when absent - see its docstring in `_lib.py`.
     """
-    return append_paragraph_to_section(lines, body_start, heading_text, new_text, cr)
+    return append_paragraph_to_section(
+        lines, body_start, heading_text, new_text, cr,
+        is_placeholder=person_section_is_unfilled)
 
 
 def run_edit(
@@ -4317,14 +4322,16 @@ def _add_edit_arguments(sub: argparse._SubParsersAction) -> None:
 
 
 _NOTE_DESCRIPTION = """\
-Append a quick note to Stories or Research Notes. Nothing is replaced.
+Append a quick note to Stories or Research Notes. Nothing you wrote is replaced.
 
   fha person note p-2b3c4d5e6f --section research --text "Check the 1880 census."
 
 Adds TEXT as a new paragraph at the end of the section (creating it if
-missing). Plain markdown, human-written; existing text is never rewritten
-or removed. Refuses if the section's <!-- private --> fencing is left
-unclosed, since it could not tell which side of it the new text belongs on."""
+missing). Plain markdown, human-written; text you wrote is never rewritten
+or removed. The first note replaces the section's "what goes here"
+instructions, if they are still there unchanged. Refuses if the section's
+<!-- private --> fencing is left unclosed, since it could not tell which
+side of it the new text belongs on."""
 
 
 def _add_note_arguments(sub: argparse._SubParsersAction) -> None:
