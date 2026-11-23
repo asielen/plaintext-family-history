@@ -1,0 +1,48 @@
+0 HEAD
+1 SOUR AdversarialFixture
+1 GEDC
+2 VERS 5.5.5
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Zoë /Fiction/
+2 GIVN Zoë
+2 SURN Fiction
+1 NAME Zed /Alternative/
+2 TYPE alias
+1 _VENDOR alpha
+2 _NESTED
+3 NOTE preserved detail
+1 EVEN
+2 TYPE
+1 NOTE first
+2 CONC -joined
+2 CONT next line
+1 BIRT
+2 DATE definitely not a date
+1 BIRT
+2 DATE 1 JAN 2000
+2 PLAC Fictional Vale
+1 DEAT
+2 DATE BEF 2099
+1 DEAT
+2 DATE AFT 2099
+1 SOUR @S1@
+2 NOTE @N1@
+2 OBJE @O1@
+2 CITN Fictional citation detail
+3 NOTE Unicode note: 星
+1 FAMS @F404@
+0 @F1@ FAM
+1 HUSB @I1@
+1 WIFE @I404@
+1 _EMPTY
+0 @N1@ NOTE detached fictional note
+1 _VENDOR_NOTE
+0 @S1@ SOUR
+1 TITL Fictional Archive Catalogue
+1 NOTE @N1@
+1 OBJE @O1@
+0 @O1@ OBJE
+1 FILE fictional-portrait.jpg
+2 TITL Fictional portrait
+0 TRLR

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -660,7 +660,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "3dcf2904520224a1378118776ce9603d52ef89e9db4e6940d82f59c9a00956aa",
+      "sha256": "46ba2711bc30dbbd38a0c43dd2aecef289b545a872bf6de48e40e75b2d7398a5",
       "spec_version": "2.22",
       "src": "tools/_lib.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
+      "sha256": "ce4714bee28d5f97fac1285e8f10ef6d6370f619335c12a2ae10f05250d831cf",
       "spec_version": "2.22",
       "src": "tools/gedcom_import.py"
     },
@@ -1249,7 +1249,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "5cdb540585e72b1271dd3b49a43b1a0d175e963ef4925e5340f42c80d5c92ee4",
+      "sha256": "dccb88df673970f2961e0157251b1d7a295c45dd9c4de4a14c27177acb1a698e",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },
