@@ -2635,6 +2635,13 @@ _SOUNDS_LIKE_PEOPLE = {
     'stubs/jovanovic__jovan_p-snd0000011.md': (
         'id: p-snd0000011\naliases: [p-snd0000011, Јован Јовановић]\nname: Јован Јовановић\n'
         'living: false\ntier: stub\n'),
+    # A private name left in aliases: written as a link, quoted and not.
+    'stubs/bradford__george_p-snd0000012.md': (
+        'id: p-snd0000012\naliases:\n  - p-snd0000012\n  - George Bradford\n'
+        '  - "[[George Wiśniewski]]"\n  - [[George Wiszniewski]]\nname: George Bradford\n'
+        'name_variants:\n  - {value: George Wiśniewski, restricted: true}\n'
+        '  - {value: George Wiszniewski, restricted: true}\n'
+        'living: false\ntier: stub\n'),
 }
 
 
@@ -2726,6 +2733,23 @@ class SoundsLikeTests(unittest.TestCase):
             self.assertEqual(rc, EXIT_CLEAN, (query, out))
             self.assertIn('p-snd0000009', out, query)
             self.assertIn('p-snd0000010', out, query)
+
+    def test_a_private_name_left_in_aliases_as_a_link_is_not_shown(self) -> None:
+        for argv in (['--sounds-like', 'Wisniewski'], ['--sounds-like', 'Wisniewski', '--json']):
+            rc, out, err = self._find(argv)
+            for text in (out, err):
+                self.assertNotIn('p-snd0000012', text)
+                self.assertNotIn('Wiśniewski', text)
+                self.assertNotIn('Wiszniewski', text)
+
+    def test_a_long_first_word_is_not_joined_to_the_next(self) -> None:
+        # D-M codes stop at six digits, so CalvinGeorge and CalvinHartley
+        # code alike: joining long words would list Warren Calvin Hartley,
+        # who has no George in his name.
+        rc, out, _err = self._find(['--sounds-like', 'Calvin George'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-fa7541e871', out)
+        self.assertNotIn('p-6f7g8h9jka', out)
 
     def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Jovanović'])

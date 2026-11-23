@@ -137,6 +137,8 @@ from _lib import (
     translit,
     vital_pick_key,
     _person_frontmatter_all,
+    alias_key_text,
+    yaml_list_link_text,
     person_alias_mirror,
     person_restricted_names,
 )
@@ -3069,15 +3071,33 @@ def _sound_term(word: str) -> dict:
 
 def _sounds_like_readings(query: str, terms: list[dict]) -> list[list[dict]]:
     """The ways to read the typed words for the match: as typed, then with
-    each two neighbouring words written as one, so "Van Deusen" also finds
-    a record that writes Vandeusen (and `_match_name` joins the record's
-    words the same way, so Vandeusen finds Van Deusen)."""
+    a surname prefix written onto the word after it (`_joins_next`), so
+    "Van Deusen" also finds a record that writes Vandeusen (and
+    `_match_name` joins the record's words the same way, so Vandeusen finds
+    Van Deusen)."""
     words = name_sound_words(query)
     readings = [terms]
     for i in range(len(words) - 1):
+        if not _joins_next(words[i]):
+            continue
         joined = [*words[:i], words[i] + words[i + 1], *words[i + 2:]]
         readings.append([_sound_term(w) for w in joined if len(w) > 1])
     return readings
+
+
+# Longer surname prefixes that are written both apart and joined; any word
+# of one to three letters (Van, De, Le, O, Mc, Mac, St, Ten) counts too.
+_SOUNDS_LIKE_LONG_PREFIXES = frozenset(
+    ('vande', 'vander', 'vanden', 'vonder', 'della', 'delle', 'dela', 'saint'))
+
+
+def _joins_next(word: str) -> bool:
+    """Is `word` a surname prefix that may be written onto the next word
+    (Van Deusen, Vandeusen)? Only short words and a few known prefixes: a
+    D-M code stops at six digits, so a long first word joined to anything
+    codes the same whatever follows, and "Calvin George" would find every
+    Calvin."""
+    return len(word) <= 3 or _fold_word(word) in _SOUNDS_LIKE_LONG_PREFIXES
 
 
 def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
@@ -3126,9 +3146,13 @@ def _record_public_names(archive_root: Path, person: dict) -> list[str]:
     seen = {n.lower() for n in names}
     raw = meta.get('aliases')
     for item in (raw if isinstance(raw, list) else [raw]):
-        if item is None or isinstance(item, (dict, list)):
+        if item is None or isinstance(item, dict):
             continue
-        alias = str(item).strip()
+        # A link (`"[[Name]]"`, or unquoted, which YAML reads as a nested
+        # list) names the same handle as the bare text: read it the way the
+        # alias mirror does, or a private name written as a link is shown.
+        text = yaml_list_link_text(item) if isinstance(item, list) else str(item)
+        alias = alias_key_text(text).strip()
         if not alias or ID_RE.search(alias) or alias.lower() in private:
             continue
         if '_' in alias:
@@ -3153,11 +3177,12 @@ def _match_name(name: str, terms: list[dict],
     word's exact spelling), or None. A query word takes the name word with
     its own spelling when there is one, else the first that shares a code.
 
-    Two neighbouring words of the name also count as one word (Van Deusen
-    as Vandeusen, O Brien as OBrien), shown as written."""
+    A surname prefix and the word after it also count as one word (Van
+    Deusen as Vandeusen, O Brien as OBrien; `_joins_next`), shown as
+    written."""
     words = name_sound_words(name)
     units = [(w, w) for w in words if len(w) > 1]
-    units += [(f'{a} {b}', a + b) for a, b in zip(words, words[1:])]
+    units += [(f'{a} {b}', a + b) for a, b in zip(words, words[1:]) if _joins_next(a)]
     matched: list[str] = []
     exact = 0
     for term in terms:

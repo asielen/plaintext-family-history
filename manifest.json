@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "f93f6dffd3c48324a37b3bccd2b3f8972645a70d89c6482420a0cc15fc31e601",
+      "sha256": "d191b517ceb24f57f136af848aa92070c052218601b130e6189f18da8290b840",
       "spec_version": "2.23",
       "src": "tools/find.py"
     },
@@ -1466,7 +1466,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "24ab7e4a5b6ef8faf1be1261fe47a50920ac5d06e0f11561c18cf0329e478252",
+      "sha256": "e3f32ef611fa85fdff72f04af16b9e3e4fe79225cf725b53837e34b86be2b62c",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },
