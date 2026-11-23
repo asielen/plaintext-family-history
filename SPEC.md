@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.19, 2026-11-20**
+**Version 2.22, 2026-11-22**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -162,7 +162,7 @@ The readers below keep their fallbacks so older records still read. The linter r
 
 **Every other claim naming two or more people gives everyone a role too**: the person whose fact it is as `subject:` (a residence, an occupation, a military record, or `head` / `household_member` on a census), the others by their part (`spouse`, `child`, `parent`, `employer`, `witness`, a descriptive word). When nobody is primary (a party they all attended, a household that moved together), `subject:` lists everyone, and that is the human's answer, not a default. A father's occupation that names his son, unroled, shows on the son's timeline as the son's job. The linter warns on the gap; it does not block an accept, since these claims make no one born, dead or married.
 
-**Role words.** The `roles:` keys this section gives a meaning to form one closed list: the derivation roles `child`, `parent`, `spouse`, `head`, `household_member`, `enslaved`, `enslaver`, `employer`, `employee`, `member`, `deceased`, with the social-tie parties `friend`, `associate`, `neighbor` (the §8.2 subtypes of the same name, which name their own parties); and the people a record names who are not parties to the event, `informant`, `witness`, `midwife`, `physician`. A word outside the list is a **descriptive role**: valid and never rejected, it places the person on the claim and derives nothing. Spell the common ones one way: `subject` (whose fact the claim is, on a claim that is not an event), `sibling`, `grandparent`, `grandchild`, `godparent`, `grantor`, `grantee`, `officiant`. A word that is plainly a derivation role misspelt or in the plural (`parents:`, `parnet:`) is reported rather than read as a description, since reading it that way would keep that person out of the tree with nothing said.
+**Role words.** The `roles:` keys this section gives a meaning to form one closed list: the derivation roles `child`, `parent`, `spouse`, `head`, `household_member`, `enslaved`, `enslaver`, `employer`, `employee`, `member`, `deceased`, with the social-tie parties `friend`, `associate`, `neighbor` (the §8.2 subtypes of the same name, which name their own parties); and the people a record names who are not parties to the event, `informant`, `witness`, `midwife`, `physician`. A word outside the list is a **descriptive role**: valid and never rejected, it places the person on the claim and derives nothing. Spell the common ones one way: `subject` (whose fact the claim is, on a claim that is not an event), `sibling`, `grandparent`, `grandchild`, `godparent`, `grantor`, `grantee`, `officiant`, `named_for` (the person a child was named after, on a birth, baptism or `name` claim). A word that is plainly a derivation role misspelt or in the plural (`parents:`, `parnet:`) is reported rather than read as a description, since reading it that way would keep that person out of the tree with nothing said.
 
 **Synonyms.** Six kin words are read exactly as the role they name: `mother` and `father` as `parent`, `son` and `daughter` as `child`, `husband` and `wife` as `spouse`.
 
@@ -780,7 +780,7 @@ A single `places/places.yaml` holds all places; they are tiny and number in the 
 
 `notes:` is optional and written only when there is something to say about the place: a brief history, with loose citations (Wikipedia) acceptable, since places are reference data, not genealogical conclusions. A new place carries none.
 
-**Place notes (Obsidian link mode).** With `links: obsidian` (§18), `fha views places` (and `fha views refresh`) writes one generated note per registered place: `places/{slug}_{l-id}.md`, the slug being the place's `name` folded to lowercase letters, digits and hyphens. The note exists so a place link has a file Obsidian can follow and each place is one node in its graph. It opens with frontmatter whose `aliases:` hold the place's ID, `name` and `alt_names`, then the `<!-- GENERATED … -->` header and the purpose block (§16a), then what the registry says: the hierarchy, the place it sits `within`, the coords, the other names, the dated `history:` and the `notes:`. Every registered place gets one. It lists no people or sources: Obsidian's backlinks show what mentions the place. `places.yaml` stays the only truth: the note is rebuilt from it and never read back, a change is made in `places.yaml`, and a place renamed there gets a note under its new name while the old note is removed and links naming the old file are pointed at the new one. A file in `places/` without the header is the human's: it is never overwritten or removed, and never a link target, even when its name carries a place's ID. `fha views clean` removes the notes, and in `id` mode none are written. The note adds nothing an export can carry: `fha site` builds its place pages from the registry, and no export copies `places/`.
+**Place notes (Obsidian link mode).** With `links: obsidian` (§18), `fha views places` (and `fha views refresh`) writes one generated note per registered place: `places/{slug}_{l-id}.md`, the slug being the place's `name` folded to lowercase letters, digits and hyphens. The note exists so a place link has a file Obsidian can follow and each place is one node in its graph. It opens with frontmatter whose `aliases:` hold the place's ID, `name` and `alt_names`, and, for a place with coords, `location: [lat, lon]`, the property Obsidian's map views read; then the `<!-- GENERATED … -->` header and the purpose block (§16a), then what the registry says: the hierarchy, the place it sits `within`, the coords, the other names, the dated `history:` and the `notes:`. Every registered place gets one. It lists no people or sources: Obsidian's backlinks show what mentions the place. `places.yaml` stays the only truth: the note is rebuilt from it and never read back, a change is made in `places.yaml`, and a place renamed there gets a note under its new name while the old note is removed and links naming the old file are pointed at the new one. A file in `places/` without the header is the human's: it is never overwritten or removed, and never a link target, even when its name carries a place's ID. `fha views clean` removes the notes, and in `id` mode none are written. The note adds nothing an export can carry: `fha site` builds its place pages from the registry, and no export copies `places/`.
 
 Most addresses never become places at all: they live as `place_text` on claims. A micro-place (house, address, cemetery, church, building) earns an l-record by the processing path like everything else: when it recurs and matters (the family home across decades of claims; the cemetery holding six relatives). **Recurrence is detected, not remembered:** the report surfaces unlinked `place_text` values that cluster past a threshold (and photo-GPS clusters near no known place) as place candidates; confirmed elevation mints the l-id and guides per-claim backfill of `place:`; `place_text` itself is never altered.
 
@@ -921,13 +921,33 @@ Tooling may propose answers and closures and append context; status changes requ
   question: "[[h-4f20aa91c3]] parents of [[p-cd795c61e0|Margaret Cole]]"
   repository: Ancestry
   collection: "Kansas State Census, 1875"
+  years: 1875
   terms: "Hartley, Breton Co."
   result: nil
+
+- date: 2026-07-09
+  question: "death of [[p-de957bcda1|Thomas Edward Hartley]]"
+  repository: Breton County clerk
+  collection: "Death register"
+  years: 1911/1925
+  terms: "Hartley"
+  result: unavailable (the clerk's office holds no registers before 1930; they went to the state archive)
 ```
 
-One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person; a person ID there makes the search count for that person); `repository`; `collection`; `terms`; `result` (`nil` | `found [[s-…]]` | `partial (note)` | `staged inbox/…`: captured into the inbox, not yet processed). `fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
+One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person; a person ID there makes the search count for that person); `repository`; `collection`; `years` (optional: the years of records the search covered, in EDTF, such as `1875` or `1911/1925`; with no `years`, the search covered whatever the collection holds); `terms`; `result`, one of:
 
-Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first**: "already searched (date)" is surfaced before any lead is proposed.
+- `nil`: searched, and nothing was found in what the entry says was searched;
+- `found [[s-…]]`: found, and processed as that source;
+- `partial (note)`: something found, the note says what;
+- `staged inbox/…`: captured into the inbox, not yet processed;
+- `requested (note)`: asked for by letter, email or form, and no answer yet;
+- `unavailable (note)`: could not be searched at all (the office was closed, the records are lost or closed to the public, the site was down); the note says why.
+
+`fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
+
+**A nil says what one search covered.** It is not on its own evidence that the record was never made: it supports a negative finding (Appendix A.2) only together with what shows the record would have been made, survives for those years and that place, and could have been found by that search, and that reasoning is written in a proof-argument source (§14). An `unavailable` or `requested` entry is no evidence either way: the search is still to be done.
+
+Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first**: "already searched (date)" is surfaced before any lead is proposed. An `unavailable` or `requested` entry is shown as still to do, never as already searched.
 
 **Search history is optional.** The log is useful when present and never needed to understand or operate the archive. Being a durable record, it lives under `notes/`, never in `.cache/`.
 
@@ -1060,7 +1080,7 @@ Every field here is valid and fully defined, and most archives never use any of 
 
 Some of the most important genealogical findings are *absences*: a person who never married, had no children, or (for someone still living) has no death record. "We researched and it did not happen" is a real, citable conclusion, represented two ways:
 
-- **Negative-fact claim** (the researched case): a normal claim of the relevant `type` with **`negated: true`** and `evidence: negative`, e.g. `type: marriage, negated: true, value: "no marriage found", confidence: medium` citing the searches that justify it. It sits in the source's claims list like any claim and is fully sourced, typically by a proof-argument source (§14) assembling the negative searches.
+- **Negative-fact claim** (the researched case): a normal claim of the relevant `type` with **`negated: true`** and `evidence: negative`, e.g. `type: marriage, negated: true, value: "no marriage found", confidence: medium` citing the searches that justify it, with what they covered (§17c). It sits in the source's claims list like any claim and is fully sourced, typically by a proof-argument source (§14) assembling the negative searches.
 - **Person-level convenience flags** (the common, low-ceremony case): optional booleans on the person record (`no_known_marriages: true`, `no_known_children: true`) for quickly recording a settled judgment without authoring a claim. They are *assertions of current knowledge*, not sourced facts; tooling treats them as "stop flagging this person's missing marriage/children in vitals gaps," and a later contradicting claim supersedes them.
 
 ```yaml
