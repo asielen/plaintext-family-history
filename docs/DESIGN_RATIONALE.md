@@ -21,6 +21,8 @@ Contents:
 11. Geocoding: one table, one yes
 12. Merging two sources
 13. Linking place text: the hierarchy rule
+14. One vendored D3 for interactive charts
+15. Site search: a script, not a data file
 
 ---
 
@@ -351,3 +353,17 @@ Other limits:
 - **Several D3 module files.** More files to pin and check, and nothing gained for a page that loads them all.
 - **Loading D3 from a CDN.** It fails offline and on a machine without a network.
 - **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.
+
+---
+
+## 15. Site search: a script, not a data file
+
+**The rule.** The search box on the family site looks names up in `data/search-data.js`, a script that sets one global (`window.FHA_SEARCH`), loaded by `search.html` with a plain `<script>` tag. `fha site` writes it from the pages the build already publishes, and it holds names, years and titles only. The spelling rule (`_search_fold`) is written once in `site.py`; the file carries its table, so the browser folds a query the same way the build folded the names.
+
+**Why.** A page opened from a USB stick (`file://`) may load a script beside it, but browsers refuse to `fetch()` a local data file. Every visitor downloads the whole file, so it can hold only what a shared page already shows: a name kept out of the file is a name nobody can take back from a cousin's computer.
+
+**Rejected.**
+
+- **A JSON file fetched at search time.** It fails from `file://`, which is how the site is shared.
+- **The data inline in every page.** Every page would carry every name, for a box most visits never use.
+- **A second copy of the spelling rule in the script.** Two copies drift; the file carries the table instead, and a test checks that both halves fold a list of names alike.
