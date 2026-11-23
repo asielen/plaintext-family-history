@@ -1185,6 +1185,172 @@ class LooseDateFallbackTestCase(unittest.TestCase):
                 self.assertIsNone(gedcom_import.gedcom_date_to_edtf(raw))
 
 
+class LenientLinesTestCase(_ArchiveCase):
+    """MyHeritage breaks long notes onto lines with no level number and double-
+    encodes web-page codes. His note text must arrive whole and clean."""
+
+    def _plan_text(self, body: str):
+        ged = Path(self._tmp.name) / 'odd.ged'
+        ged.write_text(body, encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def _mh(self):
+        return gedcom_import.build_plan(
+            self.archive, self.config, FIXTURES / 'myheritage-lines.ged')
+
+    def _note(self, plan):
+        return next(c for c in plan.claims if c.claim_type == 'note')
+
+    def test_no_level_lines_join_the_note(self) -> None:
+        plan = self._mh()
+        note = self._note(plan)
+        whole = f'{note.value} {note.notes}'
+        self.assertIn('and then to her granddaughter in Fairview', whole)
+        self.assertFalse(any('did not parse' in w for w in plan.warnings), plan.warnings)
+
+    def test_join_keeps_anchor(self) -> None:
+        plan = self._mh()
+        self.assertEqual(self._note(plan).anchor, 'line 8')
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 11')
+
+    def test_double_encoded_br_split(self) -> None:
+        plan = self._mh()
+        note = self._note(plan)
+        self.assertEqual(note.value, 'Rose Hartley: Rose kept the family bible')
+        self.assertTrue(note.notes.startswith('It passed to her eldest daughter'))
+        for c in plan.claims:
+            for text in (c.value, c.notes or ''):
+                for junk in ('&amp;', '&lt;', '<br'):
+                    self.assertNotIn(junk, text)
+
+    def test_citation_title_cleaned(self) -> None:
+        plan = self._mh()
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertIn('GEDCOM cites: Kansas Births & Baptisms', birth.notes)
+
+    def test_plan_text_counts_both(self) -> None:
+        plan = self._mh()
+        text = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('2 line(s) had no level number', text)
+        self.assertIn('value(s) carried web-page codes', text)
+
+    def test_plain_ampersand_untouched(self) -> None:
+        plan = gedcom_import.build_plan(
+            self.archive, self.config, FIXTURES / 'plain-ampersand.ged')
+        self.assertEqual(self._note(plan).value, 'Rose Hartley: Bought from Smith &amp; Sons')
+        text = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertNotIn('web-page codes', text)
+
+    def test_digit_garbage_still_malformed(self) -> None:
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Pat /Example/\n'
+            '1\n100 NAME x\n0 TRLR\n')
+        warn = next(w for w in plan.warnings if 'did not parse' in w)
+        self.assertIn('line 6', warn)
+        self.assertIn('line 7', warn)
+
+    def test_leading_text_before_head_malformed(self) -> None:
+        plan = self._plan_text(
+            'stray words\n0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n'
+            '1 NAME Pat /Example/\n0 TRLR\n')
+        warn = next(w for w in plan.warnings if 'did not parse' in w)
+        self.assertIn('line 1', warn)
+
+    _MH_HEAD = ('0 HEAD\n1 SOUR MYHERITAGE\n1 CHAR UTF-8\n0 @I1@ INDI\n'
+                '1 NAME Rose /Hartley/\n')
+
+    def test_link_in_note_kept_as_typed(self) -> None:
+        # A web link pasted into a MyHeritage note must arrive working:
+        # "&region=" and "&copy=" are not the "&reg"/"&copy" symbols.
+        url = ('https://www.familysearch.org/search?q=Hartley&region=Kansas'
+               '&copy=1&notes=yes&para=2')
+        plan = self._plan_text(self._MH_HEAD + f'1 NOTE See {url}\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value, f'Rose Hartley: See {url}')
+
+    def test_ampersand_words_kept(self) -> None:
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Hartley &sect 4 of the deed; Smith&times two\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Hartley &sect 4 of the deed; Smith&times two')
+
+    def test_complete_entities_still_decoded(self) -> None:
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Smith &amp; Sons &copy;&nbsp;1900 &#233;t&eacute;\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Smith & Sons © 1900 été')
+
+    def test_note_line_starting_with_a_number_joins(self) -> None:
+        # "2 brothers nearby" is a broken note line, not a GEDCOM tag: its
+        # words, and the words after it, must stay in the note.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Rose raised her family\nin Fairview with\n'
+            '2 brothers nearby\nand a sister.\n1923 was a hard year\nfor all.\n'
+            '1 BIRT\n2 DATE 12 JAN 1878\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Rose raised her family in Fairview with 2 brothers '
+                         'nearby and a sister. 1923 was a hard year for all.')
+        self.assertEqual(plan.joined_lines, 5)
+        self.assertFalse(plan.warnings, plan.warnings)
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 12')
+
+    def test_note_line_starting_with_number_and_capital_joins(self) -> None:
+        # "2 I remember the farm" is a broken note line too: "I" is no tag.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Rose told her children\nthat summer:\n'
+            '2 I remember the farm\nshe said.\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Rose told her children that summer: '
+                         '2 I remember the farm she said.')
+
+    def test_lower_case_real_tags_still_read(self) -> None:
+        # A hand-edited file with lower-case tags keeps its birth and its
+        # CONT line break, even when the same file has a level-less line.
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+            '1 NOTE First line\nstill first\n2 cont Second line\n1 Birt\n'
+            '2 DATE 12 JAN 1878\n0 TRLR\n')
+        note = self._note(plan)
+        self.assertEqual(note.value, 'Rose Hartley: First line still first')
+        self.assertEqual(note.notes, 'Second line')
+        birth = next(c for c in plan.claims if c.claim_type == 'birth')
+        self.assertEqual(birth.anchor, 'line 9')
+
+    def test_record_line_after_broken_note_keeps_its_event(self) -> None:
+        # A real event line after a broken note (any tag, listed or not) is
+        # a record line, never note text: the will keeps its date.
+        plan = self._plan_text(
+            self._MH_HEAD + '1 NOTE Kept the family bible\nin Fairview.\n'
+            '1 WILL\n2 DATE 12 JAN 1910\n1 Xyzzy\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value,
+                         'Rose Hartley: Kept the family bible in Fairview.')
+        self.assertTrue(any(c.anchor == 'line 8' for c in plan.claims),
+                        [(c.claim_type, c.anchor) for c in plan.claims])
+
+    def test_lower_case_tag_untouched_without_broken_lines(self) -> None:
+        # A file with no level-less lines parses exactly as before.
+        plan = self._plan_text(
+            '0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+            '1 NOTE First line\n1 Birt\n2 DATE 12 JAN 1878\n0 TRLR\n')
+        self.assertEqual(self._note(plan).value, 'Rose Hartley: First line')
+        self.assertEqual(plan.joined_lines, 0)
+        self.assertTrue(any(c.claim_type == 'birth' for c in plan.claims))
+
+    def test_plan_line_shows_br_plainly(self) -> None:
+        text = '\n'.join(gedcom_import._plan_lines(self._mh(), applied=False))
+        self.assertIn('(like <br>)', text)
+        self.assertNotIn('&lt;', text)
+
+    def test_filed_copy_byte_identical(self) -> None:
+        fixture = FIXTURES / 'myheritage-lines.ged'
+        result, _out, _err = self._run(fixture, apply=True)
+        filed = list((self.archive / 'documents' / 'gedcom').glob('*.ged'))
+        self.assertEqual(len(filed), 1)
+        self.assertEqual(hashlib.sha256(filed[0].read_bytes()).hexdigest(),
+                         hashlib.sha256(fixture.read_bytes()).hexdigest())
+
+
 class LooseDateImportTestCase(_ArchiveCase):
     """#293 end to end: t97.ged imports with every date in `date:`, and the
     plan says how many dates were read from free-form wording."""
