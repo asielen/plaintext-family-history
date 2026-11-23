@@ -1785,6 +1785,56 @@ class PhotoLinksTestCase(_ArchiveCase):
         self.assertEqual(got['@I3@'], ('matched', 'photos/1960/ada.heif'))
         self.assertEqual(got['@I4@'], ('matched', 'photos/1961/ben.dng'))
 
+    def test_every_same_name_photo_is_listed(self) -> None:
+        """When a name matches five photos, his choice is among all five, never
+        a silent first three."""
+        for year in range(1901, 1906):
+            f = self.photos / str(year) / 'scan.jpg'
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'scan ' + str(year).encode())
+        self._scan()
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace(
+            'Hartley Media/missing.png', 'Hartley Media/scan.jpg'), encoding='utf-8')
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertIn('(or 2 more, listed in the full plan', out)
+        self.assertIn('photos/1905/scan.jpg', self._record_text())
+
+    def test_document_media_is_not_offered(self) -> None:
+        """A census image the old program typed as a document is not his photo."""
+        doc = self.photos / 'docs' / 'rose_census_1900.jpg'
+        doc.parent.mkdir(parents=True)
+        doc.write_bytes(b'census')
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Ann /Hartley/\n'
+                 '1 OBJE\n2 FILE rose_census_1900.jpg\n3 FORM jpg\n4 TYPE document\n'
+                 '1 OBJE @O2@\n'
+                 '0 @O2@ OBJE\n1 FILE rose_census_1900.jpg\n1 _TYPE DOCUMENT\n'
+                 '0 @I11@ INDI\n1 NAME Al /Hartley/\n'
+                 '1 OBJE\n2 FILE rose_census_1900.jpg\n3 FORM jpg\n4 MEDI photo\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual([lk for lk in plan.photo_links if lk.person_xref == '@I10@'], [])
+        self.assertEqual([lk.status for lk in plan.photo_links if lk.person_xref == '@I11@'],
+                         ['matched'])
+        self.assertNotIn('TYPE', dict(plan.unread_top))
+
+    def test_name_only_match_says_look_first(self) -> None:
+        """The printed example warns when only the file name matched."""
+        self._scan()
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertIn('matched by its file name only: look at it before you say yes', out)
+        self.assertIn('1 is already in your photo folders:', out)
+
+    def test_folder_hint_never_names_a_home_folder(self) -> None:
+        """Photos kept straight in C:\\Users\\<name> never print that name."""
+        self._scan()
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace(
+            'someone\\Hartley Media\\', 'someone\\'), encoding='utf-8')
+        _, out, _ = self._run(self.ged)
+        self.assertNotIn('someone', out)
+        self.assertNotIn('folder called', out)
+
 
 class SqliteReadonlyUriTestCase(unittest.TestCase):
     """For him: an archive in a folder like "Family #2", or on a network share,

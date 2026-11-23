@@ -1419,7 +1419,7 @@ def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
     def eat(node: _Node) -> None:
         consumed.add(id(node))
         for c in node.children:
-            if c.tag in ('FILE', 'FORM', 'TITL', '_PRIM', 'MEDI', '_TYPE'):
+            if c.tag in ('FILE', 'FORM', 'TITL', '_PRIM', 'MEDI', '_TYPE', 'TYPE'):
                 eat(c)
 
     for indi in (r for r in records if r.tag == 'INDI'):
@@ -1452,6 +1452,8 @@ def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
                     if parsed is None:
                         continue
                     kind, path, host, base = parsed
+                    if _media_type(f, body, obje) in _NOT_A_PORTRAIT:
+                        continue                 # a scanned document or gravestone, not their photo
                     key = (pid, f.value.strip().replace('\\', '/').casefold())
                     if key in seen:
                         continue
@@ -1464,8 +1466,44 @@ def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
                         person_xref=indi.xref, pid=pid, name=names.get(indi.xref, ''),
                         raw_file=path, title=title, primary=prim_f, line=f.line,
                         kind=kind, host=host, basename=base,
-                        folder=path.rstrip('/').rsplit('/', 2)[-2] if path.count('/') else ''))
+                        folder=_old_folder_name(path)))
     return links
+
+
+# A media type the old program gave that says "not a photo of the person"
+# (GEDCOM MEDI values, and the words Ancestry / Family Tree Maker use).
+# No type, or `photo` / `electronic` / `image`, is still read as a photo.
+_NOT_A_PORTRAIT = frozenset({
+    'document', 'census', 'certificate', 'record', 'book', 'card', 'fiche',
+    'film', 'magazine', 'manuscript', 'map', 'newspaper', 'obituary', 'story',
+    'tombstone', 'headstone', 'gravestone', 'audio', 'video',
+})
+
+
+def _media_type(*nodes: _Node) -> str:
+    """The media type the old program gave a FILE/OBJE (`FORM`/`TYPE`,
+    `FORM`/`MEDI`, `MEDI`, `_TYPE`), lowercased; '' when none."""
+    for node in nodes:
+        for c in node.children:
+            if c.tag == 'FORM':
+                for cc in c.children:
+                    if cc.tag in ('TYPE', 'MEDI') and cc.value.strip():
+                        return cc.value.strip().casefold()
+            elif c.tag in ('MEDI', '_TYPE', 'TYPE') and c.value.strip():
+                return c.value.strip().casefold()
+    return ''
+
+
+def _old_folder_name(path: str) -> str:
+    """The last folder name of an old photo path, for the plan's "most were
+    in a folder called ..." hint. Never a home folder: under `Users/` or
+    `home/` that name is his account name."""
+    parts = [p for p in path.rstrip('/').split('/')[:-1] if p]
+    if not parts:
+        return ''
+    if len(parts) >= 2 and parts[-2].casefold() in ('users', 'home', 'documents and settings'):
+        return ''
+    return parts[-1]
 
 
 def _exact_photo_alias(archive_root: Path, fha_config: dict, raw: str, ged_dir: Path,
@@ -1539,7 +1577,7 @@ def _match_photo_links(archive_root: Path, fha_config: dict, links: list[_PhotoL
                 continue
             if len(gids) > 1:
                 lk.status = 'ambiguous'
-                lk.candidates = sorted(group_rep(g) for g in gids)[:3]
+                lk.candidates = sorted(group_rep(g) for g in gids)   # every one: his photo may be the 5th
                 continue
             gid = gids[0]
             lk.how, lk.alias = 'same file name', group_rep(gid)
@@ -1590,7 +1628,8 @@ def _photo_plan_lines(plan: 'ImportPlan', *, capped: bool) -> list[str]:
     by = {s: [lk for lk in links if lk.kind == 'local' and lk.status == s]
           for s in ('matched', 'ambiguous', 'not found', 'already tagged')}
     if by['matched']:
-        lines.append(f'    {len(by["matched"]):,} are already in your photo folders:')
+        n = len(by['matched'])
+        lines.append(f'    {n:,} {"is" if n == 1 else "are"} already in your photo folders:')
         for lk in by['matched'][:cap]:
             lines.append(f'      {lk.name or lk.person_xref}   {lk.alias} ({lk.how})')
         if len(by['matched']) > cap:
@@ -1600,11 +1639,16 @@ def _photo_plan_lines(plan: 'ImportPlan', *, capped: bool) -> list[str]:
         lines.append(f'    {len(by["already tagged"]):,} already carry that person\'s '
                      'name in your photo folders (nothing to do).')
     if by['ambiguous']:
-        lines.append(f'    {len(by["ambiguous"]):,} match more than one photo by name - '
+        n = len(by['ambiguous'])
+        lines.append(f'    {n:,} {"matches" if n == 1 else "match"} more than one photo by name - '
                      'pick the right one when you tag:')
         for lk in by['ambiguous'][:cap]:
+            shown = lk.candidates[:3] if capped else lk.candidates
+            more = len(lk.candidates) - len(shown)
             lines.append(f'      {lk.name or lk.person_xref}   {lk.basename} could be '
-                         + ' or '.join(lk.candidates))
+                         + ' or '.join(shown)
+                         + (f' (or {more:,} more, listed in the full plan and the '
+                            "source's Notes)" if more else ''))
         if len(by['ambiguous']) > cap:
             lines.append(f'      ... and {len(by["ambiguous"]) - cap:,} more')
     if by['not found']:
@@ -1663,7 +1707,7 @@ person's name on their photo (one photo at a time, each with your yes):
 or run, for example (the first line brings the photo catalog up to date
 with the people just added; tag-person needs that):
   fha photoindex
-  {command}
+  {command}{caution}
 The full list is in the new source's Notes."""
 
 
@@ -1677,7 +1721,9 @@ def _photo_handoff_text(plan: 'ImportPlan') -> str:
     command = ('fha photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
                + ' --paths ' + shell_quote(first.alias))
     n = len(matched)
-    return _PHOTO_HANDOFF.format(
+    caution = ('\n(That photo matched by its file name only: look at it before you say yes.)'
+               if first.how == 'same file name' else '')
+    return _PHOTO_HANDOFF.format(caution=caution,
         n=n, photos='photo' if n == 1 else 'photos', are='is' if n == 1 else 'are',
         command=command)
 

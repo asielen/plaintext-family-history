@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "70410d5bb7e91a60fc392bd6b2b2aaf6ff3f966cbb061c2e2afcad3c3b9c2fcf",
+      "sha256": "9655af6f5fed4b83068f641d52aa78e6443ecb2ab98ab0201d779d98ffb0cc27",
       "spec_version": "2.22",
       "src": "tools/gedcom_import.py"
     },
