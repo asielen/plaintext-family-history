@@ -2717,9 +2717,6 @@ def _yaml_problem_location(exc: object) -> str:
 # so text with any of these never goes to libyaml at all:
 #   - a Tab anywhere: libyaml accepts `name:<Tab>Mary` (Notepad alignment,
 #     a value pasted from a spreadsheet, a trailing Tab); PyYAML refuses it.
-#   - a `?` anywhere: libyaml accepts `[Mary Ann?]` and `[1880?]` in a flow
-#     list; PyYAML refuses them. A bare `1880?` date is common, so this one
-#     costs the most speed, and is still far faster than no libyaml at all.
 #   - a byte-order mark (U+FEFF) anywhere: libyaml skips one at the start
 #     of a later line, so `\ufeffb: 1` reads as the key `b`, not `\ufeffb`.
 #   - `#` straight after a block-scalar indicator (`|#`, `>-#`, `|2#`).
@@ -2733,7 +2730,82 @@ def _yaml_problem_location(exc: object) -> str:
 # synthetic ones, and written as every `key: value` line's whole value -
 # about a million documents. With this rule the helper's answer matched
 # SafeLoader's every time.
-_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?!]|[|>][-+0-9]*#')
+#
+# A `?` is the other disagreement, and it is handled after libyaml has read
+# the text (#392), not here. An uncertain date (`1880?`), a question in a
+# note and a web address with `?id=` are common, and sending every block
+# that holds one to the slow parser cost about 5 s of every lint on a large
+# archive. The two parsers part ways only on a `?` inside [ ] or { }:
+# libyaml reads `[Mary Ann?]`, `[1880?]` and `{place: Ohio?}`; PyYAML
+# ends the value at the `?` and refuses them. Outside brackets they agree,
+# real `? key` lines included. So `_LibyamlFirst` lets libyaml find the
+# brackets and passes any text with a `?` inside them to the Python parser.
+_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff!]|[|>][-+0-9]*#')
+
+
+class _PythonParserDecides(Exception):
+    """Raised inside the libyaml read when the Python parser must decide."""
+
+
+def _flow_holds_question(node: Any, text: str) -> bool:
+    """True when any [ ] or { } collection libyaml read spans a `?`.
+
+    A record with `persons: [P-0123456789]` and `date: 1880?` keeps the fast
+    parser; `persons: [Mary Ann?]` goes to the Python parser, whose reading
+    is the archive's rule. Marks are character offsets into `text`; a span that
+    does not end on its closing bracket means a libyaml build counts them
+    some other way, and then the Python parser decides too. The walk stops
+    at the outermost brackets, and tracks what it has seen, since an alias
+    can make a node its own child.
+    """
+    seen = set()
+    todo = [node]
+    while todo:
+        n = todo.pop()
+        if isinstance(n, yaml.ScalarNode) or id(n) in seen:
+            continue
+        seen.add(id(n))
+        if n.flow_style:
+            span = text[n.start_mark.index:n.end_mark.index]
+            if '?' in span or span[-1:] not in (']', '}'):
+                return True
+            continue
+        if isinstance(n, yaml.MappingNode):
+            for key, value in n.value:
+                todo.append(key)
+                todo.append(value)
+        else:
+            todo.extend(n.value)
+    return False
+
+
+_LIBYAML_FIRST_LOADERS: dict = {}
+
+
+def _libyaml_first(c_loader: Any) -> Any:
+    """libyaml's loader, refusing text with a `?` inside [ ] or { }.
+
+    Its `get_single_data` is PyYAML's own (`BaseConstructor`), with the
+    bracket check between reading the text and building the values, so a
+    value it returns is exactly what plain CSafeLoader returns.
+    """
+    cls = _LIBYAML_FIRST_LOADERS.get(c_loader)
+    if cls is None:
+        class _LibyamlFirst(c_loader):
+            def __init__(self, stream):
+                super().__init__(stream)
+                self._fha_text = stream
+
+            def get_single_data(self):
+                node = self.get_single_node()
+                if node is None:
+                    return None
+                text = self._fha_text
+                if '?' in text and _flow_holds_question(node, text):
+                    raise _PythonParserDecides
+                return self.construct_document(node)
+        cls = _LIBYAML_FIRST_LOADERS[c_loader] = _LibyamlFirst
+    return cls
 
 
 def safe_load_yaml(stream: Any) -> Any:
@@ -2762,7 +2834,9 @@ def safe_load_yaml(stream: Any) -> Any:
         a bare `!` tag to a different value. Taking libyaml's word there
         would turn lint's E010 into silence, or change a value, and only
         on machines that have libyaml. Text that could hit one of those
-        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser.
+        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser,
+        and so does text where libyaml finds a `?` inside [ ] or { }
+        (`_libyaml_first`).
 
     So a record reads to the same value, or fails with the same words, on
     every machine, with or without libyaml. The one known case left, and
@@ -2796,7 +2870,7 @@ def safe_load_yaml(stream: Any) -> Any:
         text = read if isinstance(read, str) else None
     if text is not None and not _LIBYAML_DISAGREES_RE.search(text):
         try:
-            return yaml.load(text, Loader=c_loader)
+            return yaml.load(text, Loader=_libyaml_first(c_loader))
         except Exception:  # noqa: BLE001 - the Python parse below decides
             pass
     if start is not None:
