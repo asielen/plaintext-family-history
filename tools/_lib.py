@@ -22272,22 +22272,87 @@ def shell_quote(word: str) -> str:
     subexpression), `&`, `,`, `;`, `{ }` and `@`. A photo named
     `O'Brien-Farm.tif` produced a command that would not even parse (#210
     audit). Any such word is double-quoted too, which cmd.exe also accepts.
-    `$` and a backtick are still expanded inside PowerShell double quotes;
-    there is no spelling that both shells take, and they are rare in names.
+
+    Some values have no spelling that both shells take (#400): a `"`, which
+    PowerShell 5.1 hands to `fha.cmd` without escaping (`fha confirm place
+    --name="Springfield, \\"Old Town\\", Ohio"` failed with "unrecognized
+    arguments"); a `$` or a backtick, which PowerShell expands inside double
+    quotes; a curly double quote, which closes a PowerShell string; and
+    `& | < > ^` with no space in the value, where PowerShell drops the
+    double quotes and cmd.exe then runs the rest as a second command. The
+    printed commands are PowerShell spellings, so PowerShell wins:
+    `_powershell_quote` writes these in the one form that reached fha intact
+    in the #400 paste tests. Command Prompt reads that form's single quotes
+    as part of the value, so it is kept to these values, and every command
+    that carries a quoted value starts with `fha_launcher()` (`.\\fha`, a
+    PowerShell line), never a bare `fha`, which only Command Prompt runs. A `%NAME%` that
+    names a set variable is still expanded by `fha.cmd` either way.
     """
     if os.name == 'nt':
-        quoted = subprocess.list2cmdline([word])
-        if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
-            # No whitespace and no `"` (else list2cmdline had quoted it), so
-            # the only escape needed inside the quotes is a trailing
-            # backslash, which would otherwise escape the closing quote.
-            stripped = word.rstrip('\\')
-            quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
-        return quoted
+        if needs_powershell_quote(word):
+            return _powershell_quote(word)
+        return _windows_double_quote(word)
     return shlex.quote(word)
 
 
-_PS_SPECIAL = frozenset("'()&,;{}@|<>^")
+def needs_powershell_quote(word: str) -> bool:
+    """True when `shell_quote` gives this value the PowerShell-only spelling on
+    Windows, the one Command Prompt would save with stray apostrophes (#400)."""
+    return any(ch in _PS_ONLY for ch in word) or (
+        any(ch in _CMD_SPECIAL for ch in word) and not any(ch.isspace() for ch in word))
+
+
+def _windows_double_quote(word: str) -> str:
+    """The double-quote spelling of one value, which Command Prompt takes, and
+    PowerShell too unless `needs_powershell_quote` says otherwise."""
+    quoted = subprocess.list2cmdline([word])
+    if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
+        # No whitespace and no `"` (else list2cmdline had quoted it), so
+        # the only escape needed inside the quotes is a trailing
+        # backslash, which would otherwise escape the closing quote.
+        stripped = word.rstrip('\\')
+        quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
+    return quoted
+
+
+# A name typed with a curly apostrophe (O'Brien as Word writes it) pastes
+# into PowerShell: the curly apostrophes close a PowerShell single-quoted
+# string just as `'` does, so unquoted it would not even parse. `#` starts
+# a PowerShell comment.
+_PS_SPECIAL = frozenset("'()&,;{}@|<>^#\u2018\u2019\u201a\u201b")
+_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+_PS_ONLY = frozenset('"$`\u201c\u201d\u201e')
+_CMD_SPECIAL = frozenset('&|<>^')
+
+
+def _powershell_quote(word: str) -> str:
+    """A place name with a `"` in it, pasted into Windows PowerShell, reaches
+    fha exactly as written (#400).
+
+    PowerShell gets a single-quoted string, in which nothing is special but
+    the apostrophes, doubled. Its value is the word wrapped in double quotes
+    with each inner `"` doubled, the form Python's own argument reader takes
+    inside quotes, so PowerShell 5.1 passes it on untouched and cmd.exe sees
+    every symbol inside quotes. Backslashes before a `"` and at the end are
+    doubled, as `subprocess.list2cmdline` does, so none escapes a quote.
+    """
+    inner = re.sub(r'(\\*)"', lambda m: m.group(1) * 2 + '""', word)
+    inner = re.sub(r'(\\+)\Z', lambda m: m.group(1) * 2, inner)
+    inner = '"' + inner + '"'
+    return "'" + ''.join(ch * 2 if ch in _PS_SINGLE_QUOTES else ch for ch in inner) + "'"
+
+
+def fha_launcher() -> str:
+    """The way to start fha that runs when he pastes a printed command (#400).
+
+    `fha` is a file at the archive root, never a program on PATH, so a bare
+    `fha` runs only in Command Prompt. PowerShell needs `.\\fha` (Command
+    Prompt takes it too), and a Mac or Linux shell needs `./fha`. Any command
+    that carries a `shell_quote` value starts with this: on Windows that value
+    can be a PowerShell-only spelling, and a bare `fha` line would invite a
+    Command Prompt paste that saves it with stray apostrophes.
+    """
+    return '.\\fha' if os.name == 'nt' else './fha'
 
 
 def pip_command(target: str) -> str:
@@ -22315,11 +22380,16 @@ def pip_command(target: str) -> str:
     # archive path, and "Family Archive" is an ordinary folder name - quoting the
     # interpreter while leaving the requirements file bare just moves the split
     # one argument to the right.
-    exe = shell_quote(sys.executable)
+    # On Windows this line starts with a quoted interpreter path, which only
+    # Command Prompt runs, so it keeps the double-quote spelling: the
+    # PowerShell-only one would reach pip with apostrophes round an archive
+    # path like `D:\Smith&Jones\` (#400).
+    quote = _windows_double_quote if os.name == 'nt' else shell_quote
+    exe = quote(sys.executable)
     if target.startswith('-r '):
-        arg = f'-r {shell_quote(target[3:])}'
+        arg = f'-r {quote(target[3:])}'
     else:
-        arg = shell_quote(target)
+        arg = quote(target)
     return f'{exe} -m pip install {arg}'
 
 
