@@ -1,0 +1,61 @@
+filters:
+  and:
+    - file.ext == "md"
+    - file.inFolder("people")
+    - 'id.lower().startsWith("p-")'
+    - '!file.name.startsWith("_TEMPLATE")'
+    - '!file.name.startsWith("MERGED-INTO-")'
+    - '!file.name.contains("_research_")'
+properties:
+  note.name:
+    displayName: Name
+  note.living:
+    displayName: Living
+  note.tier:
+    displayName: Tier
+  note.birth:
+    displayName: Birth (estimate)
+  note.death:
+    displayName: Death (estimate)
+  note.tags:
+    displayName: Tags
+  file.folder:
+    displayName: Folder
+views:
+  - type: table
+    name: Everyone
+    order:
+      - note.name
+      - note.birth
+      - note.death
+      - note.living
+      - note.tier
+      - file.folder
+  - type: table
+    name: Curated
+    filters:
+      and:
+        - 'tier == "curated"'
+    order:
+      - file.folder
+      - note.name
+      - note.birth
+      - note.death
+  - type: table
+    name: Stubs
+    filters:
+      and:
+        - 'tier == "stub"'
+    order:
+      - note.name
+      - note.birth
+      - note.death
+  - type: table
+    name: Living or not known
+    filters:
+      and:
+        - 'living != false'
+    order:
+      - note.name
+      - note.living
+      - file.folder
