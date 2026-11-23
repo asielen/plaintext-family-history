@@ -140,6 +140,17 @@ class HomeAndChromeTests(_ServeCase):
         self.assertNotIn('src="../../', txt)
         self.assertNotIn('src="..\\', txt)
 
+    def test_person_page_lists_searches_on_other_websites(self):
+        # Thomas Hartley's page offers pre-filled searches; each opens in a new
+        # tab without telling the site which address the owner came from.
+        s, d, _h = self.req('GET', '/persons/p-de957bcda1.html')
+        self.assertEqual(s, 200)
+        txt = d.decode('utf-8')
+        self.assertIn('wb-research-links', txt)
+        self.assertIn('target="_blank"', txt)
+        self.assertIn('rel="noopener noreferrer"', txt)
+        self.assertIn('q.surname=Hartley', txt)
+
     def test_review_gathers_migrates_legacy_dismissed_and_logs_it(self) -> None:
         # #48: `gather_review` calls `cooccur.run_cooccur`, which can migrate
         # a legacy `.cache/cooccur_dismissed.json` forward on its own - the

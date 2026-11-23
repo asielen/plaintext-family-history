@@ -9378,6 +9378,204 @@ class WorkbenchModeTests(_Base):
         self._read('sources/s-1111111111.html')
 
 
+class WorkbenchSearchLinksTests(unittest.TestCase):
+    """The workbench person page offers searches on other websites, filled in
+    from the archive (build plan 10, PR 10.1). The owner sees links that open
+    FamilySearch, Find a Grave and so on already filled in; the privacy rules
+    are what these tests guard: a living or unknown person goes out as a name
+    only, a restricted person is not offered, a living or restricted relative
+    is never named, and the shared site never carries any of it."""
+
+    THOMAS = 'p-de957bcda1'
+    CTX = {'port': 8765, 'csrf_token': 'abc123', 'review_count': 0, 'inbox_count': 0}
+    HOSTS = ('familysearch.org/search', 'sse.dll', 'findagrave.com/memorial/search',
+             'geneteka', 'myheritage.com/research', 'findmypast', 'billiongraves',
+             'loc.gov/collections/chronicling-america', 'newspapers.com/search',
+             'discovery.nationalarchives.gov.uk')
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.root = self.tmp / 'archive'
+        shutil.copytree(ROOT / 'example-archive', self.root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _edit(self, pid: str, old: str, new: str) -> None:
+        [path] = [p for p in self.root.rglob(f'*{pid}.md')
+                  if '_research_' not in p.name and '_view_' not in p.name]
+        text = path.read_text(encoding='utf-8')
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='')
+
+    def _build(self, **mode) -> Path:
+        import index as index_mod
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            index_mod.build_index(self.root, {})
+        out = self.tmp / ('out-' + '-'.join(sorted(mode)) + str(len(list(self.tmp.iterdir()))))
+        extra = {'workbench_context': self.CTX} if mode.get('workbench') else {}
+        res = site.run_site(self.root, out, **mode, **extra)
+        self.assertEqual(res['status'], 'ok', res['messages'])
+        return out
+
+    def _research_hrefs(self, html_text: str) -> list[str]:
+        import html as html_mod
+        return [html_mod.unescape(h) for h in re.findall(
+            r'<a href="([^"]+)"[^>]*data-wb-search=', html_text)]
+
+    def _thomas_page(self, out: Path) -> str:
+        return (out / 'persons' / f'{self.THOMAS}.html').read_text(encoding='utf-8')
+
+    def test_thomas_gets_a_familysearch_link_filled_in_with_his_parents(self):
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertIn('class="wb-research-links"', page)
+        hrefs = self._research_hrefs(page)
+        [fs] = [h for h in hrefs if 'familysearch.org/search' in h]
+        self.assertIn('q.surname=Hartley', fs)
+        self.assertIn('q.fatherGivenName=Caleb', fs)
+        self.assertIn('q.motherSurname=Reed', fs)
+        self.assertIn('q.spouseSurname=Cole', fs)
+        self.assertIn('q.birthLikeDate.from=1838', fs)
+        self.assertEqual(len(hrefs), 9)          # Geneteka needs a Polish province
+        self.assertIn('target="_blank"', page)
+        self.assertIn('referrerpolicy="no-referrer"', page)
+        self.assertNotIn('<details class="wb-research"', page)   # he is not living
+
+    def test_a_living_relative_is_left_out_of_every_url(self):
+        self._edit('p-cd795c61e0', 'living: false', 'living: true')
+        hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))
+        self.assertTrue(hrefs)
+        for h in hrefs:
+            self.assertNotIn('Margaret', h)
+            self.assertNotIn('Cole', h)
+        [fs] = [h for h in hrefs if 'familysearch.org/search' in h]
+        self.assertIn('q.fatherGivenName=Caleb', fs)
+
+    def test_an_unknown_and_a_restricted_relative_are_left_out_too(self):
+        self._edit('p-075114a0f8', 'living: false', 'living: unknown')
+        self._edit('p-d00c678c1a', 'living: false', 'living: false\nrestricted: true')
+        hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))
+        self.assertTrue(hrefs)
+        for h in hrefs:
+            self.assertNotIn('Caleb', h)
+            self.assertNotIn('Chastina', h)
+            self.assertNotIn('Reed', h)
+
+    def test_a_living_subject_gets_a_name_and_nothing_else_inside_a_fold(self):
+        self._edit(self.THOMAS, 'living: false', 'living: true')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertIn('<details class="wb-research">', page)
+        hrefs = self._research_hrefs(page)
+        self.assertTrue(hrefs)
+        for h in hrefs:
+            self.assertIn('Hartley', h)
+            self.assertNotRegex(h, r'(?<![A-Za-z0-9_.])(18|19|20)\d\d', h)
+            for leak in ('New York', 'New+York', 'Caleb', 'Chastina', 'Margaret', 'Cole',
+                         'Reed', 'Fairview', 'Kansas', 'Edward'):
+                self.assertNotIn(leak, h)
+
+    def test_an_unknown_subject_is_treated_like_a_living_one(self):
+        self._edit(self.THOMAS, 'living: false', 'living: unknown')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertIn('<details class="wb-research">', page)
+        for h in self._research_hrefs(page):
+            self.assertNotIn('Caleb', h)
+            self.assertNotIn('New+York', h)
+
+    def test_a_by_request_or_restricted_subject_gets_no_links_at_all(self):
+        for value in ('by-request', 'true'):
+            with self.subTest(value):
+                self._edit(self.THOMAS, 'living: false', f'living: false\nrestricted: {value}')
+                page = self._thomas_page(self._build(linked=True, workbench=True))
+                self.assertNotIn('wb-research-links', page)
+                self.assertNotIn('data-wb-search', page)
+                self._edit(self.THOMAS, f'restricted: {value}\n', '')
+
+    def _thomas_fs(self) -> str:
+        hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))
+        [fs] = [h for h in hrefs if 'familysearch.org/search' in h]
+        return fs
+
+    BIRTH_SOURCES = ('1850-census-easton-hartley-household_s-7k2m9q4w1e',
+                     '1880-census-fairview-hartley-household_s-4f5f215e60')
+    BIRTH_CLAIMS = ('c-2d5g8j1k4m', 'c-1b9d4e7a30')
+
+    def _edit_source(self, stem: str, old: str, new: str) -> None:
+        [path] = list(self.root.rglob(f'{stem}.md'))
+        text = path.read_text(encoding='utf-8')
+        self.assertIn(old, text)
+        path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='')
+
+    def test_a_restricted_birth_claim_stays_out_of_the_links(self):
+        # The shared site withholds a claim marked restricted; a click must
+        # not send its birth place to FamilySearch either.
+        for stem, cid in zip(self.BIRTH_SOURCES, self.BIRTH_CLAIMS):
+            self._edit_source(stem, f'id: {cid}\n', f'id: {cid}\n  restricted: true\n')
+        fs = self._thomas_fs()
+        self.assertNotIn('q.birthLikePlace', fs)
+        self.assertNotIn('q.birthLikeDate', fs)
+        self.assertIn('q.fatherGivenName=Caleb', fs)
+
+    def test_a_by_request_source_keeps_its_facts_out_of_the_links(self):
+        for stem in self.BIRTH_SOURCES:
+            self._edit_source(stem, 'source_type: census\n',
+                              'source_type: census\nrestricted: by-request\n')
+        fs = self._thomas_fs()
+        self.assertNotIn('q.birthLikePlace', fs)
+        self.assertNotIn('q.birthLikeDate', fs)
+
+    def test_a_married_name_written_as_a_list_gives_its_surname(self):
+        self._edit(self.THOMAS, 'living: false', 'living: false\nmarried_name: [Thomas Smith]')
+        hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))
+        [fg] = [h for h in hrefs if 'findagrave' in h]
+        self.assertIn('lastname=Smith&', fg)
+
+    def test_a_restricted_married_name_in_a_list_never_goes_out(self):
+        self._edit(self.THOMAS, 'living: false',
+                   'living: false\nmarried_name:\n  - {restricted: true, value: Thomas Hiddenname}')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        hrefs = self._research_hrefs(page)
+        self.assertTrue(hrefs)
+        for h in hrefs:
+            self.assertNotIn('Hiddenname', h)
+        [fg] = [h for h in hrefs if 'findagrave' in h]
+        self.assertIn('lastname=Hartley&', fg)
+
+    def test_a_typo_in_a_provisional_date_does_not_stop_the_workbench(self):
+        self._edit(self.THOMAS, 'living: false', 'living: false\ndeath: 1902-13')
+        fs = self._thomas_fs()
+        self.assertNotIn('q.deathLikeDate', fs)
+
+    def test_open_ended_and_unknown_dates_add_no_year(self):
+        # "before 1840" must not search the year 920; "unknown" not the year 5000.
+        for stem in self.BIRTH_SOURCES:
+            self._edit_source(stem, 'date: 1840~\n', "date: '[..1840]'\n")
+        self._edit(self.THOMAS, 'living: false', 'living: false\ndeath: unknown')
+        fs = self._thomas_fs()
+        self.assertNotIn('q.birthLikeDate', fs)
+        self.assertNotIn('q.deathLikeDate', fs)
+        self.assertIn('q.birthLikePlace=New+York', fs)
+
+    def test_an_unknown_given_name_is_left_out_not_searched(self):
+        self._edit('p-d00c678c1a', 'name: Chastina Augusta Reed', 'name: Unknown Reed')
+        fs = self._thomas_fs()
+        self.assertNotIn('Unknown', fs)
+        self.assertIn('q.motherSurname=Reed', fs)
+
+    def test_the_shared_site_never_carries_a_search_link(self):
+        for mode in ({'linked': False}, {'linked': True}):
+            with self.subTest(mode):
+                out = self._build(**mode)
+                for path in out.rglob('*.html'):
+                    text = path.read_text(encoding='utf-8')
+                    self.assertNotIn('data-wb-search', text, path.name)
+                    self.assertNotIn('wb-research', text, path.name)
+                    for host in self.HOSTS:
+                        self.assertNotIn(host, text, f'{host} in {path.name}')
+
+
 class OpenQuestionsSectionTests(_Base):
     """Issue #117: a person referenced by a `## Q:` block's `refs:` sees that
     question on their own page. Gated on `linked` (workbench always implies

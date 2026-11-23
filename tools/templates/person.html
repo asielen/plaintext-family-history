@@ -282,6 +282,19 @@
   {% endfor %}
   {% endif %}
 
+  {#- Workbench only (the ctx key is empty in every other build). A click opens
+      the other website's own search; nothing is sent before it. -#}
+  {% if workbench and person.research_links %}
+  <h2>Look for {{ person.research_given }} on other websites</h2>
+  {% if person.research_living %}<details class="wb-research"><summary>This person may still be living. Open the searches</summary>{% endif %}
+  <p class="wb-later">{% if person.research_living %}Only the name goes into these searches: no dates, places or relatives, because this person may be alive.{% else %}Each link opens that website's own search, filled in from this page: name, years give or take two, places, and the names of parents and spouse who have died.{% endif %} Nothing is sent to a website until you click its link.</p>
+  <ul class="wb-research-links">
+    {% for l in person.research_links %}<li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-wb-search="{{ l.key }}">{{ l.label }}</a> <span class="wb-later">{{ l.note }}</span></li>
+    {% endfor %}
+  </ul>
+  {% if person.research_living %}</details>{% endif %}
+  {% endif %}
+
   {% if person.family %}
   <h2>Friends &amp; Family</h2>
   {% for group in person.family %}
