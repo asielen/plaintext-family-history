@@ -3004,6 +3004,15 @@ class ReimportPlanTestCase(_ReimportCase):
         plan = self._plan(self._same_tree_redownloaded())
         self.assertEqual(self._fact(plan, 'birth', 'Ben Hartley').outcome, 'same')
 
+    def test_an_unreadable_date_added_where_there_was_none_is_more_detail(self) -> None:
+        # Thomas's occupation had a date; his death had none. The newer file
+        # gives the death a date no one can read: more detail, not a question.
+        later = self._edited('later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+                             ('1 DEAT Y\n', '1 DEAT Y\n2 DATE INT 1950 (from the bible)\n'))
+        plan = self._plan(later)
+        self.assertEqual(self._fact(plan, 'death', 'Thomas Hartley').outcome, 'more detail')
+        self.assertEqual(plan.questions, [])
+
     def test_date_disagreements_are_listed_for_new_people_only(self) -> None:
         # A matched person keeps the record he already has, so "the new record
         # shows" is said only of someone the plan would add.

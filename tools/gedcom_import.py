@@ -2616,12 +2616,15 @@ def _fields_relation(old: _OldFact, claim: _Claim) -> str:
     archive holds, by date and place as the record reads today."""
     relations = (_date_relation(old.date, claim.date or ''),
                  _place_relation(old.place, claim.place_text or ''))
-    if (old.joined and not old.date and not claim.date and (old.raw_date or claim.raw_date)
+    if (old.joined and not old.date and not claim.date and old.raw_date and claim.raw_date
             and _norm_text(old.raw_date) != _norm_text(claim.raw_date)):
         # Neither date could be read, and the wording changed: it cannot be
         # compared, so it goes to him as a change rather than being lost.
         # (Without the filed copy the earlier wording is not known.)
         return 'changed'
+    if (old.joined and not old.date and not old.raw_date and claim.raw_date
+            and 'conflict' not in relations):
+        return 'more detail'        # a date wording where there was none
     if 'conflict' in relations:
         return 'changed'
     return 'more detail' if 'adds' in relations else 'same'
