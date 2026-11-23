@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
+      "sha256": "f63c3a7639506d29d772020ab9c3c4be61fdb190d2b816c2b89c7771ef00e9f4",
       "spec_version": "2.23",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -76,7 +76,7 @@
     {
       "path": ".agents/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
+      "sha256": "15da03e594ceaa3b521ae68408b433f6b1625d26c2ce999d6624ebdfce75ab00",
       "spec_version": "2.23",
       "src": ".claude/skills/photo-context/SKILL.md"
     },
@@ -223,7 +223,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
+      "sha256": "f63c3a7639506d29d772020ab9c3c4be61fdb190d2b816c2b89c7771ef00e9f4",
       "spec_version": "2.23"
     },
     {
@@ -241,7 +241,7 @@
     {
       "path": ".claude/skills/photo-context/SKILL.md",
       "category": "operating",
-      "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
+      "sha256": "15da03e594ceaa3b521ae68408b433f6b1625d26c2ce999d6624ebdfce75ab00",
       "spec_version": "2.23"
     },
     {
@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "297b1a2f406a74e188c3b0d15ccac4b09c3cf4bac64267c65a0a672c7fb0b3b5",
+      "sha256": "50b8dcc0679624987d88ea250d3b0a190c4fe214249a3fbc9b84c4d66a49c050",
       "spec_version": "2.23",
       "src": "tools/_lib.py"
     },
@@ -905,7 +905,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "3f310353462c889b93319bbe826f0eb6aac6809f7eacda0e8d2c4ae5c7ca5908",
+      "sha256": "be419a8571cd90983ae73bdad640190df882eea88be2cc4b9e2eef25d2a4cb27",
       "spec_version": "2.23",
       "src": "tools/relate.py"
     },
@@ -1374,7 +1374,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "b96f2ac54e5117f55928b993c4c15f557b1ead496999b4dd05dcc7f0e41680cb",
+      "sha256": "8881fc2cebfbc5c279614158029e82261e8f57af633878c543791aab21baf99c",
       "spec_version": "2.23"
     },
     {
@@ -1399,7 +1399,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "9c9d80d047565afb9f234369a8f79d247d4379e82ea6e587f3ee0072b12889c4",
+      "sha256": "de949f96eb6b114657c1167b6de81198b50c2f8367f97a133aabb23af139baef",
       "spec_version": "2.23"
     },
     {
@@ -1417,7 +1417,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "1b23bb44eb47c8e810d1188de62b63306874e01ed52c906fb7710f385116278f",
+      "sha256": "24719f46341128998d6dc98a49cffab85a99fd4ae79036b6ca2b197f70eb7ef2",
       "spec_version": "2.23"
     },
     {
@@ -1441,7 +1441,7 @@
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "84aa5ecb71ec1e5e3a15ea24f35992b56caa845abad82a107d093aab2b3149d8",
+      "sha256": "56f7ed576f8e85d1d56643275d1301f2feed68aa65a08f0518d5ac1df5df2a2e",
       "spec_version": "2.23"
     },
     {
@@ -1459,14 +1459,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "0fa9aec07411c6249eb0371ddd8ff369fc2816eec778a3bd41d1d0dc82a3fc99",
+      "sha256": "e8d369673d2fc3b3bb5aec2a08f1fff1e2f9d1a4b4390bbfce62b3cc3c17cb7c",
       "spec_version": "2.23",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "71333b1b4a653e10ab9cec07fce365fb7755a0a8a09f7295fb6fe2416c8e410c",
+      "sha256": "185baab5777490882cc7452ba79734b43c29d95b451e9f0ec7dd3233802ea98d",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },
