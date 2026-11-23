@@ -20,7 +20,7 @@
     {
       "path": ".agents/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "3b9caf262bf4b4118beee924f4ed791474803f0d72343c873795f11bbf52c50e",
       "spec_version": "2.23",
       "src": ".claude/skills/find-photos/SKILL.md"
     },
@@ -193,7 +193,7 @@
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "3b9caf262bf4b4118beee924f4ed791474803f0d72343c873795f11bbf52c50e",
       "spec_version": "2.23"
     },
     {
@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "2682f6b034a9c5f5ef17a3910d2b42c3729cb28c5fa110ee0c3a27b1c7fe5226",
+      "sha256": "390c29a33f13f3f9d25be586535644cf2ecc3d59d58929ce7473db21392d1350",
       "spec_version": "2.23",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "656c4a12571a514eb15920fb17641e991b238a3b6ad44eb893febf77dbfd5bca",
+      "sha256": "9785ec749ee9e9423127596a2c983c5a4952d9d1e2a09884f6a6570117b6875d",
       "spec_version": "2.23",
       "src": "browser-companion/src/content.js"
     },
@@ -397,6 +397,13 @@
       "sha256": "a2ce1248e28d78c19b01e8325cc68be148bb3dffc6e4cbe3018b2d236631c585",
       "spec_version": "2.23",
       "src": "browser-companion/src/lib/ancestry-record.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/archiveorg-record.js",
+      "category": "operating",
+      "sha256": "01f8ad501ad41a77ce7d4375ff25832869daf760cc44274a55b167e9e9e3b3c7",
+      "spec_version": "2.23",
+      "src": "browser-companion/src/lib/archiveorg-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
@@ -534,14 +541,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "cd28e4c65fecd63a15da32183bd606abaf325173ce995ee14fc75f29b13ea9e6",
+      "sha256": "50df6d074fe2c3f44cbf7c943f6e72e672f4009658d0fbeb4c32663d8a671bb0",
       "spec_version": "2.23",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "2084ffc888b11a46f6cab914ffabe35497b11398504a9bd391c594271027c1f5",
+      "sha256": "2499de4af07258da135655df16d7ebb1801468dfdef195b9a3b79b10824e9211",
       "spec_version": "2.23",
       "src": "browser-companion/src/panel.js"
     },
@@ -660,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "486a69ea628d44af7d25157faed18acc569e3ef578ddb167dac6f6eac8bf033f",
+      "sha256": "fb42c224656abaf940e2cb0569a949fb26a01736a27f025f55e66b52610af9a9",
       "spec_version": "2.23",
       "src": "tools/_lib.py"
     },
@@ -705,6 +712,13 @@
       "sha256": "bcdb899da26f38957cd01e7db279ff3ae622648247bc8ac8e930f2b4695ffd86",
       "spec_version": "2.23",
       "src": "tools/capture_recipes/ancestry.py"
+    },
+    {
+      "path": ".fha/tools/capture_recipes/archiveorg.py",
+      "category": "operating",
+      "sha256": "e8e49ecede8823aaf3d0c11f981efb27a39d3d76faf356e6a9ee3a0fc28aeece",
+      "spec_version": "2.23",
+      "src": "tools/capture_recipes/archiveorg.py"
     },
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
@@ -793,7 +807,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "ce4714bee28d5f97fac1285e8f10ef6d6370f619335c12a2ae10f05250d831cf",
+      "sha256": "9723eda7b87951027b45840e7875b0d5222db7a20792fe1b428d10f78d8c6a35",
       "spec_version": "2.23",
       "src": "tools/gedcom_import.py"
     },
@@ -814,7 +828,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8305a685d71da0dabaa1d29e1ffdef5281991130480203397ab1d83cc42404eb",
+      "sha256": "64543894f384d99df1ae48d611b5eea1fd6372c3df322fc2be4e4b5293784b7f",
       "spec_version": "2.23",
       "src": "tools/lint.py"
     },
@@ -877,7 +891,7 @@
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
-      "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
+      "sha256": "11e2959c09cdcb0e25940ba0ad85f61bdff3051e99faa445c4b5e93c9276c088",
       "spec_version": "2.23",
       "src": "tools/reconcile.py"
     },
@@ -1182,7 +1196,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "418954922407dbb2ca2199aba5918e7476edd0068ebcfbb88e45f2ccbbf8bc24",
+      "sha256": "de949f96eb6b114657c1167b6de81198b50c2f8367f97a133aabb23af139baef",
       "spec_version": "2.23"
     },
     {
@@ -1218,7 +1232,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
+      "sha256": "da00c8cab1777bc02af6e3d5bd6d96e69dcc5c9dca7f2be366088ac00433b432",
       "spec_version": "2.23"
     },
     {
@@ -1249,7 +1263,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "8def3cb93e4333b590ab91a2e8fc914be209b6e9815b79bb04f07ddb9e79e38b",
+      "sha256": "4754da896d52cffc22a4913cb1d0f8fa761407f4f0b6a197e0450614e62d27b5",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },

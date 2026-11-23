@@ -1,0 +1,49 @@
+0 HEAD
+1 SOUR TESTPROGRAM
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Rose /Hartley/
+1 SEX F
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\rose_wedding.jpg
+3 TITL Wedding
+2 _PRIM Y
+0 @I2@ INDI
+1 NAME Thomas /Hartley/
+1 SEX M
+1 OBJE @O1@
+0 @I3@ INDI
+1 NAME Ada /Hartley/
+1 SEX F
+1 BIRT
+2 DATE 3 MAR 1900
+2 OBJE
+3 FILE https://www.ancestry.com/mediaui-viewer/x?token=abc
+0 @I4@ INDI
+1 NAME Ben /Hartley/
+1 SEX M
+1 OBJE
+2 FILE Hartley Media/missing.png
+0 @I5@ INDI
+1 NAME Cora /Hartley/
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\cora1.jpg
+0 @I6@ INDI
+1 NAME Dan /Hartley/
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\dan1.jpg
+0 @I7@ INDI
+1 NAME Eve /Hartley/
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\eve1.jpg
+0 @I8@ INDI
+1 NAME Finn /Hartley/
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\finn1.jpg
+0 @I9@ INDI
+1 NAME Gwen /Hartley/
+1 OBJE
+2 FILE C:\Users\someone\Hartley Media\gwen1.jpg
+0 @O1@ OBJE
+1 FILE Hartley Media/thomas.jpg
+0 TRLR
