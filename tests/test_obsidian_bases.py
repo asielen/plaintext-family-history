@@ -168,6 +168,19 @@ class WriteTests(unittest.TestCase):
                 _quiet(views.run_refresh, root)
                 self.assertEqual(_bases(root), [])
 
+    def test_the_places_table_finds_coordinates_in_generated_notes(self):
+        # "With coordinates" reads note.location: a place note for a place
+        # with coords must carry it, or the table is always empty.
+        root = self._archive('obsidian')
+        _quiet(views.run_places, root)
+        with_coords = 0
+        for note in (root / 'places').glob('*_l-*.md'):
+            fm = yaml.safe_load(note.read_text(encoding='utf-8').split('---', 2)[1])
+            if fm.get('location'):
+                with_coords += 1
+                self.assertEqual(len(fm['location']), 2, note.name)
+        self.assertGreater(with_coords, 0)
+
     def test_nothing_lands_in_a_record_tree(self):
         root = self._archive('obsidian')
         _quiet(views.run_refresh, root)

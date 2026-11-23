@@ -4372,7 +4372,8 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
 # the graph has one node per place. The note mirrors places.yaml (read here
 # through the index, like every view); places.yaml stays the only truth. It
 # opens with frontmatter (`aliases:`, which Obsidian reads only at the top of
-# a file), then the GENERATED header, so its ownership is judged after the
+# a file, and `location:` for a place with coordinates, which the map views
+# read), then the GENERATED header, so its ownership is judged after the
 # frontmatter (`after_frontmatter=True`). It lists no people or sources:
 # Obsidian's backlinks pane shows those, and a list here would change on
 # every refresh.
@@ -4411,7 +4412,9 @@ def _place_note_text(place: dict, names: dict[str, str]) -> str:
     """One place note, in the ID link form (the caller converts it).
 
     Frontmatter `aliases:` carries the place's ID, name and alt names, so
-    Obsidian suggests the note when any of them is typed after `[[`. The body
+    Obsidian suggests the note when any of them is typed after `[[`, and a
+    place with coordinates gets `location:` there, which Obsidian's map views
+    read, so it shows on a map. The body
     is what places.yaml says: the hierarchy, the place it sits inside, the
     coordinates, the other names, the dated history and the notes. A field
     the registry leaves out is left out here too."""
@@ -4425,6 +4428,11 @@ def _place_note_text(place: dict, names: dict[str, str]) -> str:
             aliases.append(a)
     out = ['---\n', 'aliases:\n', f'  - {shown}\n']
     out += [f'  - {json.dumps(a, ensure_ascii=False)}\n' for a in aliases]
+    # Obsidian's map views (the Maps view of Bases, the Map View plugin) read
+    # `location:`, so a mapped place shows on a map. Same numbers as the
+    # Coordinates line below, so the two never disagree.
+    if place['lat'] is not None and place['lon'] is not None:
+        out.append(f'location: [{place["lat"]}, {place["lon"]}]\n')
     out += ['---\n', _gen_header('places'), f'# {title}\n', _purpose_block_md('places')]
 
     facts: list[str] = []
