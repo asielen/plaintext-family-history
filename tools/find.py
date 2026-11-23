@@ -3090,6 +3090,13 @@ _SOUNDS_LIKE_LONG_PREFIXES = frozenset(
     ('vande', 'vander', 'vanden', 'vonder', 'della', 'delle', 'dela', 'saint', 'fitz'))
 
 
+# The second word of a two-word prefix (Van der, de la, von den). Only these
+# chain on: two short given names (Max Lyn Hartley) must not, or their
+# six-digit code matches Max Lynch.
+_SOUNDS_LIKE_PARTICLES = frozenset(
+    ('der', 'den', 'de', 'la', 'le', 'los', 'las', 'van', 'von', 'du', 'des', 'di', 'da', 'del', 'ten', 'ter'))
+
+
 def _joins_next(word: str) -> bool:
     """Is `word` a surname prefix that may be written onto the next word
     (Van Deusen, Vandeusen)? Only short words and a few known prefixes: a
@@ -3101,13 +3108,13 @@ def _joins_next(word: str) -> bool:
 
 def _prefix_spans(words: list[str]) -> list[tuple[int, int]]:
     """The runs of words to read as one: a prefix with the word after it
-    (Van Deusen), and two prefixes with the word after them (Van der Meer,
-    de la Cruz), as (start, end) slices."""
+    (Van Deusen), and a prefix and a particle with the word after them (Van
+    der Meer, de la Cruz; `_SOUNDS_LIKE_PARTICLES`), as (start, end) slices."""
     spans = []
     for i in range(len(words) - 1):
         if _joins_next(words[i]):
             spans.append((i, i + 2))
-            if i + 2 < len(words) and _joins_next(words[i + 1]):
+            if i + 2 < len(words) and _fold_word(words[i + 1]) in _SOUNDS_LIKE_PARTICLES:
                 spans.append((i, i + 3))
     return spans
 

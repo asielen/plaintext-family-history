@@ -2657,6 +2657,10 @@ _SOUNDS_LIKE_PEOPLE = {
     'stubs/van_der_meer__pieter_p-snd0000015.md': (
         'id: p-snd0000015\naliases: [p-snd0000015, Pieter Van der Meer]\n'
         'name: Pieter Van der Meer\nliving: false\ntier: stub\n'),
+    # Two short given names: not a surname prefix chain.
+    'stubs/hartley__max_lyn_p-snd0000016.md': (
+        'id: p-snd0000016\naliases: [p-snd0000016, Max Lyn Hartley]\n'
+        'name: Max Lyn Hartley\nliving: false\ntier: stub\n'),
 }
 
 
@@ -2779,6 +2783,11 @@ class SoundsLikeTests(unittest.TestCase):
             rc, out, _err = self._find(['--sounds-like', query])
             self.assertEqual(rc, EXIT_CLEAN, (query, out))
             self.assertIn(pid, out, query)
+
+    def test_two_short_given_names_do_not_chain_onto_the_surname(self) -> None:
+        # MaxLynHartley codes like MaxLynch once cut to six digits.
+        rc, out, _err = self._find(['--sounds-like', 'Max Lynch'])
+        self.assertNotIn('p-snd0000016', out)
 
     def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Jovanović'])
