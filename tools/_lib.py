@@ -14931,7 +14931,8 @@ def person_restricted(row, privacy: ExportPrivacy, lookup) -> bool:
     return any(r['id'] in privacy.restricted_persons for r in merge_chain(row, lookup))
 
 
-def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup) -> bool:
+def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup, *,
+                    carried=None) -> bool:
     """Whether an export keeps this person out: living or unknown (unknown is
     treated as living, AGENTS.md) or restricted (any value, SPEC §21), merges
     followed both ways.
@@ -14944,7 +14945,12 @@ def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, looku
     way: a record merged INTO the survivor that says `living: true` hands him
     its claims, so it keeps him out too (`living_carried_to_survivors`).
     `row` is an index `persons` row or a mapping with `id`, `living` and
-    `merged_into`; `lookup(id)` returns the next record or None."""
+    `merged_into`; `lookup(id)` returns the next record or None.
+
+    `carried` is `living_carried_to_survivors(conn)` worked out once by a
+    caller that asks about every person in the family, so a site with
+    thousands of people is not slowed by asking the index again for each
+    one. Left out, it is read here."""
     chain = merge_chain(row, lookup)
     if any(r['id'] in privacy.restricted_persons
            or (r['living'] or '') in ('true', 'unknown') for r in chain):
@@ -14952,7 +14958,9 @@ def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, looku
     survivor = merge_survivor(chain)
     if survivor is None:
         return False
-    return survivor['id'] in living_carried_to_survivors(conn)
+    if carried is None:
+        carried = living_carried_to_survivors(conn)
+    return survivor['id'] in carried
 
 
 def export_tie_ok(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup, *,
