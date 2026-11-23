@@ -2,7 +2,7 @@ filters:
   and:
     - file.ext == "md"
     - file.inFolder("sources")
-    - 'id.startsWith("s-")'
+    - 'id.lower().startsWith("s-")'
     - '!file.name.startsWith("_TEMPLATE")'
 properties:
   note.title:

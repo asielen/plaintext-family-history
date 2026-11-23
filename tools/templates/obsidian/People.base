@@ -2,7 +2,7 @@ filters:
   and:
     - file.ext == "md"
     - file.inFolder("people")
-    - 'id.startsWith("p-")'
+    - 'id.lower().startsWith("p-")'
     - '!file.name.startsWith("_TEMPLATE")'
     - '!file.name.startsWith("MERGED-INTO-")'
     - '!file.name.contains("_research_")'
@@ -46,7 +46,7 @@ views:
     name: Stubs
     filters:
       and:
-        - 'file.inFolder("people/stubs")'
+        - 'tier == "stub"'
     order:
       - note.name
       - note.birth

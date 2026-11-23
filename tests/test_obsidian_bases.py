@@ -112,6 +112,26 @@ class ShippedFileTests(unittest.TestCase):
                     else:
                         self.assertTrue(key.startswith('file.'), key)
 
+    def _view_filters(self, name, view):
+        doc = yaml.safe_load((TEMPLATES / name).read_text(encoding='utf-8'))
+        if view is None:
+            return doc['filters']['and']
+        return next(v for v in doc['views'] if v['name'] == view)['filters']['and']
+
+    def test_stubs_are_found_by_tier_wherever_they_are_filed(self):
+        # SPEC §12.2 lets a stub child sit in its parents' couple folder;
+        # a folder filter would leave it out of the Stubs table.
+        self.assertEqual(self._view_filters('People.base', 'Stubs'), ['tier == "stub"'])
+
+    def test_id_prefixes_are_matched_without_regard_to_case(self):
+        # SPEC §10: an older tool's `P-…`/`S-…` id is still a record.
+        for name, prefix in (('People.base', 'p-'), ('Sources.base', 's-')):
+            with self.subTest(name):
+                self.assertIn(f'id.lower().startsWith("{prefix}")',
+                              self._view_filters(name, None))
+                text = (TEMPLATES / name).read_text(encoding='utf-8')
+                self.assertNotIn('id.startsWith(', text)
+
     def test_a_file_needs_no_plugin(self):
         # The map view needs the Maps plugin; the shipped files must open
         # in plain Obsidian.

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.23",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -1003,7 +1003,7 @@
     {
       "path": ".fha/tools/templates/obsidian/People.base",
       "category": "operating",
-      "sha256": "aacadb4211f6a26d8a4387ac5b1fd9ba59c447e09d2c3c9827f9ec3351147501",
+      "sha256": "45065e37d2e63a06b767bfe73ab422bb67f69aaef6e12b040f87886602d07fad",
       "spec_version": "2.23",
       "src": "tools/templates/obsidian/People.base"
     },
@@ -1017,7 +1017,7 @@
     {
       "path": ".fha/tools/templates/obsidian/Sources.base",
       "category": "operating",
-      "sha256": "23a97b70db4ac5ae8c7ec367a408c6e6b2e9633488735cdb65be245bc0ce4afc",
+      "sha256": "86b8cfbb4f99823e2cfdd9911da98d8383c7f6d78bcb778cd033dc6620c8bd94",
       "spec_version": "2.23",
       "src": "tools/templates/obsidian/Sources.base"
     },
