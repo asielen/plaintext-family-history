@@ -7,6 +7,7 @@
 *.js text eol=lf
 *.json text eol=lf
 *.css text eol=lf
+*.base text eol=lf
 *.txt text eol=lf
 .gitignore text eol=lf
 # The checksum-stability rule has to cover itself: without this line,
