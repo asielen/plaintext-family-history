@@ -7013,14 +7013,23 @@ def replace_section_content(
 
 def append_paragraph_to_section(
     lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
+    is_placeholder: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[str], bool, str]:
     """Append `paragraph` to a `## {heading_text}` section; the shared engine.
 
+    For him: a first note in a section that still shows the scaffold's
+    "what goes here" instructions replaces them, so they are not published
+    above his words. `is_placeholder(heading, on_disk_content)` is how a
+    caller says what counts as that scaffold text (`fha person note` passes
+    `person_section_is_unfilled`); text that is not exactly the placeholder
+    is never removed.
+
     Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
     blank-line-separated paragraph at the END of the section, never touching
-    what was already there (the nothing-ever-lost contract `fha person note`
+    what he wrote there (the nothing-ever-lost contract `fha person note`
     and `fha source note` both depend on). A section holding only a
-    `*(none yet)*` / `(none yet)` placeholder is treated as empty - the
+    `*(none yet)*` / `(none yet)` placeholder, or only text the caller's
+    `is_placeholder` recognizes, is treated as empty - the
     placeholder is replaced outright rather than kept alongside real prose,
     since it means exactly "nothing here yet" and leaving it in would read as
     a second, contradictory sentence. When the heading is absent it is created
@@ -7042,11 +7051,13 @@ def append_paragraph_to_section(
     trimmed = list(old_content_lines)
     while trimmed and trimmed[-1].strip() == '':
         trimmed.pop()
-    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    is_empty = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    if not is_empty and is_placeholder is not None:
+        is_empty = is_placeholder(heading_text, old_content)
     has_next = content_end < len(lines)
 
     new_lines = list(lines[:content_start])
-    if trimmed and not is_placeholder:
+    if trimmed and not is_empty:
         new_lines.extend(trimmed)
         new_lines.append(cr)
     new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
@@ -17573,6 +17584,19 @@ PERSON_PURPOSE_BLOCK = (
 PERSON_SOURCES_PLACEHOLDER = (
     '*(none yet - regenerate with `fha views sources-index`.)*'
 )
+
+# What `fha process` writes under a new source's `## Notes` until a note
+# lands there. His first note (or a tool's own note) replaces it, so the
+# record does not say "none yet" above the note that is there (#393).
+SOURCE_NOTES_PLACEHOLDER = '*(none yet - drafted in the AI pass)*'
+
+
+def source_notes_is_unfilled(heading: str, content: str) -> bool:
+    """True when a source record's `## Notes` holds nothing but the
+    placeholder `fha process` scaffolded. The `is_placeholder` test the
+    source-note writers hand `append_paragraph_to_section`; exact on the
+    words (`_normalized_section_text`), so anything he typed is kept."""
+    return heading == 'Notes' and _normalized_section_text(content) == SOURCE_NOTES_PLACEHOLDER
 
 # The four hand-written sections' opening text, VERBATIM from
 # `_TEMPLATE.person.md` (`## Biography` through EOF) - adapted only where the
