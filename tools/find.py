@@ -136,6 +136,9 @@ from _lib import (
     name_sound_words,
     translit,
     vital_pick_key,
+    _person_frontmatter_all,
+    person_alias_mirror,
+    person_restricted_names,
 )
 
 configure_utf8_stdout()
@@ -203,9 +206,10 @@ configure_utf8_stdout()
 #                                 the coverage note on stderr, or nothing
 #    _parse_kind_filter          - CLI --kind comma list → (kinds, error_message)
 #
-#  --sounds-like: names that sound alike (read-only, index only)
+#  --sounds-like: names that sound alike (read-only: the index, then each match's record)
 #    _sounds_like_terms:          the typed name → words with their D-M codes, or a refusal
-#    _sounds_like_names:          every active person's public names from the index
+#    _sounds_like_candidates:     every active person and every name the index holds
+#    _record_public_names:        the names of one person that may be shown
 #    _match_name:                 does one name sound like every query word?
 #    _sounds_like_years:          "born about 1840, died 1923" from own accepted vitals
 #    run_find_sounds_like:        the engine: ranked, grouped people in a Result
@@ -2991,14 +2995,17 @@ def _parse_kind_filter(raw: str | None) -> tuple[list[str] | None, str | None]:
 # Kovalsky; Hartley, Hartly) is one family to the researcher and four strings
 # to every other search. This lists the people whose names sound like the one
 # he typed, grouped by how each is spelled, using the Daitch-Mokotoff codes in
-# `_lib` (`dm_soundex`, `name_sound_codes`). It reads the index only, changes
-# nothing, and says plainly that sounding alike is a hint.
+# `_lib` (`dm_soundex`, `name_sound_codes`). It reads the index and the
+# matched people's records, changes nothing, and says plainly that sounding alike is a hint.
 #
-# The names it reads are the public ones: `persons.name`, the public
-# `name_variants` (`person_variants`), and the public names a record mirrors
-# into its `aliases:` (index `aliases` rows of kind 'stem', which carry a
-# married name or a birth name). It never reads `aliases` rows of kind
-# 'variant': those hold restricted prior names too (SPEC §9, §19).
+# The names it shows are the public ones, taken from the person's own record:
+# `name:`, the public values of `name_variants`, `name_at_birth`,
+# `married_name` and `also_known_as` (`person_alias_mirror`), and any other
+# name typed into `aliases:`. A name marked restricted in any field is never
+# shown, even where an older copy of it still sits in `aliases:` or a public
+# field repeats it (SPEC §9, §19). The index only narrows the search to the
+# people worth reading: it holds every name, private ones included, so a
+# person it picks out is matched again on the record's public names alone.
 
 _SOUNDS_LIKE_REQUIRED_TABLES = ('persons', 'person_variants', 'aliases', 'claims', 'claim_persons')
 _SOUNDS_LIKE_DEFAULT_LIMIT = 50
@@ -3045,88 +3052,147 @@ def _sounds_like_terms(query: str) -> tuple[list[dict], str | None]:
     if not whole:
         return [], ('A single letter has no sound to compare. Type a whole name, '
                     'for example "Hartley" or "Jan Kowalski".')
-    terms = []
-    for word in whole:
-        own = name_sound_codes(word)
-        equivalents = given_name_equivalents(word)
-        codes = set(own)
-        for form in equivalents:
-            codes |= name_sound_codes(form)
-        latin = translit(word, 'passport') if has_cyrillic(word) else word
-        terms.append({'word': word, 'own_codes': sorted(own), 'codes': codes,
-                      'soundex': american_soundex(latin), 'equivalents': equivalents})
-    return terms, None
+    return [_sound_term(word) for word in whole], None
 
 
-def _sounds_like_names(conn: sqlite3.Connection) -> dict[str, dict]:
-    """Every active person and the public names to compare, from the index:
-    `{pid: {'name': display name, 'names': [(written form, from_stem)]}}`.
+def _sound_term(word: str) -> dict:
+    """One query word as `_sounds_like_terms` describes a term."""
+    own = name_sound_codes(word)
+    equivalents = given_name_equivalents(word)
+    codes = set(own)
+    for form in equivalents:
+        codes |= name_sound_codes(form)
+    latin = translit(word, 'passport') if has_cyrillic(word) else word
+    return {'word': word, 'own_codes': sorted(own), 'codes': codes,
+            'soundex': american_soundex(latin), 'equivalents': equivalents}
+
+
+def _sounds_like_readings(query: str, terms: list[dict]) -> list[list[dict]]:
+    """The ways to read the typed words for the match: as typed, then with
+    each two neighbouring words written as one, so "Van Deusen" also finds
+    a record that writes Vandeusen (and `_match_name` joins the record's
+    words the same way, so Vandeusen finds Van Deusen)."""
+    words = name_sound_words(query)
+    readings = [terms]
+    for i in range(len(words) - 1):
+        joined = [*words[:i], words[i] + words[i + 1], *words[i + 2:]]
+        readings.append([_sound_term(w) for w in joined if len(w) > 1])
+    return readings
+
+
+def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Every active person, with every name the index holds for them:
+    `{pid: {'name', 'path', 'names': [...]}}`. Only for narrowing the
+    search: these include private names (`aliases` keeps every variant so a
+    link to a former name still resolves), so a person found here is matched
+    again on `_record_public_names` before anything is shown.
 
     A merged tombstone is left out (its names were folded into the survivor,
-    which is listed under them). A stem alias that is ID-shaped (the record's
-    own ID, or a file stem carrying one) is not a name. Stems are stored lower
-    case, so a stem that repeats the name or a variant adds nothing and is
-    skipped; one that does not (a married name) is kept and shown with its
-    words capitalised."""
+    which is listed under them)."""
     people: dict[str, dict] = {}
     for row in conn.execute(
-        "SELECT id, name FROM persons "
+        "SELECT id, name, path FROM persons "
         "WHERE lower(trim(COALESCE(status, 'active'))) != 'merged'"
     ):
-        names = [] if is_placeholder_name(row['name']) else [(row['name'], False)]
-        people[row['id']] = {'name': row['name'], 'names': names}
+        names = [] if is_placeholder_name(row['name']) else [row['name']]
+        people[row['id']] = {'name': row['name'], 'path': row['path'], 'names': names}
     for row in conn.execute('SELECT person_id, variant FROM person_variants'):
         person = people.get(row['person_id'])
         if person is not None and row['variant']:
-            person['names'].append((row['variant'], False))
-    for row in conn.execute("SELECT canonical_id, alias FROM aliases WHERE kind = 'stem'"):
+            person['names'].append(row['variant'])
+    for row in conn.execute("SELECT canonical_id, alias FROM aliases WHERE kind != 'id'"):
         person = people.get(row['canonical_id'])
-        stem = (row['alias'] or '').strip()
-        if person is None or not stem or ID_RE.search(stem):
-            continue
-        if any(stem.lower() == written.lower() for written, _s in person['names']):
-            continue
-        person['names'].append((stem, True))
+        alias = (row['alias'] or '').strip()
+        if person is not None and alias and not ID_RE.search(alias):
+            person['names'].append(alias)
     return people
 
 
+def _record_public_names(archive_root: Path, person: dict) -> list[str]:
+    """The names of one person that may be shown, read from their record:
+    `name:`, each public other name (`person_alias_mirror`, which leaves out
+    a value marked restricted in any field, even where another field lists
+    it as public), then any other name typed into `aliases:` that is neither
+    ID-shaped nor restricted. A name still sitting in `aliases:` from before
+    it was marked private is not shown (SPEC §9). A record that cannot be
+    read gives only the index's `name:`."""
+    meta = None
+    if person.get('path'):
+        meta = _person_frontmatter_all(archive_root / person['path'])
+    if meta is None:
+        return [] if is_placeholder_name(person['name']) else [person['name']]
+    private = person_restricted_names(meta)
+    names = [n for n in person_alias_mirror(meta) if not is_placeholder_name(n)]
+    seen = {n.lower() for n in names}
+    raw = meta.get('aliases')
+    for item in (raw if isinstance(raw, list) else [raw]):
+        if item is None or isinstance(item, (dict, list)):
+            continue
+        alias = str(item).strip()
+        if not alias or ID_RE.search(alias) or alias.lower() in private:
+            continue
+        if '_' in alias:
+            alias = _stem_display(alias)
+        if alias.lower() in seen or alias.lower() in private:
+            continue
+        seen.add(alias.lower())
+        names.append(alias)
+    return names
+
+
 def _stem_display(stem: str) -> str:
-    """A lower-cased `aliases:` stem as a name to show: underscores read as
-    spaces and each word capitalised ("margaret hartley" is "Margaret
-    Hartley"). The index stores stems lower case, so the record's own
-    capitals are not available."""
+    """A file-stem alias (`margaret_hartley`) as a name to show: underscores
+    read as spaces and each word capitalised ("Margaret Hartley")."""
     return ' '.join(w[:1].upper() + w[1:] for w in re.sub(r'_+', ' ', stem).split())
 
 
-def _match_name(name: str, from_stem: bool, terms: list[dict],
+def _match_name(name: str, terms: list[dict],
                 word_codes: dict[str, set[str]]) -> tuple[list[str], int] | None:
     """Does this one name sound like every query word? Returns (the name's
     words that matched, in query order, and how many of them are the query
     word's exact spelling), or None. A query word takes the name word with
-    its own spelling when there is one, else the first that shares a code."""
-    words = [w for w in name_sound_words(name) if len(w) > 1]
-    if from_stem:
-        words = [w[:1].upper() + w[1:] for w in words]
+    its own spelling when there is one, else the first that shares a code.
+
+    Two neighbouring words of the name also count as one word (Van Deusen
+    as Vandeusen, O Brien as OBrien), shown as written."""
+    words = name_sound_words(name)
+    units = [(w, w) for w in words if len(w) > 1]
+    units += [(f'{a} {b}', a + b) for a, b in zip(words, words[1:])]
     matched: list[str] = []
     exact = 0
     for term in terms:
         key = _fold_word(term['word'])
         pick, pick_exact = None, False
-        for word in words:
+        for shown, word in units:
             if _fold_word(word) == key:
-                pick, pick_exact = word, True
+                pick, pick_exact = shown, True
                 break
             if pick is None:
                 codes = word_codes.get(word)
                 if codes is None:
                     codes = word_codes[word] = name_sound_codes(word)
                 if codes & term['codes']:
-                    pick = word
+                    pick = shown
         if pick is None:
             return None
         matched.append(pick)
         exact += pick_exact
     return matched, exact
+
+
+def _best_sound_match(names: list[str], readings: list[list[dict]],
+                      word_codes: dict[str, set[str]]) -> tuple | None:
+    """The best (matched words, exact count, name) over every name and every
+    reading of the query, or None when no name sounds like it."""
+    best = None
+    for terms in readings:
+        if not terms:
+            continue
+        for written in names:
+            match = _match_name(written, terms, word_codes)
+            if match is not None and (best is None or match[1] > best[1]):
+                best = (*match, written)
+    return best
 
 
 def _sounds_like_years(conn: sqlite3.Connection, pids: list[str]) -> dict[str, str]:
@@ -3213,20 +3279,18 @@ def run_find_sounds_like(archive_root: Path, fha_config: dict, query: str,
         return Result(ok=False, exit_code=EXIT_FAILURE)
     try:
         try:
-            people = _sounds_like_names(conn)
+            people = _sounds_like_candidates(conn)
+            readings = _sounds_like_readings(query, terms)
             word_codes: dict[str, set[str]] = {}
             found = []
             for pid, person in people.items():
-                best = None
-                for written, from_stem in person['names']:
-                    match = _match_name(written, from_stem, terms, word_codes)
-                    if match is not None and (best is None or match[1] > best[1]):
-                        best = (*match, written, from_stem)
+                if _best_sound_match(person['names'], readings, word_codes) is None:
+                    continue
+                best = _best_sound_match(_record_public_names(archive_root, person),
+                                         readings, word_codes)
                 if best is None:
                     continue
-                matched_words, exact, written, from_stem = best
-                if from_stem:
-                    written = _stem_display(written)
+                matched_words, exact, written = best
                 found.append({'id': pid, 'name': person['name'], 'exact': exact,
                               'matched': ' '.join(matched_words),
                               'written': '' if written == person['name'] else written})

@@ -2609,6 +2609,32 @@ _SOUNDS_LIKE_PEOPLE = {
     'stubs/kolodin__ivan_p-snd0000005.md': (
         'id: p-snd0000005\naliases: [p-snd0000005, Иван Колодин]\nname: Иван Колодин\n'
         'living: false\ntier: stub\n'),
+    # A name mirrored into aliases: while it was public, then marked private
+    # by hand: the stale aliases: copy must not be read.
+    'stubs/cole__susan_p-snd0000006.md': (
+        'id: p-snd0000006\naliases: [p-snd0000006, Susan Cole, Susan Petrowski]\n'
+        'name: Susan Cole\nname_variants:\n  - {value: Susan Petrowski, restricted: true}\n'
+        'living: false\ntier: stub\n'),
+    # Private in one field, listed as public in another: private wins (SPEC §9).
+    'stubs/green__ruth_p-snd0000007.md': (
+        'id: p-snd0000007\naliases: [p-snd0000007, Ruth Green]\nname: Ruth Green\n'
+        'name_at_birth: {value: Ruth Petrowska, restricted: true}\n'
+        'name_variants: [Ruth Petrowska]\nliving: false\ntier: stub\n'),
+    # A public married name on a record with no aliases: mirror at all.
+    'stubs/brooks__edna_p-snd0000008.md': (
+        'id: p-snd0000008\nname: Edna Brooks\nmarried_name: Edna Petrovsky\n'
+        'living: false\ntier: stub\n'),
+    # One surname written split here and joined there.
+    'stubs/van_deusen__charles_p-snd0000009.md': (
+        'id: p-snd0000009\naliases: [p-snd0000009, Charles Van Deusen]\n'
+        'name: Charles Van Deusen\nliving: false\ntier: stub\n'),
+    'stubs/vandeusen__peter_p-snd0000010.md': (
+        'id: p-snd0000010\naliases: [p-snd0000010, Peter Vandeusen]\n'
+        'name: Peter Vandeusen\nliving: false\ntier: stub\n'),
+    # A Serbian Cyrillic name (ј and ћ are not Russian letters).
+    'stubs/jovanovic__jovan_p-snd0000011.md': (
+        'id: p-snd0000011\naliases: [p-snd0000011, Јован Јовановић]\nname: Јован Јовановић\n'
+        'living: false\ntier: stub\n'),
 }
 
 
@@ -2675,6 +2701,36 @@ class SoundsLikeTests(unittest.TestCase):
             self.assertNotIn('Hartlie', text)
             self.assertNotIn('p-snd0000002', text)
             self.assertNotIn('Mary Smith', text)
+
+    def test_a_name_made_private_after_it_was_mirrored_is_not_shown(self) -> None:
+        # Susan's Petrowski is still in her aliases: (mirrored while public);
+        # Ruth's Petrowska is private in name_at_birth and public in
+        # name_variants. Neither may be shown, in text or in --json.
+        for argv in (['--sounds-like', 'Petrowsky'], ['--sounds-like', 'Petrowsky', '--json']):
+            rc, out, err = self._find(argv)
+            for text in (out, err):
+                self.assertNotIn('Petrowski', text)
+                self.assertNotIn('Petrowska', text)
+                self.assertNotIn('p-snd0000006', text)
+                self.assertNotIn('p-snd0000007', text)
+
+    def test_a_public_married_name_without_an_aliases_mirror_is_found(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Petrowsky'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-snd0000008', out)
+        self.assertIn('Edna Petrovsky', out)
+
+    def test_a_surname_written_joined_or_split_finds_both(self) -> None:
+        for query in ('Vandeusen', 'Van Deusen'):
+            rc, out, _err = self._find(['--sounds-like', query])
+            self.assertEqual(rc, EXIT_CLEAN, (query, out))
+            self.assertIn('p-snd0000009', out, query)
+            self.assertIn('p-snd0000010', out, query)
+
+    def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Jovanović'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-snd0000011', out)
 
     def test_a_merged_tombstone_is_left_out(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Hartley'])

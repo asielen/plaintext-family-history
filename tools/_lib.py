@@ -16985,10 +16985,21 @@ def american_soundex(name: str) -> str:
 # SOFTWARE.
 
 CYRILLIC_LETTERS = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґѣѳѵ'
+# Not from genealogy-mcp: the Serbian, Macedonian and Belarusian letters its
+# tables lack, each written as the Latin alphabet of that language writes it
+# (ј j, ђ đ, ћ ć, ў ŭ), the same in all three systems. Without
+# them Јовановић lost its first sound and never met Jovanović.
+CYRILLIC_LETTERS_EXTRA: dict[str, str] = {
+    'ј': 'j', 'ђ': 'đ', 'љ': 'lj', 'њ': 'nj', 'ћ': 'ć', 'џ': 'dž',
+    'ѓ': 'gj', 'ќ': 'kj', 'ѕ': 'dz', 'ў': 'ŭ',
+}
+
+
 def has_cyrillic(text: str) -> bool:
-    """True when `text` holds a Cyrillic letter (Russian, Ukrainian, or the
-    pre-1918 letters ѣ ѳ ѵ)."""
-    return any(ch in CYRILLIC_LETTERS for ch in str(text or '').lower())
+    """True when `text` holds a Cyrillic letter (Russian, Ukrainian, the
+    pre-1918 letters ѣ ѳ ѵ, or a Serbian, Macedonian or Belarusian one)."""
+    return any(ch in CYRILLIC_LETTERS or ch in CYRILLIC_LETTERS_EXTRA
+               for ch in str(text or '').lower())
 
 
 # The Latin letters for each Cyrillic one, in CYRILLIC_LETTERS order. The
@@ -17005,6 +17016,9 @@ TRANSLIT: dict[str, dict[str, str]] = {
         'a b w g d e io ż z i j k ł m n o p r s t u f ch c cz sz szcz  y  '
         'e iu ia i ji je g e f i').split(' '))),
 }
+for _table in TRANSLIT.values():
+    _table.update(CYRILLIC_LETTERS_EXTRA)
+del _table
 # A letter at the start of a word (or after a vowel) that a system writes
 # differently there: German writes a word-initial е as je.
 TRANSLIT_INITIAL: dict[str, dict[str, str]] = {
