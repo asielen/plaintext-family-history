@@ -1532,10 +1532,6 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
         self.assertIn('    child: p-aaaaaaaaaa', lines)
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 # ── Odd files from other programs ─────────────────────────────────────────────
 
 ADVERSARIAL = FIXTURES / 'adversarial'
@@ -1610,8 +1606,9 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         births = self._of(plan, 'birth')
         self.assertEqual(len(births), 2)
         self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
-        # Documented behaviour: both BIRTs become claims; the stub's provisional
-        # `birth:` follows the LAST BIRT in the file (a review pass settles it).
+        # Both BIRTs become claims. Today the stub's provisional `birth:` follows
+        # the LAST BIRT in the file; that is a bug when the last one is undated
+        # (issue #449). Here the dated one happens to be last.
         self.assertEqual(plan.stubs[0].birth, '2000-01-01')
         self.assertEqual(len(plan.date_downgrades), 1)
 
@@ -1642,14 +1639,17 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         tags = dict(plan.unread_top)
         self.assertIn('_VENDOR', tags)
         self.assertIn('OBJE', tags)
+        # A person-level SOUR is counted, not read (issue #450 asks to read it).
         self.assertIn('SOUR', tags)
         self._applied_lints_clean(ADVERSARIAL / 'preserve-extensions.ged')
 
     def test_xref_source_a_dangling_child_warns_and_text_is_not_a_link(self) -> None:
         plan = self._plan(ADVERSARIAL / 'xref-source-a.ged')
         self.assertTrue(any('@I99@' in w for w in plan.warnings), plan.warnings)
-        for c in plan.claims:
-            self.assertNotIn('@I99@', c.value)
+        # The missing child makes no relationship, and the `_TEXT literal @I1@
+        # and @I99@` line is never followed as a link: it is counted unread.
+        self.assertEqual(plan.claims, [])
+        self.assertEqual(dict(plan.unread_top).get('_TEXT'), 1)
         self._applied_lints_clean(ADVERSARIAL / 'xref-source-a.ged')
 
     # -- files built from bytes ----------------------------------------------
@@ -1688,10 +1688,8 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         plan = self._plan(self._bytes('skip.ged', raw))
         self.assertTrue(any('level jumps to 2' in w for w in plan.warnings), plan.warnings)
 
-    def test_duplicate_indi_still_refused(self) -> None:
-        result, _out, err = self._run(FIXTURES / 'dup-xref.ged', apply=True)
-        self.assertEqual(result.exit_code, EXIT_ERRORS)
-        self.assertIn('more than once', err)
+    # A `0 @I1@ INDI` defined twice is refused: covered by the dup-xref.ged
+    # test above, not repeated here.
 
     def test_bare_level_stays_malformed_not_joined(self) -> None:
         raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n1\n'
@@ -1700,15 +1698,44 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
                         plan.warnings)
 
-    # FINDING (reported to the owner, not fixed in this PR): the rule from
-    # gedcom-lenient-lines looks at the first character being a digit, so a
-    # '-1 NAME x' line (leading minus) is joined into the value above it
-    # instead of being reported. Remove the decorator when that is fixed.
-    @unittest.expectedFailure
     def test_negative_level_stays_malformed_not_joined(self) -> None:
+        # A '-1 NAME x' line is a broken GEDCOM line, not note prose: it is
+        # reported, so his name does not quietly become "Rose Hartley -1 NAME x".
         raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n-1 NAME x\n'
                b'1 NOTE Kept the bible\n0 TRLR\n')
         plan = self._plan(self._bytes('neg.ged', raw))
         self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
                         plan.warnings)
         self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+
+    def test_every_broken_level_shape_is_reported_or_read(self) -> None:
+        # Each of these is an attempt at a GEDCOM line. None may be folded into
+        # the name above it: it is either read as a line or reported.
+        reported = ['-1 NAME x', '+1 NAME x', '−1 NAME x', '–1 NAME x',
+                    '\xa01 NAME x', '　1 NAME x', '\t1 NAME x', '  1 NAME x',
+                    '100 NAME x', '1NAME x', '\xb2 NAME x']
+        read = ['01 NAME x', '١ NAME x', '１ NAME x']
+        for line in reported + read:
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(joined, [])
+                self.assertEqual(records[1].children[0].value, 'Rose /Hartley/')
+                if line in reported:
+                    self.assertTrue(any(m.startswith('line 4') for m in malformed), malformed)
+                else:
+                    self.assertEqual(malformed, [])
+                    self.assertEqual(records[1].children[1].value, 'x')
+
+    def test_prose_starting_with_a_dash_still_joins(self) -> None:
+        # A MyHeritage note line like "- and her sister" has no level and no
+        # number: it still joins the note above it, words kept.
+        text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n- and her sister\n0 TRLR\n'
+        records, malformed, joined = gedcom_import.parse_gedcom(text)
+        self.assertEqual(malformed, [])
+        self.assertEqual(joined, [4])
+        self.assertEqual(records[1].children[0].value, 'Rose kept the bible - and her sister')
+
+
+if __name__ == '__main__':
+    unittest.main()

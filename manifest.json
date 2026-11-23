@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
+      "sha256": "46f400ff58ad6135dee463c5b158442e2b47d41ec0e511cb04f125fa4ce32f3e",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "30f60b075de26f07d53edc99d2d8b248f8097ca76788a805c5c969e5b7d482e8",
+      "sha256": "635cdb8a075edea8e86b3046e9b7df0290902e8c94210f4060930bcc52b4f848",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },

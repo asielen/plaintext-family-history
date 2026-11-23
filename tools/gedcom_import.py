@@ -283,6 +283,22 @@ _GEDCOM_LINE_RE = re.compile(
 _NOTE_CHILD_TAGS = frozenset({'CONC', 'CONT', 'SOUR', 'REFN', 'RIN', 'CHAN',
                               'LANG', 'MIME', 'TRAN'})
 
+# Signs a broken level number can carry ("-1 NAME", "+1 NAME", a typographic
+# minus or dash pasted from a word processor).
+_LEVEL_SIGNS = '-+−‐‑‒–—﹣＋－'
+
+
+def _looks_like_level(line: str) -> bool:
+    """True when a line that failed the grammar still starts like a level
+    number, so it is reported as unreadable instead of being joined into the
+    value above it, where a "-1 NAME x" line would quietly become part of his
+    name. Leading whitespace of any kind (a no-break space, a tab) and one sign
+    are skipped before looking for the digit."""
+    s = line.lstrip().lstrip('﻿').lstrip()
+    if s[:1] and s[0] in _LEVEL_SIGNS:
+        s = s[1:]
+    return s[:1].isdigit()
+
 
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
     """Decode a GEDCOM file as UTF-8, refusing anything else with a plain fix.
@@ -320,7 +336,8 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     words are kept; node line numbers stay true because no node is made).
     Returns (records, malformed, joined). `malformed` describes lines that fit
     no grammar (reported as warnings, never fatal - the filed copy keeps them);
-    a line that starts with a digit, or text before any node, still lands there
+    a line that starts with a digit (after any leading space and one sign, so
+    "-1 NAME x" counts), or text before any node, still lands there
     because it looks like an attempt at a GEDCOM line (except, in a file that
     has level-less lines, a line nested under a NOTE/TEXT with a tag a note
     cannot have, such as "2 brothers nearby"). `joined` holds the line
@@ -337,7 +354,7 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     joined: list[int] = []
     lines = text.splitlines()
     broken = any(ln.strip() and not _GEDCOM_LINE_RE.match(ln.strip('﻿'))
-                 and not ln.lstrip(' \t\ufeff')[:1].isdigit() for ln in lines)
+                 and not _looks_like_level(ln) for ln in lines)
 
     for lineno, rawline in enumerate(lines, start=1):
         if not rawline.strip():
@@ -355,7 +372,7 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
                  and not m.group(3).startswith('_')
                  and m.group(3).upper() not in _NOTE_CHILD_TAGS)
         if not m or prose:
-            if last is not None and (prose or not rawline.lstrip(' \t\ufeff')[:1].isdigit()):
+            if last is not None and (prose or not _looks_like_level(rawline)):
                 last.value += ' ' + rawline.strip()
                 joined.append(lineno)
             else:

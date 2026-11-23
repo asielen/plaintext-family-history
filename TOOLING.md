@@ -1433,7 +1433,7 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 - An unreadable date omits `date:`, keeping the wording in the value; the plan counts read vs unread free-form dates (three of each on screen, all in `--plan-out`).
 - Dedupe compares birth windows (`edtf_bounds` ± 2 years; an open window matches its whole side), shown in plain words (`b.after 1700 ~ ... b.about 1849`). Reported, never merged.
 - A duplicate xref definition is refused as malformed.
-- Lines with no level number (MyHeritage) join the line above with a space. Double-encoded HTML entities and `<br>` are decoded only in a file that has double-encoded entities or says `HEAD SOUR MYHERITAGE`. Anchors and the filed copy are unchanged; the plan counts both.
+- Lines with no level number (MyHeritage) join the line above with a space. A line that starts like a level number, even a broken one (`-1 NAME`, a no-break space before `1`), is reported as unreadable instead. Double-encoded HTML entities and `<br>` are decoded only in a file that has double-encoded entities or says `HEAD SOUR MYHERITAGE`. Anchors and the filed copy are unchanged; the plan counts both.
 - Audit CSV `.cache/gedcom_import/{sha12-of-file-hash}.csv` maps xrefs to ids and is the re-run guard (same file refused with date and s-id). Every write registers an undo; any failure rolls back; the CSV is written last.
 - An unreachable documents root refuses `--apply` before writing, naming the drive and `roots:` fix. On a `WORKING_COPY` (§13d) `--apply` is refused.
 - `living:` (one predicate): DEAT present, or latest-plausible birth (`edtf_bounds` upper; `1915~` = 1916) over 110 years back → `false`; else `unknown`.
