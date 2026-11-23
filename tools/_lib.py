@@ -9934,9 +9934,10 @@ def _search_url_ukdiscovery(s: dict) -> str:
     return _rs_url('https://discovery.nationalarchives.gov.uk/results/r', {'_q': _rs_name(s)})
 
 
-# Each URL shape is the upstream builder's own; checked by hand on 2026-11-22.
-# Sites change their search addresses; a link that stops pre-filling still
-# opens the site, which is the graceful failure.
+# Each URL shape is the upstream builder's own. Not yet opened by hand: before
+# the PR merges, open the ten links for Thomas Edward Hartley and put the date
+# here. Sites change their search addresses; a link that stops pre-filling
+# still opens the site, which is the graceful failure.
 RESEARCH_SITES: tuple = (
     {'key': 'familysearch', 'label': 'FamilySearch', 'group': 'General',
      'note': 'free, needs a free login to see records', 'build': _search_url_familysearch},
