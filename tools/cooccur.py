@@ -10,7 +10,9 @@ consumed through `fha report`. Never writes to the archive: confirming a
 person-pair mints a `relationship` claim and dismissing one records a
 tombstone, but both of those writes belong to `fha confirm` (TOOLING §14a3)
 and the today skill's reaction flow, not this tool. This tool only reads
-`notes/cooccur_dismissed.json`; it never adds or removes a dismissal.
+the `pairs` list of `notes/cooccur_dismissed.json` (the file also holds the
+"not the same person" decisions, which are not about connections and are
+ignored here); it never adds or removes a dismissal.
 
 One narrow exception (#48): the dismissal tombstone used to live at
 `.cache/cooccur_dismissed.json`, which is disposable by design, and a human's

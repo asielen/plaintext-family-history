@@ -46,6 +46,7 @@ lint/index integration - the real archive is never a test bed.
 
 import hashlib
 import os
+import json
 import shutil
 import sys
 import tempfile
@@ -644,6 +645,27 @@ class MergeArchiveTests(unittest.TestCase):
         aka = read_record(self.survivor_path)['meta']['also_known_as']
         self.assertEqual(aka[0]['value'], 'Quenby')
         self.assertEqual(str(aka[0]['restricted']), 'true')
+
+    def test_merging_a_pair_noted_as_two_people_warns_and_names_the_undo(self) -> None:
+        notes = self.root / 'notes'
+        notes.mkdir(exist_ok=True)
+        dismissed = notes / 'cooccur_dismissed.json'
+        dismissed.write_text(json.dumps({'pairs': [], 'not_same_person': [
+            {'persons': ['p-bbbbbbbbbb', 'p-aaaaaaaaaa'], 'date': '2026-11-22'}]}),
+            encoding='utf-8')
+        before = dismissed.read_bytes()
+        undo = 'fha confirm undismiss p-bbbbbbbbbb p-aaaaaaaaaa --not-same-person'
+        dry = run_merge(self.root, dry_run=True)
+        dry_text = ' '.join(m.text for m in dry.messages)
+        self.assertIn(undo, dry_text)
+        self.assertIn('On 2026-11-22 you noted', dry_text)
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+        warnings = [m.text for m in result.messages if m.level == 'warning']
+        self.assertTrue(any(undo in w for w in warnings), warnings)
+        # The merge never edits the dismissal file.
+        self.assertEqual(dismissed.read_bytes(), before)
 
     # Full round trip -----------------------------------------------------------
 
