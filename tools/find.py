@@ -9,6 +9,8 @@ find.py - fha find: the universal locator.
   fha find --json <ID|text>           Machine-readable result list (a reference-resolver
                                        backend - see search_json below), optionally narrowed
                                        with --kind and --limit
+  fha find --sounds-like NAME         People whose names sound like NAME in any
+                                       spelling (Daitch-Mokotoff), grouped by spelling
 
 Detects ID type from its prefix letter and prints structured output.
 Uses the SQLite index when present.  If the index is stale, it prints a
@@ -73,6 +75,8 @@ import os
 import re
 import sqlite3
 import sys
+import textwrap
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -121,6 +125,23 @@ from _lib import (
     unsaved_image_checker_for_index,
     unreadable_dir_recorder,
     walk_files,
+    ID_RE,
+    american_soundex,
+    claim_is_own_vital,
+    fold_accents,
+    given_name_equivalents,
+    has_cyrillic,
+    humanize_edtf,
+    is_placeholder_name,
+    name_sound_codes,
+    name_sound_words,
+    translit,
+    vital_pick_key,
+    _person_frontmatter_all,
+    alias_key_text,
+    yaml_list_link_text,
+    person_alias_mirror,
+    person_restricted_names,
 )
 
 configure_utf8_stdout()
@@ -188,6 +209,16 @@ configure_utf8_stdout()
 #                                 the coverage note on stderr, or nothing
 #    _parse_kind_filter          - CLI --kind comma list → (kinds, error_message)
 #
+#  --sounds-like: names that sound alike (read-only: the index, then each match's record)
+#    _sounds_like_terms:          the typed name → words with their D-M codes, or a refusal
+#    _sounds_like_candidates:     every active person and every name the index holds
+#    _record_public_names:        the names of one person that may be shown
+#    _match_name:                 does one name sound like every query word?
+#    _sounds_like_years:          "born about 1840, died 1923" from own accepted vitals
+#    run_find_sounds_like:        the engine: ranked, grouped people in a Result
+#    _sounds_like_code_line:      one query word's D-M and census Soundex codes
+#    _cmd_find_sounds_like:       the only layer that prints a --sounds-like result
+#
 #  Public API
 #    find_by_id                - locate a single ID; called by fha id check alias in fha.py
 #    run_find                  - full dispatcher (id | text | --related); returns a Result
@@ -197,6 +228,7 @@ configure_utf8_stdout()
 #    register                  - attach 'find' to the main fha parser
 #    _reader_went_away         - a closed pipe (`| head`) is normal use, not an error
 #    _run_find / _find_command - argparse → run_find bridge (returns the int exit code)
+#    _sounds_like_command:      --sounds-like's flag checks, then engine and printer
 #    _run_search / _search_command - the same bridge for `fha search <words>`
 #    _standalone_main          - for `python tools/find.py` direct invocation
 #
@@ -2960,6 +2992,483 @@ def _parse_kind_filter(raw: str | None) -> tuple[list[str] | None, str | None]:
     return kinds, None
 
 
+# ── --sounds-like: names that sound alike ─────────────────────────────────────
+#
+# One surname spelled four ways across a family's records (Kowalski, Kowalska,
+# Kovalsky; Hartley, Hartly) is one family to the researcher and four strings
+# to every other search. This lists the people whose names sound like the one
+# he typed, grouped by how each is spelled, using the Daitch-Mokotoff codes in
+# `_lib` (`dm_soundex`, `name_sound_codes`). It reads the index and the
+# matched people's records, changes nothing, and says plainly that sounding alike is a hint.
+#
+# The names it shows are the public ones, taken from the person's own record:
+# `name:`, the public values of `name_variants`, `name_at_birth`,
+# `married_name` and `also_known_as` (`person_alias_mirror`), and any other
+# name typed into `aliases:`. A name marked restricted in any field is never
+# shown, even where an older copy of it still sits in `aliases:` or a public
+# field repeats it (SPEC §9, §19). The index only narrows the search to the
+# people worth reading: it holds every name, private ones included, so a
+# person it picks out is matched again on the record's public names alone.
+
+_SOUNDS_LIKE_REQUIRED_TABLES = ('persons', 'person_variants', 'aliases', 'claims', 'claim_persons')
+_SOUNDS_LIKE_DEFAULT_LIMIT = 50
+_SOUNDS_LIKE_NOT_LATIN = (
+    'I can only compare names written in Latin or Cyrillic letters. Type the name as '
+    'it would be spelled in English or Polish, for example "Moskowitz".')
+_SOUNDS_LIKE_HINT = (
+    'Sounding alike is only a hint: these can be different families.\n'
+    'To compare two of them, ask to check whether they are the same person\n'
+    '(the merge-identities skill), or run `fha find --related <p-id>` on each.')
+# The vital claims whose dates give the years beside a name: the start of a
+# life, then its end, each as (claim type, the word printed), best first.
+_SOUNDS_LIKE_VITALS = (
+    (('birth', 'born'), ('baptism', 'baptised')),
+    (('death', 'died'), ('burial', 'buried')),
+)
+
+
+def _fold_word(word: str) -> str:
+    """A word as two spellings are compared for "the same spelling": lower
+    case with accents folded, so Kowalski and KOWALSKI are one spelling."""
+    return fold_accents(word).lower()
+
+
+def _sounds_like_terms(query: str) -> tuple[list[dict], str | None]:
+    """Read the typed name into the words to match, or say why it cannot be.
+
+    Each term is `{word, own_codes, codes, soundex, equivalents}`: the word
+    as typed, its own D-M codes (printed), the codes it matches (its own,
+    plus those of its other-language forms when it is a known given name, so
+    Jan finds Ivan), its census Soundex code, and those other forms. Returns
+    (terms, None) or ([], message).
+
+    One-letter words are initials ("T. E. Hartley"): an initial has no sound
+    to compare, so it is left out of the match; a query of initials alone is
+    refused. A word in another script (Hebrew, Greek) has no code and is
+    refused rather than silently dropped, since dropping it would widen the
+    search without saying so.
+    """
+    words = name_sound_words(query)
+    if not words or any(not name_sound_codes(w) for w in words):
+        return [], _SOUNDS_LIKE_NOT_LATIN
+    whole = [w for w in words if len(w) > 1]
+    if not whole:
+        return [], ('A single letter has no sound to compare. Type a whole name, '
+                    'for example "Hartley" or "Jan Kowalski".')
+    return [_sound_term(word) for word in whole], None
+
+
+def _sound_term(word: str) -> dict:
+    """One query word as `_sounds_like_terms` describes a term."""
+    own = name_sound_codes(word)
+    equivalents = given_name_equivalents(word)
+    codes = set(own)
+    for form in equivalents:
+        codes |= name_sound_codes(form)
+    latin = translit(word, 'passport') if has_cyrillic(word) else word
+    return {'word': word, 'own_codes': sorted(own), 'codes': codes,
+            'soundex': american_soundex(latin), 'equivalents': equivalents}
+
+
+def _sounds_like_readings(query: str, terms: list[dict]) -> list[list[dict]]:
+    """The ways to read the typed words for the match: as typed, then with
+    a surname prefix written onto the word after it (`_joins_next`), so
+    "Van Deusen" also finds a record that writes Vandeusen (and
+    `_match_name` joins the record's words the same way, so Vandeusen finds
+    Van Deusen)."""
+    words = name_sound_words(query)
+    readings = [terms]
+    for i, end in _prefix_spans(words):
+        joined = [*words[:i], ''.join(words[i:end]), *words[end:]]
+        readings.append([_sound_term(w) for w in joined if len(w) > 1])
+    return readings
+
+
+# Longer surname prefixes that are written both apart and joined; any word
+# of one to three letters (Van, De, Le, O, Mc, Mac, St, Ten) counts too.
+_SOUNDS_LIKE_LONG_PREFIXES = frozenset(
+    ('vande', 'vander', 'vanden', 'vonder', 'della', 'delle', 'dela', 'saint', 'fitz'))
+
+
+# The second word of a two-word prefix (Van der, de la, von den). Only these
+# chain on: two short given names (Max Lyn Hartley) must not, or their
+# six-digit code matches Max Lynch.
+_SOUNDS_LIKE_PARTICLES = frozenset(
+    ('der', 'den', 'de', 'la', 'le', 'los', 'las', 'van', 'von', 'du', 'des', 'di', 'da', 'del', 'ten', 'ter'))
+
+
+def _joins_next(word: str) -> bool:
+    """Is `word` a surname prefix that may be written onto the next word
+    (Van Deusen, Vandeusen)? Only short words and a few known prefixes: a
+    D-M code stops at six digits, so a long first word joined to anything
+    codes the same whatever follows, and "Calvin George" would find every
+    Calvin."""
+    return len(word) <= 3 or _fold_word(word) in _SOUNDS_LIKE_LONG_PREFIXES
+
+
+def _prefix_spans(words: list[str]) -> list[tuple[int, int]]:
+    """The runs of words to read as one: a prefix with the word after it
+    (Van Deusen), and a prefix and a particle with the word after them (Van
+    der Meer, de la Cruz; `_SOUNDS_LIKE_PARTICLES`), as (start, end) slices."""
+    spans = []
+    for i in range(len(words) - 1):
+        if _joins_next(words[i]):
+            spans.append((i, i + 2))
+            if i + 2 < len(words) and _fold_word(words[i + 1]) in _SOUNDS_LIKE_PARTICLES:
+                spans.append((i, i + 3))
+    return spans
+
+
+def _name_key(text: str) -> str:
+    """A name as two copies of it are compared for "the same name": one
+    Unicode form (an accent pasted from a Mac or a PDF arrives as a separate
+    mark), spaces collapsed, lower case."""
+    return ' '.join(unicodedata.normalize('NFC', text).split()).lower()
+
+
+def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Every active person, with every name the index holds for them:
+    `{pid: {'name', 'path', 'names': [...]}}`. Only for narrowing the
+    search: these include private names (`aliases` keeps every variant so a
+    link to a former name still resolves), so a person found here is matched
+    again on `_record_public_names` before anything is shown.
+
+    A merged tombstone is left out (its names were folded into the survivor,
+    which is listed under them)."""
+    people: dict[str, dict] = {}
+    for row in conn.execute(
+        "SELECT id, name, path FROM persons "
+        "WHERE lower(trim(COALESCE(status, 'active'))) != 'merged'"
+    ):
+        names = [] if is_placeholder_name(row['name']) else [row['name']]
+        people[row['id']] = {'name': row['name'], 'path': row['path'], 'names': names}
+    for row in conn.execute('SELECT person_id, variant FROM person_variants'):
+        person = people.get(row['person_id'])
+        if person is not None and row['variant']:
+            person['names'].append(row['variant'])
+    for row in conn.execute("SELECT canonical_id, alias FROM aliases WHERE kind != 'id'"):
+        person = people.get(row['canonical_id'])
+        alias = (row['alias'] or '').strip()
+        if person is not None and alias and not ID_RE.search(alias):
+            person['names'].append(alias)
+    return people
+
+
+def _record_public_names(archive_root: Path, person: dict) -> tuple[str, list[str]] | None:
+    """The names of one person that may be shown, read from their record:
+    `name:`, each public other name (`person_alias_mirror`, which leaves out
+    a value marked restricted in any field, even where another field lists
+    it as public), then any other name typed into `aliases:` that is neither
+    ID-shaped nor restricted. A name still sitting in `aliases:` from before
+    it was marked private is not shown (SPEC §9). A record that cannot be
+    read gives None: its names cannot be checked, and the index's copies may
+    be ones he has since marked private, so none of them is shown.
+
+    Returns (the name to label them with, the names). The label is the
+    record's `name:` as it is now, not the index's copy: a main name made
+    private since the last `fha index` must not be shown either."""
+    meta = None
+    if person.get('path'):
+        meta = _person_frontmatter_all(archive_root / person['path'])
+    if meta is None:
+        return None
+    label = str(meta.get('name') or '').strip() or person['name']
+    # Compared by `_name_key`, so a copy that differs from the private value
+    # only by accent encoding or spacing is still taken as that value.
+    private = {_name_key(v) for v in person_restricted_names(meta)}
+    names = [n for n in person_alias_mirror(meta)
+             if not is_placeholder_name(n) and _name_key(n) not in private]
+    seen = {_name_key(n) for n in names}
+    raw = meta.get('aliases')
+    for item in (raw if isinstance(raw, list) else [raw]):
+        if item is None or isinstance(item, dict):
+            continue
+        # A link (`"[[Name]]"`, or unquoted, which YAML reads as a nested
+        # list) names the same handle as the bare text: read it the way the
+        # alias mirror does, or a private name written as a link is shown.
+        text = yaml_list_link_text(item) if isinstance(item, list) else str(item)
+        alias = alias_key_text(text).strip()
+        if not alias or ID_RE.search(alias) or _name_key(alias) in private:
+            continue
+        if '_' in alias:
+            alias = _stem_display(alias)
+        if _name_key(alias) in seen or _name_key(alias) in private:
+            continue
+        seen.add(_name_key(alias))
+        names.append(alias)
+    return label, names
+
+
+def _stem_display(stem: str) -> str:
+    """A file-stem alias (`margaret_hartley`) as a name to show: underscores
+    read as spaces and each word capitalised ("Margaret Hartley")."""
+    return ' '.join(w[:1].upper() + w[1:] for w in re.sub(r'_+', ' ', stem).split())
+
+
+def _match_name(name: str, terms: list[dict],
+                word_codes: dict[str, set[str]]) -> tuple[list[str], int] | None:
+    """Does this one name sound like every query word? Returns (the name's
+    words that matched, in query order, and how many of them are the query
+    word's exact spelling), or None. A query word takes the name word with
+    its own spelling when there is one, else the first that shares a code.
+
+    A surname prefix and the word after it also count as one word (Van
+    Deusen as Vandeusen, O Brien as OBrien, Van der Meer as Vandermeer;
+    `_prefix_spans`), shown as written."""
+    words = name_sound_words(name)
+    units = [(w, w) for w in words if len(w) > 1]
+    units += [(' '.join(words[i:end]), ''.join(words[i:end])) for i, end in _prefix_spans(words)]
+    matched: list[str] = []
+    exact = 0
+    for term in terms:
+        key = _fold_word(term['word'])
+        pick, pick_exact = None, False
+        for shown, word in units:
+            if _fold_word(word) == key:
+                pick, pick_exact = shown, True
+                break
+            if pick is None:
+                codes = word_codes.get(word)
+                if codes is None:
+                    codes = word_codes[word] = name_sound_codes(word)
+                if codes & term['codes']:
+                    pick = shown
+        if pick is None:
+            return None
+        matched.append(pick)
+        exact += pick_exact
+    return matched, exact
+
+
+def _best_sound_match(names: list[str], readings: list[list[dict]],
+                      word_codes: dict[str, set[str]]) -> tuple | None:
+    """The best (matched words, exact count, name) over every name and every
+    reading of the query, or None when no name sounds like it."""
+    best = None
+    for terms in readings:
+        if not terms:
+            continue
+        for written in names:
+            match = _match_name(written, terms, word_codes)
+            if match is not None and (best is None or match[1] > best[1]):
+                best = (*match, written)
+    return best
+
+
+def _sounds_like_years(conn: sqlite3.Connection, pids: list[str]) -> dict[str, str]:
+    """A short "born about 1840, died 1923" for each person, from their own
+    accepted birth (else baptism) and death (else burial) claims, the best
+    dated one of each (`vital_pick_key`, `claim_is_own_vital`: the same pick
+    the person page makes), else the provisional `birth:`/`death:` on the
+    record. Someone with neither gets no years. Only for telling two people
+    of one name apart; no date is judged here."""
+    picked: dict[tuple[str, str], str] = {}
+    subjects: dict[str, list[str] | None] = {}
+    types = [ctype for pair in _SOUNDS_LIKE_VITALS for ctype, _verb in pair]
+    for start in range(0, len(pids), 500):
+        chunk = pids[start:start + 500]
+        rows = conn.execute(
+            f"""SELECT cp.person_id, c.id, c.type, c.date_edtf, c.date_min, c.date_max,
+                       c.confidence
+                FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id
+                WHERE cp.person_id IN ({','.join('?' * len(chunk))})
+                  AND c.type IN ({','.join('?' * len(types))})
+                  AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0
+                  AND c.date_edtf IS NOT NULL AND c.date_edtf != ''""",
+            [*chunk, *types],
+        ).fetchall()
+        for r in sorted(rows, key=vital_pick_key):
+            key = (r['person_id'], r['type'])
+            if key in picked:
+                continue
+            if claim_is_own_vital(conn, r['person_id'], r['id'], r['type'], subjects):
+                picked[key] = r['date_edtf']
+    provisional = {}
+    for start in range(0, len(pids), 500):
+        chunk = pids[start:start + 500]
+        for r in conn.execute(
+            f"SELECT id, birth, death FROM persons WHERE id IN ({','.join('?' * len(chunk))})",
+            chunk,
+        ):
+            provisional[r['id']] = (r['birth'], r['death'])
+    out: dict[str, str] = {}
+    for pid in pids:
+        birth_est, death_est = provisional.get(pid, (None, None))
+        parts = []
+        for pair, estimate in zip(_SOUNDS_LIKE_VITALS, (birth_est, death_est)):
+            for ctype, verb in pair:
+                if (pid, ctype) in picked:
+                    parts.append(f'{verb} {humanize_edtf(picked[(pid, ctype)])}')
+                    break
+            else:
+                if estimate:
+                    parts.append(f'{pair[0][1]} {humanize_edtf(str(estimate))}')
+        out[pid] = ', '.join(parts)
+    return out
+
+
+def run_find_sounds_like(archive_root: Path, fha_config: dict, query: str,
+                         limit: int = _SOUNDS_LIKE_DEFAULT_LIMIT) -> Result:
+    """`fha find --sounds-like NAME`: the people whose names sound like NAME.
+
+    The rule (TOOLING §4a): every word of the query must sound like some
+    word of one of the person's public names, in any order; a query word
+    that is a known given name also matches its forms in other languages.
+    Two words sound alike when their Daitch-Mokotoff code sets share a code.
+
+    Ranking: people with more query words in their exact spelling come
+    first, then by name. People are grouped by the spelling that matched;
+    a group's place is its best person's. `limit` cuts the people listed
+    (the groups are built from those kept), and `data['more']` says how many
+    were left out.
+
+    Exit codes: 0 found; 1 no one sounds like it; 2 the name cannot be
+    compared (another script, initials only, empty); 3 no usable index.
+    `data`: `{query, codes: [{word, codes, soundex, equivalents}], groups:
+    [{spelling, people: [{id, name, years, written}]}], hits: [{id, type,
+    label, detail, matched}], more}`. `written` is the name that matched when
+    it is not the person's main name (a married name), else ''.
+    """
+    terms, refusal = _sounds_like_terms(query)
+    if refusal:
+        return Result(ok=False, exit_code=EXIT_ERRORS).add('error', refusal)
+    codes_data = [{'word': t['word'], 'codes': t['own_codes'], 'soundex': t['soundex'],
+                   'equivalents': t['equivalents']} for t in terms]
+    conn = open_index_db(archive_root, _SOUNDS_LIKE_REQUIRED_TABLES)
+    if conn is None:
+        return Result(ok=False, exit_code=EXIT_FAILURE)
+    try:
+        try:
+            people = _sounds_like_candidates(conn)
+            readings = _sounds_like_readings(query, terms)
+            word_codes: dict[str, set[str]] = {}
+            found = []
+            unreadable: list[str] = []
+            for pid, person in people.items():
+                if _best_sound_match(person['names'], readings, word_codes) is None:
+                    continue
+                record = _record_public_names(archive_root, person)
+                if record is None:
+                    unreadable.append(pid)
+                    continue
+                label, public = record
+                best = _best_sound_match(public, readings, word_codes)
+                if best is None:
+                    continue
+                matched_words, exact, written = best
+                found.append({'id': pid, 'name': label, 'exact': exact,
+                              'matched': ' '.join(matched_words),
+                              'written': '' if written == label else written})
+            found.sort(key=lambda p: (-p['exact'], p['name'].lower(), p['id']))
+            kept = found[:limit]
+            years = _sounds_like_years(conn, [p['id'] for p in kept])
+        except sqlite3.OperationalError:
+            return Result(ok=False, exit_code=EXIT_FAILURE).add(
+                'error',
+                '.cache/index.sqlite is unreadable or has an incompatible schema; '
+                'your search index is out of date. Run `fha index` to rebuild it.',
+                next_step='fha index',
+            )
+    finally:
+        conn.close()
+
+    groups: dict[str, dict] = {}
+    for p in kept:
+        group = groups.setdefault(p['matched'].lower(),
+                                  {'spelling': p['matched'], 'people': []})
+        group['people'].append({'id': p['id'], 'name': p['name'],
+                                'years': years.get(p['id'], ''), 'written': p['written']})
+    hits = [{'id': p['id'], 'type': 'person', 'label': p['name'],
+             'detail': years.get(p['id'], ''), 'matched': p['matched']} for p in kept]
+    data = {'query': query, 'codes': codes_data, 'groups': list(groups.values()),
+            'hits': hits, 'more': len(found) - len(kept), 'unreadable': sorted(unreadable)}
+    if not found:
+        return Result(ok=True, exit_code=EXIT_WARNINGS, data=data).add(
+            'warning',
+            f'No one in the archive has a name that sounds like "{query.strip()}". '
+            'Names are compared as written in the Latin or Cyrillic alphabet.')
+    return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
+
+
+def _sounds_like_code_line(term: dict) -> str:
+    """One query word's codes, for the header: "Hartley: Daitch-Mokotoff code
+    593800; census Soundex H634". The D-M code is the one to type into
+    JewishGen or Stephen Morse's search pages to find every spelling there;
+    the census Soundex code is the one the 1880-1930 census cards are filed
+    under."""
+    codes = term['codes']
+    label = 'code' if len(codes) == 1 else 'codes'
+    line = f"{term['word']}: Daitch-Mokotoff {label} {' or '.join(codes)}"
+    if term['soundex']:
+        line += f"; census Soundex {term['soundex']}"
+    return line
+
+
+def _cmd_find_sounds_like(result: Result, as_json: bool, limit: int) -> int:
+    """The only layer that prints a --sounds-like result.
+
+    `--json`: one JSON array on stdout (`[]` when no one matched), every
+    message on stderr. Otherwise the header with the sound codes, any given
+    name that was widened to its other forms, the groups, how many more were
+    left out, and the "only a hint" lines."""
+    data = result.data
+    if data.get('unreadable'):
+        # Only the IDs: the names in the index may be ones since made private.
+        print(f"NOTE: left out {len(data['unreadable'])} record(s) that could not be read, "
+              f"so their names could not be checked: {', '.join(data['unreadable'])}. "
+              'Run `fha lint` to see what is wrong with them.', file=sys.stderr)
+    if as_json:
+        for m in result.messages:
+            prefix = {'error': 'ERROR', 'warning': 'NOTE'}.get(m.level, 'NOTE')
+            print(f'{prefix}: {m.text}', file=sys.stderr)
+        if data.get('more'):
+            print(f"NOTE: {data['more']} more not listed. Add --limit "
+                  f"{limit + data['more']} to list them all.", file=sys.stderr)
+        if 'hits' in data:
+            print(json.dumps(data['hits']))
+        return result.exit_code
+    if 'hits' not in data:
+        for m in result.messages:
+            print(f'ERROR: {m.text}', file=sys.stderr)
+        return result.exit_code
+    if not data['hits']:
+        for m in result.messages:
+            print(m.text)
+        for term in data['codes']:
+            print(f'  {_sounds_like_code_line(term)}')
+        return result.exit_code
+
+    print(f'People whose names sound like "{data["query"].strip()}":')
+    for term in data['codes']:
+        print(f'  {_sounds_like_code_line(term)}')
+    for term in data['codes']:
+        if term['equivalents']:
+            print(textwrap.fill(
+                f'  "{term["word"]}" is a given name, so its forms in other languages '
+                f'count too: {", ".join(term["equivalents"])}.',
+                width=78, subsequent_indent='    '))
+    rows = []
+    for group in data['groups']:
+        for person in group['people']:
+            notes = [f"as {person['written']}"] if person['written'] else []
+            if person['years']:
+                notes.append(person['years'])
+            rows.append(person['name'] + (f" ({'; '.join(notes)})" if notes else ''))
+    width = min(max(len(r) for r in rows), 56)
+    print()
+    row_iter = iter(rows)
+    for group in data['groups']:
+        count = len(group['people'])
+        print(f"  {group['spelling']}   {count} {'person' if count == 1 else 'people'}")
+        for person in group['people']:
+            print(f"    {next(row_iter):<{width}}  {person['id']}")
+    if data['more']:
+        print(f"\n  {data['more']} more not shown. Add --limit {limit + data['more']} to see them all.")
+    print()
+    print(_SOUNDS_LIKE_HINT)
+    return result.exit_code
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _text_search(query: str, archive_root: Path, fha_config: dict) -> int:
@@ -3128,6 +3637,7 @@ Locate anything in the archive, or search its full text.
   fha find --text "phrase"   Full-text search across records, notes, captions
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
+  fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`."""
@@ -3155,6 +3665,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
              'Combine with --date for a time slice, or pass --related --date EDTF alone '
              'for the standalone time-slice neighborhood.',
     )
+    mode.add_argument(
+        '--sounds-like', metavar='NAME', dest='sounds_like',
+        help='People whose names sound like NAME in any spelling (Kowalski, Kowalska, '
+             'Kovalsky), grouped by spelling, with the Daitch-Mokotoff and census Soundex '
+             'codes. Works with --json and --limit.',
+    )
 
     p.add_argument(
         '--date', metavar='EDTF',
@@ -3170,8 +3686,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         '--json', action='store_true', dest='use_json',
         help='Machine-readable result list instead of a human report. Valid with a bare '
-             'ID/text query or --text; combine with --kind/--limit to narrow it. Not yet '
-             'valid with --related.',
+             'ID/text query, --text or --sounds-like; combine with --kind/--limit to '
+             'narrow it. Not yet valid with --related.',
     )
     p.add_argument(
         '--kind', metavar='KIND[,KIND...]',
@@ -3180,8 +3696,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
              'files)). Default: every kind.',
     )
     p.add_argument(
-        '--limit', type=int, default=20, metavar='N',
-        help='With --json: maximum number of results (default 20).',
+        '--limit', type=int, default=None, metavar='N',
+        help='Maximum number of results: with --json (default 20), or the people '
+             '--sounds-like lists (default 50).',
     )
 
     p.add_argument(
@@ -3279,6 +3796,10 @@ def _find_command(args: argparse.Namespace) -> int:
     related_requested = related is not _NO_RELATED
     related_id = related if (related_requested and related) else None
 
+    sounds_like = getattr(args, 'sounds_like', None)
+    if sounds_like is not None:
+        return _sounds_like_command(args, archive_root, fha_config, sounds_like, query)
+
     # --date only has defined behavior alongside --related (TOOLING §4a D4).
     # Catch it before the --text branch - otherwise `fha find --text "X" --date Y`
     # silently runs an unfiltered text search and drops the date.
@@ -3318,7 +3839,9 @@ def _find_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return EXIT_FAILURE
-        limit = getattr(args, 'limit', 20)
+        limit = getattr(args, 'limit', None)
+        if limit is None:
+            limit = 20
         result = run_find_json(
             archive_root, fha_config, query=json_query, kinds=kinds, limit=limit,
         )
@@ -3347,6 +3870,37 @@ def _find_command(args: argparse.Namespace) -> int:
         print('Usage: fha find <ID>  |  fha find --text "phrase"  |  fha find --related <ID> [--date EDTF]',
               file=sys.stderr)
         return EXIT_FAILURE
+
+
+def _sounds_like_command(args: argparse.Namespace, archive_root: Path, fha_config: dict,
+                         name: str, extra: str | None) -> int:
+    """`fha find --sounds-like NAME`: refuse the flags that mean nothing here,
+    then run the engine and print.
+
+    `--date` and `--kind` are refused (exit 2) rather than ignored, so a
+    filter he asked for is never silently dropped. A second word typed
+    without quotes (`--sounds-like Jan Kowalski`) arrives as the positional
+    query, and is read as the rest of the name, which is what he meant."""
+    if getattr(args, 'date', None) is not None:
+        print('ERROR: --date does not work with --sounds-like. Run '
+              f'`fha find --sounds-like "{name}"` on its own; to see who was active in a '
+              'year, run `fha find --related --date 1900`.', file=sys.stderr)
+        return EXIT_ERRORS
+    if getattr(args, 'kind', None) is not None:
+        print('ERROR: --kind does not work with --sounds-like, which only lists people. '
+              f'Run `fha find --sounds-like "{name}"`, adding --json or --limit if you '
+              'need them.', file=sys.stderr)
+        return EXIT_ERRORS
+    if extra:
+        name = f'{name} {extra}'
+    limit = getattr(args, 'limit', None)
+    if limit is None:
+        limit = _SOUNDS_LIKE_DEFAULT_LIMIT
+    if limit < 1:
+        print('ERROR: --limit must be 1 or more, for example --limit 100.', file=sys.stderr)
+        return EXIT_ERRORS
+    result = run_find_sounds_like(archive_root, fha_config, name, limit=limit)
+    return _cmd_find_sounds_like(result, getattr(args, 'use_json', False), limit)
 
 
 def _run_search(args: argparse.Namespace) -> int:
@@ -3392,6 +3946,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--text', metavar='PHRASE')
     mode.add_argument('--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID')
+    mode.add_argument('--sounds-like', metavar='NAME', dest='sounds_like')
 
     parser.add_argument(
         '--date', metavar='EDTF',
@@ -3400,7 +3955,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
 
     parser.add_argument('--json', action='store_true', dest='use_json')
     parser.add_argument('--kind', metavar='KIND[,KIND...]')
-    parser.add_argument('--limit', type=int, default=20, metavar='N')
+    parser.add_argument('--limit', type=int, default=None, metavar='N')
 
     parser.add_argument('query', nargs='?', metavar='ID_OR_TEXT')
     args = parser.parse_args(argv)
