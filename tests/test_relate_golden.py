@@ -94,12 +94,13 @@ class RelateMatchesRecordedAnswersTests(unittest.TestCase):
                 self.assertEqual(self.actual.get(pair, {}).get('json_sha256'), want['json_sha256'])
 
     def test_golden_covers_blood_and_unrelated_pairs(self):
-        # The recorded answers exercise aunts and nieces, lineal ties, spouses
-        # and strangers, so a broken naming rule cannot hide behind a fixture
-        # of only "no blood". (example-archive has no cousins; the word grid in
-        # test_kinship pins those.)
+        # The recorded answers exercise aunts and nieces, lineal ties, spouses,
+        # in-laws, a stepmother and strangers, so a broken naming rule cannot
+        # hide behind a fixture of only "no blood". (example-archive has no
+        # cousins; the word grid in test_kinship pins those.)
         texts = [v['text'] for v in self.expected.values()]
         for word in ('great-aunt', 'great-niece', 'great-grandfather', 'your wife',
+                     'sister-in-law', 'stepmother', 'aunt by marriage',
                      'no blood relationship'):
             with self.subTest(word=word):
                 self.assertTrue(any(word in t for t in texts))

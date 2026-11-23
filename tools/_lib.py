@@ -466,6 +466,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    blood_routes              - every separate blood route, nearest first, each
 #                                 with its half state (full, half, or may be half)
 #    blood_answer              - the nearest route, plus the "may be half" note
+#    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
+#                                 (by the dates), adoptive father, uncle by marriage
+#    kinship_answer            - {blood, by_marriage}, what fha relate prints
+#    person_life_dates         - own accepted birth and death spans, for the step rule
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
@@ -6665,6 +6669,95 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     # living/unknown status governs him as well (`living_carried_to_survivors`).
     survivor = merge_survivor(chain)
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
+
+
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date,
+                   *, count_children: bool = True) -> bool:
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
+
+    Adult means one of (D20 read literally, owner decision 2026-11-22):
+    - at least one recorded child (`has_recorded_child`), whatever any
+      recorded birth says: a parent gets a blank card, which names and
+      dates nothing;
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the
+      provisional `birth:` estimate on their record or on any record merged
+      into them, whose LATEST possible day is `ADULT_AGE_YEARS` or more
+      years before `today`; several birth dates are all checked, and the
+      youngest one decides;
+    - no birth date at all, and a baptism 18 or more years ago (they were
+      born by then). A recent baptism says nothing.
+
+    `count_children=False` skips the child test, for a caller that must
+    count only the child links it may publish (the shared site: a child the
+    owner kept private must not be what earns a card).
+
+    Anyone else is "not known to be an adult". The answer reads `today`
+    (the build date), so a child who turns 18 changes it on the next
+    rebuild. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year with no leap day
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    if count_children and has_recorded_child(conn, pid):
+        return True
+    latest = own_dates('birth')
+    # The provisional `birth:` of the person AND of every record merged into
+    # them: `fha confirm merge` leaves a duplicate's estimate on the
+    # duplicate, and it is a recorded birth of the same human (Codex, PR
+    # #436). Claims and relationships already land on the survivor at index
+    # time, so only this record-level field needs the widening.
+    for rid in [pid, *merged_into_survivor(index_merge_survivors(conn), pid)]:
+        row = conn.execute('SELECT birth FROM persons WHERE id = ?', (rid,)).fetchone()
+        if row is not None and str(row[0] or '').strip():
+            latest.append(latest_day(str(row[0])))
+    if latest:
+        return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    return any(day <= cutoff.isoformat() for day in own_dates('baptism'))
+
+
+def has_recorded_child(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether the index records a child of `pid`. Child links are written
+    under the merge survivor at index time, so the survivor's id answers for
+    every finished merge into it."""
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
 
 
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
@@ -18461,7 +18554,9 @@ class KinshipGraph:
       other_parents     child -> {parent: subtype} for the non-genetic kinds
                         (adoptive, step, foster, guardian, ...)
       spouses           pid -> {spouse: (date_start, date_end)}, the first
-                        recorded marriage row for the pair
+                        recorded marriage row for the pair, each date an EDTF
+                        string or None (`kin_graph` gives ranges: the
+                        marriage claim's date, "earliest/latest" for the end)
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
       half_sibling_pairs  pairs an accepted `subtype: half` sibling claim
@@ -18597,6 +18692,43 @@ def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> K
     return graph
 
 
+def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> None:
+    """Give each spouse row its dates as ranges, in place, so "190X" is never
+    read as 1900. The index keeps only each date's earliest day (date_start
+    from the marriage, date_end from the first divorce or death that closed
+    it). date_start becomes the backing marriage or relationship claim's own
+    EDTF; date_end becomes
+    "earliest/latest", the latest day taken from the closing claim (a death
+    of either spouse or a divorce naming one of them, matched on that
+    earliest day), or "earliest/.." when no such claim is found. The
+    step-parent date rule (`_kin_step_state`) then compares safe bounds."""
+    spouse_rows = [r for r in rows if r.get('rel') == 'spouse']
+    if not spouse_rows:
+        return
+    start_edtf = {r['id']: r['date_edtf'] for r in dicts(conn.execute(
+        "SELECT id, date_edtf FROM claims WHERE type IN ('marriage', 'relationship')"))}
+    closing: dict[tuple[str, str], str] = {}
+    for r in dicts(conn.execute(
+            '''SELECT cp.person_id AS pid, c.date_min AS dmin, c.date_max AS dmax
+               FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE c.type IN ('death', 'divorce') AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0 AND c.date_min IS NOT NULL''')):
+        key = (r['pid'], r['dmin'])
+        latest = r['dmax'] or '9999-12-31'
+        if latest > closing.get(key, ''):
+            closing[key] = latest
+    for r in spouse_rows:
+        if r.get('claim_id') in start_edtf:
+            # The backing claim's whole date, or none: its lower bound alone
+            # would read "1900" as 1 January 1900.
+            r['date_start'] = start_edtf[r['claim_id']] or None
+        end = r.get('date_end')
+        if end:
+            latest = max((closing.get((p, end), '') for p in (r['person_id'], r['other_id'])),
+                         default='')
+            r['date_end'] = f"{end}/{latest if latest and latest != '9999-12-31' else '..'}"
+
+
 def kin_graph(conn: sqlite3.Connection,
               edge_ok: Callable[[dict], bool] | None = None) -> KinshipGraph:
     """Load the KinshipGraph from an open index.
@@ -18633,6 +18765,7 @@ def kin_graph(conn: sqlite3.Connection,
     # every answer the same from run to run and machine to machine.
     if edge_ok is not None:
         rows = [r for r in rows if edge_ok(r)]
+    _kin_marriage_spans(conn, rows, _dicts)
     graph = _kinship_graph_from_rows(people, rows)
 
     # "Half" may rest on a source that says so: an accepted `subtype: half`
@@ -18928,34 +19061,461 @@ def kinship_path(graph: KinshipGraph, a: str, b: str) -> dict | None:
         node = came_from
     chain.reverse()
     path = [
-        {'from': x, 'to': y, 'rel': rel,
-         'label': _kin_hop_label(rel, graph.people.get(y, {}).get('sex', ''))}
+        {'from': x, 'to': y, 'rel': rel, 'label': _kin_path_hop(graph, x, y, rel)}
         for (x, y, rel) in chain
     ]
     rendered = 'your ' + "'s ".join(h['label'] for h in path)
     return {'path': path, 'rendered': rendered}
 
 
+def _kin_path_hop(graph: KinshipGraph, x: str, y: str, rel: str) -> str:
+    """The word for `y` as seen from `x` on one path hop. A parent or child
+    hop over a tie that is not by birth names its kind ("your adoptive
+    father", "your stepson"), so the chain never reads as blood when it is
+    not. A tie also recorded as genetic keeps the plain word."""
+    sex = graph.people.get(y, {}).get('sex', '')
+    if rel == 'parent' and y not in graph.genetic_parents.get(x, ()):
+        kind = graph.other_parents.get(x, {}).get(y)
+        if kind:
+            return _kin_social_word(kind, sex, parent=True)
+    elif rel == 'child' and x not in graph.genetic_parents.get(y, ()):
+        kind = graph.other_parents.get(y, {}).get(x)
+        if kind:
+            return _kin_social_word(kind, sex, parent=False)
+    return _kin_hop_label(rel, sex)
+
+
+# ── Ties by marriage and by a parent who is not a birth parent ───────────────
+#
+# A wife's brother is "brother-in-law", a father's later wife is "stepmother",
+# an aunt's husband is "uncle by marriage". These answers are asked for only
+# when no blood line joins the two people: a cousin who also married into the
+# family stays a cousin (blood wins), and an adoptive or step parent never
+# makes anyone a blood relative, because blood reads genetic edges only.
+#
+# A derived step tie (a parent's spouse who is not a parent) depends on dates:
+# a father's wife who died before the child was born was never the child's
+# stepmother. With the dates missing the answer is hedged, never stated as
+# fact, because a confident wrong word is repeated in the family.
+
+# The word for the parent and the word for the child, for each kind of parent
+# tie that is not by birth (SPEC §8.2 subtypes). '' is the word for a person
+# whose sex is not recorded as M or F.
+_KIN_SOCIAL_PARENT_WORDS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+    'step': ({'M': 'stepfather', 'F': 'stepmother', '': 'step-parent'},
+             {'M': 'stepson', 'F': 'stepdaughter', '': 'stepchild'}),
+    'adoptive': ({'M': 'adoptive father', 'F': 'adoptive mother', '': 'adoptive parent'},
+                 {'M': 'adopted son', 'F': 'adopted daughter', '': 'adopted child'}),
+    'foster': ({'M': 'foster father', 'F': 'foster mother', '': 'foster parent'},
+               {'M': 'foster son', 'F': 'foster daughter', '': 'foster child'}),
+    'guardian': ({'': 'guardian'}, {'': 'ward'}),
+    'surrogate-gestational': ({'': 'gestational surrogate'},
+                              {'': 'child carried as a surrogate'}),
+    'social': ({'M': 'social father', 'F': 'social mother', '': 'social parent'},
+               {'M': 'social son', 'F': 'social daughter', '': 'social child'}),
+}
+# Two children of one parent, at least one of them not by birth, share a
+# sibling word only for these kinds: adoptive sister, foster brother, stepsister.
+_KIN_SIBLING_PREFIX = {'adoptive': 'adoptive ', 'foster': 'foster ', 'step': 'step'}
+_KIN_SIBLING_WORDS = {'M': 'brother', 'F': 'sister', '': 'sibling'}
+
+
+def _kin_sexed(words: dict[str, str], sex: str) -> str:
+    return words.get((sex or '').upper(), words[''])
+
+
+def _kin_social_word(kind: str, sex: str, *, parent: bool) -> str:
+    """The word for a non-birth parent ("adoptive father") or child
+    ("adopted daughter"). An unlisted kind reads as the plain word."""
+    pair = _KIN_SOCIAL_PARENT_WORDS.get(kind)
+    if pair is None:
+        return _kin_hop_label('parent' if parent else 'child', sex)
+    return _kin_sexed(pair[0 if parent else 1], sex)
+
+
+def _kin_year(value: Any) -> int | None:
+    """The year of an index date ('1912', '1912-06-01'); None when unset."""
+    m = re.match(r'\s*(\d{1,4})(?!\d)', str(value or ''))
+    return int(m.group(1)) if m else None
+
+
+def _kin_bounds(value: Any) -> tuple[str | None, str | None]:
+    """(earliest, latest) ISO day an EDTF date allows, None for an open end.
+    "1903" is ('1903-01-01', '1903-12-31'); "[..1910]" has no earliest day; a
+    missing or unreadable date has neither. A (lo, hi) pair passes through."""
+    if isinstance(value, (tuple, list)):
+        lo, hi = (tuple(value) + (None, None))[:2]
+    elif value is None or str(value).strip() == '':
+        return None, None
+    else:
+        lo, hi = edtf_bounds(str(value).strip())
+    # The index's stand-ins for "no bound" (0001-01-01, 9999-12-31) mean the
+    # same on either side: a bare '0001-01-01' is a "before" date's lower
+    # bound, not a day in year 1.
+    lo = None if not lo or str(lo)[:4] in ('0001', '9999') else lo
+    hi = None if not hi or str(hi)[:4] in ('0001', '9999') else hi
+    return lo, hi
+
+
+def _kin_life_reader(life: Callable[[str], Any] | None) -> Callable[[str], tuple]:
+    """Read `life(pid)` as ((born_lo, born_hi), (died_lo, died_hi) | None).
+    `life` may answer None (nothing known), an int (a birth year, the
+    shorthand tests use), or {'born': date, 'died': date} where each date is
+    an EDTF string or a (lo, hi) pair (`person_life_dates`)."""
+    def read(pid: str) -> tuple:
+        got = life(pid) if life else None
+        if got is None:
+            return (None, None), None
+        if isinstance(got, int):
+            return (f'{got:04d}-01-01', f'{got:04d}-12-31'), None
+        born = _kin_bounds(got.get('born'))
+        died = _kin_bounds(got.get('died')) if got.get('died') else None
+        return born, (died if died != (None, None) else None)
+    return read
+
+
+def _kin_step_state(marriage: tuple[str | None, str | None], child: str,
+                    life: Callable[[str], tuple]) -> str:
+    """Whether a parent's marriage makes the other spouse the child's
+    step-parent (SPEC Part IV: only when the dates show the marriage
+    overlapped the child's life). 'step' when they prove an overlap; 'not'
+    when the marriage surely ended before the child was born; 'after' when
+    it surely began after the child died; 'open' otherwise. Every date is a
+    range: "190X" or "before 1910" settles nothing a single year inside it
+    would not, so a vague date leaves the answer open instead of guessing.
+    A marriage with no recorded end counts as open-ended only from its own
+    start; a child with no recorded death counts as living on."""
+    (b_lo, b_hi), died = life(child)
+    if b_lo is None and b_hi is None:
+        return 'open'
+    s_lo, s_hi = _kin_bounds(marriage[0])
+    e_lo, e_hi = _kin_bounds(marriage[1])
+    if e_hi is not None and b_lo is not None and e_hi < b_lo:
+        return 'not'
+    if died is not None and s_lo is not None and died[1] is not None and s_lo > died[1]:
+        return 'after'
+    # Overlap: the marriage still ran after the birth, and began before the death.
+    # A marriage ends no earlier than it began, and began no later than it ended.
+    surely_ran_to = max((d for d in (e_lo, s_lo) if d), default=None)
+    surely_began_by = min((d for d in (s_hi, e_hi) if d), default=None)
+    ran_after_birth = bool(b_hi and surely_ran_to and surely_ran_to >= b_hi)
+    began_before_death = died is None or bool(
+        died[0] and surely_began_by and surely_began_by <= died[0])
+    return 'step' if ran_after_birth and began_before_death else 'open'
+
+
+_KIN_STEP_HEDGE = "The marriage and birth dates that would settle this aren't all recorded"
+
+
+def _kin_in_law(word: str) -> str:
+    return f'{word}-in-law'
+
+
+def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                    life: Callable[[str], Any] | None = None) -> dict | None:
+    """A's tie to B through a marriage or a parent who is not a birth parent,
+    as A is B's <relationship>, or None. Always None when a blood line joins
+    them: blood wins, and an in-law word is never offered for a blood relative.
+
+    `life(pid)` feeds the step-parent date rule: the person's birth and
+    death dates (`person_life_dates`; an int is read as a birth year).
+    Without it every derived step tie is hedged. Returns {relationship, kind,
+    certain, hedge, explain, via, path}: `kind` is spouse, step, adoptive,
+    foster, guardian, surrogate-gestational, social, in-law or by-marriage;
+    `certain` is False only for a step tie the dates cannot settle, and then
+    `hedge` is the plain sentence that says so; `explain` is the chain from
+    B's side with names ("Ann Aye's wife's brother") or None for a direct
+    tie; `via` the people between them, in chain order; `path` the same
+    chain with no names ("wife's brother")."""
+    if a == b or blood_answer(graph, a, b):
+        return None
+    return _marriage_answer(graph, a, b, life=life)
+
+
+def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                     life: Callable[[str], Any] | None = None) -> dict | None:
+    """`marriage_answer` for a pair already known to share no blood line."""
+    if a == b:
+        return None
+    lifeof = _kin_life_reader(life)
+
+    def has_death(p: str) -> bool:
+        return lifeof(p)[1] is not None
+
+    def name(p: str) -> str:
+        return graph.people.get(p, {}).get('name') or p
+
+    def sex(p: str) -> str:
+        return graph.people.get(p, {}).get('sex', '')
+
+    def answer(relationship, kind, path, via, *, explain=None, certain=True, hedge=None):
+        return {'relationship': relationship, 'kind': kind, 'certain': certain,
+                'hedge': hedge, 'explain': explain, 'via': list(via), 'path': path}
+
+    def parents_of(p: str) -> set[str]:
+        return set(graph.genetic_parents.get(p, ())) | set(graph.other_parents.get(p, {}))
+
+    def parent_word(child: str, parent: str) -> str:
+        """`parent` as `child`'s parent: "father", or "adoptive father"."""
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(parent), parent=True)
+        return _kin_hop_label('parent', sex(parent))
+
+    def child_word(parent: str, child: str) -> str:
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(child), parent=False)
+        return _kin_hop_label('child', sex(child))
+
+    a_name, b_name = name(a), name(b)
+    # (cost, rank, gens, via, answer): the shortest tie wins; a recorded tie
+    # beats a derived one at the same cost; P-ids settle the rest, so every
+    # run gives the same answer.
+    cands: list[tuple] = []
+
+    # 1. A recorded parent tie that is not by birth, between A and B themselves.
+    kind = graph.other_parents.get(b, {}).get(a)
+    if kind and a not in graph.genetic_parents.get(b, ()):
+        word = _kin_social_word(kind, sex(a), parent=True)
+        cands.append((1, 0, (0, 1), [], answer(word, kind, word, [])))
+    kind = graph.other_parents.get(a, {}).get(b)
+    if kind and b not in graph.genetic_parents.get(a, ()):
+        word = _kin_social_word(kind, sex(a), parent=False)
+        cands.append((1, 0, (1, 0), [], answer(word, kind, word, [])))
+
+    # 2. Married to each other.
+    if b in graph.spouses.get(a, {}):
+        word = _kin_hop_label('spouse', sex(a))
+        cands.append((1, 1, (0, 0), [], answer(word, 'spouse', word, [])))
+
+    # 3. Children of one parent, at least one of them not by birth: adoptive
+    #    sister, foster brother, stepsister (a step-parent's own child).
+    for p in sorted(parents_of(a) & parents_of(b)):
+        ka = None if p in graph.genetic_parents.get(a, ()) else graph.other_parents.get(a, {}).get(p)
+        kb = None if p in graph.genetic_parents.get(b, ()) else graph.other_parents.get(b, {}).get(p)
+        kinds = {k for k in (ka, kb) if k}
+        if len(kinds) != 1:
+            continue
+        kind = kinds.pop()
+        # Two stepchildren of one step-parent are tied through their own
+        # parent, who is not recorded here; no word is safe.
+        if kind not in _KIN_SIBLING_PREFIX or (kind == 'step' and ka and kb):
+            continue
+        word = _KIN_SIBLING_PREFIX[kind] + _kin_sexed(_KIN_SIBLING_WORDS, sex(a))
+        path = f"{parent_word(b, p)}'s {child_word(p, a)}"
+        cands.append((2, 2, (1, 1), [p], answer(word, kind, path, [p],
+                                                explain=f"{b_name}'s {path}")))
+
+    # 4. A is the spouse of R, a blood relative of B.
+    spouse_word_a = _kin_hop_label('spouse', sex(a))
+    for r in sorted(graph.spouses.get(a, {})):
+        if r == b:
+            continue
+        br = blood_answer(graph, r, b)          # R is B's ...
+        if not br:
+            continue
+        ga, gb = br['gens_a'], br['gens_b']
+        path = f"{br['relationship']}'s {spouse_word_a}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (0, 1):
+            # R is B's parent: A is a step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[a][r], b, lifeof)
+            if state == 'not':
+                rel = f"{br['relationship']}'s earlier {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} before {b_name} was born')
+            elif state == 'after':
+                rel = f"{br['relationship']}'s later {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} after {b_name} died')
+            else:
+                or_after = f' or only after {b_name} died' if has_death(b) else ''
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been '
+                    f"{name(r)}'s {spouse_word_a} only before {b_name} was born{or_after}.")
+                ans = answer(_kin_social_word('step', sex(a), parent=True), 'step', path,
+                             [r], explain=explain, certain=state == 'step', hedge=hedge)
+        elif ga == 0:
+            # A grandparent's spouse is not a step-grandparent by any rule the
+            # record can check: say the chain ("grandfather's wife").
+            ans = answer(path, 'by-marriage', path, [r])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [r], explain=explain)
+        elif gb == 0:
+            ans = answer(_kin_in_law(_kin_lineal(ga, sex(a), up=False)), 'in-law',
+                         path, [r], explain=explain)
+        else:
+            # The word A would carry standing where R stands: an aunt's
+            # husband is an uncle by marriage.
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [r], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [r], ans))
+
+    # 5. A is a blood relative of S, B's spouse.
+    for s in sorted(graph.spouses.get(b, {})):
+        if s == a:
+            continue
+        bs = blood_answer(graph, a, s)          # A is S's ...
+        if not bs:
+            continue
+        ga, gb = bs['gens_a'], bs['gens_b']
+        spouse_word_s = _kin_hop_label('spouse', sex(s))
+        path = f"{spouse_word_s}'s {bs['relationship']}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (1, 0):
+            # A is S's child: B is A's step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[b][s], a, lifeof)
+            if state == 'not':
+                rel = f"earlier {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"born after {name(s)}'s marriage to {b_name} ended")
+            elif state == 'after':
+                rel = f"later {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"died before {name(s)}'s marriage to {b_name}")
+            else:
+                or_died = (f", or have died before {name(s)} married {b_name}"
+                           if has_death(a) else '')
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been born after '
+                    f"{name(s)}'s marriage to {b_name} ended{or_died}.")
+                ans = answer(_kin_social_word('step', sex(a), parent=False), 'step', path,
+                             [s], explain=explain, certain=state == 'step', hedge=hedge)
+        elif gb == 0:
+            # A spouse's grandchild is not a step-grandchild by any rule the
+            # record can check: say the chain ("wife's grandson").
+            ans = answer(path, 'by-marriage', path, [s])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [s], explain=explain)
+        elif ga == 0:
+            ans = answer(_kin_in_law(_kin_lineal(gb, sex(a), up=True)), 'in-law',
+                         path, [s], explain=explain)
+        else:
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [s], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [s], ans))
+
+    # 6. Co-in-laws: A's spouse R and B's spouse S are brother and sister.
+    for r in sorted(graph.spouses.get(a, {})):
+        for s in sorted(graph.spouses.get(b, {})):
+            if r in (b, s) or s == a:
+                continue
+            if graph.genetic_parents.get(r, set()) & graph.genetic_parents.get(s, set()):
+                path = (f"{_kin_hop_label('spouse', sex(s))}'s "
+                        f"{_kin_hop_label('sibling', sex(r))}'s {spouse_word_a}")
+                cands.append((3, 4, (1, 1), [s, r], answer(
+                    _kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law', path,
+                    [s, r], explain=f"{b_name}'s {path}")))
+
+    # 7. Step-siblings: A is the child of Q, who married P, B's parent, and A
+    #    and B share no parent of any kind.
+    if not (parents_of(a) & parents_of(b)):
+        for p in sorted(graph.genetic_parents.get(b, ())):
+            for q in sorted(graph.spouses.get(p, {})):
+                if q in parents_of(b) or q not in graph.genetic_parents.get(a, ()):
+                    continue
+                marriage = graph.spouses[p][q]
+                states = {_kin_step_state(marriage, a, lifeof),
+                          _kin_step_state(marriage, b, lifeof)}
+                if states & {'not', 'after'}:
+                    continue
+                certain = states == {'step'}
+                path = (f"{_kin_hop_label('parent', sex(p))}'s "
+                        f"{_kin_hop_label('spouse', sex(q))}'s {_kin_hop_label('child', sex(a))}")
+                hedge = None if certain else (
+                    f'{_KIN_STEP_HEDGE}, so the marriage of {name(p)} and {name(q)} '
+                    f'may have ended before {a_name} or {b_name} was born'
+                    + (' or begun after one of them died.'
+                       if has_death(a) or has_death(b) else '.'))
+                cands.append((3, 5, (1, 1), [p, q], answer(
+                    'step' + _kin_sexed(_KIN_SIBLING_WORDS, sex(a)), 'step', path, [p, q],
+                    explain=f"{b_name}'s {path}", certain=certain, hedge=hedge)))
+
+    if not cands:
+        return None
+    return min(cands, key=lambda c: c[:4])[4]
+
+
+def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
+                   life: Callable[[str], Any] | None = None) -> dict:
+    """Both answers `fha relate` prints: {'blood': blood_answer(...),
+    'by_marriage': marriage_answer(...)}; by_marriage is None whenever there
+    is a blood answer."""
+    blood = blood_answer(graph, a, b)
+    by_marriage = None if blood else _marriage_answer(graph, a, b, life=life)
+    return {'blood': blood, 'by_marriage': by_marriage}
+
+
+def person_life_dates(conn: sqlite3.Connection, pid: str,
+                      cache: dict | None = None) -> dict:
+    """{'born': (lo, hi) | None, 'died': (lo, hi) | None}: the earliest and
+    latest day the person's own accepted, non-negated birth and death claims
+    allow, the widest span when two records disagree. A record that names
+    the person as a parent or witness does not count (`claim_is_own_vital`),
+    and neither does a baptism or burial: each only bounds the event from
+    one side. `cache` is claim_is_own_vital's. Feeds `marriage_answer`'s
+    step-parent date rule as its `life` callable."""
+    out: dict = {'born': None, 'died': None}
+    for ctype, key in (('birth', 'born'), ('death', 'died')):
+        rows = conn.execute(
+            '''SELECT DISTINCT c.id, c.date_min, c.date_max FROM claims c
+               JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE cp.person_id = ? AND c.type = ? AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0
+                 AND (c.date_min IS NOT NULL OR c.date_max IS NOT NULL)''',
+            (pid, ctype)).fetchall()
+        los, his = [], []
+        for row in rows:
+            cid, dmin, dmax = (tuple(row.values()) if isinstance(row, dict) else tuple(row))[:3]
+            if not claim_is_own_vital(conn, pid, cid, ctype, cache):
+                continue
+            lo, hi = _kin_bounds((dmin, dmax))
+            if lo is None and hi is None:
+                continue   # an undated record of the event says nothing about when
+            los.append(lo)
+            his.append(hi)
+        if los:
+            # One open end on any record leaves that end open.
+            out[key] = (None if None in los else min(los), None if None in his else max(his))
+    return out
+
+
 def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
-                     birth_year: Callable[[str], int | None] | None = None) -> dict:
+                     life: Callable[[str], Any] | None = None) -> dict:
     """How `pid` is related to `anchor_pid`, as a short label a page can put
     after "Thomas Hartley's" or "Your". Always a dict:
 
-      words  bare lowercase noun phrase ("great-grandmother"); '' for kind 'none'
-      note   the honest caveat, or None
-      kind   'blood' | 'none' (ties by marriage, step and social kinds come
-             with the by-marriage answer)
-      path   the blood line from the anchor's side, hop words joined by
-             "'s", no names ("father's father's mother"); '' for kind 'none'
+      words  bare lowercase noun phrase ("great-grandmother", "brother-in-law");
+             '' for kind 'none'
+      note   the honest caveat, or None: 'other parent not recorded' for an
+             open half tie, 'marriage dates not recorded' for a step tie the
+             dates cannot settle
+      kind   'blood' | 'marriage' | 'step' | 'social' | 'none'
+      path   the chain from the anchor's side, hop words joined by "'s", no
+             names ("father's father's mother", "father's wife"); '' for
+             kind 'none'
 
-    Neither `words` nor `path` ever carries a name. `birth_year` is accepted
-    now so callers need not change when the step-parent date rule arrives."""
+    Neither `words` nor `path` ever carries a name. `life` feeds the
+    step-parent date rule (`marriage_answer`); without it every derived step
+    tie carries the dates note."""
     none = {'words': '', 'note': None, 'kind': 'none', 'path': ''}
     if anchor_pid == pid:
         return none
     blood = blood_answer(graph, pid, anchor_pid)
     if not blood:
-        return none
+        bm = _marriage_answer(graph, pid, anchor_pid, life=life)
+        if not bm:
+            return none
+        kind = {'spouse': 'marriage', 'in-law': 'marriage', 'by-marriage': 'marriage',
+                'step': 'step'}.get(bm['kind'], 'social')
+        return {'words': bm['relationship'],
+                'note': None if bm['certain'] else 'marriage dates not recorded',
+                'kind': kind, 'path': bm['path']}
     path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
     # An open half tie keeps the plain word ("brother"); the caveat is the
     # note, which a page may print or leave out.
@@ -22291,22 +22851,87 @@ def shell_quote(word: str) -> str:
     subexpression), `&`, `,`, `;`, `{ }` and `@`. A photo named
     `O'Brien-Farm.tif` produced a command that would not even parse (#210
     audit). Any such word is double-quoted too, which cmd.exe also accepts.
-    `$` and a backtick are still expanded inside PowerShell double quotes;
-    there is no spelling that both shells take, and they are rare in names.
+
+    Some values have no spelling that both shells take (#400): a `"`, which
+    PowerShell 5.1 hands to `fha.cmd` without escaping (`fha confirm place
+    --name="Springfield, \\"Old Town\\", Ohio"` failed with "unrecognized
+    arguments"); a `$` or a backtick, which PowerShell expands inside double
+    quotes; a curly double quote, which closes a PowerShell string; and
+    `& | < > ^` with no space in the value, where PowerShell drops the
+    double quotes and cmd.exe then runs the rest as a second command. The
+    printed commands are PowerShell spellings, so PowerShell wins:
+    `_powershell_quote` writes these in the one form that reached fha intact
+    in the #400 paste tests. Command Prompt reads that form's single quotes
+    as part of the value, so it is kept to these values, and every command
+    that carries a quoted value starts with `fha_launcher()` (`.\\fha`, a
+    PowerShell line), never a bare `fha`, which only Command Prompt runs. A `%NAME%` that
+    names a set variable is still expanded by `fha.cmd` either way.
     """
     if os.name == 'nt':
-        quoted = subprocess.list2cmdline([word])
-        if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
-            # No whitespace and no `"` (else list2cmdline had quoted it), so
-            # the only escape needed inside the quotes is a trailing
-            # backslash, which would otherwise escape the closing quote.
-            stripped = word.rstrip('\\')
-            quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
-        return quoted
+        if needs_powershell_quote(word):
+            return _powershell_quote(word)
+        return _windows_double_quote(word)
     return shlex.quote(word)
 
 
-_PS_SPECIAL = frozenset("'()&,;{}@|<>^")
+def needs_powershell_quote(word: str) -> bool:
+    """True when `shell_quote` gives this value the PowerShell-only spelling on
+    Windows, the one Command Prompt would save with stray apostrophes (#400)."""
+    return any(ch in _PS_ONLY for ch in word) or (
+        any(ch in _CMD_SPECIAL for ch in word) and not any(ch.isspace() for ch in word))
+
+
+def _windows_double_quote(word: str) -> str:
+    """The double-quote spelling of one value, which Command Prompt takes, and
+    PowerShell too unless `needs_powershell_quote` says otherwise."""
+    quoted = subprocess.list2cmdline([word])
+    if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
+        # No whitespace and no `"` (else list2cmdline had quoted it), so
+        # the only escape needed inside the quotes is a trailing
+        # backslash, which would otherwise escape the closing quote.
+        stripped = word.rstrip('\\')
+        quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
+    return quoted
+
+
+# A name typed with a curly apostrophe (O'Brien as Word writes it) pastes
+# into PowerShell: the curly apostrophes close a PowerShell single-quoted
+# string just as `'` does, so unquoted it would not even parse. `#` starts
+# a PowerShell comment.
+_PS_SPECIAL = frozenset("'()&,;{}@|<>^#\u2018\u2019\u201a\u201b")
+_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+_PS_ONLY = frozenset('"$`\u201c\u201d\u201e')
+_CMD_SPECIAL = frozenset('&|<>^')
+
+
+def _powershell_quote(word: str) -> str:
+    """A place name with a `"` in it, pasted into Windows PowerShell, reaches
+    fha exactly as written (#400).
+
+    PowerShell gets a single-quoted string, in which nothing is special but
+    the apostrophes, doubled. Its value is the word wrapped in double quotes
+    with each inner `"` doubled, the form Python's own argument reader takes
+    inside quotes, so PowerShell 5.1 passes it on untouched and cmd.exe sees
+    every symbol inside quotes. Backslashes before a `"` and at the end are
+    doubled, as `subprocess.list2cmdline` does, so none escapes a quote.
+    """
+    inner = re.sub(r'(\\*)"', lambda m: m.group(1) * 2 + '""', word)
+    inner = re.sub(r'(\\+)\Z', lambda m: m.group(1) * 2, inner)
+    inner = '"' + inner + '"'
+    return "'" + ''.join(ch * 2 if ch in _PS_SINGLE_QUOTES else ch for ch in inner) + "'"
+
+
+def fha_launcher() -> str:
+    """The way to start fha that runs when he pastes a printed command (#400).
+
+    `fha` is a file at the archive root, never a program on PATH, so a bare
+    `fha` runs only in Command Prompt. PowerShell needs `.\\fha` (Command
+    Prompt takes it too), and a Mac or Linux shell needs `./fha`. Any command
+    that carries a `shell_quote` value starts with this: on Windows that value
+    can be a PowerShell-only spelling, and a bare `fha` line would invite a
+    Command Prompt paste that saves it with stray apostrophes.
+    """
+    return '.\\fha' if os.name == 'nt' else './fha'
 
 
 def pip_command(target: str) -> str:
@@ -22334,11 +22959,16 @@ def pip_command(target: str) -> str:
     # archive path, and "Family Archive" is an ordinary folder name - quoting the
     # interpreter while leaving the requirements file bare just moves the split
     # one argument to the right.
-    exe = shell_quote(sys.executable)
+    # On Windows this line starts with a quoted interpreter path, which only
+    # Command Prompt runs, so it keeps the double-quote spelling: the
+    # PowerShell-only one would reach pip with apostrophes round an archive
+    # path like `D:\Smith&Jones\` (#400).
+    quote = _windows_double_quote if os.name == 'nt' else shell_quote
+    exe = quote(sys.executable)
     if target.startswith('-r '):
-        arg = f'-r {shell_quote(target[3:])}'
+        arg = f'-r {quote(target[3:])}'
     else:
-        arg = shell_quote(target)
+        arg = quote(target)
     return f'{exe} -m pip install {arg}'
 
 

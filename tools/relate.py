@@ -4,22 +4,27 @@ relate.py - fha relate: how are two people related?
 
   fha relate <P-A> <P-B> [--json] [--root PATH]
 
-Answers two questions, both derived from accepted relationship claims and never
-stored (a layer-3 generated view, SPEC §3 / Part IV):
+Answers three questions, all derived from accepted relationship claims and
+never stored (a layer-3 generated view, SPEC §3 / Part IV):
 
-  Blood:  the genealogical relationship (second cousin once removed,
-          great-grandmother, half-brother, ...) found via the lowest common
-          ancestor over GENETIC parent edges only - adoptive / step / foster /
-          guardian parents are not counted into the blood answer (SPEC §12.2).
-          When a parent on the connecting line is unrecorded, a second line
-          says the tie may be half.
-  Path:   the shortest readable chain between the two over ALL relationship edges
-          (parent / child / spouse / sibling / friend / associate / neighbor),
-          e.g. "your brother's friend's sister's father".
+  Blood:        the genealogical relationship (second cousin once removed,
+                great-grandmother, half-brother, ...) found via the lowest
+                common ancestor over GENETIC parent edges only - adoptive /
+                step / foster / guardian parents are not counted into the
+                blood answer (SPEC §12.2). When a parent on the connecting
+                line is unrecorded, a second line says the tie may be half.
+  By marriage:  only when there is no blood answer: wife, brother-in-law,
+                stepmother, adoptive father, uncle by marriage. A step tie
+                the dates cannot settle gets a second line saying so.
+  Path:         the shortest readable chain between the two over ALL
+                relationship edges (parent / child / spouse / sibling /
+                friend / associate / neighbor), e.g. "your brother's
+                friend's sister's father".
 
-The two are reported separately because they answer different questions: the
-blood degree, and the shortest social connection (which may run through people
-who are not blood relatives at all).
+They are reported separately because they answer different questions: the
+blood degree, the family tie through a marriage or an adoption, and the
+shortest social connection (which may run through people who are not
+relatives at all).
 
 This is a pure read query over `.cache/index.sqlite`; an absent index is a hard
 error (run `fha index`), never a silent wrong answer. SPEC Part IV, TOOLING §7.
@@ -33,9 +38,12 @@ command around it:
     `claims` for each edge's nature): a GENETIC parent map for the blood
     answer, and an undirected adjacency (every parent/child/spouse/social
     edge, plus derived sibling edges from shared parents) for the path.
-  * `blood_answer` is the nearest blood route over the genetic map (one
+  * `kinship_answer` gives the nearest blood route over the genetic map (one
     common ancestor or a couple), named by generation and removal
-    (`kinship_word`), with its half state and, when half is open, a note.
+    (`kinship_word`), with its half state and, when half is open, a note;
+    and, only when there is no blood route, the tie by marriage
+    (`marriage_answer`), whose step-parent date rule reads each person's
+    birth and death dates (`person_life_dates`).
   * `kinship_path` is a BFS over the adjacency, rendered hop by hop.
 """
 
@@ -59,11 +67,13 @@ from _lib import (
     id_type_of,
     is_valid_id,
     kin_graph,
+    kinship_answer,
     kinship_path,
     link_writer,
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    person_life_dates,
     person_name_refusal,
     persons_named,
     resolve_root_arg,
@@ -73,11 +83,12 @@ configure_utf8_stdout()
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
-#  The engine is _lib's "Kinship" section (kin_graph, blood_answer,
-#  kinship_path, kinship_word); nothing in this file names a relationship.
+#  The engine is _lib's "Kinship" section (kin_graph, kinship_answer,
+#  blood_answer, marriage_answer, kinship_path, kinship_word); nothing in this
+#  file names a relationship.
 #
 #  Engine / interface
-#    run_relate               - resolve the two people, ask _lib for both
+#    run_relate               - resolve the two people, ask _lib for the
 #                               answers, return a Result
 #    _cmd_relate              - render the Result (text or --json) -> exit code
 #    register / _run_relate / _standalone_main - CLI wiring
@@ -90,7 +101,7 @@ _REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'claim_persons', 'alia
 # ── Engine / interface ────────────────────────────────────────────────────────
 
 def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: str) -> Result:
-    """Compute the blood relationship and the shortest social path between two
+    """Compute the blood relationship, the tie by marriage and the shortest path between two
     people and return a structured Result. A pure read over the index; never
     writes. The text formatter and `--json` both render this one Result."""
     a_raw, b_raw = person_a, person_b
@@ -108,62 +119,68 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         # open_index_db already printed the cause + the `fha index` next step.
         return Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-index'})
 
+    # The connection stays open until the answers are computed: the
+    # step-parent date rule reads birth and death dates from it.
     try:
-        # A name: one person carrying it is the person meant; two or more, or
-        # nobody, is refused with the choices and the next step.
-        resolved = []
+        try:
+            # A name: one person carrying it is the person meant; two or
+            # more, or nobody, is refused with the choices and the next step.
+            resolved = []
+            for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
+                if not is_valid_id(pid):
+                    matches = persons_named(conn, raw)
+                    if len(matches) != 1:
+                        r = Result(ok=False, exit_code=EXIT_FAILURE,
+                                   data={'error': 'ambiguous-name' if matches else 'bad-id',
+                                         'candidates': [m['id'] for m in matches]})
+                        r.add('error', person_name_refusal(raw, matches, '`fha relate`'),
+                              path=archive_root)
+                        return r
+                    pid = normalize_id(matches[0]['id'])
+                resolved.append(pid)
+            pid_a, pid_b = resolved
+            graph = kin_graph(conn)
+        except Exception:
+            r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-schema'})
+            r.add('error',
+                  '.cache/index.sqlite is unreadable or has an incompatible schema. '
+                  'Run `fha index` to rebuild it.', path=archive_root)
+            return r
+
+        people = graph.people
         for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
-            if not is_valid_id(pid):
-                matches = persons_named(conn, raw)
-                if len(matches) != 1:
-                    r = Result(ok=False, exit_code=EXIT_FAILURE,
-                               data={'error': 'ambiguous-name' if matches else 'bad-id',
-                                     'candidates': [m['id'] for m in matches]})
-                    r.add('error', person_name_refusal(raw, matches, '`fha relate`'),
-                          path=archive_root)
-                    return r
-                pid = normalize_id(matches[0]['id'])
-            resolved.append(pid)
-        pid_a, pid_b = resolved
-        graph = kin_graph(conn)
-    except Exception:
-        conn.close()
-        r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-schema'})
-        r.add('error',
-              '.cache/index.sqlite is unreadable or has an incompatible schema. '
-              'Run `fha index` to rebuild it.', path=archive_root)
-        return r
+            if pid not in people:
+                r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-person'})
+                r.add('error',
+                      f'No person {fmt_id_display(pid)} in the index. '
+                      f'Run `fha find {fmt_id_display(pid)}` to check the ID, or `fha index` to rebuild.',
+                      path=archive_root)
+                return r
+
+        vital_cache: dict = {}
+        answers = kinship_answer(graph, pid_a, pid_b,
+                                 life=lambda p: person_life_dates(conn, p, vital_cache))
+        path = kinship_path(graph, pid_a, pid_b)
     finally:
         try:
             conn.close()
         except Exception:
             pass
+    blood, by_marriage = answers['blood'], answers['by_marriage']
 
-    people = graph.people
-    for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
-        if pid not in people:
-            r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-person'})
-            r.add('error',
-                  f'No person {fmt_id_display(pid)} in the index. '
-                  f'Run `fha find {fmt_id_display(pid)}` to check the ID, or `fha index` to rebuild.',
-                  path=archive_root)
-            return r
-
-    blood = blood_answer(graph, pid_a, pid_b)
-    path = kinship_path(graph, pid_a, pid_b)
-
-    # Display names for every person the renderer will name (the pair, plus any
-    # common ancestors), so the text output reads with names, not bare IDs.
+    # Display names for every person the renderer will name (the pair, any
+    # common ancestors, and the people a tie by marriage runs through), so
+    # the text output reads with names, not bare IDs.
     names = {pid_a: people[pid_a]['name'], pid_b: people[pid_b]['name']}
-    if blood:
-        for c in blood['common_ancestors']:
-            names[c] = people.get(c, {}).get('name') or fmt_id_display(c)
+    for c in (blood['common_ancestors'] if blood else []) + (
+            by_marriage['via'] if by_marriage else []):
+        names[c] = people.get(c, {}).get('name') or fmt_id_display(c)
 
     data = {
         'a': pid_a, 'b': pid_b,
         'a_name': people[pid_a]['name'], 'b_name': people[pid_b]['name'],
         'names': names,
-        'blood': blood, 'any': path,
+        'blood': blood, 'by_marriage': by_marriage, 'any': path,
     }
     # With links: obsidian (SPEC §18) each name is linked by its file name, so
     # the line can be pasted into a note Obsidian follows. The id mode's
@@ -174,6 +191,11 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
     return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
 
 
+# Every answer line starts its words in this column ("By marriage:" and two
+# spaces), so Blood, By marriage and Path read down one edge.
+_LABEL = 14
+
+
 def _id_name(pid: str, name: str, links: dict[str, str] | None = None) -> str:
     if links and pid in links:
         return links[pid]
@@ -182,7 +204,8 @@ def _id_name(pid: str, name: str, links: dict[str, str] | None = None) -> str:
 
 def _cmd_relate(result: Result, use_json: bool = False) -> int:
     """Render a relate Result and return the exit code. The only layer that
-    prints; mirrors the blood/path two-line shape from TOOLING §7."""
+    prints; the Blood, By marriage and Path lines of TOOLING §7, their
+    labels padded to one column so the answers line up."""
     if use_json:
         print(json.dumps(result.as_dict(), indent=2))
         return result.exit_code
@@ -207,23 +230,34 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         rel = blood['relationship']
         if blood['common_ancestors']:
             label = 'common ancestor' if len(blood['common_ancestors']) == 1 else 'common ancestors'
-            print(f'Blood:  {data["a_name"]} is {data["b_name"]}\'s {rel}  ({label}: {anc})')
+            print(f'{"Blood:":<{_LABEL}}{data["a_name"]} is {data["b_name"]}\'s {rel}  ({label}: {anc})')
         else:
-            print(f'Blood:  {data["a_name"]} is {data["b_name"]}\'s {rel}')
+            print(f'{"Blood:":<{_LABEL}}{data["a_name"]} is {data["b_name"]}\'s {rel}')
         # With a parent unrecorded he hears, in the same breath, that the
         # tie may be half, instead of a plain "sister" he would repeat.
         if blood.get('note'):
-            print(f'        {blood["note"]}')
+            print(f'{"":<{_LABEL}}{blood["note"]}')
     else:
-        print('Blood:  no blood relationship found in the recorded tree')
+        print(f'{"Blood:":<{_LABEL}}no blood relationship found in the recorded tree')
+
+    # A wife's brother reads "brother-in-law"; a stepmother the dates cannot
+    # settle carries a second line saying so, so he never repeats a guess.
+    bm = data.get('by_marriage')
+    if bm:
+        line = f'{"By marriage:":<{_LABEL}}{data["a_name"]} is {data["b_name"]}\'s {bm["relationship"]}'
+        if bm.get('explain'):
+            line += f'  ({bm["explain"]})'
+        print(line)
+        if bm.get('hedge'):
+            print(f'{"":<{_LABEL}}{bm["hedge"]}')
 
     path = data.get('any')
     if path and path.get('path'):
-        print(f'Path:   {path["rendered"]}')
+        print(f'{"Path:":<{_LABEL}}{path["rendered"]}')
     elif path and not path.get('path'):
-        print('Path:   the same person')
+        print(f'{"Path:":<{_LABEL}}the same person')
     else:
-        print('Path:   no recorded connection between them')
+        print(f'{"Path:":<{_LABEL}}no recorded connection between them')
     return result.exit_code
 
 
@@ -233,7 +267,8 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
 _CLI_DESCRIPTION = """\
 Show how two people are related.
 
-  fha relate P-A P-B          Blood degree plus the shortest social path
+  fha relate P-A P-B          Blood degree, the tie by marriage (brother-in-law,
+                              stepmother) and the shortest social path
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
@@ -244,7 +279,7 @@ A read-only view over accepted relationship claims: nothing is written."""
 def register(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser(
         'relate',
-        help='How are two people related? Blood degree + shortest social path.',
+        help='How are two people related? Blood degree, tie by marriage, shortest path.',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
