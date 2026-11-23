@@ -212,6 +212,7 @@
     if (host.includes('familysearch.org')) return 'familysearch';
     if (host.includes('newspapers.com')) return 'newspapers';
     if (host.includes('findagrave.com')) return 'findagrave';
+    if (iaBookPage(url)) return 'archiveorg';
     if (host.includes('wvculture.org')) return 'wvculture';
     return null;
   }
@@ -2629,6 +2630,233 @@
   }
   // FHA-SYNC-END findagrave
 
+  // An Internet Archive item page that is a text (a book), by the page's own
+  // <meta property="mediatype">: a recording or a film is captured as a plain
+  // page, never filed as a book. A page with no such tag is read as a book.
+  function iaBookPage(url) {
+    if (!iaParsePage(url)) return false;
+    const m = document.querySelector('meta[property="mediatype"]');
+    const type = m ? String(m.getAttribute('content') || '').trim().toLowerCase() : '';
+    return !type || type === 'texts';
+  }
+
+  // Internet Archive book pages (lib/archiveorg-record.js is canonical): which page an
+  // address is, for the panel; the requests run in the panel, not here.
+  // FHA-SYNC-BEGIN archiveorg
+  const IA_HOST_RE = /(^|\.)archive\.org$/i;
+  const IA_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,200}$/;
+
+  // A book page: /details/{id}, with /page/{p} when a page is open. `p` is
+  // BookReader's "n{K}" (the scan at position K from 0) or a printed page
+  // ("11", "xii"). Returns { itemId, leaf (K, or null), printedPage (the
+  // segment, or null), segment (the page segment as the address wrote it, or
+  // null) }; null for any other address.
+  function iaParsePage(href, base) {
+    let u;
+    try {
+      u = new URL(href, base);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' || !/^(www\.)?archive\.org$/i.test(u.hostname)) return null;
+    const m = /^\/details\/([^/?#]+)(?:\/page\/([^/?#]+))?/i.exec(u.pathname);
+    if (!m) return null;
+    let itemId;
+    try {
+      itemId = decodeURIComponent(m[1]);
+    } catch (e) {
+      return null;
+    }
+    if (!IA_ID_RE.test(itemId)) return null;
+    let segment = null;
+    if (m[2]) {
+      try {
+        segment = decodeURIComponent(m[2]);
+      } catch (e) {
+        segment = null;
+      }
+    }
+    const n = segment ? /^n(\d+)$/i.exec(segment) : null;
+    return {
+      itemId,
+      leaf: n ? parseInt(n[1], 10) : null,
+      printedPage: segment && !n ? segment : null,
+      segment: segment || null,
+    };
+  }
+
+  // The author as archive.org's catalogue gives it ("[Mason, Jesse D] [from old
+  // catalog]", "Smith, John, 1840-1910") written as a citation names a person:
+  // "Jesse D. Mason". More than one author: the first two, "and"; more, "et al.".
+  function iaCleanCreator(raw) {
+    const list = (Array.isArray(raw) ? raw : [raw]).map((x) => String(x == null ? '' : x)).filter((x) => x.trim());
+    const names = [];
+    for (const item of list) {
+      let s = item.replace(/\[from old catalog\]/gi, ' ').replace(/[[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+      s = s.replace(/,?\s*\d{4}\??\s*-\s*(\d{4})?\??\.?$/, '').replace(/[.,;\s]+$/, '').trim();
+      if (!s) continue;
+      const parts = s.split(/\s*,\s*/);
+      if (parts.length === 2 && parts[0] && parts[1] && !/\b(inc|co|company|society|committee|association)\b/i.test(s)) {
+        const given = parts[1].replace(/\b([A-Z])\b(?!\.)/g, '$1.');
+        s = given + ' ' + parts[0];
+      }
+      if (!names.includes(s)) names.push(s);
+    }
+    if (!names.length) return null;
+    if (names.length === 1) return names[0];
+    return names.length === 2 ? names[0] + ' and ' + names[1] : names[0] + ' et al.';
+  }
+
+  function iaFirst(v) {
+    const x = Array.isArray(v) ? v[0] : v;
+    const s = x == null ? '' : String(x).replace(/\s+/g, ' ').trim();
+    return s || null;
+  }
+
+  // What /metadata/{id} says about a book: { ok, item: { itemId, title,
+  // creator, publisher, date, year, volume, imageCount, mediatype }, files:
+  // [{ name, size }] } or { ok:false, error }. An item that does not exist
+  // answers with an empty object.
+  function iaMetadataFrom(json, itemId) {
+    const md = json && json.metadata;
+    if (!md || typeof md !== 'object' || !Object.keys(md).length) {
+      return { ok: false, error: 'the Internet Archive has no item called ' + itemId + ' (it may have been removed or renamed)' };
+    }
+    const date = iaFirst(md.date);
+    const year = iaYear(date);
+    const count = parseInt(iaFirst(md.imagecount), 10);
+    return {
+      ok: true,
+      item: {
+        itemId,
+        title: iaFirst(md.title),
+        creator: iaCleanCreator(md.creator),
+        publisher: iaFirst(md.publisher),
+        date,
+        year,
+        volume: iaFirst(md.volume),
+        imageCount: isNaN(count) ? null : count,
+        mediatype: iaFirst(md.mediatype),
+        // A lending-library book: only lent, so none of its pages is kept.
+        lent: String(iaFirst(md['access-restricted-item']) || '').toLowerCase() === 'true',
+      },
+      // Where the item's files sit, for the reader's page list.
+      server: typeof json.server === 'string' ? json.server : null,
+      dir: typeof json.dir === 'string' ? json.dir : null,
+      files: (Array.isArray(json.files) ? json.files : []).map((f) => ({ name: String(f.name || ''), size: Number(f.size) || 0 })),
+    };
+  }
+
+  // The one year a catalogue date names: "1881", "1881-06-15",
+  // "1881-06-15T00:00:00Z", "c1881", "[1881?]". A range ("1890-1895",
+  // "1890/91") dates no single year, so it gives none.
+  function iaYear(date) {
+    const s = String(date || '').trim();
+    const iso = /^(\d{4})(?:-\d{2}(?:-\d{2})?)?(?:[T ].*)?$/.exec(s);
+    if (iso) return iso[1];
+    if (/(?<!\d)\d{4}\s*[-/–]\s*\d{2,4}(?!\d)/.test(s)) return null;
+    return (/(?<!\d)(1[0-9]{3}|20[0-9]{2})(?!\d)/.exec(s) || [])[1] || null;
+  }
+
+  // The byte range [start, end) of scan `leafNum` in {id}_hocr.html, from the
+  // parsed {id}_hocr_pageindex.json (entry 0 is the file's header, entry N the
+  // OCR of leaf N); null when the index has no usable entry.
+  function iaPageIndexRange(index, leafNum) {
+    const e = Array.isArray(index) ? index[leafNum] : null;
+    if (!Array.isArray(e) || e.length < 4) return null;
+    const start = Number(e[2]);
+    const end = Number(e[3]);
+    return start >= 0 && end > start ? [start, end] : null;
+  }
+
+  function iaEntities(s) {
+    return s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (all, k) => {
+      const key = k.toLowerCase();
+      if (key === 'amp') return '&';
+      if (key === 'lt') return '<';
+      if (key === 'gt') return '>';
+      if (key === 'quot') return '"';
+      if (key === 'apos') return '\'';
+      const code = key[1] === 'x' ? parseInt(key.slice(2), 16) : parseInt(key.slice(1), 10);
+      try {
+        return String.fromCodePoint(code);
+      } catch (e) {
+        return all;
+      }
+    });
+  }
+
+  // One page of archive.org's hOCR as plain text: a line for each printed
+  // line, a blank line between paragraphs. Words stay as the OCR read them.
+  function iaHocrText(html) {
+    const paras = String(html || '').split(/<p\b[^>]*class="[^"]*\bocr_par\b/);
+    const out = [];
+    for (const para of paras.slice(1)) {
+      const lines = [];
+      for (const line of para.split(/<span\b[^>]*class="[^"]*\bocr_line\b/).slice(1)) {
+        const words = [];
+        const re = /<span\b[^>]*class="[^"]*\bocrx_word\b[^"]*"[^>]*>([\s\S]*?)<\/span>/g;
+        let w;
+        while ((w = re.exec(line))) {
+          const t = iaEntities(w[1].replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+          if (t) words.push(t);
+        }
+        if (words.length) lines.push(words.join(' '));
+      }
+      if (lines.length) out.push(lines.join('\n'));
+    }
+    return out.join('\n\n');
+  }
+
+  // The scan at `leafNum` (counting from 1) at full size, from archive.org's
+  // IIIF image service.
+  function iaImageUrl(itemId, leafNum) {
+    return 'https://iiif.archive.org/iiif/' + itemId + '$' + leafNum + '/full/full/0/default.jpg';
+  }
+
+  // The address of a page, the way the page segment was written: n20 stays
+  // n20 and 11 stays 11.
+  function iaPageUrl(itemId, segment) {
+    return 'https://archive.org/details/' + itemId + (segment ? '/page/' + encodeURIComponent(segment) : '');
+  }
+
+  function iaTitle(item) {
+    const i = item || {};
+    return (i.title || i.itemId || 'Internet Archive book') + (i.volume ? ', vol. ' + i.volume : '');
+  }
+
+  // The citation: "{author}, {title} ({publisher}, {date}), p. {printed};
+  // digital images, Internet Archive ({url} : accessed {date})." `pages`:
+  // [{ leaf (K), printed }] in order; `url`: the link to the first page, in the
+  // form the human was looking at. A scan whose printed page is not known is
+  // named by its place in the address (n20) and said so.
+  function iaCitation(item, pages, url, accessed) {
+    const i = item || {};
+    const who = i.creator ? i.creator + ', ' : '';
+    const pub = [i.publisher, i.date].filter(Boolean).join(', ');
+    const head = who + iaTitle(i) + (pub ? ' (' + pub + ')' : '');
+    const list = pages || [];
+    const known = list.length > 0 && list.every((p) => p.printed);
+    let where;
+    if (!list.length) where = '';
+    else if (known) {
+      const nums = list.map((p) => p.printed);
+      where = (nums.length === 1 ? 'p. ' : 'pp. ') + (nums.length === 1 ? nums[0] : nums[0] + '-' + nums[nums.length - 1]);
+    } else {
+      const names = list.map((p) => (p.printed ? 'p. ' + p.printed : 'scan n' + p.leaf));
+      where = names.join(', ') + ' (printed page not known)';
+    }
+    return head + (where ? ', ' + where : '') + '; digital images, Internet Archive (' + url + ' : accessed ' + accessed + ').';
+  }
+
+  // What the book says about itself for filing: a printed book, so `book`;
+  // a digitised copy of a published work is `derivative`; dated by its
+  // publication year when it names one.
+  function iaHints(item) {
+    return { sourceType: 'book', sourceClass: 'derivative', sourceDate: (item && item.year) || null };
+  }
+  // FHA-SYNC-END archiveorg
+
   // FHA-SYNC-BEGIN wvculture
   const WV_VIEW_HOST = 'archive.wvculture.org';
   const WV_IMAGE_HOST = 'images.wvculture.org';
@@ -3753,16 +3981,21 @@
       photo = null; // the page's own title, as anywhere else
     }
     const photoInfo = photo && photo.ok ? photo : null;
+    // An Internet Archive book page: the book's own title, not the tab's
+    // "… : Free Download, Borrow, and Streaming : Internet Archive".
+    const iaPage = iaBookPage(url);
     return {
       url,
       canonical,
-      title: fagRec ? memorial.title : photoInfo && photoInfo.media.title ? photoInfo.media.title : title,
+      title: fagRec ? memorial.title : photoInfo && photoInfo.media.title ? photoInfo.media.title
+        : iaPage ? String(title || '').split(' : ')[0] || title : title,
       sourceDate: fagRec ? memorial.hints.sourceDate : photoInfo ? photoInfo.hints.sourceDate || '' : sourceDate,
       // A shared item is a photo unless its Ancestry category says it is a
       // document (ancMediaKind: an obituary, a certificate…).
       sourceType: fagRec ? memorial.hints.sourceType
+        : iaPage ? 'book'
         : ancPhoto ? (photoInfo && photoInfo.hints.sourceType) || 'photo' : undefined,
-      repository: fagRec ? 'Find a Grave' : hostnameOf(url) || null,
+      repository: fagRec ? 'Find a Grave' : iaPage ? 'Internet Archive' : hostnameOf(url) || null,
       people: fagRec ? [fagRec.name].concat(fagRec.family.map((f) => f.name)).filter(Boolean)
         .filter((n, i, a) => a.indexOf(n) === i)
         // A shared item's people come only from its own Details - never
@@ -3771,6 +4004,9 @@
       // A Find a Grave memorial page (not its gallery): Capture saves the
       // memorial's own facts and citation and its photos at full size.
       findagraveMemorial: !!fagMemorialPage(url),
+      // A page of an Internet Archive book: Capture saves the page image, its
+      // OCR text, the book's details and a citation (the panel reads them).
+      archiveorgPage: iaPage,
       // A West Virginia Archives view page: Capture saves its image with its numbers.
       wvcultureImagePage: !!wvParsePage(url),
       imageUrl: detectImage(stale),
