@@ -34,7 +34,7 @@ sys.path.insert(0, str(ROOT))
 import _lib  # noqa: E402
 import index  # noqa: E402
 import places  # noqa: E402
-from _lib import ClaimEditRefused, add_place_to_claim, shell_quote  # noqa: E402
+from _lib import ClaimEditRefused, add_place_to_claim, fha_launcher, shell_quote  # noqa: E402
 from tests.test_places import _write_geonames  # noqa: E402
 
 PID = 'l-7c1a9f4e22'
@@ -554,7 +554,7 @@ class RegisterSameNameTests(_ArchiveCase):
         text = '\n'.join(result['messages'])
         self.assertIn('"Chicago, Cook County, Illinois" (3 claims) may be Chicago '
                       '(Cook, Illinois; l-9e3c1b6a44)', text)
-        self.assertIn('If it is the same place: fha confirm place c-aaaaaaaa00 c-aaaaaaaa01 '
+        self.assertIn(f'If it is the same place: {fha_launcher()} confirm place c-aaaaaaaa00 c-aaaaaaaa01 '
                       'c-aaaaaaaa02 --into l-9e3c1b6a44', text)
         self.assertIn('its hierarchy has no county written as "Cook County"', text)
         claims = {c['id']: c.get('place') for c in _claims_of(
@@ -581,9 +581,9 @@ class RegisterMayBeListingTests(_ArchiveCase):
         ids = 'c-aaaaaaaa00 c-aaaaaaaa01 c-aaaaaaaa02'
         self.assertIn('"Springfield, Massachusetts" (3 claims) may be Springfield '
                       '(Sangamon County, Illinois, USA; l-9e3c1b6a44)', text)
-        self.assertIn(f'If it is the same place: fha confirm place {ids} --into l-9e3c1b6a44',
+        self.assertIn(f'If it is the same place: {fha_launcher()} confirm place {ids} --into l-9e3c1b6a44',
                       text)
-        self.assertIn('If it is a different place: fha confirm place '
+        self.assertIn(f'If it is a different place: {fha_launcher()} confirm place '
                       f'{ids} --name={shell_quote("Springfield, Massachusetts")}', text)
         self.assertIn('hierarchy has no "Massachusetts"', text)
         self.assertNotIn('Cook County', text)

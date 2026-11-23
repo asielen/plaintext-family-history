@@ -1706,7 +1706,7 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
 # ── Photos the old program linked ──────────────────────────────────────────────
 
 import photoindex
-from _lib import photoindex_status, shell_quote
+from _lib import fha_launcher, photoindex_status, shell_quote
 
 PHOTO_LINKS = FIXTURES / 'photo-links.ged'
 
@@ -1883,7 +1883,8 @@ class PhotoLinksTestCase(_ArchiveCase):
         self._scan()
         _, out, _ = self._run(self.ged, apply=True)
         self.assertEqual(photoindex_status(self.archive, self.config)[0], 'stale')
-        self.assertRegex(out, r'\n  fha photoindex\n  fha photoindex tag-person ')
+        launcher = re.escape(fha_launcher())
+        self.assertRegex(out, rf'\n  {launcher} photoindex\n  {launcher} photoindex tag-person ')
 
     def test_citation_media_is_not_a_person_photo(self) -> None:
         """A census scan attached to a citation is not a photo of the person."""
