@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8c855a050224fa13e891d0aa6db52736c76f177e9664545d059b9e036a3a99f0",
+      "sha256": "82979c8de190f01d8120af9b9e05e4d63b049f7a767a98da89319795d1b77ce9",
       "spec_version": "2.26",
       "src": "tools/_lib.py"
     },
@@ -1129,7 +1129,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "694720c1a0c0d4e323003c770462bde60a8c58d1b039caa19e2a1d36499d3ff3",
+      "sha256": "62519343abb0caf40bab409035037bf1df2dcb74b6cbd934f5ec9d191063835e",
       "spec_version": "2.26",
       "src": "tools/site.py"
     },
@@ -1220,7 +1220,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "2dbfb59f697ae64921f667c06e7abdee179c2f9e92a465a42b6a21dd1075b26b",
+      "sha256": "be781ad9e61e5bd5a9bbae26cf09e79f18a44fe686e8a14ca083cf60c23bbf8f",
       "spec_version": "2.26",
       "src": "tools/templates/person.html"
     },
@@ -1311,7 +1311,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "d12af70e1a3d94068bb5ede41df26e1d4f9d21a6f1c9f543a46cee428cb42f16",
+      "sha256": "8455e9dd85eedfb767429a6b3453b8d64fe83bfefc1e07c4a6ad3567fefc794e",
       "spec_version": "2.26",
       "src": "tools/templates/workbench/workbench.css"
     },
@@ -1417,7 +1417,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "24719f46341128998d6dc98a49cffab85a99fd4ae79036b6ca2b197f70eb7ef2",
+      "sha256": "fa24c13bcbc5d868eb13626f1d00baabca0e62186804b51a60b38965ffd3029e",
       "spec_version": "2.26"
     },
     {
