@@ -10332,6 +10332,38 @@ class KnownAdultTests(_Base):
                           "date_max = '2007-12-31' WHERE id = 'c-1111111111'")
         self.assertTrue(self._adult('p-aaaaaaaaaa'))
 
+    def test_a_baptism_eighteen_years_ago_makes_an_adult_and_a_recent_one_proves_nothing(self):
+        # Decision D20: a baptism only bounds the birth from above.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley', living='true')
+        self._seed_claim('c-1111111111', 's-1111111111', 'baptism', 'baptised', date_edtf='2000-03-04',
+                         persons=('p-aaaaaaaaaa',), roles={'p-aaaaaaaaaa': 'child'})
+        self.assertTrue(self._adult('p-aaaaaaaaaa'), 'baptised 26 years ago, so born by then')
+        self._seed_person('p-bbbbbbbbbb', 'Bo Hartley', living='true')
+        self._seed_claim('c-2222222222', 's-1111111111', 'baptism', 'baptised', date_edtf='2020',
+                         persons=('p-bbbbbbbbbb',), roles={'p-bbbbbbbbbb': 'child'})
+        self.assertFalse(self._adult('p-bbbbbbbbbb'), 'a recent baptism and no child')
+        self._seed_rel('p-bbbbbbbbbb', 'child', 'p-cccccccccc')
+        self.assertTrue(self._adult('p-bbbbbbbbbb'), 'a recent baptism says nothing; the child decides')
+
+    def test_a_range_counts_from_its_last_day_and_an_open_end_is_not_an_adult(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley', living='true')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'born', date_edtf='[..2007]',
+                         persons=('p-aaaaaaaaaa',), roles={'p-aaaaaaaaaa': 'child'})
+        self.assertTrue(self._adult('p-aaaaaaaaaa'), 'born before the end of 2007')
+        self._seed_person('p-bbbbbbbbbb', 'Bo Hartley', living='true')
+        self._seed_claim('c-2222222222', 's-1111111111', 'birth', 'born', date_edtf='[1990..]',
+                         persons=('p-bbbbbbbbbb',), roles={'p-bbbbbbbbbb': 'child'})
+        self.assertFalse(self._adult('p-bbbbbbbbbb'), 'born 1990 or later may be a child')
+
+    def test_a_mistyped_birth_date_does_not_stop_the_site_or_make_an_adult(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley', living='true')
+        self._seed_claim('c-1111111111', 's-1111111111', 'birth', 'born', date_edtf='2010-02-30',
+                         persons=('p-aaaaaaaaaa',), roles={'p-aaaaaaaaaa': 'child'})
+        self._seed_rel('p-aaaaaaaaaa', 'child', 'p-cccccccccc')
+        self.assertFalse(self._adult('p-aaaaaaaaaa'), 'read by its year, 2010')
+        self.conn.execute("UPDATE claims SET date_edtf = '1950-02-30' WHERE id = 'c-1111111111'")
+        self.assertTrue(self._adult('p-aaaaaaaaaa'), 'read by its year, 1950')
+
 
 class TreeFitScaleTests(unittest.TestCase):
     """#152 review fix (P2): `fha-tree.js`'s `fit()` (both the collapsible-

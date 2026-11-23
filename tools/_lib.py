@@ -6533,48 +6533,71 @@ ADULT_AGE_YEARS = 18
 
 
 def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> bool:
-    """Whether a living person is known to be an adult, for the shared site's
-    family trees: an adult is drawn as a card reading "Private"; anyone else
-    living is left out of the tree entirely, so no box of any kind stands for
-    a child (owner decision D20).
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
 
-    Adult means a recorded birth at least ADULT_AGE_YEARS before `today`, or,
-    when no birth date is recorded at all, at least one recorded child. A known
-    birth always wins: someone born under 18 years ago is left out even with a
-    child. Every one of the person's own birth dates counts, from claims of any
-    status (a suggested claim's date is still the best guess there is) and the
-    record's own provisional `birth:`; the person is an adult only when the
-    latest possible day of every one of them is 18 years past. A date with no
-    upper bound cannot show that, so it reads as not adult. The dates are read
-    only to make this decision and are never printed.
+    Adult means one of:
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the person's
+      own provisional `birth:` estimate, whose LATEST possible day is
+      `ADULT_AGE_YEARS` or more years before `today`; several birth dates
+      are all checked, and the youngest one decides;
+    - no birth date recorded at all, and at least one recorded child.
 
-    `today` is the build's date, so a child who turns 18 appears on the next
-    rebuild; the living rule already depends on the date the same way. Only a
-    birth claim that is a record OF this person counts (`claim_is_own_vital`):
-    a parent named on a child's birth certificate is not born that day.
+    A known birth date always wins: someone under 18 by any recorded birth
+    is not an adult, even with a child of their own. No birth date and no
+    child means "not known to be an adult". The answer reads `today` (the
+    build date), so a child who turns 18 changes it on the next rebuild.
 
-    TODO: PR 13-1 (home tree private cards) defines the same rule; reconcile
-    the two at merge so it lives once."""
+    With no birth date at all, a baptism 18 or more years ago also makes an
+    adult (they were born by then); a recent baptism says nothing, and the
+    has-a-child rule decides. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult.
+
+    TODO: PR 13-1 (home tree private cards) defines this same rule, word for
+    word; keep one copy when the second of the two merges."""
     try:
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
-    except ValueError:                      # 29 February, in a year that has none
+    except ValueError:                      # 29 February, in a year with no leap day
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
-    latest: list[str] = []
-    for cid, date_edtf, date_max in conn.execute(
-            "SELECT c.id, c.date_edtf, c.date_max FROM claims c "
-            "JOIN claim_persons cp ON cp.claim_id = c.id "
-            "WHERE cp.person_id = ? AND c.type = 'birth' AND COALESCE(c.negated, 0) = 0 "
-            "ORDER BY c.id", (pid,)).fetchall():
-        if not (date_edtf or date_max):
-            continue
-        if not claim_is_own_vital(conn, pid, cid, 'birth'):
-            continue
-        latest.append(date_max or edtf_bounds(date_edtf)[1])
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    latest = own_dates('birth')
     row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
-    if row is not None and row[0]:
-        latest.append(edtf_bounds(str(row[0]))[1])
+    if row is not None and str(row[0] or '').strip():
+        latest.append(latest_day(str(row[0])))
     if latest:
-        return all(str(d)[:10] <= cutoff.isoformat() for d in latest)
+        return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    if any(day <= cutoff.isoformat() for day in own_dates('baptism')):
+        return True
     return conn.execute(
         "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
         (pid,)).fetchone() is not None

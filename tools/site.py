@@ -8779,18 +8779,20 @@ class _SiteBuilder:
 
         TODO: PR 13-1 defines this same method for the home tree and its
         family row; reconcile the two at merge so the rule lives once."""
+        if self.linked:
+            return 'shown'
         meta = self.person_meta.get(pid)
         if meta is None:
             return 'omit'
-        if self.linked or not self._person_is_redacted(meta):
-            return 'shown'
         chain = self._merge_chain(meta)
         survivor = merge_survivor(chain)
+        # A broken merge chain has nobody to read: left out, not guessed at.
         if survivor is None or any(r['id'] in self.restricted_persons for r in chain):
             return 'omit'
-        if is_known_adult(self.conn, survivor['id'], self._build_date()):
-            return 'private'
-        return 'omit'
+        if not self._person_is_redacted(meta):
+            return 'shown'
+        adult = is_known_adult(self.conn, survivor['id'], self._build_date())
+        return 'private' if adult else 'omit'
 
     def _build_date(self) -> datetime.date:
         """The day this build is made, which decides who is an adult: a child
