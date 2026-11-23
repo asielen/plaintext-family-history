@@ -921,6 +921,40 @@ class ReportTests(unittest.TestCase):
             lines,
         )
 
+    def test_search_log_says_which_years_and_what_could_not_be_searched(self) -> None:
+        report.run_report(self.archive_root, {}, full=True)
+
+        db_path = self.archive_root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = [
+                ('2020-01-01', 'County probate index', '1880/1890', 'nil'),
+                ('2020-02-02', 'Breton County death register', '1911/1925',
+                 "unavailable (the office was closed)"),
+                ('2020-03-03', 'State archive letter', None, 'requested (letter to the state archive)'),
+                ('2020-04-04', 'Newspaper archive', '1875', 'found S-1111111111'),
+            ]
+            for d, coll, years, result in rows:
+                conn.execute(
+                    "INSERT INTO search_log(date, person_id, collection, years, result) "
+                    "VALUES (?,?,?,?,?)", (d, 'p-aaaaaaaaaa', coll, years, result))
+            conn.commit()
+            lines = report._section_search_log(
+                conn, {'vitals_gap_person_ids': ['p-aaaaaaaaaa']})
+        finally:
+            conn.close()
+
+        who = '- Test Person [p-aaaaaaaaaa] - '
+        self.assertIn(who + 'County probate index (1880-1890): worth re-running (stale nil search)', lines)
+        # Old, but never a nil: still to do, never "already searched".
+        self.assertIn(
+            who + 'Breton County death register (1911-1925): could not be searched 2020-02-02: the office was closed',
+            lines)
+        self.assertIn(who + 'State archive letter: asked 2020-03-03, waiting for a reply', lines)
+        self.assertIn(who + 'Newspaper archive (1875): already searched 2020-04-04', lines)
+        self.assertFalse(any('worth re-running' in l and 'register' in l for l in lines))
+
     def test_search_log_calls_out_recent_unreconciled_captures(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
 

@@ -688,6 +688,16 @@ def _section_contradictions(findings: list) -> list[str]:
 
 # ── Section 5: Search-log awareness ───────────────────────────────────────────
 
+def _years_label(years) -> str:
+    """A research-log `years:` value for a line: `1880/1890` reads `1880-1890`,
+    a single year reads as itself, anything looser is shown as written."""
+    text = str(years or '').strip()
+    m = re.fullmatch(r'(\d{4})\s*/\s*(\d{4})', text)
+    if m:
+        return f'{m.group(1)}-{m.group(2)}'
+    return text
+
+
 def _section_search_log(conn, current: dict) -> list[str]:
     """
     Annotate leads from the other sections with prior search_log activity,
@@ -725,7 +735,7 @@ def _section_search_log(conn, current: dict) -> list[str]:
         horizon = datetime.date.today() - datetime.timedelta(days=_SEARCH_LOG_HORIZON_DAYS)
         for pid in sorted(lead_pids):
             rows = conn.execute(
-                'SELECT date, collection, repository, result FROM search_log WHERE person_id=? ORDER BY date DESC',
+                'SELECT date, collection, repository, years, result FROM search_log WHERE person_id=? ORDER BY date DESC',
                 (pid,),
             ).fetchall()
             if not rows:
@@ -736,15 +746,29 @@ def _section_search_log(conn, current: dict) -> list[str]:
                     stale = datetime.date.fromisoformat(row['date']) < horizon
                 except (TypeError, ValueError):
                     stale = False
-                result = str(row['result'] or '').strip().lower()
-                nil_result = result in {'nil', 'none', 'no results', 'not found', 'negative'}
-                note = (
-                    'worth re-running (stale nil search)'
-                    if stale and nil_result
-                    else f"already searched {row['date']}"
+                raw_result = str(row['result'] or '').strip()
+                result = raw_result.lower()
+                kind = result.split(' ', 1)[0]
+                nil_result = (
+                    result in {'nil', 'none', 'no results', 'not found', 'negative'}
+                    or kind == 'nil'
                 )
+                if kind == 'unavailable':
+                    # Could not be searched at all: still to do, never a nil
+                    # and never "already searched" (SPEC §17c).
+                    why = re.match(r'\S+\s*\((.*)\)\s*$', raw_result, re.S)
+                    note = f"could not be searched {row['date']}" + (
+                        f': {why.group(1).strip()}' if why and why.group(1).strip() else '')
+                elif kind == 'requested':
+                    note = f"asked {row['date']}, waiting for a reply"
+                elif stale and nil_result:
+                    note = 'worth re-running (stale nil search)'
+                else:
+                    note = f"already searched {row['date']}"
                 collection = row['collection'] or row['repository'] or '(unspecified collection)'
-                lines.append(f'- {label} - {collection}: {note}')
+                years = _years_label(row['years'])
+                scope = f' ({years})' if years else ''
+                lines.append(f'- {label} - {collection}{scope}: {note}')
 
     recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
     # notes/research-log.md entries are also person_id IS NULL (general/locality
