@@ -24,7 +24,7 @@ The tools run on Python, which is free and is the only program you install. (A f
 1. Go to **<https://www.python.org/downloads/>** and click "Download Python."
 2. Run the installer. **On Windows, tick "Add Python to PATH"** before clicking Install.
 
-**Did it work?** Open a terminal (Command Prompt on Windows, Terminal on Mac) and type:
+**Did it work?** Open a terminal (PowerShell on Windows, Terminal on Mac) and type:
 
 ```
 python --version
@@ -38,7 +38,7 @@ A line like `Python 3.12.1` (3.10 or newer) means it worked. On a Mac you may ne
 
 Open a terminal **in your workshop folder**:
 
-- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `cmd` and press Enter. A terminal opens in that folder.
+- **Windows:** open the unzipped folder in File Explorer, click the address bar, type `powershell` and press Enter. A PowerShell window opens in that folder. (Or hold Shift, right-click the folder and choose "Open PowerShell window here"; on Windows 11 choose "Open in Terminal".) Command Prompt runs most commands too, but it can garble a name that has quotation marks or symbols in it, so use PowerShell.
 - **Mac:** in Terminal, type `cd ` (with a space), drag the unzipped folder onto the window and press Enter.
 
 Then run:
@@ -58,7 +58,6 @@ In the same terminal, run the line for your system:
 ```
 ./fha install ../my-family-archive      # macOS / Linux
 .\fha install ..\my-family-archive      # Windows PowerShell
-fha install ..\my-family-archive        # Windows Command Prompt
 ```
 
 That creates a `my-family-archive` folder beside the workshop, with its own copy of the tools, the manual and the assistant's instructions:
@@ -95,7 +94,6 @@ Open a terminal in your new `my-family-archive` folder (the same way as in Step 
 ```
 ./fha check      # macOS / Linux
 .\fha check      # Windows PowerShell
-fha check        # Windows Command Prompt
 ```
 
 A fresh archive prints:

@@ -25,9 +25,10 @@ You never have to type a command.
 
 | Where you are | Type |
 |---|---|
-| Windows, Command Prompt | `fha <command>` |
 | Windows, PowerShell | `.\fha <command>` |
 | macOS or Linux | `./fha <command>` |
+
+On Windows, use PowerShell. To open it in your archive folder, open the folder in File Explorer, click the address bar, type `powershell` and press Enter. The commands the tools print are written for PowerShell, so you can copy and paste them as they are. Command Prompt (where you type `fha <command>`) runs most commands too, but it can garble a name that has quotation marks or symbols in it.
 
 The other guides write commands bare (`fha doctor`); add the `./` or `.\` your terminal needs. Putting the folder on your PATH once makes a bare `fha <command>` work everywhere.
 

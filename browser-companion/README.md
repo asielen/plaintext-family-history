@@ -93,7 +93,6 @@ Nothing sweeps automatically (the archive has no daemons or watchers). When you'
 ```sh
 ./fha capture --ingest      # macOS / Linux: sweeps the default staging folder into inbox/
 .\fha capture --ingest      # Windows PowerShell
-fha capture --ingest        # Windows Command Prompt
 ```
 
 As soon as a capture completes, the handoff card shows the command with the staging folder the browser actually used (`./fha capture --ingest "<that folder>"`). The download directory is a browser setting, so the panel reads it from the completed download rather than assuming a home-relative `Downloads`.
