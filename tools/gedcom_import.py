@@ -1761,6 +1761,11 @@ class _Fact:
     subject: str = ''
     before: str = ''
     now: str = ''
+    # A couple's statement with the spouses' names in it, for an earlier
+    # claim whose filed copy could not be read (its words carry the names).
+    named_text: str = ''
+    # Parents of a tie he rejected or deleted, left out of the planned tie.
+    turned_down: frozenset[str] = frozenset()
 
 
 @dataclass(eq=False)
@@ -1979,6 +1984,7 @@ def _read_prior_import(archive_root: Path, fha_config: dict, path: Path, rec: di
     # earlier import filed about that number. The number is written at the end
     # of the value, and the line in the filed copy says it again.
     seen: dict[str, set[str]] = {}
+    raw_of: dict[str, set[str]] = {}    # the records the claims name, before merges
     joined: dict[int, _Claim] = {}
     order: list[str] = [i.xref for i in old_indis] + list(audit)
     for i, claim in enumerate(claims):
@@ -1995,6 +2001,8 @@ def _read_prior_import(archive_root: Path, fha_config: dict, path: Path, rec: di
         pids = claim_person_pids(claim, alias_map)
         if (by_tail or by_line) and pids:
             seen.setdefault(by_tail or by_line, set()).add(pids[0])
+            raw = claim_person_pids(claim)
+            raw_of.setdefault(by_tail or by_line, set()).add(raw[0] if raw else pids[0])
             order.append(by_tail or by_line)
 
     # One record named by the statements of two record numbers: he moved a
@@ -2009,6 +2017,9 @@ def _read_prior_import(archive_root: Path, fha_config: dict, path: Path, rec: di
     for pid, xrefs in owners.items():
         if len(xrefs) < 2:
             continue
+        raws = [raw_of.get(x, set()) for x in xrefs]
+        if all(not (a & b) for i, a in enumerate(raws) for b in raws[i + 1:]):
+            continue        # each number's own record, merged here into one: fine
         record = by_pid.get(pid)
         names = ({_name_key(n) for n in [record['name']] + record['variants']}
                  if record else set())
@@ -2156,7 +2167,7 @@ def _new_fact(claim: _Claim) -> _Fact:
                      text='', parents=frozenset(claim.roles['parent']))
     if ctype in _COUPLE_TYPES:
         return _Fact(claim, 'couple', (ctype, frozenset(claim.roles['spouse'])),
-                     text=_norm_text(claim.said))
+                     text=_norm_text(claim.said), named_text=_statement_text(claim.value))
     text = _norm_text(claim.said)
     if ctype in _SINGLE_TYPES:
         return _Fact(claim, 'single', (ctype, claim.persons[0]), text=text)
@@ -2282,7 +2293,8 @@ def _name_shared(new: _Incoming, old: _PriorPerson) -> bool:
 
 
 def _number_doubt(new: _Incoming, old: _PriorPerson,
-                  by_name: dict[tuple[str, ...], list[_PriorPerson]]) -> str:
+                  by_name: dict[tuple[str, ...], list[_PriorPerson]],
+                  kept: frozenset[str] = frozenset()) -> str:
     """Why the person holding this record number may not be the same person,
     or '' when they certainly are.
 
@@ -2304,15 +2316,16 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
     if new.names & old.names:
         # Another earlier person of this name fits better when the births
         # here disagree and theirs does not, or when a birth is missing on one
-        # side here and theirs agrees outright (an undated father whose
-        # number his dated son now carries).
+        # side here, theirs agrees outright, and their own number no longer
+        # holds them (an undated father whose number his dated son now
+        # carries; a cousin still at his own number is no rival).
         apart = _birth_differs(new, old)
         if apart or not _birth_fits(new, old):
             for key in sorted(new.names):
                 for other in by_name.get(key, []):
                     if (other.ident != old.ident and not _sex_differs(new, other)
-                            and (_birth_fits(new, other) if not apart
-                                 else not _birth_differs(new, other))):
+                            and (not _birth_differs(new, other) if apart
+                                 else _birth_fits(new, other) and other.ident not in kept)):
                         return (f'{was}, but the birth year here fits '
                                 f'{_who(other)} better')
         return ''
@@ -2353,10 +2366,15 @@ def _match_people(incoming: list[_Incoming],
 
     found: dict[str, tuple[_PriorPerson, str]] = {}
     doubts: dict[str, tuple[str, _PriorPerson]] = {}
+    # Earlier people still at their own number, under a name they had.
+    kept = frozenset(
+        by_xref[n.xref].ident for n in incoming
+        if n.xref in by_xref and n.names & by_xref[n.xref].names
+        and not _sex_differs(n, by_xref[n.xref]) and not _birth_differs(n, by_xref[n.xref]))
     for new in incoming:
         old = by_xref.get(new.xref)
         if old is not None:
-            doubt = _number_doubt(new, old, by_name)
+            doubt = _number_doubt(new, old, by_name, kept)
             if not doubt:
                 found[new.xref] = (old, 'record number')
                 continue
@@ -2587,9 +2605,16 @@ def _judge(fact: _Fact, olds: list[_OldFact], parents_now: frozenset[str]) -> No
             fact.outcome = 'decided'
         elif any(turned_down(o) for o in settled):
             # Every parent of a tie he rejected or deleted is named again, now
-            # beside a parent the tree added. Planned as new, it would put the
-            # parent he turned down back in front of him; it stays decided.
-            fact.outcome = 'decided'
+            # beside a parent the tree added. Those parents stay turned down;
+            # only the parents left are judged (and, if new, planned).
+            gone = frozenset().union(*((o.orig_parents if o.orig_only else o.parents)
+                                       for o in settled if turned_down(o)))
+            fact.turned_down |= gone
+            fact.parents = fact.parents - gone
+            if not fact.parents:
+                fact.outcome = 'decided'
+                return
+            _judge(fact, olds, parents_now)
         else:
             live = [o for o in live if not o.orig_only]
             against = [o for o in live if o.parents - parents_now]
@@ -2597,10 +2622,13 @@ def _judge(fact: _Fact, olds: list[_OldFact], parents_now: frozenset[str]) -> No
             fact.was = against
             fact.against = [o.cid for o in against]
         return
-    if any(o.text == fact.text for o in live):
+    def worded(o: _OldFact) -> bool:
+        return o.text == (fact.text if o.joined or not fact.named_text else fact.named_text)
+
+    if any(worded(o) for o in live):
         fact.outcome = 'same'
         return
-    if any(o.text == fact.text for o in settled):
+    if any(worded(o) for o in settled):
         fact.outcome = 'decided'
         return
     # Dates and places are compared only with claims still about these people.
@@ -2686,6 +2714,15 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
             parents_now[fact.key] = parents_now.get(fact.key, frozenset()) | fact.parents
     for fact in facts:
         _judge(fact, olds.get(fact.key, []), parents_now.get(fact.key, frozenset()))
+        if fact.turned_down and fact.outcome != 'decided':
+            # The tie is planned with only the parents he has not turned down.
+            claim = fact.claim
+            keep = [p for p in claim.roles['parent'] if p in fact.parents]
+            claim.roles = {**claim.roles, 'parent': keep}
+            claim.persons = [claim.roles['child']] + keep
+            nature = f' ({claim.subtype})' if claim.subtype else ''
+            claim.value = (f'{name_of(claim.roles["child"])} is a child{nature} of '
+                           f'{names_of(keep)} (GEDCOM {claim.fam_xref})')
 
     questions: list[_Question] = []
     for fact in facts:
@@ -3913,7 +3950,9 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
                      'newest import only.')
     for alias in plan.unread_copies:
         lines.append(f'  The filed copy of the earlier download ({alias}) could not be '
-                     'read, so this plan compares the newer file with your records only.')
+                     'read, so this plan compares the newer file with your records only. '
+                     'A statement you deleted from your records may be listed as new; '
+                     'check the new statements against what you removed.')
     if not (plan.stubs or plan.claims or plan.held):
         lines.append('  Nothing new: this download says the same as what your archive '
                      'already has from this tree. Nothing would be written.')

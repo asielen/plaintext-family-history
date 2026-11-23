@@ -2946,6 +2946,15 @@ class ReimportPlanTestCase(_ReimportCase):
             self.assertEqual([p.sid for p in plan.prior], [sid2])
             self.assertEqual((plan.stubs, plan.claims), ([], []))
 
+    def test_a_corrected_marriage_stands_when_only_the_filed_copy_is_gone(self) -> None:
+        # The filed copy alone is missing (the folder is there). His
+        # corrected marriage year is still not questioned by an unchanged tree.
+        self._edit_record1("date: '1897-06-05'", "date: '1898-06-05'")
+        self.filed1.unlink()
+        result, out, _err = self._run(self._same_tree_redownloaded())
+        self.assertEqual(result.data['changed'], 0)
+        self.assertIn('may be listed as new', out)
+
     def test_date_disagreements_are_listed_for_new_people_only(self) -> None:
         # A matched person keeps the record he already has, so "the new record
         # shows" is said only of someone the plan would add.
@@ -3188,7 +3197,8 @@ class ReimportMatchingTestCase(_ArchiveCase):
 
     def test_a_parent_he_rejected_is_not_proposed_again_beside_a_new_one(self) -> None:
         # He rejected "Ada is Thomas's child". The newer download adds Rose as
-        # her mother in that family; Thomas must not come back with her.
+        # her mother in that family. Rose is planned; Thomas must not come
+        # back with her.
         people = [('@I1@', 'Thomas /Hartley/', 'M', '1875'),
                   ('@I2@', 'Rose /Hartley/', 'F', '1878'),
                   ('@I3@', 'Ada /Hartley/', 'F', '1901')]
@@ -3203,11 +3213,74 @@ class ReimportMatchingTestCase(_ArchiveCase):
         later = self._tree('later.ged', people,
                            ('0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@'))
         plan = self._plan(later)
-        thomas = self._ids()['Thomas Hartley 1875'][0]
-        rel = [f for f in plan.facts if f.claim.claim_type == 'relationship']
-        self.assertEqual([f.outcome for f in rel], ['decided'])
-        self.assertFalse(any(c.claim_type == 'relationship' and thomas in c.persons
-                             for c in plan.claims))
+        ids = self._ids()
+        thomas, rose = ids['Thomas Hartley 1875'][0], ids['Rose Hartley 1878'][0]
+        rel = [c for c in plan.claims if c.claim_type == 'relationship']
+        self.assertEqual([c.roles['parent'] for c in rel], [[rose]])
+        self.assertNotIn(thomas, rel[0].persons)
+        self.assertNotIn('Thomas', rel[0].value)
+        self.assertEqual(plan.questions, [])
+
+    def test_a_father_the_tree_adds_is_planned_beside_a_mother_he_rejected(self) -> None:
+        # He rejected "Ada is Rose's child" (the wrong mother). The newer
+        # download keeps Rose and adds Thomas as the father: Thomas is new.
+        people = [('@I1@', 'Thomas /Hartley/', 'M', '1875'),
+                  ('@I2@', 'Rose /Hartley/', 'F', '1878'),
+                  ('@I3@', 'Ada /Hartley/', 'F', '1901')]
+        first = self._tree('first.ged', people, ('0 @F1@ FAM', '1 WIFE @I2@', '1 CHIL @I3@'))
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        record = next((self.archive / 'sources' / 'other').glob('*.md'))
+        text = record.read_text(encoding='utf-8')
+        at = text.index('status: suggested', text.index('is a child of'))
+        record.write_text(text[:at] + 'status: rejected' + text[at + len('status: suggested'):],
+                          encoding='utf-8')
+        later = self._tree('later.ged', people,
+                           ('0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@'))
+        plan = self._plan(later)
+        ids = self._ids()
+        rel = [c for c in plan.claims if c.claim_type == 'relationship']
+        self.assertEqual([c.roles['parent'] for c in rel], [[ids['Thomas Hartley 1875'][0]]])
+
+    def test_a_duplicate_he_merged_still_matches_without_the_cache(self) -> None:
+        # The tree had Rose twice. He merged the two records here, and the
+        # tree dropped the second. On a new computer she still matches.
+        first = self._tree('first.ged', [('@I1@', 'Rose /Hartley/', 'F', '12 JAN 1878'),
+                                         ('@I2@', 'Rose /Hartley/', 'F', '1878'),
+                                         ('@I3@', 'Thomas /Hartley/', 'M', '1875')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        roses = sorted((str(read_record(path)['meta'].get('birth')), path)
+                       for path in (self.archive / 'people').rglob('*.md')
+                       if read_record(path)['meta']['name'] == 'Rose Hartley')
+        (_b, dup_path), (_b2, keep_path) = roses
+        survivor = str(read_record(keep_path)['meta']['id'])
+        text = dup_path.read_text(encoding='utf-8').replace(
+            'tier: stub', f'status: merged\nmerged_into: {survivor}\n'
+            'merge_reason: same person\nmerged_date: 2026-11-01\ntier: stub')
+        self.assertIn('status: merged', text)
+        dup_path.unlink()
+        (dup_path.parent / f'MERGED-INTO-{survivor}__{dup_path.name}').write_text(
+            text, encoding='utf-8')
+        shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        later = self._tree('later.ged', [
+            ('@I1@', 'Rose /Hartley/', 'F', '12 JAN 1878', '1 OCCU Seamstress'),
+            ('@I3@', 'Thomas /Hartley/', 'M', '1875')])
+        plan = self._plan(later)
+        self.assertEqual(plan.matches['@I1@'].pid, survivor)
+        self.assertEqual(plan.held, {})
+
+    def test_a_cousin_of_the_same_name_given_a_birth_year_still_matches(self) -> None:
+        # Two cousins named John Hartley, one born 1849, one undated. The
+        # tree keeps every number and gives the undated one a year, 1850.
+        first = self._tree('first.ged', [('@I1@', 'John /Hartley/', 'M', '1849'),
+                                         ('@I2@', 'John /Hartley/', 'M', '', '1 OCCU Miner'),
+                                         ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', [('@I1@', 'John /Hartley/', 'M', '1849'),
+                                         ('@I2@', 'John /Hartley/', 'M', '1850', '1 OCCU Miner'),
+                                         ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertEqual(sorted(plan.matches), ['@I1@', '@I2@', '@I3@'])
+        self.assertEqual(plan.held, {})
 
 
 class ReimportComparisonTestCase(unittest.TestCase):
