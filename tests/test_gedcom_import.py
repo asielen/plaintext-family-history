@@ -1534,3 +1534,181 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ── Odd files from other programs ─────────────────────────────────────────────
+
+ADVERSARIAL = FIXTURES / 'adversarial'
+
+_CRLF_SOURCE = (
+    '0 HEAD\n1 SOUR Test\n1 CHAR UTF-8\n'
+    '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n'
+    '1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+    '1 NOTE Kept the family bible\n2 CONT in a cedar box\n'
+    '0 TRLR\n')
+
+
+class AdversarialFixtureTestCase(_ArchiveCase):
+    """Files from other programs arrive without surprises. The four files in
+    adversarial/ are copied from another project (MIT; see its README); the
+    expected answers below come from TOOLING §13a2 and the importer's rules,
+    not from whatever the code printed. The rest are built from bytes here so
+    no editor or git newline setting can change them."""
+
+    def _plan(self, ged: Path):
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def _bytes(self, name: str, raw: bytes) -> Path:
+        p = Path(self._tmp.name) / name
+        p.write_bytes(raw)
+        return p
+
+    def _applied_lints_clean(self, ged: Path):
+        import lint as lint_mod
+        result, _out, err = self._run(ged, apply=True)
+        self.assertTrue(result.data['applied'], err)
+        n_errors, _w, _e = lint_mod.run_lint_silent(self.archive, self.config)
+        self.assertEqual(n_errors, 0, 'imported records must lint with no E-codes')
+        return result
+
+    @staticmethod
+    def _of(plan, claim_type: str):
+        return [c for c in plan.claims if c.claim_type == claim_type]
+
+    # -- the four copied files ------------------------------------------------
+
+    def test_minimal_551_one_person_one_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        self.assertEqual(plan.stubs[0].name, 'Briar Fiction')
+        self.assertEqual(plan.stubs[0].living, 'unknown')
+        self.assertEqual([c.claim_type for c in plan.claims], ['note'])
+        self.assertEqual(plan.warnings, [])
+        result = self._applied_lints_clean(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_minimal_555_leading_zero_date_and_place(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-555.ged')
+        (birth,) = plan.claims
+        self.assertEqual(birth.claim_type, 'birth')
+        self.assertEqual(birth.date, '1900-01-01')
+        self.assertEqual(birth.place_text, 'Example County')
+        self.assertEqual(plan.warnings, [])
+        self._applied_lints_clean(ADVERSARIAL / 'minimal-555.ged')
+
+    def test_preserve_extensions_person_and_variant(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        stub = plan.stubs[0]
+        self.assertEqual(stub.name, 'Zoë Fiction')
+        self.assertEqual(stub.variants, ['Zed Alternative'])
+        # A DEAT is present, so he is not guessed to be living.
+        self.assertEqual(stub.living, 'false')
+
+    def test_preserve_extensions_two_births_last_one_sets_stub(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        births = self._of(plan, 'birth')
+        self.assertEqual(len(births), 2)
+        self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
+        # Documented behaviour: both BIRTs become claims; the stub's provisional
+        # `birth:` follows the LAST BIRT in the file (a review pass settles it).
+        self.assertEqual(plan.stubs[0].birth, '2000-01-01')
+        self.assertEqual(len(plan.date_downgrades), 1)
+
+    def test_preserve_extensions_open_ended_deaths(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        deaths = self._of(plan, 'death')
+        self.assertEqual(sorted(d.date for d in deaths), ['[..2099]', '[2099..]'])
+
+    def test_preserve_extensions_empty_even_type_uses_tag_name(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (even,) = self._of(plan, 'event')
+        self.assertEqual(even.subtype, 'even')
+
+    def test_preserve_extensions_conc_cont_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (note,) = self._of(plan, 'note')
+        self.assertIn('first-joined', note.value)
+        self.assertEqual(note.notes, 'next line')
+
+    def test_preserve_extensions_dangling_references_warn(self) -> None:
+        result, _out, _err = self._run(ADVERSARIAL / 'preserve-extensions.ged')
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertTrue(any('@I404@' in w for w in plan.warnings), plan.warnings)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_preserve_extensions_vendor_and_media_counted_unread(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        tags = dict(plan.unread_top)
+        self.assertIn('_VENDOR', tags)
+        self.assertIn('OBJE', tags)
+        self.assertIn('SOUR', tags)
+        self._applied_lints_clean(ADVERSARIAL / 'preserve-extensions.ged')
+
+    def test_xref_source_a_dangling_child_warns_and_text_is_not_a_link(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'xref-source-a.ged')
+        self.assertTrue(any('@I99@' in w for w in plan.warnings), plan.warnings)
+        for c in plan.claims:
+            self.assertNotIn('@I99@', c.value)
+        self._applied_lints_clean(ADVERSARIAL / 'xref-source-a.ged')
+
+    # -- files built from bytes ----------------------------------------------
+
+    def test_crlf_imports_same_as_lf(self) -> None:
+        lf = self._plan(self._bytes('lf.ged', _CRLF_SOURCE.encode('utf-8')))
+        crlf = self._plan(self._bytes(
+            'crlf.ged', _CRLF_SOURCE.replace('\n', '\r\n').encode('utf-8')))
+
+        def shape(p):
+            return [(c.claim_type, c.anchor, c.date, c.value) for c in p.claims]
+        self.assertEqual(shape(crlf), shape(lf))
+        self.assertEqual(crlf.warnings, lf.warnings)
+
+    def test_utf8_bom_imports(self) -> None:
+        plan = self._plan(self._bytes('bom.ged', b'\xef\xbb\xbf' + _CRLF_SOURCE.encode('utf-8')))
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+        self.assertEqual(plan.warnings, [])
+
+    def test_utf16_both_byte_orders_refused(self) -> None:
+        for name, raw in (('le.ged', b'\xff\xfe' + _CRLF_SOURCE.encode('utf-16-le')),
+                          ('be.ged', b'\xfe\xff' + _CRLF_SOURCE.encode('utf-16-be'))):
+            result, _out, err = self._run(self._bytes(name, raw), apply=True)
+            self.assertEqual(result.exit_code, EXIT_ERRORS, name)
+            self.assertIn('UTF-16', err)
+            self.assertFalse((self.archive / 'people').exists())
+
+    def test_partial_bom_refused_as_not_utf8(self) -> None:
+        raw = b'\xef\xbb' + _CRLF_SOURCE.encode('utf-8')
+        result, _out, err = self._run(self._bytes('partial.ged', raw), apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('not UTF-8', err)
+
+    def test_skipped_level_warns(self) -> None:
+        raw = b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n2 DATE 1900\n0 TRLR\n'
+        plan = self._plan(self._bytes('skip.ged', raw))
+        self.assertTrue(any('level jumps to 2' in w for w in plan.warnings), plan.warnings)
+
+    def test_duplicate_indi_still_refused(self) -> None:
+        result, _out, err = self._run(FIXTURES / 'dup-xref.ged', apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('more than once', err)
+
+    def test_bare_level_stays_malformed_not_joined(self) -> None:
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n1\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('bare.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+
+    # FINDING (reported to the owner, not fixed in this PR): the rule from
+    # gedcom-lenient-lines looks at the first character being a digit, so a
+    # '-1 NAME x' line (leading minus) is joined into the value above it
+    # instead of being reported. Remove the decorator when that is fixed.
+    @unittest.expectedFailure
+    def test_negative_level_stays_malformed_not_joined(self) -> None:
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n-1 NAME x\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('neg.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')

@@ -1,0 +1,11 @@
+0 HEAD
+1 SOUR AdversarialFixture
+1 GEDC
+2 VERS 5.5.5
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Aster /Fiction/
+1 BIRT
+2 DATE 01 JAN 1900
+2 PLAC Example County
+0 TRLR
