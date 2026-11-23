@@ -42,7 +42,8 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #
 #  GEDCOM parsing
 #    _decode_gedcom_bytes      - bytes → text; UTF-8 only, BOM/UTF-16/ANSEL guards
-#    parse_gedcom              - line grammar → a tree of _Node records
+#    parse_gedcom              - line grammar → a tree of _Node records (+ joined level-less lines)
+#    _clean_vendor_markup      - MyHeritage/double-encoded HTML entities and <br> → plain text
 #    _Node                     - one GEDCOM line + its children (+ source line no.)
 #
 #  Field derivation
@@ -84,6 +85,8 @@ import argparse
 import csv
 import datetime
 import hashlib
+import html
+import html.entities
 import io
 import re
 import shutil
@@ -275,6 +278,12 @@ _GEDCOM_LINE_RE = re.compile(
 )
 
 
+# The only tags GEDCOM (5.5.1 and 7.0) allows under a NOTE or TEXT. A line one
+# level below a NOTE with any other "tag" is a broken note line (see parse_gedcom).
+_NOTE_CHILD_TAGS = frozenset({'CONC', 'CONT', 'SOUR', 'REFN', 'RIN', 'CHAN',
+                              'LANG', 'MIME', 'TRAN'})
+
+
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
     """Decode a GEDCOM file as UTF-8, refusing anything else with a plain fix.
 
@@ -303,11 +312,19 @@ def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
         )
 
 
-def parse_gedcom(text: str) -> tuple[list[_Node], list[str]]:
+def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     """Parse GEDCOM text into a list of level-0 record nodes.
 
-    Returns (records, malformed) where `malformed` describes lines that fit no
-    grammar (reported as warnings, never fatal - the filed copy keeps them).
+    A note from MyHeritage arrives whole: a line with no level number that
+    does not start with a digit joins the node above it with one space (the
+    words are kept; node line numbers stay true because no node is made).
+    Returns (records, malformed, joined). `malformed` describes lines that fit
+    no grammar (reported as warnings, never fatal - the filed copy keeps them);
+    a line that starts with a digit, or text before any node, still lands there
+    because it looks like an attempt at a GEDCOM line (except, in a file that
+    has level-less lines, a line nested under a NOTE/TEXT with a tag a note
+    cannot have, such as "2 brothers nearby"). `joined` holds the line
+    number of every level-less line that was folded in.
     CONC appends to the last node's value with NO space (GEDCOM splits values
     mid-word); CONT appends a newline + text. Both attach to the most recently
     parsed node regardless of level bookkeeping, which is how every real-world
@@ -315,14 +332,34 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str]]:
     records: list[_Node] = []
     stack: list[_Node] = []       # stack[level] = the open node at that level
     last: _Node | None = None
+    last_level = 0
     malformed: list[str] = []
+    joined: list[int] = []
+    lines = text.splitlines()
+    broken = any(ln.strip() and not _GEDCOM_LINE_RE.match(ln.strip('﻿'))
+                 and not ln.lstrip(' \t\ufeff')[:1].isdigit() for ln in lines)
 
-    for lineno, rawline in enumerate(text.splitlines(), start=1):
+    for lineno, rawline in enumerate(lines, start=1):
         if not rawline.strip():
             continue
         m = _GEDCOM_LINE_RE.match(rawline.strip('﻿'))
-        if not m:
-            malformed.append(f'line {lineno}: {rawline.strip()[:60]!r}')
+        # A broken note line that happens to start with a number ("2 brothers
+        # nearby", "1923 was a hard year", "2 I remember the farm") is prose,
+        # not a tag. Only in a file that already has level-less lines (so a
+        # tidy file parses exactly as before), and only for a line nested
+        # under the NOTE with a tag a note cannot have. A line at the note's
+        # own level or above ("1 WILL", "1 Birt") is a real record line and a
+        # hand-typed "2 cont" is still a CONT.
+        prose = (broken and m is not None and last is not None
+                 and last.tag in ('NOTE', 'TEXT') and int(m.group(1)) > last_level
+                 and not m.group(3).startswith('_')
+                 and m.group(3).upper() not in _NOTE_CHILD_TAGS)
+        if not m or prose:
+            if last is not None and (prose or not rawline.lstrip(' \t\ufeff')[:1].isdigit()):
+                last.value += ' ' + rawline.strip()
+                joined.append(lineno)
+            else:
+                malformed.append(f'line {lineno}: {rawline.strip()[:60]!r}')
             continue
         level = int(m.group(1))
         xref = m.group(2) or ''
@@ -353,7 +390,56 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str]]:
             malformed.append(f'line {lineno}: level jumps to {level}')
             continue
         last = node
-    return records, malformed
+        last_level = level
+    return records, malformed, joined
+
+
+_DOUBLE_ENTITY_RE = re.compile(r'&amp;(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-f]+);', re.I)
+_BR_RE = re.compile(r'<br\s*/?>', re.I)
+# Only a complete entity (ending in ";") is decoded. html.unescape alone would
+# also turn "&region=" in a pasted web link into "®ion=", breaking the link.
+_ENTITY_RE = re.compile(r'&(?:#(\d+)|#[xX]([0-9a-fA-F]+)|([A-Za-z][A-Za-z0-9]{1,31}));')
+
+
+def _decode_entity(m: re.Match) -> str:
+    if m.group(3):
+        return html.entities.html5.get(m.group(3) + ';', m.group(0))
+    return html.unescape(m.group(0))
+
+
+def _clean_vendor_markup(text: str, records: list[_Node]) -> int:
+    """Notes from MyHeritage read as plain words, not as web-page codes.
+
+    MyHeritage double-encodes its notes (`&amp;lt;br&amp;gt;` for a line break),
+    which would otherwise land in his archive as junk. Only a file that has
+    double-encoded entities or says `1 SOUR MYHERITAGE` is touched; a file that
+    legitimately says "Smith &amp; Sons" stays as typed. Changes node values in
+    place (before any mapping) and returns how many nodes changed. A `<br>` in
+    a NOTE or TEXT becomes a newline, so the existing first-line/rest split
+    keeps the text before the break as the claim and the rest as its notes."""
+    if not (_DOUBLE_ENTITY_RE.search(text)
+            or re.search(r'^1 SOUR MYHERITAGE\b', text[:4000], re.M | re.I)):
+        return 0
+    changed = 0
+
+    def walk(node: _Node) -> None:
+        nonlocal changed
+        old = node.value
+        if old and ('&' in old or '<' in old):
+            v = re.sub(r'&amp;(?=(?:lt|gt|amp|quot|apos|nbsp|#\d+|#x[0-9a-f]+);)', '&',
+                       old, flags=re.I)
+            v = _ENTITY_RE.sub(_decode_entity, v)
+            v = _BR_RE.sub('\n' if node.tag in ('NOTE', 'TEXT') else ' ', v)
+            v = re.sub(r'[ \t ]+', ' ', v).strip()
+            if v != old:
+                node.value = v
+                changed += 1
+        for child in node.children:
+            walk(child)
+
+    for rec in records:
+        walk(rec)
+    return changed
 
 
 # ── Date translation (inverting the exporter's grammar, gedcom.py) ────────────
@@ -791,6 +877,8 @@ class ImportPlan:
     loose_dates: int = 0                   # dates read by the free-form fallback (#293)
     loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
     date_downgrades: list[str] = field(default_factory=list)    # unreadable, uncapped
+    joined_lines: int = 0                  # level-less lines folded into the line above
+    markup_cleaned: int = 0                # values that had web-page codes cleaned
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -1271,7 +1359,8 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     raw = ged_path.read_bytes()
     ged_hash = hashlib.sha256(raw).hexdigest()
     text = _decode_gedcom_bytes(raw, ged_path)
-    records, malformed = parse_gedcom(text)
+    records, malformed, joined = parse_gedcom(text)
+    markup_cleaned = _clean_vendor_markup(text, records)
 
     head = next((r for r in records if r.tag == 'HEAD'), None)
     indis = [r for r in records if r.tag == 'INDI']
@@ -1473,6 +1562,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
         loose_dates=len(date_loose), loose_date_reads=list(date_loose),
         date_downgrades=list(date_downgrades),
+        joined_lines=len(joined), markup_cleaned=markup_cleaned,
     )
 
 
@@ -1702,6 +1792,14 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      f'rather than GEDCOM\'s date form ({shown}{more}) and were read '
                      'the way `fha claim --date` reads a typed date. The wording '
                      'stays in each claim\'s text, to check when you review it.')
+    if plan.joined_lines:
+        lines.append('')
+        lines.append(f'  {plan.joined_lines:,} line(s) had no level number (a MyHeritage '
+                     'habit) and were joined to the line above, so their words are kept.')
+    if plan.markup_cleaned:
+        lines.append('')
+        lines.append(f'  {plan.markup_cleaned:,} value(s) carried web-page codes (like '
+                     '<br>) and were cleaned; the original file is kept as it was.')
     if plan.date_downgrades and not capped:
         # The warning names three; the full plan names every date left out.
         lines.append('')

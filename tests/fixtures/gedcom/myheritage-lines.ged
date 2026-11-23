@@ -1,0 +1,16 @@
+0 HEAD
+1 SOUR MYHERITAGE
+2 NAME MyHeritage Family Tree Builder
+1 CHAR UTF-8
+0 @I1@ INDI
+1 NAME Rose /Hartley/
+1 SEX F
+1 NOTE Rose kept the family bible&amp;lt;br&amp;gt;It passed to her eldest daughter
+	and then to her granddaughter
+in Fairview.
+1 BIRT
+2 DATE 12 JAN 1878
+2 SOUR @S1@
+0 @S1@ SOUR
+1 TITL Kansas Births &amp;amp; Baptisms
+0 TRLR
