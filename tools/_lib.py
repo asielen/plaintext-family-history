@@ -10151,10 +10151,17 @@ def _search_url_geneteka(s: dict) -> str | None:
     words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
 
     def names(word: str, province: str) -> bool:
-        # The whole word, in any Polish case ending: "woj. podlaskiego",
-        # "w Warszawie" are the same province as "podlaskie", "Warszawa".
+        # The whole word, or the same word with a Polish case ending:
+        # "woj. podlaskiego", "w Warszawie" are "podlaskie", "Warszawa". Only
+        # the real endings, so the English "Ukrainian" is not "Ukraina".
         stem = province[:-1]
-        return word.startswith(stem) and len(word) - len(stem) <= 3
+        if province.endswith('e'):          # podlaskie, podlaskiego, podlaskim
+            forms = (province, stem + 'ego', stem + 'm')
+        elif province.endswith('a'):        # Warszawa, Warszawy, Warszawie
+            forms = (province, stem + 'y', stem + 'ie', stem + 'e')
+        else:                               # Białoruś, Białorusi
+            forms = (province, province + 'i')
+        return word in forms
 
     province = next((code for code, name in _GENETEKA_PROVINCES
                      if any(names(w, fold_accents(name).lower()) for w in words)), None)

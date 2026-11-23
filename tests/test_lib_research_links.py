@@ -152,6 +152,16 @@ class SearchUrlTests(unittest.TestCase):
                 self.assertEqual(query(by_key(dict(THOMAS, places=[place]))['geneteka'])['w'],
                                  code)
 
+    def test_an_american_place_with_a_polish_looking_word_gets_no_geneteka(self):
+        # A Ukrainian church in Chicago is not a parish in the Ukraina region,
+        # and a Warsaw county is not the city.
+        for place in ('St. Nicholas Ukrainian Catholic Cemetery, Chicago, Cook, Illinois',
+                      'Ukrainian Village, Chicago, Illinois',
+                      'Litwak Street, Brooklyn', 'Mazowiecki Hall, Detroit',
+                      'powiat warszawski zachodni', 'Warsaw, Indiana'):
+            with self.subTest(place):
+                self.assertNotIn('geneteka', by_key(dict(THOMAS, places=[place])))
+
     def test_years_are_widened_by_two_and_absent_years_add_no_date_parameter(self):
         q = query(by_key({'given': 'A', 'surname': 'B', 'birth_year': 1840})['familysearch'])
         self.assertEqual((q['q.birthLikeDate.from'], q['q.birthLikeDate.to']), ('1838', '1842'))
