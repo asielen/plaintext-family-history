@@ -1854,6 +1854,237 @@ class SqliteReadonlyUriTestCase(unittest.TestCase):
         share = Path(chr(92) * 2 + 'nas' + chr(92) + 'family' + chr(92) + 'photos.sqlite')
         self.assertEqual(sqlite_readonly_uri(share), 'file:////nas/family/photos.sqlite?mode=ro')
 
+# ── Odd files from other programs ─────────────────────────────────────────────
+
+ADVERSARIAL = FIXTURES / 'adversarial'
+
+_CRLF_SOURCE = (
+    '0 HEAD\n1 SOUR Test\n1 CHAR UTF-8\n'
+    '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n'
+    '1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+    '1 NOTE Kept the family bible\n2 CONT in a cedar box\n'
+    '0 TRLR\n')
+
+
+class AdversarialFixtureTestCase(_ArchiveCase):
+    """Files from other programs arrive without surprises. The four files in
+    adversarial/ are copied from another project (MIT; see its README); the
+    expected answers below come from TOOLING §13a2 and the importer's rules,
+    not from whatever the code printed. The rest are built from bytes here so
+    no editor or git newline setting can change them."""
+
+    def _plan(self, ged: Path):
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def _bytes(self, name: str, raw: bytes) -> Path:
+        p = Path(self._tmp.name) / name
+        p.write_bytes(raw)
+        return p
+
+    def _applied_lints_clean(self, ged: Path):
+        import lint as lint_mod
+        result, _out, err = self._run(ged, apply=True)
+        self.assertTrue(result.data['applied'], err)
+        n_errors, _w, _e = lint_mod.run_lint_silent(self.archive, self.config)
+        self.assertEqual(n_errors, 0, 'imported records must lint with no E-codes')
+        return result
+
+    @staticmethod
+    def _of(plan, claim_type: str):
+        return [c for c in plan.claims if c.claim_type == claim_type]
+
+    # -- the four copied files ------------------------------------------------
+
+    def test_minimal_551_one_person_one_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        self.assertEqual(plan.stubs[0].name, 'Briar Fiction')
+        self.assertEqual(plan.stubs[0].living, 'unknown')
+        self.assertEqual([c.claim_type for c in plan.claims], ['note'])
+        self.assertEqual(plan.warnings, [])
+        result = self._applied_lints_clean(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_minimal_555_leading_zero_date_and_place(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-555.ged')
+        (birth,) = plan.claims
+        self.assertEqual(birth.claim_type, 'birth')
+        self.assertEqual(birth.date, '1900-01-01')
+        self.assertEqual(birth.place_text, 'Example County')
+        self.assertEqual(plan.warnings, [])
+        self._applied_lints_clean(ADVERSARIAL / 'minimal-555.ged')
+
+    def test_preserve_extensions_person_and_variant(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        stub = plan.stubs[0]
+        self.assertEqual(stub.name, 'Zoë Fiction')
+        self.assertEqual(stub.variants, ['Zed Alternative'])
+        # A DEAT is present, so he is not guessed to be living.
+        self.assertEqual(stub.living, 'false')
+
+    def test_preserve_extensions_two_births_last_one_sets_stub(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        births = self._of(plan, 'birth')
+        self.assertEqual(len(births), 2)
+        self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
+        # Both BIRTs become claims. Today the stub's provisional `birth:` follows
+        # the LAST BIRT in the file; that is a bug when the last one is undated
+        # (issue #449). Here the dated one happens to be last.
+        self.assertEqual(plan.stubs[0].birth, '2000-01-01')
+        self.assertEqual(len(plan.date_downgrades), 1)
+
+    def test_preserve_extensions_open_ended_deaths(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        deaths = self._of(plan, 'death')
+        self.assertEqual(sorted(d.date for d in deaths), ['[..2099]', '[2099..]'])
+
+    def test_preserve_extensions_empty_even_type_uses_tag_name(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (even,) = self._of(plan, 'event')
+        self.assertEqual(even.subtype, 'even')
+
+    def test_preserve_extensions_conc_cont_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (note,) = self._of(plan, 'note')
+        self.assertIn('first-joined', note.value)
+        self.assertEqual(note.notes, 'next line')
+
+    def test_preserve_extensions_dangling_references_warn(self) -> None:
+        result, _out, _err = self._run(ADVERSARIAL / 'preserve-extensions.ged')
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertTrue(any('@I404@' in w for w in plan.warnings), plan.warnings)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_preserve_extensions_vendor_and_media_counted_unread(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        tags = dict(plan.unread_top)
+        self.assertIn('_VENDOR', tags)
+        self.assertIn('OBJE', tags)
+        # A person-level SOUR is counted, not read (issue #450 asks to read it).
+        self.assertIn('SOUR', tags)
+        self._applied_lints_clean(ADVERSARIAL / 'preserve-extensions.ged')
+
+    def test_xref_source_a_dangling_child_warns_and_text_is_not_a_link(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'xref-source-a.ged')
+        self.assertTrue(any('@I99@' in w for w in plan.warnings), plan.warnings)
+        # The missing child makes no relationship, and the `_TEXT literal @I1@
+        # and @I99@` line is never followed as a link: it is counted unread.
+        self.assertEqual(plan.claims, [])
+        self.assertEqual(dict(plan.unread_top).get('_TEXT'), 1)
+        self._applied_lints_clean(ADVERSARIAL / 'xref-source-a.ged')
+
+    # -- files built from bytes ----------------------------------------------
+
+    def test_crlf_imports_same_as_lf(self) -> None:
+        lf = self._plan(self._bytes('lf.ged', _CRLF_SOURCE.encode('utf-8')))
+        crlf = self._plan(self._bytes(
+            'crlf.ged', _CRLF_SOURCE.replace('\n', '\r\n').encode('utf-8')))
+
+        def shape(p):
+            return [(c.claim_type, c.anchor, c.date, c.value) for c in p.claims]
+        self.assertEqual(shape(crlf), shape(lf))
+        self.assertEqual(crlf.warnings, lf.warnings)
+
+    def test_utf8_bom_imports(self) -> None:
+        plan = self._plan(self._bytes('bom.ged', b'\xef\xbb\xbf' + _CRLF_SOURCE.encode('utf-8')))
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+        self.assertEqual(plan.warnings, [])
+
+    def test_utf16_both_byte_orders_refused(self) -> None:
+        for name, raw in (('le.ged', b'\xff\xfe' + _CRLF_SOURCE.encode('utf-16-le')),
+                          ('be.ged', b'\xfe\xff' + _CRLF_SOURCE.encode('utf-16-be'))):
+            result, _out, err = self._run(self._bytes(name, raw), apply=True)
+            self.assertEqual(result.exit_code, EXIT_ERRORS, name)
+            self.assertIn('UTF-16', err)
+            self.assertFalse((self.archive / 'people').exists())
+
+    def test_partial_bom_refused_as_not_utf8(self) -> None:
+        raw = b'\xef\xbb' + _CRLF_SOURCE.encode('utf-8')
+        result, _out, err = self._run(self._bytes('partial.ged', raw), apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('not UTF-8', err)
+
+    def test_skipped_level_warns(self) -> None:
+        raw = b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n2 DATE 1900\n0 TRLR\n'
+        plan = self._plan(self._bytes('skip.ged', raw))
+        self.assertTrue(any('level jumps to 2' in w for w in plan.warnings), plan.warnings)
+
+    # A `0 @I1@ INDI` defined twice is refused: covered by the dup-xref.ged
+    # test above, not repeated here.
+
+    def test_bare_level_stays_malformed_not_joined(self) -> None:
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n1\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('bare.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+
+    def test_negative_level_stays_malformed_not_joined(self) -> None:
+        # A '-1 NAME x' line is a broken GEDCOM line, not note prose: it is
+        # reported, so his name does not quietly become "Rose Hartley -1 NAME x".
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n-1 NAME x\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('neg.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+
+    def test_every_broken_level_shape_is_reported_or_read(self) -> None:
+        # Each of these is an attempt at a GEDCOM line. None may be folded into
+        # the name above it: it is either read as a line or reported.
+        reported = ['-1 NAME x', '-1 SEX F', '-1 @I2@ INDI', '-2 _MYTAG x', '+1 NAME x', '−1 NAME x', '–1 NAME x',
+                    '\xa01 NAME x', '　1 NAME x', '\t1 NAME x', '  1 NAME x',
+                    '100 NAME x', '1NAME x', '\xb2 NAME x']
+        read = ['01 NAME x', '١ NAME x', '１ NAME x']
+        for line in reported + read:
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(joined, [])
+                self.assertEqual(records[1].children[0].value, 'Rose /Hartley/')
+                if line in reported:
+                    self.assertTrue(any(m.startswith('line 4') for m in malformed), malformed)
+                else:
+                    self.assertEqual(malformed, [])
+                    self.assertEqual(records[1].children[1].value, 'x')
+
+    def test_note_prose_starting_with_a_sign_or_number_still_joins(self) -> None:
+        # A MyHeritage note line that opens with a dash, a sign or a no-break
+        # space is still prose: it joins the note above it, words kept.
+        for line in ('- and her sister', '-30 degrees, the well froze',
+                     '–1940 they stayed on the farm', '—1918 was the year of the flu',
+                     '\xa01937 the farm was sold', '+2 more cousins in Topeka',
+                     '-1920 I started school in Fairview', '+2 US Army cousins came home',
+                     '\xa01918 A hard year for the family',
+                     '-1942 WWII took both brothers',
+                     '–1920 MOVED TO KANSAS WITH HER PARENTS',
+                     '+2 USA trips after the war', '\xa01945 FDR died that spring'):
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(malformed, [])
+                self.assertEqual(joined, [4])
+                self.assertEqual(records[1].children[0].value,
+                                 'Rose kept the bible ' + line.strip())
+
+    def test_sign_prose_keeps_the_numbered_prose_rule_on(self) -> None:
+        # A "-5 below zero" line may be the file's only level-less line. It
+        # must still mark the file as having broken lines, so "2 brothers
+        # nearby" under the note joins too instead of becoming an unknown
+        # BROTHERS tag whose words appear in no warning.
+        for first in ('-5 below zero that January', '-1920 I started school',
+                      '-1 NAME x'):
+            with self.subTest(first=first):
+                text = ('0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+                        '1 NOTE She remembered the winter of 1936\n' + first + '\n'
+                        '2 brothers nearby helped with the cattle\n0 TRLR\n')
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                note = records[1].children[1]
+                self.assertEqual(note.children, [])
+                self.assertTrue(note.value.endswith('helped with the cattle'), note.value)
+                self.assertIn(6, joined)
+
 
 if __name__ == '__main__':
     unittest.main()
