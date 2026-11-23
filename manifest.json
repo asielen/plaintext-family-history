@@ -982,7 +982,7 @@
     {
       "path": ".fha/tools/templates/obsidian/People.base",
       "category": "operating",
-      "sha256": "9d5891c8cf4054e43d37644e8abb299bf2aa61aa06cad90f939a74ebb2c84fee",
+      "sha256": "aacadb4211f6a26d8a4387ac5b1fd9ba59c447e09d2c3c9827f9ec3351147501",
       "spec_version": "2.21",
       "src": "tools/templates/obsidian/People.base"
     },
