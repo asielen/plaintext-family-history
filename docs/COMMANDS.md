@@ -198,10 +198,14 @@ Build always-current summary pages from your records.
   fha views places                 One note per place, for Obsidian
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
+  fha views family-sheet <p-id>    A printable family group sheet for a couple
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
 visible not-for-publication banner); share through `fha site` instead.
+The family sheet is the exception: it is made to hand to relatives, so
+living relatives are counted but never named and private records are
+left out.
 
 These pages are generated and rebuildable; edit the records, not the pages.
 ```
@@ -332,6 +336,25 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--generations` `N` | Maximum generations / hops (default: unlimited; fan default: 2). |
 | `--format` `{json,dot,html}` | Output format (default: json). html is not available here; run `fha site` for a browsable tree. |
 | `--out` `FILE` | Write output to FILE instead of stdout. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views family-sheet`
+
+Print a family group sheet: a couple, their parents and children, each fact with its source.
+
+```text
+Write a printed family group sheet for one deceased person and a spouse
+(one sheet per spouse when none is named) to generated/views/. Every
+fact carries a note number that points to its record. Living relatives
+are counted but never named; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; the sheet is for them and a spouse. |
+| `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha views clean`
