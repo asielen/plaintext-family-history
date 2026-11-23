@@ -1628,6 +1628,73 @@ class DismissNotSamePersonTests(unittest.TestCase):
         self.assertEqual(self._read()['pairs'], [])
         self.assertFalse(self.legacy.exists())
 
+    def test_undoing_a_different_person_note_keeps_legacy_connection_pairs(self) -> None:
+        # Undoing one "different people" note must not lose a "not connected"
+        # answer that was still waiting in the old .cache file.
+        self._write({'pairs': [], 'not_same_person': [
+            {'persons': [NSP_A, NSP_B], 'date': '2026-11-01'}]})
+        self.legacy.write_text(json.dumps({'pairs': [[NSP_C, NSP_D]]}), encoding='utf-8')
+        r = confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B,
+                                  not_same_person=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(data['not_same_person'], [])
+        self.assertFalse(self.legacy.exists())
+
+    def test_dismiss_with_legacy_pairs_keeps_them(self) -> None:
+        self.legacy.write_text(json.dumps({'pairs': [[NSP_C, NSP_D]]}), encoding='utf-8')
+        r = confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B,
+                                not_same_person=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(len(data['not_same_person']), 1)
+
+    def test_file_saved_with_a_byte_order_mark_still_reads(self) -> None:
+        # Notepad's "UTF-8 with BOM" save must not make every decision vanish.
+        text = json.dumps({'pairs': [[NSP_C, NSP_D]], 'not_same_person': [
+            {'persons': [NSP_A, NSP_B], 'date': '2026-11-01'}]})
+        self.path.write_bytes(b'\xef\xbb\xbf' + text.encode('utf-8'))
+        self.assertEqual(load_cooccur_dismissed(self.root, migrate=False)[0], [[NSP_C, NSP_D]])
+        self.assertEqual(load_not_same_person(self.root),
+                         {frozenset((NSP_A, NSP_B)): '2026-11-01'})
+        r = confirm.run_undismiss(self.root, person_a=NSP_C, person_b=NSP_D)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._read()['pairs'], [])
+
+    def test_hand_written_pair_entries_survive_every_writer(self) -> None:
+        # A pair he typed with a note, or in another shape, is his record: a
+        # write for some other pair must leave it exactly as he wrote it.
+        odd = [NSP_A, NSP_B, 'cousins? checked 1990 census']
+        other = {'persons': ['p-eeeeeeeeee', 'p-ffffffffff']}
+        self._write({'pairs': [odd, other, [NSP_C, NSP_D]]})
+        r = confirm.run_undismiss(self.root, person_a=NSP_C, person_b=NSP_D)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._read()['pairs'], [odd, other])
+        r = confirm.run_dismiss(self.root, person_a=NSP_C, person_b=NSP_D)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._read()['pairs'], [odd, other, [NSP_C, NSP_D]])
+        self.legacy.write_text(json.dumps({'pairs': [['p-1111111111', 'p-2222222222']]}),
+                               encoding='utf-8')
+        load_cooccur_dismissed(self.root)
+        self.assertEqual(self._read()['pairs'],
+                         [odd, other, [NSP_C, NSP_D], ['p-1111111111', 'p-2222222222']])
+
+    def test_a_list_key_holding_something_else_is_refused_not_replaced(self) -> None:
+        # One note written as an object instead of a list must not be erased
+        # by the next dismiss.
+        original = {'pairs': [], 'not_same_person': {
+            'persons': [NSP_A, NSP_B], 'date': '2026-10-01'}}
+        self._write(original)
+        before = self.path.read_bytes()
+        r = confirm.run_dismiss(self.root, person_a=NSP_C, person_b=NSP_D,
+                                not_same_person=True)
+        self.assertEqual(r.exit_code, 3)
+        self.assertIn('not_same_person', self._texts(r))
+        self.assertNotIn('not valid JSON', self._texts(r))
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_damaged_file_is_refused_and_left_alone(self) -> None:
         self.path.write_bytes(b'{not json')
         for run in (

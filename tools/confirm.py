@@ -187,6 +187,7 @@ from _lib import (
     configure_utf8_stdout,
     contradiction_question_heading,
     cooccur_dismissed_paths,
+    dismissed_pair_key,
     NOT_SAME_PERSON_KEY,
     find_person_record_path,
     find_source_record_path,
@@ -1138,6 +1139,36 @@ def _not_same_list(data: dict) -> list:
     return entries if isinstance(entries, list) else []
 
 
+def _raw_pairs(data: dict) -> list:
+    """The `pairs` list exactly as written, so an entry he typed in another
+    shape (a pair with a note beside it) is kept by every write."""
+    entries = data.get('pairs')
+    return list(entries) if isinstance(entries, list) else []
+
+
+def _read_after_migration(archive_root: Path, dry_run: bool):
+    """Read the dismissal file for a writer, after any legacy move.
+
+    Returns `(data, (pairs, migrated))`, or `(None, problem)` when the current
+    file cannot be read (checked first, so a damaged file is never moved over).
+    The dict is read AFTER `load_cooccur_dismissed` has moved a legacy
+    `.cache/` file's pairs in, so writing it back keeps them; reading it before
+    would write the pre-move copy over the moved pairs. A dry run never moves,
+    and writes nothing, so its dict may lack legacy pairs: `pairs` (the union)
+    is what it counts from. A corrupt or unreadable legacy copy is still
+    treated as absent, as it always has been.
+    """
+    data, problem = read_dismissed_file(archive_root)
+    if data is None:
+        return None, problem
+    pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
+    if migrated:
+        data, problem = read_dismissed_file(archive_root)
+        if data is None:
+            return None, problem
+    return data, (pairs, migrated)
+
+
 def _not_same_entry_key(entry: object) -> frozenset[str] | None:
     persons = entry.get('persons') if isinstance(entry, dict) else None
     if not (isinstance(persons, list) and len(persons) == 2):
@@ -1182,13 +1213,10 @@ def run_dismiss(
     da, db = fmt_id_display(pa), fmt_id_display(pb)
 
     new_path, old_path = cooccur_dismissed_paths(archive_root)
-    data, problem = read_dismissed_file(archive_root)
+    data, state = _read_after_migration(archive_root, dry_run)
     if data is None:
-        return _fail(result, 'unreadable', str(problem))
-    # A corrupt or unreadable LEGACY copy is still treated as absent
-    # (`load_cooccur_dismissed` degrades), as it always has been.
-    pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
-    data['pairs'] = pairs
+        return _fail(result, 'unreadable', str(state))
+    pairs, migrated = state
     seen = {frozenset(pair) for pair in pairs}
 
     # `migrated` is true the moment `load_cooccur_dismissed` above physically
@@ -1244,8 +1272,7 @@ def run_dismiss(
         data[NOT_SAME_PERSON_KEY] = _not_same_list(data) + [
             {'persons': [pa, pb], 'date': _today()}]
     else:
-        pairs.append([pa, pb])
-        data['pairs'] = pairs
+        data['pairs'] = _raw_pairs(data) + [[pa, pb]]
     try:
         write_dismissed_file(archive_root, data)
     except OSError as e:
@@ -1284,10 +1311,10 @@ def run_undismiss(
     key = frozenset((pa, pb))
 
     new_path, old_path = cooccur_dismissed_paths(archive_root)
-    data, problem = read_dismissed_file(archive_root)
+    data, state = _read_after_migration(archive_root, dry_run)
     if data is None:
-        return _fail(result, 'unreadable', str(problem))
-    pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
+        return _fail(result, 'unreadable', str(state))
+    pairs, migrated = state
     in_pairs = key in {frozenset(p) for p in pairs}
     in_not_same = key in load_not_same_person(archive_root)
 
@@ -1314,7 +1341,7 @@ def run_undismiss(
         done = (f'{da} and {db} may be listed again as a possible duplicate '
                 '(fha report section 4b).')
     else:
-        data['pairs'] = [p for p in pairs if frozenset(p) != key]
+        data['pairs'] = [p for p in _raw_pairs(data) if dismissed_pair_key(p) != key]
         done = (f'{da} and {db} may be suggested again as a possible connection '
                 '(fha report section 8).')
 

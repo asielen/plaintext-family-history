@@ -4197,8 +4197,9 @@ def load_cooccur_dismissed(
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
+            # utf-8-sig: Notepad's "UTF-8 with BOM" save must not hide every pair.
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
             return []
         if not isinstance(data, dict):
             return []
@@ -4226,7 +4227,17 @@ def load_cooccur_dismissed(
         if problem is None:
             try:
                 data = dict(current or {})
-                data['pairs'] = merged
+                # Keep every entry of the current list exactly as written (a
+                # hand-typed pair with a note is still his record), then add
+                # the legacy pairs it does not already hold.
+                raw = data.get('pairs')
+                kept = list(raw) if isinstance(raw, list) else []
+                have = {k for k in (dismissed_pair_key(e) for e in kept) if k}
+                for pair in _read(old_path):
+                    if frozenset(pair) not in have:
+                        have.add(frozenset(pair))
+                        kept.append(pair)
+                data['pairs'] = kept
                 write_dismissed_file(archive_root, data)
                 old_path.unlink()
                 migrated = True
@@ -4251,17 +4262,31 @@ def read_dismissed_file(archive_root: str | Path) -> tuple[dict | None, str | No
     path = cooccur_dismissed_paths(archive_root)[0]
     if not path.exists():
         return {}, None
+    name = path.relative_to(Path(archive_root)).as_posix()
+    fix = ('so nothing was written. Open it in a text editor and fix or remove '
+           'the damaged line, or rename the file to keep a copy, then run this again.')
     try:
-        data = json.loads(path.read_text(encoding='utf-8'))
+        # utf-8-sig: a file saved as "UTF-8 with BOM" (a Notepad choice) is fine.
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError):
-        data = None
+        return None, f'{name} could not be read (it is not valid JSON), {fix}'
     if not isinstance(data, dict):
-        return None, (
-            f'{path.relative_to(Path(archive_root)).as_posix()} could not be read '
-            '(it is not valid JSON), so nothing was written. Open it in a text '
-            'editor and fix or remove the damaged line, or rename the file to '
-            'keep a copy, then run this again.')
+        return None, (f'{name} could not be read (it should start with {{ and hold '
+                      f'named lists), {fix}')
+    for list_key in ('pairs', NOT_SAME_PERSON_KEY):
+        if list_key in data and not isinstance(data[list_key], list):
+            # Writing a list over it would erase what he wrote there.
+            return None, (f'{name} could not be read ("{list_key}" should be a list '
+                          f'in square brackets [ ]), {fix}')
     return data, None
+
+
+def dismissed_pair_key(entry: object) -> frozenset[str] | None:
+    """The unordered, normalized id pair of a `pairs` entry, or None for any
+    other shape (a writer keeps such an entry as written; a reader skips it)."""
+    if isinstance(entry, list) and len(entry) == 2:
+        return frozenset(normalize_id(str(p)) for p in entry)
+    return None
 
 
 def write_dismissed_file(archive_root: str | Path, data: dict) -> Path:
