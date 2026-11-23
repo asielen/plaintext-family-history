@@ -803,7 +803,12 @@ def _date_span_days(edtf: str) -> int:
     if not is_valid_edtf(edtf):
         return 10 ** 7
     lo, hi = edtf_bounds(edtf)
-    return (datetime.date.fromisoformat(hi) - datetime.date.fromisoformat(lo)).days
+    try:
+        return (datetime.date.fromisoformat(hi) - datetime.date.fromisoformat(lo)).days
+    except ValueError:
+        # `about 9999` or `about 1` reach past what a calendar date can hold:
+        # rank it vaguest rather than stop the whole import on one typo.
+        return 10 ** 7
 
 
 def _best_event_date(dated: list[tuple[str, int]]) -> str | None:
@@ -814,7 +819,10 @@ def _best_event_date(dated: list[tuple[str, int]]) -> str | None:
     so it can never wipe a dated one."""
     if not dated:
         return None
-    return min(dated, key=lambda d: _date_span_days(d[0]))[0]
+    # An `about` or `maybe` day spans no wider than an exact day once read,
+    # so the hedge breaks the tie: `14 Jan 1850` beats `about 12 Jan 1850`.
+    return min(dated, key=lambda d: (_date_span_days(d[0]),
+                                     any(ch in d[0] for ch in '~?%')))[0]
 
 
 def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
@@ -1020,6 +1028,7 @@ def _map_individual(
     # Every dated birth and death fact, (EDTF, line) in file order (#449).
     births: list[tuple[str, int]] = []
     deaths: list[tuple[str, int]] = []
+    unread_births: list[tuple[str, int]] = []   # a DATE nobody could read
     has_death = False
     pedi_map: dict[str, str] = {}
 
@@ -1092,6 +1101,8 @@ def _map_individual(
             # dated ones and choose after the loop.
             if tag == 'BIRT' and claim.date:
                 births.append((claim.date, node.line))
+            elif tag == 'BIRT' and node.child_value('DATE'):
+                unread_births.append((node.child_value('DATE'), node.line))
             elif tag == 'DEAT':
                 has_death = True
                 if claim.date:
@@ -1113,20 +1124,36 @@ def _map_individual(
 
     birth_edtf = _best_event_date(births)
     death_edtf = _best_event_date(deaths)
-    living = living_flag_for_import(has_death, _latest_birth_reading(births))
+    # The living guess: when the dated births agree, the most exact one
+    # stands for them all (`AFT 1850` adds nothing to `12 Jan 1878`). When
+    # they disagree, or a birth date could not be read, one of the tree's own
+    # facts may say she is young, and doubt keeps `unknown` (SPEC §19).
+    if unread_births:
+        living = living_flag_for_import(has_death, None)
+    elif _dates_disagree(births):
+        living = living_flag_for_import(has_death, _latest_birth_reading(births))
+    else:
+        living = living_flag_for_import(has_death, birth_edtf)
+    # Say why someone born in 1878 is still hidden as living.
+    hidden_by_doubt = (living == 'unknown'
+                       and living_flag_for_import(has_death, birth_edtf) == 'false')
     if date_conflicts is not None:
+        who = f'{indi.xref} {display or "(no name)"}'
         for label, dated, chosen in (('birth', births, birth_edtf),
                                      ('death', deaths, death_edtf)):
             if _dates_disagree(dated):
                 listed = ', '.join(f'{e} (line {ln})' for e, ln in dated)
-                line = (f'{indi.xref} {display or "(no name)"} {label}: {listed}; '
-                        f'the record shows {chosen}')
-                if (label == 'birth' and living == 'unknown'
-                        and living_flag_for_import(has_death, chosen) == 'false'):
-                    # Say why someone born in 1878 is still hidden as living.
+                line = f'{who} {label}: {listed}; the record shows {chosen}'
+                if label == 'birth' and hidden_by_doubt and not unread_births:
                     line += (', and keeps living: unknown because another of '
                              'these dates could make the person living')
                 date_conflicts.append(line)
+        if hidden_by_doubt and unread_births:
+            unread = ', '.join(f'{raw!r} (line {ln})' for raw, ln in unread_births)
+            date_conflicts.append(
+                f'{who} birth: the record shows {birth_edtf}, but {unread} could '
+                'not be read, so it keeps living: unknown in case that date '
+                'makes the person living')
     stub = _PersonStub(
         xref=indi.xref, pid=pid, name=display, given=given, surname=surname,
         variants=variants, sex=sex, living=living,
@@ -1873,8 +1900,9 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         shown = plan.date_conflicts[:cap]
         lines.append('')
         lines.append(f'  {len(plan.date_conflicts):,} person(s) have birth or death '
-                     'dates in your tree that disagree. The new record shows the most '
-                     'exact one, and every date is still filed as a suggested claim, '
+                     'dates in your tree that disagree or could not be read. The new '
+                     'record shows the most exact one, and every date is still filed '
+                     'as a suggested claim, '
                      'to settle when you review them:')
         lines.extend(f'    {c}' for c in shown)
         if len(plan.date_conflicts) > len(shown):

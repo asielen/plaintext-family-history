@@ -748,6 +748,44 @@ class DuplicateBirthTestCase(_ArchiveCase):
         self.assertEqual(stub.death, '1950')
         self.assertEqual(stub.living, 'false')
 
+    def test_an_unreadable_second_birth_date_keeps_living_unknown(self) -> None:
+        # A typed 05/06/1995 could be her real birth: a date nobody could read
+        # is doubt, so she is not shown as dead, and the plan says why.
+        for raw in ('05/06/1995', 'INT 1995 (per cousin)'):
+            with self.subTest(raw=raw):
+                plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n'
+                                  f'1 BIRT\n2 DATE {raw}\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1878-01-12')
+                self.assertEqual(stub.living, 'unknown')
+                text = self._text(plan)
+                self.assertIn('keeps living: unknown', text)
+                self.assertIn('line 9', text)
+
+    def test_an_open_ended_birth_that_agrees_does_not_hide_her(self) -> None:
+        # AFT 1850 and BEF 1990 both fit 12 Jan 1878: nothing disagrees, so
+        # she is not hidden as possibly living.
+        for alt in ('AFT 1850', 'BEF 1990'):
+            for order in ('first', 'last'):
+                with self.subTest(alt=alt, order=order):
+                    exact, other = '1 BIRT\n2 DATE 12 JAN 1878\n', f'1 BIRT\n2 DATE {alt}\n'
+                    body = exact + other if order == 'last' else other + exact
+                    (stub,) = self._plan(body).stubs
+                    self.assertEqual(stub.birth, '1878-01-12')
+                    self.assertEqual(stub.living, 'false')
+
+    def test_a_far_fetched_date_does_not_stop_the_import(self) -> None:
+        # One typo-like year on one person must not crash the whole import.
+        for raw in ('ABT 9999', 'ABT 001', 'ABT JAN 0001'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE 12 JAN 1878\n1 BIRT\n2 DATE {raw}\n'
+                                  f'1 DEAT\n2 DATE {raw}\n')
+                self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+
+    def test_an_about_day_does_not_beat_an_exact_day(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE ABT 12 JAN 1850\n1 BIRT\n2 DATE 14 JAN 1850\n')
+        self.assertEqual(plan.stubs[0].birth, '1850-01-14')
+
     def test_single_birth_file_is_unchanged(self) -> None:
         plan = gedcom_import.build_plan(self.archive, self.config, SMALL)
         self.assertEqual(
