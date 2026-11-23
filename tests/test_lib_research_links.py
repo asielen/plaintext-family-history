@@ -143,7 +143,11 @@ class SearchUrlTests(unittest.TestCase):
                             ('Gdańsk, pomorskie', '11pm'),
                             ('Toruń, kujawsko-pomorskie', '02kp'),
                             ('Wrocław, dolnośląskie', '01ds'),
-                            ('Katowice, Śląskie', '12sl')):
+                            ('Katowice, Śląskie', '12sl'),
+                            # Polish case endings and a typed en dash.
+                            ('Białystok, woj. podlaskiego', '10pl'),
+                            ('urodzony w Warszawie', '71wa'),
+                            ('Olsztyn, Warmińsko–Mazurskie', '14wm')):
             with self.subTest(place):
                 self.assertEqual(query(by_key(dict(THOMAS, places=[place]))['geneteka'])['w'],
                                  code)

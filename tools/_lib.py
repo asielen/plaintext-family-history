@@ -9904,7 +9904,7 @@ RESEARCH_SEARCH_FIELDS = (
 )
 
 # Geneteka's provinces as WikiTree Sourcer lists them. A province is found by
-# its whole name in a place text, longest name first, so "zachodniopomorskie"
+# its whole name in a place text (any case ending), so "zachodniopomorskie"
 # is never read as "pomorskie" or "dolnośląskie" as "śląskie".
 _GENETEKA_PROVINCES = (
     ('01ds', 'dolnośląskie'), ('02kp', 'kujawsko-pomorskie'), ('03lb', 'lubelskie'),
@@ -10058,11 +10058,17 @@ def _search_url_newspapers(s: dict) -> str:
 def _search_url_geneteka(s: dict) -> str | None:
     """Geneteka cannot search without a province, so no province in any place
     text means no link (never a guess)."""
-    words = re.findall(r'[\w-]+', fold_accents(
-        ' '.join(str(x) for x in (s.get('places') or ()))).lower())
-    province = next((code for code, name in sorted(_GENETEKA_PROVINCES,
-                                                   key=lambda x: -len(x[1]))
-                     if fold_accents(name).lower() in words), None)
+    text = ' '.join(str(x) for x in (s.get('places') or ()))
+    words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
+
+    def names(word: str, province: str) -> bool:
+        # The whole word, in any Polish case ending: "woj. podlaskiego",
+        # "w Warszawie" are the same province as "podlaskie", "Warszawa".
+        stem = province[:-1]
+        return word.startswith(stem) and len(word) - len(stem) <= 3
+
+    province = next((code for code, name in _GENETEKA_PROVINCES
+                     if any(names(w, fold_accents(name).lower()) for w in words)), None)
     if not province:
         return None
     p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
