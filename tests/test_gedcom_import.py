@@ -2713,6 +2713,97 @@ class ReimportPlanTestCase(_ReimportCase):
         self.assertIn('12 January 1878', lines[5])
         self.assertIn('12 January 1879', lines[5])
 
+    # Found in review.
+
+    def _claim_block(self, claim_id: str) -> tuple[str, int, int]:
+        text = self.record1.read_text(encoding='utf-8')
+        start = text.rindex('- value:', 0, text.index(f'id: {claim_id}'))
+        end = text.find('\n\n', start)
+        return text, start, len(text) if end < 0 else end
+
+    def test_a_spouse_he_corrected_is_not_planned_again(self) -> None:
+        # He decided Rose Hartley's husband was Silas, not Thomas, and
+        # re-pointed the marriage. The same tree downloaded again still says
+        # Thomas: the tree repeating itself, not a new marriage to add.
+        thomas, silas = self._pid('Thomas Hartley'), self._pid('Silas Cole')
+        claim = self._v1_claim('marriage', 'Thomas Hartley married')
+        text, start, end = self._claim_block(claim['id'])
+        block = text[start:end]
+        self.assertEqual(block.count(thomas), 2)
+        self.record1.write_text(text[:start] + block.replace(thomas, silas) + text[end:],
+                                encoding='utf-8')
+        plan = self._plan(self._same_tree_redownloaded())
+        self.assertEqual(plan.claims, [])
+        self.assertEqual(plan.questions, [])
+        self.assertEqual(plan.gone_facts, [])
+
+    def test_a_marriage_date_he_corrected_stands_when_a_spouse_is_renamed(self) -> None:
+        # He corrected the marriage year by hand. The tree did not change the
+        # marriage; it only gave Rose a middle name. No question against him.
+        self._edit_record1("date: '1897-06-05'", "date: '1898-06-05'")
+        later = self._edited('later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+                             ('1 NAME Rose /Hartley/', '1 NAME Rose Ellen /Hartley/'))
+        plan = self._plan(later)
+        self.assertEqual(self._fact(plan, 'marriage', 'Rose Hartley').outcome, 'same')
+        self.assertEqual(plan.questions, [])
+
+    def test_a_new_person_like_someone_already_matched_is_flagged(self) -> None:
+        # The newer download has a second Rose Hartley, born the same day as
+        # the one already on file. She is planned as new, and he is told she
+        # may be the same person.
+        later = self._edited(
+            'later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+            ('0 TRLR', '0 @I99@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n1 BIRT\n'
+                       '2 DATE 12 JAN 1878\n0 TRLR'))
+        plan = self._plan(later)
+        self.assertEqual([s.xref for s in plan.stubs], ['@I99@'])
+        self.assertTrue(any(d.startswith('@I99@') and self._pid('Rose Hartley') in d
+                            for d in plan.duplicates), plan.duplicates)
+
+    def test_two_copies_filed_the_same_day_compare_with_the_closer_one(self) -> None:
+        # Both downloads were filed today as separate trees. Whichever order
+        # the records are read in, a newer copy of the second is compared with
+        # the second, not with the first.
+        result, _out, _err = self._run(SMALL_V2, as_new_tree=True, apply=True)
+        sid2 = result.data['source_id']
+        again = self._edited('v2-again.ged', SMALL_V2, ('1 DATE 1 JUL 2027', '1 DATE 1 JUL 2028'))
+        real = gedcom_import._read_prior_imports
+        for flip in (False, True):
+            def read(*args, flip=flip):
+                priors, unreadable = real(*args)
+                return (priors[::-1] if flip else priors), unreadable
+            with mock.patch.object(gedcom_import, '_read_prior_imports', read):
+                plan = self._plan(again)
+            self.assertEqual([p.sid for p in plan.prior], [sid2])
+            self.assertEqual((plan.stubs, plan.claims), ([], []))
+
+    def test_apply_is_refused_while_an_earlier_import_cannot_be_read(self) -> None:
+        # A slip of the keyboard in the earlier import's record must not turn
+        # the newer download into a second copy of every person.
+        self._edit_record1("- value: 'Thomas Hartley: occupation Bookkeeper",
+                           "- value: 'Thomas Hartley's occupation Bookkeeper")
+        before = _tree_digest(self.archive)
+        result, _out, err = self._run(SMALL_V2, apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('could not be read', err)
+        self.assertIn('Nothing was written', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+        # Said plainly, he can still import it as a separate tree.
+        result, _out, _err = self._run(SMALL_V2, apply=True, as_new_tree=True)
+        self.assertTrue(result.data['applied'])
+
+    def test_a_documents_drive_not_plugged_in_stops_the_plan(self) -> None:
+        # He deleted a statement. With the drive that holds the filed copy
+        # unplugged, the plan could not see that, and would offer it again.
+        text, start, end = self._claim_block(
+            self._v1_claim('occupation', 'Thomas Hartley')['id'])
+        self.record1.write_text(text[:start] + text[end + 2:], encoding='utf-8')
+        (self.archive / 'documents').rename(self.archive / 'documents-unplugged')
+        result, out, err = self._run(self._same_tree_redownloaded())
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('Plug the drive back in', err)
+        self.assertNotIn('Bookkeeper', out)
+
 
 class ReimportMatchingTestCase(_ArchiveCase):
     """Small trees built in the test, for the cases `small.ged` cannot hold."""
@@ -2722,10 +2813,11 @@ class ReimportMatchingTestCase(_ArchiveCase):
         """A tiny tree. A person with an empty birth year has a name and
         nothing else: no statement of their own."""
         lines = ['0 HEAD', '1 SOUR OtherApp', '1 CHAR UTF-8']
-        for xref, person, sex, born in people:
+        for xref, person, sex, born, *more in people:
             lines += [f'0 {xref} INDI', f'1 NAME {person}', f'1 SEX {sex}']
             if born:
                 lines += ['1 BIRT', f'2 DATE {born}']
+            lines += list(more)
         lines += list(families) + ['0 TRLR', '']
         path = Path(self._tmp.name) / name
         path.write_bytes('\n'.join(lines).encode('utf-8'))
@@ -2841,6 +2933,99 @@ class ReimportMatchingTestCase(_ArchiveCase):
         self.assertEqual(sorted(plan.matches), ['@I2@'])
         self.assertIn('sex', plan.held['@I1@'].reason)
         self.assertEqual(plan.stubs, [])
+
+    # Found in review.
+
+    def _ids(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for path in sorted((self.archive / 'people').rglob('*.md')):
+            meta = read_record(path)['meta']
+            out.setdefault(f"{meta['name']} {meta.get('birth') or ''}".strip(),
+                           []).append(str(meta['id']))
+        return out
+
+    def test_an_undated_father_is_not_matched_to_his_son_at_his_number(self) -> None:
+        # The undated father was deleted in the tree and the program closed
+        # the gap: his dated son now carries his number.
+        first = self._tree('first.ged', [
+            ('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Farmer'),
+            ('@I2@', 'John /Hartley/', 'M', '1850', '1 OCCU Blacksmith'),
+            ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', [
+            ('@I1@', 'John /Hartley/', 'M', '1850', '1 OCCU Blacksmith'),
+            ('@I2@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        ids = self._ids()
+        self.assertNotIn('@I1@', plan.matches)
+        # Held, with the son named among the people it may be.
+        self.assertIn(ids['John Hartley 1850'][0], plan.held['@I1@'].about)
+        self.assertEqual(plan.claims, [])
+
+    def test_an_undated_namesake_unchanged_still_matches(self) -> None:
+        # The same tree again: the undated father keeps his number and match.
+        people = [('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Farmer'),
+                  ('@I2@', 'John /Hartley/', 'M', '1850', '1 OCCU Blacksmith'),
+                  ('@I3@', 'Rose /Hartley/', 'F', '1878')]
+        self.assertTrue(self._run(self._tree('first.ged', people), apply=True)[0].data['applied'])
+        plan = self._plan(self._tree('later.ged',
+                                     people + [('@I4@', 'Ada /Hartley/', 'F', '1901')]))
+        self.assertEqual(sorted(plan.matches), ['@I1@', '@I2@', '@I3@'])
+        self.assertEqual(plan.held, {})
+
+    def test_a_statement_he_moved_to_a_brother_does_not_make_them_one(self) -> None:
+        # John's only statement was an occupation. He decided it was really
+        # Thomas's and moved it. That does not make John's number Thomas's.
+        first = self._tree('first.ged', [
+            ('@I1@', 'Thomas /Hartley/', 'M', '1875'),
+            ('@I2@', 'John /Hartley/', 'M', '', '1 OCCU Farmer'),
+            ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        ids = self._ids()
+        thomas, john = ids['Thomas Hartley 1875'][0], ids['John Hartley'][0]
+        record = next((self.archive / 'sources' / 'other').glob('*.md'))
+        text = record.read_text(encoding='utf-8')
+        start = text.rindex('- value:', 0, text.index('occupation Farmer') + 1)
+        end = text.find('\n\n', start)
+        end = len(text) if end < 0 else end
+        block = text[start:end]
+        self.assertIn(john, block)
+        record.write_text(text[:start] + block.replace(john, thomas) + text[end:],
+                          encoding='utf-8')
+        shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        later = self._tree('later.ged', [
+            ('@I1@', 'Thomas /Hartley/', 'M', '1875'),
+            ('@I2@', 'John /Hartley/', 'M', '1880', '1 OCCU Farmer'),
+            ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertEqual(plan.matches['@I1@'].pid, thomas)
+        self.assertNotIn('@I2@', plan.matches)
+        self.assertIn('@I2@', plan.held)
+        self.assertFalse(any(thomas in c.persons for c in plan.claims))
+        self.assertEqual(plan.questions, [])
+
+    def test_a_parent_he_rejected_is_not_proposed_again_beside_a_new_one(self) -> None:
+        # He rejected "Ada is Thomas's child". The newer download adds Rose as
+        # her mother in that family; Thomas must not come back with her.
+        people = [('@I1@', 'Thomas /Hartley/', 'M', '1875'),
+                  ('@I2@', 'Rose /Hartley/', 'F', '1878'),
+                  ('@I3@', 'Ada /Hartley/', 'F', '1901')]
+        first = self._tree('first.ged', people, ('0 @F1@ FAM', '1 HUSB @I1@', '1 CHIL @I3@'))
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        record = next((self.archive / 'sources' / 'other').glob('*.md'))
+        text = record.read_text(encoding='utf-8')
+        start = text.index('is a child of')
+        at = text.index('status: suggested', start)
+        record.write_text(text[:at] + 'status: rejected' + text[at + len('status: suggested'):],
+                          encoding='utf-8')
+        later = self._tree('later.ged', people,
+                           ('0 @F1@ FAM', '1 HUSB @I1@', '1 WIFE @I2@', '1 CHIL @I3@'))
+        plan = self._plan(later)
+        thomas = self._ids()['Thomas Hartley 1875'][0]
+        rel = [f for f in plan.facts if f.claim.claim_type == 'relationship']
+        self.assertEqual([f.outcome for f in rel], ['decided'])
+        self.assertFalse(any(c.claim_type == 'relationship' and thomas in c.persons
+                             for c in plan.claims))
 
 
 class ReimportComparisonTestCase(unittest.TestCase):
