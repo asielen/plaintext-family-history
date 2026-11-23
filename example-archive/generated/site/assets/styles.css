@@ -11,7 +11,7 @@
 
    Sections:  1 Fonts · 2 Tokens · 3 Base · 4 Masthead & layout ·
               5 Components · 6 Ledger table & statuses · 7 Family tree ·
-              8 Register patterns · 9 Utilities
+              8 Register patterns · 9 Utilities · 10 Print
    ============================================================================ */
 
 
@@ -607,3 +607,34 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 .u-stack > * + * { margin-top: var(--space-4); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
                    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+
+/* 10. PRINT: paper copies for relatives. The menu, search box and zoom
+   buttons stay off the paper, charts are shown whole, and the colours that
+   carry meaning still print. The descendant explorer draws itself only when
+   opened on screen, so it is left off paper. */
+
+.print-only { display: none; }
+
+@media print {
+  @page { margin: 1.5cm; }
+  :root { --paper: #fff; --surface: #fff; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, noscript,
+  .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
+  [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
+  .wb-add-hint { display: none !important; }
+  /* The whole year prints under its "All months" heading, without the arrow. */
+  .cal-all > summary { list-style: none; font-weight: 600; margin-top: var(--space-4); }
+  .cal-all > summary::-webkit-details-marker { display: none; }
+  .site-header::after { border-color: #000; }
+  a { color: inherit; text-decoration: none; }
+  details.chart > summary.chart-title::before { content: none; }
+  .fha-tree-viewport, .fha-tree-viewport svg,
+  .pedigree-home-wrap { height: auto !important; overflow: visible !important; }
+  svg.pedigree, svg.fan-chart { max-width: 100%; height: auto; }
+  h2, h3, summary.chart-title { break-after: avoid; }
+  figure, table tr, .ped-node, details.chart, .family-calendar-events li { break-inside: avoid; }
+  .pedigree, .fan-chart, .ped-node { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  .print-only { display: block !important; }
+}
