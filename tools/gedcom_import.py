@@ -288,16 +288,30 @@ _NOTE_CHILD_TAGS = frozenset({'CONC', 'CONT', 'SOUR', 'REFN', 'RIN', 'CHAN',
 _LEVEL_SIGNS = '-+−‐‑‒–—﹣＋－'
 
 
+# After a sign or an odd space: digits, then a GEDCOM tag ("NAME", "@I1@ INDI").
+_BROKEN_LEVEL_RE = re.compile(r'\d+\s+(?:@[^@\s]+@\s+)?[A-Z_][A-Z0-9_]*(?:\s|$)')
+
+
 def _looks_like_level(line: str) -> bool:
-    """True when a line that failed the grammar still starts like a level
-    number, so it is reported as unreadable instead of being joined into the
-    value above it, where a "-1 NAME x" line would quietly become part of his
-    name. Leading whitespace of any kind (a no-break space, a tab) and one sign
-    are skipped before looking for the digit."""
-    s = line.lstrip().lstrip('﻿').lstrip()
-    if s[:1] and s[0] in _LEVEL_SIGNS:
-        s = s[1:]
-    return s[:1].isdigit()
+    """True when a line that failed the grammar still looks like an attempt at
+    a GEDCOM line, so it is reported as unreadable instead of being joined into
+    the value above it, where a "-1 NAME x" line would quietly become part of
+    his name.
+
+    A line starting with a digit (after spaces, tabs or a BOM) always counts.
+    One that starts with a sign or dash, or with another kind of space (a
+    no-break space), counts only when a capitalised tag follows the number:
+    "-1 NAME x" is reported, while note prose such as "-5 below zero that
+    January" or "+2 more cousins" still joins the note, words kept."""
+    s = line.lstrip(' \t﻿')
+    if s[:1].isdigit():
+        return True
+    rest = s.lstrip()
+    if rest[:1] and rest[0] in _LEVEL_SIGNS:
+        rest = rest[1:]
+    elif rest == s:
+        return False
+    return bool(_BROKEN_LEVEL_RE.match(rest))
 
 
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
@@ -336,8 +350,8 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     words are kept; node line numbers stay true because no node is made).
     Returns (records, malformed, joined). `malformed` describes lines that fit
     no grammar (reported as warnings, never fatal - the filed copy keeps them);
-    a line that starts with a digit (after any leading space and one sign, so
-    "-1 NAME x" counts), or text before any node, still lands there
+    a line that starts with a digit (or a sign and a number before a tag, so
+    "-1 NAME x" counts; see _looks_like_level), or text before any node, still lands there
     because it looks like an attempt at a GEDCOM line (except, in a file that
     has level-less lines, a line nested under a NOTE/TEXT with a tag a note
     cannot have, such as "2 brothers nearby"). `joined` holds the line

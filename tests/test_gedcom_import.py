@@ -1727,14 +1727,33 @@ class AdversarialFixtureTestCase(_ArchiveCase):
                     self.assertEqual(malformed, [])
                     self.assertEqual(records[1].children[1].value, 'x')
 
-    def test_prose_starting_with_a_dash_still_joins(self) -> None:
-        # A MyHeritage note line like "- and her sister" has no level and no
-        # number: it still joins the note above it, words kept.
-        text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n- and her sister\n0 TRLR\n'
+    def test_note_prose_starting_with_a_sign_or_number_still_joins(self) -> None:
+        # A MyHeritage note line that opens with a dash, a sign or a no-break
+        # space is still prose: it joins the note above it, words kept.
+        for line in ('- and her sister', '-30 degrees, the well froze',
+                     '–1940 they stayed on the farm', '—1918 was the year of the flu',
+                     '\xa01937 the farm was sold', '+2 more cousins in Topeka'):
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(malformed, [])
+                self.assertEqual(joined, [4])
+                self.assertEqual(records[1].children[0].value,
+                                 'Rose kept the bible ' + line.strip())
+
+    def test_sign_prose_keeps_the_numbered_prose_rule_on(self) -> None:
+        # "-5 below zero" is the file's only level-less line. It must still
+        # mark the file as having broken lines, so "2 brothers nearby" under
+        # the note joins too instead of becoming an unknown BROTHERS tag.
+        text = ('0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+                '1 NOTE She remembered the winter of 1936\n-5 below zero that January\n'
+                '2 brothers nearby helped with the cattle\n0 TRLR\n')
         records, malformed, joined = gedcom_import.parse_gedcom(text)
         self.assertEqual(malformed, [])
-        self.assertEqual(joined, [4])
-        self.assertEqual(records[1].children[0].value, 'Rose kept the bible - and her sister')
+        self.assertEqual(joined, [5, 6])
+        note = records[1].children[1]
+        self.assertEqual(note.children, [])
+        self.assertTrue(note.value.endswith('helped with the cattle'), note.value)
 
 
 if __name__ == '__main__':
