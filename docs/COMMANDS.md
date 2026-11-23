@@ -866,7 +866,8 @@ Bring a tree from Ancestry (or any genealogy program) into your archive.
 Download your tree as a GEDCOM (.ged) file, then run this. The file itself is
 filed as one source (your original untouched); every person becomes a record
 with their dates; every statement becomes a suggested fact for you to review
-later, family by family. Nothing imported is treated as proven. Re-importing
+later, family by family. Nothing imported is treated as proven. Photos your
+old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
   --plan-out FILE    Also write the full, uncut plan text to FILE.
@@ -1116,14 +1117,15 @@ hand-edit right after minting. Preview any change first with --dry-run.
 
 ## `fha confirm`
 
-Write back a decision the human made (xref/cooccur/dismiss/place/discovery/draft/merge)
+Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
 
 ```text
 Write down a suggestion you've decided to accept.
 
   fha confirm xref <c-a> <c-b> --as corroborates|contradicts
   fha confirm cooccur <p-a> <p-b> --source <s-id> --subtype friend|associate|neighbor
-  fha confirm dismiss <p-a> <p-b>
+  fha confirm dismiss <p-a> <p-b> [--not-same-person]
+  fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
   fha confirm draft <p-id>
@@ -1167,12 +1169,26 @@ Confirm a co-occurrence pair: mint a relationship claim
 
 ### `fha confirm dismiss`
 
-Dismiss a co-occurrence pair (tombstone, not re-proposed)
+Remember a pair: not connected, or (--not-same-person) two different people
 
 | Argument | What it does |
 |---|---|
 | `p-id-a` | First person. |
 | `p-id-b` | Second person. |
+| `--not-same-person` | Record that these are two different people, so fha report stops listing them as a possible duplicate. |
+| `--dry-run` | Preview the change without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha confirm undismiss`
+
+Take a remembered pair back out, or list every one the archive remembers
+
+| Argument | What it does |
+|---|---|
+| `[p-id-a]` | First person. |
+| `[p-id-b]` | Second person. |
+| `--not-same-person` | Undo a "two different people" note instead of a "not connected" pair. |
+| `--list` | List every remembered pair with the command that undoes it. |
 | `--dry-run` | Preview the change without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
