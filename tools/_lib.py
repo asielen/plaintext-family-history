@@ -462,6 +462,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    blood_routes              - every separate blood route, nearest first, each
 #                                 with its half state (full, half, or may be half)
 #    blood_answer              - the nearest route, plus the "may be half" note
+#    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
+#                                 (by the dates), adoptive father, uncle by marriage
+#    kinship_answer            - {blood, by_marriage}, what fha relate prints
+#    person_birth_year         - earliest own accepted birth year, for the step rule
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
@@ -18687,12 +18691,351 @@ def kinship_path(graph: KinshipGraph, a: str, b: str) -> dict | None:
         node = came_from
     chain.reverse()
     path = [
-        {'from': x, 'to': y, 'rel': rel,
-         'label': _kin_hop_label(rel, graph.people.get(y, {}).get('sex', ''))}
+        {'from': x, 'to': y, 'rel': rel, 'label': _kin_path_hop(graph, x, y, rel)}
         for (x, y, rel) in chain
     ]
     rendered = 'your ' + "'s ".join(h['label'] for h in path)
     return {'path': path, 'rendered': rendered}
+
+
+def _kin_path_hop(graph: KinshipGraph, x: str, y: str, rel: str) -> str:
+    """The word for `y` as seen from `x` on one path hop. A parent or child
+    hop over a tie that is not by birth names its kind ("your adoptive
+    father", "your stepson"), so the chain never reads as blood when it is
+    not. A tie also recorded as genetic keeps the plain word."""
+    sex = graph.people.get(y, {}).get('sex', '')
+    if rel == 'parent' and y not in graph.genetic_parents.get(x, ()):
+        kind = graph.other_parents.get(x, {}).get(y)
+        if kind:
+            return _kin_social_word(kind, sex, parent=True)
+    elif rel == 'child' and x not in graph.genetic_parents.get(y, ()):
+        kind = graph.other_parents.get(y, {}).get(x)
+        if kind:
+            return _kin_social_word(kind, sex, parent=False)
+    return _kin_hop_label(rel, sex)
+
+
+# ── Ties by marriage and by a parent who is not a birth parent ───────────────
+#
+# A wife's brother is "brother-in-law", a father's later wife is "stepmother",
+# an aunt's husband is "uncle by marriage". These answers are asked for only
+# when no blood line joins the two people: a cousin who also married into the
+# family stays a cousin (blood wins), and an adoptive or step parent never
+# makes anyone a blood relative, because blood reads genetic edges only.
+#
+# A derived step tie (a parent's spouse who is not a parent) depends on dates:
+# a father's wife who died before the child was born was never the child's
+# stepmother. With the dates missing the answer is hedged, never stated as
+# fact, because a confident wrong word is repeated in the family.
+
+# The word for the parent and the word for the child, for each kind of parent
+# tie that is not by birth (SPEC §8.2 subtypes). '' is the word for a person
+# whose sex is not recorded as M or F.
+_KIN_SOCIAL_PARENT_WORDS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+    'step': ({'M': 'stepfather', 'F': 'stepmother', '': 'step-parent'},
+             {'M': 'stepson', 'F': 'stepdaughter', '': 'stepchild'}),
+    'adoptive': ({'M': 'adoptive father', 'F': 'adoptive mother', '': 'adoptive parent'},
+                 {'M': 'adopted son', 'F': 'adopted daughter', '': 'adopted child'}),
+    'foster': ({'M': 'foster father', 'F': 'foster mother', '': 'foster parent'},
+               {'M': 'foster son', 'F': 'foster daughter', '': 'foster child'}),
+    'guardian': ({'': 'guardian'}, {'': 'ward'}),
+    'surrogate-gestational': ({'': 'gestational surrogate'},
+                              {'': 'child carried as a surrogate'}),
+    'social': ({'M': 'social father', 'F': 'social mother', '': 'social parent'},
+               {'M': 'social son', 'F': 'social daughter', '': 'social child'}),
+}
+# Two children of one parent, at least one of them not by birth, share a
+# sibling word only for these kinds: adoptive sister, foster brother, stepsister.
+_KIN_SIBLING_PREFIX = {'adoptive': 'adoptive ', 'foster': 'foster ', 'step': 'step'}
+_KIN_SIBLING_WORDS = {'M': 'brother', 'F': 'sister', '': 'sibling'}
+
+
+def _kin_sexed(words: dict[str, str], sex: str) -> str:
+    return words.get((sex or '').upper(), words[''])
+
+
+def _kin_social_word(kind: str, sex: str, *, parent: bool) -> str:
+    """The word for a non-birth parent ("adoptive father") or child
+    ("adopted daughter"). An unlisted kind reads as the plain word."""
+    pair = _KIN_SOCIAL_PARENT_WORDS.get(kind)
+    if pair is None:
+        return _kin_hop_label('parent' if parent else 'child', sex)
+    return _kin_sexed(pair[0 if parent else 1], sex)
+
+
+def _kin_year(value: Any) -> int | None:
+    """The year of an index date ('1912', '1912-06-01'); None when unset."""
+    m = re.match(r'\s*(\d{1,4})(?!\d)', str(value or ''))
+    return int(m.group(1)) if m else None
+
+
+def _kin_step_state(marriage: tuple[str | None, str | None], child: str,
+                    birth_year: Callable[[str], int | None] | None) -> str:
+    """Whether a parent's marriage makes the other spouse the child's
+    step-parent: 'step' when the dates show the marriage overlapped the
+    child's life, 'not' when it ended before the child was born, 'open' when
+    a date that would settle it is missing. Years only: the index keeps a
+    lower bound for each date, so a decade-only date reads as its first year."""
+    start, end = marriage
+    born = birth_year(child) if birth_year else None
+    start_y, end_y = _kin_year(start), _kin_year(end)
+    if born is None:
+        return 'open'
+    if end_y is not None and end_y < born:
+        return 'not'
+    if (start_y is not None and start_y >= born) or (end_y is not None and end_y >= born):
+        return 'step'
+    return 'open'
+
+
+_KIN_STEP_HEDGE = "The marriage and birth dates that would settle this aren't all recorded"
+
+
+def _kin_in_law(word: str) -> str:
+    return f'{word}-in-law'
+
+
+def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                    birth_year: Callable[[str], int | None] | None = None) -> dict | None:
+    """A's tie to B through a marriage or a parent who is not a birth parent,
+    as A is B's <relationship>, or None. Always None when a blood line joins
+    them: blood wins, and an in-law word is never offered for a blood relative.
+
+    `birth_year(pid) -> int | None` feeds the step-parent date rule; without
+    it every derived step tie is hedged. Returns {relationship, kind,
+    certain, hedge, explain, via, path}: `kind` is spouse, step, adoptive,
+    foster, guardian, surrogate-gestational, social, in-law or by-marriage;
+    `certain` is False only for a step tie the dates cannot settle, and then
+    `hedge` is the plain sentence that says so; `explain` is the chain from
+    B's side with names ("Ann Aye's wife's brother") or None for a direct
+    tie; `via` the people between them, in chain order; `path` the same
+    chain with no names ("wife's brother")."""
+    if a == b or blood_answer(graph, a, b):
+        return None
+    return _marriage_answer(graph, a, b, birth_year=birth_year)
+
+
+def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                     birth_year: Callable[[str], int | None] | None = None) -> dict | None:
+    """`marriage_answer` for a pair already known to share no blood line."""
+    if a == b:
+        return None
+
+    def name(p: str) -> str:
+        return graph.people.get(p, {}).get('name') or p
+
+    def sex(p: str) -> str:
+        return graph.people.get(p, {}).get('sex', '')
+
+    def answer(relationship, kind, path, via, *, explain=None, certain=True, hedge=None):
+        return {'relationship': relationship, 'kind': kind, 'certain': certain,
+                'hedge': hedge, 'explain': explain, 'via': list(via), 'path': path}
+
+    def parents_of(p: str) -> set[str]:
+        return set(graph.genetic_parents.get(p, ())) | set(graph.other_parents.get(p, {}))
+
+    def parent_word(child: str, parent: str) -> str:
+        """`parent` as `child`'s parent: "father", or "adoptive father"."""
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(parent), parent=True)
+        return _kin_hop_label('parent', sex(parent))
+
+    def child_word(parent: str, child: str) -> str:
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(child), parent=False)
+        return _kin_hop_label('child', sex(child))
+
+    a_name, b_name = name(a), name(b)
+    # (cost, rank, gens, via, answer): the shortest tie wins; a recorded tie
+    # beats a derived one at the same cost; P-ids settle the rest, so every
+    # run gives the same answer.
+    cands: list[tuple] = []
+
+    # 1. A recorded parent tie that is not by birth, between A and B themselves.
+    kind = graph.other_parents.get(b, {}).get(a)
+    if kind and a not in graph.genetic_parents.get(b, ()):
+        word = _kin_social_word(kind, sex(a), parent=True)
+        cands.append((1, 0, (0, 1), [], answer(word, kind, word, [])))
+    kind = graph.other_parents.get(a, {}).get(b)
+    if kind and b not in graph.genetic_parents.get(a, ()):
+        word = _kin_social_word(kind, sex(a), parent=False)
+        cands.append((1, 0, (1, 0), [], answer(word, kind, word, [])))
+
+    # 2. Married to each other.
+    if b in graph.spouses.get(a, {}):
+        word = _kin_hop_label('spouse', sex(a))
+        cands.append((1, 1, (0, 0), [], answer(word, 'spouse', word, [])))
+
+    # 3. Children of one parent, at least one of them not by birth: adoptive
+    #    sister, foster brother, stepsister (a step-parent's own child).
+    for p in sorted(parents_of(a) & parents_of(b)):
+        ka = None if p in graph.genetic_parents.get(a, ()) else graph.other_parents.get(a, {}).get(p)
+        kb = None if p in graph.genetic_parents.get(b, ()) else graph.other_parents.get(b, {}).get(p)
+        kinds = {k for k in (ka, kb) if k}
+        if len(kinds) != 1:
+            continue
+        kind = kinds.pop()
+        # Two stepchildren of one step-parent are tied through their own
+        # parent, who is not recorded here; no word is safe.
+        if kind not in _KIN_SIBLING_PREFIX or (kind == 'step' and ka and kb):
+            continue
+        word = _KIN_SIBLING_PREFIX[kind] + _kin_sexed(_KIN_SIBLING_WORDS, sex(a))
+        path = f"{parent_word(b, p)}'s {child_word(p, a)}"
+        cands.append((2, 2, (1, 1), [p], answer(word, kind, path, [p],
+                                                explain=f"{b_name}'s {path}")))
+
+    # 4. A is the spouse of R, a blood relative of B.
+    spouse_word_a = _kin_hop_label('spouse', sex(a))
+    for r in sorted(graph.spouses.get(a, {})):
+        if r == b:
+            continue
+        br = blood_answer(graph, r, b)          # R is B's ...
+        if not br:
+            continue
+        ga, gb = br['gens_a'], br['gens_b']
+        path = f"{br['relationship']}'s {spouse_word_a}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (0, 1):
+            # R is B's parent: A is a step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[a][r], b, birth_year)
+            if state == 'not':
+                rel = f"{br['relationship']}'s earlier {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} before {b_name} was born')
+            else:
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been '
+                    f"{name(r)}'s {spouse_word_a} only before {b_name} was born.")
+                ans = answer(_kin_social_word('step', sex(a), parent=True), 'step', path,
+                             [r], explain=explain, certain=state == 'step', hedge=hedge)
+        elif ga == 0:
+            # A grandparent's spouse is not a step-grandparent by any rule the
+            # record can check: say the chain ("grandfather's wife").
+            ans = answer(path, 'by-marriage', path, [r])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [r], explain=explain)
+        elif gb == 0:
+            ans = answer(_kin_in_law(_kin_lineal(ga, sex(a), up=False)), 'in-law',
+                         path, [r], explain=explain)
+        else:
+            # The word A would carry standing where R stands: an aunt's
+            # husband is an uncle by marriage.
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [r], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [r], ans))
+
+    # 5. A is a blood relative of S, B's spouse.
+    for s in sorted(graph.spouses.get(b, {})):
+        if s == a:
+            continue
+        bs = blood_answer(graph, a, s)          # A is S's ...
+        if not bs:
+            continue
+        ga, gb = bs['gens_a'], bs['gens_b']
+        spouse_word_s = _kin_hop_label('spouse', sex(s))
+        path = f"{spouse_word_s}'s {bs['relationship']}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (1, 0):
+            # A is S's child: B is A's step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[b][s], a, birth_year)
+            if state == 'not':
+                rel = f"earlier {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"born after {name(s)}'s marriage to {b_name} ended")
+            else:
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been born after '
+                    f"{name(s)}'s marriage to {b_name} ended.")
+                ans = answer(_kin_social_word('step', sex(a), parent=False), 'step', path,
+                             [s], explain=explain, certain=state == 'step', hedge=hedge)
+        elif gb == 0:
+            # A spouse's grandchild is not a step-grandchild by any rule the
+            # record can check: say the chain ("wife's grandson").
+            ans = answer(path, 'by-marriage', path, [s])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [s], explain=explain)
+        elif ga == 0:
+            ans = answer(_kin_in_law(_kin_lineal(gb, sex(a), up=True)), 'in-law',
+                         path, [s], explain=explain)
+        else:
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [s], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [s], ans))
+
+    # 6. Co-in-laws: A's spouse R and B's spouse S are brother and sister.
+    for r in sorted(graph.spouses.get(a, {})):
+        for s in sorted(graph.spouses.get(b, {})):
+            if r in (b, s) or s == a:
+                continue
+            if graph.genetic_parents.get(r, set()) & graph.genetic_parents.get(s, set()):
+                path = (f"{_kin_hop_label('spouse', sex(s))}'s "
+                        f"{_kin_hop_label('sibling', sex(r))}'s {spouse_word_a}")
+                cands.append((3, 4, (1, 1), [s, r], answer(
+                    _kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law', path,
+                    [s, r], explain=f"{b_name}'s {path}")))
+
+    # 7. Step-siblings: A is the child of Q, who married P, B's parent, and A
+    #    and B share no parent of any kind.
+    if not (parents_of(a) & parents_of(b)):
+        for p in sorted(graph.genetic_parents.get(b, ())):
+            for q in sorted(graph.spouses.get(p, {})):
+                if q in parents_of(b) or q not in graph.genetic_parents.get(a, ()):
+                    continue
+                marriage = graph.spouses[p][q]
+                states = {_kin_step_state(marriage, a, birth_year),
+                          _kin_step_state(marriage, b, birth_year)}
+                if 'not' in states:
+                    continue
+                certain = states == {'step'}
+                path = (f"{_kin_hop_label('parent', sex(p))}'s "
+                        f"{_kin_hop_label('spouse', sex(q))}'s {_kin_hop_label('child', sex(a))}")
+                hedge = None if certain else (
+                    f'{_KIN_STEP_HEDGE}, so the marriage of {name(p)} and {name(q)} '
+                    f'may have ended before {a_name} or {b_name} was born.')
+                cands.append((3, 5, (1, 1), [p, q], answer(
+                    'step' + _kin_sexed(_KIN_SIBLING_WORDS, sex(a)), 'step', path, [p, q],
+                    explain=f"{b_name}'s {path}", certain=certain, hedge=hedge)))
+
+    if not cands:
+        return None
+    return min(cands, key=lambda c: c[:4])[4]
+
+
+def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
+                   birth_year: Callable[[str], int | None] | None = None) -> dict:
+    """Both answers `fha relate` prints: {'blood': blood_answer(...),
+    'by_marriage': marriage_answer(...)}; by_marriage is None whenever there
+    is a blood answer."""
+    blood = blood_answer(graph, a, b)
+    by_marriage = None if blood else _marriage_answer(graph, a, b, birth_year=birth_year)
+    return {'blood': blood, 'by_marriage': by_marriage}
+
+
+def person_birth_year(conn: sqlite3.Connection, pid: str,
+                      cache: dict | None = None) -> int | None:
+    """The earliest year among the person's own accepted, non-negated birth
+    claims, or None. A record that names the person as a parent or witness
+    does not count (`claim_is_own_vital`), and neither does a baptism: it
+    bounds a birth from above, not below. `cache` is claim_is_own_vital's."""
+    rows = conn.execute(
+        '''SELECT DISTINCT c.id, c.date_min FROM claims c
+           JOIN claim_persons cp ON cp.claim_id = c.id
+           WHERE cp.person_id = ? AND c.type = 'birth' AND c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0 AND c.date_min IS NOT NULL''',
+        (pid,)).fetchall()
+    years = []
+    for row in rows:
+        cid, dmin = (tuple(row.values()) if isinstance(row, dict) else tuple(row))[:2]
+        year = _kin_year(dmin)
+        if year is not None and claim_is_own_vital(conn, pid, cid, 'birth', cache):
+            years.append(year)
+    return min(years) if years else None
 
 
 def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
@@ -18700,21 +19043,32 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
     """How `pid` is related to `anchor_pid`, as a short label a page can put
     after "Thomas Hartley's" or "Your". Always a dict:
 
-      words  bare lowercase noun phrase ("great-grandmother"); '' for kind 'none'
-      note   the honest caveat, or None
-      kind   'blood' | 'none' (ties by marriage, step and social kinds come
-             with the by-marriage answer)
-      path   the blood line from the anchor's side, hop words joined by
-             "'s", no names ("father's father's mother"); '' for kind 'none'
+      words  bare lowercase noun phrase ("great-grandmother", "brother-in-law");
+             '' for kind 'none'
+      note   the honest caveat, or None: 'other parent not recorded' for an
+             open half tie, 'marriage dates not recorded' for a step tie the
+             dates cannot settle
+      kind   'blood' | 'marriage' | 'step' | 'social' | 'none'
+      path   the chain from the anchor's side, hop words joined by "'s", no
+             names ("father's father's mother", "father's wife"); '' for
+             kind 'none'
 
-    Neither `words` nor `path` ever carries a name. `birth_year` is accepted
-    now so callers need not change when the step-parent date rule arrives."""
+    Neither `words` nor `path` ever carries a name. `birth_year` feeds the
+    step-parent date rule (`marriage_answer`); without it every derived step
+    tie carries the dates note."""
     none = {'words': '', 'note': None, 'kind': 'none', 'path': ''}
     if anchor_pid == pid:
         return none
     blood = blood_answer(graph, pid, anchor_pid)
     if not blood:
-        return none
+        bm = _marriage_answer(graph, pid, anchor_pid, birth_year=birth_year)
+        if not bm:
+            return none
+        kind = {'spouse': 'marriage', 'in-law': 'marriage', 'by-marriage': 'marriage',
+                'step': 'step'}.get(bm['kind'], 'social')
+        return {'words': bm['relationship'],
+                'note': None if bm['certain'] else 'marriage dates not recorded',
+                'kind': kind, 'path': bm['path']}
     path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
     # An open half tie keeps the plain word ("brother"); the caveat is the
     # note, which a page may print or leave out.
