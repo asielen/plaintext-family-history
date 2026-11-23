@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -132,7 +132,7 @@
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "d21cf51f8f53ba9bf2c453e1493847b984f5048c3fdc3176038c7588429a74e9",
+      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
       "spec_version": "2.22",
       "src": ".claude/skills/today/SKILL.md"
     },
@@ -289,7 +289,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "d21cf51f8f53ba9bf2c453e1493847b984f5048c3fdc3176038c7588429a74e9",
+      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
       "spec_version": "2.22"
     },
     {
@@ -660,7 +660,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "1708e8b63732abf324899d7a6e40a2fb959916c3659d268e7855ff833eadf79a",
+      "sha256": "6f25926da63465094364d0c1cd648ea30b177d2dcf9e539f62cc45a6f5ab034d",
       "spec_version": "2.22",
       "src": "tools/_lib.py"
     },
@@ -744,7 +744,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "3afc3180323b564a0cc91c089f5105bb8ee1ebdf2a8a7a34b05d99d115cbd50b",
+      "sha256": "665806ecfb6c2399c00c531325a20154895f2c7e5a1e5b0ad6bd9fe403d4505e",
       "spec_version": "2.22",
       "src": "tools/confirm.py"
     },
@@ -758,7 +758,7 @@
     {
       "path": ".fha/tools/cooccur.py",
       "category": "operating",
-      "sha256": "948c83646f70e4dfededa4ce3116d47ec3a4547ebd306d82acd5612b3b2af907",
+      "sha256": "b5f4a500662d104d29d73e03c1803cc1a03ea76d6e8e9347c97e5621ee2edb9c",
       "spec_version": "2.22",
       "src": "tools/cooccur.py"
     },
@@ -1157,7 +1157,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "b96f2ac54e5117f55928b993c4c15f557b1ead496999b4dd05dcc7f0e41680cb",
+      "sha256": "ae463b48ee5a2facb11caec1366d47e0416c5803e9462a1c5c9e085cad910669",
       "spec_version": "2.22"
     },
     {
@@ -1182,7 +1182,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "9af41819004ef5acd6edf095f1c195382a8d016e76a024ce047c202eee471584",
+      "sha256": "41f3225b7abb65090c531eb5958beec7a40c0cd6233fee116cabe1da9806b3cd",
       "spec_version": "2.22"
     },
     {
@@ -1249,7 +1249,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "5befa4d595c287c42670f5910c9386038c46ede584daf8a36d6f2599d7d00232",
+      "sha256": "6813033c8d6c35a89ed13da06c1e967e8d366eebcb5b11ba0cb3967dd09ea841",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },

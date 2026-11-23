@@ -28,7 +28,7 @@ a one-time carry-forward of bytes a human already decided, not a new judgment
 `fha cooccur` is making - it does not add a second owner for WHICH pairs get
 dismissed, only a second caller of the same idempotent housekeeping move.
 
-THE SEVEN WRITE-BACKS
+THE EIGHT WRITE-BACKS
 ---------------------
   xref       - confirm an `fha xref` pair: write reciprocal `corroborates:`/
                `contradicts:` claim_links into both claims' source records. A
@@ -46,8 +46,15 @@ THE SEVEN WRITE-BACKS
                the only place "the human accepts" lives. `--accept` is the
                escape hatch for a human who is treating this confirm *as* the
                review (it stamps `reviewed:` and `reviewed_by: human` like `fha claim` does).
-  dismiss    - record a co-occurrence pair in `notes/cooccur_dismissed.json`,
-               the tombstone `fha cooccur` reads to stop re-proposing a pair.
+  dismiss    - record a pair in `notes/cooccur_dismissed.json`: by default as
+               not connected (the `pairs` list `fha cooccur` reads to stop
+               re-proposing it), with `--not-same-person` as two different
+               people (the dated `not_same_person` list the report's possible-
+               duplicates section skips). Every other key in the file survives
+               a write, and a file that cannot be read is refused.
+  undismiss  - take a pair back out of either list (`--not-same-person` picks
+               the second), or `--list` every remembered pair with its undo
+               command.
                Nothing else writes NEW dismissals to this file; this is its
                writer (though `fha cooccur` may also carry an older archive's
                `.cache/cooccur_dismissed.json` forward to this location on
@@ -145,10 +152,13 @@ CODE MAP
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import difflib
+import io
 import json
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -177,6 +187,7 @@ from _lib import (
     configure_utf8_stdout,
     contradiction_question_heading,
     cooccur_dismissed_paths,
+    NOT_SAME_PERSON_KEY,
     find_person_record_path,
     find_source_record_path,
     fmt_id_display,
@@ -189,11 +200,14 @@ from _lib import (
     is_valid_id,
     link_field_refs,
     load_cooccur_dismissed,
+    load_not_same_person,
     mint_ids,
     normalize_id,
     optional_scalar,
     parse_filename,
     parse_frontmatter_strict,
+    open_index_db,
+    read_dismissed_file,
     read_record,
     read_text_exact,
     reapply_newline,
@@ -214,6 +228,7 @@ from _lib import (
     relationship_entry_is_guess,    # status: hypothesis (SPEC §9)
     unreadable_dir_recorder,
     walk_files,
+    write_dismissed_file,
     write_text_exact_atomic,
     convert_written_links,
     link_writer,
@@ -1100,19 +1115,54 @@ def _relationship_claim_lines(
 
 # ── Verb: dismiss (cooccur tombstone) ───────────────────────────────────────────
 
+def _dismiss_pair_arg(result: Result, person_a: str, person_b: str,
+                      verb: str) -> tuple[str, str] | None:
+    """Validate the two ids of a dismiss/undismiss call; None after a refusal."""
+    for label, pid in (('first', person_a), ('second', person_b)):
+        if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
+            _fail(result, 'invalid-id',
+                  f'The {label} argument {pid!r} is not a valid person ID. '
+                  'p-ids look like p-de957bcda1.')
+            return None
+    pa, pb = normalize_id(person_a), normalize_id(person_b)
+    if pa == pb:
+        _fail(result, 'same-person', f'Pass two different P-ids to {verb} a pair.')
+        return None
+    result.data['person_a'] = fmt_id_display(pa)
+    result.data['person_b'] = fmt_id_display(pb)
+    return pa, pb
+
+
+def _not_same_list(data: dict) -> list:
+    entries = data.get(NOT_SAME_PERSON_KEY)
+    return entries if isinstance(entries, list) else []
+
+
+def _not_same_entry_key(entry: object) -> frozenset[str] | None:
+    persons = entry.get('persons') if isinstance(entry, dict) else None
+    if not (isinstance(persons, list) and len(persons) == 2):
+        return None
+    return frozenset(normalize_id(str(p)) for p in persons)
+
+
 def run_dismiss(
-    archive_root: Path, *, person_a: str, person_b: str, dry_run: bool = False,
+    archive_root: Path, *, person_a: str, person_b: str,
+    not_same_person: bool = False, dry_run: bool = False,
 ) -> Result:
-    """Record a person-pair in `notes/cooccur_dismissed.json` so it isn't re-proposed.
+    """Remember that two records are not connected, or are two different people.
 
-    `data` is {'status', 'person_a', 'person_b', 'total'}. The tombstone is the
-    exact `{"pairs": [[id, id], …]}` shape `fha cooccur._load_dismissed` reads
-    (lowercased ids, deduped by unordered pair). `fha cooccur` reads this file
-    directly, so no re-index is needed.
+    `data` is {'status', 'kind', 'person_a', 'person_b', 'total'}, `kind` being
+    'not-connected' or 'not-same-person'. By default the pair goes into the
+    `{"pairs": [[id, id], ...]}` list `fha cooccur` reads (lowercased ids,
+    deduped by unordered pair), so the report stops proposing the connection.
+    With `not_same_person` it goes into the dated `not_same_person` list
+    instead, so the report stops listing the pair as a possible duplicate. The
+    two lists are independent. Every other key in the file is written back
+    untouched, and a file that cannot be read is refused rather than replaced,
+    because it holds decisions only the human could make.
 
-    The tombstone moved out of `.cache/` in #48: these are a human's "stop
-    suggesting this" decisions, not derived data, so a `.cache/` wipe must
-    never be able to forget them. Existing pairs are loaded through
+    The tombstone moved out of `.cache/` in #48: a `.cache/` wipe must never
+    be able to forget these decisions. Existing pairs are loaded through
     `_lib.load_cooccur_dismissed(archive_root, migrate=not dry_run)`, which
     also carries an older archive's `.cache/cooccur_dismissed.json` forward
     to the new location - `migrate=False` on a dry run so a preview still
@@ -1122,24 +1172,23 @@ def run_dismiss(
     this call's own answer turns out to be - including the `already`
     no-op below, so a legacy file quietly disappearing is never a surprise.
     """
-    result = Result(data={'status': None, 'person_a': None, 'person_b': None, 'total': 0})
-
-    for label, pid in (('first', person_a), ('second', person_b)):
-        if not (is_valid_id(pid) and id_type_of(pid) == 'P'):
-            return _fail(result, 'invalid-id',
-                         f'The {label} argument {pid!r} is not a valid person ID. '
-                         'p-ids look like p-de957bcda1.')
-    pa, pb = normalize_id(person_a), normalize_id(person_b)
-    if pa == pb:
-        return _fail(result, 'same-person', 'Pass two different P-ids to dismiss a pair.')
-    result.data['person_a'] = fmt_id_display(pa)
-    result.data['person_b'] = fmt_id_display(pb)
+    kind = 'not-same-person' if not_same_person else 'not-connected'
+    result = Result(data={'status': None, 'kind': kind, 'person_a': None,
+                          'person_b': None, 'total': 0})
+    ids = _dismiss_pair_arg(result, person_a, person_b, 'dismiss')
+    if ids is None:
+        return result
+    pa, pb = ids
+    da, db = fmt_id_display(pa), fmt_id_display(pb)
 
     new_path, old_path = cooccur_dismissed_paths(archive_root)
-    # A corrupt or unreadable copy of either file is disposable, not archive
-    # truth (same posture the old inline reader took) - load_cooccur_dismissed
-    # degrades to treating it as absent rather than refusing the dismissal.
+    data, problem = read_dismissed_file(archive_root)
+    if data is None:
+        return _fail(result, 'unreadable', str(problem))
+    # A corrupt or unreadable LEGACY copy is still treated as absent
+    # (`load_cooccur_dismissed` degrades), as it always has been.
     pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
+    data['pairs'] = pairs
     seen = {frozenset(pair) for pair in pairs}
 
     # `migrated` is true the moment `load_cooccur_dismissed` above physically
@@ -1153,31 +1202,52 @@ def run_dismiss(
         'a one-time tidy-up, nothing to do on your end.'
     )
 
-    if frozenset((pa, pb)) in seen:
+    key = frozenset((pa, pb))
+    if not_same_person:
+        noted = load_not_same_person(archive_root)
+        already = key in noted
+        since = noted.get(key)
+        total = len(noted) + (0 if already else 1)
+        already_text = (
+            f'{da} and {db} are already noted as two different people'
+            + (f' (since {since})' if since else '') + '. Nothing to do.')
+        dry_text = (f'[dry-run] Would note {da} and {db} as two different people '
+                    f'({total} pair(s) noted in all). No file written.')
+        done_text = (f'Noted: {da} and {db} are two different people. fha report will '
+                     'stop listing them as a possible duplicate. To undo: '
+                     f'fha confirm undismiss {da} {db} --not-same-person')
+    else:
+        already = key in seen
+        total = len(pairs) + (0 if already else 1)
+        already_text = f'{da} <-> {db} is already dismissed. Nothing to do.'
+        dry_text = (f'[dry-run] Would dismiss {da} <-> {db} '
+                    f'({total} pair(s) total). No file written.')
+        done_text = (f'Dismissed {da} <-> {db}. `fha cooccur` will no longer propose '
+                     f'this pair. To undo: fha confirm undismiss {da} {db}')
+    result.data['total'] = total
+
+    if already:
         result.data['status'] = 'already'
-        result.data['total'] = len(pairs)
         if migrated:
             result.note_changed(new_path)
             result.note_changed(old_path)
             result.add('info', migration_note)
-        result.add('info',
-                   f'{fmt_id_display(pa)} <-> {fmt_id_display(pb)} is already dismissed. '
-                   'Nothing to do.')
+        result.add('info', already_text)
         return result
-
-    pairs.append([pa, pb])
-    result.data['total'] = len(pairs)
 
     if dry_run:
         result.data['status'] = 'ok'
-        result.add('info',
-                   f'[dry-run] Would dismiss {fmt_id_display(pa)} <-> {fmt_id_display(pb)} '
-                   f'({len(pairs)} pair(s) total). No file written.')
+        result.add('info', dry_text)
         return result
 
+    if not_same_person:
+        data[NOT_SAME_PERSON_KEY] = _not_same_list(data) + [
+            {'persons': [pa, pb], 'date': _today()}]
+    else:
+        pairs.append([pa, pb])
+        data['pairs'] = pairs
     try:
-        new_path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_exact_atomic(new_path, json.dumps({'pairs': pairs}, indent=2) + '\n')
+        write_dismissed_file(archive_root, data)
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {new_path}: {e}')
 
@@ -1186,9 +1256,156 @@ def run_dismiss(
     if migrated:
         result.note_changed(old_path)
         result.add('info', migration_note)
-    result.add('info',
-               f'Dismissed {fmt_id_display(pa)} <-> {fmt_id_display(pb)}. '
-               f'`fha cooccur` will no longer propose this pair.', path=new_path)
+    result.add('info', done_text, path=new_path)
+    return result
+
+
+def run_undismiss(
+    archive_root: Path, *, person_a: str, person_b: str,
+    not_same_person: bool = False, dry_run: bool = False,
+) -> Result:
+    """Take a remembered pair back out, so the report may suggest it again.
+
+    `data` is {'status', 'kind', 'person_a', 'person_b'}. Removes every copy of
+    the unordered pair from the chosen list only, and writes the rest of the
+    file back unchanged. A pair that sits only in the other list is not
+    touched: the message gives the exact command for that list. A pair that
+    exists only in an archive's legacy `.cache/` file is found too (the move
+    to `notes/` happens first, as for `dismiss`).
+    """
+    kind = 'not-same-person' if not_same_person else 'not-connected'
+    result = Result(data={'status': None, 'kind': kind, 'person_a': None,
+                          'person_b': None})
+    ids = _dismiss_pair_arg(result, person_a, person_b, 'undo')
+    if ids is None:
+        return result
+    pa, pb = ids
+    da, db = fmt_id_display(pa), fmt_id_display(pb)
+    key = frozenset((pa, pb))
+
+    new_path, old_path = cooccur_dismissed_paths(archive_root)
+    data, problem = read_dismissed_file(archive_root)
+    if data is None:
+        return _fail(result, 'unreadable', str(problem))
+    pairs, migrated = load_cooccur_dismissed(archive_root, migrate=not dry_run)
+    in_pairs = key in {frozenset(p) for p in pairs}
+    in_not_same = key in load_not_same_person(archive_root)
+
+    if not (in_not_same if not_same_person else in_pairs):
+        if migrated:
+            result.note_changed(new_path)
+            result.note_changed(old_path)
+        if not_same_person and in_pairs:
+            text = (f'{da} and {db} are not noted as two different people. They are in '
+                    'the list of pairs you asked to stop suggesting as a connection; '
+                    f'to undo that, run: fha confirm undismiss {da} {db}')
+        elif in_not_same:
+            text = (f'{da} and {db} are not in the list of pairs you asked to stop '
+                    'suggesting. They are noted as two different people; to undo '
+                    f'that, run: fha confirm undismiss {da} {db} --not-same-person')
+        else:
+            text = (f'{da} and {db} are not remembered in either list. Run '
+                    'fha confirm undismiss --list to see what is.')
+        return _notfound(result, text)
+
+    if not_same_person:
+        data[NOT_SAME_PERSON_KEY] = [
+            e for e in _not_same_list(data) if _not_same_entry_key(e) != key]
+        done = (f'{da} and {db} may be listed again as a possible duplicate '
+                '(fha report section 4b).')
+    else:
+        data['pairs'] = [p for p in pairs if frozenset(p) != key]
+        done = (f'{da} and {db} may be suggested again as a possible connection '
+                '(fha report section 8).')
+
+    if dry_run:
+        result.data['status'] = 'ok'
+        result.add('info', f'[dry-run] Would take the pair back out: {done} No file written.')
+        return result
+    try:
+        write_dismissed_file(archive_root, data)
+    except OSError as e:
+        return _fail(result, 'failed', f'cannot write {new_path}: {e}')
+    result.data['status'] = 'ok'
+    result.note_changed(new_path)
+    if migrated:
+        result.note_changed(old_path)
+    result.add('info', done, path=new_path)
+    return result
+
+
+def run_list_dismissed(archive_root: Path) -> Result:
+    """Everything the archive remembers about pairs, with the command to undo each.
+
+    Read-only: it never moves a legacy file. `data` is {'not_connected': [...],
+    'not_same_person': [...]}, each entry carrying both ids and names (the id
+    again when no index is built yet), the second list also the date. A damaged
+    file is a warning here, not a refusal: this is a read.
+    """
+    result = Result(data={'not_connected': [], 'not_same_person': []})
+    _data, problem = read_dismissed_file(archive_root)
+    if problem is not None:
+        result.add('warning', problem.replace(
+            'so nothing was written. ', 'so it cannot be listed. ', 1))
+        result.exit_code = EXIT_WARNINGS
+    pairs, _ = load_cooccur_dismissed(archive_root, migrate=False)
+    noted = load_not_same_person(archive_root)
+
+    names: dict[str, str] = {}
+    # Names are a nicety: a missing or stale index must not print its own
+    # warning into a plain listing, the id stands in.
+    with contextlib.redirect_stderr(io.StringIO()):
+        conn = open_index_db(archive_root, ('persons',), strict=False)
+    if conn is not None:
+        try:
+            for pid, name in conn.execute('SELECT id, name FROM persons'):
+                names[normalize_id(pid)] = str(name or '')
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+
+    def entry(a: str, b: str) -> dict:
+        a, b = sorted((a, b))
+        return {'person_a': fmt_id_display(a), 'person_b': fmt_id_display(b),
+                'name_a': names.get(a) or fmt_id_display(a),
+                'name_b': names.get(b) or fmt_id_display(b)}
+
+    seen: set[frozenset[str]] = set()
+    for a, b in pairs:
+        if frozenset((a, b)) not in seen:
+            seen.add(frozenset((a, b)))
+            result.data['not_connected'].append(entry(a, b))
+    for pair, date in noted.items():
+        a, b = tuple(pair)
+        result.data['not_same_person'].append(dict(entry(a, b), date=date))
+    result.data['not_connected'].sort(key=lambda e: (e['name_a'], e['name_b']))
+    result.data['not_same_person'].sort(key=lambda e: (e['name_a'], e['name_b']))
+
+    if not result.data['not_connected'] and not result.data['not_same_person']:
+        result.add('info', 'Nothing is remembered yet: no pair has been dismissed.')
+        return result
+
+    def lines(items: list[dict], flag: str, dated: bool) -> list[str]:
+        out = []
+        for e in items:
+            when = ''
+            if dated:
+                when = f', noted {e["date"]}' if e.get('date') else ', noted (date unknown)'
+            out.append(f'  {e["name_a"]} ({e["person_a"]}) and {e["name_b"]} '
+                       f'({e["person_b"]}){when}')
+            out.append(f'    undo: fha confirm undismiss {e["person_a"]} {e["person_b"]}{flag}')
+        return out
+
+    nc, ns = result.data['not_connected'], result.data['not_same_person']
+    if nc:
+        result.add('info', '\n'.join(
+            [f'Pairs you said are not connected (fha report section 8 skips them): {len(nc)}']
+            + lines(nc, '', False)))
+    if ns:
+        result.add('info', '\n'.join(
+            [f'Pairs you said are two different people (fha report section 4b skips them): '
+             f'{len(ns)}'] + lines(ns, ' --not-same-person', True)))
     return result
 
 
@@ -3153,6 +3370,19 @@ def run_confirm_merge(
                    f'({", ".join(sorted(set(skipped_self_types)))}) - evidence the '
                    'two may be different people. Re-check the decision if in '
                    'doubt; that edge was not copied onto the survivor.')
+    # A pair the human earlier noted as two different people still merges when
+    # he asks (evidence warns, never refuses), but he should hear about the
+    # earlier note, and how to clear it if that note was the mistake. The note
+    # is left alone here: clearing it would join the merge's undo journal, and
+    # the duplicate scan skips merged records anyway.
+    noted_on = load_not_same_person(archive_root)
+    if frozenset((pm, ps)) in noted_on:
+        when = noted_on[frozenset((pm, ps))]
+        result.add('warning',
+                   f'{"On " + when if when else "Earlier"} you noted {pm_disp} and '
+                   f'{ps_disp} as two different people. The merge went ahead because '
+                   'you asked for it; if that earlier note was the mistake, clear it '
+                   f'with fha confirm undismiss {pm_disp} {ps_disp} --not-same-person.')
 
     try:
         survivor_text = _fold_fm_list(survivor_text, 'name_variants', fold_variant_items)
@@ -3631,6 +3861,28 @@ def _cmd_dismiss(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     return _emit(run_dismiss(
         archive_root, person_a=args.person_a, person_b=args.person_b,
+        not_same_person=bool(getattr(args, 'not_same_person', False)),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+def _cmd_undismiss(args: argparse.Namespace) -> int:
+    ids = [i for i in (args.person_a, args.person_b) if i]
+    if getattr(args, 'list', False) and ids:
+        print('ERROR: Use either --list or two p-ids, not both.', file=sys.stderr)
+        return EXIT_ERRORS
+    if not getattr(args, 'list', False) and len(ids) != 2:
+        print('ERROR: Name the two people to undo, e.g. fha confirm undismiss '
+              'p-aaaaaaaaaa p-bbbbbbbbbb, or see what is remembered with '
+              'fha confirm undismiss --list.', file=sys.stderr)
+        return EXIT_ERRORS
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    if getattr(args, 'list', False):
+        return _emit(run_list_dismissed(archive_root))
+    return _emit(run_undismiss(
+        archive_root, person_a=args.person_a, person_b=args.person_b,
+        not_same_person=bool(getattr(args, 'not_same_person', False)),
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
@@ -3675,7 +3927,7 @@ def _cmd_merge(args: argparse.Namespace) -> int:
 
 
 def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -> None:
-    """Build the seven `confirm` subparsers (shared by main fha + standalone)."""
+    """Build the eight `confirm` subparsers (shared by main fha + standalone)."""
     def root_arg(p: argparse.ArgumentParser) -> None:
         if suppress_root:
             p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
@@ -3709,13 +3961,33 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     root_arg(co_p)
     co_p.set_defaults(func=_cmd_cooccur)
 
-    dis_p = subs.add_parser('dismiss', help='Dismiss a co-occurrence pair (tombstone, not re-proposed)')
+    dis_p = subs.add_parser(
+        'dismiss',
+        help='Remember a pair: not connected, or (--not-same-person) two different people')
     dis_p.add_argument('person_a', metavar='p-id-a', help='First person.')
     dis_p.add_argument('person_b', metavar='p-id-b', help='Second person.')
+    dis_p.add_argument('--not-same-person', action='store_true', dest='not_same_person',
+                       help='Record that these are two different people, so fha report '
+                            'stops listing them as a possible duplicate.')
     dis_p.add_argument('--dry-run', action='store_true', dest='dry_run',
                        help='Preview the change without writing.')
     root_arg(dis_p)
     dis_p.set_defaults(func=_cmd_dismiss)
+
+    und_p = subs.add_parser(
+        'undismiss',
+        help='Take a remembered pair back out, or list every one the archive remembers')
+    und_p.add_argument('person_a', metavar='p-id-a', nargs='?', help='First person.')
+    und_p.add_argument('person_b', metavar='p-id-b', nargs='?', help='Second person.')
+    und_p.add_argument('--not-same-person', action='store_true', dest='not_same_person',
+                       help='Undo a "two different people" note instead of a '
+                            '"not connected" pair.')
+    und_p.add_argument('--list', action='store_true', dest='list',
+                       help='List every remembered pair with the command that undoes it.')
+    und_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                       help='Preview the change without writing.')
+    root_arg(und_p)
+    und_p.set_defaults(func=_cmd_undismiss)
 
     pl_p = subs.add_parser('place', help='Register a place-text cluster and relink its claims')
     pl_p.add_argument('claim_ids', metavar='c-id', nargs='+', help='Claim(s) to relink to the place.')
@@ -3763,7 +4035,8 @@ Write down a suggestion you've decided to accept.
 
   fha confirm xref <c-a> <c-b> --as corroborates|contradicts
   fha confirm cooccur <p-a> <p-b> --source <s-id> --subtype friend|associate|neighbor
-  fha confirm dismiss <p-a> <p-b>
+  fha confirm dismiss <p-a> <p-b> [--not-same-person]
+  fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
   fha confirm draft <p-id>
@@ -3778,7 +4051,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'confirm' onto the main fha parser."""
     p = subs.add_parser(
         'confirm',
-        help='Write back a decision the human made (xref/cooccur/dismiss/place/discovery/draft/merge)',
+        help='Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

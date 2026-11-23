@@ -37,7 +37,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import confirm
 import cooccur
 from _lib import (
-    link_field_refs,
+    link_field_refs, load_cooccur_dismissed, load_not_same_person,
     EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml, normalize_id, read_record,
 )
 
@@ -1458,6 +1458,219 @@ class CooccurClaimNamesTests(unittest.TestCase):
         text = '\n'.join(lines)
         self.assertIn('  persons:\n    - "[[p-aaaaaaaaaa|Ann Lee]]"\n    - p-bbbbbbbbbb\n', text)
         self.assertIn('    neighbor: [p-aaaaaaaaaa, p-bbbbbbbbbb]', text)
+
+
+
+# ── "Not the same person" is remembered, and can be undone ───────────────────
+
+NSP_A = 'p-cccccccccc'
+NSP_B = 'p-dddddddddd'
+NSP_C = 'p-aaaaaaaaaa'
+NSP_D = 'p-bbbbbbbbbb'
+
+
+class DismissNotSamePersonTests(unittest.TestCase):
+    """A "these are two different people" answer is kept in the dismissal file
+    beside the "not connected" pairs, nothing else in that file is ever lost
+    by a write, and every answer can be taken back."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'notes').mkdir()
+        (self.root / '.cache').mkdir()
+        (self.root / 'fha.yaml').write_text('archive_name: Test\n', encoding='utf-8')
+        self.path = self.root / 'notes' / 'cooccur_dismissed.json'
+        self.legacy = self.root / '.cache' / 'cooccur_dismissed.json'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _write(self, data: dict) -> None:
+        self.path.write_text(json.dumps(data), encoding='utf-8')
+
+    def _read(self) -> dict:
+        return json.loads(self.path.read_text(encoding='utf-8'))
+
+    def _texts(self, result: Result) -> str:
+        return '\n'.join(m.text for m in result.messages)
+
+    def test_not_same_person_is_written_with_todays_date_and_pairs_untouched(self) -> None:
+        self._write({'pairs': [[NSP_C, NSP_D]]})
+        r = confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B, not_same_person=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(r['kind'], 'not-same-person')
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(data['not_same_person'],
+                         [{'persons': [NSP_A, NSP_B], 'date': confirm._today()}])
+        self.assertIn('fha confirm undismiss', self._texts(r))
+        self.assertIn('--not-same-person', self._texts(r))
+
+    def test_plain_dismiss_keeps_not_same_person_and_unknown_keys(self) -> None:
+        self._write({'pairs': [], 'note': 'x',
+                     'not_same_person': [{'persons': [NSP_A, NSP_B], 'date': '2026-11-01'}]})
+        r = confirm.run_dismiss(self.root, person_a=NSP_C, person_b=NSP_D)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(data['note'], 'x')
+        self.assertEqual(len(data['not_same_person']), 1)
+
+    def test_legacy_migration_keeps_not_same_person(self) -> None:
+        self._write({'pairs': [], 'not_same_person': [
+            {'persons': [NSP_A, NSP_B], 'date': '2026-11-01'}]})
+        self.legacy.write_text(json.dumps({'pairs': [[NSP_C, NSP_D]]}), encoding='utf-8')
+        pairs, migrated = load_cooccur_dismissed(self.root)
+        self.assertTrue(migrated)
+        self.assertEqual(pairs, [[NSP_C, NSP_D]])
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(len(data['not_same_person']), 1)
+        self.assertFalse(self.legacy.exists())
+
+    def test_old_format_file_reads_as_no_not_same_decisions(self) -> None:
+        self._write({'pairs': [[NSP_C, NSP_D]]})
+        self.assertEqual(load_not_same_person(self.root), {})
+
+    def test_loader_skips_bad_entries_and_reads_dates(self) -> None:
+        self._write({'not_same_person': [
+            {'persons': [NSP_A, NSP_B], 'date': '2026-11-22'},
+            {'persons': [NSP_A, NSP_A]}, {'persons': [NSP_A]}, 'junk',
+            {'persons': [NSP_C.upper(), NSP_D]},
+        ]})
+        got = load_not_same_person(self.root)
+        self.assertEqual(got[frozenset((NSP_A, NSP_B))], '2026-11-22')
+        self.assertIsNone(got[frozenset((NSP_C, NSP_D))])
+        self.assertEqual(len(got), 2)
+
+    def test_already_names_the_date_and_writes_nothing(self) -> None:
+        self._write({'not_same_person': [{'persons': [NSP_B, NSP_A], 'date': '2026-11-01'}]})
+        before = self.path.read_bytes()
+        r = confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B, not_same_person=True)
+        self.assertEqual(r['status'], 'already')
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertIn('2026-11-01', self._texts(r))
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(r.changed, [])
+
+    def test_dry_runs_write_nothing_and_do_not_migrate(self) -> None:
+        self.legacy.write_text(json.dumps({'pairs': [[NSP_C, NSP_D]]}), encoding='utf-8')
+        for kwargs in ({'not_same_person': True}, {}):
+            r = confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B,
+                                    dry_run=True, **kwargs)
+            self.assertEqual(r.exit_code, EXIT_CLEAN)
+            self.assertIn('[dry-run]', self._texts(r))
+        self.assertFalse(self.path.exists())
+        self.assertTrue(self.legacy.exists())
+        self.legacy.unlink()
+        self._write({'pairs': [[NSP_A, NSP_B]],
+                     'not_same_person': [{'persons': [NSP_C, NSP_D], 'date': '2026-11-01'}]})
+        before = self.path.read_bytes()
+        for pair in ((NSP_A, NSP_B, False), (NSP_C, NSP_D, True)):
+            r = confirm.run_undismiss(self.root, person_a=pair[0], person_b=pair[1],
+                                      not_same_person=pair[2], dry_run=True)
+            self.assertEqual(r.exit_code, EXIT_CLEAN)
+            self.assertIn('Would', self._texts(r))
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_undismiss_removes_each_kind_and_keeps_the_rest(self) -> None:
+        self._write({'pairs': [[NSP_A, NSP_B], [NSP_C, NSP_D]], 'note': 'x',
+                     'not_same_person': [{'persons': [NSP_A, NSP_B], 'date': '2026-11-01'},
+                                         {'persons': [NSP_C, NSP_D], 'date': '2026-11-02'}]})
+        r = confirm.run_undismiss(self.root, person_a=NSP_B, person_b=NSP_A)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertIn('section 8', self._texts(r))
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(len(data['not_same_person']), 2)
+        r = confirm.run_undismiss(self.root, person_a=NSP_B, person_b=NSP_A, not_same_person=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertIn('section 4b', self._texts(r))
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(data['not_same_person'],
+                         [{'persons': [NSP_C, NSP_D], 'date': '2026-11-02'}])
+        self.assertEqual(data['note'], 'x')
+
+    def test_dismiss_then_undismiss_restores_the_state(self) -> None:
+        self._write({'pairs': [[NSP_C, NSP_D]], 'note': 'x'})
+        confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B, not_same_person=True)
+        self.assertEqual(len(load_not_same_person(self.root)), 1)
+        confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B, not_same_person=True)
+        data = self._read()
+        self.assertEqual(data['pairs'], [[NSP_C, NSP_D]])
+        self.assertEqual(data['note'], 'x')
+        self.assertEqual(load_not_same_person(self.root), {})
+
+    def test_undismiss_pair_in_the_other_list_names_the_other_command(self) -> None:
+        self._write({'pairs': [[NSP_A, NSP_B]],
+                     'not_same_person': [{'persons': [NSP_C, NSP_D], 'date': '2026-11-01'}]})
+        before = self.path.read_bytes()
+        r = confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B, not_same_person=True)
+        self.assertEqual(r.exit_code, EXIT_WARNINGS)
+        self.assertIn(f'run: fha confirm undismiss {NSP_A} {NSP_B}', self._texts(r))
+        self.assertNotIn(f'{NSP_B} --not-same-person', self._texts(r))
+        r = confirm.run_undismiss(self.root, person_a=NSP_C, person_b=NSP_D)
+        self.assertEqual(r.exit_code, EXIT_WARNINGS)
+        self.assertIn(f'fha confirm undismiss {NSP_C} {NSP_D} --not-same-person', self._texts(r))
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_undismiss_unknown_pair_points_at_the_list(self) -> None:
+        r = confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B)
+        self.assertEqual(r.exit_code, EXIT_WARNINGS)
+        self.assertIn('fha confirm undismiss --list', self._texts(r))
+
+    def test_a_pair_only_in_the_legacy_file_can_be_undone(self) -> None:
+        self.legacy.write_text(json.dumps({'pairs': [[NSP_A, NSP_B]]}), encoding='utf-8')
+        r = confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._read()['pairs'], [])
+        self.assertFalse(self.legacy.exists())
+
+    def test_damaged_file_is_refused_and_left_alone(self) -> None:
+        self.path.write_bytes(b'{not json')
+        for run in (
+            lambda: confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B),
+            lambda: confirm.run_dismiss(self.root, person_a=NSP_A, person_b=NSP_B,
+                                        not_same_person=True),
+            lambda: confirm.run_undismiss(self.root, person_a=NSP_A, person_b=NSP_B),
+        ):
+            r = run()
+            self.assertEqual(r.exit_code, 3)
+            self.assertIn('could not be read', self._texts(r))
+            self.assertEqual(self.path.read_bytes(), b'{not json')
+
+    def test_list_shows_both_kinds_with_undo_commands(self) -> None:
+        self._write({'pairs': [[NSP_C, NSP_D]],
+                     'not_same_person': [{'persons': [NSP_A, NSP_B], 'date': '2026-11-22'}]})
+        r = confirm.run_list_dismissed(self.root)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        text = self._texts(r)
+        self.assertIn(f'fha confirm undismiss {NSP_C} {NSP_D}', text)
+        self.assertIn(f'fha confirm undismiss {NSP_A} {NSP_B} --not-same-person', text)
+        self.assertIn('noted 2026-11-22', text)
+        self.assertEqual(len(r['not_connected']), 1)
+        self.assertEqual(r['not_same_person'][0]['date'], '2026-11-22')
+
+    def test_list_on_an_empty_archive(self) -> None:
+        r = confirm.run_list_dismissed(self.root)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertIn('Nothing is remembered yet', self._texts(r))
+
+    def test_cli_needs_ids_or_list_but_not_both(self) -> None:
+        import contextlib
+        import io
+        for argv in (['undismiss', '--root', str(self.root)],
+                     ['undismiss', NSP_A, NSP_B, '--list', '--root', str(self.root)]):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = confirm._standalone_main(argv)
+            self.assertEqual(code, 2)
+            self.assertIn('ERROR:', err.getvalue())
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = confirm._standalone_main(['undismiss', '--list', '--root', str(self.root)])
+        self.assertEqual(code, 0)
 
 
 if __name__ == '__main__':
