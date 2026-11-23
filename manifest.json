@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8517703f3ff11c7738ecfd248fb959c2817338236ec162709b11b5908e7476e4",
+      "sha256": "af0a7954be5e58e523817d82e74c270f94de5d235e39105976a1fb5acd8529b1",
       "spec_version": "2.20",
       "src": "tools/_lib.py"
     },
@@ -1179,7 +1179,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "611b89d524a1f2363df6af911e0a9adfce3eb365f7d6f18d3e7beabda5bc0298",
+      "sha256": "a90b5de1267a28e10b920dc5987b09666eedffc3bca59b648cbc8eca1ac829ea",
       "spec_version": "2.20"
     },
     {
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "95a1814ed5f4f3d784948fd86a35c2176f242db98b03d93d6240c10fcd88b560",
+      "sha256": "233213cafc5aed945b6a22a023c47f226c6e80e24966d232c010f63099c1750c",
       "spec_version": "2.20",
       "src": "TOOLING.md"
     },

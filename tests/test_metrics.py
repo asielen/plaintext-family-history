@@ -777,6 +777,50 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertEqual(c['expected'], [1900, 1901, 1910, 1911, 1920, 1930])
 
+    def test_an_about_date_that_may_be_earlier_does_not_hide_a_return(self):
+        # Born in Toronto 1895, in the 1900 US census, in the US "about 1900"
+        # (1899 to 1901) and in Toronto in December 1900, died 1905: the US
+        # stay may have come before the return, so Canada's 1901 still shows
+        # as a gap rather than the check reading complete.
+        self.a.source('vital-record', [_birth(KID, '1895', CA),
+                                       {'type': 'death', 'persons': [KID], 'date': '1905'}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1900~',
+                                 'place': US},
+                                {'type': 'residence', 'persons': [KID], 'date': '1900-12-01',
+                                 'place': CA}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1900',
+                                  'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['expected'], c['missing']), ([1900, 1901], [1901]))
+
+    def test_a_census_placed_by_its_source_counts_after_a_move(self):
+        # Born in Kansas 1850, in Toronto 1875, then an 1880 census whose
+        # place is on the source (`places:`), not the claim; died 1890. The
+        # filed 1880 US census still counts, and puts him back in the US, so
+        # Canada's 1881 is not asked.
+        self.a.source('vital-record', [_birth(KID, '1850', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '1890'}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1875',
+                                 'place': CA}])
+        self.a.source('census', [{'type': 'event', 'persons': [KID], 'date': '1880'}],
+                      source_date='1880', places=[US])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['expected'], c['found']), ([1850, 1860, 1870, 1880], [1880]))
+
+    def test_a_census_naming_no_place_still_counts_after_a_move(self):
+        # Born in Cork 1870, in Kansas 1895, died 1930, with a 1901 census
+        # entry whose place is not registered: it may be the Irish 1901, so
+        # that year stays asked and found, as it was before moves were read.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1895',
+                                 'place': US}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': '1901'}])
+        c = self.a.check(KID, 'census')
+        self.assertIn(1901, c['found'])
+        self.assertNotIn(1911, c['expected'])
+
     def test_a_census_year_found_in_both_countries_counts_once(self):
         self._register('L-eeeeeeeeee', 'Bristol', 'Bristol, England')
         self.a.source('vital-record', [_birth(KID, '1890', 'L-eeeeeeeeee'),

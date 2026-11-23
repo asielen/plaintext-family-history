@@ -19369,19 +19369,21 @@ def _census_night_countries(dated: list[tuple[int, int, str]], year: int) -> set
     dated to within a couple of years. The answer is the country of their
     latest such record on or before the year; with none before it, their
     earliest one after. A record whose few-year span takes in the year itself
-    ("about 1900" for 1900) counts as there that night too, and records tied
-    for latest all count, so a doubtful night keeps every country it might
-    be. An empty set means no dated record says, and nothing is dropped."""
+    ("about 1900" for 1900) counts as there that night too, and every record
+    that could be the latest counts (one whose span reaches the start of
+    another's: "about 1900" in the US and "December 1900" in Canada), so a
+    doubtful night keeps every country it might be. An empty set means no
+    dated record says, and nothing is dropped."""
     here = {key for lo, hi, key in dated if lo <= year < hi}
-    before = [(hi, key) for lo, hi, key in dated if hi <= year]
+    before = [(lo, hi, key) for lo, hi, key in dated if hi <= year]
     if before:
-        latest = max(hi for hi, _key in before)
-        here |= {key for hi, key in before if hi == latest}
+        surely_by = max(lo for lo, _hi, _key in before)
+        here |= {key for _lo, hi, key in before if hi >= surely_by}
     elif not here:
-        after = [(lo, key) for lo, _hi, key in dated if lo > year]
+        after = [(lo, hi, key) for lo, hi, key in dated if lo > year]
         if after:
-            first = min(lo for lo, _key in after)
-            here = {key for lo, key in after if lo == first}
+            surely_by = min(hi for _lo, hi, _key in after)
+            here = {key for lo, _hi, key in after if lo <= surely_by}
     return here
 
 
@@ -19455,6 +19457,10 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
                 census_key = census_country_key(census_raw)
                 found_by.setdefault(census_key or census_raw, set()).update(
                     range(c['y_lo'], c['y_hi'] + 1))
+                # A census whose country comes from its source's `places:`
+                # puts them there that year as surely as one placed itself.
+                if census_key and c['place_id'] is None:
+                    dated_places.append((c['y_lo'], c['y_hi'], census_key))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
         if raw and not key:
@@ -19469,19 +19475,24 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if c['y_lo'] is not None and c['y_hi'] is not None and c['y_hi'] - c['y_lo'] <= 2:
             dated_places.append((c['y_lo'], c['y_hi'], key))
 
+    countries = sorted(set(first_in) | born_in)
     # A country is asked a year unless their dated records put them in some
     # other country that night. A country no dated record names is never
-    # dropped: nothing says when they were there.
+    # dropped: nothing says when they were there. Only a country whose years
+    # are asked can take them away from another (a census known only from
+    # its source's places, in a country nothing else of theirs names, is no
+    # move), and a census on file that names no registered place may be any
+    # country's, so its year is never dropped.
+    dated_places = [d for d in dated_places if d[2] in countries]
     dated_countries = {key for _lo, _hi, key in dated_places}
 
     def counted_in(key: str, year: int) -> bool:
-        if key not in dated_countries:
+        if key not in dated_countries or year in found_by.get(None, ()):
             return True
         there = _census_night_countries(dated_places, year)
         return not there or key in there
 
-    empty ={'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
-    countries = sorted(set(first_in) | born_in)
+    empty = {'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
     if not countries:
         if placed_undated:
             # Placed, but no record there is dated: the place is not the gap.
