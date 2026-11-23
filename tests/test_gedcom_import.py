@@ -1769,6 +1769,22 @@ class PhotoLinksTestCase(_ArchiveCase):
         self.assertIn('rose_wedding.jpg "Wedding" (not looked for: the photo catalog could not be read', record)
         self.assertNotIn('was not built', record)
 
+    def test_heif_and_raw_photos_in_the_catalog_are_matched(self) -> None:
+        """A HEIF or camera-raw photo the catalog holds is offered like a JPEG."""
+        for rel in ('1960/ada.heif', '1961/ben.dng'):
+            f = self.photos / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'photo ' + rel.encode())
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8')
+        text = text.replace('https://www.ancestry.com/mediaui-viewer/x?token=abc', 'ada.heif')
+        text = text.replace('Hartley Media/missing.png', 'Hartley Media/ben.dng')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        got = {lk.person_xref: (lk.status, lk.alias) for lk in plan.photo_links}
+        self.assertEqual(got['@I3@'], ('matched', 'photos/1960/ada.heif'))
+        self.assertEqual(got['@I4@'], ('matched', 'photos/1961/ben.dng'))
+
 
 class SqliteReadonlyUriTestCase(unittest.TestCase):
     """For him: an archive in a folder like "Family #2", or on a network share,

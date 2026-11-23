@@ -105,6 +105,7 @@ from urllib.parse import unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    PHOTO_EXTENSIONS,
     render_person_body_scaffold,  # the full §16 profile body every new person record gets
     link_list_lines,
     normalize_id,
@@ -1352,8 +1353,7 @@ def _count_unread(records: list[_Node], consumed: set[int]) -> tuple[int, list[t
 # `fha photoindex tag-person`, one photo at a time, with his yes. Nothing here
 # opens a photo file for writing; the catalog is opened read-only.
 
-_PHOTO_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.gif', '.tif', '.tiff',
-                         '.bmp', '.webp', '.heic'})
+_PHOTO_EXTS = PHOTO_EXTENSIONS   # the catalog's own list: a HEIF or raw photo it holds is matched too
 _MISSING_PREFIX = 'MISSING:'     # photoindex's key for a vanished file (own copy: tools never import tools)
 _SCHEME_RE = re.compile(r'^([A-Za-z][A-Za-z0-9+.\-]+):')   # 2+ letters: `C:` is a drive, not a scheme
 _FOLDER_HINT_MIN = 5
