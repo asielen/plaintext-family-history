@@ -96,6 +96,12 @@ Extending an existing biography keeps the register already on the page unless th
    ```
    Confirm no dangling links (E004) and report plainly ("I drafted three paragraphs on Thomas, each fact sourced. They're marked as my draft until you accept them.").
 
+8. **Close with what went in and what is missing.** Tell him plainly which accepted facts the draft used, by source ("the 1880 census for his job and household, the marriage notice for the wedding"), and which it left out because they are still waiting for his review (offer `review-claims`). Then name what would make the life fuller, from the tools rather than from memory:
+   ```
+   fha metrics <p-id>        # the five checks: birth record, censuses, parents, marriage, death
+   ```
+   Turn each check that is not met into one plain sentence and offer a next step for it ("There's no death record yet. Want me to suggest where to look?"), which hands off to `research-next`. This is said in the conversation only: nothing about the gaps goes into the biography, and nothing is written as a question unless he asks one (SPEC §17b).
+
 ## Guardrails
 
 - No fact from a `suggested` claim; no unverified `[[p-…]]`/`[[s-…]]` link; no edit below a GENERATED header; no overwrite of human text.
@@ -112,4 +118,5 @@ Extending an existing biography keeps the register already on the page unless th
 - Acceptance flips markers via `fha confirm draft`, not by hand-editing.
 - A session drafting in **each named style** keeps the identical citation density (every factual sentence cited) and the lint baseline. The AI-DRAFT marker and the AI-pass task both name the style used. With no session ask and no `fha.yaml` `biography:` block, the voice is `chronicle`.
 - The drafted `## Biography` prose reads as flowing, blank-line-separated paragraphs, each paragraph on one line with no hard wraps and no dashes used as punctuation, with no run of consecutive lines each ending on a sentence boundary with its own `[[s-…]]`, in either named style.
+- The session ends by naming the accepted facts the draft used and the `fha metrics` checks still unmet, each with an offered `research-next` lead, and none of that summary is written into the profile.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9).

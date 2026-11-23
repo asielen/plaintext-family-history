@@ -116,7 +116,7 @@
       before). A native <summary> click always toggles it open/closed even
       with JS disabled - the arrow-styled affordance below just names what
       opening it shows. -#}
-  <details class="chart">
+  <details class="chart fha-tree-explorer">
     <summary class="chart-title">See descendants of {{ person.name }} &rarr;</summary>
     <div class="chart-body">
       {% with tree = person.descendants_tree %}{% include "_tree.html" %}{% endwith %}

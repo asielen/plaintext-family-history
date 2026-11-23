@@ -55,12 +55,6 @@ test('an img src off the image host, or not an image, is never fetched', () => {
   assert.strictEqual(wv.wvImageUrl(null), null);
 });
 
-test('a download under 30 KB is refused as not the full image', () => {
-  assert.strictEqual(wv.wvImageLargeEnough(29 * 1024), false);
-  assert.strictEqual(wv.wvImageLargeEnough(30 * 1024), true);
-  assert.strictEqual(wv.wvImageLargeEnough(0), false);
-});
-
 test('the citation names the archive, the page as opened, the film and the image', () => {
   assert.strictEqual(
     wv.wvCitation({ filmNumber: '1984148', imageNumber: '2530', pageUrl: PAGE }, '2026-11-22'),

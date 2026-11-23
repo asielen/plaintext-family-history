@@ -111,6 +111,7 @@
     // ancImages for FamilySearch: "{imageId}" -> the record that holds it.
     fsRecord: false,
     fsImage: false,
+    fsImagePage: false, // a bare film image (3:1, no record): film, image number and citation too
     fsCheck: null,
     fsCheckSeq: 0,
     fsImages: {},
@@ -778,14 +779,15 @@
   // and notes she has stay as they are.
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
     'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
-    'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
+    'familysearchRecord', 'familysearchImageViewer', 'familysearchImagePage', 'familysearchImageId', 'findagraveMemorial',
     'wvcultureImagePage', 'newspapers', 'iiif'];
 
   // Pages whose record file is fetched without her: there the "File address
   // on the page" box has no job, and is hidden (the drop zone stays).
   function autoFilePage(prefill) {
     return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.ancestryPhoto || prefill.familysearchRecord ||
-      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.wvcultureImagePage || prefill.iiif || prefill.newspapers);
+      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.wvcultureImagePage || prefill.iiif ||
+      prefill.newspapers);
   }
 
   // `keepNp`: { pageId, selected } - Re-read file on the same Newspapers.com
@@ -824,6 +826,7 @@
     $('pagecopy-note').style.display = state.ancPhoto ? 'block' : 'none';
     state.fsRecord = !!prefill.familysearchRecord;
     state.fsImage = !!prefill.familysearchImageViewer;
+    state.fsImagePage = !!prefill.familysearchImagePage && state.fsImage;
     state.fagRecord = !!prefill.findagraveMemorial;
     state.wvImage = !!prefill.wvcultureImagePage;
     // Pre-fill the evidence url box with the best-guess image/PDF the page
@@ -2120,6 +2123,9 @@
       url: rec.url,
       title,
       accessed: captureJson.accessedDate(),
+      // FamilySearch's own citation, so the source file cites the record the
+      // way FamilySearch does rather than a generic guess from the page.
+      citation: info.citation || '',
       // What she typed wins; else what the record says about itself.
       sourceDate: form.date || hints.sourceDate || '',
       sourceType: form.type || hints.sourceType || '',
@@ -2155,30 +2161,133 @@
     };
   }
 
+  // A bare film image (ark 3:1, no record behind it): a deed or will found by
+  // paging an unindexed film. What changes for the researcher: the bundle
+  // carries the film, DGS and image number and a citation that leads back to
+  // this exact image, instead of a bare picture. record.jpg is the full image
+  // (the same fetch as a record's), site-data holds FamilySearch's description
+  // of where the image sits. The data service is asked once for the
+  // description and once for the picture, with the signed-in session.
+  async function captureFamilySearchImage(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+    const accessed = captureJson.accessedDate();
+    const got = await autoFetch('FamilySearch image details', { action: 'familysearchImageInfo', accessed }, { recordUrl });
+    if (!got || !got.ok) throw new Error((got && got.error) || 'could not read the FamilySearch image');
+    const info = got.info;
+    const imageId = info.imageId;
+    notQueued(opts, 'fsimg:' + imageId, 'FamilySearch image ' + imageId);
+    await checkTabStillOn(recordUrl, ['3:1:' + imageId]);
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+    const assets = [];
+    let pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl, ['3:1:' + imageId]);
+    let imageWarning = null;
+    let imageFlags = { transient: false, slowDown: false };
+    if (dropped) {
+      assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
+    } else {
+      setStageResult('Fetching the image from FamilySearch…', '');
+      const img = await autoFetch('FamilySearch image ' + imageId, { action: 'familysearchImage', imageId },
+        { recordUrl, ids: ['3:1:' + imageId] });
+      if (img && img.ok) {
+        assets.push({
+          filename: 'record.' + (img.ext || 'jpg'),
+          blob: bundle.base64ToBlob(img.base64, img.contentType),
+          role: 'record', mode: 'familysearch-api',
+        });
+      } else {
+        imageFlags = { transient: !img || !!img.transient, slowDown: !!(img && img.slowDown) };
+        imageWarning = ((img && img.error) || 'no answer from the page') +
+          '. The image’s link and citation are saved. To add the image, use FamilySearch’s ' +
+          'Download button, drop the file into the panel and press Capture again: that capture holds both.';
+      }
+    }
+    const hasImage = assets.some((a) => a.role === 'record');
+    if (!pageCopy && !hasImage) pageCopy = await recordPageCopy('late', true, recordUrl, ['3:1:' + imageId]);
+    const forcedCopy = !!pageCopy && !wantPageCopy;
+    if (pageCopy) assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+    const data = {
+      note: 'Captured from FamilySearch by the archive capture extension. This is where the image sits on its ' +
+        'film, as FamilySearch describes it: a missing value was not found, not guessed.',
+      image: info,
+      citation: got.citation,
+    };
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'familysearch-image-data',
+    });
+    const title = (form.edited.has('f-title') && form.title) || got.title;
+    const ownNotes = hasImage ? withoutLine(form.notes, form.fsNoteLine) : form.notes;
+    const saidAlready = ownNotes.indexOf(fsNoteMark(imageId)) !== -1;
+    const notes = [
+      gatherNotes(provisional, ownNotes),
+      'FamilySearch citation: ' + got.citation,
+      got.warning ? 'FamilySearch image ' + imageId + ': ' + got.warning + '. Checked ' + accessed + '.' : '',
+      imageWarning && !saidAlready ? fsNoteMark(imageId) + '(' + info.arkUrl + ') could not be downloaded - ' +
+        imageWarning.split('. The image’s link')[0] + '. Checked ' + accessed + '.' : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: info.arkUrl,
+      title,
+      accessed,
+      citation: got.citation,
+      sourceDate: form.date || '',
+      sourceType: form.type || '',
+      repository: form.edited.has('f-repo') && form.repo ? form.repo : 'FamilySearch',
+      people: form.people,
+      notes,
+      recipeHint: 'familysearch',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
+    if (hasImage && !provisional) state.fsImages[imageId] = { record: 'fsimg:' + imageId, url: info.arkUrl, name: title };
+    reportStaged(st.where, st.viaHost, imageWarning, [st.hostWarning,
+      got.warning ? 'FamilySearch: ' + got.warning + '. The citation names the image and its link only.' : null,
+      forcedCopy ? 'A copy of the web page was kept too: with no image, it is what this image’s film and citation are filed with.' : null]
+      .filter(Boolean).join('\n') || null);
+    return {
+      key: 'fsimg:' + imageId,
+      // An image, not an indexed record: no fsId, so the record-only batch
+      // ledger never files it as a 1:1 record (PR #427 Codex 4660023408).
+      record: { imageId, name: title },
+      bundle: st.bundle, where: st.where,
+      imageKey: hasImage ? 'fsimg:' + imageId : null,
+      partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),
+      slowDown: imageFlags.slowDown || !!got.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
+      note: imageWarning ? 'image not saved: ' + imageWarning.split('. The image’s link')[0] : null,
+    };
+  }
+
   // ── West Virginia Archives view pages ──────────────────────────────────────
   // One image of the Vital Research Records site (its film and image number
   // from the address). Bundle: record.{gif|jpg} (role record, mode wvculture),
   // record-data.json (the numbers and both addresses, role site-data), and the
-  // page copy when she ticked it. The image is read with no login
-  // (content.js wvcultureImage). A picture that cannot be read stops the
-  // capture: she is told to drop the image in and press Capture again.
+  // page copy when she ticked it. The content script says which image the page
+  // shows; this side downloads it with no login (lib/wvculture.js), because the
+  // image host refuses a fetch made from the page. A picture that cannot be
+  // read stops the capture, and the message ends with what to do: drop the
+  // image in and press Capture again. A dropped image needs only the address's
+  // numbers, so it is saved even on a page whose image this does not recognise.
+  const WV_DROP_IN = 'Save the image from the page, drop it into the panel and press Capture again';
   async function captureWvcultureImage(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
-    let info;
-    if (dropped) {
-      info = await autoFetch('West Virginia Archives image details',
-        { action: 'wvcultureImageInfo', today: captureJson.accessedDate() }, { recordUrl });
-    } else {
-      setStageResult('Fetching the image from West Virginia Archives…', '');
-      info = await autoFetch('West Virginia Archives image',
-        { action: 'wvcultureImage', today: captureJson.accessedDate() }, { recordUrl });
-    }
+    const accessed = captureJson.accessedDate();
+    const info = await autoFetch('West Virginia Archives image details',
+      { action: 'wvcultureImageInfo', today: accessed }, { recordUrl });
     if (!info || !info.ok) {
-      throw new Error((info && info.error) || 'could not read the West Virginia Archives image. ' +
-        'Drop the image in the panel and press Capture again');
+      throw new Error((info && info.error) || 'could not read the West Virginia Archives page');
     }
     const rec = info.record;
+    let image = null;
+    if (!dropped) {
+      if (!rec.imageUrl) throw new Error('the page shows no image the panel can save. ' + WV_DROP_IN);
+      setStageResult('Fetching the image from West Virginia Archives…', '');
+      image = await FHA.wvculture.fetchImage(rec.imageUrl, (u, init) => window.fetch(u, init));
+      if (!image.ok) throw new Error(image.error + '. ' + WV_DROP_IN);
+    }
     notQueued(opts, 'wv:' + rec.filmNumber + ':' + rec.imageNumber,
       'West Virginia Archives film ' + rec.filmNumber + ', image ' + rec.imageNumber);
     await checkTabStillOn(recordUrl);
@@ -2186,10 +2295,7 @@
     if (dropped) {
       assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
     } else {
-      assets.push({
-        filename: 'record.' + info.ext, blob: bundle.base64ToBlob(info.base64, info.contentType),
-        role: 'record', mode: 'wvculture',
-      });
+      assets.push({ filename: 'record.' + image.ext, blob: image.blob, role: 'record', mode: 'wvculture' });
     }
     const pageCopy = await recordPageCopy('early', !!wantPageCopy, recordUrl, []);
     if (pageCopy) {
@@ -2219,12 +2325,15 @@
     const fields = {
       url: rec.pageUrl,
       title,
-      accessed: captureJson.accessedDate(),
+      accessed,
       sourceDate: form.date || '',
       sourceType: form.type || '',
       repository: form.edited.has('f-repo') && form.repo ? form.repo : 'West Virginia Archives and History',
       people: form.people,
       notes,
+      // The capture-day citation, so filing the bundle on a later day keeps
+      // the day he looked at the page.
+      citation: info.citation || '',
       recipeHint: 'wvculture',
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
     };
@@ -3138,8 +3247,15 @@
         return outcome;
       }
 
-      // Find a Grave memorial: what the memorial says and its citation, plus
-      // its photos at full size (and a file she dropped in, saved with them).
+      // A bare FamilySearch film image: its film, image number and citation,
+      // plus the full image (or the file she dropped in).
+      if (wantEvidence && state.fsImagePage && !evidenceUrl()) {
+        const got = await captureFamilySearchImage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        resetForNext();
+        outcome = Object.assign({ ok: true, site: 'familysearch' }, got);
+        return outcome;
+      }
+
       // A West Virginia Archives view page: its image, with its film and image numbers.
       if (wantEvidence && state.wvImage && !evidenceUrl()) {
         const got = await captureWvcultureImage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
@@ -3148,6 +3264,8 @@
         return outcome;
       }
 
+      // Find a Grave memorial: what the memorial says and its citation, plus
+      // its photos at full size (and a file she dropped in, saved with them).
       if (wantEvidence && state.fagRecord && !evidenceUrl()) {
         const got = await captureFindAGraveMemorial(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();

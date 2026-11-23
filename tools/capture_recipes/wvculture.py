@@ -19,19 +19,25 @@ import re
 from urllib.parse import parse_qs, urlsplit
 
 from capture import _today, domain_of
-from capture_recipes._common import record_hints
 
 SOURCE_NAME = 'WVCulture'
 PRIORITY = 35
 
 _VIEW_PATH = '/vrr/va_view2.aspx'
-_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\'](https?://images\.wvculture\.org/\d+/\d+\.(?:gif|jpe?g))["\']',
-                         re.IGNORECASE)
+# The add-on resolves the src against the page and checks only its path, so a
+# protocol-relative src, or one with a query string, is the same image here.
+_IMG_SRC_RE = re.compile(r'<img[^>]+src=["\']((?:https?:)?//images\.wvculture\.org/\d+/\d+\.(?:gif|jpe?g))'
+                         r'(?:\?[^"\']*)?["\']', re.IGNORECASE)
 _REPOSITORY = 'West Virginia Archives and History'
 
 
 def detect(html: str, url: str | None) -> bool:
-    return 'wvculture.org' in domain_of(url)
+    # Only a view page with both numbers: any other page on the archive's
+    # site keeps its own title and text through the generic recipe.
+    if domain_of(url) != 'archive.wvculture.org':
+        return False
+    film, image = _numbers(url)
+    return bool(film and image)
 
 
 def _numbers(url: str | None) -> tuple[str | None, str | None]:
@@ -52,7 +58,7 @@ def _image_src(html: str) -> str | None:
     m = _IMG_SRC_RE.search(html or '')
     if not m:
         return None
-    return 'https://' + m.group(1).split('://', 1)[1]
+    return 'https://' + m.group(1).split('//', 1)[1]
 
 
 def extract(html: str, url: str | None) -> dict:
@@ -67,7 +73,6 @@ def extract(html: str, url: str | None) -> dict:
         # invented numbers.
         title = 'West Virginia Vital Research Records, image page'
         citation = f'West Virginia Archives and History, Vital Research Records ({url or "page"}).'
-    hints = record_hints('West Virginia Vital Research Records', lambda word: None)
     body_lines = []
     if film and image:
         body_lines.append(f'Film {film}, image {image} of the Vital Research Records site.')
@@ -75,8 +80,11 @@ def extract(html: str, url: str | None) -> dict:
         body_lines.append(f'Image address on the site: {image_src}')
     return {
         'title': title,
-        'source_type': hints['source_type'],
-        'source_class': hints['source_class'],
+        # Every image on the Vital Research Records site is a birth, death or
+        # marriage record, so it files as a vital record (SPEC §8.5: its claims
+        # then default to high confidence), not as a web page.
+        'source_type': 'vital-record',
+        'source_class': None,
         'citation': citation,
         'repository': _REPOSITORY,
         'source_date': None,

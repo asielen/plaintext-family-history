@@ -1712,6 +1712,31 @@
     return null;
   }
 
+  // A bare film image: ark:/61903/3:1:{id} with NO record behind it (no
+  // personArk), as reached by paging an unindexed film from the catalog. A viewer
+  // opened from a record is still that record (fsParseRecordPage). null for
+  // anything else. { imageId }.
+  function fsParseImagePage(href) {
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (!FS_HOST_RE.test(u.hostname) || fsParseRecordPage(href)) return null;
+    const m = /\/ark:\/61903\/3:1:([A-Z0-9-]+)/i.exec(u.pathname);
+    if (!m) return null;
+    let q = u.search;
+    try {
+      q = decodeURIComponent(q);
+    } catch (e) {
+      /* a stray % that is not valid encoding: read the query as it is */
+    }
+    // A personArk in the query, however it is written, makes it a record's image.
+    if (/personArk=[^&]*1:1:[A-Z0-9-]+/i.test(q)) return null;
+    return { imageId: m[1].toUpperCase() };
+  }
+
   // The image (ark:/61903/3:1:{id}) an address names, in its path or query.
   function fsImageIdFromHref(href) {
     let u;
@@ -1884,6 +1909,69 @@
     return !typed || typed === page || /\bFamilySearch\s*$|•/.test(typed) ? auto : typed;
   }
 
+  // Where a film image sits, from the two answers FamilySearch's own film viewer
+  // asks for (fsFilmData): `film.imageData` names the image's film by its DGS
+  // number, and `film.filmData` holds the film's catalog entry (title, film
+  // numbers) and its images in order. The image's GEDCOM X description says
+  // none of this (checked on a live film image, 2026-11-22). `page.title` is the
+  // page's own title ("Deeds, 1785-1851; ark:/61903/3:1:…"), used for the
+  // catalog title only when FamilySearch's answer did not come.
+  // { imageId, dgs, imageNumber, imageCount, filmNumber, filmNote, catalogTitle,
+  // catalogUrl, arkUrl }. A value not found is null, never guessed.
+  function fsImageInfoFrom(imageId, film, page) {
+    const id = String(imageId || '').toUpperCase();
+    const f = film || {};
+    const fd = f.filmData && typeof f.filmData === 'object' ? f.filmData : {};
+    const text = (v) => (v == null || typeof v === 'object' ? '' : String(v).replace(/\s+/g, ' ').trim());
+    const unpad = (v) => text(v).replace(/^0+(?=\d)/, '');
+    const rawDgs = text((f.imageData && f.imageData.dgsNum) || fd.dgsNum);
+    // The viewer pads the DGS to nine digits ("008129459"); the catalog does not.
+    const dgs = /^\d+$/.test(rawDgs) ? unpad(rawDgs) : null;
+    const cats = Array.isArray(fd.catalogs) ? fd.catalogs.filter((c) => c && c.data && typeof c.data === 'object') : [];
+    const notesOf = (c) => (Array.isArray(c.data.film_note) ? c.data.film_note : []);
+    const isOurs = (n) => !!dgs && !!n && unpad(n.digital_film_no) === dgs;
+    // A film can sit under more than one catalog entry: the one that lists this film.
+    const cat = cats.find((c) => notesOf(c).some(isOurs)) || cats[0] || null;
+    const note = cat ? notesOf(cat).find(isOurs) || null : null;
+    const fromPage = text(page && page.title).replace(/\s*;\s*ark:\/61903\/.*$/i, '')
+      .replace(/\s*[|–—]\s*(?:Film\s*#.*|FamilySearch)\s*$/i, '').trim();
+    const catalogId = cat && /^\/(?:[a-z]{2}\/)?search\/catalog\/(?:info\/)?([A-Za-z0-9:._-]+)$/.exec(text(cat.path));
+    const images = Array.isArray(fd.images) ? fd.images : [];
+    const at = images.findIndex((u) => {
+      const m = /\/3:1:([A-Z0-9-]+)/i.exec(text(u));
+      return !!m && m[1].toUpperCase() === id;
+    });
+    return {
+      imageId: id,
+      dgs,
+      imageNumber: at >= 0 ? at + 1 : null,
+      imageCount: at >= 0 ? images.length : null,
+      filmNumber: (note && /^\d+$/.test(text(note.filmno)) && text(note.filmno)) || null,
+      filmNote: (note && (text(note.text) || text(note.public_note))) || null,
+      catalogTitle: (cat && (text(cat.data.title) || text(cat.data.display_title))) || fromPage || null,
+      catalogUrl: catalogId ? 'https://www.familysearch.org/search/catalog/' + catalogId[1] : null,
+      arkUrl: 'https://www.familysearch.org/ark:/61903/3:1:' + id,
+    };
+  }
+
+  // The citation for a bare film image; a part that is not known is left out.
+  // `accessed` is the date text (YYYY-MM-DD).
+  function fsImageCitation(info, accessed) {
+    const i = info || {};
+    const where = 'FamilySearch (' + [i.arkUrl, accessed ? 'accessed ' + accessed : ''].filter(Boolean).join(' : ') + ')';
+    const lead = i.catalogTitle ? '"' + i.catalogTitle + ',"' : '';
+    const n = i.imageNumber ? 'image ' + i.imageNumber + (i.imageCount ? ' of ' + i.imageCount : '') : '';
+    const from = [i.filmNumber ? 'film ' + i.filmNumber : '', i.dgs ? 'DGS ' + i.dgs : ''].filter(Boolean).join(', ');
+    return [[lead, 'images,', where].filter(Boolean).join(' '), n, from ? 'citing ' + from : ''].filter(Boolean).join('; ') + '.';
+  }
+
+  // The panel's title for a bare film image: "{catalog title}, image {n}".
+  function fsImageTitle(info) {
+    const i = info || {};
+    const parts = [i.catalogTitle, i.imageNumber ? 'image ' + i.imageNumber : ''].filter(Boolean);
+    return parts.length ? parts.join(', ') : 'FamilySearch image ' + (i.imageId || '');
+  }
+
   // The full-image link in an image description; null when there is none
   // (a restricted image often has none).
   function fsImageLink(j) {
@@ -1907,12 +1995,16 @@
   // fsStatusMessage's words (never the token or the address). `what` is what
   // she is told was refused: 'record' (the default) or 'image' (an image's
   // description), so a refused image is never reported as a refused record.
-  async function fsJson(path, accept, d, what) {
+  // `body`, when given, makes it a POST of that JSON (the film viewer's own
+  // questions, fsFilmData), under the same login rule.
+  async function fsJson(path, accept, d, what, body) {
     const headers = Object.assign({ Accept: accept || 'application/x-gedcomx-v1+json' },
-      fsAuthHeaders(path, d.base, d.token));
+      body ? { 'Content-Type': 'application/json' } : {}, fsAuthHeaders(path, d.base, d.token));
+    const init = body ? { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) }
+      : { credentials: 'include', headers };
     let r;
     try {
-      r = await d.fetch(new URL(path, d.base).href, { credentials: 'include', headers });
+      r = await d.fetch(new URL(path, d.base).href, init);
     } catch (e) {
       throw fsFailure('could not reach FamilySearch - check your internet connection, then press Capture again', null);
     }
@@ -1948,14 +2040,45 @@
     }
   }
 
+  // An image's description (GEDCOM X), once. The check before Capture reads it
+  // and hands it to fsImageCheck and fsImage rather than asking again.
+  async function fsImageDescription(imageId, d) {
+    return fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image');
+  }
+
+  // Which film a bare image is on, and where on it: the same two questions
+  // FamilySearch's own film viewer asks when it shows the image (image-data
+  // names the film's DGS; film-data, for that DGS, its catalog entry and its
+  // images in order). Checked on a live film image, 2026-11-22. Never throws:
+  // { imageData, filmData, error, slowDown }, a part not answered is null and
+  // `error` says why, so the image and its link are still saved without them.
+  async function fsFilmData(imageId, d) {
+    const out = { imageData: null, filmData: null, error: null, slowDown: false };
+    const ask = (type, args) => fsJson('/search/filmdatainfo/' + type, 'application/json', d, 'image',
+      { type, args: Object.assign(args, { state: {}, locale: 'en' }) });
+    try {
+      out.imageData = await ask('image-data', { imageURL: 'https://familysearch.org/ark:/61903/3:1:' + imageId });
+      const dgs = String((out.imageData && out.imageData.dgsNum) || '');
+      if (!/^\d+$/.test(dgs)) {
+        out.error = 'FamilySearch did not say which film this image is on';
+        return out;
+      }
+      out.filmData = await ask('film-data', { dgsNum: dgs });
+    } catch (e) {
+      out.error = e.message;
+      out.slowDown = !!e.slowDown;
+    }
+    return out;
+  }
+
   // Before Capture: can this page's image be saved from here? Reads the image's
   // description and asks for its first kilobyte, never the whole picture.
   // `imageId` is the record's or the viewer's. { ok, imageId, available, reason? }.
-  async function fsImageCheck(imageId, d) {
+  async function fsImageCheck(imageId, d, desc) {
     if (!imageId) return { ok: true, imageId: null, available: false, reason: 'there is no image for it on FamilySearch' };
     let link;
     try {
-      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
+      link = fsImageLink(desc || await fsImageDescription(imageId, d));
     } catch (e) {
       // `slowDown`: FamilySearch said slow down or busy even before Capture;
       // the owner's batch downloads take their break (PR #224 Codex 4504294846).
@@ -1985,11 +2108,11 @@
 
   // The full image behind ark:/61903/3:1:{imageId}: { ok, base64, ext,
   // contentType } or { ok:false, error }.
-  async function fsImage(imageId, d) {
+  async function fsImage(imageId, d, desc) {
     if (!imageId) return { ok: false, error: 'no image named' };
     let link;
     try {
-      link = fsImageLink(await fsJson('/ark:/61903/3:1:' + imageId, null, d, 'image'));
+      link = fsImageLink(desc || await fsImageDescription(imageId, d));
     } catch (e) {
       return { ok: false, error: e.message, transient: !!e.transient, slowDown: !!e.slowDown };
     }
@@ -2144,7 +2267,42 @@
     }
     const imageId = fsViewerImageId();
     if (!imageId) return { ok: true, record: false, imageId: null, available: false, reason: 'no single image was found on this page' };
+    // A bare film image: the description answers "can it be saved?" and is
+    // kept for the image fetch. The panel's first title is the page's own
+    // catalog title; the film and image number are asked for at Capture only.
+    if (fsParseImagePage(location.href)) {
+      let desc;
+      try {
+        desc = await fsImageDescription(imageId, fsDeps());
+      } catch (e) {
+        return { ok: true, record: false, imageId, available: false, reason: e.message, slowDown: !!e.slowDown };
+      }
+      fsImageDescCache = { id: imageId, desc };
+      const info = fsImageInfoFrom(imageId, null, { title: document.title });
+      return Object.assign({ record: false, filmImage: true, title: info.catalogTitle ? fsImageTitle(info) : null },
+        await fsImageCheck(imageId, fsDeps(), desc));
+    }
     return Object.assign({ record: false }, await fsImageCheck(imageId, fsDeps()));
+  }
+
+  // The image description Capture's first question read, kept for the image
+  // fetch that follows it so FamilySearch is asked for it once (no token in it).
+  let fsImageDescCache = null;
+
+  // The bare film image on this page: its film, DGS, image number, catalog
+  // title and citation (what Capture files with the picture). FamilySearch
+  // not answering is never a failed capture: the image and its 3:1 link are
+  // still saved, and `warning` says what is missing and why.
+  async function familysearchImageInfo(accessed) {
+    const page = fsParseImagePage(location.href);
+    if (!page) return { ok: false, error: 'this is not a FamilySearch film image page' };
+    const film = await fsFilmData(page.imageId, fsDeps());
+    const info = fsImageInfoFrom(page.imageId, film, { title: document.title });
+    return {
+      ok: true, info, title: fsImageTitle(info), citation: fsImageCitation(info, accessed),
+      warning: film.error ? 'the film and image number were not saved: ' + film.error : null,
+      slowDown: film.slowDown,
+    };
   }
 
   // ── Find a Grave memorials (the memorial and its photos) ─────────────────────
@@ -2527,12 +2685,6 @@
     return m[1].toLowerCase() === 'gif' ? 'gif' : 'jpg';
   }
 
-  // A full image is well over 30 KB (certificates are 100-200 KB, registers 1-2
-  // MB); a smaller answer is a placeholder or an error page, not the record.
-  function wvImageLargeEnough(bytes) {
-    return Number(bytes) >= 30 * 1024;
-  }
-
   // The citation line: the archive, the page as the human opened it, the film and
   // the image. `accessed` is YYYY-MM-DD.
   function wvCitation(info, accessed) {
@@ -2545,37 +2697,20 @@
   // A view page (archive.wvculture.org/vrr/va_view2.aspx) shows one image, an
   // <img> on images.wvculture.org. The numbers come from the address, the image
   // from the page's own img src (lib/wvculture-record.js: never a built URL).
+  // The panel downloads the image (lib/wvculture.js): the image host sends no
+  // cross-origin permission, so a fetch from here fails on the live site.
+  // imageUrl is null when the page shows no image this recognises; the numbers
+  // and the citation still stand, so an image he drops in is saved with them.
   function wvcultureImageInfo(today) {
     const parsed = wvParsePage(location.href);
     if (!parsed) return { ok: false, error: 'this is not a West Virginia Archives image page' };
     const srcs = Array.prototype.map.call(document.querySelectorAll('img'),
       (img) => absUrl(img.getAttribute('src') || '') || '');
     const imageUrl = wvImageUrl(srcs);
-    if (!imageUrl) return { ok: false, error: 'the page shows no image the panel can save' };
-    const record = Object.assign({}, parsed, { pageUrl: location.href, imageUrl, ext: wvExtension(imageUrl) });
+    const record = Object.assign({}, parsed, {
+      pageUrl: location.href, imageUrl, ext: imageUrl ? wvExtension(imageUrl) : null,
+    });
     return { ok: true, record, citation: wvCitation(record, today) };
-  }
-
-  // The image itself, read with no login: { ok, record, base64, ext, contentType }
-  // or { ok:false, error }. A download under 30 KB is refused, not saved.
-  async function wvcultureImage(today) {
-    const info = wvcultureImageInfo(today);
-    if (!info.ok) return info;
-    let resp;
-    try {
-      resp = await fetch(info.record.imageUrl, { credentials: 'omit' });
-    } catch (e) {
-      return { ok: false, error: 'the image could not be reached (' + e.message + ')' };
-    }
-    if (!resp.ok) return { ok: false, error: 'the West Virginia Archives image server refused the picture (HTTP ' + resp.status + ')' };
-    const blob = await resp.blob();
-    if (!wvImageLargeEnough(blob.size)) {
-      return { ok: false, error: 'the picture is only ' + Math.round(blob.size / 1024) + ' KB, not the full image, so it was not saved' };
-    }
-    return {
-      ok: true, record: info.record, citation: info.citation, base64: await blobToBase64(blob),
-      ext: info.record.ext, contentType: blob.type || '',
-    };
   }
 
   // The memorial page itself - not its photo gallery or its flowers.
@@ -3665,6 +3800,9 @@
       // saves FamilySearch's own data for it and its image.
       familysearchRecord: !!fsParseRecordPage(url),
       // A FamilySearch image viewer of its own: the full image, from the API.
+      // A bare film image (no record behind it): film, image number and
+      // citation come with the picture.
+      familysearchImagePage: !!fsParseImagePage(url),
       familysearchImageViewer: !fsParseRecordPage(url) && !!fsViewerImageId(url),
       familysearchImageId: fsParseRecordPage(url) ? null : fsViewerImageId(url),
       // A Newspapers.com page or clipping: the panel asks for newspapersInfo
@@ -4666,13 +4804,13 @@
       case 'wvcultureImageInfo':
         sendResponse(wvcultureImageInfo(msg.today));
         return;
-      case 'wvcultureImage':
-        wvcultureImage(msg.today)
+      case 'familysearchRecordInfo':
+        familysearchRecordInfo(msg.formTitle)
           .then(sendResponse)
           .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
-      case 'familysearchRecordInfo':
-        familysearchRecordInfo(msg.formTitle)
+      case 'familysearchImageInfo':
+        familysearchImageInfo(msg.accessed)
           .then(sendResponse)
           .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response
@@ -4716,7 +4854,12 @@
           sendResponse({ ok: false, error: 'this page does not show one FamilySearch image the panel can save' });
           return;
         }
-        fsImage(fsImageWanted, fsDeps())
+        fsImage(fsImageWanted, fsDeps(),
+          fsImageDescCache && fsImageDescCache.id === String(fsImageWanted).toUpperCase() ? fsImageDescCache.desc : undefined)
+          .then((r) => {
+            fsImageDescCache = null;
+            return r;
+          })
           .then(sendResponse)
           .catch((e) => sendResponse(brokeOff(e)));
         return true; // async response

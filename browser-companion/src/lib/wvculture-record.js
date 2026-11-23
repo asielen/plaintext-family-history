@@ -20,7 +20,6 @@
 //   wvParsePage       the film and image numbers from a view-page address
 //   wvImageUrl        the page's image (its img src on the image host), https
 //   wvExtension       'gif' or 'jpg' from that image address
-//   wvImageLargeEnough a download of at least 30 KB (smaller is not the full image)
 //   wvCitation        the citation line for the source
 
 'use strict';
@@ -81,12 +80,6 @@ function wvExtension(url) {
   return m[1].toLowerCase() === 'gif' ? 'gif' : 'jpg';
 }
 
-// A full image is well over 30 KB (certificates are 100-200 KB, registers 1-2
-// MB); a smaller answer is a placeholder or an error page, not the record.
-function wvImageLargeEnough(bytes) {
-  return Number(bytes) >= 30 * 1024;
-}
-
 // The citation line: the archive, the page as the human opened it, the film and
 // the image. `accessed` is YYYY-MM-DD.
 function wvCitation(info, accessed) {
@@ -99,6 +92,5 @@ module.exports = {
   wvParsePage,
   wvImageUrl,
   wvExtension,
-  wvImageLargeEnough,
   wvCitation,
 };

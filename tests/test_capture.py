@@ -684,6 +684,43 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['repository'], 'FamilySearch')
         self.assertIn('Harriet Webb', meta['people'])
 
+    def test_familysearch_bare_film_image_names_film_image_and_ark(self) -> None:
+        # A deed found by paging an unindexed film (ark 3:1, no record behind
+        # it): the stub's citation names the film, image number and 3:1 link,
+        # so it reads right even when the add-on's own hints are missing.
+        # The fixture is the live viewer's header (2026-11-22): there "Film #"
+        # is the DGS number, padded to nine digits, not the microfilm number.
+        ark = 'https://www.familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HDJG?lang=en&i=10'
+        rc = self._capture(_sample('familysearch-film-image'), url=ark)
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self._only_stub().read_text(encoding='utf-8')
+        citation = ' '.join(text.split('citation:', 1)[1].split('repository:', 1)[0].split())
+        self.assertRegex(citation, r'^> "Deeds, 1785-1851," images, FamilySearch \(https://www\.familysearch\.org/ark:/61903/'
+                                   r'3:1:3Q9M-CSVG-HDJG : accessed [\d-]+\); citing DGS 8129459\.$')
+        self.assertNotIn('film 008129459', text)  # the viewer's "Film #" is never cited as the film
+        self.assertNotIn('ark:/61903/3:1:3Q9M-CSVG-HDJG;', text)  # the page title's ark tail is not in the title
+        self.assertNotIn('?i=10', citation)  # the citation links the image, not the viewer's position
+
+    def test_familysearch_bare_film_image_with_no_film_text_leaves_parts_out(self) -> None:
+        rc = self._capture('<html><head><title>Will book B | FamilySearch</title></head><body></body></html>',
+                           url='https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2')
+        self.assertEqual(rc, EXIT_CLEAN)
+        text = self._only_stub().read_text(encoding='utf-8')
+        self.assertIn('"Will book B," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM2', text)
+        self.assertNotIn('citing', text)
+        from capture_recipes import familysearch as fsrecipe
+        for page_title in ('Will book B - FamilySearch', 'Will book B | FamilySearch',
+                           'Will book B; ark:/61903/3:1:HRT2-FILM2', 'Will book B – Film # 008129459'):
+            self.assertEqual(fsrecipe._TITLE_TAIL_RE.sub('', page_title), 'Will book B', page_title)
+
+    def test_familysearch_viewer_opened_from_a_record_is_still_a_record_page(self) -> None:
+        from capture_recipes import familysearch as fsrecipe
+        self.assertTrue(fsrecipe._ark_image(
+            'https://www.familysearch.org/ark:/61903/3:1:HRT2-FILM1'))
+        self.assertFalse(fsrecipe._ark_image(
+            'https://www.familysearch.org/ark:/61903/3:1:X?personArk=%2Fark%3A%2F61903%2F1%3A1%3AHRT1-CEN1'))
+        self.assertFalse(fsrecipe._ark_image('https://www.familysearch.org/ark:/61903/1:1:HRT1-CEN1'))
+
     def test_familysearch_recipe_label_value_fact_table(self) -> None:
         # A tree-person page lists facts as label/value rows (`Name | value`,
         # `Father's Name | value`) rather than the record-detail column shape;
@@ -979,6 +1016,34 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['title'], 'West Virginia Vital Research Records, film 1984148, image 2530')
         self.assertIn('Film 1984148, image 2530', rec['body'])
         self.assertIn('https://images.wvculture.org/1984148/0002530.gif', rec['body'])
+        # A death certificate or register page is a vital record, not a web page.
+        self.assertEqual(meta['source_type'], 'vital-record')
+
+    def test_wvculture_recipe_leaves_other_archive_pages_to_the_generic_recipe(self) -> None:
+        # Codex 4660426755: another page on the archive's site keeps its own
+        # title and text instead of a fixed "image page" title and no body.
+        from capture_recipes import wvculture
+        html = '<html><head><title>Marriage Records Search</title></head><body><p>Search by county</p></body></html>'
+        for url in ('https://archive.wvculture.org/vrr/va_select.aspx',
+                    'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148',
+                    'https://www.wvculture.org/history/',
+                    'https://images.wvculture.org/1984148/0002530.gif'):
+            self.assertFalse(wvculture.detect(html, url), url)
+        self.assertTrue(wvculture.detect(
+            html, 'https://archive.wvculture.org/vrr/va_view2.aspx?filmnumber=1984148&imagenumber=2530'))
+        rc = self._capture(html, url='https://archive.wvculture.org/vrr/va_select.aspx')
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        self.assertEqual(rec['meta']['title'], 'Marriage Records Search')
+
+    def test_wvculture_recipe_reads_the_image_the_add_on_reads(self) -> None:
+        # The add-on resolves a protocol-relative src or one with a query
+        # string to the same image; the stub names it too.
+        from capture_recipes import wvculture
+        for src in ('//images.wvculture.org/1984148/0002530.gif',
+                    'https://images.wvculture.org/1984148/0002530.gif?t=1'):
+            self.assertEqual(wvculture._image_src(f'<img alt="x" src="{src}">'),
+                             'https://images.wvculture.org/1984148/0002530.gif', src)
 
     def test_findagrave_date_from_title_and_memorial_park(self) -> None:
         # B2: lifespan only in the title → still read (the title shows it),

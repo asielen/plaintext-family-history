@@ -122,7 +122,7 @@ HTML arrives on **stdin** (`… | fha capture`) or from an `--asset` that is its
 
 Recipes live in [`tools/capture_recipes/`](tools/capture_recipes/), one module per site, each exposing `detect(html, url)` and `extract(html, url)`, discovered at runtime and sorted by `PRIORITY`. They are **plug-in data** for capture: a new site needs a new module, not an engine change. A broken or interface-incomplete recipe is skipped with a warning and the page is captured by the generic recipe instead.
 
-Current coverage, in priority order: **Ancestry** (record pages, the image viewer, census household tables, shared tree photos), **Newspapers.com** (clipping + citation), **FamilySearch** (record + tree person), **Find a Grave** (memorial + cemetery place), **West Virginia Archives** (a Vital Research Records image: its film and image number). Any other site gets the generic recipe.
+Current coverage, in priority order: **Ancestry** (record pages, the image viewer, census household tables, shared tree photos), **Newspapers.com** (clipping + citation), **FamilySearch** (record, tree person, and a bare film image with its film, image number and citation), **Find a Grave** (memorial + cemetery place), **West Virginia Archives** (a Vital Research Records image: its film and image number). Any other site gets the generic recipe.
 
 ### 2.3 The three asset cases
 

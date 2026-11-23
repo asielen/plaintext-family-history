@@ -315,6 +315,33 @@ test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagr
   }
 });
 
+test('lib/wvculture.js (the panel) downloads only the images lib/wvculture-record.js reads off the page', () => {
+  // The page says which image it shows; the panel downloads it (the image host
+  // refuses a fetch made from the page). One rule, two copies: one battery.
+  const wvRecord = require('../src/lib/wvculture-record.js');
+  const w = {};
+  new Function('window', readSrc('lib/wvculture.js'))(w);
+  const panel = w.FHA.wvculture;
+  for (const u of [
+    'https://images.wvculture.org/1984148/0002530.gif',
+    'http://images.wvculture.org/1984148/0002530.gif',
+    'https://IMAGES.WVCULTURE.ORG/12345/00042.JPG',
+    'https://images.wvculture.org/12345/00042.jpeg',
+    'https://images.wvculture.org/vrr/1984148/0002530.gif',
+    'https://images.wvculture.org/1984148/0002530.png',
+    'https://images.wvculture.org.evil.example/1/2.gif',
+    'https://evil.example/1984148/0002530.gif',
+    'https://a:b@images.wvculture.org/1/2.gif',
+    'https://images.wvculture.org:8443/1/2.gif',
+    'ftp://images.wvculture.org/1/2.gif', 'data:image/gif;base64,AAAA', '/1/2.gif', '',
+  ]) {
+    const read = wvRecord.wvImageUrl([u]);
+    if (read) assert.ok(panel.imageUrlOk(read), 'the panel refuses what the page reads: ' + u);
+    if (/^https:/i.test(u)) assert.strictEqual(panel.imageUrlOk(u), read !== null, u);
+  }
+  assert.strictEqual(panel.imageUrlOk('http://images.wvculture.org/1/2.gif'), false, 'https only');
+});
+
 test('content.js batch-download readers are a verbatim copy of lib/batch-sources.js', () => {
   // Including the FamilySearch person reader, which sends the login: a drift
   // there would be the one that sends a researcher's session elsewhere.
