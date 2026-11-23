@@ -289,10 +289,23 @@ _LEVEL_SIGNS = '-+−‐‑‒–—﹣＋－'
 
 
 # After a sign or an odd space: digits, then a GEDCOM tag ("NAME", "@I1@ INDI").
-# A tag is 3-5 capitals or starts with "_", so "-1920 I started school" or
-# "+2 US Army cousins" in a note is prose, not a broken level.
+# The tag must be a real GEDCOM 5.5.1/7.0 tag or start with "_", so note prose
+# such as "-1920 I started school" or "-1942 WWII took both brothers" is prose,
+# not a broken level.
 _BROKEN_LEVEL_RE = re.compile(
-    r'\d+\s+(?:@[^@\s]+@\s+)?(?:_[A-Z0-9_]+|[A-Z][A-Z0-9]{2,4})(?:\s|$)')
+    r'\d+\s+(?:@[^@\s]+@\s+)?(_[A-Z0-9_]+|[A-Z][A-Z0-9]{1,5})(?:\s|$)')
+_GEDCOM_TAGS = frozenset('''
+    ABBR ADDR ADOP ADR1 ADR2 ADR3 AFN AGE AGNC ALIA ANCE ANCI ANUL ASSO AUTH
+    BAPL BAPM BARM BASM BIRT BLES BURI CALN CAST CAUS CENS CHAN CHAR CHIL CHR
+    CHRA CITY CONC CONF CONL CONT COPR CORP CREM CROP CTRY DATA DATE DEAT DESC
+    DESI DEST DIV DIVF DSCR EDUC EMAIL EMIG ENDL ENGA EVEN EXID FACT FAM FAMC
+    FAMS FAX FCOM FILE FONE FORM GEDC GIVN GRAD HEAD HEIGHT HUSB IDNO IMMI INDI
+    LANG LATI LEFT LONG MAP MARB MARC MARL MARR MARS MEDI MIME NAME NATI NATU
+    NCHI NICK NMR NO NOTE NPFX NSFX OBJE OCCU ORDI ORDN PAGE PEDI PHON PHRASE
+    PLAC POST PROB PROP PUBL QUAY REFN RELA RELI REPO RESI RESN RETI RFN RIN
+    ROLE ROMN SCHMA SDATE SEX SLGC SLGS SNOTE SOUR SPFX SSN STAE STAT SUBM SUBN
+    SURN TEMP TEXT TIME TITL TRAN TRLR TYPE UID VERS WIDTH WIFE WILL WWW
+'''.split())
 
 
 def _looks_like_level(line: str) -> bool:
@@ -314,7 +327,8 @@ def _looks_like_level(line: str) -> bool:
         rest = rest[1:]
     elif rest == s:
         return False
-    return bool(_BROKEN_LEVEL_RE.match(rest))
+    m = _BROKEN_LEVEL_RE.match(rest)
+    return bool(m) and (m.group(1).startswith('_') or m.group(1) in _GEDCOM_TAGS)
 
 
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:

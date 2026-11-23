@@ -1711,7 +1711,7 @@ class AdversarialFixtureTestCase(_ArchiveCase):
     def test_every_broken_level_shape_is_reported_or_read(self) -> None:
         # Each of these is an attempt at a GEDCOM line. None may be folded into
         # the name above it: it is either read as a line or reported.
-        reported = ['-1 NAME x', '+1 NAME x', '−1 NAME x', '–1 NAME x',
+        reported = ['-1 NAME x', '-1 SEX F', '-1 @I2@ INDI', '-2 _MYTAG x', '+1 NAME x', '−1 NAME x', '–1 NAME x',
                     '\xa01 NAME x', '　1 NAME x', '\t1 NAME x', '  1 NAME x',
                     '100 NAME x', '1NAME x', '\xb2 NAME x']
         read = ['01 NAME x', '١ NAME x', '１ NAME x']
@@ -1734,7 +1734,10 @@ class AdversarialFixtureTestCase(_ArchiveCase):
                      '–1940 they stayed on the farm', '—1918 was the year of the flu',
                      '\xa01937 the farm was sold', '+2 more cousins in Topeka',
                      '-1920 I started school in Fairview', '+2 US Army cousins came home',
-                     '\xa01918 A hard year for the family'):
+                     '\xa01918 A hard year for the family',
+                     '-1942 WWII took both brothers',
+                     '–1920 MOVED TO KANSAS WITH HER PARENTS',
+                     '+2 USA trips after the war', '\xa01945 FDR died that spring'):
             with self.subTest(line=line):
                 text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n' + line + '\n0 TRLR\n'
                 records, malformed, joined = gedcom_import.parse_gedcom(text)
