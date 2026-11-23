@@ -41,7 +41,7 @@ FOLDER = 'notes/obsidian'
 
 # Keys SPEC §9 (person), §14 (source) and §15 (place note) document.
 SPEC_KEYS = {
-    'name', 'living', 'tier', 'birth', 'death', 'tags',
+    'id', 'name', 'living', 'tier', 'birth', 'death', 'tags',
     'title', 'source_type', 'source_date', 'repository', 'source_class',
     'location',
 }
@@ -95,6 +95,17 @@ class ShippedFileTests(unittest.TestCase):
                     used |= set(v.get('order', []))
                     if 'groupBy' in v:
                         used.add(v['groupBy']['property'])
+                # Bare names in filter expressions are note properties too: a
+                # typo there (`tierr == ...`) leaves a table silently empty.
+                filters = [doc['filters']] + [v['filters'] for v in views_ if 'filters' in v]
+                for f in filters:
+                    for expr in f['and']:
+                        stripped = re.sub(r'"[^"]*"', '', expr)
+                        for m in re.finditer(r'(?<![\w.])([A-Za-z_]\w*)(?=\s*(?:[.=!<>]|$))', stripped):
+                            word = m.group(1)
+                            if word in ('file', 'note', 'true', 'false', 'null'):
+                                continue
+                            used.add('note.' + word)
                 for key in used:
                     if key.startswith('note.'):
                         self.assertIn(key[5:], SPEC_KEYS, key)
