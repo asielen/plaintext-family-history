@@ -351,6 +351,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
 #    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
 #                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
+#    dm_soundex:                every Daitch-Mokotoff code of a name (from Mokotoff's chart)
+#    american_soundex:          the census Soundex code (National Archives' rules)
+#    translit, has_cyrillic:    Cyrillic name in passport/German/Polish Latin letters
+#    given_name_equivalents:    one given name's forms in other languages (Jan, John, Иван)
+#    name_sound_words:          the words of a name the sound match compares
+#    name_sound_codes:          one word's D-M codes, through its Latin spellings if Cyrillic
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
 #    person_name_slot          - one person-filename name slot: [a-z0-9], single underscores
 #    name_words                - the words of a name a surname is read from (no punctuation-only words)
@@ -16724,6 +16730,428 @@ def fold_accents(text: str) -> str:
     """
     folded = unicodedata.normalize('NFKD', str(text or '').translate(ACCENT_FOLD))
     return ''.join(c for c in folded if not unicodedata.combining(c))
+
+
+# ── Names that sound alike (Daitch-Mokotoff and census Soundex) ──────────────
+#
+# A surname written Kowalski in one record, Kowalska in the next and Kovalsky
+# on a ship list is one family. `fha find --sounds-like` puts such spellings
+# together by a sound code. Nothing here changes a name: the codes are
+# computed on the fly for comparison and never stored or written back.
+#
+# Two codes, two jobs:
+#   - Daitch-Mokotoff (D-M) decides who sounds alike. It is the code JewishGen
+#     and the Eastern European indexes use, and it keeps Slavic and Yiddish
+#     spellings together where the older American Soundex splits them.
+#   - American ("census") Soundex is only printed, so the human can look the
+#     name up on the National Archives' Soundex cards for the 1880-1930
+#     censuses, which are filed by it.
+#
+# Sources. The D-M table below is written from Gary Mokotoff's published
+# coding chart and rules (JewishGen, "Soundex Coding",
+# https://www.jewishgen.org/InfoFiles/soundex.html), one entry per chart row,
+# alternate spellings expanded. Where the chart is silent the choices follow
+# Apache Commons Codec's DaitchMokotoffSoundex, whose results were checked
+# against Stephen Morse's calculator: the vowels a "before a vowel" column
+# looks at are A, E, I, O, U; a sound already written at the end of the code
+# so far is not written again (KS, 54, then S, 4, gives 54, not 544); and an
+# M next to an N is always written. American Soundex follows the National
+# Archives' "The Soundex Indexing System"
+# (https://www.archives.gov/research/census/soundex). No other
+# implementation's code was copied for either.
+
+# One row per chart line: (letter groups, start of a name, before a vowel,
+# any other situation). '' is "not coded"; '|' separates the two readings of
+# a two-way letter ("Try KH (5) and TCH (4)" is '5|4').
+_DM_CHART: tuple[tuple[str, str, str, str], ...] = (
+    ('ai aj ay', '0', '1', ''),
+    ('au', '0', '7', ''),
+    ('ą', '', '', '6|'),            # Polish a-ogonek: 6 or not coded
+    ('a', '0', '', ''),
+    ('b', '7', '7', '7'),
+    ('chs', '5', '54', '54'),
+    ('ch', '5|4', '5|4', '5|4'),    # try KH (5) and TCH (4)
+    ('ck', '5|45', '5|45', '5|45'), # try K (5) and TSK (45)
+    ('cz cs csz czs', '4', '4', '4'),
+    ('c', '5|4', '5|4', '5|4'),     # try K (5) and TZ (4)
+    ('drz drs', '4', '4', '4'),
+    ('ds dsh dsz', '4', '4', '4'),
+    ('dz dzh dzs', '4', '4', '4'),
+    ('d dt', '3', '3', '3'),
+    ('ei ej ey', '0', '1', ''),
+    ('eu', '1', '1', ''),
+    ('ę', '', '', '6|'),            # Polish e-ogonek: 6 or not coded
+    ('e', '0', '', ''),
+    ('fb', '7', '7', '7'),
+    ('f', '7', '7', '7'),
+    ('g', '5', '5', '5'),
+    ('h', '5', '5', ''),
+    ('ia ie io iu', '1', '', ''),
+    ('i', '0', '', ''),
+    ('j', '1|4', '|4', '|4'),       # try Y (1, -, -) and DZH (4)
+    ('ks', '5', '54', '54'),
+    ('kh', '5', '5', '5'),
+    ('k', '5', '5', '5'),
+    ('l', '8', '8', '8'),
+    ('mn', '66', '66', '66'),
+    ('m', '6', '6', '6'),
+    ('nm', '66', '66', '66'),
+    ('n', '6', '6', '6'),
+    ('oi oj oy', '0', '1', ''),
+    ('o', '0', '', ''),
+    ('p pf ph', '7', '7', '7'),
+    ('q', '5', '5', '5'),
+    ('rz rs', '94|4', '94|4', '94|4'),  # try RTZ (94) and ZH (4)
+    ('r', '9', '9', '9'),
+    ('schtsch schtsh schtch', '2', '4', '4'),
+    ('sch', '4', '4', '4'),
+    ('shtch shch shtsh', '2', '4', '4'),
+    ('sht scht schd', '2', '43', '43'),
+    ('sh', '4', '4', '4'),
+    ('stch stsch sc', '2', '4', '4'),
+    ('strz strs stsh', '2', '4', '4'),
+    ('st', '2', '43', '43'),
+    ('szcz szcs', '2', '4', '4'),
+    ('szt shd szd sd', '2', '43', '43'),
+    ('sz', '4', '4', '4'),
+    ('s', '4', '4', '4'),
+    ('tch ttch ttsch', '4', '4', '4'),
+    ('th', '3', '3', '3'),
+    ('trz trs', '4', '4', '4'),
+    ('tsch tsh', '4', '4', '4'),
+    ('ts tts ttsz tc', '4', '4', '4'),
+    ('tz ttz tzs tsz', '4', '4', '4'),
+    ('ţ ț', '3|4', '3|4', '3|4'),   # Romanian t-cedilla (and t-comma): 3 or 4
+    ('t', '3', '3', '3'),
+    ('ui uj uy', '0', '1', ''),
+    ('u ue', '0', '', ''),
+    ('v', '7', '7', '7'),
+    ('w', '7', '7', '7'),
+    ('x', '5', '54', '54'),
+    ('y', '1', '', ''),
+    ('zdz zdzh zhdzh', '2', '4', '4'),
+    ('zd zhd', '2', '43', '43'),
+    ('zh zs zsch zsh', '4', '4', '4'),
+    ('z', '4', '4', '4'),
+)
+
+DM_RULES: dict[str, tuple[str, str, str]] = {
+    group: (start, before_vowel, other)
+    for groups, start, before_vowel, other in _DM_CHART
+    for group in groups.split()
+}
+DM_LONGEST = max(len(group) for group in DM_RULES)
+DM_VOWELS = frozenset('aeiouąę')
+# The letters the chart codes in their own right, so they are kept as they
+# are instead of being folded to a plain letter first.
+_DM_OWN_LETTERS = frozenset('ąęţț')
+
+
+def _dm_letters(name: str) -> str:
+    """The letters D-M reads from a name: lower case, the chart's own letters
+    (ą, ę, ţ, ț) kept, ß read as one s, every other accented letter folded to
+    its base letter (`fold_accents`: ł to l, ń to n, ü to u), and everything
+    that is not a letter a-z dropped. Dropping the spaces and hyphens is the
+    chart's rule that a name of several words ("Ben Aron") is coded as one."""
+    out: list[str] = []
+    for ch in str(name or '').lower():
+        if ch in _DM_OWN_LETTERS:
+            out.append(ch)
+        elif ch == 'ß':
+            out.append('s')
+        else:
+            out.extend(c for c in fold_accents(ch) if 'a' <= c <= 'z')
+    return ''.join(out)
+
+
+def dm_soundex(name: str) -> list[str]:
+    """Every Daitch-Mokotoff code of a name in Latin letters, each six digits:
+    `dm_soundex('Peters')` is `['739400', '734000']`, `dm_soundex('')` is `[]`.
+
+    The rules, as the chart states them. The name is read left to right,
+    always taking the longest letter group the chart knows (`schtsch` before
+    `sch` before `s`). Each group has three codes: one at the start of the
+    name, one when the next letter is a vowel, one otherwise. A code may be
+    empty (most vowels after the first letter) or have two readings (C, CH,
+    CK, J, RS, RZ, Ą, Ę, Ţ), which splits the result in two. A sound that
+    repeats the end of the code written so far is written once, except
+    that an M beside an N is always written (Kleinman is 586660); a group
+    with no code between them means the second is written again. Each
+    result is padded with zeros or cut to six digits. A name can therefore
+    have several codes, and two names sound alike when they share one.
+
+    A name with no Latin letter (empty, digits, Hebrew script) has no code.
+    Cyrillic is transliterated first by `name_sound_codes`, not here.
+    """
+    letters = _dm_letters(name)
+    if not letters:
+        return []
+    branches: list[tuple[str, str | None]] = [('', None)]   # (code so far, last sound read)
+    i = 0
+    while i < len(letters):
+        for size in range(min(DM_LONGEST, len(letters) - i), 0, -1):
+            group = letters[i:i + size]
+            if group in DM_RULES:
+                break
+        else:
+            i += 1
+            continue
+        start, before_vowel, other = DM_RULES[group]
+        following = letters[i + size] if i + size < len(letters) else ''
+        readings = (start if i == 0
+                    else before_vowel if following in DM_VOWELS
+                    else other).split('|')
+        always = i > 0 and {letters[i - 1], letters[i]} == {'m', 'n'}
+        grown: list[tuple[str, str | None]] = []
+        for code, last in branches:
+            for sound in readings:
+                if always or last is None or not last.endswith(sound):
+                    grown.append(((code + sound)[:6], sound))
+                else:
+                    grown.append((code, sound))
+        branches = list(dict.fromkeys(grown))
+        i += size
+    return list(dict.fromkeys((code + '000000')[:6] for code, _last in branches))
+
+
+_SOUNDEX_DIGITS: dict[str, str] = {
+    letter: digit
+    for letters, digit in (('bfpv', '1'), ('cgjkqsxz', '2'), ('dt', '3'),
+                           ('l', '4'), ('mn', '5'), ('r', '6'))
+    for letter in letters
+}
+
+
+def american_soundex(name: str) -> str:
+    """The census Soundex code the National Archives files names under: the
+    first letter and three digits, `american_soundex('Washington')` is
+    `'W252'`, `american_soundex('')` is `''`.
+
+    The National Archives' rules: keep the first letter; code B F P V 1,
+    C G J K Q S X Z 2, D T 3, L 4, M N 5, R 6; letters with the same digit
+    side by side count once, and so does a letter with the first letter's
+    digit (Pfister is P236); H and W between two such letters do not
+    separate them (Ashcraft is A261), a vowel does (Tymczak is T522); pad
+    with zeros. The Archives' page names A, E, I, O, U as the separating
+    vowels and is silent on Y; Y is a vowel here, as in Knuth's statement of
+    the rules. A prefix (Van, De, La) is coded as written: the Archives say
+    to look under both, and the caller can code the name without it."""
+    letters = ''.join(c for c in fold_accents(str(name or '')).lower() if 'a' <= c <= 'z')
+    if not letters:
+        return ''
+    digits: list[str] = []
+    previous = _SOUNDEX_DIGITS.get(letters[0], '')
+    for ch in letters[1:]:
+        if ch in 'hw':
+            continue
+        digit = _SOUNDEX_DIGITS.get(ch, '')
+        if digit and digit != previous:
+            digits.append(digit)
+        previous = digit
+    return (letters[0].upper() + ''.join(digits) + '000')[:4]
+
+
+# Cyrillic names, and one given name in several languages.
+#
+# Ported from igormel81/genealogy-mcp, src/genealogy_mcp/names.py at commit
+# 2aa2cb0dcf94904e04cd481ebba71808e1b68ae9
+# (https://github.com/igormel81/genealogy-mcp). What was changed: only the
+# passport, German and Polish transliterations are kept (the three the sound
+# match reads); the given-name rows are kept as published except that
+# Ганна (the Ukrainian Anna) is taken out of the Agafya row, where it would
+# have made every Hanna an Agatha; the given-name lookup folds accents
+# (Paweł finds Pawel); names reformatted to this file's style.
+#
+# MIT License
+#
+# Copyright (c) 2026 Igor Melnikov
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+CYRILLIC_LETTERS = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґѣѳѵ'
+def has_cyrillic(text: str) -> bool:
+    """True when `text` holds a Cyrillic letter (Russian, Ukrainian, or the
+    pre-1918 letters ѣ ѳ ѵ)."""
+    return any(ch in CYRILLIC_LETTERS for ch in str(text or '').lower())
+
+
+# The Latin letters for each Cyrillic one, in CYRILLIC_LETTERS order. The
+# passport table is the one Russian passports use (ICAO Doc 9303); a German
+# or Polish clerk wrote the same name the way it sounded in his language.
+TRANSLIT: dict[str, dict[str, str]] = {
+    'passport': dict(zip(CYRILLIC_LETTERS, (
+        'a b v g d e e zh z i i k l m n o p r s t u f kh ts ch sh shch ie y  '
+        'e iu ia i i ie g e f i').split(' '))),
+    'german': dict(zip(CYRILLIC_LETTERS, (
+        'a b w g d e jo sch s i i k l m n o p r s t u f ch z tsch sch schtsch  y  '
+        'e ju ja i ji je g e f i').split(' '))),
+    'polish': dict(zip(CYRILLIC_LETTERS, (
+        'a b w g d e io ż z i j k ł m n o p r s t u f ch c cz sz szcz  y  '
+        'e iu ia i ji je g e f i').split(' '))),
+}
+# A letter at the start of a word (or after a vowel) that a system writes
+# differently there: German writes a word-initial е as je.
+TRANSLIT_INITIAL: dict[str, dict[str, str]] = {
+    'passport': {'е': 'e', 'ю': 'iu', 'я': 'ia'},
+    'german': {'е': 'je'},
+}
+_CYRILLIC_VOWELS = 'аеёиоуыэюяъьіїє'
+
+# One row per given name: its forms across languages and church records,
+# including the Hebrew and Yiddish names and how Russian and Polish clerks
+# wrote them. A row can join names a family did not think of as the same
+# (Chaja and Ida); the search output says when a given name was widened.
+GIVEN_NAME_ROWS: tuple[str, ...] = (
+    'Иван Іоаннъ Иоанн Іван Ян Jan Johann Johannes John Ivan Iwan Ioan Ion Juan João Giovanni Jean Jonas Ioannes Janis Jānis Jonas',
+    'Пётр Петр Петръ Пётр Петро Piotr Peter Pierre Pedro Pietro Petrus Petru Pēteris Petras',
+    'Павел Павелъ Павло Paweł Paul Pablo Paulo Paolo Paulus Pavel Pavlo Paulius',
+    'Михаил Михаилъ Михайло Michał Michael Michel Miguel Michele Michael Mihai Mihail Mykhailo Mykolas',
+    'Николай Николай Микола Mikołaj Nikolaus Nicholas Nicolas Nicolás Nicola Nicolae Mykola Nikolai Mikalojus',
+    'Георгий Георгій Юрий Егор Юрій Jerzy Georg George Georges Jorge Giorgio Gheorghe Yurii Yuri Jurgis',
+    'Андрей Андрей Андрій Andrzej Andreas Andrew André Andrés Andrea Andrei Andrii Andrius',
+    'Алексей Алексѣй Олексій Aleksy Alexis Alejo Alessio Alexei Oleksii',
+    'Александр Александръ Олександр Aleksander Alexander Alexandre Alejandro Alessandro Alexandru Oleksandr Aleksandras',
+    'Василий Василій Василь Bazyli Basilius Basil Basile Basilio Vasile Vasyl Vasilii',
+    'Фёдор Федор Феодоръ Хведір Федір Teodor Theodor Theodore Théodore Teodoro Fiodor Fedir Fyodor',
+    'Яков Іаковъ Яків Jakub Jakob Jacob Jacques Jaime Santiago Giacomo Iacob Yakiv Jokūbas',
+    'Иосиф Іосифъ Осип Йосип Józef Joseph Josef José Giuseppe Iosif Yosyp Juozapas',
+    'Григорий Григорій Григорій Grzegorz Gregor Gregory Grégoire Gregorio Grigore Hryhorii',
+    'Стефан Степан Стефанъ Степан Szczepan Stefan Stephan Stephen Étienne Esteban Stefano Ștefan Stepan Steponas',
+    'Матвей Матфей Матвій Mateusz Matthäus Matthew Mathieu Mateo Matteo Matei Matvii',
+    'Даниил Данила Данило Daniel Daniele Danylo Danielius',
+    'Моисей Мовша Мойша Моше Мозес Moshe Moishe Movsha Mowsza Mojżesz Moses Moise Moisei',
+    'Исаак Ицка Ицко Ицхак Ицик Isaak Isaac Icek Icko Itzik Yitzchak Itzhak Izaak',
+    'Авраам Абрам Аврум Абрамка Avraham Abraham Abram Avrum Abrom',
+    'Янкель Янкиель Яков Иаков Yankel Jankiel Jankel Yaakov Jacob Jakob',
+    'Шмуль Шмуэль Самуил Самуэль Shmuel Szmul Schmul Samuel',
+    'Лейба Лейб Лев Лёва Лейзер Leib Lejb Leyb Lejba Leon Leo Lev',
+    'Хаим Хаймо Ефим Хаймович Chaim Chaim Haim Chaym Hyman Efim',
+    'Гирш Герш Хирш Гершон Hirsch Hirsz Hersh Hersz Herschel Gersh Grigori',
+    'Берко Бер Бэр Берл Борух Барух Ber Berko Berl Boruch Baruch Bernard Boris',
+    'Мендель Менахем Мендл Mendel Mendl Menachem Emanuel',
+    'Сара Сарра Сура Сорка Sarah Sara Sura Sora Surka',
+    'Ривка Ревекка Рива Rivka Rywka Riva Rebecca Rebekah Rebeka',
+    'Рахиль Рохля Рахель Rachel Rochla Rachela Ruchla Rokhl',
+    'Лея Лия Лиза Leah Lea Laja Laya',
+    'Хая Хава Ева Chaja Chaya Chawa Eva Ida',
+    'Голда Голде Golda Golde Goldie',
+    'Фейга Фейге Фаина Fejga Feiga Feige Fanny Faina',
+    'Двойра Дебора Двора Dwojra Dvoira Deborah Dora Vera',
+    'Малка Малке Malka Malke Molly Manya',
+    'Марк Mark Marek Markus Marc Marcos Marco Marcu',
+    'Анна Ганна Hanna Anna Anne Ana Anne Anica',
+    'Мария Марія Марья Маріа Maria Marie Mary María Marija Marya Mariia',
+    'Екатерина Екатерина Катерина Katarzyna Katharina Catherine Catalina Caterina Ecaterina Kateryna Kotryna',
+    'Елизавета Елисавета Єлизавета Elżbieta Elisabeth Elizabeth Élisabeth Isabel Elisabetta Elisabeta Yelyzaveta',
+    'Евдокия Авдотья Явдоха Eudokia Eudoxia Evdokiia Yevdokiia',
+    'Пелагея Палагея Пелагія Pelagia Pélagie Pelagia',
+    'Агафья Агафія Agata Agathe Agatha Ágata Agata',
+    'Ксения Аксинья Оксана Ксенія Ksenia Xenia Oksana Kseniia',
+    'Софья София Софія Zofia Sophie Sophia Sofía Sofia',
+    'Татьяна Татіана Тетяна Tatiana Tatjana Tetiana',
+    'Наталья Наталия Наталія Natalia Natalie Nathalie Natália Natalia',
+    'Ольга Ольга Olga Olha Olga',
+    'Евфросиния Ефросинья Фрося Єфросинія Eufrozyna Euphrosyne Eufrosina',
+    'Параскева Прасковья Параска Paraskewa Paraschiva Parascovia',
+)
+
+
+def _given_name_key(word: str) -> str:
+    """The lookup key for a given name: lower case, and a Latin name's
+    accents folded (José finds Jose). Cyrillic is only lower-cased, because
+    folding would turn й into и and ё into е, which are different letters
+    there."""
+    text = str(word or '').strip().lower()
+    return text if has_cyrillic(text) else fold_accents(text)
+
+
+_GIVEN_NAME_INDEX: dict[str, set[int]] = {}
+for _row_number, _row in enumerate(GIVEN_NAME_ROWS):
+    for _form in _row.split():
+        _GIVEN_NAME_INDEX.setdefault(_given_name_key(_form), set()).add(_row_number)
+del _row_number, _row, _form
+
+
+def translit(text: str, system: str = 'passport') -> str:
+    """`text` with its Cyrillic letters written in Latin ones by `system`
+    (`passport`, `german` or `polish`); Latin letters pass through, so
+    `translit('Hartley')` is `'Hartley'`. `translit('Колодин')` is
+    `'Kolodin'`, `translit('Иван', 'german')` is `'Iwan'`.
+
+    A record from the Russian Empire may write one name in Cyrillic, a
+    German-speaking clerk's spelling of it, a Polish one, and the passport
+    form an emigrant carried; the sound match reads all three."""
+    table = TRANSLIT.get(system, TRANSLIT['passport'])
+    base = TRANSLIT['passport']
+    text = str(text or '')
+    out: list[str] = []
+    for i, ch in enumerate(text):
+        low = ch.lower()
+        if low not in base:
+            out.append(ch)
+            continue
+        at_start = i == 0 or not text[i - 1].isalpha() or text[i - 1].lower() in _CYRILLIC_VOWELS
+        latin = TRANSLIT_INITIAL.get(system, {}).get(low) if at_start else None
+        if latin is None:
+            latin = table.get(low, base[low])
+        out.append(latin.capitalize() if ch.isupper() and latin else latin)
+    result = ''.join(out)
+    if system == 'german':
+        # German writes one s between vowels as ss, or it would read as z.
+        result = re.sub(r'(?<=[aeiouyAEIOUY])s(?=[aeiouy])', 'ss', result)
+    return result
+
+
+def given_name_equivalents(word: str) -> list[str]:
+    """The other forms of a given name, from `GIVEN_NAME_ROWS`: for 'Jan',
+    John, Johann, Ivan, Иван and the rest. A name in no row (most surnames)
+    has none: `[]`. The word itself is left out."""
+    key = _given_name_key(word)
+    out: list[str] = []
+    for row_number in sorted(_GIVEN_NAME_INDEX.get(key, ())):
+        out += GIVEN_NAME_ROWS[row_number].split()
+    return list(dict.fromkeys(form for form in out if _given_name_key(form) != key))
+
+
+def name_sound_words(text: str) -> list[str]:
+    """The words of a name, as the sound match compares them: apostrophes
+    taken out (O'Brien is OBrien), then split at anything that is not a
+    letter (spaces, hyphens, dots, digits). `'Margaret A. Cole'` gives
+    `['Margaret', 'A', 'Cole']`."""
+    text = unicodedata.normalize('NFC', str(text or ''))
+    text = re.sub(r"['’ʼ`]", '', text)
+    return re.findall(r'[^\W\d_]+', text)
+
+
+def name_sound_codes(word: str) -> set[str]:
+    """Every Daitch-Mokotoff code of one word of a name. A Cyrillic word is
+    coded through its passport, German and Polish spellings together, so
+    Иван sounds like Ivan and Iwan. A word in another script has no code
+    (an empty set)."""
+    if has_cyrillic(word):
+        forms = [translit(word, system) for system in ('passport', 'german', 'polish')]
+    else:
+        forms = [word]
+    codes: set[str] = set()
+    for form in forms:
+        codes.update(dm_soundex(form))
+    return codes
 
 
 # Generational suffixes SPEC §13's filename split must never mistake for a

@@ -33,8 +33,9 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    fha find --related <p-b>          # B's world
    fha cooccur                        # shared-source signal (do they keep appearing together?)
    fha relate <p-a> <p-b>             # is there already a relationship path between them?
+   fha find --sounds-like "<surname>"  # a third record, spelled differently, that belongs in the comparison?
    ```
-   Read both records directly for their vitals, `name_variants`, and existing claims.
+   Read both records directly for their vitals, `name_variants`, and existing claims. A name that only sounds alike is a reason to look, never evidence for the merge.
 
 2. **Lay out the evidence for and against, plainly.** Give the human a two-column read he can judge:
    - **For same-person:** at least two independent facts beyond the name that agree (the same birth year and place, the same parents, spouse or children, shared sources naming both, the same associates), and no relationship path that would make them distinct (you don't merge a father into his son). A matching name alone never makes the case. Count each fact by where it came from: an index and the record it indexes, or two online trees, agree because one copied the other, and that is one fact.

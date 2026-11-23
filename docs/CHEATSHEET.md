@@ -40,6 +40,7 @@ fha process "inbox/the-file-you-added.jpg"   # file one new inbox item
 fha process "inbox/Trip/IMG_0001.jpg" --type photo --dest "Trip"   # a photo, into a folder of your photo library
 fha report                    # the review queue and research leads
 fha find --text "Rose Hartley"   # search everything
+fha find --sounds-like "Hartley"   # names that sound alike, every spelling
 fha doctor                    # health check: run this when stuck
 fha lint                      # "is my archive shaped right?"
 fha lint --changed            # quick check before a commit: only what changed since the last one

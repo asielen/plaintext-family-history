@@ -711,6 +711,16 @@ Ranked search for pickers and autocomplete; `/api/find` wraps the same engine.
 - `--limit` default 20. Works with a bare query or `--text`.
 - Absent/incompatible index: exit 3, plain message. With `--related`: refused, naming supported combinations (exit 2).
 
+### `--sounds-like NAME [--limit N] [--json]`
+
+The people whose names sound like NAME in any spelling the archive holds (Hartley, Hartly; Kowalski, Kowalska, Kovalsky), grouped by the spelling that matched. Every word of NAME must sound like some word of one of the person's public names (`name`, public `name_variants`, and the public names mirrored into `aliases:`, such as a married name), in any order; a word that is a known given name also matches its forms in other languages (Jan, John, Johann, Иван). Merged tombstones are left out, and a restricted name is never read.
+
+- **Sound codes.** Two words sound alike when their Daitch-Mokotoff codes share one (`_lib.dm_soundex`, written from Gary Mokotoff's published coding chart; a name can have several codes). A Cyrillic word is coded through its passport, German and Polish spellings (`_lib.name_sound_codes`). The header prints each word's D-M codes, which search every spelling at once on JewishGen and Stephen Morse's pages, and its census Soundex code (`_lib.american_soundex`, the National Archives' rules), which the 1880-1930 census Soundex cards are filed under. A prefix (Van, De, La) is coded as written; the Archives file such names under both forms.
+- **Words.** Apostrophes are dropped (O'Brien is OBrien) and anything else that is not a letter splits words. A one-letter word is an initial and is not compared.
+- **Ranking.** People with more words in the query's exact spelling (accents and case aside) first, then by name; a group sits where its best person does. `--limit` (default 50) cuts the people listed and says how many more there are.
+- **Output.** Each person with their years (own accepted birth or baptism and death or burial, else the record's provisional `birth:`/`death:`) and p-id, a name other than their main one shown as "as …", and the closing line "Sounding alike is only a hint: these can be different families." `--json`: one array `[{id, type: "person", label, detail, matched}]` on stdout (`[]` on no match), `matched` being the spelling that matched; messages on stderr.
+- **Exit codes.** 0 found; 1 no one sounds like it; 2 a name that cannot be compared (no Latin or Cyrillic letters, initials only, empty), or `--date`/`--kind` given with it; 3 no usable index (no fallback scan).
+
 ### Index freshness (D9)
 
 Shared by `find`, `doctor`, `views`, `photoindex`.
@@ -1779,6 +1789,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
+| `fha find --sounds-like "NAME"` (T C) | "Is she spelled another way somewhere?" The people whose names sound like NAME in any spelling, grouped by spelling, with the Daitch-Mokotoff and census Soundex codes (§4a). A hint, never a merge; `merge-identities` and `research-next` use it. |
 | `find-photos` skill (A) | "Show me grandma's photos." Answers from the photo index, offers the gallery page. Read-only. |
 | `photo-context` skill (A) | "What do we know about this photo?" Drafts a better caption from the archive's own knowledge; human approves exact text; writes via `set-summary`. |
 | `share-and-export` skill (A) | "Export this for my aunt." Routes to packet/gedcom/site/wikitree/backup; speaks privacy defaults before running. |

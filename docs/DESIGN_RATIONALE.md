@@ -21,6 +21,8 @@ Contents:
 11. Geocoding: one table, one yes
 12. Merging two sources
 13. Linking place text: the hierarchy rule
+14. One vendored D3 for interactive charts
+15. Sounds-alike search
 
 ---
 
@@ -351,3 +353,18 @@ Other limits:
 - **Several D3 module files.** More files to pin and check, and nothing gained for a page that loads them all.
 - **Loading D3 from a CDN.** It fails offline and on a machine without a network.
 - **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.
+
+## 15. Sounds-alike search
+
+**The rule.** `fha find --sounds-like NAME` lists the people whose public names sound like NAME, grouped by spelling. Two words sound alike when their Daitch-Mokotoff codes share one; every word typed must sound like a word of one of the person's names, and a known given name also matches its forms in other languages (Jan, John, Johann, Иван). A Cyrillic name is compared through its passport, German and Polish spellings. The output says that sounding alike is only a hint, and nothing is written.
+
+**Why.** A family's name drifts across records: a census taker hears Hartly, a Polish priest writes Kowalska for a wife, an emigrant's papers say Kovalsky. A search for one spelling misses the rest, and those misses look like absence. Daitch-Mokotoff is the code JewishGen and the Eastern European indexes use, so the codes in the header also search those sites, and its rules were made for the Slavic and Yiddish spellings these families carry. The census Soundex code is printed beside it because the 1880-1930 census cards are filed under it. Matching every typed word, in any order, finds "Jan Kowalski" written "Kowalski, John" without matching every Jan in the archive.
+
+The D-M coder is written from Gary Mokotoff's published chart, and its tests pin the codes JewishGen, Wikipedia, Avotaynu and the National Archives publish. The transliteration tables and given-name rows come from genealogy-mcp (MIT, Igor Melnikov), with its notice above them in `_lib.py`.
+
+**Rejected.**
+
+- **American Soundex as the matcher.** It keeps only the first letter and three sounds and splits Slavic spellings D-M keeps together (Moskowitz M232, Moskovitz M213); it is printed for the census cards, not used to match.
+- **Edit distance (fuzzy spelling).** It groups names that look alike, not names that sound alike (Hart and Hurt), and its threshold has no right value.
+- **Rewriting or normalising names.** A name stays as each record wrote it; the spelling is evidence. The search reads the spellings and changes none.
+- **Reading restricted names.** A private prior name sits beside the public ones in the index's alias rows; the search reads only the public names, so it never prints one.

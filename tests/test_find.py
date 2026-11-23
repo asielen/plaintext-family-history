@@ -2586,5 +2586,185 @@ class JsonUncheckedKeyTests(unittest.TestCase):
         self.assertNotIn('unchecked', by_id[self.paths['checked']])
 
 
+# ── --sounds-like: names that sound alike ─────────────────────────────────────
+
+_SOUNDS_LIKE_PEOPLE = {
+    # A second spelling of the family name.
+    'stubs/hartly__ann_p-snd0000001.md': (
+        'id: p-snd0000001\naliases: [p-snd0000001, Ann Hartly]\nname: Ann Hartly\n'
+        'living: false\ntier: stub\n'),
+    # A private prior name that sounds like Hartley: never read, never shown.
+    'stubs/smith__mary_p-snd0000002.md': (
+        'id: p-snd0000002\naliases: [p-snd0000002, Mary Smith]\nname: Mary Smith\n'
+        'name_variants:\n  - {value: Hartlie, restricted: true}\n'
+        'living: false\ntier: stub\n'),
+    'stubs/kovalsky__john_p-snd0000003.md': (
+        'id: p-snd0000003\naliases: [p-snd0000003, John Kovalsky]\nname: John Kovalsky\n'
+        'living: false\ntier: stub\n'),
+    # A merged tombstone: its name now belongs to the survivor.
+    'stubs/MERGED-INTO-p-de957bcda1__hartlee__thomas_p-snd0000004.md': (
+        'id: p-snd0000004\naliases: [p-snd0000004]\nname: Thomas Hartlee\n'
+        'status: merged\nmerged_into: p-de957bcda1\nmerge_reason: same man\n'
+        'merged_date: 2026-11-01\nliving: false\ntier: stub\n'),
+    'stubs/kolodin__ivan_p-snd0000005.md': (
+        'id: p-snd0000005\naliases: [p-snd0000005, Иван Колодин]\nname: Иван Колодин\n'
+        'living: false\ntier: stub\n'),
+}
+
+
+class SoundsLikeTests(unittest.TestCase):
+    """`fha find --sounds-like NAME`: a copy of example-archive (the Hartley
+    family) plus a second spelling, a private name, a Slavic spelling, a
+    merged tombstone and a Cyrillic name, indexed once for the class."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import index as index_mod
+        from _lib import load_fha_yaml
+        cls._tmp = tempfile.TemporaryDirectory()
+        root = Path(cls._tmp.name) / 'archive'
+        shutil.copytree(ROOT / 'example-archive', root,
+                        ignore=shutil.ignore_patterns('generated', '.cache'))
+        for rel, front in _SOUNDS_LIKE_PEOPLE.items():
+            path = root / 'people' / rel
+            name = front.split('name: ', 1)[1].split('\n', 1)[0]
+            path.write_text(f'---\n{front}---\n\n# {name}\n', encoding='utf-8')
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            index_mod.build_index(root, load_fha_yaml(root))
+        cls.root = root
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def _find(self, argv: list[str]) -> tuple[int, str, str]:
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers()
+        find.register(subs)
+        args = parser.parse_args(['find', *argv])
+        args.root = str(self.root)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = find._run_find(args)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_every_spelling_of_hartley(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Hartley'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        for pid in ('p-de957bcda1', 'p-075114a0f8', 'p-snd0000001'):
+            self.assertIn(pid, out)
+        self.assertIn('Ann Hartly', out)
+        self.assertIn('593800', out)                      # the D-M code
+        self.assertIn('H634', out)                        # the census Soundex code
+        self.assertIn('only a hint', out)
+        # The exact spelling's group comes before the other spelling's.
+        self.assertLess(out.index('Thomas Edward Hartley'), out.index('Ann Hartly'))
+
+    def test_a_married_name_finds_the_woman(self) -> None:
+        # Margaret A. Cole's married name, Margaret Hartley, is public and
+        # mirrored in her aliases:.
+        rc, out, _err = self._find(['--sounds-like', 'Hartley'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('p-cd795c61e0', out)
+        self.assertIn('Margaret Hartley', out)
+
+    def test_a_private_name_is_never_read(self) -> None:
+        rc, out, err = self._find(['--sounds-like', 'Hartley'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        for text in (out, err):
+            self.assertNotIn('Hartlie', text)
+            self.assertNotIn('p-snd0000002', text)
+            self.assertNotIn('Mary Smith', text)
+
+    def test_a_merged_tombstone_is_left_out(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Hartley'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('p-snd0000004', out)
+        self.assertNotIn('Hartlee', out)
+
+    def test_given_name_in_another_language_and_slavic_spelling(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Jan Kowalski'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('John Kovalsky', out)
+        self.assertIn('Johann', out)          # the widened given name is said
+        rc, out, _err = self._find(['--sounds-like', 'Jan', 'Kowalski'])   # unquoted
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('John Kovalsky', out)
+        # Jan and Иван share no sound code: only the given-name row joins them.
+        rc, out, _err = self._find(['--sounds-like', 'Jan Kolodin'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-snd0000005', out)
+
+    def test_cyrillic_name_is_found_from_latin_spelling(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Ivan Kolodin'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-snd0000005', out)
+        rc, out, _err = self._find(['--sounds-like', 'Kołodin'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertIn('p-snd0000005', out)
+
+    def test_no_match_exits_1(self) -> None:
+        rc, out, err = self._find(['--sounds-like', 'Zzyzx'])
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertIn('No one in the archive has a name that sounds like "Zzyzx"', out + err)
+
+    def test_other_scripts_and_initials_are_refused(self) -> None:
+        rc, out, err = self._find(['--sounds-like', 'משה'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('Latin or Cyrillic', err)
+        rc, out, err = self._find(['--sounds-like', 'T. E.'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('whole name', err)
+        rc, out, err = self._find(['--sounds-like', ''])
+        self.assertEqual(rc, EXIT_ERRORS)
+
+    def test_date_and_kind_are_refused(self) -> None:
+        rc, _out, err = self._find(['--sounds-like', 'Hartley', '--date', '1900'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--date', err)
+        rc, _out, err = self._find(['--sounds-like', 'Hartley', '--kind', 'person'])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertIn('--kind', err)
+
+    def test_json_prints_one_array(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Hartley', '--json'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1)
+        hits = json.loads(lines[0])
+        self.assertIsInstance(hits, list)
+        by_id = {h['id']: h for h in hits}
+        self.assertEqual(by_id['p-snd0000001']['matched'], 'Hartly')
+        self.assertEqual(by_id['p-snd0000001']['type'], 'person')
+        self.assertEqual(by_id['p-snd0000001']['label'], 'Ann Hartly')
+        self.assertIn('detail', by_id['p-snd0000001'])
+        self.assertNotIn('p-snd0000002', by_id)
+
+    def test_json_no_match_is_an_empty_array(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Zzyzx', '--json'])
+        self.assertEqual(rc, EXIT_WARNINGS)
+        self.assertEqual(json.loads(out), [])
+
+    def test_limit_says_how_many_more(self) -> None:
+        rc, out, _err = self._find(['--sounds-like', 'Hartley', '--limit', '2'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('more', out)
+        self.assertIn('--limit', out)
+
+    def test_missing_index_exits_3(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
+            parser = argparse.ArgumentParser()
+            subs = parser.add_subparsers()
+            find.register(subs)
+            args = parser.parse_args(['find', '--sounds-like', 'Hartley'])
+            args.root = tmp
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                rc = find._run_find(args)
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertIn('fha index', err.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()
