@@ -304,7 +304,6 @@ from _lib import (
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
-    has_recorded_child,
     is_known_adult,
     is_valid_edtf,
     is_valid_id,
@@ -8390,10 +8389,32 @@ class _SiteBuilder:
         asked = [survivor['id']] + [
             r['id'] for r in chain[:-1]
             if merge_pointer(r['status'], r['merged_into']) is None]
-        # A recorded child on any of them makes an adult (D20, owner).
-        adult = (any(has_recorded_child(self.conn, rid) for rid in asked)
-                 or all(is_known_adult(self.conn, rid, today) for rid in asked))
+        # A recorded child on any of them makes an adult (D20, owner), but
+        # only a child link the site may show: a tie the owner kept private
+        # (a restricted record, a by-request child) must not be what earns
+        # the card, or the card itself tells a relative it exists.
+        adult = (any(self._has_public_child(rid) for rid in asked)
+                 or all(is_known_adult(self.conn, rid, today, count_children=False)
+                        for rid in asked))
         return 'private' if adult else 'omit'
+
+    def _has_public_child(self, pid: str) -> bool:
+        """Whether `pid` has a recorded child the shared site may show: the
+        tie backed by a publishable claim (`_has_public_claim`) and the child
+        not restricted or by-request (anyone on their merge chain)."""
+        for r in self.conn.execute(
+                "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'child'",
+                (pid,)):
+            child = r[0]
+            if not self._has_public_claim(pid, child):
+                continue
+            meta = self.person_meta.get(child)
+            chain = self._merge_chain(meta) if meta is not None else []
+            if merge_survivor(chain) is None or any(
+                    c['id'] in self.restricted_persons for c in chain):
+                continue
+            return True
+        return False
 
     def _tree_card_entry(self, pid: str, page_dir: Path) -> dict:
         """A home-tree card for `pid`, per `_tree_card_kind`. A private card

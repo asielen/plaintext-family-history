@@ -6617,6 +6617,38 @@ class HomeTreePrivateCardTests(_Base):
         self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', '2010',
                              'Sky Hartley', 'p-zaaaaaaaaa')
 
+    def test_a_child_the_owner_kept_private_does_not_make_a_teen_a_private_card(self):
+        # Delta review of PR #436: a 16-year-old whose only child is linked
+        # by a restricted record, or is a by-request person, drew a "Private"
+        # card. A relative who knows their age could read from the card the
+        # very tie the owner withheld. Only a child link the site may show
+        # counts toward "adult".
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._seed_source('s-rr00000001', 'Private letter', source_type='letter', restricted=1)
+        self._seed_claim('c-rr00000001', 's-rr00000001', 'relationship', 'Robin is Sky\'s parent',
+                         persons=('p-kaaaaaaaaa', 'p-zaaaaaaaaa'))
+        self._seed_rel('p-zaaaaaaaaa', 'parent', 'p-kaaaaaaaaa', claim_id='c-rr00000001')
+        self._seed_rel('p-kaaaaaaaaa', 'child', 'p-zaaaaaaaaa', claim_id='c-rr00000001')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'Sky Hartley', 'p-zaaaaaaaaa')
+
+    def test_a_by_request_child_does_not_make_a_teen_a_private_card(self):
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2010-01-01')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true',
+                     frontmatter_extra='restricted: by-request')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'Sky Hartley', 'p-zaaaaaaaaa')
+
     def test_an_unreviewed_birth_claim_still_keeps_a_minor_out(self):
         # The age test reads birth claims of any status: a suggested claim
         # saying "born 2015" is enough to leave a child out, though it is

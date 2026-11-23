@@ -6550,7 +6550,8 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
 ADULT_AGE_YEARS = 18
 
 
-def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> bool:
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date,
+                   *, count_children: bool = True) -> bool:
     """Whether a living relative may show on the shared site's family tree as
     a blank "Private" card, or must be left out because they may be a child
     (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
@@ -6568,6 +6569,10 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
       youngest one decides;
     - no birth date at all, and a baptism 18 or more years ago (they were
       born by then). A recent baptism says nothing.
+
+    `count_children=False` skips the child test, for a caller that must
+    count only the child links it may publish (the shared site: a child the
+    owner kept private must not be what earns a card).
 
     Anyone else is "not known to be an adult". The answer reads `today`
     (the build date), so a child who turns 18 changes it on the next
@@ -6602,7 +6607,7 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
                 out.append(latest_day(str(r[1])))
         return out
 
-    if has_recorded_child(conn, pid):
+    if count_children and has_recorded_child(conn, pid):
         return True
     latest = own_dates('birth')
     # The provisional `birth:` of the person AND of every record merged into
