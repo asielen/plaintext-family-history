@@ -164,6 +164,9 @@ CODE MAP
 
   Static charts (person page + home page, #115)
     _render_fan_svg            - radial ancestor fan, self-contained SVG
+    _fan_rings, _fan_fit_arc,  - the fan's rings (curved or radial by arc
+    _fan_fit_radial              length) and each label's lines and size
+    _chart_year                - the year a chart prints for a date
     _ancestor_branch           - Ahnentafel slot → paternal(1)/maternal(2) line
     _render_pedigree_svg       - horizontal family chart: siblings/children -
                                  subject/spouse(s) - N ancestor generations,
@@ -193,6 +196,8 @@ CODE MAP
                                  (scoped to the person's OWN vitals, #126)
     _chart_entry               - one redacted {name,url,dates} node; shared by the
                                  Ahnentafel walk and the family-wings walk below
+    _tree_card_kind            - shared site: 'shown', 'private' (living adult)
+                                 or 'omit' for one person in a tree
     _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree),
                                  already generation-agnostic (unchanged by #115)
     _build_family_wings        - spouse/child edges → pedigree's family-chart
@@ -292,7 +297,12 @@ from _lib import (
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
+    bracket_given_name,
     claim_is_own_vital,
+    edtf_bounds,
+    is_placeholder_name,
+    person_surname,
+    research_search_links,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -317,6 +327,7 @@ from _lib import (
     merge_pointer,
     merge_survivor,
     normalize_id,
+    person_other_name_entries,
     open_index_db,
     parse_filename,
     parse_questions,
@@ -481,12 +492,34 @@ _PICTURES_BEFORE_POOL = 8
 # workers busy while bounding the finished pictures held in memory.
 _PICTURE_QUEUE_PER_WORKER = 4
 
-# Ancestor generations drawn in the static fan chart (rings beyond the subject).
-# 3 = up to great-grandparents. Every ring then keeps its labels on a roomy
-# *curved* arc (the 4th ring would need cramped radial spokes that clip long
-# names); the fan auto-shrinks to the actual depth present, so a shallow tree
-# still renders small. One generation deeper than the person-page pedigree.
-_FAN_GENERATIONS = 3
+# Ancestor generations drawn in the person page's fan chart (rings beyond the
+# subject): 5 reaches great-great-great-grandparents. Inner rings, where an arc
+# is long, carry each name curved along the ring (given names, then surname,
+# then the years); outer rings, where a curved line would be too short to
+# read, run the name outward along the radius. The switch is chosen per ring by
+# arc length (`_fan_rings`), not fixed by generation. The fan shrinks to the
+# depth actually recorded, so a shallow tree still renders small. MAX is the
+# deepest fan the renderer lays out (each ring doubles the cells).
+_FAN_GENERATIONS = 5
+_FAN_GENERATIONS_MAX = 6
+
+# Fan geometry, in SVG user units (`_render_fan_svg`). A ring's labels follow
+# the arc while its mid-radius arc is at least _FAN_ARC_MIN long; arc rings are
+# _FAN_T_ARC thick, radial rings _FAN_T_RADIAL (room for a name read outward).
+# Label sizes run from the ring's cap down to the readable floor, and only
+# below the floor is a line shortened. _FAN_CW is a glyph's width in em for the
+# serif face, _FAN_LH the line height in em; the years line is drawn at
+# _FAN_YEARS_SCALE of the name's size.
+_FAN_R0 = 54
+_FAN_T_ARC = 64
+_FAN_T_RADIAL = 104
+_FAN_ARC_MIN = 72
+_FAN_PAD = 4
+_FAN_FS_MAX = {1: 13.0, 2: 12.0, 3: 11.0, 4: 10.0, 5: 9.5, 6: 9.0}
+_FAN_FS_MIN = 8.0
+_FAN_CW = 0.66
+_FAN_LH = 1.15
+_FAN_YEARS_SCALE = 0.85
 
 # Home pedigree ancestor depth (#115), overridable via
 # `site.home_pedigree_generations`. DEFAULT is the decided answer to the
@@ -721,6 +754,31 @@ def _restricted_type(value) -> str | None:
     if value in (True, 'true'):
         return 'plain'
     return str(value).strip().lower() or 'plain'
+
+
+def _research_public_name(meta: dict, field: str) -> str:
+    """The first public name in one other-name field (`married_name`,
+    `name_at_birth`), read the one way every exporter reads them
+    (`person_other_name_entries`: plain text, a `{value, restricted}`
+    mapping, or a list of either); '' when there is none. A restricted name
+    never goes into a search link."""
+    for f, value, marker in person_other_name_entries(meta):
+        if f == field and not _is_restricted_value(marker):
+            return value
+    return ''
+
+
+# A name word that only says the archive does not know the name. A search for
+# "Unknown Reed" finds almost nothing, so the word is left out of the link.
+_RESEARCH_UNKNOWN_NAME = frozenset({
+    'unknown', 'unk', 'unnamed', 'baby', 'infant', 'fnu', 'lnu', 'none',
+    'null', 'nn', 'n.n', '?'})
+
+
+def _research_known(word: str) -> str:
+    """`word`, or '' when it is only a stand-in for a name nobody knows."""
+    core = word.strip('[]().').casefold()
+    return '' if not core or core in _RESEARCH_UNKNOWN_NAME else word
 
 
 # ── Prose / HTML ────────────────────────────────────────────────────────────
@@ -3048,35 +3106,268 @@ def _real_path(path: str | Path) -> Path:
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
-def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60) -> str:
+def _chart_year(edtf) -> str:
+    """The year a chart prints for a date, keeping what the date means: a
+    death recorded "before 1920" must not read as a death in 1920. Charts show
+    years only; the person's page carries the full date. Owner decision
+    (2026-11-22) on the short forms:
+
+    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
+      '1840?' are both '1840');
+    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
+    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
+    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
+    - an interval `1918/1920`: '1918–1920', or the one year when both ends
+      fall in it.
+
+    Anything else falls back to the first four-digit run, or '' when there is
+    none. Used by the fan and the family chart alike."""
+    if not edtf:
+        return ''
+    s = str(edtf).strip()
+    if '/' in s:
+        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
+        if ends[0] and ends[1]:
+            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
+        return ends[0] or ends[1]
+    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
+    if m:
+        return f'bef. {m.group(1)}'
+    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
+    if m:
+        return f'aft. {m.group(1)}'
+    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
+    if m:
+        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
+    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
+    if m:
+        return f'abt. {m.group(1) or m.group(2)}'
+    return _chart_bare_year(s)
+
+
+def _chart_bare_year(s: str) -> str:
+    """The first four-digit run of a date's text, or ''."""
+    m = re.search(r'\d{4}', s)
+    return m.group(0) if m else ''
+
+
+def _pedigree_years(dates: dict | None) -> str:
+    """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
+    return _chart_lifespan(dates, '–')
+
+
+def _fan_years(dates: dict | None) -> str:
+    """The years line under a fan name: '1840-1941', 'b. 1840', 'd. 1941' or '',
+    each year in `_chart_year`'s short form ('abt. 1850-bef. 1920'). Birth and
+    death are joined by a hyphen; with a range on either side they are
+    spelled out instead ('b. 1838–1841, d. 1920')."""
+    return _chart_lifespan(dates, '-')
+
+
+def _chart_lifespan(dates: dict | None, join: str) -> str:
+    """'b<join>d', 'b. b', 'd. d' or '' from a {'birth', 'death'} map. When
+    either date is a range ('1918–1920'), the two are spelled out as
+    'b. 1918–1920, d. 1990', so a range never reads as a birth and a death."""
+    dates = dates or {}
+    b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
+    if b and d:
+        if '–' in b or '–' in d:
+            return f'b. {b}, d. {d}'
+        return f'{b}{join}{d}'
+    return f'b. {b}' if b else (f'd. {d}' if d else '')
+
+
+def _fan_rings(n: int, span: float, r0: float = _FAN_R0) -> list[tuple[str, float, float]]:
+    """[(mode, r_in, r_out)] for generations 1..n, decided once per chart and
+    outward. A ring keeps curved labels ('arc') while the arc through its middle
+    is at least _FAN_ARC_MIN long; past that a curved line holds too few letters,
+    so the ring turns 'radial' and grows thicker to give the name its length.
+    The mode depends only on n and the fan's span, so it is deterministic, and a
+    wider fan (08-4's poster angles) moves the switch outward on its own."""
+    rings: list[tuple[str, float, float]] = []
+    r = r0
+    for g in range(1, n + 1):
+        seg = span / (1 << g)
+        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
+        rings.append((mode, r, r + t))
+        r += t
+    return rings
+
+
+def _fan_name_lines(name: str, surname: str | None) -> list[str]:
+    """A name as two lines for a curved ring: given names, then surname.
+
+    The surname is the index's own `surname` when the name ends with it (so
+    "Anna van der Berg" keeps "van der Berg" whole), else the last word. A
+    one-word name stays one line."""
+    name = name.strip()
+    sur = (surname or '').strip()
+    if sur and len(name) > len(sur) and name.lower().endswith(sur.lower()):
+        given = name[:-len(sur)]
+        if given[-1:].isspace() and given.strip():
+            return [given.strip(), name[-len(sur):]]
+    words = name.split()
+    if len(words) < 2:
+        return [name]
+    return [' '.join(words[:-1]), words[-1]]
+
+
+def _fan_shorten(text: str, room: float) -> str:
+    """`text` cut to fit `room` at the floor size, ending in an ellipsis."""
+    budget = max(3, int(room / (_FAN_FS_MIN * _FAN_CW)))
+    return text if len(text) <= budget else text[:budget - 1].rstrip() + '…'
+
+
+def _fan_years_size(fs: float, years: str, room: float) -> float:
+    """The years line's size: _FAN_YEARS_SCALE of the name's, made smaller
+    (never below the floor) when a long one such as 'bef. 1840-aft. 1941'
+    would not fit its room, so it shrinks before it is dropped. Rounded down,
+    like every fan size (#116)."""
+    fy = fs * _FAN_YEARS_SCALE
+    if years:
+        fy = min(fy, room / (len(years) * _FAN_CW))
+    return max(_FAN_FS_MIN, math.floor(fy * 10) / 10)
+
+
+def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
+                 seg: float) -> dict:
+    """Lay out one curved-ring label: which lines, at what size, at what radii.
+
+    Lines stack across the ring, the first at the larger radius so it reads
+    first on the upper half. The whole name stays on one line when it fits at
+    the ring's cap; otherwise given names and surname take a line each. Then
+    the size is the largest that fits every line along its own arc and the
+    stack across the ring, capped per ring and rounded DOWN to the one decimal
+    it is written with, so the drawn size is never larger than the measured one
+    (#116). A line's radius moves with the size (the line spacing is in em), so
+    each line is measured at the shorter of its radius at the cap and at the
+    floor: whatever size is chosen, the line then fits. Below the floor the
+    size stays at the floor and each line too long is shortened. The years
+    line, smaller, shrinks toward the floor to fit (`_fan_years_size`) and is
+    dropped only when it still does not; the name is then laid out again
+    without it.
+
+    Returns {'fs', 'lines', 'fy', 'years', 'radii'}: radii has one entry per
+    line, name lines first, then the years line when it is kept."""
+    cap = _FAN_FS_MAX[g]
+
+    def layout(lines: list[str], with_years: bool) -> dict:
+        count = len(lines) + (1 if with_years else 0)
+
+        def radius(i: int, size: float) -> float:
+            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+
+        def room(i: int) -> float:
+            return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
+
+        fs = min([cap, (_FAN_T_ARC - 2 * _FAN_PAD) / (count * _FAN_LH)]
+                 + [room(i) / (max(1, len(t)) * _FAN_CW) for i, t in enumerate(lines)])
+        fs = math.floor(fs * 10) / 10
+        shown = list(lines)
+        if fs < _FAN_FS_MIN:
+            fs = _FAN_FS_MIN
+            shown = [_fan_shorten(t, room(i)) for i, t in enumerate(lines)]
+        fy = _fan_years_size(fs, years, room(count - 1))
+        fits = with_years and len(years) * _FAN_CW * fy <= room(count - 1)
+        return {'fs': fs, 'lines': shown, 'fy': fy, 'years': years if fits else '',
+                'radii': [radius(i, fs) for i in range(count)], 'fits': fits}
+
+    lines = [name]
+    split = _fan_name_lines(name, surname)
+    if len(split) == 2 and layout(lines, bool(years))['fs'] < cap:
+        lines = split
+    out = layout(lines, bool(years))
+    if years and not out['fits']:
+        out = layout(lines, False)
+    return out
+
+
+def _fan_fit_radial(name: str, years: str, g: int, r_in: float, t: float,
+                    seg: float) -> dict | None:
+    """Lay out one radial-ring label, read outward along the radius.
+
+    A line runs from `r_in + PAD` to `r_in + t - PAD`. Across the cell the room
+    is narrowest at the inner edge (`w = r_in * seg - 2`), and that decides how
+    many lines fit: the name, plus the years when two lines fit. The size is
+    the largest that fits the name's length and the stack's width, capped per
+    ring and rounded down, with the same floor-and-shorten rule as the arc
+    rings. A cell too narrow for even one line at the floor gets no text
+    (None); its <title> still names the person.
+
+    Returns {'fs', 'lines', 'fy', 'years'} or None."""
+    avail = t - 2 * _FAN_PAD
+    w = r_in * seg - 2
+    if w < _FAN_LH * _FAN_FS_MIN:
+        return None
+    with_years = bool(years) and w >= 2 * _FAN_LH * _FAN_FS_MIN
+    count = 2 if with_years else 1
+    fs = min(_FAN_FS_MAX[g], avail / (max(1, len(name)) * _FAN_CW), w / (count * _FAN_LH))
+    fs = math.floor(fs * 10) / 10
+    shown = name
+    if fs < _FAN_FS_MIN:
+        fs = _FAN_FS_MIN
+        shown = _fan_shorten(name, avail)
+    fy = _fan_years_size(fs, years, avail)
+    if with_years and len(years) * _FAN_CW * fy > avail:
+        with_years = False
+    return {'fs': fs, 'lines': [shown], 'fy': fy, 'years': years if with_years else ''}
+
+
+def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
+                    span_deg: int = 180) -> str:
     """Render an ancestor fan as a self-contained, print-friendly SVG string.
 
-    `labels` is an Ahnentafel map {number: {'name', 'url', 'redacted'}} - number 1
-    is the subject, 2/3 the parents, 4-7 the grandparents, and so on. The fan is a
-    180° semicircle with the subject at the hub; each segment's fill is a branch
-    colour lightened by generation (set inline as CSS vars, composed by the
-    stylesheet, so custom.css can retint the whole chart). Labels ride an SVG
-    <textPath> - curved along the ring on the roomy inner generations, radial
-    (reading outward) on the narrow outer ones - each shrunk to fit its own arc
-    and shortened only once that shrink hits a readable floor. The chosen size
-    goes out as a font-size presentation attribute, so styles.css must not
-    declare a font-size on `.fan-label` itself: a rule matching the label beats
-    a presentation attribute and flattens every label back to one size (#116).
-    Colour/type come from the design tokens; this function only lays out geometry."""
-    # Size to the actual depth present, not the configured maximum, so a shallow
-    # tree renders as a small tidy fan rather than a huge mostly-empty canvas.
-    n = min(max_gen, max((num.bit_length() - 1 for num in labels), default=1)) or 1
-    r_max = r0 + n * ring
+    He sees up to five generations of ancestors around the person, every name
+    readable at its ring, with their years. `labels` is an Ahnentafel map
+    {number: {'name', 'surname', 'url', 'redacted', 'private', 'dates'}}:
+    number 1 is the subject, 2/3 the parents, 4-7 the grandparents, and so on.
+    The fan is a 180° semicircle (`span_deg`; the poster angles come later)
+    with the subject at the hub. Each cell's fill is a branch colour lightened
+    by generation, set inline as CSS vars and composed by the stylesheet, so
+    custom.css can retint the whole chart.
+
+    Rings and labels (`_fan_rings`): on a curved ring the name follows the arc,
+    on two lines (given names, surname) when one is too long, with the years
+    under it (`_fan_fit_arc`); on a radial ring the name and years run outward
+    (`_fan_fit_radial`), upright on both halves. Every line rides its own
+    invisible <textPath>. Each size is written as a font-size presentation
+    attribute, so styles.css must not size `.fan-label` or `.fan-years`: a
+    rule matching the text beats a presentation attribute and flattens every
+    label back to one size (#116). The full name and years ride a <title>, so a
+    shortened label is never lossy.
+
+    A private card (`private`: a living adult in a shared site, chart plan
+    13-2) is a neutral cell reading "Private", with no title, link or line
+    colour. Any other withheld slot (`redacted`, or no name) gets its cell and
+    nothing else."""
+    if span_deg != 180:
+        # TODO: 08-4 adds the 270° and 360° poster layouts (lower-half text,
+        # the full-circle hub); until then only the semicircle is laid out.
+        raise ValueError(f'fan span {span_deg}° is not supported yet; use 180')
+    span = math.radians(span_deg)
+    a_start = math.pi / 2 + span / 2
+    # Size to the depth actually present, not the configured maximum, so a
+    # shallow tree renders as a small tidy fan rather than a mostly empty one.
+    n = min(max_gen, _FAN_GENERATIONS_MAX,
+            max((num.bit_length() - 1 for num in labels), default=1)) or 1
+    rings = _fan_rings(n, span, r0)
+    r_max = rings[-1][2]
     pad = 14
     cx = r_max + pad
     cy = r_max + pad
     w = 2 * r_max + 2 * pad
-    h = r_max + pad + 40
+    bottom = cy + r_max * max(0.0, -math.cos(span / 2))
+    h = bottom + pad + (40 if span_deg == 180 else 0)
+
+    def xy(r: float, a: float) -> tuple[float, float]:
+        return cx + r * math.cos(a), cy - r * math.sin(a)
 
     def polar(r: float, a: float) -> str:
-        return f"{cx + r * math.cos(a):.1f},{cy - r * math.sin(a):.1f}"
+        x, y = xy(r, a)
+        return f"{x:.1f},{y:.1f}"
 
-    defs: list[str] = []      # one <path> per label; text rides it via <textPath>
+    defs: list[str] = []      # one <path> per label line; text rides it via <textPath>
     body: list[str] = []
     lid = 0
 
@@ -3085,81 +3376,96 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
         if g < 1 or g > n:
             continue
         info = labels[num]
-        slot = num - (1 << g)
-        seg = math.pi / (1 << g)
-        a2 = math.pi - slot * seg
-        a1 = math.pi - (slot + 1) * seg
-        r_in = r0 + (g - 1) * ring
-        r_out = r0 + g * ring
-        # In this coord system (y flipped) increasing angle is counter-clockwise,
-        # so the outer arc (a1→a2) sweeps 0 and the inner arc (a2→a1) sweeps 1;
-        # this makes adjacent segments tile with no gaps.
-        d = (f"M{polar(r_out, a1)} A{r_out:.1f},{r_out:.1f} 0 0 0 {polar(r_out, a2)} "
-             f"L{polar(r_in, a2)} A{r_in:.1f},{r_in:.1f} 0 0 1 {polar(r_in, a1)} Z")
-        if g >= 2:
-            gp = num >> (g - 2)                       # gen-2 ancestor → grandparent line
-            style = f'--seg-color:var(--branch-{(gp - 4) % 7 + 1}); --gen-fade:{min((g - 2) * 15, 55)}%'
-        else:
+        mode, r_in, r_out = rings[g - 1]
+        seg = span / (1 << g)
+        a_hi = a_start - (num - (1 << g)) * seg
+        a_lo = a_hi - seg
+        mid = (a_hi + a_lo) / 2
+        large = 1 if seg > math.pi else 0
+        # y is flipped, so increasing angle runs counter-clockwise on screen:
+        # the outer arc (a_lo to a_hi) sweeps 0 and the inner arc back sweeps
+        # 1, and neighbouring cells tile with no gaps.
+        d = (f"M{polar(r_out, a_lo)} A{r_out:.1f},{r_out:.1f} 0 {large} 0 {polar(r_out, a_hi)} "
+             f"L{polar(r_in, a_hi)} A{r_in:.1f},{r_in:.1f} 0 {large} 1 {polar(r_in, a_lo)} Z")
+        private = bool(info.get('private'))
+        if private:
             style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-        body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
-
-        if info.get('redacted') or not info.get('name'):
-            continue
-        # Labels ride an invisible path (SVG textPath), so they curve along the ring
-        # on the roomy inner generations and read radially (outward) on the narrow
-        # outer ones - and never clip at a wedge edge. The path is drawn in the
-        # direction that keeps text upright on this (upper) half of the circle.
-        lid += 1
-        pid = f'fan{lid}'
-        mid = (a1 + a2) / 2
-        rm = (r_in + r_out) / 2
-        fs_max = (14, 13, 12, 11, 10)[min(g, 4)]
-        if g < 4:                                     # inner: curved along the ring
-            path_d = f"M{polar(rm, a2)} A{rm:.1f},{rm:.1f} 0 0 1 {polar(rm, a1)}"
-            avail = rm * seg
-        else:                                         # outer: radial line, outward-upright
-            path_d = (f"M{polar(r_out, mid)} L{polar(r_in, mid)}" if mid > math.pi / 2
-                      else f"M{polar(r_in, mid)} L{polar(r_out, mid)}")
-            avail = r_out - r_in
-        defs.append(f'<path id="{pid}" d="{path_d}"/>')
-        full = info['name']
-        # Shrink the label to fit the whole name on the arc, down to a readable
-        # floor; only below the floor do we truncate (the roomy inner rings then
-        # show full names, the tight outer rings shorten but keep it in the tooltip).
-        _CW = 0.66                                    # approx glyph width in em for the serif
-        _FS_MIN = 8.0                                 # readable floor; below it we shorten instead
-        fs = min(fs_max, avail / (max(1, len(full)) * _CW))
-        # Round the size DOWN to the one decimal the attribute is written with,
-        # so the size drawn is never larger than the size the fit was measured
-        # at - the whole point of #116 is that computed and rendered agree.
-        fs = math.floor(fs * 10) / 10
-        if fs >= _FS_MIN:
-            # The size was picked so the whole name fits, so it fits. Deriving a
-            # character budget back out of `fs` here only reintroduced the float
-            # rounding it came from, and ellipsised names the shrink had already
-            # made room for ("Chastina Augusta Re…" at 9.5px on a 21-character arc).
-            name = full
+            body.append(f'<path class="fan-seg fan-seg-private" style="{style}" d="{d}"/>')
         else:
-            fs = _FS_MIN
-            budget = max(3, int(avail / (fs * _CW)))
-            name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
-        # The full name rides a <title> so a truncated arc label is never lossy:
-        # hovering (or a screen reader) gives the whole name.
-        title = f'<title>{html.escape(full)}</title>'
-        label = (f'<text class="fan-label" font-size="{fs:.1f}"><textPath href="#{pid}" '
-                 f'startOffset="50%">{html.escape(name)}</textPath></text>')
-        url = info.get('url')
-        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{label}</a>'
-                    if url else f'<g>{title}{label}</g>')
+            if g >= 2:
+                gp = num >> (g - 2)                   # generation-2 ancestor: grandparent line
+                style = (f'--seg-color:var(--branch-{(gp - 4) % 7 + 1}); '
+                         f'--gen-fade:{min((g - 2) * 15, 55)}%')
+            else:
+                style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
+            body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
 
-    # subject: filled upper half-disk at the hub (left→right, sweep 1 arcs over
-    # the top, so the hub fills the inner fan rather than hanging below) + name
+        if private:
+            name, surname, years = 'Private', None, ''
+        elif info.get('redacted') or not info.get('name'):
+            continue
+        else:
+            name, surname = info['name'], info.get('surname')
+            years = _fan_years(info.get('dates'))
+
+        if mode == 'arc':
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            # Upper half: each line runs from a_hi to a_lo (left to right
+            # over the top), which keeps the text upright.
+            paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
+                     for r in fit['radii']]
+        else:
+            fit = _fan_fit_radial(name, years, g, r_in, r_out - r_in, seg)
+            paths = []
+            if fit is not None:
+                count = len(fit['lines']) + (1 if fit['years'] else 0)
+                # Lines run parallel to the cell's middle radius, offset across
+                # it. Inner to outer on the right half, outer to inner on the
+                # left, so the text stays upright; `up` is the reader's up.
+                right = math.cos(mid) >= 0
+                nx, ny = -math.sin(mid), -math.cos(mid)
+                ux, uy = (nx, ny) if right else (-nx, -ny)
+                ends = (r_in + _FAN_PAD, r_out - _FAN_PAD)
+                if not right:
+                    ends = ends[::-1]
+                for i in range(count):
+                    off = ((count - 1) / 2 - i) * _FAN_LH * fit['fs']
+                    (x1, y1), (x2, y2) = (xy(r, mid) for r in ends)
+                    paths.append(f"M{x1 + off * ux:.1f},{y1 + off * uy:.1f} "
+                                 f"L{x2 + off * ux:.1f},{y2 + off * uy:.1f}")
+
+        text = ''
+        if fit is not None:
+            lid += 1
+            ids = [f'fan{lid}{chr(ord("a") + i)}' for i in range(len(paths))]
+            defs.extend(f'<path id="{pid}" d="{pd}"/>' for pid, pd in zip(ids, paths))
+            spans = ''.join(f'<textPath href="#{pid}" startOffset="50%">{html.escape(t)}</textPath>'
+                            for pid, t in zip(ids, fit['lines']))
+            cls = 'fan-label fan-label-private' if private else 'fan-label'
+            text = f'<text class="{cls}" font-size="{fit["fs"]:.1f}">{spans}</text>'
+            if fit['years']:
+                text += (f'<text class="fan-years" font-size="{fit["fy"]:.1f}">'
+                         f'<textPath href="#{ids[-1]}" startOffset="50%">'
+                         f'{html.escape(fit["years"])}</textPath></text>')
+        if private:
+            # Nothing that could name or reach the person: no title, no link.
+            if text:
+                body.append(f'<g class="fan-private">{text}</g>')
+            continue
+        full = name + (f', {years}' if years else '')
+        title = f'<title>{html.escape(full)}</title>'
+        url = info.get('url')
+        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
+                    if url else f'<g>{title}{text}</g>')
+
+    # subject: filled upper half-disk at the hub (left to right, sweep 1 arcs
+    # over the top, so the hub fills the inner fan rather than hanging below)
     body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
                 f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
     subj_full = labels.get(1, {}).get('name', '')
     if subj_full:
-        # The hub is small and the page is already titled with the full name, so the
-        # centre shows just the given name (full name in the tooltip) - no overflow.
+        # The hub is small and the page is already titled with the full name, so
+        # the centre shows just the given name (full name in the tooltip).
         parts = subj_full.split()
         given = parts[0] if parts else subj_full
         if len(given) > 12:
@@ -3553,10 +3859,6 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     W = 2 * PAD + (max_gen - min_gen + 1) * CW + (max_gen - min_gen) * COL_GAP
     H = 2 * PAD + axis_pad + CH + (max_row - min_row) * ROW
 
-    def yr(edtf) -> str:
-        m = re.search(r'\d{4}', str(edtf)) if edtf else None
-        return m.group(0) if m else ''
-
     def card(x: float, yc: float, cls_extra: str, lab: dict | None, slot: int | None = None,
              branch: int | None = None) -> str:
         div_attrs = ''
@@ -3607,8 +3909,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
                        if url else f'<span class="ped-name">{name}</span>')
             d = lab.get('dates') or {}
-            b, dd = yr(d.get('birth')), yr(d.get('death'))
-            span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
+            span = _pedigree_years(d)
             inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
         return (f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
                 f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}"{div_attrs}>{inner}</div>'
@@ -4179,6 +4480,9 @@ class _SiteBuilder:
         # so a broken file is not retried four times either) - distinct from
         # "not yet asked" (pid absent from the dict).
         self._provisional_record_cache: dict[str, dict | None] = {}
+        # Per source: the ids of its claims marked restricted, or None when the
+        # source is private or unreadable (`_research_claim_ok`).
+        self._research_private_claims_cache: dict[str, set | None] = {}
         # One person's `relationships` rows for a given direction ('parent' or
         # 'child'), memoized across every descendant/ancestor tree BFS in this
         # build (#152 review fix, P2, finding 1 - see `_DESCENDANT_TREE_MAX_
@@ -6056,7 +6360,8 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
+        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir,
+                                                            private_cards=True)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
@@ -6151,6 +6456,7 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
@@ -6357,6 +6663,231 @@ class _SiteBuilder:
         """
         return claim_is_own_vital(
             self.conn, pid, claim_id, claim_type, self._vital_subjects)
+
+    # - searches on other websites (workbench only) -
+
+    def _research_meta(self, pid: str) -> dict | None:
+        """The person's frontmatter, or None when it cannot be read.
+
+        Reads through `_provisional_vital`'s record cache, so a person whose
+        file is read for several things on one page is parsed once."""
+        self._provisional_vital(pid, 'restricted')    # fills the cache
+        rec = self._provisional_record_cache.get(pid)
+        return rec['meta'] if rec else None
+
+    def _research_person_ok(self, pid: str, *, deceased_only: bool) -> bool:
+        """May this person's details go into a link to another website?
+
+        Never for a restricted or by-request person, and a record that cannot
+        be read counts as restricted (the same fail-closed rule the shared
+        site uses). With `deceased_only`, never for a living or unknown person
+        either: a relative's name goes into a search only when `living:` says
+        false."""
+        row = self.person_meta.get(pid)
+        meta = self._research_meta(pid)
+        if row is None or meta is None or row['merged_into']:
+            return False
+        if _is_restricted_value(meta.get('restricted')):
+            return False
+        return not deceased_only or (row['living'] or 'unknown') == 'false'
+
+    def _research_name(self, pid: str, *, birth_name: bool = False) -> tuple[str, str]:
+        """(first given name, surname) of a person for a search. For a woman
+        the surname her records name her at birth (`name_at_birth`) when she
+        has one, since that is what the records of her family use."""
+        row = self.person_meta[pid]
+        name = (row['name'] or '').strip()
+        if is_placeholder_name(name):
+            return '', ''
+        meta = self._research_meta(pid) or {}
+        surname = person_surname(name, row['surname']) or ''
+        if birth_name and _research_public_name(meta, 'name_at_birth'):
+            surname = person_surname(_research_public_name(meta, 'name_at_birth')) or surname
+        given = bracket_given_name(name)
+        if ' ' in given:          # "Mrs. Doe": a title and a surname, no given name
+            given = ''
+        return _research_known(given), _research_known(surname)
+
+    @staticmethod
+    def _research_year(date_min: str | None, date_max: str | None) -> int | None:
+        """The middle year of a claim's date range ("about 1840" is 1840), or
+        None when the range cannot honestly be one year give or take two: an
+        open end ("before 1840" runs from year 1), "unknown", a whole century
+        ("18XX"), or a span wider than ten years. A search with no year is
+        better than one that looks in the wrong decade."""
+        try:
+            lo, hi = int(str(date_min)[:4]), int(str(date_max or date_min)[:4])
+        except ValueError:
+            return None
+        if lo <= 1 or hi >= 9999 or hi - lo > 10:
+            return None
+        return (lo + hi) // 2
+
+    @classmethod
+    def _research_year_of(cls, edtf: str | None) -> int | None:
+        """`_research_year` of a date as typed; None for a date that does not
+        read (a typo such as `1902-13` must not stop the workbench building)."""
+        if not edtf:
+            return None
+        try:
+            return cls._research_year(*edtf_bounds(str(edtf)))
+        except (ValueError, TypeError):
+            return None
+
+    def _research_claim_ok(self, claim_id, source_id) -> bool:
+        """May this claim's date and place go into a search link? Not when the
+        claim, or its source, is marked restricted or by-request (the shared
+        site withholds those too), and not when the source cannot be read,
+        since then nobody can say which of its claims were marked private.
+
+        The workbench is built as a linked site, which does not read the
+        per-claim markers (`_load_restriction_markers`), so this reads each
+        source a person's claims come from, once per build."""
+        if not source_id:
+            return True
+        cache = self._research_private_claims_cache
+        if source_id not in cache:
+            cache[source_id] = None                  # unreadable or private
+            row = self.source_meta.get(source_id)
+            if row is not None and not row['restricted'] and row['path']:
+                path = self.archive_root / row['path']
+                _marker, trouble = read_restriction_marker(path)
+                rec = None
+                if trouble is None:
+                    try:
+                        rec = read_record(path, on_decode_error=_ignore_decode_error)
+                    except Exception:   # noqa: BLE001 - any failure reads as private
+                        rec = None
+                if (rec is not None and not rec.get('undecodable')
+                        and not rec['parse_errors']
+                        and not _is_restricted_value(rec['meta'].get('restricted'))):
+                    cache[source_id] = {
+                        normalize_id(str(c.get('id', ''))) for c in rec['claims']
+                        if isinstance(c, dict) and _is_restricted_value(c.get('restricted'))}
+        private = cache[source_id]
+        return private is not None and normalize_id(str(claim_id)) not in private
+
+    def _person_research_ctx(self, pid: str, name: str) -> dict:
+        """The page's "Look for ... on other websites" keys. Empty outside the
+        workbench: the shared site never carries a link to another website's
+        search, because a reader's page must not send a relative's name anywhere."""
+        subject = self._person_research_subject(pid) if self.workbench else None
+        if not subject:
+            return {'research_links': [], 'research_living': False, 'research_given': ''}
+        return {
+            'research_links': research_search_links(subject),
+            'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
+            'research_given': subject.get('given') or name,
+        }
+
+    def _person_research_subject(self, pid: str) -> dict | None:
+        """What a search on another website may say about this person, or None
+        when no search should be offered at all.
+
+        For the owner: the workbench page offers links to other genealogy
+        websites, and a click sends what is in the link to that website. So a
+        living or unknown person goes out as a name and nothing else (no years,
+        places or relatives), a restricted or by-request person is never
+        offered, and a parent or spouse is named only when `living:` says
+        false. The caller passes the result to `_lib.research_search_links`."""
+        row = self.person_meta.get(pid)
+        if row is None or not self._research_person_ok(pid, deceased_only=False):
+            return None
+        given, surname = self._research_name(pid)
+        if not (given or surname):
+            return None
+        subject: dict = {'given': given, 'surname': surname}
+        if (row['living'] or 'unknown') != 'false':
+            return subject                            # name only
+        meta = self._research_meta(pid) or {}
+        married = _research_known(person_surname(_research_public_name(meta, 'married_name')) or '')
+        if married:
+            subject['married_surname'] = married
+
+        # Own vitals: the best accepted birth (else baptism) and death (else burial).
+        rows = [r for r in self.conn.execute(
+            "SELECT c.id, c.source_id, c.type, c.date_edtf, c.date_min, c.date_max, c.place_id, "
+            "c.place_text, c.confidence FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "WHERE cp.person_id = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0 "
+            "AND c.type IN ('birth','death','marriage','baptism','burial') ORDER BY c.id",
+            (pid,)) if self._claim_is_own_vital(pid, r['id'], r['type'])
+            and self._research_claim_ok(r['id'], r['source_id'])]
+        best: dict[str, sqlite3.Row] = {}
+        for r in sorted(rows, key=vital_pick_key):
+            best.setdefault(r['type'], r)
+        places: list[str] = []
+        for kind, fallbacks in (('birth', ('birth', 'baptism')), ('death', ('death', 'burial'))):
+            claim = next((best[t] for t in fallbacks if t in best), None)
+            year = place = None
+            if claim is not None:
+                year = (self._research_year(claim['date_min'], claim['date_max'])
+                        if claim['date_min'] else self._research_year_of(claim['date_edtf']))
+                place = self._place_label(claim['place_text'], claim['place_id'])
+            else:                                     # the unsourced estimate on the record
+                est = self._provisional_vital(pid, kind)
+                year = self._research_year_of(est)
+                place = self._provisional_vital(pid, f'{kind}_place')
+            if year:
+                subject[f'{kind}_year'] = year
+            if place:
+                subject[f'{kind}_place'] = place
+                places.append(place)
+
+        # Parents (genetic first) and the first spouse, only when deceased.
+        parents = self.conn.execute(
+            "SELECT r.other_id, c.subtype FROM relationships r "
+            "LEFT JOIN claims c ON c.id = r.claim_id "
+            "WHERE r.person_id = ? AND r.rel = 'parent'", (pid,)).fetchall()
+        for p in sorted(parents, key=lambda x: (not is_genetic_parent_subtype(x['subtype']),
+                                                x['other_id'])):
+            prow = self.person_meta.get(p['other_id'])
+            if prow is None or not self._research_person_ok(p['other_id'], deceased_only=True):
+                continue
+            role = {'m': 'father', 'f': 'mother'}.get((prow['sex'] or '').strip().lower())
+            if role is None or f'{role}_given' in subject or f'{role}_surname' in subject:
+                continue
+            g, sn = self._research_name(p['other_id'], birth_name=(role == 'mother'))
+            if g:
+                subject[f'{role}_given'] = g
+            if sn:
+                subject[f'{role}_surname'] = sn
+        spouses = self.conn.execute(
+            "SELECT r.other_id, r.claim_id, c.source_id, c.type, c.date_min, c.date_max, "
+            "c.place_id, c.place_text FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+            "WHERE r.person_id = ? AND r.rel = 'spouse' "
+            "ORDER BY r.date_start IS NULL, r.date_start, r.other_id", (pid,)).fetchall()
+        for sp in spouses:
+            srow = self.person_meta.get(sp['other_id'])
+            if srow is None or not self._research_person_ok(sp['other_id'], deceased_only=True):
+                continue
+            g, sn = self._research_name(
+                sp['other_id'], birth_name=(srow['sex'] or '').strip().lower() == 'f')
+            if g:
+                subject['spouse_given'] = g
+            if sn:
+                subject['spouse_surname'] = sn
+            if sp['type'] == 'marriage' and self._research_claim_ok(sp['claim_id'], sp['source_id']):
+                year = self._research_year(sp['date_min'], sp['date_max'])
+                place = self._place_label(sp['place_text'], sp['place_id'])
+                if year:
+                    subject['marriage_year'] = year
+                if place:
+                    subject['marriage_place'] = place
+                    places.append(place)
+            break
+        # Every place the page's own accepted claims name, for Geneteka's province.
+        for r in self.conn.execute(
+                "SELECT DISTINCT c.id, c.source_id, c.place_id, c.place_text FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.status = 'accepted'", (pid,)):
+            if not self._research_claim_ok(r['id'], r['source_id']):
+                continue
+            label = self._place_label(r['place_text'], r['place_id'])
+            if label and label not in places:
+                places.append(label)
+        if places:
+            subject['places'] = places
+        return subject
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
@@ -8658,9 +9189,11 @@ class _SiteBuilder:
         pid = meta['id']
         url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
                if pid in self.person_pages else None)
-        # Dates ride along for the pedigree card; the radial fan ignores them.
+        # Dates ride along for the pedigree card and the fan's years line; the
+        # surname lets the fan put given names and surname on two lines.
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
-                'redacted': False, 'dates': self._person_vitals(pid)}
+                'redacted': False, 'surname': meta['surname'],
+                'dates': self._person_vitals(pid)}
 
     def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
         """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
@@ -8729,8 +9262,7 @@ class _SiteBuilder:
         family' scoped to that child - the slot that is actually missing a
         parent, not a fixed subject). Father (a parent recorded M) takes the
         even slot, mother (F) the odd one; unknown-sex parents fill whatever
-        slot is free. Redaction is applied per person - a withheld ancestor
-        becomes a blank segment, never a leaked name (mirrors `_tree_node`).
+        slot is free.
 
         GENETIC LINE ONLY (#152 review fix, P2, SPEC §12.2). The Ahnentafel
         numbering - and the branch coloring it drives - means "the genetic
@@ -8779,7 +9311,8 @@ class _SiteBuilder:
         the plain two-elbow rendering - two known co-parents are evidence of
         PARENTAGE, never of marriage, by themselves.
 
-        PRIVATE CARDS (`private_cards`, the shared home tree only; owner
+        PRIVATE CARDS (`private_cards`: the shared home tree, and the person
+        page's fan and family chart (chart plan 13-2); owner
         decisions D16 and D20, 2026-11-22). A relative opening the shared
         site sees the tree behind a living adult instead of a gap: every
         person is sorted by `_tree_card_kind`. A living adult fills their
@@ -8789,8 +9322,7 @@ class _SiteBuilder:
         by-request) is skipped exactly like today's redacted parent: the slot
         draws as an unresearched 'Unknown' and nothing behind them is
         reached. A private card's `sex_derived` is False, so its slot never
-        tints a branch paternal or maternal. Off (person pages, the fan),
-        the walk is unchanged."""
+        tints a branch paternal or maternal. Off, the walk is unchanged."""
         entry_for = self._tree_card_entry if private_cards else self._chart_entry
         labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
