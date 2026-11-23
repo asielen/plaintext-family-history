@@ -1329,7 +1329,7 @@ Builds the archive as a website in `generated/site/` (or `--out`): relative link
 
 ### Pages
 - **Home**: ancestor pedigree (below) seeded on `site.home_person` else `root_person`, depth `site.home_pedigree_generations` (default 5, max 8); surname A-Z index; recent discoveries; **Sources** grouped by decade of `date_min`, alphabetical within, undated last.
-- **Person (curated)**: summary; family chart; biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
+- **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
 - **Person (stub)**: one-line entries on their couple's section.
 - **Source**: scan thumbnail (the Files list's privacy-checked image, `role: front` preferred) linking to the full scan; citation, metadata, claims table with status badges, files list.
 - **Place**: embedded OpenStreetMap iframe with marker when coords exist (offline an empty frame; the map link always works); `notes:`; `history:`; claims; `within:` children.
@@ -1348,6 +1348,7 @@ One renderer: person page at 2 ancestor generations, Home at the configured dept
 - Ahnentafel slots 2N/2N+1 are a couple: both known gets one shared bracket (`ped-link-couple`); one known gets a plain elbow.
 - Family wings route couples-first: subject and spouse join, then one line to that couple's children. A child with an unrecorded or redacted co-parent hangs off the subject. A redacted or absent spouse/child is dropped.
 - Ancestor cards are tinted paternal/maternal by Ahnentafel parity, except a slot filled by elimination among unknown-sex parents.
+- **Private cards (shared site, family chart and fan):** a living or unknown ancestor who is an adult (`_lib.is_known_adult`: a recorded birth 18 or more years before the build, or no birth recorded and a recorded child) fills their slot as a card reading "Private", with no name, dates, link, tooltip or line tint, and the walk continues to the ancestors behind them. A living person not known to be an adult, and a restricted or by-request person, is left out with no slot, and the walk stops there.
 - Caption: "{name}'s family, tracing back through the generations →". An ancestor with a page links to it; a stub is plain text.
 - **Redaction-safe Home hub:** a redacted seed hands off to the closest unredacted ancestor on its line; failing that, a blank hub only (no ancestors, no family row) with a plain note.
 

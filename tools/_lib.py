@@ -6513,6 +6513,59 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
 
 
+# A living person this old or older may be drawn in a shared site's family
+# trees as a card reading "Private" (`is_known_adult`, owner decision D20).
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> bool:
+    """Whether a living person is known to be an adult, for the shared site's
+    family trees: an adult is drawn as a card reading "Private"; anyone else
+    living is left out of the tree entirely, so no box of any kind stands for
+    a child (owner decision D20).
+
+    Adult means a recorded birth at least ADULT_AGE_YEARS before `today`, or,
+    when no birth date is recorded at all, at least one recorded child. A known
+    birth always wins: someone born under 18 years ago is left out even with a
+    child. Every one of the person's own birth dates counts, from claims of any
+    status (a suggested claim's date is still the best guess there is) and the
+    record's own provisional `birth:`; the person is an adult only when the
+    latest possible day of every one of them is 18 years past. A date with no
+    upper bound cannot show that, so it reads as not adult. The dates are read
+    only to make this decision and are never printed.
+
+    `today` is the build's date, so a child who turns 18 appears on the next
+    rebuild; the living rule already depends on the date the same way. Only a
+    birth claim that is a record OF this person counts (`claim_is_own_vital`):
+    a parent named on a child's birth certificate is not born that day.
+
+    TODO: PR 13-1 (home tree private cards) defines the same rule; reconcile
+    the two at merge so it lives once."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year that has none
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    latest: list[str] = []
+    for cid, date_edtf, date_max in conn.execute(
+            "SELECT c.id, c.date_edtf, c.date_max FROM claims c "
+            "JOIN claim_persons cp ON cp.claim_id = c.id "
+            "WHERE cp.person_id = ? AND c.type = 'birth' AND COALESCE(c.negated, 0) = 0 "
+            "ORDER BY c.id", (pid,)).fetchall():
+        if not (date_edtf or date_max):
+            continue
+        if not claim_is_own_vital(conn, pid, cid, 'birth'):
+            continue
+        latest.append(date_max or edtf_bounds(date_edtf)[1])
+    row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
+    if row is not None and row[0]:
+        latest.append(edtf_bounds(str(row[0]))[1])
+    if latest:
+        return all(str(d)[:10] <= cutoff.isoformat() for d in latest)
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
+
+
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
     """Indexes of column-0 `key:` lines between two bounds (exclusive).
 

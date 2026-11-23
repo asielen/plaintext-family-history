@@ -164,6 +164,9 @@ CODE MAP
 
   Static charts (person page + home page, #115)
     _render_fan_svg            - radial ancestor fan, self-contained SVG
+    _fan_rings, _fan_fit_arc,  - the fan's rings (curved or radial by arc
+    _fan_fit_radial              length) and each label's lines and size
+    _chart_year                - the year a chart prints for a date
     _ancestor_branch           - Ahnentafel slot → paternal(1)/maternal(2) line
     _render_pedigree_svg       - horizontal family chart: siblings/children -
                                  subject/spouse(s) - N ancestor generations,
@@ -193,6 +196,8 @@ CODE MAP
                                  (scoped to the person's OWN vitals, #126)
     _chart_entry               - one redacted {name,url,dates} node; shared by the
                                  Ahnentafel walk and the family-wings walk below
+    _tree_card_kind            - shared site: 'shown', 'private' (living adult)
+                                 or 'omit' for one person in a tree
     _build_ahnentafel          - parent-edge walk → Ahnentafel map (fan + pedigree),
                                  already generation-agnostic (unchanged by #115)
     _build_family_wings        - spouse/child edges → pedigree's family-chart
@@ -304,6 +309,7 @@ from _lib import (
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
+    is_known_adult,
     is_valid_edtf,
     is_valid_id,
     is_working_copy,
@@ -479,12 +485,34 @@ _PICTURES_BEFORE_POOL = 8
 # workers busy while bounding the finished pictures held in memory.
 _PICTURE_QUEUE_PER_WORKER = 4
 
-# Ancestor generations drawn in the static fan chart (rings beyond the subject).
-# 3 = up to great-grandparents. Every ring then keeps its labels on a roomy
-# *curved* arc (the 4th ring would need cramped radial spokes that clip long
-# names); the fan auto-shrinks to the actual depth present, so a shallow tree
-# still renders small. One generation deeper than the person-page pedigree.
-_FAN_GENERATIONS = 3
+# Ancestor generations drawn in the person page's fan chart (rings beyond the
+# subject): 5 reaches great-great-great-grandparents. Inner rings, where an arc
+# is long, carry each name curved along the ring (given names, then surname,
+# then the years); outer rings, where a curved line would be too short to
+# read, run the name outward along the radius. The switch is chosen per ring by
+# arc length (`_fan_rings`), not fixed by generation. The fan shrinks to the
+# depth actually recorded, so a shallow tree still renders small. MAX is the
+# deepest fan the renderer lays out (each ring doubles the cells).
+_FAN_GENERATIONS = 5
+_FAN_GENERATIONS_MAX = 6
+
+# Fan geometry, in SVG user units (`_render_fan_svg`). A ring's labels follow
+# the arc while its mid-radius arc is at least _FAN_ARC_MIN long; arc rings are
+# _FAN_T_ARC thick, radial rings _FAN_T_RADIAL (room for a name read outward).
+# Label sizes run from the ring's cap down to the readable floor, and only
+# below the floor is a line shortened. _FAN_CW is a glyph's width in em for the
+# serif face, _FAN_LH the line height in em; the years line is drawn at
+# _FAN_YEARS_SCALE of the name's size.
+_FAN_R0 = 54
+_FAN_T_ARC = 64
+_FAN_T_RADIAL = 104
+_FAN_ARC_MIN = 72
+_FAN_PAD = 4
+_FAN_FS_MAX = {1: 13.0, 2: 12.0, 3: 11.0, 4: 10.0, 5: 9.5, 6: 9.0}
+_FAN_FS_MIN = 8.0
+_FAN_CW = 0.66
+_FAN_LH = 1.15
+_FAN_YEARS_SCALE = 0.85
 
 # Home pedigree ancestor depth (#115), overridable via
 # `site.home_pedigree_generations`. DEFAULT is the decided answer to the
@@ -3046,35 +3074,203 @@ def _real_path(path: str | Path) -> Path:
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
-def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60) -> str:
+def _chart_year(edtf) -> str:
+    """The year a chart prints for a date: the first four-digit run of its EDTF
+    text ('1840-03-02' and '1840?' are both '1840'), or '' when there is none.
+    Charts show years only; the person's page carries the full date."""
+    m = re.search(r'\d{4}', str(edtf)) if edtf else None
+    return m.group(0) if m else ''
+
+
+def _fan_years(dates: dict | None) -> str:
+    """The years line under a fan name: '1840-1941', 'b. 1840', 'd. 1941' or ''.
+    A hyphen, never an en dash (the house rule allows a hyphen in a range)."""
+    dates = dates or {}
+    b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
+    if b and d:
+        return f'{b}-{d}'
+    return f'b. {b}' if b else (f'd. {d}' if d else '')
+
+
+def _fan_rings(n: int, span: float, r0: float = _FAN_R0) -> list[tuple[str, float, float]]:
+    """[(mode, r_in, r_out)] for generations 1..n, decided once per chart and
+    outward. A ring keeps curved labels ('arc') while the arc through its middle
+    is at least _FAN_ARC_MIN long; past that a curved line holds too few letters,
+    so the ring turns 'radial' and grows thicker to give the name its length.
+    The mode depends only on n and the fan's span, so it is deterministic, and a
+    wider fan (08-4's poster angles) moves the switch outward on its own."""
+    rings: list[tuple[str, float, float]] = []
+    r = r0
+    for g in range(1, n + 1):
+        seg = span / (1 << g)
+        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
+        rings.append((mode, r, r + t))
+        r += t
+    return rings
+
+
+def _fan_name_lines(name: str, surname: str | None) -> list[str]:
+    """A name as two lines for a curved ring: given names, then surname.
+
+    The surname is the index's own `surname` when the name ends with it (so
+    "Anna van der Berg" keeps "van der Berg" whole), else the last word. A
+    one-word name stays one line."""
+    name = name.strip()
+    sur = (surname or '').strip()
+    if sur and len(name) > len(sur) and name.lower().endswith(sur.lower()):
+        given = name[:-len(sur)]
+        if given[-1:].isspace() and given.strip():
+            return [given.strip(), name[-len(sur):]]
+    words = name.split()
+    if len(words) < 2:
+        return [name]
+    return [' '.join(words[:-1]), words[-1]]
+
+
+def _fan_shorten(text: str, room: float) -> str:
+    """`text` cut to fit `room` at the floor size, ending in an ellipsis."""
+    budget = max(3, int(room / (_FAN_FS_MIN * _FAN_CW)))
+    return text if len(text) <= budget else text[:budget - 1].rstrip() + '…'
+
+
+def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
+                 seg: float) -> dict:
+    """Lay out one curved-ring label: which lines, at what size, at what radii.
+
+    Lines stack across the ring, the first at the larger radius so it reads
+    first on the upper half. The whole name stays on one line when it fits at
+    the ring's cap; otherwise given names and surname take a line each. Then
+    the size is the largest that fits every line along its own arc and the
+    stack across the ring, capped per ring and rounded DOWN to the one decimal
+    it is written with, so the drawn size is never larger than the measured one
+    (#116). A line's radius moves with the size (the line spacing is in em), so
+    each line is measured at the shorter of its radius at the cap and at the
+    floor: whatever size is chosen, the line then fits. Below the floor the
+    size stays at the floor and each line too long is shortened. The years
+    line, smaller, is dropped when it does not fit; the name is then laid out
+    again without it.
+
+    Returns {'fs', 'lines', 'fy', 'years', 'radii'}: radii has one entry per
+    line, name lines first, then the years line when it is kept."""
+    cap = _FAN_FS_MAX[g]
+
+    def layout(lines: list[str], with_years: bool) -> dict:
+        count = len(lines) + (1 if with_years else 0)
+
+        def radius(i: int, size: float) -> float:
+            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+
+        def room(i: int) -> float:
+            return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
+
+        fs = min([cap, (_FAN_T_ARC - 2 * _FAN_PAD) / (count * _FAN_LH)]
+                 + [room(i) / (max(1, len(t)) * _FAN_CW) for i, t in enumerate(lines)])
+        fs = math.floor(fs * 10) / 10
+        shown = list(lines)
+        if fs < _FAN_FS_MIN:
+            fs = _FAN_FS_MIN
+            shown = [_fan_shorten(t, room(i)) for i, t in enumerate(lines)]
+        fy = max(_FAN_FS_MIN, math.floor(fs * _FAN_YEARS_SCALE * 10) / 10)
+        fits = with_years and len(years) * _FAN_CW * fy <= room(count - 1)
+        return {'fs': fs, 'lines': shown, 'fy': fy, 'years': years if fits else '',
+                'radii': [radius(i, fs) for i in range(count)], 'fits': fits}
+
+    lines = [name]
+    split = _fan_name_lines(name, surname)
+    if len(split) == 2 and layout(lines, bool(years))['fs'] < cap:
+        lines = split
+    out = layout(lines, bool(years))
+    if years and not out['fits']:
+        out = layout(lines, False)
+    return out
+
+
+def _fan_fit_radial(name: str, years: str, g: int, r_in: float, t: float,
+                    seg: float) -> dict | None:
+    """Lay out one radial-ring label, read outward along the radius.
+
+    A line runs from `r_in + PAD` to `r_in + t - PAD`. Across the cell the room
+    is narrowest at the inner edge (`w = r_in * seg - 2`), and that decides how
+    many lines fit: the name, plus the years when two lines fit. The size is
+    the largest that fits the name's length and the stack's width, capped per
+    ring and rounded down, with the same floor-and-shorten rule as the arc
+    rings. A cell too narrow for even one line at the floor gets no text
+    (None); its <title> still names the person.
+
+    Returns {'fs', 'lines', 'fy', 'years'} or None."""
+    avail = t - 2 * _FAN_PAD
+    w = r_in * seg - 2
+    if w < _FAN_LH * _FAN_FS_MIN:
+        return None
+    with_years = bool(years) and w >= 2 * _FAN_LH * _FAN_FS_MIN
+    count = 2 if with_years else 1
+    fs = min(_FAN_FS_MAX[g], avail / (max(1, len(name)) * _FAN_CW), w / (count * _FAN_LH))
+    fs = math.floor(fs * 10) / 10
+    shown = name
+    if fs < _FAN_FS_MIN:
+        fs = _FAN_FS_MIN
+        shown = _fan_shorten(name, avail)
+    fy = max(_FAN_FS_MIN, math.floor(fs * _FAN_YEARS_SCALE * 10) / 10)
+    if with_years and len(years) * _FAN_CW * fy > avail:
+        with_years = False
+    return {'fs': fs, 'lines': [shown], 'fy': fy, 'years': years if with_years else ''}
+
+
+def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
+                    span_deg: int = 180) -> str:
     """Render an ancestor fan as a self-contained, print-friendly SVG string.
 
-    `labels` is an Ahnentafel map {number: {'name', 'url', 'redacted'}} - number 1
-    is the subject, 2/3 the parents, 4-7 the grandparents, and so on. The fan is a
-    180° semicircle with the subject at the hub; each segment's fill is a branch
-    colour lightened by generation (set inline as CSS vars, composed by the
-    stylesheet, so custom.css can retint the whole chart). Labels ride an SVG
-    <textPath> - curved along the ring on the roomy inner generations, radial
-    (reading outward) on the narrow outer ones - each shrunk to fit its own arc
-    and shortened only once that shrink hits a readable floor. The chosen size
-    goes out as a font-size presentation attribute, so styles.css must not
-    declare a font-size on `.fan-label` itself: a rule matching the label beats
-    a presentation attribute and flattens every label back to one size (#116).
-    Colour/type come from the design tokens; this function only lays out geometry."""
-    # Size to the actual depth present, not the configured maximum, so a shallow
-    # tree renders as a small tidy fan rather than a huge mostly-empty canvas.
-    n = min(max_gen, max((num.bit_length() - 1 for num in labels), default=1)) or 1
-    r_max = r0 + n * ring
+    He sees up to five generations of ancestors around the person, every name
+    readable at its ring, with their years. `labels` is an Ahnentafel map
+    {number: {'name', 'surname', 'url', 'redacted', 'private', 'dates'}}:
+    number 1 is the subject, 2/3 the parents, 4-7 the grandparents, and so on.
+    The fan is a 180° semicircle (`span_deg`; the poster angles come later)
+    with the subject at the hub. Each cell's fill is a branch colour lightened
+    by generation, set inline as CSS vars and composed by the stylesheet, so
+    custom.css can retint the whole chart.
+
+    Rings and labels (`_fan_rings`): on a curved ring the name follows the arc,
+    on two lines (given names, surname) when one is too long, with the years
+    under it (`_fan_fit_arc`); on a radial ring the name and years run outward
+    (`_fan_fit_radial`), upright on both halves. Every line rides its own
+    invisible <textPath>. Each size is written as a font-size presentation
+    attribute, so styles.css must not size `.fan-label` or `.fan-years`: a
+    rule matching the text beats a presentation attribute and flattens every
+    label back to one size (#116). The full name and years ride a <title>, so a
+    shortened label is never lossy.
+
+    A private card (`private`: a living adult in a shared site, chart plan
+    13-2) is a neutral cell reading "Private", with no title, link or line
+    colour. Any other withheld slot (`redacted`, or no name) gets its cell and
+    nothing else."""
+    if span_deg != 180:
+        # TODO: 08-4 adds the 270° and 360° poster layouts (lower-half text,
+        # the full-circle hub); until then only the semicircle is laid out.
+        raise ValueError(f'fan span {span_deg}° is not supported yet; use 180')
+    span = math.radians(span_deg)
+    a_start = math.pi / 2 + span / 2
+    # Size to the depth actually present, not the configured maximum, so a
+    # shallow tree renders as a small tidy fan rather than a mostly empty one.
+    n = min(max_gen, _FAN_GENERATIONS_MAX,
+            max((num.bit_length() - 1 for num in labels), default=1)) or 1
+    rings = _fan_rings(n, span, r0)
+    r_max = rings[-1][2]
     pad = 14
     cx = r_max + pad
     cy = r_max + pad
     w = 2 * r_max + 2 * pad
-    h = r_max + pad + 40
+    bottom = cy + r_max * max(0.0, -math.cos(span / 2))
+    h = bottom + pad + (40 if span_deg == 180 else 0)
+
+    def xy(r: float, a: float) -> tuple[float, float]:
+        return cx + r * math.cos(a), cy - r * math.sin(a)
 
     def polar(r: float, a: float) -> str:
-        return f"{cx + r * math.cos(a):.1f},{cy - r * math.sin(a):.1f}"
+        x, y = xy(r, a)
+        return f"{x:.1f},{y:.1f}"
 
-    defs: list[str] = []      # one <path> per label; text rides it via <textPath>
+    defs: list[str] = []      # one <path> per label line; text rides it via <textPath>
     body: list[str] = []
     lid = 0
 
@@ -3083,81 +3279,96 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = 54, ring: float = 60
         if g < 1 or g > n:
             continue
         info = labels[num]
-        slot = num - (1 << g)
-        seg = math.pi / (1 << g)
-        a2 = math.pi - slot * seg
-        a1 = math.pi - (slot + 1) * seg
-        r_in = r0 + (g - 1) * ring
-        r_out = r0 + g * ring
-        # In this coord system (y flipped) increasing angle is counter-clockwise,
-        # so the outer arc (a1→a2) sweeps 0 and the inner arc (a2→a1) sweeps 1;
-        # this makes adjacent segments tile with no gaps.
-        d = (f"M{polar(r_out, a1)} A{r_out:.1f},{r_out:.1f} 0 0 0 {polar(r_out, a2)} "
-             f"L{polar(r_in, a2)} A{r_in:.1f},{r_in:.1f} 0 0 1 {polar(r_in, a1)} Z")
-        if g >= 2:
-            gp = num >> (g - 2)                       # gen-2 ancestor → grandparent line
-            style = f'--seg-color:var(--branch-{(gp - 4) % 7 + 1}); --gen-fade:{min((g - 2) * 15, 55)}%'
-        else:
+        mode, r_in, r_out = rings[g - 1]
+        seg = span / (1 << g)
+        a_hi = a_start - (num - (1 << g)) * seg
+        a_lo = a_hi - seg
+        mid = (a_hi + a_lo) / 2
+        large = 1 if seg > math.pi else 0
+        # y is flipped, so increasing angle runs counter-clockwise on screen:
+        # the outer arc (a_lo to a_hi) sweeps 0 and the inner arc back sweeps
+        # 1, and neighbouring cells tile with no gaps.
+        d = (f"M{polar(r_out, a_lo)} A{r_out:.1f},{r_out:.1f} 0 {large} 0 {polar(r_out, a_hi)} "
+             f"L{polar(r_in, a_hi)} A{r_in:.1f},{r_in:.1f} 0 {large} 1 {polar(r_in, a_lo)} Z")
+        private = bool(info.get('private'))
+        if private:
             style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-        body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
-
-        if info.get('redacted') or not info.get('name'):
-            continue
-        # Labels ride an invisible path (SVG textPath), so they curve along the ring
-        # on the roomy inner generations and read radially (outward) on the narrow
-        # outer ones - and never clip at a wedge edge. The path is drawn in the
-        # direction that keeps text upright on this (upper) half of the circle.
-        lid += 1
-        pid = f'fan{lid}'
-        mid = (a1 + a2) / 2
-        rm = (r_in + r_out) / 2
-        fs_max = (14, 13, 12, 11, 10)[min(g, 4)]
-        if g < 4:                                     # inner: curved along the ring
-            path_d = f"M{polar(rm, a2)} A{rm:.1f},{rm:.1f} 0 0 1 {polar(rm, a1)}"
-            avail = rm * seg
-        else:                                         # outer: radial line, outward-upright
-            path_d = (f"M{polar(r_out, mid)} L{polar(r_in, mid)}" if mid > math.pi / 2
-                      else f"M{polar(r_in, mid)} L{polar(r_out, mid)}")
-            avail = r_out - r_in
-        defs.append(f'<path id="{pid}" d="{path_d}"/>')
-        full = info['name']
-        # Shrink the label to fit the whole name on the arc, down to a readable
-        # floor; only below the floor do we truncate (the roomy inner rings then
-        # show full names, the tight outer rings shorten but keep it in the tooltip).
-        _CW = 0.66                                    # approx glyph width in em for the serif
-        _FS_MIN = 8.0                                 # readable floor; below it we shorten instead
-        fs = min(fs_max, avail / (max(1, len(full)) * _CW))
-        # Round the size DOWN to the one decimal the attribute is written with,
-        # so the size drawn is never larger than the size the fit was measured
-        # at - the whole point of #116 is that computed and rendered agree.
-        fs = math.floor(fs * 10) / 10
-        if fs >= _FS_MIN:
-            # The size was picked so the whole name fits, so it fits. Deriving a
-            # character budget back out of `fs` here only reintroduced the float
-            # rounding it came from, and ellipsised names the shrink had already
-            # made room for ("Chastina Augusta Re…" at 9.5px on a 21-character arc).
-            name = full
+            body.append(f'<path class="fan-seg fan-seg-private" style="{style}" d="{d}"/>')
         else:
-            fs = _FS_MIN
-            budget = max(3, int(avail / (fs * _CW)))
-            name = full if len(full) <= budget else full[:budget - 1].rstrip() + '…'
-        # The full name rides a <title> so a truncated arc label is never lossy:
-        # hovering (or a screen reader) gives the whole name.
-        title = f'<title>{html.escape(full)}</title>'
-        label = (f'<text class="fan-label" font-size="{fs:.1f}"><textPath href="#{pid}" '
-                 f'startOffset="50%">{html.escape(name)}</textPath></text>')
-        url = info.get('url')
-        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{label}</a>'
-                    if url else f'<g>{title}{label}</g>')
+            if g >= 2:
+                gp = num >> (g - 2)                   # generation-2 ancestor: grandparent line
+                style = (f'--seg-color:var(--branch-{(gp - 4) % 7 + 1}); '
+                         f'--gen-fade:{min((g - 2) * 15, 55)}%')
+            else:
+                style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
+            body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
 
-    # subject: filled upper half-disk at the hub (left→right, sweep 1 arcs over
-    # the top, so the hub fills the inner fan rather than hanging below) + name
+        if private:
+            name, surname, years = 'Private', None, ''
+        elif info.get('redacted') or not info.get('name'):
+            continue
+        else:
+            name, surname = info['name'], info.get('surname')
+            years = _fan_years(info.get('dates'))
+
+        if mode == 'arc':
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            # Upper half: each line runs from a_hi to a_lo (left to right
+            # over the top), which keeps the text upright.
+            paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
+                     for r in fit['radii']]
+        else:
+            fit = _fan_fit_radial(name, years, g, r_in, r_out - r_in, seg)
+            paths = []
+            if fit is not None:
+                count = len(fit['lines']) + (1 if fit['years'] else 0)
+                # Lines run parallel to the cell's middle radius, offset across
+                # it. Inner to outer on the right half, outer to inner on the
+                # left, so the text stays upright; `up` is the reader's up.
+                right = math.cos(mid) >= 0
+                nx, ny = -math.sin(mid), -math.cos(mid)
+                ux, uy = (nx, ny) if right else (-nx, -ny)
+                ends = (r_in + _FAN_PAD, r_out - _FAN_PAD)
+                if not right:
+                    ends = ends[::-1]
+                for i in range(count):
+                    off = ((count - 1) / 2 - i) * _FAN_LH * fit['fs']
+                    (x1, y1), (x2, y2) = (xy(r, mid) for r in ends)
+                    paths.append(f"M{x1 + off * ux:.1f},{y1 + off * uy:.1f} "
+                                 f"L{x2 + off * ux:.1f},{y2 + off * uy:.1f}")
+
+        text = ''
+        if fit is not None:
+            lid += 1
+            ids = [f'fan{lid}{chr(ord("a") + i)}' for i in range(len(paths))]
+            defs.extend(f'<path id="{pid}" d="{pd}"/>' for pid, pd in zip(ids, paths))
+            spans = ''.join(f'<textPath href="#{pid}" startOffset="50%">{html.escape(t)}</textPath>'
+                            for pid, t in zip(ids, fit['lines']))
+            cls = 'fan-label fan-label-private' if private else 'fan-label'
+            text = f'<text class="{cls}" font-size="{fit["fs"]:.1f}">{spans}</text>'
+            if fit['years']:
+                text += (f'<text class="fan-years" font-size="{fit["fy"]:.1f}">'
+                         f'<textPath href="#{ids[-1]}" startOffset="50%">'
+                         f'{html.escape(fit["years"])}</textPath></text>')
+        if private:
+            # Nothing that could name or reach the person: no title, no link.
+            if text:
+                body.append(f'<g class="fan-private">{text}</g>')
+            continue
+        full = name + (f', {years}' if years else '')
+        title = f'<title>{html.escape(full)}</title>'
+        url = info.get('url')
+        body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
+                    if url else f'<g>{title}{text}</g>')
+
+    # subject: filled upper half-disk at the hub (left to right, sweep 1 arcs
+    # over the top, so the hub fills the inner fan rather than hanging below)
     body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
                 f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
     subj_full = labels.get(1, {}).get('name', '')
     if subj_full:
-        # The hub is small and the page is already titled with the full name, so the
-        # centre shows just the given name (full name in the tooltip) - no overflow.
+        # The hub is small and the page is already titled with the full name, so
+        # the centre shows just the given name (full name in the tooltip).
         parts = subj_full.split()
         given = parts[0] if parts else subj_full
         if len(given) > 12:
@@ -3402,7 +3613,10 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
         if render.get(slot // 2, ('', None))[0] != 'person':
             continue
         lab = labels.get(slot)
-        render[slot] = ('person', lab) if (lab and lab.get('name')) else ('empty', None)
+        # A private card (a living adult in a shared site) holds its place
+        # like a named card, so the dead ancestors behind it still draw.
+        shown = lab and (lab.get('name') or lab.get('private'))
+        render[slot] = ('person', lab) if shown else ('empty', None)
     # Deepest generation actually PLACED in `render` - the depth research (or
     # its still-unresearched 'Unknown' placeholders) actually reached, which
     # may be far shallower than `max_ancestor_gen` (the full CONFIGURED depth
@@ -3548,10 +3762,6 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
     W = 2 * PAD + (max_gen - min_gen + 1) * CW + (max_gen - min_gen) * COL_GAP
     H = 2 * PAD + axis_pad + CH + (max_row - min_row) * ROW
 
-    def yr(edtf) -> str:
-        m = re.search(r'\d{4}', str(edtf)) if edtf else None
-        return m.group(0) if m else ''
-
     def card(x: float, yc: float, cls_extra: str, lab: dict | None, slot: int | None = None,
              branch: int | None = None) -> str:
         div_attrs = ''
@@ -3576,6 +3786,11 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 div_attrs = (f' data-wb-open="tpl-add-family" data-wb-args=\'{args}\' '
                             'data-wb-fill="relation_type=parent" '
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')
+        elif lab.get('private'):
+            # A living adult in a shared site: the word "Private" and nothing
+            # that could name or reach them (no link, dates, tooltip or line
+            # colour; chart plan 13-2).
+            cls, inner = 'ped-node tree-card-private', '<span class="ped-name">Private</span>'
         else:
             cls = 'ped-node' + cls_extra
             if branch:
@@ -3595,7 +3810,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
                        if url else f'<span class="ped-name">{name}</span>')
             d = lab.get('dates') or {}
-            b, dd = yr(d.get('birth')), yr(d.get('death'))
+            b, dd = _chart_year(d.get('birth')), _chart_year(d.get('death'))
             span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
             inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
         return (f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
@@ -8544,9 +8759,46 @@ class _SiteBuilder:
         pid = meta['id']
         url = (_rel_href(self.persons_dir / _page_filename(pid), page_dir)
                if pid in self.person_pages else None)
-        # Dates ride along for the pedigree card; the radial fan ignores them.
+        # Dates ride along for the pedigree card and the fan's years line; the
+        # surname lets the fan put given names and surname on two lines.
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
-                'redacted': False, 'dates': self._person_vitals(pid)}
+                'redacted': False, 'surname': meta['surname'],
+                'dates': self._person_vitals(pid)}
+
+    def _tree_card_kind(self, pid: str) -> str:
+        """How a shared site's family trees draw one person: 'shown',
+        'private' or 'omit' (chart plan 13, decision D20).
+
+        A relative opening the shared site sees every dead ancestor, and a
+        living adult relative as a card reading "Private" with nothing else on
+        it, so the tree keeps its shape and the ancestors behind them still
+        show. A living person not known to be an adult (`is_known_adult`) is
+        left out: no card, no place. A restricted or by-request person, alive
+        or dead, is left out too, and so is anyone whose merge chain cannot be
+        read. The workbench and linked preview show everyone.
+
+        TODO: PR 13-1 defines this same method for the home tree and its
+        family row; reconcile the two at merge so the rule lives once."""
+        meta = self.person_meta.get(pid)
+        if meta is None:
+            return 'omit'
+        if self.linked or not self._person_is_redacted(meta):
+            return 'shown'
+        chain = self._merge_chain(meta)
+        survivor = merge_survivor(chain)
+        if survivor is None or any(r['id'] in self.restricted_persons for r in chain):
+            return 'omit'
+        if is_known_adult(self.conn, survivor['id'], self._build_date()):
+            return 'private'
+        return 'omit'
+
+    def _build_date(self) -> datetime.date:
+        """The day this build is made, which decides who is an adult: a child
+        who turns 18 appears as a private card from the next rebuild on."""
+        try:
+            return datetime.date.fromisoformat(_today())
+        except ValueError:
+            return datetime.date.today()
 
     def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
         """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
@@ -8614,8 +8866,11 @@ class _SiteBuilder:
         family' scoped to that child - the slot that is actually missing a
         parent, not a fixed subject). Father (a parent recorded M) takes the
         even slot, mother (F) the odd one; unknown-sex parents fill whatever
-        slot is free. Redaction is applied per person - a withheld ancestor
-        becomes a blank segment, never a leaked name (mirrors `_tree_node`).
+        slot is free. In a shared site each person is drawn by
+        `_tree_card_kind`: a living adult fills the slot as a private card
+        (`private: True`, no name, dates, link or id) and the walk continues
+        behind them; a living child or a restricted person is left out, slot
+        and all, and the walk stops there.
 
         GENETIC LINE ONLY (#152 review fix, P2, SPEC §12.2). The Ahnentafel
         numbering - and the branch coloring it drives - means "the genetic
@@ -8676,6 +8931,7 @@ class _SiteBuilder:
             # SELECT means DISTINCT no longer collapses multiple claims about
             # the same pair into one row the way the old sex-only query did.
             parent_rows: dict[str, dict] = {}
+            private_parents: set[str] = set()
             for r in self.conn.execute(
                 '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
                           c.source_id, c.status
@@ -8685,12 +8941,19 @@ class _SiteBuilder:
                    ORDER BY r.other_id, r.claim_id''', (pid,)):
                 other = r['other_id']
                 # A deceased ancestor without a page (stub) still fills its slot as a
-                # name (unlinked); only a living/unknown/restricted ancestor stays a
-                # blank redaction, and a no-public-claim edge is skipped.
-                ometa = self.person_meta.get(other)
-                if not self.linked and (ometa is None or self._person_is_redacted(ometa)
-                                        or not self._has_public_claim(pid, other)):
-                    continue
+                # name (unlinked). In a shared site a living adult fills it as a
+                # private card and the walk goes on through them to the dead
+                # ancestors behind; a living child, a restricted person and a
+                # no-public-claim edge are left out (`_tree_card_kind`).
+                if not self.linked:
+                    if (self.person_meta.get(other) is None
+                            or not self._has_public_claim(pid, other)):
+                        continue
+                    kind = self._tree_card_kind(other)
+                    if kind == 'omit':
+                        continue
+                    if kind == 'private':
+                        private_parents.add(other)
                 subtype = (r['subtype'] or '').strip().lower() or None
                 entry = parent_rows.setdefault(
                     other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
@@ -8743,8 +9006,16 @@ class _SiteBuilder:
                 if not ppid:
                     missing_parent_of[slot_num] = pid
                     continue
-                labels[slot_num] = self._chart_entry(ppid, page_dir)
-                labels[slot_num]['sex_derived'] = sex_derived
+                if ppid in private_parents:
+                    # Nothing about the person but their place: no name,
+                    # dates, link or id. Their sex still picks the slot, but
+                    # it is not shown as evidence (no line colour).
+                    labels[slot_num] = {'name': '', 'url': None, 'redacted': True,
+                                        'private': True, 'sex_derived': False,
+                                        'dates': {'birth': None, 'death': None}}
+                else:
+                    labels[slot_num] = self._chart_entry(ppid, page_dir)
+                    labels[slot_num]['sex_derived'] = sex_derived
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
