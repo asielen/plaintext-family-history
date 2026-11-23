@@ -41,8 +41,20 @@ def _details(url: str | None) -> tuple[str, str | None] | None:
     return (m.group(1), m.group(2)) if m else None
 
 
+_MEDIATYPE_RE = re.compile(
+    r'''<meta\b[^>]*\bproperty=["']mediatype["'][^>]*\bcontent=["']([^"']*)["']''', re.I)
+
+
+def _is_text(html: str) -> bool:
+    """The item page says it is a text (a book). A recording or a film says
+    otherwise and is left to the generic recipe, never filed as a book. A page
+    with no mediatype tag is read as a book."""
+    m = _MEDIATYPE_RE.search(html or '')
+    return m is None or m.group(1).strip().lower() == 'texts'
+
+
 def detect(html: str, url: str | None) -> bool:
-    return _details(url) is not None and 'archive.org' in domain_of(url)
+    return _details(url) is not None and 'archive.org' in domain_of(url) and _is_text(html)
 
 
 def _creator(raw: str) -> str | None:

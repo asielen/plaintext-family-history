@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "52477b7dc34e213ae4f932c50821f5a19378765f8632f86eadde114a57878ba3",
+      "sha256": "9785ec749ee9e9423127596a2c983c5a4952d9d1e2a09884f6a6570117b6875d",
       "spec_version": "2.22",
       "src": "browser-companion/src/content.js"
     },
@@ -716,7 +716,7 @@
     {
       "path": ".fha/tools/capture_recipes/archiveorg.py",
       "category": "operating",
-      "sha256": "2033ded9ce6d5c952963fba76e7841a4f18cf5d1b85940f9137256b8ab20f4a3",
+      "sha256": "e8e49ecede8823aaf3d0c11f981efb27a39d3d76faf356e6a9ee3a0fc28aeece",
       "spec_version": "2.22",
       "src": "tools/capture_recipes/archiveorg.py"
     },

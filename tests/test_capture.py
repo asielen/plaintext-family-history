@@ -1068,6 +1068,19 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('https://archive.org/details/historyofamadorc00maso/page/n20',
                       [x['url'] for x in meta['external_links']])
 
+    def test_internet_archive_recording_is_not_filed_as_a_book(self) -> None:
+        # Codex 4662757865: an oral-history recording saved from archive.org is
+        # captured as a plain page, never filed as a book.
+        from capture_recipes import archiveorg
+        html = ('<html><head><title>Oral history interview : Free Download, Borrow, and Streaming : Internet Archive'
+                '</title><meta property="mediatype" content="audio"></head><body><p>An interview</p></body></html>')
+        url = 'https://archive.org/details/oral-history-interview-01'
+        self.assertFalse(archiveorg.detect(html, url))
+        rc = self._capture(html, url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertNotEqual(meta.get('source_type'), 'book')
+
     def test_internet_archive_other_pages_are_not_claimed(self) -> None:
         from capture_recipes import archiveorg
         for url in ('https://archive.org/search?query=hartley', 'https://archive.org/',

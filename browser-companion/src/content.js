@@ -212,7 +212,7 @@
     if (host.includes('familysearch.org')) return 'familysearch';
     if (host.includes('newspapers.com')) return 'newspapers';
     if (host.includes('findagrave.com')) return 'findagrave';
-    if (iaParsePage(url)) return 'archiveorg';
+    if (iaBookPage(url)) return 'archiveorg';
     if (host.includes('wvculture.org')) return 'wvculture';
     return null;
   }
@@ -2630,6 +2630,16 @@
   }
   // FHA-SYNC-END findagrave
 
+  // An Internet Archive item page that is a text (a book), by the page's own
+  // <meta property="mediatype">: a recording or a film is captured as a plain
+  // page, never filed as a book. A page with no such tag is read as a book.
+  function iaBookPage(url) {
+    if (!iaParsePage(url)) return false;
+    const m = document.querySelector('meta[property="mediatype"]');
+    const type = m ? String(m.getAttribute('content') || '').trim().toLowerCase() : '';
+    return !type || type === 'texts';
+  }
+
   // Internet Archive book pages (lib/archiveorg-record.js is canonical): which page an
   // address is, for the panel; the requests run in the panel, not here.
   // FHA-SYNC-BEGIN archiveorg
@@ -3973,7 +3983,7 @@
     const photoInfo = photo && photo.ok ? photo : null;
     // An Internet Archive book page: the book's own title, not the tab's
     // "… : Free Download, Borrow, and Streaming : Internet Archive".
-    const iaPage = !!iaParsePage(url);
+    const iaPage = iaBookPage(url);
     return {
       url,
       canonical,

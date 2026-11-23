@@ -321,6 +321,14 @@ test('prefill on an Internet Archive book page: the book\'s own title, a book, a
   assert.strictEqual(r.prefill.title, 'History of Amador County, California');
   assert.strictEqual(r.prefill.sourceType, 'book');
   assert.strictEqual(r.prefill.repository, 'Internet Archive');
+  r = await loadPage({ url, head: { mediatype: 'texts' } }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.archiveorgPage, true);
+  // Codex 4662757865: a recording on archive.org is not filed as a book
+  r = await loadPage({ url: 'https://archive.org/details/oral-history-interview-01', head: { mediatype: 'audio' } })
+    .ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.archiveorgPage, false);
+  assert.notStrictEqual(r.prefill.recipeHint, 'archiveorg');
+  assert.notStrictEqual(r.prefill.sourceType, 'book');
   // a search or a collection page is not a book page
   r = await loadPage({ url: 'https://archive.org/search?query=hartley' }).ask({ action: 'prefill' });
   assert.strictEqual(r.prefill.archiveorgPage, false);
