@@ -16,7 +16,7 @@ Changes flow one way: from your copy of the project (the "workshop") into your a
 
 Run everything from a terminal *inside your archive folder*. `PATH-TO-WORKSHOP` below is the project folder the update comes from: your git clone, or the new download, unzipped (zip users: [SETUP_FROM_ZIP.md](SETUP_FROM_ZIP.md) covers getting that folder).
 
-Commands are written bare; on macOS or Linux type `./fha`, in Windows PowerShell `.\fha`, and in the Command Prompt `fha`. The [cheat sheet](CHEATSHEET.md#typing-fha) has the details. You never type the path to the tools: in an installed archive they live in a hidden `.fha/` folder, and the launcher finds them there.
+Commands are written bare; on macOS or Linux type `./fha`, and in Windows PowerShell `.\fha`. The [cheat sheet](CHEATSHEET.md#typing-fha) has the details. You never type the path to the tools: in an installed archive they live in a hidden `.fha/` folder, and the launcher finds them there.
 
 1. **Get the new version of the project.** Git users: `git pull` in the workshop clone. Zip users: unzip the new download beside the old one.
 

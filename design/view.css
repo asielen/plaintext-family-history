@@ -143,6 +143,14 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .status-rejected, .status-superseded { color: var(--status-rejected-fg); text-decoration: line-through; }
 
 
+/* Printed reports (fha views family-sheet): note numbers, the notes list, and
+   one sheet per page when a file holds several. */
+
+sup.note { font-family: var(--font-sans); font-size: 0.7em; color: var(--accent); }
+p.fact { margin-bottom: var(--space-1); }
+.report-notes { font-size: var(--text-sm); color: var(--ink-soft); }
+.report-sheet + .report-sheet { margin-top: var(--space-8); break-before: page; }
+
 /* Print: white paper, black ink, no rows split across pages. The private
    banner is left alone on purpose: a printed copy left on a table still
    says it is private. */

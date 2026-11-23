@@ -198,10 +198,14 @@ Build always-current summary pages from your records.
   fha views places                 One note per place, for Obsidian
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
+  fha views family-sheet <p-id>    A printable family group sheet for a couple
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
 visible not-for-publication banner); share through `fha site` instead.
+The family sheet is the exception: it is made to hand to relatives, so
+living relatives are counted but never named and private records are
+left out.
 
 These pages are generated and rebuildable; edit the records, not the pages.
 ```
@@ -334,6 +338,25 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--out` `FILE` | Write output to FILE instead of stdout. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
+### `fha views family-sheet`
+
+Print a family group sheet: a couple, their parents and children, each fact with its source.
+
+```text
+Write a printed family group sheet for one deceased person and a spouse
+(one sheet per spouse when none is named) to generated/views/. Every
+fact carries a note number that points to its record. Living relatives
+are counted but never named; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; the sheet is for them and a spouse. |
+| `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
 ### `fha views clean`
 
 Delete every generated view file (companion .md + generated/views/ HTML); they regenerate with `fha views refresh`.
@@ -404,6 +427,7 @@ Locate anything in the archive, or search its full text.
   fha find --text "phrase"   Full-text search across records, notes, captions
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
+  fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`.
@@ -414,10 +438,11 @@ as `fha find --text`.
 | `--root` `PATH` | Archive root |
 | `--text` `PHRASE` | Full-text search across records, notes, transcripts |
 | `--related` `[ID]` | Neighborhood of an ID: the people, places and sources next to it. Combine with --date for a time slice, or pass --related --date EDTF alone for the standalone time-slice neighborhood. |
+| `--sounds-like` `NAME` | People whose names sound like NAME in any spelling (Kowalski, Kowalska, Kovalsky), grouped by spelling, with the Daitch-Mokotoff and census Soundex codes. Works with --json and --limit. |
 | `--date` `EDTF` | Time-slice filter. With --related <ID>, narrows that neighborhood to the given EDTF range; with --related and no ID, reports everything active in that range. |
-| `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query or --text; combine with --kind/--limit to narrow it. Not yet valid with --related. |
+| `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query, --text or --sounds-like; combine with --kind/--limit to narrow it. Not yet valid with --related. |
 | `--kind` `KIND[,KIND...]` | With --json: only these result kinds (person, source, place, hypothesis, claim, text (comma list; photo-source = only sources that have photo files)). Default: every kind. |
-| `--limit` `N` | With --json: maximum number of results (default 20). |
+| `--limit` `N` | Maximum number of results: with --json (default 20), or the people --sounds-like lists (default 50). |
 | `[ID_OR_TEXT]` | Archive ID (P-/S-/C-/L-/H-) or text to search |
 
 ## `fha search`

@@ -23,6 +23,9 @@ Contents:
 13. Linking place text: the hierarchy rule
 14. One vendored D3 for interactive charts
 15. Dates that cannot all be true
+16. Search links on the workbench person page
+17. Sounds-alike search
+18. Site search: a script, not a data file
 
 ---
 
@@ -382,3 +385,32 @@ Other limits:
 - **A JavaScript port.** Two copies of every address, and none of it testable from Python.
 - **Affiliate links.** Ancestry's address is returned as the search itself, with no redirect through an affiliate network.
 - **Putting living relatives' names in a link.** A click would send a living person's name to a company that was never asked.
+
+## 17. Sounds-alike search
+
+**The rule.** `fha find --sounds-like NAME` lists the people whose public names sound like NAME, grouped by spelling. Two words sound alike when their Daitch-Mokotoff codes share one; every word typed must sound like a word of one of the person's names, and a known given name also matches its forms in other languages (Jan, John, Johann, Иван). A Cyrillic name is compared through its passport, German and Polish spellings. The output says that sounding alike is only a hint, and nothing is written.
+
+**Why.** A family's name drifts across records: a census taker hears Hartly, a Polish priest writes Kowalska for a wife, an emigrant's papers say Kovalsky. A search for one spelling misses the rest, and those misses look like absence. Daitch-Mokotoff is the code JewishGen and the Eastern European indexes use, so the codes in the header also search those sites, and its rules were made for the Slavic and Yiddish spellings these families carry. The census Soundex code is printed beside it because the 1880-1930 census cards are filed under it. Matching every typed word, in any order, finds "Jan Kowalski" written "Kowalski, John" without matching every Jan in the archive.
+
+The D-M coder is written from Gary Mokotoff's published chart, and its tests pin the codes JewishGen, Wikipedia, Avotaynu and the National Archives publish. The transliteration tables and given-name rows come from genealogy-mcp (MIT, Igor Melnikov), with its notice above them in `_lib.py`.
+
+**Rejected.**
+
+- **American Soundex as the matcher.** It keeps only the first letter and three sounds and splits Slavic spellings D-M keeps together (Moskowitz M232, Moskovitz M213); it is printed for the census cards, not used to match.
+- **Edit distance (fuzzy spelling).** It groups names that look alike, not names that sound alike (Hart and Hurt), and its threshold has no right value.
+- **Rewriting or normalising names.** A name stays as each record wrote it; the spelling is evidence. The search reads the spellings and changes none.
+- **Showing names straight from the index.** The index keeps private prior names beside the public ones, and an older copy of a name made private can linger in `aliases:`; the index only narrows the search, and each match is checked against the public names in the person's own record, so a private name is never shown.
+
+---
+
+## 18. Site search: a script, not a data file
+
+**The rule.** The search box on the family site looks names up in `data/search-data.js`, a script that sets one global (`window.FHA_SEARCH`), loaded by `search.html` with a plain `<script>` tag. `fha site` writes it from the pages the build already publishes, and it holds names, years and titles only. The spelling rule (`_search_fold`) is written once in `site.py`; the file carries its table, so the browser folds a query the same way the build folded the names.
+
+**Why.** A page opened from a USB stick (`file://`) may load a script beside it, but browsers refuse to `fetch()` a local data file. Every visitor downloads the whole file, so it can hold only what a shared page already shows: a name kept out of the file is a name nobody can take back from a cousin's computer.
+
+**Rejected.**
+
+- **A JSON file fetched at search time.** It fails from `file://`, which is how the site is shared.
+- **The data inline in every page.** Every page would carry every name, for a box most visits never use.
+- **A second copy of the spelling rule in the script.** Two copies drift; the file carries the table instead, and a test checks that both halves fold a list of names alike.
