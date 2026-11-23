@@ -2600,7 +2600,9 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # index has neither the columns nor the table, so bump to force the rebuild.
 # 15 (plan 19, S3): source_files.is_primary flags each source's main file
 # (SPEC §14), so the site no longer reads the retired `role: primary` mark.
-INDEX_SCHEMA_VERSION = 15
+# 16: search_log.years, the years a research-log search covered (SPEC §17c).
+# A v15 index has no column, so bump to force the rebuild.
+INDEX_SCHEMA_VERSION = 16
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).

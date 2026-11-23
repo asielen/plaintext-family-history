@@ -21,8 +21,8 @@ The archive already knows what it doesn't know: open questions, working answers 
 
 - **Leads and working answers only, never claims.** A claim requires a source by definition. This skill has no source, so it produces research directions. A guess to keep is a **working answer** (SPEC §17a rung 2): the question entry it answers, with `id:`, `guess:`, `basis:` and `verify:` added. It is never a separate object and never a claim. When the guess is a relationship and the human wants to build on it, it can also go on the person's `relationships:` with `status: hypothesis` so the tree can be followed past it (§17a rung 3), linked back to its working answer with `hypothesis: h-…`: `fha person relate <p-id> --parent <p-id2> --working-answer h-…` writes both, on the human's yes.
 - **Gaps are read, never written.** A gap a tool can compute (no death date, no parents, a provisional birth with no source) is shown fresh by `fha report` every time; never write it into the questions file as a question (SPEC §17b). A question entry is written when the human asks one, or when you have a guess to keep (then the entry exists for its working answer).
-- **Log-aware, always.** Check the research log **before** proposing anything. Never re-propose a search already logged unless its nil has aged past the re-run horizon (default **18 months**, because collections grow).
-- **Log executed searches back.** When the human actually runs a lead you proposed, append the entry to `notes/research-log.md` (date, question, repository, collection, terms, result including nil; SPEC §17c).
+- **Log-aware, always.** Check the research log **before** proposing anything. Never re-propose a search already logged unless its nil has aged past the re-run horizon (default **18 months**, because collections grow). An `unavailable` or `requested` entry is still to do, never a reason to skip a lead.
+- **Log executed searches back.** When the human actually runs a lead you proposed, append the entry to `notes/research-log.md` (date, question, repository, collection, the years searched when limited, terms, result; SPEC §17c).
 - **Write it down before handing back** (_STANDARD.md §7): any working answer goes into the archive, in its question entry in the person's research file or `notes/questions.md`, and is not left in the chat.
 - **A nil is a statement about one search.** A logged nil is never written as a claim with `evidence: negative` or `negated: true`, and never said as "there is no record", until the lead also knows the record would have been made, survives for that place and those years, and could have been found by the search that was run (AGENTS.md §"You cannot conclude absence from a search").
 - **Mark what you have not checked.** Every repository a lead names comes from the research log, or is flagged as general knowledge. Hours, fees, addresses, web addresses and the years a collection covers carry "(check this)" unless they were confirmed this session. Every lead says free or paid, and online, in person or by letter.
@@ -71,11 +71,12 @@ The archive already knows what it doesn't know: open questions, working answers 
    - date: 2026-07-01
      question: "[[h-…]] Thomas Hartley death record"
      repository: Kansas State Historical Society
-     collection: "Kansas death index, Breton County 1911-1925"
+     collection: "Kansas death index, Breton County"
+     years: 1911/1925
      terms: "Hartley, Thomas"
-     result: nil        # or found [[s-…]] / partial (note)
+     result: nil        # or found [[s-…]] / partial (note) / requested (note) / unavailable (note)
    ```
-   A logged nil is a result: it stops the next session from re-running the same search.
+   Write `years:` whenever the search was limited to some years, translating his words ("1911 through 1925" becomes `1911/1925`). A logged nil is a result: it stops the next session from re-running the same search over the same years. When the search could not be run at all (the archive was closed, the records are lost, the site was down), log it as `result: unavailable (why)`: that is still to do and says nothing about whether the record exists. A request sent by letter or form is `result: requested (sent to whom)` until the answer comes back.
 
 ## Guardrails
 
