@@ -3300,5 +3300,88 @@ class SkillInventoryDocsTests(unittest.TestCase):
                     self.assertIn(name, text, f'{doc} never names the {name} skill')
 
 
+class FirstNoteReplacesPlaceholderTests(unittest.TestCase):
+    """#393: his first note replaces the scaffold's "what goes here" text,
+    so the instructions are not published above his words."""
+
+    def _file(self, heading: str, placeholder: str, cr: str = '') -> list[str]:
+        text = (f'---\nid: x\n---\n\n## {heading}\n{placeholder}\n\n'
+                '## Sources\nNone.\n')
+        if cr:
+            text = text.replace('\n', cr + '\n')
+        return text.split('\n')
+
+    def _note(self, lines: list[str], heading: str, cr: str = '') -> str:
+        new_lines, created, _old = person._append_to_section(
+            lines, 4, heading, 'My own note.', cr)
+        self.assertFalse(created)
+        return '\n'.join(new_lines)
+
+    def test_current_placeholder_replaced_for_each_heading(self) -> None:
+        import _lib
+        for heading, content in _lib.PERSON_BODY_SECTIONS:
+            with self.subTest(heading=heading):
+                out = self._note(self._file(heading, content), heading)
+                self.assertNotIn(content, out)
+                self.assertIn(f'## {heading}\nMy own note.\n\n## Sources', out)
+
+    def test_each_legacy_placeholder_replaced(self) -> None:
+        import _lib
+        for heading, content in _lib._LEGACY_PERSON_PLACEHOLDERS:
+            with self.subTest(heading=heading, start=content[:20]):
+                out = self._note(self._file(heading, content), heading)
+                self.assertNotIn(content, out)
+                self.assertIn(f'## {heading}\nMy own note.\n\n## Sources', out)
+
+    def test_crlf_keeps_every_line_crlf_and_final_newline(self) -> None:
+        import _lib
+        heading, content = _lib.PERSON_BODY_SECTIONS[0]
+        lines = self._file(heading, content, cr='\r')
+        out = self._note(lines, heading, cr='\r')
+        self.assertNotIn(content, out)
+        self.assertIn('My own note.', out)
+        for ln in out.split('\n')[:-1]:
+            self.assertTrue(ln.endswith('\r'), repr(ln))
+        self.assertTrue(out.endswith('\r\n'))
+
+    def test_placeholder_with_trailing_space_still_replaced(self) -> None:
+        import _lib
+        heading, content = _lib.PERSON_BODY_SECTIONS[0]
+        out = self._note(self._file(heading, content + '  '), heading)
+        self.assertNotIn(content, out)
+        self.assertIn('My own note.', out)
+
+    def test_one_word_changed_is_appended_nothing_removed(self) -> None:
+        import _lib
+        heading, content = _lib.PERSON_BODY_SECTIONS[0]
+        edited = content.replace('story', 'tale', 1)
+        self.assertNotEqual(edited, content)
+        out = self._note(self._file(heading, edited), heading)
+        self.assertIn(edited + '\n\nMy own note.', out)
+
+    def test_source_notes_with_person_placeholder_text_unchanged(self) -> None:
+        import _lib
+        _heading, content = _lib.PERSON_BODY_SECTIONS[0]
+        lines = f'---\nid: x\n---\n\n## Notes\n{content}\n'.split('\n')
+        new_lines, _c, _o = _lib.append_paragraph_to_section(
+            lines, 4, 'Notes', 'A source note.', '')
+        self.assertIn(content + '\n\nA source note.', '\n'.join(new_lines))
+
+    def test_run_note_leaves_only_the_note_for_the_site(self) -> None:
+        import _lib
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _mk_archive(Path(tmp))
+            path = root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+            placeholder = dict(_lib.PERSON_BODY_SECTIONS)['Research Notes']
+            path.write_text(CURATED + f'\n## Research Notes\n{placeholder}\n', encoding='utf-8')
+            result = person.run_note(root, CURATED_PID, 'research', 'A real story.')
+            self.assertEqual(result.exit_code, EXIT_CLEAN)
+            text = path.read_text(encoding='utf-8')
+            self.assertNotIn(placeholder, text)
+            stripped = _lib.strip_unfilled_person_sections(text)
+            self.assertIn('## Research Notes', stripped)
+            self.assertIn('A real story.', stripped)
+
+
 if __name__ == '__main__':
     unittest.main()

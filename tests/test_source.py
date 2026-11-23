@@ -180,9 +180,8 @@ class SourceNoteEditTests(unittest.TestCase):
         # only the `*(none yet)*` placeholder is treated as empty, so the new
         # note REPLACES it rather than sitting awkwardly beside it. `fha source
         # note`'s old private appender kept the placeholder; the shared engine
-        # (from `fha person edit`/`note`) does not. Source's real scaffold uses
-        # a different placeholder string, so this only ever affects a hand-typed
-        # person-style placeholder - pure improvement, no real-world regression.
+        # (from `fha person edit`/`note`) does not. The placeholder `fha
+        # process` really scaffolds is covered by the #393 tests below.
         placeholder_src = (
             '---\n'
             f'id: {SID}\n'
@@ -206,6 +205,55 @@ class SourceNoteEditTests(unittest.TestCase):
         after = record.read_text(encoding='utf-8')
         self.assertNotIn('*(none yet)*', after)
         self.assertTrue(after.endswith('## Notes\nA real note.\n'))
+
+    def _scaffolded(self, notes: str, crlf: bool = False) -> Path:
+        text = (
+            '---\n'
+            f'id: {SID}\n'
+            f'aliases: [{SID}]\n'
+            'title: Hartley Family Bible\n'
+            'source_type: other\n'
+            'created: 2026-01-01\n'
+            '---\n'
+            '\n'
+            '## Claims\n'
+            '```yaml\n'
+            '```\n'
+            '\n'
+            '## Notes\n'
+            f'{notes}\n'
+        )
+        if crlf:
+            text = text.replace('\n', '\r\n')
+        root = _mk_archive(Path(tempfile.mkdtemp()), text)
+        record = root / 'sources' / 'other' / f'hartley-bible_{SID}.md'
+        record.write_bytes(text.encode('utf-8'))
+        self._scaffold_root = root
+        return record
+
+    def test_first_note_replaces_the_process_scaffold_placeholder(self) -> None:
+        # #393: a new source's Notes says "(none yet - drafted in the AI
+        # pass)"; his first note replaces it instead of sitting under it.
+        from _lib import SOURCE_NOTES_PLACEHOLDER
+        for crlf in (False, True):
+            with self.subTest(crlf=crlf):
+                record = self._scaffolded(SOURCE_NOTES_PLACEHOLDER, crlf)
+                result = source.run_source_note(self._scaffold_root, SID, text='A real note.')
+                self.assertEqual(result.exit_code, EXIT_CLEAN)
+                after = record.read_bytes().decode('utf-8')
+                self.assertNotIn('none yet', after)
+                nl = '\r\n' if crlf else '\n'
+                self.assertTrue(after.endswith(f'## Notes{nl}A real note.{nl}'), repr(after[-60:]))
+                if crlf:
+                    self.assertNotIn('\n', after.replace('\r\n', ''))
+
+    def test_scaffold_placeholder_with_his_own_line_is_kept(self) -> None:
+        from _lib import SOURCE_NOTES_PLACEHOLDER
+        notes = f'{SOURCE_NOTES_PLACEHOLDER}\nFound in the attic.'
+        record = self._scaffolded(notes)
+        source.run_source_note(self._scaffold_root, SID, text='A real note.')
+        after = record.read_text(encoding='utf-8')
+        self.assertIn(notes + '\n\nA real note.\n', after)
 
     def test_superseded_source_still_accepts_notes(self) -> None:
         root = _mk_archive(Path(tempfile.mkdtemp()), SOURCE_SUPERSEDED)
