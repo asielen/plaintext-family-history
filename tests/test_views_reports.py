@@ -590,7 +590,7 @@ class FamilySheetReviewFixTests(_SheetBase):
         self.reindex()
         text = self.sheet_text()
         self.assertEqual(text.count('Ada Hartley'), 1)
-        self.assertIn('Ada Hartley (adopted by Thomas Edward Hartley)', text)
+        self.assertIn('Ada Hartley (adopted child of Thomas Edward Hartley)', text)
         self.assertNotIn('Bella Birth', text)
 
     def test_his_child_whose_other_parent_is_private_stays_on_his_sheet(self):

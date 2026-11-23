@@ -5725,7 +5725,7 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
                 kind = nonbirth_bracket_label(subtypes[0])
             if spouse and info.get('only'):
                 only = rp.name(info['only'])
-                kind = f'{kind} by {only}' if kind else f'child of {only}'
+                kind = f'{kind} child of {only}' if kind else f'child of {only}'
             mark = f' ({kind})' if kind else ''
             born_cell = _fact_text(rp, fn, birth) if birth else ''
             death = _report_pick_vital(rp, c, 'death')
