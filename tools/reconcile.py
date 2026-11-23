@@ -128,6 +128,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _lib import (
     configure_utf8_stdout,
+    sqlite_readonly_uri,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
@@ -541,7 +542,7 @@ def _catalog_source_ids(archive_root: Path) -> dict:
     if not db_path.is_file():
         return {}
     try:
-        conn = sqlite3.connect(f'{db_path.resolve().as_uri()}?mode=ro', uri=True)
+        conn = sqlite3.connect(sqlite_readonly_uri(db_path), uri=True)
     except sqlite3.Error:
         return {}
     try:
