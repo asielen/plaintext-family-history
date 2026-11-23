@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.23, 2026-11-22**
+**Version 2.25, 2026-11-23**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -429,7 +429,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 
 - `notes/home.md`: the site homepage's introduction, plain markdown written by the human (or drafted by an AI and accepted); `fha site` shows it when present.
 - `notes/discoveries.md`: the log of research wins, appended by `fha confirm discovery`.
-- `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, written by `fha confirm dismiss`, so the report stops suggesting them.
+- `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, and pairs he has said are *not the same person*, written by `fha confirm dismiss` and taken back by `fha confirm undismiss`, so the report stops suggesting them.
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
 - `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
@@ -1005,6 +1005,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Public output, living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and all claims, photos, and source citations naming them are withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
+- In a shared site's family trees, a living or unknown adult is drawn as a card reading "Private" with nothing else on it, so the tree keeps its shape; a living person not known to be an adult is left out. The relationship line and family-tree number may be worked out through ties to people the page does not show; those people are never named.
 
 **Public output, restricted material (mandatory):**
 - Anything carrying `restricted` (a source, a claim, a person, or a name) is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name).

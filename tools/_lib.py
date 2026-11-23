@@ -204,6 +204,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forward the first time either owner calls it,
 #                                 returning (pairs, migrated) so a caller that
 #                                 would otherwise look silent can report it
+#    read_dismissed_file / write_dismissed_file - the whole file as a dict, so a
+#                                 writer keeps every key it does not change
+#    load_not_same_person      - the "two different people" decisions, with dates
 #
 #  Old capture log (read-only)
 #    capture_log_path          - the old notes/capture-log.jsonl
@@ -4212,8 +4215,11 @@ def load_cooccur_dismissed(
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
+            # utf-8-sig: Notepad's "UTF-8 with BOM" save must not hide every pair.
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, dict):
             return []
         return [
             [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
@@ -4231,14 +4237,109 @@ def load_cooccur_dismissed(
 
     migrated = False
     if migrate and old_path.exists():
-        try:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
-            old_path.unlink()
-            migrated = True
-        except OSError:
-            pass  # opportunistic: nothing is lost, the next call tries again
+        # The current file also holds the "not the same person" decisions, so
+        # the move keeps every key it does not own. A current file that exists
+        # but cannot be read is left alone this run: overwriting it would lose
+        # decisions the move could not see.
+        current, problem = read_dismissed_file(archive_root)
+        if problem is None:
+            try:
+                data = dict(current or {})
+                # Keep every entry of the current list exactly as written (a
+                # hand-typed pair with a note is still his record), then add
+                # the legacy pairs it does not already hold.
+                raw = data.get('pairs')
+                kept = list(raw) if isinstance(raw, list) else []
+                have = {k for k in (dismissed_pair_key(e) for e in kept) if k}
+                for pair in _read(old_path):
+                    if frozenset(pair) not in have:
+                        have.add(frozenset(pair))
+                        kept.append(pair)
+                data['pairs'] = kept
+                write_dismissed_file(archive_root, data)
+                old_path.unlink()
+                migrated = True
+            except OSError:
+                pass  # opportunistic: nothing is lost, the next call tries again
     return merged, migrated
+
+
+NOT_SAME_PERSON_KEY = 'not_same_person'
+
+
+def read_dismissed_file(
+    archive_root: str | Path, *, check_lists: bool = True,
+) -> tuple[dict | None, str | None]:
+    """The current dismissal file as a dict, for a writer that must keep every key.
+
+    Returns `(data, None)`, with `data` `{}` when the file does not exist yet,
+    or `(None, problem)` when it exists but is not a readable JSON object. The
+    file now holds two kinds of human decision, so a writer that cannot read it
+    must stop instead of replacing it with something shorter; `problem` is the
+    plain sentence to show. Readers that can live with an empty answer use
+    `load_cooccur_dismissed` / `load_not_same_person` instead.
+
+    `check_lists=False` is for a reader of one key: an odd value under the
+    OTHER key must not hide the decisions it reads.
+    """
+    path = cooccur_dismissed_paths(archive_root)[0]
+    if not path.exists():
+        return {}, None
+    name = path.relative_to(Path(archive_root)).as_posix()
+    fix = ('so nothing was written. Open it in a text editor and fix or remove '
+           'the damaged line, or rename the file to keep a copy, then run this again.')
+    try:
+        # utf-8-sig: a file saved as "UTF-8 with BOM" (a Notepad choice) is fine.
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None, f'{name} could not be read (it is not valid JSON), {fix}'
+    if not isinstance(data, dict):
+        return None, (f'{name} could not be read (it should start with {{ and hold '
+                      f'named lists), {fix}')
+    for list_key in ('pairs', NOT_SAME_PERSON_KEY) if check_lists else ():
+        if list_key in data and not isinstance(data[list_key], list):
+            # Writing a list over it would erase what he wrote there.
+            return None, (f'{name} could not be read ("{list_key}" should be a list '
+                          f'in square brackets [ ]), {fix}')
+    return data, None
+
+
+def dismissed_pair_key(entry: object) -> frozenset[str] | None:
+    """The unordered, normalized id pair of a `pairs` entry, or None for any
+    other shape (a writer keeps such an entry as written; a reader skips it)."""
+    if isinstance(entry, list) and len(entry) == 2:
+        return frozenset(normalize_id(str(p)) for p in entry)
+    return None
+
+
+def write_dismissed_file(archive_root: str | Path, data: dict) -> Path:
+    """Write the whole dismissal file atomically; callers pass the dict they read, edited."""
+    path = cooccur_dismissed_paths(archive_root)[0]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_exact_atomic(path, json.dumps(data, indent=2) + '\n')
+    return path
+
+
+def load_not_same_person(archive_root: str | Path) -> dict[frozenset[str], str | None]:
+    """Pairs the human said are two different people, each with its date (or None).
+
+    Read-only and forgiving: never migrates, never raises, and skips any entry
+    that is not an object with two different valid person ids. A file without
+    the key, or a damaged one, reads as no decisions.
+    """
+    data, _problem = read_dismissed_file(archive_root, check_lists=False)
+    out: dict[frozenset[str], str | None] = {}
+    entries = (data or {}).get(NOT_SAME_PERSON_KEY)
+    for entry in entries if isinstance(entries, list) else []:
+        persons = entry.get('persons') if isinstance(entry, dict) else None
+        if not (isinstance(persons, list) and len(persons) == 2):
+            continue
+        ids = [normalize_id(str(p)) for p in persons]
+        if ids[0] == ids[1] or not all(is_valid_id(i) and id_type_of(i) == 'P' for i in ids):
+            continue
+        date = entry.get('date')
+        out[frozenset(ids)] = str(date).strip() if date and str(date).strip() else None
+    return out
 
 
 # ── Old capture log (read-only) ───────────────────────────────────────────────
@@ -6563,6 +6664,95 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     # living/unknown status governs him as well (`living_carried_to_survivors`).
     survivor = merge_survivor(chain)
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
+
+
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date,
+                   *, count_children: bool = True) -> bool:
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
+
+    Adult means one of (D20 read literally, owner decision 2026-11-22):
+    - at least one recorded child (`has_recorded_child`), whatever any
+      recorded birth says: a parent gets a blank card, which names and
+      dates nothing;
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the
+      provisional `birth:` estimate on their record or on any record merged
+      into them, whose LATEST possible day is `ADULT_AGE_YEARS` or more
+      years before `today`; several birth dates are all checked, and the
+      youngest one decides;
+    - no birth date at all, and a baptism 18 or more years ago (they were
+      born by then). A recent baptism says nothing.
+
+    `count_children=False` skips the child test, for a caller that must
+    count only the child links it may publish (the shared site: a child the
+    owner kept private must not be what earns a card).
+
+    Anyone else is "not known to be an adult". The answer reads `today`
+    (the build date), so a child who turns 18 changes it on the next
+    rebuild. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year with no leap day
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    if count_children and has_recorded_child(conn, pid):
+        return True
+    latest = own_dates('birth')
+    # The provisional `birth:` of the person AND of every record merged into
+    # them: `fha confirm merge` leaves a duplicate's estimate on the
+    # duplicate, and it is a recorded birth of the same human (Codex, PR
+    # #436). Claims and relationships already land on the survivor at index
+    # time, so only this record-level field needs the widening.
+    for rid in [pid, *merged_into_survivor(index_merge_survivors(conn), pid)]:
+        row = conn.execute('SELECT birth FROM persons WHERE id = ?', (rid,)).fetchone()
+        if row is not None and str(row[0] or '').strip():
+            latest.append(latest_day(str(row[0])))
+    if latest:
+        return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    return any(day <= cutoff.isoformat() for day in own_dates('baptism'))
+
+
+def has_recorded_child(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether the index records a child of `pid`. Child links are written
+    under the merge survivor at index time, so the survivor's id answers for
+    every finished merge into it."""
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
 
 
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
