@@ -454,10 +454,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    KinshipGraph              - who is whose genetic parent, other parent kinds,
 #                                 spouses with dates, every edge for the path;
 #                                 from_edges builds one by hand for tests
-#    kin_graph                 - the index's relationships table -> KinshipGraph,
-#                                 with an optional per-row edge filter (edge_ok)
-#    kinship_word              - (gens_a, gens_b, sex) -> "second cousin", "grandmother"
-#    blood_answer              - lowest common ancestor over genetic parents, named
+#    kin_graph                 - the index's relationships table (and half-sibling
+#                                 claims) -> KinshipGraph, with an optional
+#                                 per-row edge filter (edge_ok)
+#    kinship_word              - (gens_a, gens_b, sex, half=, double=) -> "great-aunt",
+#                                 "half-brother", "second cousin"
+#    blood_routes              - every separate blood route, nearest first, each
+#                                 with its half state (full, half, or may be half)
+#    blood_answer              - the nearest route, plus the "may be half" note
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
@@ -18263,9 +18267,14 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # The graph is read once from the index's `relationships` table (accepted,
 # non-negated claims only), joined to `claims` for each edge's nature, source
-# and status. Blood answers follow genetic parent edges only (SPEC §12.2); the
-# shortest path walks every edge, plus sibling edges derived from any shared
-# parent.
+# and status, plus the accepted claims that call two people half-siblings.
+# Blood answers follow genetic parent edges only (SPEC §12.2); the shortest
+# path walks every edge, plus sibling edges derived from any shared parent.
+#
+# Two people who share one parent are not told they are brother and sister:
+# a blood route through one ancestor is "half" when a source says so or both
+# other parents are recorded and differ, and when a parent is missing the
+# answer keeps the plain word and says it may be half (`blood_routes`).
 
 @dataclasses.dataclass
 class KinshipGraph:
@@ -18283,7 +18292,8 @@ class KinshipGraph:
                         recorded marriage row for the pair
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
-      half_sibling_pairs  pairs a source calls half-siblings (empty for now)
+      half_sibling_pairs  pairs an accepted `subtype: half` sibling claim
+                        names (SPEC §8.2), so "half" can rest on a source
 
     Read-only once built: `ancestors` and `genetic_children` remember their
     answers, so an edge added afterwards would not be seen. Build a new graph
@@ -18336,12 +18346,13 @@ class KinshipGraph:
 
     @classmethod
     def from_edges(cls, people: dict[str, dict], parent_edges=(), spouse_edges=(),
-                   social_edges=()) -> 'KinshipGraph':
+                   social_edges=(), half_sibling_pairs=()) -> 'KinshipGraph':
         """A graph built by hand, for tests that need no index.
 
         parent_edges: (child, parent, subtype); spouse_edges: (a, b, start, end);
-        social_edges: (a, b, rel). Each edge is entered in both directions, as
-        the index stores it, and read by the same rules as `kin_graph`."""
+        social_edges: (a, b, rel); half_sibling_pairs: pairs a source calls
+        half-siblings. Each edge is entered in both directions, as the index
+        stores it, and read by the same rules as `kin_graph`."""
         rows: list[dict] = []
         for child, parent, subtype in parent_edges:
             rows.append({'person_id': child, 'rel': 'parent', 'other_id': parent,
@@ -18358,7 +18369,9 @@ class KinshipGraph:
             rows.append({'person_id': b, 'rel': rel, 'other_id': a})
         people_copy = {pid: {'name': p.get('name') or pid, 'sex': (p.get('sex') or '').strip()}
                        for pid, p in people.items()}
-        return _kinship_graph_from_rows(people_copy, rows)
+        graph = _kinship_graph_from_rows(people_copy, rows)
+        graph.half_sibling_pairs = {frozenset(pair) for pair in half_sibling_pairs}
+        return graph
 
 
 def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> KinshipGraph:
@@ -18420,8 +18433,9 @@ def kin_graph(conn: sqlite3.Connection,
     and a False row is left out entirely (the site's privacy filter). `row` is
     a dict with person_id, rel, other_id, claim_id, date_start, date_end,
     subtype, source_id and status (the last three from the backing claim; None
-    when the claim is not in the index). Works whatever the connection's
-    row_factory is."""
+    when the claim is not in the index). Each pair from a half-sibling claim
+    is asked too, as a row with rel 'sibling'. Works whatever the
+    connection's row_factory is."""
     def _dicts(cur) -> list[dict]:
         cols = [d[0] for d in cur.description]
         # A dict-like row (a caller's own row_factory) gives its keys when
@@ -18447,7 +18461,34 @@ def kin_graph(conn: sqlite3.Connection,
     # every answer the same from run to run and machine to machine.
     if edge_ok is not None:
         rows = [r for r in rows if edge_ok(r)]
-    return _kinship_graph_from_rows(people, rows)
+    graph = _kinship_graph_from_rows(people, rows)
+
+    # "Half" may rest on a source that says so: an accepted `subtype: half`
+    # claim naming two people under `sibling:` (SPEC §8.2). The index derives
+    # no edge from it, so it is read from the claim itself. Each pair passes
+    # through `edge_ok` as a 'sibling' row, so the site's filter can leave a
+    # restricted source's word out like any other tie.
+    half_claims = _dicts(conn.execute(
+        '''SELECT c.id AS claim_id, c.source_id AS source_id, c.status AS status,
+                  c.subtype AS subtype
+           FROM claims c
+           WHERE c.type = 'relationship' AND c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0
+             AND LOWER(TRIM(c.subtype)) IN ('half', 'half-sibling')
+           ORDER BY c.id'''))
+    for claim in half_claims:
+        pairs = claim_role_pairs(
+            (r['person_id'], r['role']) for r in _dicts(conn.execute(
+                'SELECT person_id, role FROM claim_persons WHERE claim_id=? ORDER BY position',
+                (claim['claim_id'],))))
+        sibs = sorted({pid for pid, role in pairs if pid and role_meaning(role) == 'sibling'})
+        for i, p1 in enumerate(sibs):
+            for p2 in sibs[i + 1:]:
+                row = dict(claim, person_id=p1, rel='sibling', other_id=p2,
+                           date_start=None, date_end=None)
+                if edge_ok is None or edge_ok(row):
+                    graph.half_sibling_pairs.add(frozenset({p1, p2}))
+    return graph
 
 
 _KIN_ORDINALS = ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth',
@@ -18488,29 +18529,37 @@ def _kin_lineal(gens: int, sex: str, *, up: bool) -> str:
     return _kin_greats(gens - 2) + grand
 
 
-def _kin_collateral(near: int, far: int, sex: str, *, up: bool) -> str:
-    """Aunt/uncle (up) or niece/nephew (down) with grand-/great- prefixes.
+def _kin_collateral(n_greats: int, sex: str, *, up: bool, half: bool) -> str:
+    """Aunt or uncle (up) and niece or nephew (down), in the words a family
+    uses and the Shared cM Project chart prints: great-aunt, great-great-aunt
+    (not grandaunt). Someone whose sex is not recorded as M or F gets both
+    words, "great-aunt or great-uncle", so no reader meets a slash.
 
-    `near` is the LCA distance of the person at the shallower side (always 1
-    here), `far` the deeper side. The number of greats follows the genealogical
-    convention: grand-aunt at far==3, great-grand-aunt at far==4, ..."""
-    s = (sex or '').upper()
-    if up:
-        base = {'M': 'uncle', 'F': 'aunt'}.get(s, 'aunt/uncle')
-    else:
-        base = {'M': 'nephew', 'F': 'niece'}.get(s, 'niece/nephew')
-    extra = far - 2          # far==2 -> plain aunt/uncle; 3 -> grand-; 4 -> great-grand-
-    if extra <= 0:
-        return base
-    if extra == 1:
-        return 'grand' + base
-    return _kin_greats(extra - 1) + 'grand' + base
+    `n_greats` is how many great- come first (0 for a plain aunt). Half reads
+    "half-aunt" with no greats and "half great-aunt" with them, the way the
+    Shared cM Project writes it."""
+    words = {'M': ['uncle'], 'F': ['aunt']} if up else {'M': ['nephew'], 'F': ['niece']}
+    neutral = ['aunt', 'uncle'] if up else ['niece', 'nephew']
+    out = []
+    for word in words.get((sex or '').upper(), neutral):
+        word = _kin_greats(n_greats) + word
+        if half:
+            word = ('half ' if n_greats else 'half-') + word
+        out.append(word)
+    return ' or '.join(out)
 
 
-def kinship_word(gens_a: int, gens_b: int, sex: str) -> str:
+def kinship_word(gens_a: int, gens_b: int, sex: str, *, half: bool = False,
+                 double: bool = False) -> str:
     """Name A's blood relationship to B, given each one's generation distance to
-    their lowest common ancestor. Phrased from A's side (so `sex` is A's): A is
-    B's <returned phrase>."""
+    their common ancestor. Phrased from A's side (so `sex` is A's): A is B's
+    <returned phrase>.
+
+    `half` gives the half word (half-brother, half-aunt, half first cousin)
+    and `double` the double one (double first cousin); a lineal tie is never
+    half, and only cousins are double. A sex other than M or F (unknown,
+    intersex, blank) takes the neutral word: sibling, aunt or uncle."""
+    s = (sex or '').upper()
     if gens_a == 0 and gens_b == 0:
         return 'the same person'
     if gens_a == 0:                      # A is the common ancestor: A is B's ancestor
@@ -18518,47 +18567,147 @@ def kinship_word(gens_a: int, gens_b: int, sex: str) -> str:
     if gens_b == 0:                      # B is the common ancestor: A is B's descendant
         return _kin_lineal(gens_a, sex, up=False)
     if gens_a == 1 and gens_b == 1:
-        return {'M': 'brother', 'F': 'sister'}.get((sex or '').upper(), 'sibling')
-    if gens_a == 1:                      # A is a child of the LCA, B deeper -> A is aunt/uncle
-        return _kin_collateral(gens_a, gens_b, sex, up=True)
-    if gens_b == 1:                      # B is a child of the LCA, A deeper -> A is niece/nephew
-        return _kin_collateral(gens_b, gens_a, sex, up=False)
+        word = {'M': 'brother', 'F': 'sister'}.get(s, 'sibling')
+        return 'half-' + word if half else word
+    if gens_a == 1:                      # A is a child of the ancestor, B deeper: aunt or uncle
+        return _kin_collateral(gens_b - 2, sex, up=True, half=half)
+    if gens_b == 1:                      # B is a child of the ancestor, A deeper: niece or nephew
+        return _kin_collateral(gens_a - 2, sex, up=False, half=half)
     degree = min(gens_a, gens_b) - 1
     removal = abs(gens_a - gens_b)
     name = f'{_kin_ordinal(degree)} cousin'
     if removal:
         name += ' ' + _kin_times_removed(removal)
+    if half:
+        return 'half ' + name
+    if double:
+        return 'double ' + name
     return name
 
 
-def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
-    """A's blood relationship to B via the lowest common ancestor, or None if
-    the recorded tree joins them by no genetic line.
+def _kin_line_children(graph: KinshipGraph, c: str, anc: dict[str, int]) -> set[str]:
+    """The genetic children of ancestor `c` one generation nearer the person
+    whose ancestor map is `anc`: the child the line runs down through."""
+    return {k for k in graph.genetic_children(c) if anc.get(k) == anc[c] - 1}
 
-    Returns {relationship, common_ancestors, gens_a, gens_b}. The lowest common
-    ancestor minimises max(distance) then total distance; ties (a common
-    ancestral couple) are all reported, sorted by ID."""
+
+def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int],
+                    anc_b: dict[str, int]) -> bool | None:
+    """Whether a blood route is half: False (full), True (certainly half) or
+    None (a parent on the connecting line is not recorded, so it may be half).
+
+    He is told "half" only on a firm basis: a source that calls the two
+    connecting children half-siblings, or both of their other parents
+    recorded and different people. A route through a couple, and a lineal
+    route, is never half."""
+    if len(group) > 1:
+        return False
+    c = group[0]
+    if anc_a[c] == 0 or anc_b[c] == 0:
+        return False
+    ca = min(_kin_line_children(graph, c, anc_a))
+    cb = min(_kin_line_children(graph, c, anc_b))
+    if frozenset({ca, cb}) in graph.half_sibling_pairs:
+        return True
+    other_a = graph.genetic_parents.get(ca, set()) - {c}
+    other_b = graph.genetic_parents.get(cb, set()) - {c}
+    if other_a and other_b:
+        # A shared other parent would have joined the route as a couple, so
+        # an overlap here means the two lines meet again higher up: not half.
+        return not (other_a & other_b)
+    return None
+
+
+def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
+    """Every separate way A and B are related by blood, nearest first, as A
+    is B's <relationship>. Empty when no genetic line joins them.
+
+    A route is one common ancestor, or a couple who share a child on both
+    lines. A common ancestor who is only the way up to a nearer common
+    ancestor (the grandparents' own parents) is not a route of its own.
+    Each route is {relationship, common_ancestors, gens_a, gens_b, half,
+    half_relationship}: `half` is False, True or None (may be half; then
+    `relationship` keeps the full word and `half_relationship` carries the
+    half one). Sorted by (furthest generation, total generations, ancestor
+    IDs), so every run lists them in the same order."""
     anc_a = graph.ancestors(a)
     anc_b = graph.ancestors(b)
     # A person is their own ancestor at distance 0, so a direct ancestor or
-    # descendant pair shares the ancestor at (0, k), handled by kinship_word's
-    # 0-distance cases. The intersection covers lineal ties as well as cousins.
+    # descendant pair shares the ancestor at (0, k); the intersection covers
+    # lineal ties as well as cousins.
     common = set(anc_a) & set(anc_b)
     if not common:
+        return []
+    covered: set[str] = set()
+    for d in common:
+        covered.update(up for up in graph.ancestors(d) if up != d)
+    minimal = sorted(common - covered)
+
+    # Group the minimal ancestors into couples: the same generations from
+    # both people and a shared child on each line. Union-find keeps a
+    # three-parent record (two fathers recorded) in one route too.
+    root = {c: c for c in minimal}
+
+    def find(c: str) -> str:
+        while root[c] != c:
+            c = root[c]
+        return c
+
+    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
+             for c in minimal}
+    for i, c1 in enumerate(minimal):
+        for c2 in minimal[i + 1:]:
+            if ((anc_a[c1], anc_b[c1]) == (anc_a[c2], anc_b[c2])
+                    and lines[c1][0] & lines[c2][0] and lines[c1][1] & lines[c2][1]):
+                r1, r2 = find(c1), find(c2)
+                if r1 != r2:
+                    root[max(r1, r2)] = min(r1, r2)
+    groups: dict[str, list[str]] = {}
+    for c in minimal:
+        groups.setdefault(find(c), []).append(c)
+
+    sex = graph.people.get(a, {}).get('sex', '')
+    routes = []
+    for group in groups.values():
+        ga, gb = anc_a[group[0]], anc_b[group[0]]
+        half = _kin_half_state(graph, group, anc_a, anc_b)
+        routes.append({
+            'relationship': kinship_word(ga, gb, sex, half=half is True),
+            'common_ancestors': sorted(group),
+            'gens_a': ga,
+            'gens_b': gb,
+            'half': half,
+            'half_relationship': kinship_word(ga, gb, sex, half=True) if half is None else None,
+        })
+    routes.sort(key=lambda r: (max(r['gens_a'], r['gens_b']), r['gens_a'] + r['gens_b'],
+                               r['common_ancestors']))
+    return routes
+
+
+def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
+    """A's nearest blood relationship to B, or None if the recorded tree
+    joins them by no genetic line.
+
+    Returns the nearest route from `blood_routes` ({relationship,
+    common_ancestors, gens_a, gens_b, half, half_relationship}) plus `note`:
+    when the route may be half, one plain sentence naming both people that
+    says so ("... so Ethel Hartley may be Frances Hartley's half-sister."),
+    else None."""
+    routes = blood_routes(graph, a, b)
+    if not routes:
         return None
-    best_key = min((max(anc_a[c], anc_b[c]), anc_a[c] + anc_b[c]) for c in common)
-    lcas = sorted(
-        c for c in common
-        if (max(anc_a[c], anc_b[c]), anc_a[c] + anc_b[c]) == best_key
-    )
-    c0 = lcas[0]
-    gens_a, gens_b = anc_a[c0], anc_b[c0]
-    return {
-        'relationship': kinship_word(gens_a, gens_b, graph.people.get(a, {}).get('sex', '')),
-        'common_ancestors': lcas,
-        'gens_a': gens_a,
-        'gens_b': gens_b,
-    }
+    answer = dict(routes[0])
+    answer['note'] = None
+    if answer['half'] is None:
+        a_name = graph.people.get(a, {}).get('name') or a
+        b_name = graph.people.get(b, {}).get('name') or b
+        if (answer['gens_a'], answer['gens_b']) == (1, 1):
+            why = 'Only one parent is recorded for at least one of them'
+        else:
+            why = "A parent on the line that connects them isn't recorded"
+        answer['note'] = (f"{why}, so {a_name} may be {b_name}'s "
+                          f"{answer['half_relationship']}.")
+    return answer
 
 
 _KIN_HOP_WORDS = {
@@ -18636,7 +18785,10 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
     if not blood:
         return none
     path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
-    return {'words': blood['relationship'], 'note': None, 'kind': 'blood', 'path': path}
+    # An open half tie keeps the plain word ("brother"); the caveat is the
+    # note, which a page may print or leave out.
+    note = 'other parent not recorded' if blood['half'] is None else None
+    return {'words': blood['relationship'], 'note': note, 'kind': 'blood', 'path': path}
 
 
 def _kin_blood_line(graph: KinshipGraph, anchor: str, pid: str, apex: str) -> list[str]:
