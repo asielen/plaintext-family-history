@@ -204,6 +204,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forward the first time either owner calls it,
 #                                 returning (pairs, migrated) so a caller that
 #                                 would otherwise look silent can report it
+#    read_dismissed_file / write_dismissed_file - the whole file as a dict, so a
+#                                 writer keeps every key it does not change
+#    load_not_same_person      - the "two different people" decisions, with dates
 #
 #  Old capture log (read-only)
 #    capture_log_path          - the old notes/capture-log.jsonl
@@ -4208,8 +4211,11 @@ def load_cooccur_dismissed(
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
+            # utf-8-sig: Notepad's "UTF-8 with BOM" save must not hide every pair.
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, dict):
             return []
         return [
             [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
@@ -4227,14 +4233,109 @@ def load_cooccur_dismissed(
 
     migrated = False
     if migrate and old_path.exists():
-        try:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
-            old_path.unlink()
-            migrated = True
-        except OSError:
-            pass  # opportunistic: nothing is lost, the next call tries again
+        # The current file also holds the "not the same person" decisions, so
+        # the move keeps every key it does not own. A current file that exists
+        # but cannot be read is left alone this run: overwriting it would lose
+        # decisions the move could not see.
+        current, problem = read_dismissed_file(archive_root)
+        if problem is None:
+            try:
+                data = dict(current or {})
+                # Keep every entry of the current list exactly as written (a
+                # hand-typed pair with a note is still his record), then add
+                # the legacy pairs it does not already hold.
+                raw = data.get('pairs')
+                kept = list(raw) if isinstance(raw, list) else []
+                have = {k for k in (dismissed_pair_key(e) for e in kept) if k}
+                for pair in _read(old_path):
+                    if frozenset(pair) not in have:
+                        have.add(frozenset(pair))
+                        kept.append(pair)
+                data['pairs'] = kept
+                write_dismissed_file(archive_root, data)
+                old_path.unlink()
+                migrated = True
+            except OSError:
+                pass  # opportunistic: nothing is lost, the next call tries again
     return merged, migrated
+
+
+NOT_SAME_PERSON_KEY = 'not_same_person'
+
+
+def read_dismissed_file(
+    archive_root: str | Path, *, check_lists: bool = True,
+) -> tuple[dict | None, str | None]:
+    """The current dismissal file as a dict, for a writer that must keep every key.
+
+    Returns `(data, None)`, with `data` `{}` when the file does not exist yet,
+    or `(None, problem)` when it exists but is not a readable JSON object. The
+    file now holds two kinds of human decision, so a writer that cannot read it
+    must stop instead of replacing it with something shorter; `problem` is the
+    plain sentence to show. Readers that can live with an empty answer use
+    `load_cooccur_dismissed` / `load_not_same_person` instead.
+
+    `check_lists=False` is for a reader of one key: an odd value under the
+    OTHER key must not hide the decisions it reads.
+    """
+    path = cooccur_dismissed_paths(archive_root)[0]
+    if not path.exists():
+        return {}, None
+    name = path.relative_to(Path(archive_root)).as_posix()
+    fix = ('so nothing was written. Open it in a text editor and fix or remove '
+           'the damaged line, or rename the file to keep a copy, then run this again.')
+    try:
+        # utf-8-sig: a file saved as "UTF-8 with BOM" (a Notepad choice) is fine.
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None, f'{name} could not be read (it is not valid JSON), {fix}'
+    if not isinstance(data, dict):
+        return None, (f'{name} could not be read (it should start with {{ and hold '
+                      f'named lists), {fix}')
+    for list_key in ('pairs', NOT_SAME_PERSON_KEY) if check_lists else ():
+        if list_key in data and not isinstance(data[list_key], list):
+            # Writing a list over it would erase what he wrote there.
+            return None, (f'{name} could not be read ("{list_key}" should be a list '
+                          f'in square brackets [ ]), {fix}')
+    return data, None
+
+
+def dismissed_pair_key(entry: object) -> frozenset[str] | None:
+    """The unordered, normalized id pair of a `pairs` entry, or None for any
+    other shape (a writer keeps such an entry as written; a reader skips it)."""
+    if isinstance(entry, list) and len(entry) == 2:
+        return frozenset(normalize_id(str(p)) for p in entry)
+    return None
+
+
+def write_dismissed_file(archive_root: str | Path, data: dict) -> Path:
+    """Write the whole dismissal file atomically; callers pass the dict they read, edited."""
+    path = cooccur_dismissed_paths(archive_root)[0]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_exact_atomic(path, json.dumps(data, indent=2) + '\n')
+    return path
+
+
+def load_not_same_person(archive_root: str | Path) -> dict[frozenset[str], str | None]:
+    """Pairs the human said are two different people, each with its date (or None).
+
+    Read-only and forgiving: never migrates, never raises, and skips any entry
+    that is not an object with two different valid person ids. A file without
+    the key, or a damaged one, reads as no decisions.
+    """
+    data, _problem = read_dismissed_file(archive_root, check_lists=False)
+    out: dict[frozenset[str], str | None] = {}
+    entries = (data or {}).get(NOT_SAME_PERSON_KEY)
+    for entry in entries if isinstance(entries, list) else []:
+        persons = entry.get('persons') if isinstance(entry, dict) else None
+        if not (isinstance(persons, list) and len(persons) == 2):
+            continue
+        ids = [normalize_id(str(p)) for p in persons]
+        if ids[0] == ids[1] or not all(is_valid_id(i) and id_type_of(i) == 'P' for i in ids):
+            continue
+        date = entry.get('date')
+        out[frozenset(ids)] = str(date).strip() if date and str(date).strip() else None
+    return out
 
 
 # ── Old capture log (read-only) ───────────────────────────────────────────────
