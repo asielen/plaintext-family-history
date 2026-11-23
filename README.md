@@ -28,7 +28,7 @@ It checks Python and the helper packages and creates your archive with `fha inst
 
 ### Step by step
 
-In a terminal (the Command Prompt on Windows, the Terminal app on a Mac) opened in this repo's folder:
+In a terminal (PowerShell on Windows, the Terminal app on a Mac) opened in this repo's folder:
 
 1. **Install the helper packages** (one time):
 
@@ -41,7 +41,6 @@ In a terminal (the Command Prompt on Windows, the Terminal app on a Mac) opened 
    ```
    ./fha install ../my-family-archive      # macOS / Linux
    .\fha install ..\my-family-archive      # Windows PowerShell
-   fha install ..\my-family-archive        # Windows Command Prompt
    ```
 
    That creates the folder and copies in everything the archive needs to run on its own: the `fha` tools, the rules the assistant follows and the owner's manual in `docs/`.
