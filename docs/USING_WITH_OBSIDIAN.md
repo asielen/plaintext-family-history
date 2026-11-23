@@ -58,6 +58,16 @@ The notes are generated: never edit one, because the next refresh writes over it
 
 The notes stay at home: the family website builds its place pages from places.yaml, and no packet or export copies `places/`.
 
+## Ready-made tables (Bases)
+
+With `links: obsidian`, the first `fha views places` or `fha views refresh` also puts three files in `notes/obsidian/`: `People.base`, `Sources.base` and `Places.base`. Open one in Obsidian 1.9 or later (it is built in, no plugin) and you get a sortable table:
+
+- **People:** everyone; the curated people (the ones written up); stubs; and everyone still marked living or unknown. The birth and death columns say "(estimate)" because the dates in a person's frontmatter are the ones you jotted down before finding a record. The sourced dates are in the claims. The table cannot tell an ancestor from an aunt, so it has no direct-line view; `fha metrics` lists the direct line by generation.
+- **Sources:** all of them, grouped by type, or grouped by repository.
+- **Places:** all of them, the ones with coordinates, and the ones still missing them. The coordinates come from the place note's `location:` line.
+
+A table holds nothing of its own. It only reads what your notes already say, so deleting one loses nothing. Change its columns, sorting or filters in Obsidian as you like. The tools write the files once and never touch them again, and a file you delete stays deleted. They sit in `notes/obsidian/`, not in `people/`, `sources/` or `places/`. To bring one back, copy it from `.fha/tools/templates/obsidian/`. To draw the places on a map, install Obsidian's Maps plugin and add a view of type `map` with `coordinates: note.location` to `Places.base`.
+
 ## Searching your archive
 
 Each person's frontmatter holds what the person record itself says: the names, `living:`, `sex:`, `gender:`, `restricted:`, `tags:`, `tier:` and the `relationships:` block, plus any estimated `birth:` and `death:` (with `birth_place:` and `death_place:`): the dates you jotted before you had a record, or the ones a GEDCOM import brought in. Dataview and Obsidian's Bases read these directly, so "everyone whose living status is unknown" or "every stub" is a plain frontmatter search. Sourced birth and death dates are not in frontmatter: they live in the claims (below), so a frontmatter search on `birth:` finds the estimates, not what a record proved.
