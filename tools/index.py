@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS search_log(
   question TEXT,
   repository TEXT,
   collection TEXT,
+  years TEXT,
   terms TEXT,
   result TEXT,
   source_id TEXT,
@@ -1002,13 +1003,15 @@ def _index_research_log_block(
                 entry_pid = normalize_id(f"{qm.group(1)}-{qm.group(2)}")
         conn.execute(
             '''INSERT INTO search_log
-               (date, person_id, question, repository, collection, terms, result, source_id, path)
-               VALUES (?,?,?,?,?,?,?,?,?)''',
+               (date, person_id, question, repository, collection, years, terms, result, source_id, path)
+               VALUES (?,?,?,?,?,?,?,?,?,?)''',
             (
                 date, entry_pid,
                 _strip_quotes(entry.get('question', '')),
                 _strip_quotes(entry.get('repository', '')),
                 _strip_quotes(entry.get('collection', '')),
+                # Stored as written: a loose form ("1911 to 1925") is kept, not rejected.
+                _strip_quotes(entry.get('years', '')),
                 _strip_quotes(entry.get('terms', '')),
                 result,
                 source_id,
