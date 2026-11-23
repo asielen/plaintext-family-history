@@ -22,7 +22,8 @@ Contents:
 12. Merging two sources
 13. Linking place text: the hierarchy rule
 14. One vendored D3 for interactive charts
-15. Sounds-alike search
+15. Dates that cannot all be true
+16. Sounds-alike search
 
 ---
 
@@ -179,9 +180,9 @@ The same ordering guides which problems get fixed first: a confident wrong answe
 
 **The rule.** `fha metrics` scores each person on five checks (birth record, censuses, parents, marriage records, death) and computes them fresh every run. It counts accepted claims by default and counts suggested claims too on request (`--include-suggested`). A death is asked of everyone marked `living: false`, and of anyone whose status is unknown only once they were born more than 130 years ago. Census years are asked in each country the person's own records place them, from birth (or their first record there) to death; with no death year the check is never met.
 
-**Why.** Accepted-only is the standard view because it matches what the archive has settled, and SPEC's own vital completeness reads it that way. The include-suggested view exists because a score that only rises when claims are accepted rewards accepting, which is the habit the review contract exists to slow down. Both views come from one engine, so neither can drift from the other. Past 130 years there is no doubt a person has died, so a missing death is a real gap; short of that, a missing death may be a living person, and asking for it would fill the list with people nobody can do anything about. `living: false` is the owner saying the person has died, so their death is owed at any age, the same rule lint W101 applies; one archive must not get two answers to that question. The census rule is deliberately simple: a stay abroad shows as a gap the owner can see and judge, because a confident wrong "complete" is the worst thing this check can say, and an unknown death year means later censuses may still be out there. A place whose hierarchy stops at a U.S. state or Canadian province still names its country, read from a fixed list of full names; a name that is also a foreign country or province (Georgia, Florida, Maine, Maryland, Montana) or was its own country during the table's years (Hawaii, Newfoundland) is left off it, because each could put a census in the wrong country's table. Where records disagree, the safer reading wins: the latest of birth readings that roughly agree decides whether a death is owed (someone who may be 126 may be living), and the best-dated death decides which censuses they lived through (an exact date over a recollected one).
+**Why.** Accepted-only is the standard view because it matches what the archive has settled, and SPEC's own vital completeness reads it that way. The include-suggested view exists because a score that only rises when claims are accepted rewards accepting, which is the habit the review contract exists to slow down. Both views come from one engine, so neither can drift from the other. Past 130 years there is no doubt a person has died, so a missing death is a real gap; short of that, a missing death may be a living person, and asking for it would fill the list with people nobody can do anything about. `living: false` is the owner saying the person has died, so their death is owed at any age, the same rule lint W101 applies; one archive must not get two answers to that question. The census rule is deliberately simple: a person is in one census on a census night, so each year is asked only in the country their latest dated record places them in, and an emigrant is not sent back to search the country he left. Only a record that says when moves someone: a stay abroad nothing dates still shows as a gap the owner can see and judge, because a confident wrong "complete" is the worst thing this check can say, and an unknown death year means later censuses may still be out there. A move to a country with no census table does not end the old country's years, since a place ending in an abbreviation ("KS") or a name left out on purpose cannot be told from a foreign country. A place whose hierarchy stops at a U.S. state or Canadian province still names its country, read from a fixed list of full names; a name that is also a foreign country or province (Georgia, Florida, Maine, Maryland, Montana) or was its own country during the table's years (Hawaii, Newfoundland) is left off it, because each could put a census in the wrong country's table. Where records disagree, the safer reading wins: the latest of birth readings that roughly agree decides whether a death is owed (someone who may be 126 may be living), and the best-dated death decides which censuses they lived through (an exact date over a recollected one).
 
-**Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration (reading immigration claims as moves, so years abroad are not asked): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence.
+**Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration beyond the dated records (reading an immigration claim's arrival, or a gap between two countries' records, as the date of a move): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence. A dated record of where the person was is evidence of that night; an inferred move date is not.
 
 ---
 
@@ -354,7 +355,20 @@ Other limits:
 - **Loading D3 from a CDN.** It fails offline and on a machine without a network.
 - **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.
 
-## 15. Sounds-alike search
+## 15. Dates that cannot all be true
+
+**The rule.** `fha lint` warns when one person's own accepted dates cannot all be true: a death before the birth, a lifespan over 120 years, a residence or census record after the death. Every accepted claim of one fact for one person is merged into one range, from its earliest start to its latest end, and a warning fires only when the conflict holds for every date that range allows. An open side (the start of "before 1890") is unknown and never fires one. The rules live in one `_lib` engine that lint and other tools call, and each message names every claim involved and the file it sits in.
+
+**Why.** A warning against a correct record teaches him to ignore lint, and then he misses the real ones. The real conflicts come from imports that attach the wrong record and from merges of two people with one name, and those are certain: a death in 1850 and a birth in 1871 cannot both be one woman's. Two disagreeing readings of one birth are a different question, answered by `fha xref`'s contradiction pass, so merging them into one range keeps the two tools from reporting the same thing twice.
+
+**Rejected.**
+
+- **Point estimates** ("about 1870" read as the middle of 1870). They fire on correct records whenever the truth sits at the edge of the range.
+- **"Two siblings share a given name."** Reusing a dead child's name was normal.
+- **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
+- **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
+
+## 16. Sounds-alike search
 
 **The rule.** `fha find --sounds-like NAME` lists the people whose public names sound like NAME, grouped by spelling. Two words sound alike when their Daitch-Mokotoff codes share one; every word typed must sound like a word of one of the person's names, and a known given name also matches its forms in other languages (Jan, John, Johann, Иван). A Cyrillic name is compared through its passport, German and Polish spellings. The output says that sounding alike is only a hint, and nothing is written.
 
@@ -367,4 +381,4 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **American Soundex as the matcher.** It keeps only the first letter and three sounds and splits Slavic spellings D-M keeps together (Moskowitz M232, Moskovitz M213); it is printed for the census cards, not used to match.
 - **Edit distance (fuzzy spelling).** It groups names that look alike, not names that sound alike (Hart and Hurt), and its threshold has no right value.
 - **Rewriting or normalising names.** A name stays as each record wrote it; the spelling is evidence. The search reads the spellings and changes none.
-- **Reading restricted names.** A private prior name sits beside the public ones in the index's alias rows; the search reads only the public names, so it never prints one.
+- **Showing names straight from the index.** The index keeps private prior names beside the public ones, and an older copy of a name made private can linger in `aliases:`; the index only narrows the search, and each match is checked against the public names in the person's own record, so a private name is never shown.
