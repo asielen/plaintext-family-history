@@ -1,0 +1,50 @@
+{
+ "server": "ia800504.us.archive.org",
+ "dir": "/19/items/historyofamadorc00maso",
+ "metadata": {
+  "identifier": "historyofamadorc00maso",
+  "title": "History of Amador County, California",
+  "creator": "[Mason, Jesse D] [from old catalog]",
+  "publisher": "Oakland, Cal., Thompson & West",
+  "date": "1881",
+  "language": "eng",
+  "mediatype": "texts",
+  "imagecount": "498",
+  "collection": [
+   "library_of_congress",
+   "americana"
+  ]
+ },
+ "files": [
+  {
+   "name": "historyofamadorc00maso.pdf",
+   "format": "Text PDF",
+   "size": "67749796"
+  },
+  {
+   "name": "historyofamadorc00maso_chocr.html.gz",
+   "format": "chOCR",
+   "size": "25843799"
+  },
+  {
+   "name": "historyofamadorc00maso_djvu.txt",
+   "format": "DjVuTXT",
+   "size": "2302457"
+  },
+  {
+   "name": "historyofamadorc00maso_hocr.html",
+   "format": "hOCR",
+   "size": "52347046"
+  },
+  {
+   "name": "historyofamadorc00maso_hocr_pageindex.json.gz",
+   "format": "OCR Page Index",
+   "size": "5842"
+  },
+  {
+   "name": "historyofamadorc00maso_page_numbers.json",
+   "format": "Page Numbers JSON",
+   "size": "83992"
+  }
+ ]
+}
