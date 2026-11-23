@@ -666,6 +666,175 @@ class AdminTagTestCase(_ArchiveCase):
         self.assertIn('CREA', dict(plan.unread_top))
 
 
+class DuplicateBirthTestCase(_ArchiveCase):
+    """#449: a tree that holds two birth facts for one person (Ancestry
+    exports an alternate fact after the preferred one) must keep the dated
+    birth on the new record, and so the right living guess. A later fact
+    with no date, or a vaguer one, never wipes or overrides a dated one; two
+    dates that disagree are both named in the plan."""
+
+    def _plan(self, indi_body: str):
+        ged = Path(self._tmp.name) / 'twobirths.ged'
+        ged.write_text('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n'
+                       '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n'
+                       + indi_body + '0 TRLR\n', encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    @staticmethod
+    def _text(plan) -> str:
+        return '\n'.join(gedcom_import._plan_lines(plan, applied=False, capped=False))
+
+    def test_second_undated_birth_keeps_the_first_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+                          '1 BIRT\n2 PLAC Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')
+        self.assertEqual(stub.living, 'false')
+        births = [c for c in plan.claims if c.claim_type == 'birth']
+        self.assertEqual(len(births), 2)                 # both facts still filed
+
+    def test_first_undated_birth_then_a_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 PLAC Kansas\n'
+                          '1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')
+        self.assertEqual(stub.living, 'false')
+
+    def test_a_vaguer_later_birth_does_not_override_a_precise_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n1 BIRT\n2 DATE 1878\n')
+        self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+        # 1878 and 12 Jan 1878 agree, so the plan raises no disagreement.
+        self.assertNotIn('disagree', self._text(plan))
+
+    def test_a_more_precise_later_birth_is_preferred(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE ABT 1878\n1 BIRT\n2 DATE 12 JAN 1878\n')
+        self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+
+    def test_two_dated_births_that_disagree_are_both_in_the_plan(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+                          '1 BIRT\n2 DATE ABT 1990\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')       # the most exact date
+        # One of the tree's own dates says she may be young, so she stays
+        # `unknown` (treated as living) until he settles which is right.
+        self.assertEqual(stub.living, 'unknown')
+        text = self._text(plan)
+        self.assertIn('@I1@ Rose Hartley', text)
+        self.assertIn('1878-01-12', text)
+        self.assertIn('1990~', text)
+        self.assertIn('disagree', text)
+        self.assertIn('keeps living: unknown', text)     # says why she is hidden
+        # The on-screen plan says it too, not only --plan-out.
+        screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('1990~', screen)
+
+    def test_full_plan_lists_both_birth_and_death_disagreements(self) -> None:
+        # One person can disagree twice; --plan-out must not drop the second.
+        plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n'
+                          '1 DEAT\n2 DATE 1950\n1 DEAT\n2 DATE 1960\n')
+        self.assertEqual(len(plan.date_conflicts), 2)
+        text = self._text(plan)
+        self.assertIn('1960', text)
+        self.assertNotIn('more (use --plan-out', text)
+
+    def test_two_equally_precise_births_that_disagree_keep_the_first(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n')
+        self.assertEqual(plan.stubs[0].birth, '1878')
+        self.assertIn('disagree', self._text(plan))
+
+    def test_birth_with_only_a_place(self) -> None:
+        plan = self._plan('1 BIRT\n2 PLAC Fairview, Kansas\n')
+        (stub,) = plan.stubs
+        self.assertIsNone(stub.birth)
+        self.assertEqual(stub.living, 'unknown')
+        (birth,) = plan.claims
+        self.assertEqual(birth.place_text, 'Fairview, Kansas')
+        self.assertIsNone(birth.date)
+
+    def test_second_undated_death_keeps_the_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 1878\n'
+                          '1 DEAT\n2 DATE 1950\n1 DEAT\n2 PLAC Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.death, '1950')
+        self.assertEqual(stub.living, 'false')
+
+    def test_an_unreadable_second_birth_date_keeps_living_unknown(self) -> None:
+        # A typed 05/06/1995 could be her real birth: a date nobody could read
+        # is doubt, so she is not shown as dead, and the plan says why.
+        for raw in ('05/06/1995', 'INT 1995 (per cousin)', '5/6/95', 'Jun 95',
+                    '19950506'):
+            with self.subTest(raw=raw):
+                plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n'
+                                  f'1 BIRT\n2 DATE {raw}\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1878-01-12')
+                self.assertEqual(stub.living, 'unknown')
+                text = self._text(plan)
+                self.assertIn('keeps living: unknown', text)
+                self.assertIn('line 9', text)
+
+    def test_an_unreadable_old_or_yearless_birth_does_not_hide_him(self) -> None:
+        # A colonial ancestor's dual-dated or Julian alternate (or a plain
+        # "Unknown") cannot make him young, so he is not hidden as living.
+        for raw in ('12 FEB 1750/51', '@#DJULIAN@ 1 FEB 1750',
+                    'INT 1750 (family bible)', 'Unknown'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n'
+                                  '1 BIRT\n2 DATE 12 FEB 1751\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1751-02-12')
+                self.assertEqual(stub.living, 'false')
+                self.assertNotIn('keeps living: unknown', self._text(plan))
+
+    def test_a_hebrew_calendar_alternate_birth_is_read_as_its_year(self) -> None:
+        # 5600 is 1840; 5755 is 1995 and may be her real, recent birth.
+        for raw, living in (('@#DHEBREW@ 5600', 'false'),
+                            ('@#DHEBREW@ 5755', 'unknown')):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n1 BIRT\n2 DATE 1840\n')
+                self.assertEqual(plan.stubs[0].living, living)
+
+    def test_an_open_ended_birth_that_agrees_does_not_hide_her(self) -> None:
+        # AFT 1850 and BEF 1990 both fit 12 Jan 1878: nothing disagrees, so
+        # she is not hidden as possibly living.
+        for alt in ('AFT 1850', 'BEF 1990'):
+            for order in ('first', 'last'):
+                with self.subTest(alt=alt, order=order):
+                    exact, other = '1 BIRT\n2 DATE 12 JAN 1878\n', f'1 BIRT\n2 DATE {alt}\n'
+                    body = exact + other if order == 'last' else other + exact
+                    (stub,) = self._plan(body).stubs
+                    self.assertEqual(stub.birth, '1878-01-12')
+                    self.assertEqual(stub.living, 'false')
+
+    def test_a_far_fetched_date_does_not_stop_the_import(self) -> None:
+        # One typo-like year on one person must not crash the whole import.
+        for raw in ('ABT 9999', 'ABT 001', 'ABT JAN 0001'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE 12 JAN 1878\n1 BIRT\n2 DATE {raw}\n'
+                                  f'1 DEAT\n2 DATE {raw}\n')
+                self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+
+    def test_an_about_day_does_not_beat_an_exact_day(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE ABT 12 JAN 1850\n1 BIRT\n2 DATE 14 JAN 1850\n')
+        self.assertEqual(plan.stubs[0].birth, '1850-01-14')
+
+    def test_single_birth_file_is_unchanged(self) -> None:
+        plan = gedcom_import.build_plan(self.archive, self.config, SMALL)
+        self.assertEqual(
+            [(s.xref, s.birth, s.death, s.living) for s in plan.stubs],
+            [('@I1@', '1878-01-12', '1950~', 'false'),
+             ('@I2@', '[..1880]', None, 'false'),
+             ('@I3@', '[1900..]', None, 'unknown'),
+             ('@I4@', None, None, 'unknown'),
+             ('@I5@', '1850-01', None, 'false'),
+             ('@I6@', '1848~', None, 'false'),
+             ('@I7@', '1878', None, 'false'),
+             ('@I8@', '1990', None, 'unknown'),
+             ('@I9@', None, None, 'unknown'),
+             ('@I10@', None, None, 'unknown')])
+        self.assertNotIn('disagree', self._text(plan))
+
+
 class NameSubtagTestCase(_ArchiveCase):
     """`2 NSFX` end to end: the suffix reaches the stub, and the tag is not
     reported as a line this importer never read (it now reads it)."""
@@ -1924,15 +2093,15 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         # A DEAT is present, so he is not guessed to be living.
         self.assertEqual(stub.living, 'false')
 
-    def test_preserve_extensions_two_births_last_one_sets_stub(self) -> None:
+    def test_preserve_extensions_two_births_dated_one_sets_stub(self) -> None:
         plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
         births = self._of(plan, 'birth')
         self.assertEqual(len(births), 2)
         self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
-        # Both BIRTs become claims. Today the stub's provisional `birth:` follows
-        # the LAST BIRT in the file; that is a bug when the last one is undated
-        # (issue #449). Here the dated one happens to be last.
+        # Both BIRTs become claims. The stub's provisional `birth:` is the most
+        # exact readable one (#449); the unreadable first BIRT cannot blank it.
         self.assertEqual(plan.stubs[0].birth, '2000-01-01')
+        self.assertEqual(plan.stubs[0].living, 'false')     # a DEAT is present
         self.assertEqual(len(plan.date_downgrades), 1)
 
     def test_preserve_extensions_open_ended_deaths(self) -> None:
