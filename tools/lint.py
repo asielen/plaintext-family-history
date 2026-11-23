@@ -248,6 +248,8 @@ from _lib import (
     roots_change_orphans,
     sex_slot_is_defaulted,
     shell_quote,
+    fha_launcher,
+    needs_powershell_quote,
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
@@ -1843,18 +1845,20 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
     human's: `fha claim --value` (or quotes typed by hand) keeps the whole
     line; a real comment can simply be deleted. Nothing here edits a claim.
 
-    The command is offered only for text a pasted command carries intact:
-    PowerShell 5.1 expands `$5` and splits on an escaped `"`, and a backtick
-    is its escape character, so for those the hand-quoted line is the one
-    fix given (a command that saved different words would be worse than
+    The command is offered only for text a pasted command carries intact in
+    every Windows shell: for a `$`, a backtick, a straight or curly `"`
+    (`_lib.needs_powershell_quote`), PowerShell and Command Prompt need
+    different spellings (`_lib.shell_quote` prints
+    PowerShell's, #400), so for those the hand-quoted line is the one fix
+    given (a command that saved different words would be worse than
     none)."""
     for hit in claim_fields_cut_by_hash(body):
         cid, key, whole = hit['claim_id'], hit['key'], hit['whole']
         who = f'Claim {fmt_id_display(cid)}' if cid else 'A claim'
         hand = f'`{key}: {yaml_inline(whole)}`'
         flag = _CLAIM_FIELD_FLAGS.get(key)
-        if cid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha claim {fmt_id_display(cid)} {flag} '
+        if cid and flag and not needs_powershell_quote(whole):
+            fix = (f'run `{fha_launcher()} claim {fmt_id_display(cid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in the record file: {hand}'
@@ -1888,7 +1892,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     with no warning. The frontmatter twin of W156, found the same way
     (`_lib.text_fields_cut_by_hash` on the raw block) with the same fix
     rules: a command only when one rewrites just that field and the text
-    survives being pasted (no `$`, backtick or `"`), else the hand-quoted
+    survives being pasted (`_lib.needs_powershell_quote` false), else the hand-quoted
     line. A `#` two spaces or more past the text, with a space after it, is
     a comment written on purpose, as the templates do, and is left alone.
     `record` is `person`, `source`, `place` or `notes` (an inbox notes
@@ -1912,8 +1916,8 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
                 else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
         where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
-        if rid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
+        if rid and flag and not needs_powershell_quote(whole):
+            fix = (f'run `{fha_launcher()} person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
@@ -5804,7 +5808,7 @@ def _check_stray_person_keywords(
                 f'pass, often), silently tying the document to someone it has nothing '
                 f'to do with - and any photo or desktop search over the file inherits '
                 f'the same wrong association. If the tag is wrong, clear it with '
-                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
+                f'`{fha_launcher()} source clear-keyword {fmt_id_display(sid)} --keyword '
                 f'{shell_quote(text)}`; if the person genuinely belongs on this '
                 f'source, add them to its people: list instead.'))
 

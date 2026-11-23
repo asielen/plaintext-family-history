@@ -174,6 +174,7 @@ from _lib import (
     strip_generational_suffix,
     safe_load_yaml,
     shell_quote,
+    fha_launcher,
     sqlite_readonly_uri,
     through_survivors,
     yaml_inline,
@@ -3237,7 +3238,7 @@ person's name on their photo (one photo at a time, each with your yes):
   "go through the photos my old tree linked"
 or run, for example (the first line brings the photo catalog up to date
 with the people just added; tag-person needs that):
-  fha photoindex
+  {launcher} photoindex
   {command}{caution}
 The full list is in the new source's Notes."""
 
@@ -3249,12 +3250,12 @@ def _photo_handoff_text(plan: 'ImportPlan') -> str:
     if not matched:
         return ''
     first = matched[0]
-    command = ('fha photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
+    command = (fha_launcher() + ' photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
                + ' --paths ' + shell_quote(first.alias))
     n = len(matched)
     caution = ('\n(That photo matched by its file name only: look at it before you say yes.)'
                if first.how == 'same file name' else '')
-    return _PHOTO_HANDOFF.format(caution=caution,
+    return _PHOTO_HANDOFF.format(caution=caution, launcher=fha_launcher(),
         n=n, photos='photo' if n == 1 else 'photos', are='is' if n == 1 else 'are',
         command=command)
 
