@@ -142,6 +142,7 @@ from _lib import (
     strip_generational_suffix,
     safe_load_yaml,
     shell_quote,
+    fha_launcher,
     sqlite_readonly_uri,
     yaml_inline,
 )
@@ -859,6 +860,86 @@ def living_flag_for_import(has_death: bool, birth_edtf: str | None,
     return 'unknown'
 
 
+# ── Several birth or death facts for one person (#449) ────────────────────────
+
+def _date_span_days(edtf: str) -> int:
+    """How many days an EDTF value could mean: 0 for an exact day, about 365
+    for a bare year, more for `about`, ranges and open forms. The smaller the
+    span, the more exact the date. An unreadable value counts as vaguest."""
+    if not is_valid_edtf(edtf):
+        return 10 ** 7
+    lo, hi = edtf_bounds(edtf)
+    try:
+        return (datetime.date.fromisoformat(hi) - datetime.date.fromisoformat(lo)).days
+    except ValueError:
+        # `about 9999` or `about 1` reach past what a calendar date can hold:
+        # rank it vaguest rather than stop the whole import on one typo.
+        return 10 ** 7
+
+
+def _best_event_date(dated: list[tuple[str, int]]) -> str | None:
+    """The date the new record shows when a tree has several facts for one
+    event: the most exact one, and on a tie the first in the file (exporters
+    put the preferred fact first). `dated` is (EDTF, line) for the facts that
+    carry a readable date, in file order; a fact with no date is never in it,
+    so it can never wipe a dated one."""
+    if not dated:
+        return None
+    # An `about` or `maybe` day spans no wider than an exact day once read,
+    # so the hedge breaks the tie: `14 Jan 1850` beats `about 12 Jan 1850`.
+    return min(dated, key=lambda d: (_date_span_days(d[0]),
+                                     any(ch in d[0] for ch in '~?%')))[0]
+
+
+def _unread_date_may_be_recent(raw: str | None) -> bool:
+    """True when a birth date the importer could not read holds a year within
+    the living cutoff (`05/06/1995`, `INT 1995 (per cousin)`): it might be her
+    real birth, so it keeps `living: unknown`. A dual-dated `1750/51`, a
+    Julian `1750` or a bare `Unknown` cannot make anyone young, so it is
+    treated like a fact with no date."""
+    if not raw:
+        return False
+    runs = re.findall(r'\d+', raw)
+    if not runs:
+        return False                    # `Unknown`: no year at all
+    years = [int(r) for r in runs if 3 <= len(r) <= 4]
+    if '@#DHEBREW@' in raw.upper():
+        # Hebrew years run 3,760 ahead (5600 is 1840), so compare the real year.
+        years = [y - 3760 for y in years]
+    if not years or any(len(r) > 4 for r in runs):
+        # `5/6/95`, `Jun 95`, `19950506`: a year is there but can't be told
+        # apart, so it may be recent.
+        return True
+    this_year = datetime.date.today().year
+    return any(this_year - y <= _LIVING_CUTOFF_YEARS for y in years)
+
+
+def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
+    """The birth date the living guess reads when a tree has several: the one
+    that could make the person youngest. One of the tree's own facts saying
+    she may be young is doubt, and doubt keeps `living: unknown` (SPEC §19),
+    so she is marked not living only when every dated fact says she was born
+    more than 110 years ago. An open-ended date (no latest year) wins outright."""
+    best: tuple[int, str] | None = None
+    for edtf, _line in dated:
+        year = _birth_year_upper(edtf)
+        if year is None:
+            return edtf
+        if best is None or year > best[0]:
+            best = (year, edtf)
+    return best[1] if best else None
+
+
+def _dates_disagree(dated: list[tuple[str, int]]) -> bool:
+    """True when two of the dates cannot both be right (their possible spans
+    do not overlap). `1878` and `12 Jan 1878` agree: one only adds detail."""
+    spans = [edtf_bounds(e) for e, _ in dated if is_valid_edtf(e)]
+    if len(spans) < len(dated):
+        return len({e for e, _ in dated}) > 1
+    return any(a[1] < b[0] or b[1] < a[0]
+               for i, a in enumerate(spans) for b in spans[i + 1:])
+
+
 # ── Plan data model ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -942,6 +1023,7 @@ class ImportPlan:
     loose_dates: int = 0                   # dates read by the free-form fallback (#293)
     loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
     date_downgrades: list[str] = field(default_factory=list)    # unreadable, uncapped
+    date_conflicts: list[str] = field(default_factory=list)     # disagreeing births/deaths
     joined_lines: int = 0                  # level-less lines folded into the line above
     markup_cleaned: int = 0                # values that had web-page codes cleaned
     photo_links: list['_PhotoLink'] = field(default_factory=list)  # photos the old program linked
@@ -996,12 +1078,15 @@ def _map_individual(
     indi: _Node, pid: str, cid_pool: list[str],
     sour_titles: dict[str, str], sour_use: Counter,
     consumed: set[int], date_downgrades: list[str], date_loose: list[str],
+    date_conflicts: list[str] | None = None,
 ) -> tuple[_PersonStub, list[_Claim], dict[str, str]]:
     """One INDI record → its person stub, its claims, and its FAMC pedigree map.
 
     Returns (stub, claims, {fam_xref: PEDI value}) - the pedigree map lets the
     FAM pass stamp `subtype: adoptive`/`foster` on the right parent-child claim.
-    Claims take ids from `cid_pool` in order (pre-minted in one batch)."""
+    Claims take ids from `cid_pool` in order (pre-minted in one batch).
+    A person whose tree gives two birth (or death) dates that cannot both be
+    right gets one line in `date_conflicts`, for the plan to show."""
     consumed.add(id(indi))
     names = indi.children_tagged('NAME')
     for n in names:
@@ -1031,8 +1116,10 @@ def _map_individual(
         sex = ''
 
     claims: list[_Claim] = []
-    birth_edtf: str | None = None
-    death_edtf: str | None = None
+    # Every dated birth and death fact, (EDTF, line) in file order (#449).
+    births: list[tuple[str, int]] = []
+    deaths: list[tuple[str, int]] = []
+    unread_births: list[tuple[str, int]] = []   # a DATE nobody could read
     has_death = False
     pedi_map: dict[str, str] = {}
 
@@ -1100,11 +1187,17 @@ def _map_individual(
         if tag in _EVENT_MAP:
             claim_type, verb = _EVENT_MAP[tag]
             claim = _event_claim(node, claim_type, verb)
-            if tag == 'BIRT':
-                birth_edtf = claim.date
+            # A second birth fact with no date (Ancestry's alternate facts)
+            # must not blank the dated one on the new record: collect the
+            # dated ones and choose after the loop.
+            if tag == 'BIRT' and claim.date:
+                births.append((claim.date, node.line))
+            elif tag == 'BIRT' and _unread_date_may_be_recent(node.child_value('DATE')):
+                unread_births.append((node.child_value('DATE'), node.line))
             elif tag == 'DEAT':
                 has_death = True
-                death_edtf = claim.date
+                if claim.date:
+                    deaths.append((claim.date, node.line))
             claims.append(claim)
             continue
         if tag in _ADMIN_TAGS:
@@ -1120,10 +1213,41 @@ def _map_individual(
             continue
         # anything else: unread; the filed copy preserves it.
 
+    birth_edtf = _best_event_date(births)
+    death_edtf = _best_event_date(deaths)
+    # The living guess: when the dated births agree, the most exact one
+    # stands for them all (`AFT 1850` adds nothing to `12 Jan 1878`). When
+    # they disagree, or a birth date could not be read, one of the tree's own
+    # facts may say she is young, and doubt keeps `unknown` (SPEC §19).
+    if unread_births:
+        living = living_flag_for_import(has_death, None)
+    elif _dates_disagree(births):
+        living = living_flag_for_import(has_death, _latest_birth_reading(births))
+    else:
+        living = living_flag_for_import(has_death, birth_edtf)
+    # Say why someone born in 1878 is still hidden as living.
+    hidden_by_doubt = (living == 'unknown'
+                       and living_flag_for_import(has_death, birth_edtf) == 'false')
+    if date_conflicts is not None:
+        who = f'{indi.xref} {display or "(no name)"}'
+        for label, dated, chosen in (('birth', births, birth_edtf),
+                                     ('death', deaths, death_edtf)):
+            if _dates_disagree(dated):
+                listed = ', '.join(f'{e} (line {ln})' for e, ln in dated)
+                line = f'{who} {label}: {listed}; the record shows {chosen}'
+                if label == 'birth' and hidden_by_doubt and not unread_births:
+                    line += (', and keeps living: unknown because another of '
+                             'these dates could make the person living')
+                date_conflicts.append(line)
+        if hidden_by_doubt and unread_births:
+            unread = ', '.join(f'{raw!r} (line {ln})' for raw, ln in unread_births)
+            date_conflicts.append(
+                f'{who} birth: the record shows {birth_edtf}, but {unread} could '
+                'not be read, so it keeps living: unknown in case that date '
+                'makes the person living')
     stub = _PersonStub(
         xref=indi.xref, pid=pid, name=display, given=given, surname=surname,
-        variants=variants, sex=sex,
-        living=living_flag_for_import(has_death, birth_edtf),
+        variants=variants, sex=sex, living=living,
         birth=birth_edtf, death=death_edtf,
         recorded_surname=_explicit_surname(
             names[0].value if names else '', display, surname),
@@ -1757,7 +1881,7 @@ person's name on their photo (one photo at a time, each with your yes):
   "go through the photos my old tree linked"
 or run, for example (the first line brings the photo catalog up to date
 with the people just added; tag-person needs that):
-  fha photoindex
+  {launcher} photoindex
   {command}{caution}
 The full list is in the new source's Notes."""
 
@@ -1769,12 +1893,12 @@ def _photo_handoff_text(plan: 'ImportPlan') -> str:
     if not matched:
         return ''
     first = matched[0]
-    command = ('fha photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
+    command = (fha_launcher() + ' photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
                + ' --paths ' + shell_quote(first.alias))
     n = len(matched)
     caution = ('\n(That photo matched by its file name only: look at it before you say yes.)'
                if first.how == 'same file name' else '')
-    return _PHOTO_HANDOFF.format(caution=caution,
+    return _PHOTO_HANDOFF.format(caution=caution, launcher=fha_launcher(),
         n=n, photos='photo' if n == 1 else 'photos', are='is' if n == 1 else 'are',
         command=command)
 
@@ -1945,6 +2069,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     cid_pool = _DeferredPool()
     date_downgrades: list[str] = []
     date_loose: list[str] = []      # read by the free-form fallback (#293)
+    date_conflicts: list[str] = []  # two birth/death dates that disagree (#449)
     sour_use: Counter = Counter()
 
     stubs: list[_PersonStub] = []
@@ -1953,7 +2078,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     for indi in indis:
         stub, indi_claims, pedi_map = _map_individual(
             indi, xref_pid[indi.xref], cid_pool, sour_titles, sour_use,
-            consumed, date_downgrades, date_loose)
+            consumed, date_downgrades, date_loose, date_conflicts)
         stubs.append(stub)
         claims.extend(indi_claims)
         for fam_xref, pedi_value in pedi_map.items():
@@ -2016,6 +2141,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
         loose_dates=len(date_loose), loose_date_reads=list(date_loose),
         date_downgrades=list(date_downgrades),
+        date_conflicts=list(date_conflicts),
         joined_lines=len(joined), markup_cleaned=markup_cleaned,
         photo_links=photo_links, photo_catalog=photo_catalog,
     )
@@ -2214,7 +2340,9 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
     Headline counts first, then capped detail - a 2,000-person plan must be
     skimmable in a terminal. The living-heuristic counts are printed because
     that default is the one privacy-relevant thing this import decides."""
-    cap = _PLAN_DETAIL_CAP if capped else len(plan.stubs)
+    # Uncapped means every line: one person can add several date conflicts,
+    # and one new person can match several existing ones.
+    cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
     head = ('Applied GEDCOM import' if applied
             else 'GEDCOM import plan (dry-run - use --apply to write)')
     living_false = sum(1 for s in plan.stubs if s.living == 'false')
@@ -2260,6 +2388,20 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      f'rather than GEDCOM\'s date form ({shown}{more}) and were read '
                      'the way `fha claim --date` reads a typed date. The wording '
                      'stays in each claim\'s text, to check when you review it.')
+    if plan.date_conflicts:
+        # Shown even on screen: the record shows one date and the living
+        # guess may hang on it, so he should see that the tree disagrees.
+        shown = plan.date_conflicts[:cap]
+        lines.append('')
+        lines.append(f'  {len(plan.date_conflicts):,} person(s) have birth or death '
+                     'dates in your tree that disagree or could not be read. The new '
+                     'record shows the most exact one, and every date is still filed '
+                     'as a suggested claim, '
+                     'to settle when you review them:')
+        lines.extend(f'    {c}' for c in shown)
+        if len(plan.date_conflicts) > len(shown):
+            lines.append(f'    ... and {len(plan.date_conflicts) - len(shown):,} more '
+                         '(use --plan-out FILE to write the full plan)')
     if plan.joined_lines:
         lines.append('')
         lines.append(f'  {plan.joined_lines:,} line(s) had no level number (a MyHeritage '

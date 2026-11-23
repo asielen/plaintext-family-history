@@ -89,6 +89,9 @@ a.wb-add:hover { border-color: var(--accent); }
 .wb-later { font-family: var(--font-sans); font-size: var(--text-xs); color: var(--muted);
   margin-left: var(--space-2); }
 
+.wb-research-links { list-style: none; padding-left: 0; font-size: var(--text-sm, 1rem); }
+.wb-research-links li { margin: var(--space-1, 4px) 0; }
+
 tr.wb-suggested td { background: color-mix(in srgb, var(--ochre) 8%, transparent); }
 tr.wb-parked td { background: color-mix(in srgb, var(--status-review-fg) 7%, transparent); }
 tr.wb-row-actions td { padding-top: var(--space-2); }

@@ -190,7 +190,7 @@ fha claim new --source s-id --type … --value …    mint a brand-new claim ont
                             --negated mints a SPEC §8.6 confirmed absence, "researched, did
                             not happen", writing negated: true + evidence: negative)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
-                            decision (xref/cooccur/dismiss/place/discovery/draft/merge)
+                            decision (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <p-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
                             backfill any record section an older stub is still missing (never
@@ -277,7 +277,9 @@ fha find --related <ID>      neighborhood of any ID: people/places/sources/claim
                             adjacent to a person, place, source, claim, or working answer
 fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
                             --kind/--limit narrow it
-fha relate <p-A> <p-B>       how two people are related: blood degree + shortest social path
+fha find --sounds-like "NAME"   people whose names sound like NAME in any spelling
+                            (Daitch-Mokotoff; Jan also finds John); a hint, never a merge
+fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested

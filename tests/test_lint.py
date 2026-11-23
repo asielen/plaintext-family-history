@@ -6405,8 +6405,10 @@ class ClaimTextCutByHashW156Tests(unittest.TestCase):
         # PowerShell 5.1 eats `$5` and splits on `\"`, so a pasted command
         # would save different words than the archive holds. Hand-quoting
         # in the file is the only advice given.
+        # A curly double quote also gets the spelling only PowerShell takes
+        # (#400), so it gets the hand fix too.
         for notes in ('Paid $5 for lot #4; it\'s "cheap"', 'lot #4 of the `old` plat',
-                      'lot #4, "the corner one"'):
+                      'lot #4, "the corner one"', 'the “Big House” #2'):
             with self.subTest(notes=notes):
                 codes, _p, _t = self._run(self._claim(f'  notes: {notes}\n'))
                 (w,) = codes.get('W156', [])

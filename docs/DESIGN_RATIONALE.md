@@ -22,7 +22,10 @@ Contents:
 12. Merging two sources
 13. Linking place text: the hierarchy rule
 14. One vendored D3 for interactive charts
-15. Site search: a script, not a data file
+15. Dates that cannot all be true
+16. Search links on the workbench person page
+17. Sounds-alike search
+18. Site search: a script, not a data file
 
 ---
 
@@ -103,7 +106,8 @@ Family trees are never stored. They are drawn from accepted relationship claims 
 - **Tools never rewrite a guess.** A guess is your own lines, often with a comment or a note on why you believed it. When a source proves the tie, the tools add the sourced entry beside the guess and leave the guess alone. Lint then names the leftover guess, and you fold it in yourself: delete the guess, move anything you want to keep onto the sourced entry, and keep its `hypothesis: h-…` line as the record of which working answer was settled.
 - **Accepting a claim fills in the list, but only where a list is kept.** Writing the same tie by hand on two records per claim is exactly the edit that goes wrong, so `fha claim` writes the entries when you accept a relationship, marriage or birth claim, and takes the claim back out when you reject it. It never starts a list on a record that has none: once a record has a list, the linter expects it to hold every tie, so starting one would turn a single accept into a page of warnings about ties you never chose to write down.
 - **The claim is the unit of traceability.** Supersession, corroboration, contradiction and the index all hang off claims. Keeping relationships as claims keeps them traceable to evidence.
-- **Kinship words never guess past the record.** "Half" needs both other parents recorded and different, or a source that says so; with a parent missing, the tool keeps the full word and says it may be half. A confident wrong word is repeated in the family as fact, and the plain chain is always available instead.
+- **Kinship words never guess past the record.** "Half" needs both other parents recorded and different, or a source that says so; with a parent missing, the tool keeps the full word and says it may be half. A father's later wife is a stepmother only when the dates show the marriage overlapped the child's life; when they show it ended before the birth she is the father's earlier wife, when they show it began after the child died she is the father's later wife, and when they are missing or too vague ("190X") the tool says which it might be. A confident wrong word is repeated in the family as fact, and the plain chain is always available instead.
+- **Blood wins over marriage.** A cousin who married into the family is told "cousin", not "brother-in-law", and an adoptive or step parent never makes anyone a blood relative. The marriage still shows on the path line. Showing both words side by side would mean ranking two different kinds of tie, and the blood word is the one a DNA match or a pedigree depends on.
 - **Roles are a fixed list, kept in the spec.** Tools build tree edges only from a closed list of roles, plus six kin synonyms (`mother` and `father` read as `parent`, and so on). Any other word (`sibling`, `godparent`, `witness`) is valid and places the person on the claim, but builds no edge. The list is not configurable per archive: a meaning stored in one archive's settings would be lost the moment a record left that archive.
 
 **Rejected.**
@@ -179,9 +183,9 @@ The same ordering guides which problems get fixed first: a confident wrong answe
 
 **The rule.** `fha metrics` scores each person on five checks (birth record, censuses, parents, marriage records, death) and computes them fresh every run. It counts accepted claims by default and counts suggested claims too on request (`--include-suggested`). A death is asked of everyone marked `living: false`, and of anyone whose status is unknown only once they were born more than 130 years ago. Census years are asked in each country the person's own records place them, from birth (or their first record there) to death; with no death year the check is never met.
 
-**Why.** Accepted-only is the standard view because it matches what the archive has settled, and SPEC's own vital completeness reads it that way. The include-suggested view exists because a score that only rises when claims are accepted rewards accepting, which is the habit the review contract exists to slow down. Both views come from one engine, so neither can drift from the other. Past 130 years there is no doubt a person has died, so a missing death is a real gap; short of that, a missing death may be a living person, and asking for it would fill the list with people nobody can do anything about. `living: false` is the owner saying the person has died, so their death is owed at any age, the same rule lint W101 applies; one archive must not get two answers to that question. The census rule is deliberately simple: a stay abroad shows as a gap the owner can see and judge, because a confident wrong "complete" is the worst thing this check can say, and an unknown death year means later censuses may still be out there. A place whose hierarchy stops at a U.S. state or Canadian province still names its country, read from a fixed list of full names; a name that is also a foreign country or province (Georgia, Florida, Maine, Maryland, Montana) or was its own country during the table's years (Hawaii, Newfoundland) is left off it, because each could put a census in the wrong country's table. Where records disagree, the safer reading wins: the latest of birth readings that roughly agree decides whether a death is owed (someone who may be 126 may be living), and the best-dated death decides which censuses they lived through (an exact date over a recollected one).
+**Why.** Accepted-only is the standard view because it matches what the archive has settled, and SPEC's own vital completeness reads it that way. The include-suggested view exists because a score that only rises when claims are accepted rewards accepting, which is the habit the review contract exists to slow down. Both views come from one engine, so neither can drift from the other. Past 130 years there is no doubt a person has died, so a missing death is a real gap; short of that, a missing death may be a living person, and asking for it would fill the list with people nobody can do anything about. `living: false` is the owner saying the person has died, so their death is owed at any age, the same rule lint W101 applies; one archive must not get two answers to that question. The census rule is deliberately simple: a person is in one census on a census night, so each year is asked only in the country their latest dated record places them in, and an emigrant is not sent back to search the country he left. Only a record that says when moves someone: a stay abroad nothing dates still shows as a gap the owner can see and judge, because a confident wrong "complete" is the worst thing this check can say, and an unknown death year means later censuses may still be out there. A move to a country with no census table does not end the old country's years, since a place ending in an abbreviation ("KS") or a name left out on purpose cannot be told from a foreign country. A place whose hierarchy stops at a U.S. state or Canadian province still names its country, read from a fixed list of full names; a name that is also a foreign country or province (Georgia, Florida, Maine, Maryland, Montana) or was its own country during the table's years (Hawaii, Newfoundland) is left off it, because each could put a census in the wrong country's table. Where records disagree, the safer reading wins: the latest of birth readings that roughly agree decides whether a death is owed (someone who may be 126 may be living), and the best-dated death decides which censuses they lived through (an exact date over a recollected one).
 
-**Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration (reading immigration claims as moves, so years abroad are not asked): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence.
+**Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration beyond the dated records (reading an immigration claim's arrival, or a gap between two countries' records, as the date of a move): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence. A dated record of where the person was is evidence of that night; an inferred move date is not.
 
 ---
 
@@ -354,9 +358,52 @@ Other limits:
 - **Loading D3 from a CDN.** It fails offline and on a machine without a network.
 - **Drawing the interactive charts without a library.** The layout and projection maths would be code to maintain by hand.
 
+## 15. Dates that cannot all be true
+
+**The rule.** `fha lint` warns when one person's own accepted dates cannot all be true: a death before the birth, a lifespan over 120 years, a residence or census record after the death. Every accepted claim of one fact for one person is merged into one range, from its earliest start to its latest end, and a warning fires only when the conflict holds for every date that range allows. An open side (the start of "before 1890") is unknown and never fires one. The rules live in one `_lib` engine that lint and other tools call, and each message names every claim involved and the file it sits in.
+
+**Why.** A warning against a correct record teaches him to ignore lint, and then he misses the real ones. The real conflicts come from imports that attach the wrong record and from merges of two people with one name, and those are certain: a death in 1850 and a birth in 1871 cannot both be one woman's. Two disagreeing readings of one birth are a different question, answered by `fha xref`'s contradiction pass, so merging them into one range keeps the two tools from reporting the same thing twice.
+
+**Rejected.**
+
+- **Point estimates** ("about 1870" read as the middle of 1870). They fire on correct records whenever the truth sits at the edge of the range.
+- **"Two siblings share a given name."** Reusing a dead child's name was normal.
+- **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
+- **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
+
+## 16. Search links on the workbench person page
+
+**The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
+
+**Why.** Opening a relative and wondering whether she is on FamilySearch or has a grave listed meant retyping her name, years and parents into each site. The archive's knowledge now goes into the search, not the other way round. A click is the only thing that sends anything to a website, and the server fetches nothing.
+
+**Sources.** The address shapes come from WikiTree's research tool and RootsDev's gensearch (MIT) and from WikiTree Sourcer's Find a Grave and Geneteka builders (MIT); the notices sit above the code in `_lib.py`.
+
+**Rejected.**
+
+- **Links on the shared site.** A relative's name and dates would go to third parties from a page meant for reading.
+- **A JavaScript port.** Two copies of every address, and none of it testable from Python.
+- **Affiliate links.** Ancestry's address is returned as the search itself, with no redirect through an affiliate network.
+- **Putting living relatives' names in a link.** A click would send a living person's name to a company that was never asked.
+
+## 17. Sounds-alike search
+
+**The rule.** `fha find --sounds-like NAME` lists the people whose public names sound like NAME, grouped by spelling. Two words sound alike when their Daitch-Mokotoff codes share one; every word typed must sound like a word of one of the person's names, and a known given name also matches its forms in other languages (Jan, John, Johann, Иван). A Cyrillic name is compared through its passport, German and Polish spellings. The output says that sounding alike is only a hint, and nothing is written.
+
+**Why.** A family's name drifts across records: a census taker hears Hartly, a Polish priest writes Kowalska for a wife, an emigrant's papers say Kovalsky. A search for one spelling misses the rest, and those misses look like absence. Daitch-Mokotoff is the code JewishGen and the Eastern European indexes use, so the codes in the header also search those sites, and its rules were made for the Slavic and Yiddish spellings these families carry. The census Soundex code is printed beside it because the 1880-1930 census cards are filed under it. Matching every typed word, in any order, finds "Jan Kowalski" written "Kowalski, John" without matching every Jan in the archive.
+
+The D-M coder is written from Gary Mokotoff's published chart, and its tests pin the codes JewishGen, Wikipedia, Avotaynu and the National Archives publish. The transliteration tables and given-name rows come from genealogy-mcp (MIT, Igor Melnikov), with its notice above them in `_lib.py`.
+
+**Rejected.**
+
+- **American Soundex as the matcher.** It keeps only the first letter and three sounds and splits Slavic spellings D-M keeps together (Moskowitz M232, Moskovitz M213); it is printed for the census cards, not used to match.
+- **Edit distance (fuzzy spelling).** It groups names that look alike, not names that sound alike (Hart and Hurt), and its threshold has no right value.
+- **Rewriting or normalising names.** A name stays as each record wrote it; the spelling is evidence. The search reads the spellings and changes none.
+- **Showing names straight from the index.** The index keeps private prior names beside the public ones, and an older copy of a name made private can linger in `aliases:`; the index only narrows the search, and each match is checked against the public names in the person's own record, so a private name is never shown.
+
 ---
 
-## 15. Site search: a script, not a data file
+## 18. Site search: a script, not a data file
 
 **The rule.** The search box on the family site looks names up in `data/search-data.js`, a script that sets one global (`window.FHA_SEARCH`), loaded by `search.html` with a plain `<script>` tag. `fha site` writes it from the pages the build already publishes, and it holds names, years and titles only. The spelling rule (`_search_fold`) is written once in `site.py`; the file carries its table, so the browser folds a query the same way the build folded the names.
 

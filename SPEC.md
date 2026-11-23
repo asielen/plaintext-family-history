@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.22, 2026-11-22**
+**Version 2.28, 2026-11-23**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -410,6 +410,7 @@ family_archive/              ← the root (default name; rename freely - nothing
   places/places.yaml         ← single-file place registry (§15)
   places/{slug}_{l-id}.md    ←   generated place notes, Obsidian link mode only (§15)
   notes/                     ← general research workspace (§17)
+  notes/obsidian/*.base      ←   ready-made Obsidian tables (Bases), Obsidian link mode only; written once, then the owner's
   ── assets (mappable elsewhere via fha.yaml; not git-pushed if local) ──
   photos/{year}/             ← ASSET TREE: all photos, by year (§12.4 - often external)
   documents/{type}/          ← ASSET TREE: scans, clippings, recordings, transcripts
@@ -428,9 +429,10 @@ family_archive/              ← the root (default name; rename freely - nothing
 
 - `notes/home.md`: the site homepage's introduction, plain markdown written by the human (or drafted by an AI and accepted); `fha site` shows it when present.
 - `notes/discoveries.md`: the log of research wins, appended by `fha confirm discovery`.
-- `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, written by `fha confirm dismiss`, so the report stops suggesting them.
+- `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, and pairs he has said are *not the same person*, written by `fha confirm dismiss` and taken back by `fha confirm undismiss`, so the report stops suggesting them.
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
+- `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
 
 Each is optional; a missing file means "nothing recorded yet".
 
@@ -556,6 +558,7 @@ site:                         # `fha site` presentation
   picture_workers: auto       # web pictures made at once while building (auto, or a whole number)
   completeness_rings: false   # a completeness ring on each person page (TOOLING §12; default off)
   calendar: false             # "This month in the family" on the homepage (TOOLING §12; default off)
+  search: true                # a search box on every page (TOOLING §12; default on)
 ```
 
 **How a path resolves.** Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name). Moving a library is a one-line edit and **no record changes**. The spec's internal structure (`photos/{year}`, `documents/{type}`) describes the tree *under each root*, wherever it lives.
@@ -1003,6 +1006,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Public output, living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and all claims, photos, and source citations naming them are withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
+- In a shared site's family trees, a living or unknown adult is drawn as a card reading "Private" with nothing else on it, so the tree keeps its shape; a living person not known to be an adult is left out. The relationship line and family-tree number may be worked out through ties to people the page does not show; those people are never named.
 
 **Public output, restricted material (mandatory):**
 - Anything carrying `restricted` (a source, a claim, a person, or a name) is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name).
@@ -1016,6 +1020,12 @@ Generated output that leaves the archive falls into two categories with differen
 - `fha packet` is a family/private export, not public output, and is not subject to the redaction rules above. A packet may include `living: false` people's full prose and cite other people who are still living, with a README caution rather than redaction.
 - The packet *subject* is held to a stricter rule than the cited-other-people case: `living: true` and `living: unknown` subjects are refused before any output is written, with no opt-in.
 - Anything `restricted` is excluded by default (restricted sources named by ID only in the README); `--include-restricted` overrides, except the **no-override** types: `restricted: dna` stays excluded until `--include-dna` is also passed, and `restricted: by-request` is never included by any flag. A `restricted: by-request` *person* vanishes from packet content.
+
+**Printed reports (`fha views family-sheet` and the other printed reports), their own rules, per TOOLING §7:**
+- A printed report is made to hand to relatives, so it follows the public-output rules for evidence: only `accepted` claims; no `restricted` claim, person, name or source; no DNA source; no claim naming a living person. A source withheld only because it names a living person is cited by a shared placeholder, never by its title.
+- A person whose `living` flag is `true` or `unknown` is never named: a living parent or spouse appears only as "Living Person", with none of their own facts, and a living child is counted ("and 2 living children"). A living person's own descendants are neither named nor counted. A `restricted` person is left out and not counted.
+- A report about a living or unknown subject is refused; a `restricted` subject is refused without printing the name.
+- Reports are written under `generated/views/` with the GENERATED marker and are swept by `fha views clean`. They carry a banner saying living relatives are counted, not named.
 
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite`; it is as live as the last `fha index` run.
@@ -1053,8 +1063,8 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **ID mint** | Generate spec-conformant IDs with existence checking; batch capable. |
 | **Stub minter** | Create person stubs in bulk from claims that reference unresolved people. |
 | **Processing assistant** | Given a file or folder: mint s-id, mark identity (documents: rename, plus the keyword where the format holds metadata; photos: keyword only, never rename under Lightroom), scaffold the source record; folder mode triages candidates first. |
-| **View generators** | Per-person timelines; each person's own inline `## Sources` region (a couple folder has no separate sources index: its two profiles already list their sources); refreshed folder bracket lists; **relationship views** (ancestor / descendant / FAN trees for any person) all derived from accepted claims, never stored. |
-| **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges), at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
+| **View generators** | Per-person timelines; each person's own inline `## Sources` region (a couple folder has no separate sources index: its two profiles already list their sources); refreshed folder bracket lists; **relationship views** (ancestor / descendant / FAN trees for any person) all derived from accepted claims, never stored; **printed reports** (a family group sheet, and the other printed reports) for relatives, every fact cited, living relatives never named (§21). |
+| **Relationship calculator** | For any two persons, derive the **blood relationship** (the cousin/removal/great-grandparent name, via the lowest common ancestors over genetic edges, saying *half* only when the record shows it and saying when an unrecorded parent leaves it open), the **tie by marriage** when there is no blood tie (spouse, in-law, step, adoptive and the other recorded kinds of parent, "by marriage"; a step-parent worked out from a marriage is stated only when the dates show the marriage overlapped the child's life, and is hedged when they are missing), and the **shortest social path** (a readable chain of role-named hops over all relationship edges), at query time, from accepted `relationship` claims, never stored. An adoptive, step or other non-genetic parent never makes a blood relationship, and an in-law or step word is never given for two people related by blood. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only: never the corpus, never re-imported as truth. |
 | **GEDCOM importer** | File a *foreign* GEDCOM (an Ancestry download, another program's export) as ONE source record whose every assertion enters as a `suggested` claim with a line anchor, plus a person stub per individual (provisional vitals, safe `living:` defaults). Plan-then-apply with a one-shot re-run guard and full rollback; the archive's own export is refused (one-way bridge, no round-trip); duplicates are reported, never auto-merged. Writes only forms §8/§9/§14 already define; no schema additions. |
 | **Person packet** | Gather everything about a person (profile, claims, sources, files, *and all photos of them*, found by bare `p-id` keywords + `face_tags:` resolution) into a zip of copies, clearly labeled as a derived export, honoring `living`/`restricted`. |

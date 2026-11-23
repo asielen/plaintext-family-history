@@ -25,9 +25,10 @@ You never have to type a command.
 
 | Where you are | Type |
 |---|---|
-| Windows, Command Prompt | `fha <command>` |
 | Windows, PowerShell | `.\fha <command>` |
 | macOS or Linux | `./fha <command>` |
+
+On Windows, use PowerShell. To open it in your archive folder, open the folder in File Explorer, click the address bar, type `powershell` and press Enter. The commands the tools print are written for PowerShell, so you can copy and paste them as they are. Command Prompt (where you type `fha <command>`) runs most commands too, but it can garble a name that has quotation marks or symbols in it.
 
 The other guides write commands bare (`fha doctor`); add the `./` or `.\` your terminal needs. Putting the folder on your PATH once makes a bare `fha <command>` work everywhere.
 
@@ -40,6 +41,7 @@ fha process "inbox/the-file-you-added.jpg"   # file one new inbox item
 fha process "inbox/Trip/IMG_0001.jpg" --type photo --dest "Trip"   # a photo, into a folder of your photo library
 fha report                    # the review queue and research leads
 fha find --text "Rose Hartley"   # search everything
+fha find --sounds-like "Hartley"   # names that sound alike, every spelling
 fha doctor                    # health check: run this when stuck
 fha lint                      # "is my archive shaped right?"
 fha lint --changed            # quick check before a commit: only what changed since the last one
@@ -54,6 +56,7 @@ fha calendar today            # who in the family was born, married or died on t
 fha person new "Ann Smith" --sex F   # add one new person (refuses a name already on file)
 fha person new --from-file people.tsv   # add a list at once: name, sex, surname per line, tab-separated
 fha views timeline p-aaaa --format html   # a printable one-page timeline (lands in generated/views/)
+fha views family-sheet p-aaaa --format html   # a family group sheet to print for a relative (lands in generated/views/)
 fha photoindex gallery --person p-aaaa    # a clickable page of someone's photos; double-click to open (lands in generated/gallery/)
 ```
 

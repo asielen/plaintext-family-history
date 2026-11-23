@@ -70,6 +70,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 from collections import deque
 from html.parser import HTMLParser
 from collections.abc import Iterable
@@ -204,6 +205,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 forward the first time either owner calls it,
 #                                 returning (pairs, migrated) so a caller that
 #                                 would otherwise look silent can report it
+#    read_dismissed_file / write_dismissed_file - the whole file as a dict, so a
+#                                 writer keeps every key it does not change
+#    load_not_same_person      - the "two different people" decisions, with dates
 #
 #  Old capture log (read-only)
 #    capture_log_path          - the old notes/capture-log.jsonl
@@ -351,6 +355,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    find_source_record_path   - scan sources/ for one S-id's record file (never the index)
 #    ACCENT_FOLD, fold_accents - fold accented letters to base letters for slugs and
 #                                 comparison keys (Wiśniewska -> Wisniewska, issue #279)
+#    dm_soundex:                every Daitch-Mokotoff code of a name (from Mokotoff's chart)
+#    american_soundex:          the census Soundex code (National Archives' rules)
+#    translit, has_cyrillic:    Cyrillic name in passport/German/Polish Latin letters
+#    given_name_equivalents:    one given name's forms in other languages (Jan, John, Иван)
+#    name_sound_words:          the words of a name the sound match compares
+#    name_sound_codes:          one word's D-M codes, through its Latin spellings if Cyrillic
 #    strip_generational_suffix - pull a trailing Jr/Sr/II/III/IV/V off name tokens (issue #53)
 #    person_name_slot          - one person-filename name slot: [a-z0-9], single underscores
 #    name_words                - the words of a name a surname is read from (no punctuation-only words)
@@ -463,8 +473,26 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    blood_routes              - every separate blood route, nearest first, each
 #                                 with its half state (full, half, or may be half)
 #    blood_answer              - the nearest route, plus the "may be half" note
+#    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
+#                                 (by the dates), adoptive father, uncle by marriage
+#    kinship_answer            - {blood, by_marriage}, what fha relate prints
+#    person_life_dates         - own accepted birth and death spans, for the step rule
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
+#
+#  Dates that cannot all be true (fha lint W163+, the GEDCOM import plan): one
+#  engine over plain data, firing only when a conflict holds for every reading
+#    PLAUSIBLE_MAX_LIFESPAN_YEARS, W165_LIFE_TYPES - the thresholds and types
+#    DatedClaim, FactRange     - one claim's day range; one fact's merged range
+#    PlausibilityInput         - per person: births, deaths, records of their life
+#    PlausibilityProblem       - one conflict: code, kind, people, claims per side
+#    claim_date_range          - a claim's date -> (first day, last day), open sides None
+#    iso_plus_years            - the same day N years later (29 February safe)
+#    merge_fact_range          - several readings of one fact -> one range
+#    plausibility_input_from_claims - raw claim dicts -> PlausibilityInput
+#                                 (survivors= also asks "could these be one person?")
+#    one_person_problems       - W163 out of order, W164 over 120 years, W165 life after death
+#    plausibility_message      - the plain sentence, with caller-supplied name and claim refs
 #
 #  Alias resolution / publication guards
 #    person_alias_mirror       : the names a person's aliases: carries: name + public other names
@@ -4194,8 +4222,11 @@ def load_cooccur_dismissed(
         if not path.exists():
             return []
         try:
-            data = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
+            # utf-8-sig: Notepad's "UTF-8 with BOM" save must not hide every pair.
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, dict):
             return []
         return [
             [normalize_id(str(pair[0])), normalize_id(str(pair[1]))]
@@ -4213,14 +4244,109 @@ def load_cooccur_dismissed(
 
     migrated = False
     if migrate and old_path.exists():
-        try:
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            write_text_exact_atomic(new_path, json.dumps({'pairs': merged}, indent=2) + '\n')
-            old_path.unlink()
-            migrated = True
-        except OSError:
-            pass  # opportunistic: nothing is lost, the next call tries again
+        # The current file also holds the "not the same person" decisions, so
+        # the move keeps every key it does not own. A current file that exists
+        # but cannot be read is left alone this run: overwriting it would lose
+        # decisions the move could not see.
+        current, problem = read_dismissed_file(archive_root)
+        if problem is None:
+            try:
+                data = dict(current or {})
+                # Keep every entry of the current list exactly as written (a
+                # hand-typed pair with a note is still his record), then add
+                # the legacy pairs it does not already hold.
+                raw = data.get('pairs')
+                kept = list(raw) if isinstance(raw, list) else []
+                have = {k for k in (dismissed_pair_key(e) for e in kept) if k}
+                for pair in _read(old_path):
+                    if frozenset(pair) not in have:
+                        have.add(frozenset(pair))
+                        kept.append(pair)
+                data['pairs'] = kept
+                write_dismissed_file(archive_root, data)
+                old_path.unlink()
+                migrated = True
+            except OSError:
+                pass  # opportunistic: nothing is lost, the next call tries again
     return merged, migrated
+
+
+NOT_SAME_PERSON_KEY = 'not_same_person'
+
+
+def read_dismissed_file(
+    archive_root: str | Path, *, check_lists: bool = True,
+) -> tuple[dict | None, str | None]:
+    """The current dismissal file as a dict, for a writer that must keep every key.
+
+    Returns `(data, None)`, with `data` `{}` when the file does not exist yet,
+    or `(None, problem)` when it exists but is not a readable JSON object. The
+    file now holds two kinds of human decision, so a writer that cannot read it
+    must stop instead of replacing it with something shorter; `problem` is the
+    plain sentence to show. Readers that can live with an empty answer use
+    `load_cooccur_dismissed` / `load_not_same_person` instead.
+
+    `check_lists=False` is for a reader of one key: an odd value under the
+    OTHER key must not hide the decisions it reads.
+    """
+    path = cooccur_dismissed_paths(archive_root)[0]
+    if not path.exists():
+        return {}, None
+    name = path.relative_to(Path(archive_root)).as_posix()
+    fix = ('so nothing was written. Open it in a text editor and fix or remove '
+           'the damaged line, or rename the file to keep a copy, then run this again.')
+    try:
+        # utf-8-sig: a file saved as "UTF-8 with BOM" (a Notepad choice) is fine.
+        data = json.loads(path.read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return None, f'{name} could not be read (it is not valid JSON), {fix}'
+    if not isinstance(data, dict):
+        return None, (f'{name} could not be read (it should start with {{ and hold '
+                      f'named lists), {fix}')
+    for list_key in ('pairs', NOT_SAME_PERSON_KEY) if check_lists else ():
+        if list_key in data and not isinstance(data[list_key], list):
+            # Writing a list over it would erase what he wrote there.
+            return None, (f'{name} could not be read ("{list_key}" should be a list '
+                          f'in square brackets [ ]), {fix}')
+    return data, None
+
+
+def dismissed_pair_key(entry: object) -> frozenset[str] | None:
+    """The unordered, normalized id pair of a `pairs` entry, or None for any
+    other shape (a writer keeps such an entry as written; a reader skips it)."""
+    if isinstance(entry, list) and len(entry) == 2:
+        return frozenset(normalize_id(str(p)) for p in entry)
+    return None
+
+
+def write_dismissed_file(archive_root: str | Path, data: dict) -> Path:
+    """Write the whole dismissal file atomically; callers pass the dict they read, edited."""
+    path = cooccur_dismissed_paths(archive_root)[0]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_text_exact_atomic(path, json.dumps(data, indent=2) + '\n')
+    return path
+
+
+def load_not_same_person(archive_root: str | Path) -> dict[frozenset[str], str | None]:
+    """Pairs the human said are two different people, each with its date (or None).
+
+    Read-only and forgiving: never migrates, never raises, and skips any entry
+    that is not an object with two different valid person ids. A file without
+    the key, or a damaged one, reads as no decisions.
+    """
+    data, _problem = read_dismissed_file(archive_root, check_lists=False)
+    out: dict[frozenset[str], str | None] = {}
+    entries = (data or {}).get(NOT_SAME_PERSON_KEY)
+    for entry in entries if isinstance(entries, list) else []:
+        persons = entry.get('persons') if isinstance(entry, dict) else None
+        if not (isinstance(persons, list) and len(persons) == 2):
+            continue
+        ids = [normalize_id(str(p)) for p in persons]
+        if ids[0] == ids[1] or not all(is_valid_id(i) and id_type_of(i) == 'P' for i in ids):
+            continue
+        date = entry.get('date')
+        out[frozenset(ids)] = str(date).strip() if date and str(date).strip() else None
+    return out
 
 
 # ── Old capture log (read-only) ───────────────────────────────────────────────
@@ -6545,6 +6671,95 @@ def person_is_living(conn: sqlite3.Connection, pid: str) -> bool:
     # living/unknown status governs him as well (`living_carried_to_survivors`).
     survivor = merge_survivor(chain)
     return survivor is not None and survivor['id'] in living_carried_to_survivors(conn)
+
+
+ADULT_AGE_YEARS = 18
+
+
+def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date,
+                   *, count_children: bool = True) -> bool:
+    """Whether a living relative may show on the shared site's family tree as
+    a blank "Private" card, or must be left out because they may be a child
+    (owner decision D20, 2026-11-22). Only the yes/no leaves this function:
+    the dates it reads are never printed.
+
+    Adult means one of (D20 read literally, owner decision 2026-11-22):
+    - at least one recorded child (`has_recorded_child`), whatever any
+      recorded birth says: a parent gets a blank card, which names and
+      dates nothing;
+    - a recorded birth date, from a birth claim of ANY status (a suggested
+      or disputed one still says how old someone might be) or the
+      provisional `birth:` estimate on their record or on any record merged
+      into them, whose LATEST possible day is `ADULT_AGE_YEARS` or more
+      years before `today`; several birth dates are all checked, and the
+      youngest one decides;
+    - no birth date at all, and a baptism 18 or more years ago (they were
+      born by then). A recent baptism says nothing.
+
+    `count_children=False` skips the child test, for a caller that must
+    count only the child links it may publish (the shared site: a child the
+    owner kept private must not be what earns a card).
+
+    Anyone else is "not known to be an adult". The answer reads `today`
+    (the build date), so a child who turns 18 changes it on the next
+    rebuild. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult."""
+    try:
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
+    except ValueError:                      # 29 February, in a year with no leap day
+        cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
+    def latest_day(value: str) -> str:
+        # A hand-typed date can be impossible; one bad date must not stop
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
+        try:
+            return edtf_bounds(value)[1]
+        except ValueError:
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
+
+    def own_dates(claim_type: str) -> list[str]:
+        out = []
+        for r in conn.execute(
+                "SELECT c.id, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.type = ? AND COALESCE(c.negated, 0) = 0",
+                (pid, claim_type)).fetchall():
+            if (r[1] or '').strip() and claim_is_own_vital(conn, pid, r[0], claim_type):
+                out.append(latest_day(str(r[1])))
+        return out
+
+    if count_children and has_recorded_child(conn, pid):
+        return True
+    latest = own_dates('birth')
+    # The provisional `birth:` of the person AND of every record merged into
+    # them: `fha confirm merge` leaves a duplicate's estimate on the
+    # duplicate, and it is a recorded birth of the same human (Codex, PR
+    # #436). Claims and relationships already land on the survivor at index
+    # time, so only this record-level field needs the widening.
+    for rid in [pid, *merged_into_survivor(index_merge_survivors(conn), pid)]:
+        row = conn.execute('SELECT birth FROM persons WHERE id = ?', (rid,)).fetchone()
+        if row is not None and str(row[0] or '').strip():
+            latest.append(latest_day(str(row[0])))
+    if latest:
+        return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    return any(day <= cutoff.isoformat() for day in own_dates('baptism'))
+
+
+def has_recorded_child(conn: sqlite3.Connection, pid: str) -> bool:
+    """Whether the index records a child of `pid`. Child links are written
+    under the merge survivor at index time, so the survivor's id answers for
+    every finished merge into it."""
+    return conn.execute(
+        "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
+        (pid,)).fetchone() is not None
 
 
 def frontmatter_key_line_indexes(lines: list[str], start: int, end: int, key: str) -> list[int]:
@@ -9730,6 +9945,301 @@ def record_collection_index(path: Path | None = None) -> dict:
 def record_collection_group(site: str, collection_id: str, index: dict | None = None):
     """(group id, title, year) for a site's collection, or None when unmapped."""
     return (index if index is not None else record_collection_index()).get((site, str(collection_id)))
+
+
+# ── search links for other genealogy websites (workbench person page) ───────
+# What the owner notices: a relative's page on `fha serve` lists "FamilySearch",
+# "Find a Grave", "Geneteka" and so on, each opening that website's own search
+# already filled in with what the archive knows, so he stops retyping a name,
+# years and parents into ten search forms. `research_search_links` only builds
+# the addresses; nothing is fetched, and the caller decides whose details may go
+# into them (the workbench keeps every living or restricted person out).
+#
+# Ported, rewritten in Python, from:
+#   * wikitree/wikitree-dynamic-tree, views/research/research.js and
+#     views/research/sites/{familysearch,ancestry,myheritage,findmypast,
+#     billiongraves,chroniclingamerica,newspapers,uknationalarchives}.js
+#     (commit 4ea9002), MIT, Copyright (c) 2022 Interesting.com Inc
+#   * rootsdev/gensearch (commit 1bc3cbd), which research.js is based on, MIT,
+#     Copyright (c) 2015 RootsDev
+#   * RobPavey/wikitree-sourcer, extension/site/fg/core/fg_uri_builder.mjs and
+#     extension/site/geneteka/core/geneteka_{build_search_url,search_menu_data}.mjs,
+#     MIT, Copyright (c) 2020 Robert M Pavey
+# Changes: Python instead of JavaScript; Ancestry's affiliate redirect removed
+# (the search address is returned itself); years are widened by two as
+# FamilySearch's builder does; Find a Grave uses its current search address.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions: The above copyright
+# notices and this permission notice shall be included in all copies or
+# substantial portions of the Software. THE SOFTWARE IS PROVIDED "AS IS",
+# WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+# TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+# FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+# THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+# The subject a search is built from. Every key is optional; a builder uses
+# what is there and leaves the rest out of the address.
+#   given, surname           first given name only, and the surname
+#   married_surname          a later surname (grave sites index women by it)
+#   birth_year, death_year   one year each, the centre of the claim's dates
+#   birth_place, death_place plain place text
+#   father_given, father_surname, mother_given, mother_surname (her birth
+#                            surname), spouse_given, spouse_surname,
+#                            marriage_year, marriage_place
+#   places                   every place text on the page, for Geneteka's
+#                            Polish province
+RESEARCH_SEARCH_FIELDS = (
+    'given', 'surname', 'married_surname', 'birth_year', 'birth_place',
+    'death_year', 'death_place', 'father_given', 'father_surname',
+    'mother_given', 'mother_surname', 'spouse_given', 'spouse_surname',
+    'marriage_year', 'marriage_place', 'places',
+)
+
+# Geneteka's provinces as WikiTree Sourcer lists them. A province is found by
+# its whole name in a place text (any case ending), so "zachodniopomorskie"
+# is never read as "pomorskie" or "dolnośląskie" as "śląskie".
+_GENETEKA_PROVINCES = (
+    ('01ds', 'dolnośląskie'), ('02kp', 'kujawsko-pomorskie'), ('03lb', 'lubelskie'),
+    ('04ls', 'lubuskie'), ('05ld', 'łódzkie'), ('06mp', 'małopolskie'),
+    ('07mz', 'mazowieckie'), ('71wa', 'Warszawa'), ('08op', 'opolskie'),
+    ('09pk', 'podkarpackie'), ('10pl', 'podlaskie'), ('11pm', 'pomorskie'),
+    ('12sl', 'śląskie'), ('13sk', 'świętokrzyskie'), ('14wm', 'warmińsko-mazurskie'),
+    ('15wp', 'wielkopolskie'), ('16zp', 'zachodniopomorskie'), ('21uk', 'Ukraina'),
+    ('22br', 'Białoruś'), ('23lt', 'Litwa'), ('25po', 'Pozostałe'),
+)
+
+
+def _rs_url(base: str, params: dict, sep: str = '?') -> str:
+    """`base` plus `params` encoded the way JavaScript's URLSearchParams does
+    (a space is `+`), in the dict's own order, empty values dropped."""
+    q = urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, '')})
+    return f'{base}{sep}{q}' if q else base
+
+
+def _rs_name(s: dict) -> str:
+    return ' '.join(w for w in (s.get('given'), s.get('surname')) if w)
+
+
+def _search_url_familysearch(s: dict) -> str:
+    p = {
+        'q.givenName': s.get('given'), 'q.surname': s.get('surname'),
+        'q.birthLikePlace': s.get('birth_place'), 'q.deathLikePlace': s.get('death_place'),
+        'q.fatherGivenName': s.get('father_given'), 'q.fatherSurname': s.get('father_surname'),
+        'q.motherGivenName': s.get('mother_given'), 'q.motherSurname': s.get('mother_surname'),
+        'q.spouseGivenName': s.get('spouse_given'), 'q.spouseSurname': s.get('spouse_surname'),
+        'q.marriageLikePlace': s.get('marriage_place'),
+    }
+    for key, field in (('birth', 'birth_year'), ('death', 'death_year'),
+                       ('marriage', 'marriage_year')):
+        year = s.get(field)
+        if year:
+            p[f'q.{key}LikeDate.from'], p[f'q.{key}LikeDate.to'] = year - 2, year + 2
+    return _rs_url('https://www.familysearch.org/search/record/results', p)
+
+
+def _search_url_ancestry(s: dict) -> str:
+    p = {
+        'rank': '1', 'gsfn': s.get('given'), 'gsln': s.get('surname'),
+        'msbpn__ftp': s.get('birth_place'), 'msdpn__ftp': s.get('death_place'),
+        'msfng0': s.get('father_given'), 'msfns0': s.get('father_surname'),
+        'msmng0': s.get('mother_given'), 'msmns0': s.get('mother_surname'),
+        'mssng0': s.get('spouse_given'), 'mssns0': s.get('spouse_surname'),
+        'msgpn__ftp': s.get('marriage_place'),
+        'msbdy': s.get('birth_year'), 'msddy': s.get('death_year'),
+        'msgdy': s.get('marriage_year'), 'gl': 'allgs',
+    }
+    return _rs_url('https://search.ancestry.com/cgi-bin/sse.dll', p)
+
+
+def _search_url_myheritage(s: dict) -> str:
+    """Built by hand as upstream does: MyHeritage reads `+` between the parts
+    of a value and `%2F3` for a space inside one."""
+    def fix(v) -> str:
+        return urllib.parse.quote(str(v), safe=' ').replace(' ', '%2F3')
+
+    def name(who: str) -> str:
+        """`who` is '' for the subject, else father, mother or spouse."""
+        given = s.get(f'{who}_given' if who else 'given')
+        surname = s.get(f'{who}_surname' if who else 'surname')
+        return ((f'+fn.{fix(given)}' if given else '')
+                + (f'+ln.{fix(surname)}' if surname else ''))
+
+    def event(kind: str, year, place) -> str:
+        body = (f'+ey.{year}' if year else '') + (f'+ep.{fix(place)}' if place else '')
+        return f'Event+et.{kind}{body}+epmo.similar' if body else ''
+
+    q = '?formId=master&formMode=1&action=query&catId=1'
+    if name(''):
+        q += '&qname=Name' + name('')
+    for param, ev in (
+            ('qevents-event1', event('birth', s.get('birth_year'), s.get('birth_place'))),
+            ('qevents-any%2F1event_1', event('death', s.get('death_year'), s.get('death_place'))),
+            ('qevents-any%2F1event_2', event('marriage', s.get('marriage_year'),
+                                             s.get('marriage_place')))):
+        if ev:
+            q += f'&{param}={ev}'
+    q += '&qevents=List'
+    for who, slot, rel in (('father', 'qrelative_relativeName', 'qrelatives-relative'),
+                           ('mother', 'qaddRelative_1_addRelativeName', 'qrelatives-addRelative_1'),
+                           ('spouse', 'qaddRelative_2_addRelativeName', 'qrelatives-addRelative_2')):
+        if name(who):
+            q += f'&{slot}=Name{name(who)}+lnmsrs.false&{rel}=Relative+rt.{who}+rn.*{slot}'
+    q += '&qrelatives=List'
+    return 'https://www.myheritage.com/research' + q
+
+
+def _search_url_findmypast(s: dict) -> str:
+    p = {'firstname': s.get('given'), 'lastname': s.get('surname')}
+    if s.get('birth_year'):
+        p['yearofbirth'], p['yearofbirth_offset'] = s['birth_year'], '2'
+    if s.get('death_year'):
+        p['yearofdeath'], p['yearofdeath_offset'] = s['death_year'], '2'
+    return _rs_url('https://www.findmypast.co.uk/search/results', p)
+
+
+def _search_url_findagrave(s: dict) -> str:
+    p = {'firstname': s.get('given'),
+         'lastname': s.get('married_surname') or s.get('surname')}
+    if s.get('birth_year'):
+        p['birthyear'], p['birthyearfilter'] = s['birth_year'], '2'
+    if s.get('death_year'):
+        p['deathyear'], p['deathyearfilter'] = s['death_year'], '2'
+    return _rs_url('https://www.findagrave.com/memorial/search', p)
+
+
+def _search_url_billiongraves(s: dict) -> str:
+    p = {'year_range': '2', 'lim': '0', 'action': 'search', 'exact': 'false',
+         'country': '0', 'state': '0', 'county': '0',
+         'given_names': s.get('given'),
+         'family_names': s.get('married_surname') or s.get('surname'),
+         'birth_year': s.get('birth_year'), 'death_year': s.get('death_year')}
+    return _rs_url('https://billiongraves.com/pages/search/index.php', p, '#')
+
+
+def _search_url_chroniclingamerica(s: dict) -> str:
+    """His lifetime: birth to death, or birth to ninety years on when no
+    death is on file (upstream searched only the birth year then, which can
+    never find a marriage notice or an obituary)."""
+    p = {'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': _rs_name(s)}
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        p['start_date'] = f'{birth}-01-01'
+    elif death:
+        p['start_date'] = f'{death - 90}-01-01'
+    if death or birth:
+        p['end_date'] = f'{death or birth + 90}-12-31'
+    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+
+
+def _search_url_newspapers(s: dict) -> str:
+    """Newspapers.com reads `keyword` and `date-start`/`date-end` (checked by
+    hand 2026-11-23; upstream's `query`/`year-start` now drop the years)."""
+    p = {'keyword': _rs_name(s)}
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        start, end = birth - 5, (death + 5 if death else birth + 90)
+    elif death:
+        start, end = death - 90, death + 5
+    else:
+        start = end = None
+    if start and end:
+        p['date-start'], p['date-end'] = start, end
+    return _rs_url('https://www.newspapers.com/search/results/', p)
+
+
+def _search_url_geneteka(s: dict) -> str | None:
+    """Geneteka cannot search without a province, so no province in any place
+    text means no link (never a guess)."""
+    text = ' '.join(str(x) for x in (s.get('places') or ()))
+    words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
+
+    def names(word: str, province: str) -> bool:
+        # The whole word, or the same word with a Polish case ending:
+        # "woj. podlaskiego", "w Warszawie" are "podlaskie", "Warszawa". Only
+        # the real endings, so the English "Ukrainian" is not "Ukraina".
+        stem = province[:-1]
+        if province.endswith('e'):          # podlaskie, podlaskiego, podlaskim
+            forms = (province, stem + 'ego', stem + 'm')
+        elif province.endswith('a'):        # Warszawa, Warszawy, Warszawie
+            forms = (province, stem + 'y', stem + 'ie', stem + 'e')
+        else:                               # Białoruś, Białorusi
+            forms = (province, province + 'i')
+        return word in forms
+
+    province = next((code for code, name in _GENETEKA_PROVINCES
+                     if any(names(w, fold_accents(name).lower()) for w in words)), None)
+    if not province:
+        return None
+    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
+         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
+    if s.get('birth_year'):
+        # The registration may fall in the year after the birth.
+        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
+    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+
+
+def _search_url_ukdiscovery(s: dict) -> str:
+    return _rs_url('https://discovery.nationalarchives.gov.uk/results/r', {'_q': _rs_name(s)})
+
+
+# Each URL shape is the upstream builder's own unless a builder says otherwise.
+# Opened by hand in Chrome on 2026-11-23 with Thomas Hartley (Geneteka with a
+# Polish name): FamilySearch, Ancestry, Find a Grave, BillionGraves, Chronicling
+# America, Newspapers.com, Geneteka and Discovery land on a search with the
+# fields filled; Findmypast runs the search, then asks him to sign in to see it.
+# MyHeritage could not be opened from the checking browser (it blocks automated
+# visits), so its shape is upstream's, unchecked. Sites change their search
+# addresses; a link that stops pre-filling still opens the site, which is the
+# graceful failure.
+RESEARCH_SITES: tuple = (
+    {'key': 'familysearch', 'label': 'FamilySearch', 'group': 'General',
+     'note': 'free, needs a free login to see records', 'build': _search_url_familysearch},
+    {'key': 'ancestry', 'label': 'Ancestry', 'group': 'General',
+     'note': 'subscription', 'build': _search_url_ancestry},
+    {'key': 'myheritage', 'label': 'MyHeritage', 'group': 'General',
+     'note': 'subscription; free to search', 'build': _search_url_myheritage},
+    {'key': 'findmypast', 'label': 'Findmypast (UK)', 'group': 'General',
+     'note': 'subscription; asks you to sign in to see results; strong for '
+             'England, Wales, Scotland, Ireland',
+     'build': _search_url_findmypast},
+    {'key': 'findagrave', 'label': 'Find a Grave', 'group': 'Graves',
+     'note': 'free', 'build': _search_url_findagrave},
+    {'key': 'billiongraves', 'label': 'BillionGraves', 'group': 'Graves',
+     'note': 'free', 'build': _search_url_billiongraves},
+    {'key': 'chroniclingamerica', 'label': 'Chronicling America', 'group': 'Newspapers',
+     'note': 'Library of Congress, free US newspapers to 1963',
+     'build': _search_url_chroniclingamerica},
+    {'key': 'newspapers', 'label': 'Newspapers.com', 'group': 'Newspapers',
+     'note': 'subscription', 'build': _search_url_newspapers},
+    {'key': 'geneteka', 'label': 'Geneteka (Poland)', 'group': 'Poland',
+     'note': 'free index of Polish parish records', 'build': _search_url_geneteka},
+    {'key': 'ukdiscovery', 'label': 'The National Archives (UK)', 'group': 'Archives',
+     'note': 'free catalogue; some records to buy', 'build': _search_url_ukdiscovery},
+)
+
+
+def research_search_links(subject: dict) -> list[dict]:
+    """The searches to offer for one person: `[{key, label, group, note, url}]`.
+
+    Pure: no files, no index, no network. A subject with neither a given name
+    nor a surname gets none. The subject carries only what the caller chose to
+    share, so a name-only dict gives name-only addresses."""
+    if not (subject.get('given') or subject.get('surname')):
+        return []
+    out = []
+    for site in RESEARCH_SITES:
+        url = site['build'](subject)
+        if url:
+            out.append({'key': site['key'], 'label': site['label'],
+                        'group': site['group'], 'note': site['note'], 'url': url})
+    return out
 
 
 def _site_data_age(data: dict) -> int | None:
@@ -16734,6 +17244,442 @@ def fold_accents(text: str) -> str:
     return ''.join(c for c in folded if not unicodedata.combining(c))
 
 
+# ── Names that sound alike (Daitch-Mokotoff and census Soundex) ──────────────
+#
+# A surname written Kowalski in one record, Kowalska in the next and Kovalsky
+# on a ship list is one family. `fha find --sounds-like` puts such spellings
+# together by a sound code. Nothing here changes a name: the codes are
+# computed on the fly for comparison and never stored or written back.
+#
+# Two codes, two jobs:
+#   - Daitch-Mokotoff (D-M) decides who sounds alike. It is the code JewishGen
+#     and the Eastern European indexes use, and it keeps Slavic and Yiddish
+#     spellings together where the older American Soundex splits them.
+#   - American ("census") Soundex is only printed, so the human can look the
+#     name up on the National Archives' Soundex cards for the 1880-1930
+#     censuses, which are filed by it.
+#
+# Sources. The D-M table below is written from Gary Mokotoff's published
+# coding chart and rules (JewishGen, "Soundex Coding",
+# https://www.jewishgen.org/InfoFiles/soundex.html), one entry per chart row,
+# alternate spellings expanded. Where the chart is silent the choices follow
+# Apache Commons Codec's DaitchMokotoffSoundex, whose results were checked
+# against Stephen Morse's calculator: the vowels a "before a vowel" column
+# looks at are A, E, I, O, U; a sound already written at the end of the code
+# so far is not written again (KS, 54, then S, 4, gives 54, not 544); and an
+# M next to an N is always written. American Soundex follows the National
+# Archives' "The Soundex Indexing System"
+# (https://www.archives.gov/research/census/soundex). No other
+# implementation's code was copied for either.
+
+# One row per chart line: (letter groups, start of a name, before a vowel,
+# any other situation). '' is "not coded"; '|' separates the two readings of
+# a two-way letter ("Try KH (5) and TCH (4)" is '5|4').
+_DM_CHART: tuple[tuple[str, str, str, str], ...] = (
+    ('ai aj ay', '0', '1', ''),
+    ('au', '0', '7', ''),
+    ('ą', '', '', '6|'),            # Polish a-ogonek: 6 or not coded
+    ('a', '0', '', ''),
+    ('b', '7', '7', '7'),
+    ('chs', '5', '54', '54'),
+    ('ch', '5|4', '5|4', '5|4'),    # try KH (5) and TCH (4)
+    ('ck', '5|45', '5|45', '5|45'), # try K (5) and TSK (45)
+    ('cz cs csz czs', '4', '4', '4'),
+    ('c', '5|4', '5|4', '5|4'),     # try K (5) and TZ (4)
+    ('drz drs', '4', '4', '4'),
+    ('ds dsh dsz', '4', '4', '4'),
+    ('dz dzh dzs', '4', '4', '4'),
+    ('d dt', '3', '3', '3'),
+    ('ei ej ey', '0', '1', ''),
+    ('eu', '1', '1', ''),
+    ('ę', '', '', '6|'),            # Polish e-ogonek: 6 or not coded
+    ('e', '0', '', ''),
+    ('fb', '7', '7', '7'),
+    ('f', '7', '7', '7'),
+    ('g', '5', '5', '5'),
+    ('h', '5', '5', ''),
+    ('ia ie io iu', '1', '', ''),
+    ('i', '0', '', ''),
+    ('j', '1|4', '|4', '|4'),       # try Y (1, -, -) and DZH (4)
+    ('ks', '5', '54', '54'),
+    ('kh', '5', '5', '5'),
+    ('k', '5', '5', '5'),
+    ('l', '8', '8', '8'),
+    ('mn', '66', '66', '66'),
+    ('m', '6', '6', '6'),
+    ('nm', '66', '66', '66'),
+    ('n', '6', '6', '6'),
+    ('oi oj oy', '0', '1', ''),
+    ('o', '0', '', ''),
+    ('p pf ph', '7', '7', '7'),
+    ('q', '5', '5', '5'),
+    ('rz rs', '94|4', '94|4', '94|4'),  # try RTZ (94) and ZH (4)
+    ('r', '9', '9', '9'),
+    ('schtsch schtsh schtch', '2', '4', '4'),
+    ('sch', '4', '4', '4'),
+    ('shtch shch shtsh', '2', '4', '4'),
+    ('sht scht schd', '2', '43', '43'),
+    ('sh', '4', '4', '4'),
+    ('stch stsch sc', '2', '4', '4'),
+    ('strz strs stsh', '2', '4', '4'),
+    ('st', '2', '43', '43'),
+    ('szcz szcs', '2', '4', '4'),
+    ('szt shd szd sd', '2', '43', '43'),
+    ('sz', '4', '4', '4'),
+    ('s', '4', '4', '4'),
+    ('tch ttch ttsch', '4', '4', '4'),
+    ('th', '3', '3', '3'),
+    ('trz trs', '4', '4', '4'),
+    ('tsch tsh', '4', '4', '4'),
+    ('ts tts ttsz tc', '4', '4', '4'),
+    ('tz ttz tzs tsz', '4', '4', '4'),
+    ('ţ ț', '3|4', '3|4', '3|4'),   # Romanian t-cedilla (and t-comma): 3 or 4
+    ('t', '3', '3', '3'),
+    ('ui uj uy', '0', '1', ''),
+    ('u ue', '0', '', ''),
+    ('v', '7', '7', '7'),
+    ('w', '7', '7', '7'),
+    ('x', '5', '54', '54'),
+    ('y', '1', '', ''),
+    ('zdz zdzh zhdzh', '2', '4', '4'),
+    ('zd zhd', '2', '43', '43'),
+    ('zh zs zsch zsh', '4', '4', '4'),
+    ('z', '4', '4', '4'),
+)
+
+DM_RULES: dict[str, tuple[str, str, str]] = {
+    group: (start, before_vowel, other)
+    for groups, start, before_vowel, other in _DM_CHART
+    for group in groups.split()
+}
+DM_LONGEST = max(len(group) for group in DM_RULES)
+DM_VOWELS = frozenset('aeiouąę')
+# The letters the chart codes in their own right, so they are kept as they
+# are instead of being folded to a plain letter first.
+_DM_OWN_LETTERS = frozenset('ąęţț')
+
+
+def _dm_letters(name: str) -> str:
+    """The letters D-M reads from a name: lower case, the chart's own letters
+    (ą, ę, ţ, ț) kept, ß read as one s, every other accented letter folded to
+    its base letter (`fold_accents`: ł to l, ń to n, ü to u), and everything
+    that is not a letter a-z dropped. Dropping the spaces and hyphens is the
+    chart's rule that a name of several words ("Ben Aron") is coded as one."""
+    out: list[str] = []
+    for ch in str(name or '').lower():
+        if ch in _DM_OWN_LETTERS:
+            out.append(ch)
+        elif ch == 'ß':
+            out.append('s')
+        else:
+            out.extend(c for c in fold_accents(ch) if 'a' <= c <= 'z')
+    return ''.join(out)
+
+
+def dm_soundex(name: str) -> list[str]:
+    """Every Daitch-Mokotoff code of a name in Latin letters, each six digits:
+    `dm_soundex('Peters')` is `['739400', '734000']`, `dm_soundex('')` is `[]`.
+
+    The rules, as the chart states them. The name is read left to right,
+    always taking the longest letter group the chart knows (`schtsch` before
+    `sch` before `s`). Each group has three codes: one at the start of the
+    name, one when the next letter is a vowel, one otherwise. A code may be
+    empty (most vowels after the first letter) or have two readings (C, CH,
+    CK, J, RS, RZ, Ą, Ę, Ţ), which splits the result in two. A sound that
+    repeats the end of the code written so far is written once, except
+    that an M beside an N is always written (Kleinman is 586660); a group
+    with no code between them means the second is written again. Each
+    result is padded with zeros or cut to six digits. A name can therefore
+    have several codes, and two names sound alike when they share one.
+
+    A name with no Latin letter (empty, digits, Hebrew script) has no code.
+    Cyrillic is transliterated first by `name_sound_codes`, not here.
+    """
+    letters = _dm_letters(name)
+    if not letters:
+        return []
+    branches: list[tuple[str, str | None]] = [('', None)]   # (code so far, last sound read)
+    i = 0
+    while i < len(letters):
+        for size in range(min(DM_LONGEST, len(letters) - i), 0, -1):
+            group = letters[i:i + size]
+            if group in DM_RULES:
+                break
+        else:
+            i += 1
+            continue
+        start, before_vowel, other = DM_RULES[group]
+        following = letters[i + size] if i + size < len(letters) else ''
+        readings = (start if i == 0
+                    else before_vowel if following in DM_VOWELS
+                    else other).split('|')
+        always = i > 0 and {letters[i - 1], letters[i]} == {'m', 'n'}
+        grown: list[tuple[str, str | None]] = []
+        for code, last in branches:
+            for sound in readings:
+                if always or last is None or not last.endswith(sound):
+                    grown.append(((code + sound)[:6], sound))
+                else:
+                    grown.append((code, sound))
+        branches = list(dict.fromkeys(grown))
+        i += size
+    return list(dict.fromkeys((code + '000000')[:6] for code, _last in branches))
+
+
+_SOUNDEX_DIGITS: dict[str, str] = {
+    letter: digit
+    for letters, digit in (('bfpv', '1'), ('cgjkqsxz', '2'), ('dt', '3'),
+                           ('l', '4'), ('mn', '5'), ('r', '6'))
+    for letter in letters
+}
+
+
+def american_soundex(name: str) -> str:
+    """The census Soundex code the National Archives files names under: the
+    first letter and three digits, `american_soundex('Washington')` is
+    `'W252'`, `american_soundex('')` is `''`.
+
+    The National Archives' rules: keep the first letter; code B F P V 1,
+    C G J K Q S X Z 2, D T 3, L 4, M N 5, R 6; letters with the same digit
+    side by side count once, and so does a letter with the first letter's
+    digit (Pfister is P236); H and W between two such letters do not
+    separate them (Ashcraft is A261), a vowel does (Tymczak is T522); pad
+    with zeros. The Archives' page names A, E, I, O, U as the separating
+    vowels and is silent on Y; Y is a vowel here, as in Knuth's statement of
+    the rules. A prefix (Van, De, La) is coded as written: the Archives say
+    to look under both, and the caller can code the name without it."""
+    letters = ''.join(c for c in fold_accents(str(name or '')).lower() if 'a' <= c <= 'z')
+    if not letters:
+        return ''
+    digits: list[str] = []
+    previous = _SOUNDEX_DIGITS.get(letters[0], '')
+    for ch in letters[1:]:
+        if ch in 'hw':
+            continue
+        digit = _SOUNDEX_DIGITS.get(ch, '')
+        if digit and digit != previous:
+            digits.append(digit)
+        previous = digit
+    return (letters[0].upper() + ''.join(digits) + '000')[:4]
+
+
+# Cyrillic names, and one given name in several languages.
+#
+# Ported from igormel81/genealogy-mcp, src/genealogy_mcp/names.py at commit
+# 2aa2cb0dcf94904e04cd481ebba71808e1b68ae9
+# (https://github.com/igormel81/genealogy-mcp). What was changed: only the
+# passport, German and Polish transliterations are kept (the three the sound
+# match reads); the given-name rows are kept as published except that
+# Ганна (the Ukrainian Anna) is taken out of the Agafya row, where it would
+# have made every Hanna an Agatha; the given-name lookup folds accents
+# (Paweł finds Pawel); names reformatted to this file's style.
+#
+# MIT License
+#
+# Copyright (c) 2026 Igor Melnikov
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+CYRILLIC_LETTERS = 'абвгдеёжзийклмнопрстуфхцчшщъыьэюяіїєґѣѳѵ'
+# Not from genealogy-mcp: the Serbian, Macedonian and Belarusian letters its
+# tables lack, each written as the Latin alphabet of that language writes it
+# (ј j, ђ đ, ћ ć, ў ŭ), the same in all three systems. Without
+# them Јовановић lost its first sound and never met Jovanović.
+CYRILLIC_LETTERS_EXTRA: dict[str, str] = {
+    'ј': 'j', 'ђ': 'đ', 'љ': 'lj', 'њ': 'nj', 'ћ': 'ć', 'џ': 'dž',
+    'ѓ': 'gj', 'ќ': 'kj', 'ѕ': 'dz', 'ў': 'ŭ',
+}
+
+
+def has_cyrillic(text: str) -> bool:
+    """True when `text` holds a Cyrillic letter (Russian, Ukrainian, the
+    pre-1918 letters ѣ ѳ ѵ, or a Serbian, Macedonian or Belarusian one)."""
+    return any(ch in CYRILLIC_LETTERS or ch in CYRILLIC_LETTERS_EXTRA
+               for ch in str(text or '').lower())
+
+
+# The Latin letters for each Cyrillic one, in CYRILLIC_LETTERS order. The
+# passport table is the one Russian passports use (ICAO Doc 9303); a German
+# or Polish clerk wrote the same name the way it sounded in his language.
+TRANSLIT: dict[str, dict[str, str]] = {
+    'passport': dict(zip(CYRILLIC_LETTERS, (
+        'a b v g d e e zh z i i k l m n o p r s t u f kh ts ch sh shch ie y  '
+        'e iu ia i i ie g e f i').split(' '))),
+    'german': dict(zip(CYRILLIC_LETTERS, (
+        'a b w g d e jo sch s i i k l m n o p r s t u f ch z tsch sch schtsch  y  '
+        'e ju ja i ji je g e f i').split(' '))),
+    'polish': dict(zip(CYRILLIC_LETTERS, (
+        'a b w g d e io ż z i j k ł m n o p r s t u f ch c cz sz szcz  y  '
+        'e iu ia i ji je g e f i').split(' '))),
+}
+for _table in TRANSLIT.values():
+    _table.update(CYRILLIC_LETTERS_EXTRA)
+del _table
+# A letter at the start of a word (or after a vowel) that a system writes
+# differently there: German writes a word-initial е as je.
+TRANSLIT_INITIAL: dict[str, dict[str, str]] = {
+    'passport': {'е': 'e', 'ю': 'iu', 'я': 'ia'},
+    'german': {'е': 'je'},
+}
+_CYRILLIC_VOWELS = 'аеёиоуыэюяъьіїє'
+
+# One row per given name: its forms across languages and church records,
+# including the Hebrew and Yiddish names and how Russian and Polish clerks
+# wrote them. A row can join names a family did not think of as the same
+# (Chaja and Ida); the search output says when a given name was widened.
+GIVEN_NAME_ROWS: tuple[str, ...] = (
+    'Иван Іоаннъ Иоанн Іван Ян Jan Johann Johannes John Ivan Iwan Ioan Ion Juan João Giovanni Jean Jonas Ioannes Janis Jānis Jonas',
+    'Пётр Петр Петръ Пётр Петро Piotr Peter Pierre Pedro Pietro Petrus Petru Pēteris Petras',
+    'Павел Павелъ Павло Paweł Paul Pablo Paulo Paolo Paulus Pavel Pavlo Paulius',
+    'Михаил Михаилъ Михайло Michał Michael Michel Miguel Michele Michael Mihai Mihail Mykhailo Mykolas',
+    'Николай Николай Микола Mikołaj Nikolaus Nicholas Nicolas Nicolás Nicola Nicolae Mykola Nikolai Mikalojus',
+    'Георгий Георгій Юрий Егор Юрій Jerzy Georg George Georges Jorge Giorgio Gheorghe Yurii Yuri Jurgis',
+    'Андрей Андрей Андрій Andrzej Andreas Andrew André Andrés Andrea Andrei Andrii Andrius',
+    'Алексей Алексѣй Олексій Aleksy Alexis Alejo Alessio Alexei Oleksii',
+    'Александр Александръ Олександр Aleksander Alexander Alexandre Alejandro Alessandro Alexandru Oleksandr Aleksandras',
+    'Василий Василій Василь Bazyli Basilius Basil Basile Basilio Vasile Vasyl Vasilii',
+    'Фёдор Федор Феодоръ Хведір Федір Teodor Theodor Theodore Théodore Teodoro Fiodor Fedir Fyodor',
+    'Яков Іаковъ Яків Jakub Jakob Jacob Jacques Jaime Santiago Giacomo Iacob Yakiv Jokūbas',
+    'Иосиф Іосифъ Осип Йосип Józef Joseph Josef José Giuseppe Iosif Yosyp Juozapas',
+    'Григорий Григорій Григорій Grzegorz Gregor Gregory Grégoire Gregorio Grigore Hryhorii',
+    'Стефан Степан Стефанъ Степан Szczepan Stefan Stephan Stephen Étienne Esteban Stefano Ștefan Stepan Steponas',
+    'Матвей Матфей Матвій Mateusz Matthäus Matthew Mathieu Mateo Matteo Matei Matvii',
+    'Даниил Данила Данило Daniel Daniele Danylo Danielius',
+    'Моисей Мовша Мойша Моше Мозес Moshe Moishe Movsha Mowsza Mojżesz Moses Moise Moisei',
+    'Исаак Ицка Ицко Ицхак Ицик Isaak Isaac Icek Icko Itzik Yitzchak Itzhak Izaak',
+    'Авраам Абрам Аврум Абрамка Avraham Abraham Abram Avrum Abrom',
+    'Янкель Янкиель Яков Иаков Yankel Jankiel Jankel Yaakov Jacob Jakob',
+    'Шмуль Шмуэль Самуил Самуэль Shmuel Szmul Schmul Samuel',
+    'Лейба Лейб Лев Лёва Лейзер Leib Lejb Leyb Lejba Leon Leo Lev',
+    'Хаим Хаймо Ефим Хаймович Chaim Chaim Haim Chaym Hyman Efim',
+    'Гирш Герш Хирш Гершон Hirsch Hirsz Hersh Hersz Herschel Gersh Grigori',
+    'Берко Бер Бэр Берл Борух Барух Ber Berko Berl Boruch Baruch Bernard Boris',
+    'Мендель Менахем Мендл Mendel Mendl Menachem Emanuel',
+    'Сара Сарра Сура Сорка Sarah Sara Sura Sora Surka',
+    'Ривка Ревекка Рива Rivka Rywka Riva Rebecca Rebekah Rebeka',
+    'Рахиль Рохля Рахель Rachel Rochla Rachela Ruchla Rokhl',
+    'Лея Лия Лиза Leah Lea Laja Laya',
+    'Хая Хава Ева Chaja Chaya Chawa Eva Ida',
+    'Голда Голде Golda Golde Goldie',
+    'Фейга Фейге Фаина Fejga Feiga Feige Fanny Faina',
+    'Двойра Дебора Двора Dwojra Dvoira Deborah Dora Vera',
+    'Малка Малке Malka Malke Molly Manya',
+    'Марк Mark Marek Markus Marc Marcos Marco Marcu',
+    'Анна Ганна Hanna Anna Anne Ana Anne Anica',
+    'Мария Марія Марья Маріа Maria Marie Mary María Marija Marya Mariia',
+    'Екатерина Екатерина Катерина Katarzyna Katharina Catherine Catalina Caterina Ecaterina Kateryna Kotryna',
+    'Елизавета Елисавета Єлизавета Elżbieta Elisabeth Elizabeth Élisabeth Isabel Elisabetta Elisabeta Yelyzaveta',
+    'Евдокия Авдотья Явдоха Eudokia Eudoxia Evdokiia Yevdokiia',
+    'Пелагея Палагея Пелагія Pelagia Pélagie Pelagia',
+    'Агафья Агафія Agata Agathe Agatha Ágata Agata',
+    'Ксения Аксинья Оксана Ксенія Ksenia Xenia Oksana Kseniia',
+    'Софья София Софія Zofia Sophie Sophia Sofía Sofia',
+    'Татьяна Татіана Тетяна Tatiana Tatjana Tetiana',
+    'Наталья Наталия Наталія Natalia Natalie Nathalie Natália Natalia',
+    'Ольга Ольга Olga Olha Olga',
+    'Евфросиния Ефросинья Фрося Єфросинія Eufrozyna Euphrosyne Eufrosina',
+    'Параскева Прасковья Параска Paraskewa Paraschiva Parascovia',
+)
+
+
+def _given_name_key(word: str) -> str:
+    """The lookup key for a given name: lower case, and a Latin name's
+    accents folded (José finds Jose). Cyrillic is only lower-cased, because
+    folding would turn й into и and ё into е, which are different letters
+    there."""
+    text = str(word or '').strip().lower()
+    return text if has_cyrillic(text) else fold_accents(text)
+
+
+_GIVEN_NAME_INDEX: dict[str, set[int]] = {}
+for _row_number, _row in enumerate(GIVEN_NAME_ROWS):
+    for _form in _row.split():
+        _GIVEN_NAME_INDEX.setdefault(_given_name_key(_form), set()).add(_row_number)
+del _row_number, _row, _form
+
+
+def translit(text: str, system: str = 'passport') -> str:
+    """`text` with its Cyrillic letters written in Latin ones by `system`
+    (`passport`, `german` or `polish`); Latin letters pass through, so
+    `translit('Hartley')` is `'Hartley'`. `translit('Колодин')` is
+    `'Kolodin'`, `translit('Иван', 'german')` is `'Iwan'`.
+
+    A record from the Russian Empire may write one name in Cyrillic, a
+    German-speaking clerk's spelling of it, a Polish one, and the passport
+    form an emigrant carried; the sound match reads all three."""
+    table = TRANSLIT.get(system, TRANSLIT['passport'])
+    base = TRANSLIT['passport']
+    text = str(text or '')
+    out: list[str] = []
+    for i, ch in enumerate(text):
+        low = ch.lower()
+        if low not in base:
+            out.append(ch)
+            continue
+        at_start = i == 0 or not text[i - 1].isalpha() or text[i - 1].lower() in _CYRILLIC_VOWELS
+        latin = TRANSLIT_INITIAL.get(system, {}).get(low) if at_start else None
+        if latin is None:
+            latin = table.get(low, base[low])
+        out.append(latin.capitalize() if ch.isupper() and latin else latin)
+    result = ''.join(out)
+    if system == 'german':
+        # German writes one s between vowels as ss, or it would read as z.
+        result = re.sub(r'(?<=[aeiouyAEIOUY])s(?=[aeiouy])', 'ss', result)
+    return result
+
+
+def given_name_equivalents(word: str) -> list[str]:
+    """The other forms of a given name, from `GIVEN_NAME_ROWS`: for 'Jan',
+    John, Johann, Ivan, Иван and the rest. A name in no row (most surnames)
+    has none: `[]`. The word itself is left out."""
+    key = _given_name_key(word)
+    out: list[str] = []
+    for row_number in sorted(_GIVEN_NAME_INDEX.get(key, ())):
+        out += GIVEN_NAME_ROWS[row_number].split()
+    return list(dict.fromkeys(form for form in out if _given_name_key(form) != key))
+
+
+def name_sound_words(text: str) -> list[str]:
+    """The words of a name, as the sound match compares them: apostrophes
+    taken out (O'Brien is OBrien), then split at anything that is not a
+    letter (spaces, hyphens, dots, digits). `'Margaret A. Cole'` gives
+    `['Margaret', 'A', 'Cole']`."""
+    text = unicodedata.normalize('NFC', str(text or ''))
+    text = re.sub(r"['’ʼ`]", '', text)
+    return re.findall(r'[^\W\d_]+', text)
+
+
+def name_sound_codes(word: str) -> set[str]:
+    """Every Daitch-Mokotoff code of one word of a name. A Cyrillic word is
+    coded through its passport, German and Polish spellings together, so
+    Иван sounds like Ivan and Iwan. A word in another script has no code
+    (an empty set)."""
+    if has_cyrillic(word):
+        forms = [translit(word, system) for system in ('passport', 'german', 'polish')]
+    else:
+        forms = [word]
+    codes: set[str] = set()
+    for form in forms:
+        codes.update(dm_soundex(form))
+    return codes
+
+
 # Generational suffixes SPEC §13's filename split must never mistake for a
 # surname (issue #53: "Roy Eugene Dodson Jr" filed as `jr__roy_eugene_dodson`,
 # sorting the son under a different letter than his father). Matched
@@ -18246,7 +19192,9 @@ class KinshipGraph:
       other_parents     child -> {parent: subtype} for the non-genetic kinds
                         (adoptive, step, foster, guardian, ...)
       spouses           pid -> {spouse: (date_start, date_end)}, the first
-                        recorded marriage row for the pair
+                        recorded marriage row for the pair, each date an EDTF
+                        string or None (`kin_graph` gives ranges: the
+                        marriage claim's date, "earliest/latest" for the end)
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
       half_sibling_pairs  pairs an accepted `subtype: half` sibling claim
@@ -18382,6 +19330,43 @@ def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> K
     return graph
 
 
+def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> None:
+    """Give each spouse row its dates as ranges, in place, so "190X" is never
+    read as 1900. The index keeps only each date's earliest day (date_start
+    from the marriage, date_end from the first divorce or death that closed
+    it). date_start becomes the backing marriage or relationship claim's own
+    EDTF; date_end becomes
+    "earliest/latest", the latest day taken from the closing claim (a death
+    of either spouse or a divorce naming one of them, matched on that
+    earliest day), or "earliest/.." when no such claim is found. The
+    step-parent date rule (`_kin_step_state`) then compares safe bounds."""
+    spouse_rows = [r for r in rows if r.get('rel') == 'spouse']
+    if not spouse_rows:
+        return
+    start_edtf = {r['id']: r['date_edtf'] for r in dicts(conn.execute(
+        "SELECT id, date_edtf FROM claims WHERE type IN ('marriage', 'relationship')"))}
+    closing: dict[tuple[str, str], str] = {}
+    for r in dicts(conn.execute(
+            '''SELECT cp.person_id AS pid, c.date_min AS dmin, c.date_max AS dmax
+               FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE c.type IN ('death', 'divorce') AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0 AND c.date_min IS NOT NULL''')):
+        key = (r['pid'], r['dmin'])
+        latest = r['dmax'] or '9999-12-31'
+        if latest > closing.get(key, ''):
+            closing[key] = latest
+    for r in spouse_rows:
+        if r.get('claim_id') in start_edtf:
+            # The backing claim's whole date, or none: its lower bound alone
+            # would read "1900" as 1 January 1900.
+            r['date_start'] = start_edtf[r['claim_id']] or None
+        end = r.get('date_end')
+        if end:
+            latest = max((closing.get((p, end), '') for p in (r['person_id'], r['other_id'])),
+                         default='')
+            r['date_end'] = f"{end}/{latest if latest and latest != '9999-12-31' else '..'}"
+
+
 def kin_graph(conn: sqlite3.Connection,
               edge_ok: Callable[[dict], bool] | None = None) -> KinshipGraph:
     """Load the KinshipGraph from an open index.
@@ -18418,6 +19403,7 @@ def kin_graph(conn: sqlite3.Connection,
     # every answer the same from run to run and machine to machine.
     if edge_ok is not None:
         rows = [r for r in rows if edge_ok(r)]
+    _kin_marriage_spans(conn, rows, _dicts)
     graph = _kinship_graph_from_rows(people, rows)
 
     # "Half" may rest on a source that says so: an accepted `subtype: half`
@@ -18713,34 +19699,461 @@ def kinship_path(graph: KinshipGraph, a: str, b: str) -> dict | None:
         node = came_from
     chain.reverse()
     path = [
-        {'from': x, 'to': y, 'rel': rel,
-         'label': _kin_hop_label(rel, graph.people.get(y, {}).get('sex', ''))}
+        {'from': x, 'to': y, 'rel': rel, 'label': _kin_path_hop(graph, x, y, rel)}
         for (x, y, rel) in chain
     ]
     rendered = 'your ' + "'s ".join(h['label'] for h in path)
     return {'path': path, 'rendered': rendered}
 
 
+def _kin_path_hop(graph: KinshipGraph, x: str, y: str, rel: str) -> str:
+    """The word for `y` as seen from `x` on one path hop. A parent or child
+    hop over a tie that is not by birth names its kind ("your adoptive
+    father", "your stepson"), so the chain never reads as blood when it is
+    not. A tie also recorded as genetic keeps the plain word."""
+    sex = graph.people.get(y, {}).get('sex', '')
+    if rel == 'parent' and y not in graph.genetic_parents.get(x, ()):
+        kind = graph.other_parents.get(x, {}).get(y)
+        if kind:
+            return _kin_social_word(kind, sex, parent=True)
+    elif rel == 'child' and x not in graph.genetic_parents.get(y, ()):
+        kind = graph.other_parents.get(y, {}).get(x)
+        if kind:
+            return _kin_social_word(kind, sex, parent=False)
+    return _kin_hop_label(rel, sex)
+
+
+# ── Ties by marriage and by a parent who is not a birth parent ───────────────
+#
+# A wife's brother is "brother-in-law", a father's later wife is "stepmother",
+# an aunt's husband is "uncle by marriage". These answers are asked for only
+# when no blood line joins the two people: a cousin who also married into the
+# family stays a cousin (blood wins), and an adoptive or step parent never
+# makes anyone a blood relative, because blood reads genetic edges only.
+#
+# A derived step tie (a parent's spouse who is not a parent) depends on dates:
+# a father's wife who died before the child was born was never the child's
+# stepmother. With the dates missing the answer is hedged, never stated as
+# fact, because a confident wrong word is repeated in the family.
+
+# The word for the parent and the word for the child, for each kind of parent
+# tie that is not by birth (SPEC §8.2 subtypes). '' is the word for a person
+# whose sex is not recorded as M or F.
+_KIN_SOCIAL_PARENT_WORDS: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+    'step': ({'M': 'stepfather', 'F': 'stepmother', '': 'step-parent'},
+             {'M': 'stepson', 'F': 'stepdaughter', '': 'stepchild'}),
+    'adoptive': ({'M': 'adoptive father', 'F': 'adoptive mother', '': 'adoptive parent'},
+                 {'M': 'adopted son', 'F': 'adopted daughter', '': 'adopted child'}),
+    'foster': ({'M': 'foster father', 'F': 'foster mother', '': 'foster parent'},
+               {'M': 'foster son', 'F': 'foster daughter', '': 'foster child'}),
+    'guardian': ({'': 'guardian'}, {'': 'ward'}),
+    'surrogate-gestational': ({'': 'gestational surrogate'},
+                              {'': 'child carried as a surrogate'}),
+    'social': ({'M': 'social father', 'F': 'social mother', '': 'social parent'},
+               {'M': 'social son', 'F': 'social daughter', '': 'social child'}),
+}
+# Two children of one parent, at least one of them not by birth, share a
+# sibling word only for these kinds: adoptive sister, foster brother, stepsister.
+_KIN_SIBLING_PREFIX = {'adoptive': 'adoptive ', 'foster': 'foster ', 'step': 'step'}
+_KIN_SIBLING_WORDS = {'M': 'brother', 'F': 'sister', '': 'sibling'}
+
+
+def _kin_sexed(words: dict[str, str], sex: str) -> str:
+    return words.get((sex or '').upper(), words[''])
+
+
+def _kin_social_word(kind: str, sex: str, *, parent: bool) -> str:
+    """The word for a non-birth parent ("adoptive father") or child
+    ("adopted daughter"). An unlisted kind reads as the plain word."""
+    pair = _KIN_SOCIAL_PARENT_WORDS.get(kind)
+    if pair is None:
+        return _kin_hop_label('parent' if parent else 'child', sex)
+    return _kin_sexed(pair[0 if parent else 1], sex)
+
+
+def _kin_year(value: Any) -> int | None:
+    """The year of an index date ('1912', '1912-06-01'); None when unset."""
+    m = re.match(r'\s*(\d{1,4})(?!\d)', str(value or ''))
+    return int(m.group(1)) if m else None
+
+
+def _kin_bounds(value: Any) -> tuple[str | None, str | None]:
+    """(earliest, latest) ISO day an EDTF date allows, None for an open end.
+    "1903" is ('1903-01-01', '1903-12-31'); "[..1910]" has no earliest day; a
+    missing or unreadable date has neither. A (lo, hi) pair passes through."""
+    if isinstance(value, (tuple, list)):
+        lo, hi = (tuple(value) + (None, None))[:2]
+    elif value is None or str(value).strip() == '':
+        return None, None
+    else:
+        lo, hi = edtf_bounds(str(value).strip())
+    # The index's stand-ins for "no bound" (0001-01-01, 9999-12-31) mean the
+    # same on either side: a bare '0001-01-01' is a "before" date's lower
+    # bound, not a day in year 1.
+    lo = None if not lo or str(lo)[:4] in ('0001', '9999') else lo
+    hi = None if not hi or str(hi)[:4] in ('0001', '9999') else hi
+    return lo, hi
+
+
+def _kin_life_reader(life: Callable[[str], Any] | None) -> Callable[[str], tuple]:
+    """Read `life(pid)` as ((born_lo, born_hi), (died_lo, died_hi) | None).
+    `life` may answer None (nothing known), an int (a birth year, the
+    shorthand tests use), or {'born': date, 'died': date} where each date is
+    an EDTF string or a (lo, hi) pair (`person_life_dates`)."""
+    def read(pid: str) -> tuple:
+        got = life(pid) if life else None
+        if got is None:
+            return (None, None), None
+        if isinstance(got, int):
+            return (f'{got:04d}-01-01', f'{got:04d}-12-31'), None
+        born = _kin_bounds(got.get('born'))
+        died = _kin_bounds(got.get('died')) if got.get('died') else None
+        return born, (died if died != (None, None) else None)
+    return read
+
+
+def _kin_step_state(marriage: tuple[str | None, str | None], child: str,
+                    life: Callable[[str], tuple]) -> str:
+    """Whether a parent's marriage makes the other spouse the child's
+    step-parent (SPEC Part IV: only when the dates show the marriage
+    overlapped the child's life). 'step' when they prove an overlap; 'not'
+    when the marriage surely ended before the child was born; 'after' when
+    it surely began after the child died; 'open' otherwise. Every date is a
+    range: "190X" or "before 1910" settles nothing a single year inside it
+    would not, so a vague date leaves the answer open instead of guessing.
+    A marriage with no recorded end counts as open-ended only from its own
+    start; a child with no recorded death counts as living on."""
+    (b_lo, b_hi), died = life(child)
+    if b_lo is None and b_hi is None:
+        return 'open'
+    s_lo, s_hi = _kin_bounds(marriage[0])
+    e_lo, e_hi = _kin_bounds(marriage[1])
+    if e_hi is not None and b_lo is not None and e_hi < b_lo:
+        return 'not'
+    if died is not None and s_lo is not None and died[1] is not None and s_lo > died[1]:
+        return 'after'
+    # Overlap: the marriage still ran after the birth, and began before the death.
+    # A marriage ends no earlier than it began, and began no later than it ended.
+    surely_ran_to = max((d for d in (e_lo, s_lo) if d), default=None)
+    surely_began_by = min((d for d in (s_hi, e_hi) if d), default=None)
+    ran_after_birth = bool(b_hi and surely_ran_to and surely_ran_to >= b_hi)
+    began_before_death = died is None or bool(
+        died[0] and surely_began_by and surely_began_by <= died[0])
+    return 'step' if ran_after_birth and began_before_death else 'open'
+
+
+_KIN_STEP_HEDGE = "The marriage and birth dates that would settle this aren't all recorded"
+
+
+def _kin_in_law(word: str) -> str:
+    return f'{word}-in-law'
+
+
+def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                    life: Callable[[str], Any] | None = None) -> dict | None:
+    """A's tie to B through a marriage or a parent who is not a birth parent,
+    as A is B's <relationship>, or None. Always None when a blood line joins
+    them: blood wins, and an in-law word is never offered for a blood relative.
+
+    `life(pid)` feeds the step-parent date rule: the person's birth and
+    death dates (`person_life_dates`; an int is read as a birth year).
+    Without it every derived step tie is hedged. Returns {relationship, kind,
+    certain, hedge, explain, via, path}: `kind` is spouse, step, adoptive,
+    foster, guardian, surrogate-gestational, social, in-law or by-marriage;
+    `certain` is False only for a step tie the dates cannot settle, and then
+    `hedge` is the plain sentence that says so; `explain` is the chain from
+    B's side with names ("Ann Aye's wife's brother") or None for a direct
+    tie; `via` the people between them, in chain order; `path` the same
+    chain with no names ("wife's brother")."""
+    if a == b or blood_answer(graph, a, b):
+        return None
+    return _marriage_answer(graph, a, b, life=life)
+
+
+def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
+                     life: Callable[[str], Any] | None = None) -> dict | None:
+    """`marriage_answer` for a pair already known to share no blood line."""
+    if a == b:
+        return None
+    lifeof = _kin_life_reader(life)
+
+    def has_death(p: str) -> bool:
+        return lifeof(p)[1] is not None
+
+    def name(p: str) -> str:
+        return graph.people.get(p, {}).get('name') or p
+
+    def sex(p: str) -> str:
+        return graph.people.get(p, {}).get('sex', '')
+
+    def answer(relationship, kind, path, via, *, explain=None, certain=True, hedge=None):
+        return {'relationship': relationship, 'kind': kind, 'certain': certain,
+                'hedge': hedge, 'explain': explain, 'via': list(via), 'path': path}
+
+    def parents_of(p: str) -> set[str]:
+        return set(graph.genetic_parents.get(p, ())) | set(graph.other_parents.get(p, {}))
+
+    def parent_word(child: str, parent: str) -> str:
+        """`parent` as `child`'s parent: "father", or "adoptive father"."""
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(parent), parent=True)
+        return _kin_hop_label('parent', sex(parent))
+
+    def child_word(parent: str, child: str) -> str:
+        if parent not in graph.genetic_parents.get(child, ()):
+            kind = graph.other_parents.get(child, {}).get(parent)
+            if kind:
+                return _kin_social_word(kind, sex(child), parent=False)
+        return _kin_hop_label('child', sex(child))
+
+    a_name, b_name = name(a), name(b)
+    # (cost, rank, gens, via, answer): the shortest tie wins; a recorded tie
+    # beats a derived one at the same cost; P-ids settle the rest, so every
+    # run gives the same answer.
+    cands: list[tuple] = []
+
+    # 1. A recorded parent tie that is not by birth, between A and B themselves.
+    kind = graph.other_parents.get(b, {}).get(a)
+    if kind and a not in graph.genetic_parents.get(b, ()):
+        word = _kin_social_word(kind, sex(a), parent=True)
+        cands.append((1, 0, (0, 1), [], answer(word, kind, word, [])))
+    kind = graph.other_parents.get(a, {}).get(b)
+    if kind and b not in graph.genetic_parents.get(a, ()):
+        word = _kin_social_word(kind, sex(a), parent=False)
+        cands.append((1, 0, (1, 0), [], answer(word, kind, word, [])))
+
+    # 2. Married to each other.
+    if b in graph.spouses.get(a, {}):
+        word = _kin_hop_label('spouse', sex(a))
+        cands.append((1, 1, (0, 0), [], answer(word, 'spouse', word, [])))
+
+    # 3. Children of one parent, at least one of them not by birth: adoptive
+    #    sister, foster brother, stepsister (a step-parent's own child).
+    for p in sorted(parents_of(a) & parents_of(b)):
+        ka = None if p in graph.genetic_parents.get(a, ()) else graph.other_parents.get(a, {}).get(p)
+        kb = None if p in graph.genetic_parents.get(b, ()) else graph.other_parents.get(b, {}).get(p)
+        kinds = {k for k in (ka, kb) if k}
+        if len(kinds) != 1:
+            continue
+        kind = kinds.pop()
+        # Two stepchildren of one step-parent are tied through their own
+        # parent, who is not recorded here; no word is safe.
+        if kind not in _KIN_SIBLING_PREFIX or (kind == 'step' and ka and kb):
+            continue
+        word = _KIN_SIBLING_PREFIX[kind] + _kin_sexed(_KIN_SIBLING_WORDS, sex(a))
+        path = f"{parent_word(b, p)}'s {child_word(p, a)}"
+        cands.append((2, 2, (1, 1), [p], answer(word, kind, path, [p],
+                                                explain=f"{b_name}'s {path}")))
+
+    # 4. A is the spouse of R, a blood relative of B.
+    spouse_word_a = _kin_hop_label('spouse', sex(a))
+    for r in sorted(graph.spouses.get(a, {})):
+        if r == b:
+            continue
+        br = blood_answer(graph, r, b)          # R is B's ...
+        if not br:
+            continue
+        ga, gb = br['gens_a'], br['gens_b']
+        path = f"{br['relationship']}'s {spouse_word_a}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (0, 1):
+            # R is B's parent: A is a step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[a][r], b, lifeof)
+            if state == 'not':
+                rel = f"{br['relationship']}'s earlier {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} before {b_name} was born')
+            elif state == 'after':
+                rel = f"{br['relationship']}'s later {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} after {b_name} died')
+            else:
+                or_after = f' or only after {b_name} died' if has_death(b) else ''
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been '
+                    f"{name(r)}'s {spouse_word_a} only before {b_name} was born{or_after}.")
+                ans = answer(_kin_social_word('step', sex(a), parent=True), 'step', path,
+                             [r], explain=explain, certain=state == 'step', hedge=hedge)
+        elif ga == 0:
+            # A grandparent's spouse is not a step-grandparent by any rule the
+            # record can check: say the chain ("grandfather's wife").
+            ans = answer(path, 'by-marriage', path, [r])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [r], explain=explain)
+        elif gb == 0:
+            ans = answer(_kin_in_law(_kin_lineal(ga, sex(a), up=False)), 'in-law',
+                         path, [r], explain=explain)
+        else:
+            # The word A would carry standing where R stands: an aunt's
+            # husband is an uncle by marriage.
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [r], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [r], ans))
+
+    # 5. A is a blood relative of S, B's spouse.
+    for s in sorted(graph.spouses.get(b, {})):
+        if s == a:
+            continue
+        bs = blood_answer(graph, a, s)          # A is S's ...
+        if not bs:
+            continue
+        ga, gb = bs['gens_a'], bs['gens_b']
+        spouse_word_s = _kin_hop_label('spouse', sex(s))
+        path = f"{spouse_word_s}'s {bs['relationship']}"
+        explain = f"{b_name}'s {path}"
+        if (ga, gb) == (1, 0):
+            # A is S's child: B is A's step-parent, if the dates allow it.
+            state = _kin_step_state(graph.spouses[b][s], a, lifeof)
+            if state == 'not':
+                rel = f"earlier {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"born after {name(s)}'s marriage to {b_name} ended")
+            elif state == 'after':
+                rel = f"later {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"died before {name(s)}'s marriage to {b_name}")
+            else:
+                or_died = (f", or have died before {name(s)} married {b_name}"
+                           if has_death(a) else '')
+                hedge = None if state == 'step' else (
+                    f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been born after '
+                    f"{name(s)}'s marriage to {b_name} ended{or_died}.")
+                ans = answer(_kin_social_word('step', sex(a), parent=False), 'step', path,
+                             [s], explain=explain, certain=state == 'step', hedge=hedge)
+        elif gb == 0:
+            # A spouse's grandchild is not a step-grandchild by any rule the
+            # record can check: say the chain ("wife's grandson").
+            ans = answer(path, 'by-marriage', path, [s])     # the word is the chain
+        elif (ga, gb) == (1, 1):
+            ans = answer(_kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law',
+                         path, [s], explain=explain)
+        elif ga == 0:
+            ans = answer(_kin_in_law(_kin_lineal(gb, sex(a), up=True)), 'in-law',
+                         path, [s], explain=explain)
+        else:
+            ans = answer(kinship_word(ga, gb, sex(a)) + ' by marriage', 'by-marriage',
+                         path, [s], explain=explain)
+        cands.append((ga + gb + 1, 3, (ga, gb), [s], ans))
+
+    # 6. Co-in-laws: A's spouse R and B's spouse S are brother and sister.
+    for r in sorted(graph.spouses.get(a, {})):
+        for s in sorted(graph.spouses.get(b, {})):
+            if r in (b, s) or s == a:
+                continue
+            if graph.genetic_parents.get(r, set()) & graph.genetic_parents.get(s, set()):
+                path = (f"{_kin_hop_label('spouse', sex(s))}'s "
+                        f"{_kin_hop_label('sibling', sex(r))}'s {spouse_word_a}")
+                cands.append((3, 4, (1, 1), [s, r], answer(
+                    _kin_in_law(_kin_sexed(_KIN_SIBLING_WORDS, sex(a))), 'in-law', path,
+                    [s, r], explain=f"{b_name}'s {path}")))
+
+    # 7. Step-siblings: A is the child of Q, who married P, B's parent, and A
+    #    and B share no parent of any kind.
+    if not (parents_of(a) & parents_of(b)):
+        for p in sorted(graph.genetic_parents.get(b, ())):
+            for q in sorted(graph.spouses.get(p, {})):
+                if q in parents_of(b) or q not in graph.genetic_parents.get(a, ()):
+                    continue
+                marriage = graph.spouses[p][q]
+                states = {_kin_step_state(marriage, a, lifeof),
+                          _kin_step_state(marriage, b, lifeof)}
+                if states & {'not', 'after'}:
+                    continue
+                certain = states == {'step'}
+                path = (f"{_kin_hop_label('parent', sex(p))}'s "
+                        f"{_kin_hop_label('spouse', sex(q))}'s {_kin_hop_label('child', sex(a))}")
+                hedge = None if certain else (
+                    f'{_KIN_STEP_HEDGE}, so the marriage of {name(p)} and {name(q)} '
+                    f'may have ended before {a_name} or {b_name} was born'
+                    + (' or begun after one of them died.'
+                       if has_death(a) or has_death(b) else '.'))
+                cands.append((3, 5, (1, 1), [p, q], answer(
+                    'step' + _kin_sexed(_KIN_SIBLING_WORDS, sex(a)), 'step', path, [p, q],
+                    explain=f"{b_name}'s {path}", certain=certain, hedge=hedge)))
+
+    if not cands:
+        return None
+    return min(cands, key=lambda c: c[:4])[4]
+
+
+def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
+                   life: Callable[[str], Any] | None = None) -> dict:
+    """Both answers `fha relate` prints: {'blood': blood_answer(...),
+    'by_marriage': marriage_answer(...)}; by_marriage is None whenever there
+    is a blood answer."""
+    blood = blood_answer(graph, a, b)
+    by_marriage = None if blood else _marriage_answer(graph, a, b, life=life)
+    return {'blood': blood, 'by_marriage': by_marriage}
+
+
+def person_life_dates(conn: sqlite3.Connection, pid: str,
+                      cache: dict | None = None) -> dict:
+    """{'born': (lo, hi) | None, 'died': (lo, hi) | None}: the earliest and
+    latest day the person's own accepted, non-negated birth and death claims
+    allow, the widest span when two records disagree. A record that names
+    the person as a parent or witness does not count (`claim_is_own_vital`),
+    and neither does a baptism or burial: each only bounds the event from
+    one side. `cache` is claim_is_own_vital's. Feeds `marriage_answer`'s
+    step-parent date rule as its `life` callable."""
+    out: dict = {'born': None, 'died': None}
+    for ctype, key in (('birth', 'born'), ('death', 'died')):
+        rows = conn.execute(
+            '''SELECT DISTINCT c.id, c.date_min, c.date_max FROM claims c
+               JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE cp.person_id = ? AND c.type = ? AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0
+                 AND (c.date_min IS NOT NULL OR c.date_max IS NOT NULL)''',
+            (pid, ctype)).fetchall()
+        los, his = [], []
+        for row in rows:
+            cid, dmin, dmax = (tuple(row.values()) if isinstance(row, dict) else tuple(row))[:3]
+            if not claim_is_own_vital(conn, pid, cid, ctype, cache):
+                continue
+            lo, hi = _kin_bounds((dmin, dmax))
+            if lo is None and hi is None:
+                continue   # an undated record of the event says nothing about when
+            los.append(lo)
+            his.append(hi)
+        if los:
+            # One open end on any record leaves that end open.
+            out[key] = (None if None in los else min(los), None if None in his else max(his))
+    return out
+
+
 def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
-                     birth_year: Callable[[str], int | None] | None = None) -> dict:
+                     life: Callable[[str], Any] | None = None) -> dict:
     """How `pid` is related to `anchor_pid`, as a short label a page can put
     after "Thomas Hartley's" or "Your". Always a dict:
 
-      words  bare lowercase noun phrase ("great-grandmother"); '' for kind 'none'
-      note   the honest caveat, or None
-      kind   'blood' | 'none' (ties by marriage, step and social kinds come
-             with the by-marriage answer)
-      path   the blood line from the anchor's side, hop words joined by
-             "'s", no names ("father's father's mother"); '' for kind 'none'
+      words  bare lowercase noun phrase ("great-grandmother", "brother-in-law");
+             '' for kind 'none'
+      note   the honest caveat, or None: 'other parent not recorded' for an
+             open half tie, 'marriage dates not recorded' for a step tie the
+             dates cannot settle
+      kind   'blood' | 'marriage' | 'step' | 'social' | 'none'
+      path   the chain from the anchor's side, hop words joined by "'s", no
+             names ("father's father's mother", "father's wife"); '' for
+             kind 'none'
 
-    Neither `words` nor `path` ever carries a name. `birth_year` is accepted
-    now so callers need not change when the step-parent date rule arrives."""
+    Neither `words` nor `path` ever carries a name. `life` feeds the
+    step-parent date rule (`marriage_answer`); without it every derived step
+    tie carries the dates note."""
     none = {'words': '', 'note': None, 'kind': 'none', 'path': ''}
     if anchor_pid == pid:
         return none
     blood = blood_answer(graph, pid, anchor_pid)
     if not blood:
-        return none
+        bm = _marriage_answer(graph, pid, anchor_pid, life=life)
+        if not bm:
+            return none
+        kind = {'spouse': 'marriage', 'in-law': 'marriage', 'by-marriage': 'marriage',
+                'step': 'step'}.get(bm['kind'], 'social')
+        return {'words': bm['relationship'],
+                'note': None if bm['certain'] else 'marriage dates not recorded',
+                'kind': kind, 'path': bm['path']}
     path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
     # An open half tie keeps the plain word ("brother"); the caveat is the
     # note, which a page may print or leave out.
@@ -18899,6 +20312,38 @@ CENSUS_YEARS: dict[str, dict[str, tuple[int, ...]]] = {
         'required': (1901, 1911),
         'extra': (1821, 1831, 1841, 1851, 1926),
     },
+}
+
+# The night each census counted people, so a record dated in a census year
+# can be put before or after it: a Toronto letter of December 1900 says
+# nothing about where he was for the US census of 1 June 1900. Dates are the
+# official census days published by each country's census office or national
+# archives. A year left out (Ireland's 1831, taken over several years) has
+# no night to compare with, so no record dated in that year moves anyone.
+CENSUS_NIGHTS: dict[str, dict[int, str]] = {
+    'United States': {
+        1790: '1790-08-02', 1800: '1800-08-04', 1810: '1810-08-06', 1820: '1820-08-07',
+        1830: '1830-06-01', 1840: '1840-06-01', 1850: '1850-06-01', 1860: '1860-06-01',
+        1870: '1870-06-01', 1880: '1880-06-01', 1890: '1890-06-02', 1900: '1900-06-01',
+        1910: '1910-04-15', 1920: '1920-01-01', 1930: '1930-04-01', 1940: '1940-04-01',
+        1950: '1950-04-01'},
+    # The 1851 census of the Canadas was taken in January 1852.
+    'Canada': {
+        1851: '1852-01-12', 1861: '1861-01-14', 1871: '1871-04-02', 1881: '1881-04-04',
+        1891: '1891-04-06', 1901: '1901-03-31', 1906: '1906-06-24', 1911: '1911-06-01',
+        1916: '1916-06-01', 1921: '1921-06-01', 1926: '1926-06-01', 1931: '1931-06-01'},
+    # 1921 was put back from April to 19 June by the coal strike.
+    'England and Wales': {
+        1841: '1841-06-06', 1851: '1851-03-30', 1861: '1861-04-07', 1871: '1871-04-02',
+        1881: '1881-04-03', 1891: '1891-04-05', 1901: '1901-03-31', 1911: '1911-04-02',
+        1921: '1921-06-19'},
+    'Scotland': {
+        1841: '1841-06-06', 1851: '1851-03-30', 1861: '1861-04-07', 1871: '1871-04-02',
+        1881: '1881-04-03', 1891: '1891-04-05', 1901: '1901-03-31', 1911: '1911-04-02',
+        1921: '1921-06-19'},
+    'Ireland': {
+        1821: '1821-05-28', 1841: '1841-06-06', 1851: '1851-03-30', 1901: '1901-03-31',
+        1911: '1911-04-02', 1926: '1926-04-18'},
 }
 
 # The last part of a place's `hierarchy:` (largest last, SPEC §15), as people
@@ -19062,6 +20507,8 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
             'place_id': normalize_id(str(r['place_id'])) if r['place_id'] else None,
             'date': (r['date_edtf'] or '').strip(),
             'y_lo': lo, 'y_hi': hi,
+            # Day-precision bounds (ISO), read only where y_lo/y_hi are set.
+            'd_lo': str(r['date_min'] or '')[:10], 'd_hi': str(r['date_max'] or '')[:10],
         }
     raw_people: dict[str, list[tuple[str, Any]]] = {}
     for r in conn.execute(
@@ -19299,6 +20746,17 @@ def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[s
     return out
 
 
+def _claim_dates(c: dict) -> tuple[str, str]:
+    """A dated claim's (earliest, latest) day as ISO dates, from the index's
+    EDTF bounds, falling back to its whole years."""
+    lo, hi = c.get('d_lo') or '', c.get('d_hi') or ''
+    if len(lo) != 10 or not lo.startswith(f"{c['y_lo']:04d}"):
+        lo = f"{c['y_lo']:04d}-01-01"
+    if len(hi) != 10 or not hi.startswith(f"{c['y_hi']:04d}"):
+        hi = f"{c['y_hi']:04d}-12-31"
+    return lo, hi
+
+
 def _first_year(claims: list[tuple[str, dict]]) -> int | None:
     years = [c['y_lo'] for _cid, c in claims if c['y_lo'] is not None]
     return min(years) if years else None
@@ -19387,6 +20845,40 @@ def _birth_by_years(ctx: dict, pid: str,
             if c['y_hi'] is not None], False
 
 
+def _census_night_countries(dated: list[tuple[str, str, str]],
+                            night: tuple[str, str]) -> set[str]:
+    """Which census country a person counts for on a census night, so an
+    Irishman last seen in Kansas is looked for in the US census, not
+    Ireland's.
+
+    `dated` holds (earliest date, latest date, census table key), ISO dates,
+    for each of the person's own records that sits at a place with a census
+    table and is dated to within a couple of years. `night` is the census
+    night as (earliest, latest) ISO dates: one day when the night is known
+    (CENSUS_NIGHTS), the whole year when it is not. The answer is the
+    country of their latest record dated on or before the night; with none
+    before it, their earliest one after. A record that may fall either side
+    of the night counts as there that night too: "about 1900" for 1900, and
+    a record dated only "1901" for the Irish census of 31 March 1901, since
+    a year cannot say which side of the night it was. Every record that
+    could be the latest counts (one that may end after another begins:
+    "about 1900" in the US and "December 1900" in Canada), so a doubtful
+    night keeps every country it might be. An empty set means no dated
+    record says, and nothing is dropped."""
+    n_lo, n_hi = night
+    here = {key for lo, hi, key in dated if lo <= n_hi and hi > n_lo}
+    before = [(lo, hi, key) for lo, hi, key in dated if hi <= n_lo]
+    if before:
+        surely_by = max(lo for lo, _hi, _key in before)
+        here |= {key for _lo, hi, key in before if hi >= surely_by}
+    elif not here:
+        after = [(lo, hi, key) for lo, hi, key in dated if lo > n_hi]
+        if after:
+            surely_by = min(hi for _lo, hi, _key in after)
+            here = {key for lo, _hi, key in after if lo <= surely_by}
+    return here
+
+
 # Birth claims this close together are readings of one birth (a census age
 # off by a few years), so the latest of them is the latest possible birth.
 # Further apart, they may be two people merged into one record, and the
@@ -19399,8 +20891,16 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
 
     The rule: years are asked in each country the person's own records place
     them, from birth if they were born there (otherwise from their first
-    dated record there), to death. No move is inferred, so a real stay
-    abroad shows as a gap rather than hiding one. A country comes from the
+    dated record there), to death. On each census night they count for one
+    country: where their latest record dated (to within a couple of years)
+    on or before that night put them (`_census_night_countries`, with the
+    nights in CENSUS_NIGHTS; a record that may fall after the night, such as
+    one dated only to the census year, does not move them). Once such a record shows
+    them in another country, the one they left is not asked again until a
+    dated record shows them back. An undated or loosely dated record ("1890
+    to 1900") moves nobody, and a country with no such record is asked as
+    before, so a stay abroad nothing dates still shows as a gap rather than
+    hiding one. A country comes from the
     place registry (the last part of a registered place's hierarchy), never
     from free text, and a census year on file that fits a country's table
     widens that country's start. Only records of the person's own life place
@@ -19439,6 +20939,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # census claim names no registered place, which may count for any
     # country): an 1881 census in England does not fill a Canadian 1881.
     found_by: dict[str | None, set[int]] = {}
+    # (earliest date, latest date, country) of each record that says when
+    # they were where, to tell which country they were in on each census night.
+    dated_places: list[tuple[str, str, str]] = []
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
@@ -19448,6 +20951,11 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
                 census_key = census_country_key(census_raw)
                 found_by.setdefault(census_key or census_raw, set()).update(
                     range(c['y_lo'], c['y_hi'] + 1))
+                # A census whose country comes from its source's `places:`
+                # puts them there that year as surely as one placed itself
+                # (one placed itself is also added below; twice is harmless).
+                if census_key:
+                    dated_places.append((*_claim_dates(c), census_key))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
         if raw and not key:
@@ -19459,9 +20967,32 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             born_in.add(key)
         if c['y_lo'] is not None:
             first_in[key] = min(first_in.get(key, c['y_lo']), c['y_lo'])
+        if c['y_lo'] is not None and c['y_hi'] is not None and c['y_hi'] - c['y_lo'] <= 2:
+            dated_places.append((*_claim_dates(c), key))
+
+    countries = sorted(set(first_in) | born_in)
+    # A country is asked a year unless their dated records put them in some
+    # other country that night. A country no dated record names is never
+    # dropped: nothing says when they were there. Only a country whose years
+    # are asked can take them away from another (a census known only from
+    # its source's places, in a country nothing else of theirs names, is no
+    # move), and a census on file that names no registered place may be any
+    # country's, so its year is never dropped.
+    dated_places = [d for d in dated_places if d[2] in countries]
+    dated_countries = {key for _lo, _hi, key in dated_places}
+
+    def counted_in(key: str, year: int) -> bool:
+        # A census on file in this country for this year is the record of
+        # that night itself, whatever day the enumerator wrote on it.
+        if (key not in dated_countries or year in found_by.get(None, ())
+                or year in found_by.get(key, ())):
+            return True
+        night = CENSUS_NIGHTS.get(key, {}).get(year)
+        there = _census_night_countries(
+            dated_places, (night, night) if night else (f'{year:04d}-01-01', f'{year:04d}-12-31'))
+        return not there or key in there
 
     empty = {'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
-    countries = sorted(set(first_in) | born_in)
     if not countries:
         if placed_undated:
             # Placed, but no record there is dated: the place is not the gap.
@@ -19545,18 +21076,20 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if start is None:
             continue
         table = CENSUS_YEARS[key]
-        asked = [y for y in table['required'] if start <= y <= surely_alive_to]
+        asked = [y for y in table['required']
+                 if start <= y <= surely_alive_to and counted_in(key, y)]
         asked_by[key] = asked
         # Extras: the table's own, plus required years inside the death window.
         extra_here = [y for y in list(table['extra']) + list(table['required'])
-                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
+                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)
+                      and counted_in(key, y)]
         extras_all += [y for y in extra_here if y in here]
         found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
             # Extras count too: an Irish record after 1911 with no death leaves
             # the 1926 census to check, though it is never reported missing.
             later += [y for y in list(table['required']) + list(table['extra'])
-                      if max(start, end) < y <= alive_cap]
+                      if max(start, end) < y <= alive_cap and counted_in(key, y)]
     expected = sorted({y for asked in asked_by.values() for y in asked})
     found = [y for y in expected if y in found_all]
     missing = [y for y in expected if y not in found_all]
@@ -20081,6 +21614,404 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
                             'sources_with_text': len(with_text)},
         'thinnest_direct_line': thinnest,
     }
+
+
+# ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────
+#
+# "Ada Hartley's death (1850) is recorded before her birth (1871)": after a
+# GEDCOM import attaches the wrong record, or two people of one name are
+# merged, the archive can say things about one person that cannot all be
+# true, and nothing used to point at it. These are the rules, as plain
+# functions over plain data, so `fha lint` and the GEDCOM import plan (and a
+# duplicate finder asking whether two records could be one person) all ask
+# the question the same way. Lint attaches each problem to a file; another
+# caller prints it where it fits.
+#
+# A warning against a correct record teaches the owner to stop reading lint,
+# so a rule fires only when the conflict holds for EVERY date the claims
+# allow: "before" means the first fact's latest possible day is earlier than
+# the second's earliest possible day. Year-only dates span their year, `~`
+# and `?` widen a year each way (`edtf_bounds`), and an open side (the start
+# of "before 1920", an unreadable date) is unknown and never makes a rule
+# fire. Every claim of one type for one person is merged into one range, so
+# two disagreeing birth years widen the range rather than firing here; that
+# disagreement is `fha xref`'s to report.
+#
+#   PLAUSIBLE_MAX_LIFESPAN_YEARS - W164: nobody is taken to live longer
+#   W165_LIFE_TYPES        - the claim types that record something a living
+#                             person did, read by W165
+#   DatedClaim             - one claim reduced to its id, type and day range
+#   FactRange              - every claim of one fact for one person, merged
+#   PlausibilityInput      - who was born, baptized, died, buried when, and
+#                             the records of their life, per person
+#   PlausibilityProblem    - one conflict: its code, kind, people and claims
+#   claim_date_range       - a claim's date -> (first day, last day), open
+#                             sides None; None when undated or unreadable
+#   iso_plus_years         - the same day N years later (29 Feb safe)
+#   merge_fact_range       - several readings of one fact -> one range
+#   plausibility_input_from_claims - raw claim dicts -> PlausibilityInput
+#   one_person_problems    - W163 (out of order), W164 (over 120 years),
+#                             W165 (a record of life after death)
+#   plausibility_message   - the plain sentence for one problem
+
+PLAUSIBLE_MAX_LIFESPAN_YEARS = 120      # W164
+
+# The claim types that record something the person did while alive, so a
+# date after their death means the record is about someone else (W165).
+# Left out on purpose: `military` (a widow's pension application is often
+# written as a military claim dated after his death), and `event`, `note`,
+# `name` and `relationship`, whose dates often belong to the record (a
+# probate, a later index) rather than to an act of the living person. The
+# vital types have rules of their own.
+W165_LIFE_TYPES = frozenset({'residence', 'census', 'occupation', 'education', 'immigration'})
+
+# The roles that make a person the subject of a life-event claim (SPEC §8.3):
+# being named on a claim is not being located by it. A child named on his
+# father's residence is not the one who lived there.
+_LIFE_SUBJECT_ROLES = frozenset({'subject', 'head', 'household_member'})
+
+# The plain word a W165 message uses for each life-event type.
+_LIFE_TYPE_WORDS = {'education': 'school'}
+
+_PLAUSIBILITY_VITAL_TYPES = ('birth', 'baptism', 'death', 'burial')
+
+_EDTF_FLOOR, _EDTF_CEILING = '0001-01-01', '9999-12-31'
+
+
+@dataclasses.dataclass(frozen=True)
+class DatedClaim:
+    """One claim reduced to what the date rules read."""
+    claim_id: str          # normalized c-id
+    ctype: str             # lower-case claim type
+    lo: str | None         # ISO day; None when the start is open or unknown
+    hi: str | None         # ISO day; None when the end is open or unknown
+    date: str              # the claim's date as written, for messages
+    subtype: str           # lower-case, '' when unset
+
+
+@dataclasses.dataclass
+class FactRange:
+    """Every claim of one fact (one person's birth, say) merged into one range."""
+    lo: str | None
+    hi: str | None
+    claims: list[DatedClaim]
+
+
+@dataclasses.dataclass
+class PlausibilityInput:
+    """What the rules know, per person (ids as the caller resolved them)."""
+    sex: dict[str, str] = dataclasses.field(default_factory=dict)
+    # pid -> 'birth' | 'baptism' | 'death' | 'burial' -> the merged range
+    facts: dict[str, dict[str, FactRange]] = dataclasses.field(default_factory=dict)
+    # pid -> the W165_LIFE_TYPES claims they are the subject of
+    life_events: dict[str, list[DatedClaim]] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class PlausibilityProblem:
+    """One set of dates that cannot all be true."""
+    code: str                                  # 'W163' ...; the caller emits it
+    kind: str                                  # e.g. 'death-before-birth'
+    pids: tuple[str, ...]                      # the person it is about first
+    claims: tuple[tuple[DatedClaim, ...], ...]  # one tuple per side, sentence order
+    numbers: dict                              # e.g. {'years': 130}
+
+
+def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
+    """A claim's `date:` as (first possible day, last possible day).
+
+    An open side ("before 1920" has no start, "1920 or later" no end) is
+    None, so no rule can read it as a known day. None for an undated claim
+    or one whose date cannot be read, including an impossible day like
+    `1900-02-31` or an interval that runs backwards like `1890/1850` (E014
+    already reports both).
+
+    "About 20 May 1850" must not read as exactly 20 May, or an infant who
+    died on 19 May would be told the two dates cannot both be true. So a date
+    carrying `~`, `?` or `%` anywhere (on the day, the month or the whole
+    date, written so or reached from a loose form like "about ...") widens
+    to at least a year each way, the widening `1850~` already gets.
+    `edtf_bounds` keeps the narrow day for sorting; only this certainty
+    reading widens it."""
+    text = optional_scalar(claim.get('date')) if isinstance(claim, dict) else None
+    if not text:
+        return None
+    try:
+        lo, hi = edtf_bounds(text)
+    except ValueError:
+        return None
+    lo_known = None if lo == _EDTF_FLOOR else lo
+    hi_known = None if hi == _EDTF_CEILING else hi
+    if lo_known is None and hi_known is None:
+        return None
+    if lo_known is not None and hi_known is not None and lo_known > hi_known:
+        return None
+    written = normalize_date(text) or text
+    # Each end widens by its own half's mark only: "about 1880 to 1885"
+    # (`1880~/1885`) still ends exactly in 1885.
+    start_half, _, end_half = written.partition('/')
+    end_half = end_half or start_half
+
+    def _plain(half: str) -> tuple[str, str]:
+        # The half with its marks taken off, so `1880?` (already 1879 to
+        # 1881) is not widened twice.
+        try:
+            return edtf_bounds(re.sub(r'[~?%]', '', half))
+        except ValueError:
+            return (_EDTF_FLOOR, _EDTF_CEILING)
+
+    if lo_known is not None and any(m in start_half for m in '~?%'):
+        plain_lo = _plain(start_half)[0]
+        if plain_lo != _EDTF_FLOOR:
+            lo_known = min(lo_known, f'{max(int(plain_lo[:4]) - 1, 1):04d}-01-01')
+    if hi_known is not None and any(m in end_half for m in '~?%'):
+        plain_hi = _plain(end_half)[1]
+        if plain_hi != _EDTF_CEILING:
+            hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
+    return (lo_known, hi_known)
+
+
+def iso_plus_years(iso: str, years: int) -> str:
+    """The same month and day `years` later, as an ISO day.
+
+    29 February becomes 28 February in a year that has none, and the result
+    never passes the archive's ceiling `9999-12-31`, so ISO strings can be
+    compared directly afterwards."""
+    year, month, day = int(iso[:4]), int(iso[5:7]), int(iso[8:10])
+    year += years
+    if year > 9999:
+        return _EDTF_CEILING
+    if month == 2 and day == 29 and not calendar.isleap(year):
+        day = 28
+    return f'{year:04d}-{month:02d}-{day:02d}'
+
+
+def merge_fact_range(claims: list[DatedClaim]) -> FactRange:
+    """Several claims of one fact -> one range: the earliest start and the
+    latest end. A start any one claim leaves open opens the merged start
+    (and the same for the end), so a merged range is never narrower than
+    what one of its claims allows."""
+    los = [c.lo for c in claims]
+    his = [c.hi for c in claims]
+    lo = None if (not los or any(v is None for v in los)) else min(los)
+    hi = None if (not his or any(v is None for v in his)) else max(his)
+    return FactRange(lo=lo, hi=hi, claims=list(claims))
+
+
+def plausibility_input_from_claims(
+    claims: Iterable[dict], persons: dict[str, dict], alias_map: dict | None,
+    survivors: dict[str, str] | None = None, *,
+    statuses: tuple[str, ...] = ('accepted',),
+) -> PlausibilityInput:
+    """Read raw claim dicts into what the date rules need.
+
+    `claims` are claim dicts as a source's claims block holds them; `persons`
+    is {pid: frontmatter dict}. Only claims whose `status` is in `statuses`
+    count (lint passes the default: a suggested claim is not yet a fact),
+    a `negated: true` claim says the event did not happen, and an undated
+    or id-less claim has nothing to compare.
+
+    Whose birth, baptism, death or burial a claim is comes from
+    `vital_subjects`, so a mother's birth is never read off her son's birth
+    record. A life-event claim (`W165_LIFE_TYPES`) belongs to its subject:
+    its only person, or the people under `subject`, `head` or
+    `household_member` (SPEC §8.3).
+
+    Every person id passes through `survivors` ({merged id: survivor}), so a
+    merged record's claims count for the person it was merged into. The same
+    map lets a caller ask whether two records could be one person: pass
+    `{b: a}` and the rules read b's claims as a's."""
+    # Ids come back from `resolve_claim_persons_with_roles` lower-cased
+    # (SPEC §10), so every map keyed by person is read the same way.
+    survivors = {normalize_id(str(k)): normalize_id(str(v))
+                 for k, v in (survivors or {}).items()}
+    wanted = {s.strip() for s in statuses}
+    raw_facts: dict[str, dict[str, list[DatedClaim]]] = {}
+    data = PlausibilityInput()
+    for pid, meta in (persons or {}).items():
+        sex = str((meta or {}).get('sex') or '').strip() if isinstance(meta, dict) else ''
+        data.sex[normalize_id(str(pid))] = sex if sex in ('M', 'F') else ''
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get('status', '')).strip() not in wanted:
+            continue
+        if str(claim.get('negated')).strip().lower() == 'true':
+            continue
+        ctype = str(claim.get('type', '')).strip().lower()
+        if ctype not in _PLAUSIBILITY_VITAL_TYPES and ctype not in W165_LIFE_TYPES:
+            continue
+        cid = normalize_id(str(claim.get('id') or ''))
+        span = claim_date_range(claim)
+        if not cid or span is None:
+            continue
+        dated = DatedClaim(
+            claim_id=cid, ctype=ctype, lo=span[0], hi=span[1],
+            date=optional_scalar(claim.get('date')) or '',
+            subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
+        pairs = resolve_claim_persons_with_roles(claim, alias_map)
+        named = list(dict.fromkeys(p for p, _role in pairs))
+        if ctype in _PLAUSIBILITY_VITAL_TYPES:
+            subjects = vital_subjects(ctype, pairs)
+            if subjects is None:
+                subjects = named if len(named) == 1 else []
+        elif len(named) == 1:
+            subjects = named
+        else:
+            subjects = [p for p, role in pairs
+                        if clean_role_word(role).lower() in _LIFE_SUBJECT_ROLES]
+        for pid in dict.fromkeys(survivors.get(p, p) for p in subjects):
+            if ctype in _PLAUSIBILITY_VITAL_TYPES:
+                raw_facts.setdefault(pid, {}).setdefault(ctype, []).append(dated)
+            else:
+                data.life_events.setdefault(pid, []).append(dated)
+    for pid, by_type in raw_facts.items():
+        data.facts[pid] = {t: merge_fact_range(cs) for t, cs in by_type.items()}
+    return data
+
+
+def _plausibility_bounds(facts: dict[str, FactRange]) -> dict:
+    """born_lo/born_hi/died_lo/died_hi for one person, with the claims behind
+    each. A baptism says when someone was born by, never how early; a burial
+    says when they had died by. Missing or open is None."""
+    birth, bapt = facts.get('birth'), facts.get('baptism')
+    death, burial = facts.get('death'), facts.get('burial')
+    born_hi_from = birth if birth else bapt
+    died_hi_from = death if death else burial
+    return {
+        'born_lo': (birth.lo, birth) if birth else (None, None),
+        'born_hi': (born_hi_from.hi, born_hi_from) if born_hi_from else (None, None),
+        'died_lo': (death.lo, death) if death else (None, None),
+        'died_hi': (died_hi_from.hi, died_hi_from) if died_hi_from else (None, None),
+    }
+
+
+def _certainly_before(first: FactRange | None, second: FactRange | None) -> bool:
+    """Every day `first` allows is earlier than every day `second` allows."""
+    return bool(first and second and first.hi is not None
+                and second.lo is not None and first.hi < second.lo)
+
+
+def _whole_years_between(earlier: str, later: str) -> int:
+    """Full years from one ISO day to a later one (an age on that day)."""
+    years = int(later[:4]) - int(earlier[:4])
+    if later[5:] < earlier[5:]:
+        years -= 1
+    return years
+
+
+def one_person_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """The rules about one person's own dates, each firing only when it holds
+    for every date the claims allow:
+
+    - W163: a death before the birth, a burial before the death, a baptism
+      before the birth, or (no death recorded) a burial before the birth;
+    - W164: a shortest possible lifespan over PLAUSIBLE_MAX_LIFESPAN_YEARS;
+    - W165: a residence, census, occupation, school or immigration record
+      that began after the person had certainly died (a census whose subtype
+      says `mortality` lists the year's dead and is skipped).
+
+    People in sorted id order, so the result is the same every run."""
+    problems: list[PlausibilityProblem] = []
+    for pid in sorted(set(data.facts) | set(data.life_events)):
+        facts = data.facts.get(pid, {})
+        b, bp = facts.get('birth'), facts.get('baptism')
+        d, u = facts.get('death'), facts.get('burial')
+
+        for kind, first, second, applies in (
+            ('death-before-birth', d, b, True),
+            ('burial-before-death', u, d, True),
+            ('baptism-before-birth', bp, b, True),
+            ('burial-before-birth', u, b, d is None),
+        ):
+            if applies and _certainly_before(first, second):
+                problems.append(PlausibilityProblem(
+                    'W163', kind, (pid,),
+                    (tuple(first.claims), tuple(second.claims)), {}))
+
+        bounds = _plausibility_bounds(facts)
+        born_hi, born_from = bounds['born_hi']
+        died_lo, died_from = bounds['died_lo']
+        if (born_hi is not None and died_lo is not None
+                and died_lo > iso_plus_years(born_hi, PLAUSIBLE_MAX_LIFESPAN_YEARS)):
+            problems.append(PlausibilityProblem(
+                'W164', 'long-life', (pid,),
+                (tuple(born_from.claims), tuple(died_from.claims)),
+                {'years': _whole_years_between(born_hi, died_lo)}))
+
+        died_hi, died_hi_from = bounds['died_hi']
+        if died_hi is not None:
+            for event in data.life_events.get(pid, []):
+                # `in`, not a word match: `mortality_schedule` holds no
+                # word boundary before the underscore, and an 1850 mortality
+                # schedule for someone who died in 1849 is not a ghost record.
+                if event.ctype == 'census' and 'mortality' in event.subtype.lower():
+                    continue
+                if event.lo is not None and event.lo > died_hi:
+                    problems.append(PlausibilityProblem(
+                        'W165', 'life-after-death', (pid,),
+                        (tuple(died_hi_from.claims), (event,)), {}))
+    return problems
+
+
+def _plausibility_side(claims: tuple[DatedClaim, ...], ref) -> str:
+    """'1850 (c-… (file))', two readings joined by 'or', then 'and N more'."""
+    shown = [f'{humanize_edtf(c.date)} ({ref(c.claim_id)})' for c in claims[:2]]
+    text = ' or '.join(shown)
+    if len(claims) > 2:
+        text += f', and {len(claims) - 2} more'
+    return text
+
+
+def _plausibility_verb(claims: tuple[DatedClaim, ...], birth_word: str, bapt_word: str) -> str:
+    """The word for a side read from births or (when none) baptisms."""
+    return bapt_word if claims and claims[0].ctype == 'baptism' else birth_word
+
+
+def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
+    """The plain sentence for one problem.
+
+    `who(pid)` names a person and `ref(claim_id)` names a claim and where it
+    sits (lint: `c-… (sources/…/file.md)`), so every caller can point at its
+    own files. The sentence names every claim involved and never calls one
+    side wrong: the owner opens both and decides."""
+    name = who(problem.pids[0])
+    kind = problem.kind
+    side = [_plausibility_side(c, ref) for c in problem.claims]
+    if kind == 'death-before-birth':
+        return (f'{name} is recorded as dying {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Often one of the two records is '
+                'about someone else with the same name, or a date was misread. Open both '
+                'records and compare them; the claim that does not fit can be disputed '
+                'with `fha claim <c-id> --status disputed`.')
+    if kind == 'burial-before-death':
+        return (f'{name} is recorded as buried {side[0]}, before the death recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records and compare the '
+                'dates; a burial is usually within days of the death.')
+    if kind == 'baptism-before-birth':
+        return (f'{name} is recorded as baptized {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records; one may be a '
+                "sibling's baptism, or a date was misread.")
+    if kind == 'burial-before-birth':
+        return (f'{name} is recorded as buried {side[0]}, before the birth recorded for '
+                f'them, {side[1]}. Both cannot be true. Open both records and compare them.')
+    if kind == 'long-life':
+        born = _plausibility_verb(problem.claims[0], 'born', 'baptized')
+        return (f'{name} would have lived at least {problem.numbers["years"]} years: '
+                f'{born} {side[0]} and died {side[1]}. Hardly anyone lives past '
+                f'{PLAUSIBLE_MAX_LIFESPAN_YEARS}, so one of these records is probably about '
+                'a different person of the same name (a grandparent or grandchild, often), '
+                'or a date was misread. Open both and compare.')
+    if kind == 'life-after-death':
+        died = 'was buried' if problem.claims[0][0].ctype == 'burial' else 'died'
+        event = problem.claims[1][0]
+        word = _LIFE_TYPE_WORDS.get(event.ctype, event.ctype)
+        return (f'{name} {died} {side[0]}, but a {word} record dates {side[1]}. A record '
+                'of something they did after their death cannot be about them, unless the '
+                "record's date is when it was written down rather than when it happened. "
+                'Open both records; if the later one is about someone else, fix its people, '
+                "and if its date is a recording date, put the event's own date in the claim.")
+    raise ValueError(f'unknown plausibility problem kind {kind!r}')
 
 
 # ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────
@@ -21558,22 +23489,87 @@ def shell_quote(word: str) -> str:
     subexpression), `&`, `,`, `;`, `{ }` and `@`. A photo named
     `O'Brien-Farm.tif` produced a command that would not even parse (#210
     audit). Any such word is double-quoted too, which cmd.exe also accepts.
-    `$` and a backtick are still expanded inside PowerShell double quotes;
-    there is no spelling that both shells take, and they are rare in names.
+
+    Some values have no spelling that both shells take (#400): a `"`, which
+    PowerShell 5.1 hands to `fha.cmd` without escaping (`fha confirm place
+    --name="Springfield, \\"Old Town\\", Ohio"` failed with "unrecognized
+    arguments"); a `$` or a backtick, which PowerShell expands inside double
+    quotes; a curly double quote, which closes a PowerShell string; and
+    `& | < > ^` with no space in the value, where PowerShell drops the
+    double quotes and cmd.exe then runs the rest as a second command. The
+    printed commands are PowerShell spellings, so PowerShell wins:
+    `_powershell_quote` writes these in the one form that reached fha intact
+    in the #400 paste tests. Command Prompt reads that form's single quotes
+    as part of the value, so it is kept to these values, and every command
+    that carries a quoted value starts with `fha_launcher()` (`.\\fha`, a
+    PowerShell line), never a bare `fha`, which only Command Prompt runs. A `%NAME%` that
+    names a set variable is still expanded by `fha.cmd` either way.
     """
     if os.name == 'nt':
-        quoted = subprocess.list2cmdline([word])
-        if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
-            # No whitespace and no `"` (else list2cmdline had quoted it), so
-            # the only escape needed inside the quotes is a trailing
-            # backslash, which would otherwise escape the closing quote.
-            stripped = word.rstrip('\\')
-            quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
-        return quoted
+        if needs_powershell_quote(word):
+            return _powershell_quote(word)
+        return _windows_double_quote(word)
     return shlex.quote(word)
 
 
-_PS_SPECIAL = frozenset("'()&,;{}@|<>^")
+def needs_powershell_quote(word: str) -> bool:
+    """True when `shell_quote` gives this value the PowerShell-only spelling on
+    Windows, the one Command Prompt would save with stray apostrophes (#400)."""
+    return any(ch in _PS_ONLY for ch in word) or (
+        any(ch in _CMD_SPECIAL for ch in word) and not any(ch.isspace() for ch in word))
+
+
+def _windows_double_quote(word: str) -> str:
+    """The double-quote spelling of one value, which Command Prompt takes, and
+    PowerShell too unless `needs_powershell_quote` says otherwise."""
+    quoted = subprocess.list2cmdline([word])
+    if not quoted.startswith('"') and any(ch in _PS_SPECIAL for ch in word):
+        # No whitespace and no `"` (else list2cmdline had quoted it), so
+        # the only escape needed inside the quotes is a trailing
+        # backslash, which would otherwise escape the closing quote.
+        stripped = word.rstrip('\\')
+        quoted = '"' + stripped + '\\' * (2 * (len(word) - len(stripped))) + '"'
+    return quoted
+
+
+# A name typed with a curly apostrophe (O'Brien as Word writes it) pastes
+# into PowerShell: the curly apostrophes close a PowerShell single-quoted
+# string just as `'` does, so unquoted it would not even parse. `#` starts
+# a PowerShell comment.
+_PS_SPECIAL = frozenset("'()&,;{}@|<>^#\u2018\u2019\u201a\u201b")
+_PS_SINGLE_QUOTES = frozenset("'\u2018\u2019\u201a\u201b")
+_PS_ONLY = frozenset('"$`\u201c\u201d\u201e')
+_CMD_SPECIAL = frozenset('&|<>^')
+
+
+def _powershell_quote(word: str) -> str:
+    """A place name with a `"` in it, pasted into Windows PowerShell, reaches
+    fha exactly as written (#400).
+
+    PowerShell gets a single-quoted string, in which nothing is special but
+    the apostrophes, doubled. Its value is the word wrapped in double quotes
+    with each inner `"` doubled, the form Python's own argument reader takes
+    inside quotes, so PowerShell 5.1 passes it on untouched and cmd.exe sees
+    every symbol inside quotes. Backslashes before a `"` and at the end are
+    doubled, as `subprocess.list2cmdline` does, so none escapes a quote.
+    """
+    inner = re.sub(r'(\\*)"', lambda m: m.group(1) * 2 + '""', word)
+    inner = re.sub(r'(\\+)\Z', lambda m: m.group(1) * 2, inner)
+    inner = '"' + inner + '"'
+    return "'" + ''.join(ch * 2 if ch in _PS_SINGLE_QUOTES else ch for ch in inner) + "'"
+
+
+def fha_launcher() -> str:
+    """The way to start fha that runs when he pastes a printed command (#400).
+
+    `fha` is a file at the archive root, never a program on PATH, so a bare
+    `fha` runs only in Command Prompt. PowerShell needs `.\\fha` (Command
+    Prompt takes it too), and a Mac or Linux shell needs `./fha`. Any command
+    that carries a `shell_quote` value starts with this: on Windows that value
+    can be a PowerShell-only spelling, and a bare `fha` line would invite a
+    Command Prompt paste that saves it with stray apostrophes.
+    """
+    return '.\\fha' if os.name == 'nt' else './fha'
 
 
 def pip_command(target: str) -> str:
@@ -21601,11 +23597,16 @@ def pip_command(target: str) -> str:
     # archive path, and "Family Archive" is an ordinary folder name - quoting the
     # interpreter while leaving the requirements file bare just moves the split
     # one argument to the right.
-    exe = shell_quote(sys.executable)
+    # On Windows this line starts with a quoted interpreter path, which only
+    # Command Prompt runs, so it keeps the double-quote spelling: the
+    # PowerShell-only one would reach pip with apostrophes round an archive
+    # path like `D:\Smith&Jones\` (#400).
+    quote = _windows_double_quote if os.name == 'nt' else shell_quote
+    exe = quote(sys.executable)
     if target.startswith('-r '):
-        arg = f'-r {shell_quote(target[3:])}'
+        arg = f'-r {quote(target[3:])}'
     else:
-        arg = shell_quote(target)
+        arg = quote(target)
     return f'{exe} -m pip install {arg}'
 
 

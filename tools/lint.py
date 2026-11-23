@@ -70,6 +70,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     SOURCE_FRONTMATTER_KEY_ORDER,
+    one_person_problems,              # W163-W165: dates that cannot all be true
+    plausibility_input_from_claims,
+    plausibility_message,
     sqlite_readonly_uri,
     record_collection_group,
     record_collection_index,
@@ -245,6 +248,8 @@ from _lib import (
     roots_change_orphans,
     sex_slot_is_defaulted,
     shell_quote,
+    fha_launcher,
+    needs_powershell_quote,
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
@@ -363,6 +368,11 @@ configure_utf8_stdout()
 #                                   root file by path that no source owns (#249)
 #    _check_died_but_living      - W136: an accepted death/burial for a person still
 #                                   treated as living (living: unknown or true)
+#    _check_dates_that_cannot_be_true - W163-W165: one person's own dates that
+#                                   cannot all be true (_lib's plausibility engine)
+#    _plausibility_input         - the registry's accepted claims as that engine's
+#                                   input, built once per run and kept on the registry
+#    _claim_ref                  - `c-… (sources/…/file.md)` for a finding's message
 #    _check_roots_change         - W121: a roots: change orphaned filed assets
 #                                   (runs first; the E011 fallout follows it)
 #    _check_unreadable_dirs      - W123: a record folder this lint could not open
@@ -1835,18 +1845,20 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
     human's: `fha claim --value` (or quotes typed by hand) keeps the whole
     line; a real comment can simply be deleted. Nothing here edits a claim.
 
-    The command is offered only for text a pasted command carries intact:
-    PowerShell 5.1 expands `$5` and splits on an escaped `"`, and a backtick
-    is its escape character, so for those the hand-quoted line is the one
-    fix given (a command that saved different words would be worse than
+    The command is offered only for text a pasted command carries intact in
+    every Windows shell: for a `$`, a backtick, a straight or curly `"`
+    (`_lib.needs_powershell_quote`), PowerShell and Command Prompt need
+    different spellings (`_lib.shell_quote` prints
+    PowerShell's, #400), so for those the hand-quoted line is the one fix
+    given (a command that saved different words would be worse than
     none)."""
     for hit in claim_fields_cut_by_hash(body):
         cid, key, whole = hit['claim_id'], hit['key'], hit['whole']
         who = f'Claim {fmt_id_display(cid)}' if cid else 'A claim'
         hand = f'`{key}: {yaml_inline(whole)}`'
         flag = _CLAIM_FIELD_FLAGS.get(key)
-        if cid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha claim {fmt_id_display(cid)} {flag} '
+        if cid and flag and not needs_powershell_quote(whole):
+            fix = (f'run `{fha_launcher()} claim {fmt_id_display(cid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in the record file: {hand}'
@@ -1880,7 +1892,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
     with no warning. The frontmatter twin of W156, found the same way
     (`_lib.text_fields_cut_by_hash` on the raw block) with the same fix
     rules: a command only when one rewrites just that field and the text
-    survives being pasted (no `$`, backtick or `"`), else the hand-quoted
+    survives being pasted (`_lib.needs_powershell_quote` false), else the hand-quoted
     line. A `#` two spaces or more past the text, with a space after it, is
     a comment written on purpose, as the templates do, and is left alone.
     `record` is `person`, `source`, `place` or `notes` (an inbox notes
@@ -1904,8 +1916,8 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
                 else f'`{key}: {yaml_inline(whole)}{hit["aside"]}`')
         where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
-        if rid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
+        if rid and flag and not needs_powershell_quote(whole):
+            fix = (f'run `{fha_launcher()} person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
@@ -4636,6 +4648,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     registry.lap('accepted claims (evidence and analysis)')
 
+    # W163-W165: one person's own dates that cannot all be true
+    _check_dates_that_cannot_be_true(registry, findings)
+    registry.lap('dates that cannot all be true')
+
     # W107 (claims): a claim still naming a merged person. Once an error
     # (E016, retired): SPEC §9 has the tools count such a claim for the
     # survivor everywhere - timelines, the tree, pages, exports - so nothing
@@ -4806,6 +4822,74 @@ def _check_died_but_living(
                 'the site leave them out. If they have died, run '
                 f'`fha person set-living {shown} false`.')
         findings.append(Finding('W', 'W136', paths[0], message))
+
+
+# The lint code for each kind of date problem `_lib.one_person_problems`
+# reports, written out here so the TOOLING §3 table test sees every code.
+_PLAUSIBILITY_CODES = {
+    'death-before-birth': 'W163', 'burial-before-death': 'W163',
+    'baptism-before-birth': 'W163', 'burial-before-birth': 'W163',
+    'long-life': 'W164',
+    'life-after-death': 'W165',
+}
+
+
+def _plausibility_input(registry: Registry):
+    """Every accepted claim in the archive as `_lib`'s date rules read it.
+
+    Built once per lint run and kept on the registry, because each family of
+    date checks reads the same input. Merged records count for their
+    survivor (SPEC §9), through the same map the rest of lint uses."""
+    cached = getattr(registry, '_plausibility_input', None)
+    if cached is not None:
+        return cached
+    claims = [claim for sid in sorted(registry.source_claims)
+              for claim in registry.source_claims[sid]]
+    data = plausibility_input_from_claims(
+        claims, registry.person_meta, registry.alias_map,
+        _registry_merge_survivors(registry))
+    registry._plausibility_input = data
+    return data
+
+
+def _claim_ref(registry: Registry, claim_id: str) -> str:
+    """How a date finding points at a claim so he can open it:
+    `c-1a2b3c4d5e (sources/vital/birth-ada-hartley_s-….md)`, the path
+    relative to the archive. The bare id when its file is not known."""
+    shown = fmt_id_display(claim_id)
+    sid = registry.claim_ids.get(normalize_id(claim_id))
+    path = registry.source_paths.get(sid) if sid else None
+    if path is None:
+        return shown
+    try:
+        rel = Path(path).relative_to(registry.archive_root).as_posix()
+    except ValueError:
+        rel = Path(path).as_posix()
+    return f'{shown} ({rel})'
+
+
+def _check_dates_that_cannot_be_true(registry: Registry, findings: list[Finding]) -> None:
+    """W163-W165: "Ada Hartley is recorded as dying 1850, before the birth
+    recorded for her, 1871." One person's own accepted dates that cannot all
+    be true, named with both claims and their files so he can open them side
+    by side.
+
+    The rules are `_lib.one_person_problems` (one engine, so the GEDCOM
+    import plan asks the same question). They fire only when the conflict
+    holds for every date the claims allow, and two readings of one fact are
+    merged into one range (that disagreement is `fha xref`'s). Each finding
+    sits on the profile of the person it is about. A merged record is
+    skipped: its claims already count for the survivor. Report only."""
+    for problem in one_person_problems(_plausibility_input(registry)):
+        pid = problem.pids[0]
+        meta = registry.person_meta.get(pid) or {}
+        if str(meta.get('status', '')).strip().lower() == 'merged':
+            continue
+        code = _PLAUSIBILITY_CODES[problem.kind]
+        message = plausibility_message(
+            problem, lambda p: _person_label(registry, p),
+            lambda cid: _claim_ref(registry, cid))
+        findings.append(Finding('W', code, _profile_path_for(registry, pid), message))
 
 
 def _check_file_name_surnames(registry: Registry, findings: list[Finding]) -> None:
@@ -5724,7 +5808,7 @@ def _check_stray_person_keywords(
                 f'pass, often), silently tying the document to someone it has nothing '
                 f'to do with - and any photo or desktop search over the file inherits '
                 f'the same wrong association. If the tag is wrong, clear it with '
-                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
+                f'`{fha_launcher()} source clear-keyword {fmt_id_display(sid)} --keyword '
                 f'{shell_quote(text)}`; if the person genuinely belongs on this '
                 f'source, add them to its people: list instead.'))
 
