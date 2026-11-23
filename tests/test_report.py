@@ -913,11 +913,11 @@ class ReportTests(unittest.TestCase):
             conn.close()
 
         self.assertIn(
-            '- Test Person [p-aaaaaaaaaa] - County probate index: worth re-running (stale nil search)',
+            '- Test Person [p-aaaaaaaaaa], County probate index: worth re-running (stale nil search)',
             lines,
         )
         self.assertIn(
-            '- Test Person [p-aaaaaaaaaa] - Newspaper archive: already searched 2020-01-01',
+            '- Test Person [p-aaaaaaaaaa], Newspaper archive: already searched 2020-01-01',
             lines,
         )
 
@@ -945,7 +945,7 @@ class ReportTests(unittest.TestCase):
         finally:
             conn.close()
 
-        who = '- Test Person [p-aaaaaaaaaa] - '
+        who = '- Test Person [p-aaaaaaaaaa], '
         self.assertIn(who + 'County probate index (1880-1890): worth re-running (stale nil search)', lines)
         # Old, but never a nil: still to do, never "already searched".
         self.assertIn(
@@ -995,7 +995,7 @@ class ReportTests(unittest.TestCase):
         finally:
             conn.close()
 
-        who = '- Test Person [p-aaaaaaaaaa] - '
+        who = '- Test Person [p-aaaaaaaaaa], '
         self.assertIn(who + 'Court records: could not be searched 2020-01-02: courthouse burned 1888', lines)
         self.assertIn(who + 'Parish register: could not be searched 2020-01-03: closed', lines)
         self.assertIn(who + 'Land records: could not be searched 2020-01-04: the records burned', lines)

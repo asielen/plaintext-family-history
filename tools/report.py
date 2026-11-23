@@ -780,7 +780,7 @@ def _section_search_log(conn, current: dict) -> list[str]:
                 collection = row['collection'] or row['repository'] or '(unspecified collection)'
                 years = _years_label(row['years'])
                 scope = f' ({years})' if years else ''
-                lines.append(f'- {label} - {collection}{scope}: {note}')
+                lines.append(f'- {label}, {collection}{scope}: {note}')
 
     recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
     # notes/research-log.md entries are also person_id IS NULL (general/locality
