@@ -1,0 +1,66 @@
+{
+  "_about": "A bare FamilySearch film image (ark 3:1, no record behind it), recorded from the live site on 2026-11-22: a public, unindexed deed film (Bridport, Vermont, deeds 1785-1809, film 27833, DGS 8129459), image 11 of 689. 'images' is the image's GEDCOM X description (GET /ark:/61903/3:1:{id}); it names no film, DGS, image number or title. 'imageData' and 'filmData' are the two answers the film viewer itself asks for (POST /search/filmdatainfo/image-data and /film-data, body {type, args: {..., state: {}, locale: 'en'}}). Scrubbed: no session token or cookie was ever in these answers; query strings on links were dropped; the film-data catalog entry keeps only the fields the add-on reads plus a few for context, and its 689-entry image list is kept as 'imagesKept' (the entries at index 0 and 10, as recorded) with 'imageCount'; tests expand it back into a list.",
+  "images": {
+    "3Q9M-CSVG-HDJG": {
+      "description": "sd_da_1",
+      "links": {
+        "image-name": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/name" },
+        "image-permission": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/permission" },
+        "image-stream-image-thumb_p200": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/thumb_p200.jpg" },
+        "image-stream-meta-artifactmetadata": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/artifactmetadata.xml" },
+        "image-parents": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/parents" },
+        "image-stream-image-dist": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71/dist.jpg" },
+        "image-node": { "href": "https://sg30p0.familysearch.org/service/records/storage/dascloud/das/v2/TH-909-70868-11332-71" },
+        "image-deepzoom": { "href": "https://sg30p0.familysearch.org/service/records/storage/deepzoomcloud/dz/v1/TH-909-70868-11332-71/image.xml" }
+      },
+      "sourceDescriptions": [
+        {
+          "about": "https://familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HDJG",
+          "id": "sd_da_1",
+          "resourceType": "http://gedcomx.org/DigitalArtifact",
+          "rights": ["http://familysearch.org/accessControl"]
+        }
+      ]
+    }
+  },
+  "imageData": {
+    "3Q9M-CSVG-HDJG": {
+      "imageURL": "https://familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HDJG",
+      "arkId": "3:1:3Q9M-CSVG-HDJG",
+      "dgsNum": "008129459",
+      "collections": [],
+      "records": [],
+      "recordList": []
+    }
+  },
+  "filmData": {
+    "008129459": {
+      "type": "film",
+      "dgsNum": "008129459",
+      "catalogs": [
+        {
+          "path": "/search/catalog/info/koha:24277",
+          "data": {
+            "title": "Deeds, 1785-1851",
+            "display_title": "Deeds, 1785-1851",
+            "titleno": 24277,
+            "format": "Microfilm 35mm",
+            "publisher": { "date": "1952.", "name": "Filmed by the Genealogical Society of Utah", "place": "Salt Lake City, Utah", "seq": 1 },
+            "film_note": [
+              { "geo_collection": "United States & Canada", "digital_film_no": "8129459", "type": "FCONT", "filmno": "27833", "shelf": "Film", "volume": "", "public_note": "Deeds, v. 1-3 1785-1809", "text": "Deeds, v. 1-3 1785-1809", "item_image_start_no": "", "items": "", "inclusive_dates": "", "seq": 1 },
+              { "geo_collection": "United States & Canada", "digital_film_no": "8129460", "type": "FCONT", "filmno": "27834", "shelf": "Film", "volume": "", "public_note": "Deeds, v. 4-6 1809-1820", "text": "Deeds, v. 4-6 1809-1820", "item_image_start_no": "", "items": "", "inclusive_dates": "", "seq": 2 },
+              { "geo_collection": "United States & Canada", "digital_film_no": "8581682", "type": "FCONT", "filmno": "27835", "shelf": "Film", "volume": "", "public_note": "Deeds, v. 7-8 1820-1831", "text": "Deeds, v. 7-8 1820-1831", "item_image_start_no": "", "items": "", "inclusive_dates": "", "seq": 3 },
+              { "geo_collection": "United States & Canada", "digital_film_no": "8581680", "type": "FCONT", "filmno": "27836", "shelf": "Film", "volume": "", "public_note": "Deeds, v. 9-10 1831-1841", "text": "Deeds, v. 9-10 1831-1841", "item_image_start_no": "", "items": "", "inclusive_dates": "", "seq": 4 },
+              { "geo_collection": "United States & Canada", "digital_film_no": "8581678", "type": "FCONT", "filmno": "27837", "shelf": "Film", "volume": "", "public_note": "Deeds, v. 11-12 1841-1851", "text": "Deeds, v. 11-12 1841-1851", "item_image_start_no": "", "items": "", "inclusive_dates": "", "seq": 5 }
+            ]
+          }
+        }
+      ],
+      "imageCount": 689,
+      "imagesKept": {
+        "0": "https://familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HD82/image.xml",
+        "10": "https://familysearch.org/ark:/61903/3:1:3Q9M-CSVG-HDJG/image.xml"
+      }
+    }
+  }
+}
