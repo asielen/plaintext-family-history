@@ -478,7 +478,8 @@
    ],
    "access": "free",
    "channel": [
-    "online"
+    "online",
+    "in person"
    ],
    "about": "Which archive and which fonds holds the books of a given church, volost or institution.",
    "how": "A fonds number is not a file number: inventories are often only in the reading room or on the archive's own site.",
@@ -885,7 +886,8 @@
    ],
    "access": "free",
    "channel": [
-    "online"
+    "online",
+    "in person"
    ],
    "about": "Digitised memorial books of provinces, directories, provincial gazettes.",
    "how": "Some items open only in reading rooms; search the catalogue by province and year.",
@@ -1363,6 +1365,7 @@
    ],
    "access": "request",
    "channel": [
+    "in person",
     "by letter"
    ],
    "about": "Parish registers of the Belgorod area (parts of Kursk and Voronezh provinces), 1753–1925; inventories of church fonds as PDF.",
@@ -5286,7 +5289,6 @@
    "name": "BDM Online",
    "url": "https://www.bdmonline.dia.govt.nz/",
    "countries": [
-    "AU",
     "NZ"
    ],
    "years": null,
@@ -6605,7 +6607,6 @@
    ],
    "access": "mixed",
    "channel": [
-    "online",
     "in person",
     "by letter"
    ],
@@ -7120,8 +7121,7 @@
    "name": "Catastro de Ensenada (1749 to 1756)",
    "url": "",
    "countries": [
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [
@@ -7496,7 +7496,8 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "usa-immigration"
+   "guide": "usa-immigration",
+   "note": "castlegarden.org has gone offline. The same New York arrivals (~11 million, 1820–1891) are now on **FamilySearch collection 1849782** (\"New York Passenger Lists, 1820–1891\"), the practical successor."
   },
   {
    "id": "ar:usa-immigration:familysearch-passenger-lists",

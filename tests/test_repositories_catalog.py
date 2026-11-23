@@ -111,6 +111,14 @@ class MCPRowTests(unittest.TestCase):
         self.assertIsNone(r['years'])
         self.assertEqual(r['topics'], ['jewish'])
 
+    def test_a_reading_room_named_in_the_entry_is_an_in_person_route(self):
+        # "Images are viewed only in the reading room" means he can go there.
+        rows = {r['id']: r for r in br.mcp_rows(
+            [dict(SAMPLE_MCP[1], how='Images are viewed only in the reading room.'),
+             dict(SAMPLE_MCP[0], how='Use the virtual reading room.')], '2026-11-15')}
+        self.assertEqual(rows['mcp:breton_letters']['channel'], ['in person', 'by letter'])
+        self.assertEqual(rows['mcp:fsearch']['channel'], ['online'])
+
     def test_an_availability_note_is_kept(self):
         self.assertIn('Closed for repairs', self.rows['mcp:breton_letters']['note'])
 
@@ -249,6 +257,25 @@ class GuideRowTests(unittest.TestCase):
         rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
         self.assertEqual(rows['Easton State Records Office']['channel'], ['online', 'by letter'])
         self.assertEqual(br._channels('Indexed', 'Records post-1895 and post-emancipation'), ['online'])
+
+    def test_a_row_under_a_countrys_section_serves_that_country(self):
+        # New Zealand's BDM Online sits under "Key Databases (New Zealand)".
+        text = SAMPLE_GUIDE.replace('## Access', '## Key Databases (New Zealand)')
+        rows = {r['name']: r for r in br.guide_rows('australia-nz', text)}
+        self.assertEqual(rows['Fairview Search']['countries'], ['NZ'])
+
+    def test_a_route_the_guide_says_is_not_there_is_not_offered(self):
+        # "Generally not online" must not send him to look for a website.
+        self.assertEqual(br._channels('Generally not online; requires in-person or mail requests',
+                                      'Not AI-accessible', 'Varies'), ['in person', 'by letter'])
+        self.assertEqual(br._channels('Yes', 'AI-readable for the catalog'), ['online'])
+
+    def test_a_status_line_is_kept_as_the_note(self):
+        # A closed site's Status line says where its records went.
+        text = SAMPLE_GUIDE.replace('- **Coverage**: Local newspapers',
+                                    '- **Status**: Gone offline; now on collection 1849782.\n- **Coverage**: Local newspapers')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertIn('collection 1849782', rows['Reed Reading Room']['note'])
 
     def test_topics_by_stem(self):
         rows = br.guide_rows('jewish-genealogy', SAMPLE_GUIDE)
@@ -452,6 +479,10 @@ class ShippedCatalogTests(unittest.TestCase):
         self.assertIn('online', office['channel'])
         self.assertEqual(rows['ar:spain-portugal:familysearch-portugal-collections']['countries'], ['PT'])
         self.assertEqual(rows['mcp:trove']['countries'], ['AU'])
+        self.assertEqual(rows['ar:australia-nz:bdm-online']['countries'], ['NZ'])
+        self.assertNotIn('online', rows['ar:mexico-latin-america:registro-civil-varies-by-country']['channel'])
+        self.assertIn('1849782', rows['ar:usa-immigration:castle-garden-pre-ellis-ny-arrivals-1820-1892']['note'])
+        self.assertIn('in person', rows['mcp:belarchive']['channel'])
 
 
 class ShippedGuideTests(unittest.TestCase):

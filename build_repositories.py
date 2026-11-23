@@ -189,6 +189,16 @@ def normalize_url(url: str) -> str:
 
 # ---- genealogy-mcp -------------------------------------------------------
 
+def _mcp_channels(access: str, text: str) -> list[str]:
+    """Online, or by letter for a request-only archive, plus in person when the
+    entry says its reading room shows the records (a virtual reading room is online)."""
+    out = ['by letter'] if access == 'request' else ['online']
+    t = _NEGATED_ROUTE.sub(' ', text.lower()).replace('virtual reading room', '')
+    if re.search(r'reading rooms?\b|in[- ]person|on[- ]site', t):
+        out.append('in person')
+    return sorted(out, key=CHANNELS.index)
+
+
 def mcp_rows(entries: list, checked: str) -> list[dict]:
     """Catalog rows for genealogy-mcp's sources.json (a list of objects)."""
     if not isinstance(entries, list):
@@ -218,7 +228,7 @@ def mcp_rows(entries: list, checked: str) -> list[dict]:
             'years': years,
             'records': records,
             'access': access,
-            'channel': ['by letter'] if access == 'request' else ['online'],
+            'channel': _mcp_channels(access, f"{e.get('about') or ''} {e.get('how') or ''}"),
             'about': e.get('about') or '',
             'how': e.get('how') or '',
             'from': ['genealogy-mcp'],
@@ -304,8 +314,13 @@ def classify_access(cost: str) -> str:
     return None
 
 
+_NEGATED_ROUTE = re.compile(r"\b(?:not|no|never|isn't|aren't)\s+(?:\w+\s+){0,2}?"
+                            r"(?:online|ai-\w+|in[- ]person|on[- ]site|by (?:mail|post|letter))")
+
+
 def _channels(*texts: str) -> list[str]:
-    t = ' '.join(texts).lower()
+    # "Generally not online" names a route that is NOT there.
+    t = _NEGATED_ROUTE.sub(' ', ' '.join(texts).lower())
     out = []
     in_person = re.search(r'in-person|in person|on-site|on site', t) is not None
     # "post-1895" and "post-emancipation" are dates, not the post office.
@@ -319,15 +334,15 @@ def _channels(*texts: str) -> list[str]:
     return out
 
 
-def _row_countries(stem: str, heading: str, coverage: str) -> list[str]:
+def _row_countries(stem: str, heading: str, coverage: str, section: str = '') -> list[str]:
     """A guide row's countries: the guide's, narrowed to the ones its heading (or,
-    failing that, its Coverage line) names, so "FamilySearch (Portugal collections)"
+    failing that, its `##` section heading, then its Coverage line) names, so "FamilySearch (Portugal collections)"
     serves Portugal only and New Zealand's BDM Online is not offered for Australia."""
     allc = list(STEM_COUNTRIES[stem])
     names = _STEM_COUNTRY_NAMES.get(stem)
     if not names:
         return allc
-    for text in (heading, coverage):
+    for text in (heading, section, coverage):
         named = [c for c in allc if re.search(names[c], text, re.IGNORECASE)]
         if named:
             return named
@@ -357,7 +372,7 @@ def guide_rows(stem: str, text: str) -> list[dict]:
                 section = heading
             elif heading.lower() in _GENERIC_HEADINGS and section:
                 heading = section
-            cur = {'heading': heading, 'level': len(h.group(1)), 'lines': []} \
+            cur = {'heading': heading, 'section': section, 'level': len(h.group(1)), 'lines': []} \
                 if len(h.group(1)) in (3, 4) else None
             if cur:
                 blocks.append(cur)
@@ -385,7 +400,7 @@ def guide_rows(stem: str, text: str) -> list[dict]:
         url = URL_FIXES.get(url, url)
         coverage = bullets.get('Coverage') or next(
             (ln.strip() for ln in blk['lines'] if ln.strip() and not ln.lstrip().startswith(('-', '|', '#'))), '')
-        countries = _row_countries(stem, heading, coverage)
+        countries = _row_countries(stem, heading, coverage, blk['section'])
         if stem == 'ireland' and re.search(r'Northern Ireland|PRONI', ' '.join(blk['lines']) + heading):
             countries.append('GB')
         if stem == 'mexico-latin-america':
@@ -411,8 +426,11 @@ def guide_rows(stem: str, text: str) -> list[dict]:
             'checked': meta['last_verified'],
             'guide': stem,
         })
-        if url_line.strip() and url_line.strip() != (found.group(0) if found else ''):
-            row['note'] = url_line
+        # A site's Status line (closed, moved, where its records went) is kept too.
+        notes = [x for x in (url_line.strip() if url_line.strip() != (found.group(0) if found else '')
+                             else '', bullets.get('Status', '').strip()) if x]
+        if notes:
+            row['note'] = ' '.join(notes)
         rows.append(row)
     return rows
 

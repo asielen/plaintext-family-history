@@ -912,7 +912,7 @@
     {
       "path": ".fha/tools/repositories.json",
       "category": "operating",
-      "sha256": "096b225001ae8eca4a517a3655e31a959dd88ffd03610bbafc111942bcdb549d",
+      "sha256": "59ac7420d1fc42c0b05ab4cae3bbcae318177eeab5df446d542107b1308639b0",
       "spec_version": "2.22",
       "src": "tools/repositories.json"
     },
@@ -1431,7 +1431,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d03e7ccd04ee9ed931ff72d0fcfa79df98bf97f18390c991bb8d22bd3ea8bb1c",
+      "sha256": "a4cd763d0cf04bd1fcf55e6d89a6b9e3878d1c91fad4c2a8624fd7fcb903f863",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },
