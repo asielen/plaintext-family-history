@@ -4315,12 +4315,13 @@ class _SiteBuilder:
                     self.restricted_person_sources.add(row['source_id'])
 
             # A child's birth stays on the shared site when her godmother is
-            # still alive; a record about a living person, or naming a
-            # restricted one, does not. Judged once per claim by the shared
-            # rule (`_lib.claim_people_verdict`, SPEC §21) and handed to SQL as
+            # still alive, and a census stays on a dead father's page when
+            # his son in it is alive; a living person's own birth or
+            # marriage, or a record naming a restricted person, does not.
+            # Judged once per claim by the shared rule
+            # (`_lib.claim_people_verdict`, SPEC §21) and handed to SQL as
             # `fha_claim_withheld(id)` for the claim filters
-            # (`_NO_REDACTED_PERSON_SQL`). The sources above keep their own
-            # rule: a source naming a living person still gets no page.
+            # (`_NO_REDACTED_PERSON_SQL`).
             people: dict[str, list] = {}
             for row in self.conn.execute(
                     'SELECT claim_id, person_id, role FROM claim_persons '
@@ -4333,6 +4334,23 @@ class _SiteBuilder:
                     withheld=redacted_ids.__contains__, restricted=restricted_ids.__contains__)
                 if verdict in (CLAIM_UNWORDED, CLAIM_WITHHELD):
                     self._claim_verdicts[cid] = verdict
+
+            # The source of a record kept that way gets its page and its
+            # citation, like any other (owner decision 2026-11-23): the
+            # census is part of his story. The page may show the record's
+            # own text and scan, which can print the living son's name, but
+            # never lists, links or labels him (`build_source_page` names
+            # only the people `_shown_claim_people` allows). A source with no
+            # such accepted record, or naming a restricted person, keeps the
+            # rule above: a living son's own birth certificate gets no page.
+            restricted_claim_ids = self.restricted_claims
+            for row in self.conn.execute(
+                    "SELECT id, source_id FROM claims "
+                    "WHERE status = 'accepted' AND source_id IS NOT NULL"):
+                if (self._claim_verdicts.get(row['id']) == CLAIM_UNWORDED
+                        and normalize_id(str(row['id'])) not in restricted_claim_ids
+                        and row['source_id'] not in self.restricted_person_sources):
+                    source_living.discard(row['source_id'])
         verdicts = self._claim_verdicts
         self.conn.create_function('fha_claim_withheld', 1,
                                   lambda cid: verdicts.get(cid) == CLAIM_WITHHELD,
@@ -4340,7 +4358,8 @@ class _SiteBuilder:
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
-                # Standalone: also exclude sources whose people list includes a living person.
+                # Standalone: also exclude sources naming a living person,
+                # unless they carry a record kept above.
                 if not self.linked and sid in source_living:
                     continue
                 self.source_pages.add(sid)
@@ -5907,13 +5926,20 @@ class _SiteBuilder:
             person_rows = self.conn.execute(
                 'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position', (c['id'],)
             ).fetchall()
-            persons_html = ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)
+            # A census kept for the dead father whose living son is in it:
+            # the son is not listed, linked or labelled, and the claim's
+            # wording, which names him, gives way to the people it is about.
+            persons_html = ', '.join(self._person_link(pid, page_dir)
+                                     for pid in self._shown_claim_people(c['id']))
+            # Reader-facing cell: scrubbed of internal-only encoding the
+            # same way prose/timeline values already are (#144 finding
+            # 4) - a source page is a reader-facing page like any other.
+            value = _scrub_internal_encoding(c['value'] or '')
+            if not self.linked and self._claim_unworded(c['id']):
+                value = self._markup(self._unworded_claim_html(c['id'], c['type'], page_dir))
             claims.append({
                 'type': c['type'],
-                # Reader-facing cell: scrubbed of internal-only encoding the
-                # same way prose/timeline values already are (#144 finding
-                # 4) - a source page is a reader-facing page like any other.
-                'value': _scrub_internal_encoding(c['value'] or ''),
+                'value': value,
                 'date': c['date_edtf'] or '',
                 'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],

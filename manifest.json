@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8b145c9845e64eb99eb3eb327c9393645c794d40d948a2cff5901a5e0b8d2beb",
+      "sha256": "7cebeb11afa5cf46b7ca599ba1d43ff95c94340ca8133ec80245f0497d2e27f0",
       "spec_version": "2.24",
       "src": "tools/_lib.py"
     },
@@ -947,7 +947,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "5341ec13afce52e4bf8dc717e3e18a735b9f1191f1aad9aca43cd446c2d4a0a2",
+      "sha256": "6f77f220868b3a7c02b693a4fd0a112f257cb6f146b367f2c33c54f15ac24815",
       "spec_version": "2.24",
       "src": "tools/site.py"
     },
@@ -1208,7 +1208,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "5a90c4a18ca2b30645bb100f29001f56a97df46f4d9a2b3a6ced61a2e3ea8ffe",
+      "sha256": "340fc4972a756fc6e9baa1dfca12b0abeab4c731e9694cd5c983310392bed6aa",
       "spec_version": "2.24"
     },
     {
@@ -1256,14 +1256,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "fde4d01f1b9534c0384ee08d073744ab15a845372003d659d14d361b317b3165",
+      "sha256": "a0498606122cd39c7e1e76d7b3e4f0960e6e6fcaedf8212c754665627a74f81d",
       "spec_version": "2.24",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "af0d3a1a1f462368a291a9b90b3c29ab9fe22210e77ef82bc265988c16835e47",
+      "sha256": "2ab00d7a78595715c76614cf2222901c860a85eb9f6703d9eb0e9cc095f25f3f",
       "spec_version": "2.24",
       "src": "TOOLING.md"
     },

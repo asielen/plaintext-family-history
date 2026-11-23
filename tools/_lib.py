@@ -501,7 +501,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    person_restricted         - restricted only: the narrower test a family walk asks
 #    export_tie_ok             - may a walk use this tie (through the living, never
 #                                 the restricted, never on withheld evidence)
-#    claim_subjects            - who a claim is about (a living one keeps it home)
+#    claim_subjects            - who a claim is about (an event of a living
+#                                 person's own keeps it home)
 #    claim_people_verdict      - shown, shown without its wording, or withheld, by
 #                                 who it names: the one rule site, gedcom, wikitree read
 #    indexed_claim_verdict     - the same for one indexed claim
@@ -14502,10 +14503,12 @@ def export_tie_ok(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup,
 # What a shared copy does with one claim, judged by the people it names
 # (SPEC §21). The values `claim_people_verdict` returns:
 #   CLAIM_SHOWN     names nobody the copy withholds: shown as written
-#   CLAIM_UNWORDED  about deceased people, but also names a living or unknown
-#                   one (a godparent, a witness, an informant): shown by its
-#                   kind, date and place, without its own wording or that person
-#   CLAIM_WITHHELD  about a living or unknown person, or names a restricted one
+#   CLAIM_UNWORDED  kept, but also names a living or unknown person: shown by
+#                   its kind, date and place and the shown people it is
+#                   about, without its own wording or the living person
+#   CLAIM_WITHHELD  an event of a living or unknown person's own, a tie to
+#                   one, a fact about nobody but such people, or a claim
+#                   naming a restricted person
 CLAIM_SHOWN = 'shown'
 CLAIM_UNWORDED = 'unworded'
 CLAIM_WITHHELD = 'withheld'
@@ -14515,62 +14518,65 @@ _FACT_SUBJECT_ROLES = frozenset({'subject', 'head', 'household_member'})
 
 
 def claim_subjects(claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
-    """The people a claim is about, for deciding whether a shared copy may
-    show it: a living person among them keeps the whole claim home.
+    """The people a claim is about, in the claim's order, for deciding what a
+    shared copy may show of it (`claim_people_verdict`).
 
-    A child's birth record names her parents, her godparents, sometimes the
-    person she was named for. The record is about her: its date and place
-    are her birth, and say nothing about when or where her living godmother
-    was born. But a living son's birth record, which names his dead father,
-    is about the son, and its date and place are his own birthday. So the
-    question a shared copy asks is not "does this record name someone
-    living?" but "is it about someone living?".
-
-    An event (birth, baptism, death, burial, marriage, divorce) is about the
-    people `vital_subjects` reads as its own (SPEC §8.3: the `child`, the
-    `deceased`, the couple). Any other claim is about the people it calls
-    `subject`, `head` or `household_member`; failing those, the people it
-    leaves unroled once someone else has a role. When a claim does not say
-    (several people and no roles, or every person cast as somebody else, as
-    on a `relationship` claim, whose parties are all its subjects), everyone
-    it names counts: a guess that lets a living person's dates out cannot be
-    taken back, while a fact kept home can be shown once the claim says."""
+    An event (birth, baptism, death, burial, marriage, divorce) is about its
+    own people (SPEC §8.3: the `child`, the `deceased`, the couple) and,
+    failing closed, about anyone it names with no role or with a misspelling
+    of that role (`chlid:`): a twin listed beside his sister with no role was
+    born that day too, and a guess that lets a living person's birthday out
+    cannot be taken back. A `relationship` claim is about every party: it is
+    the tie itself. Any other claim is about the people under `subject`,
+    `head` or `household_member`; when it names none, everyone it names."""
     pairs = list(persons_with_roles)
     roles_of = roles_by_person(pairs)
     everyone = list(roles_of)
     ctype = str(claim_type or '').strip().lower()
     if ctype in VITAL_SUBJECT_ROLES:
-        return list(vital_subjects(ctype, pairs) or everyone)
+        own_role = VITAL_SUBJECT_ROLES[ctype]
+        own = set(vital_subjects(ctype, pairs) or ())
+        own.update(pid for pid, roles in roles_of.items()
+                   if not roles or any(r == own_role or role_near_miss(r) == own_role
+                                       for r in roles))
+        return [pid for pid in everyone if pid in own]
+    if ctype == 'relationship':
+        return everyone
     named = [pid for pid, roles in roles_of.items() if _FACT_SUBJECT_ROLES & set(roles)]
-    if named:
-        return named
-    if any(roles_of.values()):
-        return [pid for pid, roles in roles_of.items() if not roles] or everyone
-    return everyone
+    return named or everyone
 
 
 def claim_people_verdict(claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]], *,
                          withheld: Callable[[str], bool],
                          restricted: Callable[[str], bool]) -> str:
     """Whether a shared copy shows one claim, judged by who it names: one of
-    `CLAIM_SHOWN`, `CLAIM_UNWORDED`, `CLAIM_WITHHELD` (owner decision
-    2026-11-22, SPEC §21).
+    `CLAIM_SHOWN`, `CLAIM_UNWORDED`, `CLAIM_WITHHELD` (owner decisions
+    2026-11-22 and 2026-11-23, SPEC §21).
 
-    A child's birth stays on the shared site when her godmother is still
-    alive. The godmother is left out of it (not named, not linked), and so
-    is the record's own wording, which usually names everyone on it
-    (`CLAIM_UNWORDED`). A claim that is about a living or unknown person
-    (`claim_subjects`) is withheld whole, since its date and place are that
-    person's. A claim naming anyone restricted, `by-request` included, is
-    withheld whole whatever else it names: by-request is honored by every
-    export path (SPEC §19). A claim naming nobody is shown, as it always was.
+    A great-grandfather's baptism stays on the shared site when his godmother
+    is still alive, and the 1950 census of his household stays on his page
+    when the son listed in it is still alive: the record may be the heart of
+    his story. The living person is left out of it (not named, not linked,
+    not labelled), and so is the claim's own wording, which usually names
+    everyone on the record (`CLAIM_UNWORDED`). What stays home
+    (`CLAIM_WITHHELD`):
+
+      - an event that is a living or unknown person's own (a living son's
+        birth that names his dead father; a marriage with a living spouse),
+        since its date and place are that person's birthday or wedding;
+      - a `relationship` claim naming one, since it is the very tie that
+        would connect them to the family;
+      - any other claim whose people it is about are all living or unknown;
+      - a claim naming anyone restricted, `by-request` included, whatever
+        else it names: by-request is honored by every export path (§19).
+
+    A claim naming nobody withheld is shown as it always was.
 
     The one rule every shared copy reads: the site, GEDCOM and WikiTree each
     pass their own `withheld(pid)` (living or unknown, merges followed, and
     in GEDCOM lifted by `--include-living`) and `restricted(pid)` (any
     `restricted:` value on the record or a record merged into it). A copy may
-    be stricter, never looser. Its sources are a separate question: a source
-    that names a living person keeps its own rule (SPEC §21)."""
+    be stricter, never looser."""
     pairs = [(pid, role) for pid, role in persons_with_roles if pid]
     people = list(dict.fromkeys(pid for pid, _role in pairs))
     if any(restricted(pid) for pid in people):
@@ -14578,9 +14584,11 @@ def claim_people_verdict(claim_type: Any, persons_with_roles: Iterable[tuple[str
     hidden = {pid for pid in people if withheld(pid)}
     if not hidden:
         return CLAIM_SHOWN
-    if hidden & set(claim_subjects(claim_type, pairs)):
-        return CLAIM_WITHHELD
-    return CLAIM_UNWORDED
+    about = claim_subjects(claim_type, pairs)
+    ctype = str(claim_type or '').strip().lower()
+    if ctype in VITAL_SUBJECT_ROLES or ctype == 'relationship':
+        return CLAIM_WITHHELD if hidden & set(about) else CLAIM_UNWORDED
+    return CLAIM_UNWORDED if any(pid not in hidden for pid in about) else CLAIM_WITHHELD
 
 
 def indexed_claim_verdict(conn: sqlite3.Connection, claim_id: str, claim_type: Any, *,

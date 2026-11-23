@@ -1,15 +1,18 @@
 """
-A child's birth stays on the shared site when her godmother is still alive.
+A child's birth stays on the shared site when her godmother is still alive,
+and a census stays on a dead grandfather's page when his grandson in it is
+alive.
 
-Owner decision 2026-11-22 (SPEC §21): a claim about deceased people that also
-names a living or unknown person (a godparent, a witness, an informant) is
-kept. The living person is left out of it, not named and not linked, and so
-is the claim's own wording, which usually names everyone on the record. A
-claim about a living person is still withheld, since its date and place are
-that person's own, and a claim naming a restricted person (by-request
-included) is withheld whole, since by-request is honored by every export
-path (SPEC §19). Sources keep their own rule: a source naming a living
-person stays off the site and its citation reads as withheld.
+Owner decisions 2026-11-22 and 2026-11-23 (SPEC §21): a claim that names a
+living or unknown person is kept unless it is that person's own event (his
+birth, his death, his marriage), a `relationship` claim naming him, or a
+fact about nobody but living people. Kept, the living person is left out of
+it (not named, linked or labelled) and so is the claim's own wording, which
+usually names everyone on the record. Its source keeps its page and its
+citation: the page may show the record's own words, which can print the
+living person's name, but never lists, links or labels him. A claim naming
+a restricted person (by-request included) is withheld whole, since
+by-request is honored by every export path (SPEC §19).
 
 The rule lives once, in `_lib.claim_people_verdict`; the site, GEDCOM and
 WikiTree read it. Expected answers below come from those SPEC rules.
@@ -84,9 +87,35 @@ class VerdictTests(unittest.TestCase):
         pairs = [(PIP, 'child'), (THOMAS, 'parent')]
         self.assertEqual(self.verdict('birth', pairs, living={PIP}), CLAIM_WITHHELD)
 
-    def test_a_census_with_a_living_household_member_is_withheld(self):
+    def test_a_census_of_a_dead_head_with_a_living_household_member_is_kept(self):
+        # The census may be the heart of his story (owner, 2026-11-23).
         pairs = [(CALVIN, 'head'), (WREN, 'household_member')]
-        self.assertEqual(self.verdict('census', pairs, living={WREN}), CLAIM_WITHHELD)
+        self.assertEqual(self.verdict('census', pairs, living={WREN}), CLAIM_UNWORDED)
+        pairs = [(CALVIN, 'head'), (WREN, 'child')]
+        self.assertEqual(self.verdict('census', pairs, living={WREN}), CLAIM_UNWORDED)
+
+    def test_a_fact_about_nobody_but_living_people_is_withheld(self):
+        pairs = [(PIP, 'head'), (WREN, 'household_member'), (THOMAS, 'parent')]
+        self.assertEqual(self.verdict('census', pairs, living={PIP, WREN}), CLAIM_WITHHELD)
+        pairs = [(PIP, 'subject'), (THOMAS, 'parent')]
+        self.assertEqual(self.verdict('residence', pairs, living={PIP}), CLAIM_WITHHELD)
+
+    def test_a_residence_shared_by_a_dead_and_a_living_subject_is_kept(self):
+        pairs = [(CALVIN, 'subject'), (PIP, 'subject')]
+        self.assertEqual(self.verdict('residence', pairs, living={PIP}), CLAIM_UNWORDED)
+
+    def test_a_marriage_with_a_living_spouse_is_withheld(self):
+        # The date is the living spouse's own wedding day.
+        pairs = [(THOMAS, 'spouse'), (WREN, 'spouse')]
+        self.assertEqual(self.verdict('marriage', pairs, living={WREN}), CLAIM_WITHHELD)
+
+    def test_a_living_twin_with_no_role_or_a_misspelt_one_keeps_the_birth_home(self):
+        # Unroled or `chlid:`, he may be the one born that day: fail closed.
+        for role in (None, 'chlid', 'children'):
+            pairs = [(THOMAS, 'child'), (PIP, role)]
+            self.assertEqual(self.verdict('birth', pairs, living={PIP}), CLAIM_WITHHELD, role)
+        pairs = [(CALVIN, 'deceased'), (PIP, None)]
+        self.assertEqual(self.verdict('death', pairs, living={PIP}), CLAIM_WITHHELD)
 
     def test_a_claim_that_does_not_say_whose_it_is_counts_everyone(self):
         pairs = [(THOMAS, None), (WREN, None)]
@@ -229,11 +258,10 @@ class SharedSiteTests(_SiteBase):
         self.assertIn(f'<a href="../places/{RIVERSIDE}.html">', html)
         # The record's own wording names him, so it stays home too.
         self.assertNotIn('godparent', html)
-        # Its source names a living person, so it keeps its own rule: no
-        # page, and the citation reads as withheld.
-        self.assertFalse((self.out / 'sources' / 's-1111111111.html').exists())
-        self.assertIn(site._RESTRICTED_LABEL, html)
-        self.assertNotIn('baptism register', html)
+        # Its source keeps its page and its citation (owner, 2026-11-23).
+        self.assertTrue((self.out / 'sources' / 's-1111111111.html').exists())
+        self.assertIn('Riverside baptism register', html)
+        self.assertIn('s-1111111111.html', html)
 
     def test_a_marriage_of_two_dead_people_with_a_living_witness_is_shown(self):
         self.seed()
@@ -272,6 +300,24 @@ class SharedSiteTests(_SiteBase):
         self.build()
         self.assert_nowhere(('1921', 'Ivo'))
 
+    def test_a_marriage_with_a_living_spouse_appears_nowhere(self):
+        self.seed()
+        self.source('s-7777777777', 'Riverside marriage register, 1912')
+        self.claim('c-7777777777', 's-7777777777', 'marriage', '1912-05-05',
+                   [(THOMAS, 'spouse'), (WREN, 'spouse')], 'Thomas married Wren')
+        self.build()
+        self.assert_nowhere(('1912', 'Wren'))
+
+    def test_a_living_twin_left_unroled_keeps_the_birth_home(self):
+        self.seed()
+        self.person('p-gggggggggg', 'Iris Hartley')
+        self.person('p-hhhhhhhhhh', 'Ivo Hartley', living='true')
+        self.source('s-6666666666', 'Twins birth register')
+        self.claim('c-6666666666', 's-6666666666', 'birth', '1921-02-14',
+                   [('p-gggggggggg', 'child'), ('p-hhhhhhhhhh', None)], 'Twins born')
+        self.build()
+        self.assert_nowhere(('1921', 'Ivo'))
+
     def test_a_record_naming_a_by_request_person_stays_withheld(self):
         self.seed()
         self.build()
@@ -302,6 +348,57 @@ class SharedSiteTests(_SiteBase):
         html = self.page(f'persons/{THOMAS}.html')
         self.assertNotIn(site._LIVING_LABEL, html)
         self.assert_nowhere(WREN_MARKS)
+
+    def census(self):
+        """The 1940 census of Calvin's household, which lists his living
+        grandson Pip; its citation, the record's own words, names Pip."""
+        self.seed()
+        rel = 'sources/census/src_s-8888888888.md'
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('---\nid: s-8888888888\ntitle: 1940 census, Riverside\n'
+                        'source_type: census\ncitation: "1940 census, Riverside, '
+                        'household of Calvin Hartley with grandson Pip Hartley."\n---\n\n'
+                        '## Claims\n```yaml\n```\n', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO sources(id, title, source_type, restricted, status, path) '
+            'VALUES (?,?,?,?,?,?)',
+            ('s-8888888888', '1940 census, Riverside', 'census', 0, 'active', rel))
+        self.claim('c-8888888888', 's-8888888888', 'census', '1940-04-01',
+                   [(CALVIN, 'head'), (PIP, 'household_member')],
+                   'Calvin Hartley, head; Pip Hartley, grandson, age 9', place_id=RIVERSIDE)
+        self.build()
+
+    def test_a_census_naming_a_living_grandson_stays_on_the_dead_heads_page(self):
+        self.census()
+        self.assertIn('1940-04-01', self.timeline(CALVIN))
+        # Its source is cited by name and linked, not withheld.
+        self.assertIn('s-8888888888.html', self.page(f'persons/{CALVIN}.html'))
+
+    def test_the_census_source_page_shows_its_words_but_never_lists_the_living(self):
+        # "Showing a living person's name is fine, just don't connect the
+        # dots" (owner, 2026-11-23): the citation, the record's own words,
+        # may print his name; no claim row, link or label names him.
+        self.census()
+        page = self.page('sources/s-8888888888.html')
+        self.assertIn('grandson Pip Hartley', page)          # the record's own words
+        self.assertNotIn(PIP, page)
+        self.assertNotIn(site._LIVING_LABEL, page)
+        self.assertNotIn('age 9', page)                      # the claim's wording
+        self.assertNotIn('household_member', page)
+        self.assertIn(f'{CALVIN}.html', page)
+
+    def test_the_living_grandson_is_on_no_page_but_the_census_source(self):
+        self.census()
+        for rel, text in self.every_page_text().items():
+            self.assertNotIn(PIP, text, rel)
+            self.assertNotIn('age 9', text, rel)
+            if rel != 'sources/s-8888888888.html':
+                self.assertNotIn('Pip', text, rel)
+
+    def test_a_living_sons_own_birth_certificate_still_gets_no_page(self):
+        self.census()
+        self.assertFalse((self.out / 'sources' / 's-4444444444.html').exists())
 
     def test_the_linked_preview_still_shows_everything(self):
         self.seed()
