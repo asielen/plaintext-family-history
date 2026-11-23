@@ -553,5 +553,42 @@ class FamilySheetReviewFixTests(_SheetBase):
         self.assertNotIn('they has', err)
 
 
+    def test_step_and_adopted_childrens_other_parents_are_never_his_partners(self):
+        # An adopted girl's birth mother, or Margaret's first husband, must
+        # never be printed beside Thomas as a couple.
+        jack, sam, bella, ada = 'p-ssssssssss', 'p-tttttttttt', 'p-wwwwwwwwww', 'p-yyyyyyyyyy'
+        self.add_person(jack, 'Jack Miller', 'M', 'false')
+        self.add_person(sam, 'Sam Miller', 'M', 'false')
+        self.add_person(bella, 'Bella Birth', 'F', 'false')
+        self.add_person(ada, 'Ada Hartley', 'F', 'false')
+        self.add_source('sam', 's-pppppppppp', 'Sam birth', 'Breton County Birth Register vol. 7.',
+                        _rel('c-parSam0000', sam, [M, jack])
+                        + _claim('c-stepSam000', 'relationship', [sam, T], '',
+                                 roles=f'{{child: {sam}, parent: [{T}]}}', subtype='step'))
+        self.add_source('ada', 's-qqqqqqqqqq', 'Ada adoption', 'Breton County Orphans Court.',
+                        _rel('c-parAda0000', ada, [bella])
+                        + _claim('c-adoptAda00', 'relationship', [ada, T, M], '',
+                                 roles=f'{{child: {ada}, parent: [{T}, {M}]}}', subtype='adoptive'))
+        self.reindex()
+        text = self.sheet_text()
+        self.assertNotIn('Jack Miller', text)
+        self.assertNotIn('Bella Birth', text)
+        self.assertEqual(text.count('Sam Miller'), 1)
+        self.assertEqual(text.count('Ada Hartley'), 1)
+
+    def test_parents_never_married_are_father_and_mother_not_husband_and_wife(self):
+        jane, zeke = 'p-ssssssssss', 'p-tttttttttt'
+        self.add_person(jane, 'Jane Doe', 'F', 'false')
+        self.add_person(zeke, 'Zeke Hartley', 'M', 'false')
+        self.add_source('zeke', 's-pppppppppp', 'Zeke birth', 'Breton County Birth Register vol. 4.',
+                        _rel('c-parZ000000', zeke, [T, jane]))
+        self.reindex()
+        text = self.sheet_text(spouse=jane)
+        self.assertIn('## Mother: Jane Doe', text)
+        self.assertIn('## Father: Thomas Edward Hartley', text)
+        self.assertNotIn('Wife:', text)
+        self.assertNotIn('Husband:', text)
+        self.assertIn('## Husband: Thomas Edward Hartley', self.sheet_text(spouse=M))
+
 if __name__ == '__main__':
     unittest.main()

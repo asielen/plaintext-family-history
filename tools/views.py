@@ -5384,13 +5384,21 @@ class _ReportPrivacy:
         return found
 
     def co_parents(self, pid: str) -> set[str]:
-        """The other parents of `pid`'s children, through ties a report may
-        walk (so never a restricted person)."""
-        children = set(self.ties(pid, 'child')) | set(self.parented_by(pid))
+        """The other birth parents of `pid`'s birth children, through ties a
+        report may walk (so never a restricted person). Only birth ties on
+        both sides: an adopted child's birth mother or a stepchild's father
+        is not his partner, and must never be printed beside him."""
+        def genetic(info) -> bool:
+            return bool(info) and any(is_genetic_parent_subtype(s) for s in info['subtypes'])
+
+        mine = self.ties(pid, 'child')
+        children = set(mine) | set(self.parented_by(pid))
         out: set[str] = set()
         for c in children:
-            if pid in self.ties(c, 'parent') or c in self.ties(pid, 'child'):
-                out |= {p for p in self.ties(c, 'parent') if p != pid}
+            theirs = self.ties(c, 'parent')
+            if not (genetic(mine.get(c)) or genetic(theirs.get(pid))):
+                continue
+            out |= {p for p, info in theirs.items() if p != pid and genetic(info)}
         return out
 
     def other_parent_recorded(self, child: str, parent: str) -> bool:
@@ -5658,7 +5666,7 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
 
 def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
                         all_spouses: list[str], first_sheet: bool,
-                        top: int) -> tuple[str, list[str]]:
+                        top: int, married: bool = True) -> tuple[str, list[str]]:
     """One couple's sheet as markdown: `(title, lines)`. `top` is the heading
     level of the sheet title (1 alone, 2 when a file holds several sheets)."""
     fn = _Footnotes(rp)
@@ -5669,7 +5677,10 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
     title_names = ' and '.join(rp.name(p) for p in couple)
     body: list[str] = []
     for p in couple:
-        label = {'M': 'Husband', 'F': 'Wife'}.get(rp.sex(p), 'Spouse')
+        # Two parents with no marriage on record are Father and Mother,
+        # never Husband and Wife: the sheet must not state a marriage.
+        label = ({'M': 'Husband', 'F': 'Wife'}.get(rp.sex(p), 'Spouse') if married
+                 else {'M': 'Father', 'F': 'Mother'}.get(rp.sex(p), 'Parent'))
         body += _report_person_block(rp, fn, tally, h2, label, p)
     if not spouse:
         body += [f'{h2} Spouse', '', 'No spouse is recorded.', '']
@@ -5896,7 +5907,8 @@ def run_family_sheet(
             sheets = [(sp, i == 0) for i, sp in enumerate(all_spouses)] or [(None, True)]
 
         multi = len(sheets) > 1
-        built = [_family_sheet_lines(rp, pid, sp, all_spouses, first, 2 if multi else 1)[1]
+        built = [_family_sheet_lines(rp, pid, sp, all_spouses, first, 2 if multi else 1,
+                                     married=sp is None or sp in spouse_ties)[1]
                  for sp, first in sheets]
         if multi:
             lines = [f'# Family group sheets: {name}', '']
