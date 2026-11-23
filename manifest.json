@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "85421bf9515db2a8c26b8df699a949540f363d944717eedca0ff45e2ddc770ef",
+      "sha256": "52477b7dc34e213ae4f932c50821f5a19378765f8632f86eadde114a57878ba3",
       "spec_version": "2.20",
       "src": "browser-companion/src/content.js"
     },
@@ -401,7 +401,7 @@
     {
       "path": ".fha/browser-companion/src/lib/archiveorg-record.js",
       "category": "operating",
-      "sha256": "f2189a8cee82c60687b4b71c7d0e53e43d0548dbc9da3d494596d06ea60c93bd",
+      "sha256": "01f8ad501ad41a77ce7d4375ff25832869daf760cc44274a55b167e9e9e3b3c7",
       "spec_version": "2.20",
       "src": "browser-companion/src/lib/archiveorg-record.js"
     },
@@ -548,7 +548,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "eabaa1acfc5c47d6c2614030779c901d4b10aae9c70895721b8b997963d44c57",
+      "sha256": "2499de4af07258da135655df16d7ebb1801468dfdef195b9a3b79b10824e9211",
       "spec_version": "2.20",
       "src": "browser-companion/src/panel.js"
     },

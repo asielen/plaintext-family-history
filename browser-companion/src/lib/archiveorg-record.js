@@ -13,26 +13,37 @@
 // extension page, because the book's files sit on other archive.org hosts.
 //
 // What archive.org serves (checked on a live item, 2026-11): a book is
-// /details/{id}; BookReader writes /page/n{K} for the scan at position K
-// counting from 0, and /page/{printed} for a printed page it knows.
+// /details/{id}; BookReader writes /page/n{K} for the K-th page it shows
+// (counting from 0), and /page/{printed} for a printed page it knows.
 //   /metadata/{id}                      the book's own description (JSON)
-//   /download/{id}/{id}_page_numbers.json   scan number -> printed page
+//   {server}/BookReader/BookReaderJSIA.php   the reader's own page list: for
+//                                       each page it shows, the scan (leafNum)
+//                                       and the printed page it writes in the
+//                                       address. It is the only safe way from
+//                                       n{K} or a printed page to a scan: the
+//                                       reader skips scans (colour cards,
+//                                       blank leaves), so n{K} is scan K+1 at
+//                                       the front of a book and drifts later
+//                                       (n300 is scan 305 in the 1881 test
+//                                       item). {id}_page_numbers.json is not
+//                                       used: its guessed numbers differ from
+//                                       the reader's (193 for the page the
+//                                       reader and the print call 199).
 //   /download/{id}/{id}_hocr_pageindex.json.gz   byte range of each scan in
 //   /download/{id}/{id}_hocr.html       the OCR, so one page's text is one
 //                                       small range request, not the book
 //   iiif.archive.org/iiif/{id}${N}/full/full/0/default.jpg   the scan, full size
-// N, the page_numbers.json "leafNum" and the hOCR page number are all the
-// same count from 1, so the scan at /page/n20 is leaf 21.
+// N and the hOCR index entry are both the scan's leafNum.
 //
 // NO LOGIN: every request goes without cookies (`credentials: 'omit'`). A
-// lending-library book refuses its images without a borrow; that is said
-// plainly and nothing is saved for it.
+// lending-library book is only lent: its page image, its text and a copy of
+// the reader page are never saved, and the panel says so plainly.
 //
 // Code map (inside the block): iaParsePage, iaCleanCreator, iaMetadataFrom,
-// iaPageNumbersFrom, iaPrintedFor, iaLeafForPrinted, iaPageIndexRange,
-// iaHocrText, iaImageUrl, iaPageUrl, iaCitation, iaTitle, iaHints.
-// Below it: iaStatusMessage and the fetchers (iaFetchMetadata,
-// iaFetchPageNumbers, iaFetchPageIndex, iaFetchLeafText, iaFetchImage).
+// iaYear, iaPageIndexRange, iaHocrText, iaImageUrl, iaPageUrl, iaCitation,
+// iaTitle, iaHints. Below it: iaBookPagesFrom, iaPageIndexFor,
+// iaStatusMessage and the fetchers (iaFetchMetadata, iaFetchBookPages,
+// iaFetchPageIndex, iaFetchLeafText, iaFetchImage).
 
 'use strict';
 
@@ -117,9 +128,7 @@ function iaMetadataFrom(json, itemId) {
     return { ok: false, error: 'the Internet Archive has no item called ' + itemId + ' (it may have been removed or renamed)' };
   }
   const date = iaFirst(md.date);
-  // A range ("1890-1895") dates no single year, so it gives none.
-  const isRange = /(?<!\d)\d{4}\s*[-/–]\s*\d{2,4}(?!\d)/.test(date || '');
-  const year = isRange ? null : (/\b(1[0-9]{3}|20[0-9]{2})\b/.exec(date || '') || [])[1] || null;
+  const year = iaYear(date);
   const count = parseInt(iaFirst(md.imagecount), 10);
   return {
     ok: true,
@@ -133,35 +142,25 @@ function iaMetadataFrom(json, itemId) {
       volume: iaFirst(md.volume),
       imageCount: isNaN(count) ? null : count,
       mediatype: iaFirst(md.mediatype),
+      // A lending-library book: only lent, so none of its pages is kept.
+      lent: String(iaFirst(md['access-restricted-item']) || '').toLowerCase() === 'true',
     },
+    // Where the item's files sit, for the reader's page list.
+    server: typeof json.server === 'string' ? json.server : null,
+    dir: typeof json.dir === 'string' ? json.dir : null,
     files: (Array.isArray(json.files) ? json.files : []).map((f) => ({ name: String(f.name || ''), size: Number(f.size) || 0 })),
   };
 }
 
-// {id}_page_numbers.json as a list of { leafNum, printed } (printed is null
-// for a scan archive.org could not read a page number from).
-function iaPageNumbersFrom(json) {
-  const pages = json && Array.isArray(json.pages) ? json.pages : null;
-  if (!pages) return null;
-  return pages.map((p) => ({
-    leafNum: Number(p.leafNum),
-    printed: p.pageNumber == null || String(p.pageNumber).trim() === '' ? null : String(p.pageNumber).trim(),
-  }));
-}
-
-// The printed page of the scan `leafNum` (counting from 1), or null.
-function iaPrintedFor(pages, leafNum) {
-  const p = (pages || []).find((x) => x.leafNum === leafNum);
-  return p ? p.printed : null;
-}
-
-// The scan (leafNum) that carries printed page `printed`, or null. When
-// the number appears twice (a plate and a page) the first one wins.
-function iaLeafForPrinted(pages, printed) {
-  const want = String(printed || '').trim().toLowerCase();
-  if (!want) return null;
-  const p = (pages || []).find((x) => x.printed && x.printed.toLowerCase() === want);
-  return p ? p.leafNum : null;
+// The one year a catalogue date names: "1881", "1881-06-15",
+// "1881-06-15T00:00:00Z", "c1881", "[1881?]". A range ("1890-1895",
+// "1890/91") dates no single year, so it gives none.
+function iaYear(date) {
+  const s = String(date || '').trim();
+  const iso = /^(\d{4})(?:-\d{2}(?:-\d{2})?)?(?:[T ].*)?$/.exec(s);
+  if (iso) return iso[1];
+  if (/(?<!\d)\d{4}\s*[-/–]\s*\d{2,4}(?!\d)/.test(s)) return null;
+  return (/(?<!\d)(1[0-9]{3}|20[0-9]{2})(?!\d)/.exec(s) || [])[1] || null;
 }
 
 // The byte range [start, end) of scan `leafNum` in {id}_hocr.html, from the
@@ -263,6 +262,39 @@ function iaHints(item) {
 }
 // FHA-SYNC-END archiveorg
 
+// The reader's own page list (BookReaderJSIA.php): { lent, pages: [{ index,
+// leafNum, printed }] } in the order the reader shows them, so pages[K] is
+// /page/n{K}. `printed` is the page number the reader writes in the address
+// (null when it has none). null when the answer is not the reader's list.
+function iaBookPagesFrom(json) {
+  const data = json && json.data;
+  const spreads = data && data.brOptions && Array.isArray(data.brOptions.data) ? data.brOptions.data : null;
+  if (!spreads) return null;
+  const pages = [];
+  for (const spread of spreads) {
+    for (const p of Array.isArray(spread) ? spread : [spread]) {
+      const leafNum = Number(p && p.leafNum);
+      if (!Number.isInteger(leafNum) || leafNum < 0) return null;
+      const num = p.pageNum == null ? '' : String(p.pageNum).trim();
+      pages.push({ index: pages.length, leafNum, printed: num || null });
+    }
+  }
+  if (!pages.length) return null;
+  return { lent: !!(data.data && data.data.isRestricted), pages };
+}
+
+// Which of `pages` the address `at` (iaParsePage) is: n{K} is pages[K]; a
+// printed page is the first page the reader gives that number, as the
+// reader itself reads its own address. The index, or null.
+function iaPageIndexFor(pages, at) {
+  const list = pages || [];
+  if (at && at.leaf != null) return at.leaf < list.length ? at.leaf : null;
+  const want = String((at && at.printedPage) || '').trim().toLowerCase();
+  if (!want) return null;
+  const p = list.find((x) => x.printed && x.printed.toLowerCase() === want);
+  return p ? p.index : null;
+}
+
 // ── the panel side: requests ─────────────────────────────────────────────────
 // Each takes `d` = { fetch } (the extension page's fetch; a test's stand-in)
 // and sends no cookies and no referrer. Every answer is { ok, ... } or
@@ -276,9 +308,9 @@ function iaStatusMessage(status, what) {
   if (status === 429 || status === 503) {
     return 'the Internet Archive asked us to slow down (HTTP ' + status + '). Wait a few minutes, then press Capture again';
   }
-  if (what === 'image' && (status === 401 || status === 403)) {
-    return 'the Internet Archive does not show this book’s page images without borrowing it (HTTP ' + status +
-      '). Borrow it on archive.org, then press Capture again, or save the page by hand and drop the file in';
+  if ((what === 'image' || what === 'text') && (status === 401 || status === 403)) {
+    return 'the Internet Archive only lends this book (HTTP ' + status + '), so its pages cannot be kept. ' +
+      'Read the page on archive.org; the book’s details and the citation are saved';
   }
   if (status === 404 || status === 410) {
     return what === 'details'
@@ -311,6 +343,7 @@ async function iaGet(url, d, what, extra) {
   }
   if (!r.ok && r.status !== 206) {
     return { ok: false, status: r.status, slowDown: r.status === 429 || r.status === 503,
+      lent: (what === 'image' || what === 'text') && (r.status === 401 || r.status === 403),
       transient: r.status >= 500, error: iaStatusMessage(r.status, what) };
   }
   return { ok: true, r };
@@ -330,7 +363,8 @@ async function iaFetchMetadata(itemId, d) {
   const meta = iaMetadataFrom(json, itemId);
   if (!meta.ok) return meta;
   if (meta.item.mediatype && meta.item.mediatype !== 'texts') {
-    return { ok: false, error: 'this Internet Archive item is not a book or other text (it is "' + meta.item.mediatype + '")' };
+    return { ok: false, notABook: true, error: 'this Internet Archive item is not a book or other text (it is "' +
+      meta.item.mediatype + '"). To save this page, choose "No, the page copy is the record" and press Capture again' };
   }
   return meta;
 }
@@ -339,18 +373,30 @@ function iaHasFile(files, name) {
   return (files || []).some((f) => f.name === name);
 }
 
-// scan -> printed page. null (ok) when the item has no such file: the
-// printed page is then "not known" and the scan is named by its position.
-async function iaFetchPageNumbers(itemId, files, d) {
-  const name = itemId + '_page_numbers.json';
-  if (!iaHasFile(files, name)) return { ok: true, pages: null };
-  const got = await iaGet('https://archive.org/download/' + itemId + '/' + name, d, 'numbers');
-  if (!got.ok) return got;
-  try {
-    return { ok: true, pages: iaPageNumbersFrom(await got.r.json()) };
-  } catch (e) {
-    return { ok: false, transient: true, error: 'the Internet Archive’s page-number list was not readable' };
+// The reader's page list for the book `meta` (iaFetchMetadata's answer):
+// { ok, lent, pages } (iaBookPagesFrom) or { ok:false, error, ... }. Asked
+// of the archive.org server that holds the item, as the reader asks it.
+async function iaFetchBookPages(meta, d) {
+  const itemId = meta && meta.item && meta.item.itemId;
+  const server = String((meta && meta.server) || '');
+  const dir = String((meta && meta.dir) || '');
+  const unreadable = { ok: false, transient: true, error: 'the Internet Archive’s list of this book’s pages was not ' +
+    'readable, so the page could not be placed. Press Capture again in a little while' };
+  if (!IA_ID_RE.test(String(itemId || '')) || !/^[a-z0-9.-]+$/i.test(server) || !/^\/[A-Za-z0-9._/-]+$/.test(dir) ||
+      !iaHostOk('https://' + server + '/')) {
+    return unreadable;
   }
+  const url = 'https://' + server + '/BookReader/BookReaderJSIA.php?id=' + encodeURIComponent(itemId) +
+    '&itemPath=' + encodeURIComponent(dir) + '&server=' + encodeURIComponent(server) + '&format=json';
+  const got = await iaGet(url, d, 'page list');
+  if (!got.ok) return got;
+  let book;
+  try {
+    book = iaBookPagesFrom(await got.r.json());
+  } catch (e) {
+    book = null;
+  }
+  return book ? Object.assign({ ok: true }, book) : unreadable;
 }
 
 async function iaGunzip(buf) {
@@ -425,9 +471,9 @@ async function iaFetchImage(itemId, leafNum, d) {
 }
 
 const archiveorg = {
-  iaParsePage, iaCleanCreator, iaMetadataFrom, iaPageNumbersFrom, iaPrintedFor, iaLeafForPrinted,
+  iaParsePage, iaCleanCreator, iaMetadataFrom, iaYear, iaBookPagesFrom, iaPageIndexFor,
   iaPageIndexRange, iaHocrText, iaImageUrl, iaPageUrl, iaTitle, iaCitation, iaHints,
-  iaStatusMessage, iaFetchMetadata, iaFetchPageNumbers, iaFetchPageIndex, iaFetchLeafText, iaFetchImage,
+  iaStatusMessage, iaFetchMetadata, iaFetchBookPages, iaFetchPageIndex, iaFetchLeafText, iaFetchImage,
   IA_MAX_LEAVES: 4,
   // The pause between two page images, 0.8-2 s.
   pauseMs: () => 800 + Math.floor(Math.random() * 1200),

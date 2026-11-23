@@ -9,13 +9,15 @@
 //   - Capture on a book page saves the page image, the page's text marked an
 //     unchecked machine reading from the Internet Archive, the book's details,
 //     and a citation with the link to the page as she was looking at it;
-//   - the printed page number comes from the book's own page-number list, and
-//     "not known" is said when there is none;
+//   - the scan and its printed page number come from the reader's own page
+//     list, so a page past the scans the reader skips is still the right one,
+//     and "not known" is said for a page with no number;
 //   - "this page and the next" saves two, in order, at most four;
 //   - nothing is sent with the requests, only archive.org is asked, and the
 //     whole book is never downloaded;
-//   - a borrowed book, a busy site or a page with no text still saves what it
-//     can and says what is missing.
+//   - a lending-library book keeps nothing of its pages (no image, no text,
+//     no page copy) and says so; a busy site or a page with no text still
+//     saves what it can and says what is missing.
 //
 //   node --test browser-companion/tests/test-panel-archiveorg.js
 
@@ -60,10 +62,14 @@ function bookSite() {
 }
 
 // archive.org: the fixtures, a range of the OCR file, and an image per scan.
-function archive({ answers = {}, log = [], noNumbers = false, noIndex = false } = {}) {
+function archive({ answers = {}, log = [], lent = false, noIndex = false } = {}) {
   const idx = Buffer.from(zlib.gzipSync(JSON.stringify(json('archiveorg-hocr-pageindex.json'))));
   const meta = json('archiveorg-metadata.json');
-  if (noNumbers) meta.files = meta.files.filter((f) => !/page_numbers/.test(f.name));
+  const book = json('archiveorg-bookreader-data.json');
+  if (lent) {
+    meta.metadata['access-restricted-item'] = 'true';
+    book.data.data.isRestricted = true;
+  }
   if (noIndex) meta.files = meta.files.filter((f) => !/hocr/.test(f.name));
   const ok = (body, extra) => Object.assign({
     ok: true, status: 200, url: 'https://archive.org/x', headers: { get: () => 'application/json' },
@@ -79,7 +85,7 @@ function archive({ answers = {}, log = [], noNumbers = false, noIndex = false } 
       }
     }
     if (/\/metadata\//.test(url)) return ok(meta);
-    if (/_page_numbers\.json$/.test(url)) return ok(json('archiveorg-page-numbers.json'));
+    if (/\/BookReader\/BookReaderJSIA\.php\?/.test(url)) return ok(book);
     if (/_hocr_pageindex\.json\.gz$/.test(url)) return ok(idx.buffer.slice(idx.byteOffset, idx.byteOffset + idx.byteLength));
     if (/_hocr\.html$/.test(url)) return ok(read('archiveorg-hocr-leaf20.html'), { status: 206 });
     const m = /\$(\d+)\/full\/full/.exec(url);
@@ -136,7 +142,21 @@ test('a book page saves its image and its text (marked unchecked), the book\'s d
   assert.ok(log.some((l) => l.url === 'https://iiif.archive.org/iiif/' + ID + '$21/full/full/0/default.jpg'));
 });
 
-test('a printed-page address finds its scan through the page-number list, and the link keeps the form she looked at', async () => {
+test('a page past the scans the reader skips is saved from the right scan, with its own printed page', async () => {
+  // The 1881 item skips five scans before n299: n300 is scan 305, printed page 199.
+  for (const href of [BOOK + '/page/n300/mode/2up', BOOK + '/page/199']) {
+    const log = [];
+    const p = await open(href, { log });
+    await p.capture();
+    const cap = p.capJson(p.written[0]);
+    assert.match(cap.citation, /\), p\. 199; digital images/, href);
+    assert.ok(log.some((l) => l.url === 'https://iiif.archive.org/iiif/' + ID + '$305/full/full/0/default.jpg'), href);
+    const data = JSON.parse(await asset(p.written[0], 'record-data.json').blob.text());
+    assert.deepStrictEqual(data.pages.map((x) => [x.leaf, x.leafNum, x.printed]), [[300, 305, '199']]);
+  }
+});
+
+test('a printed-page address finds its scan through the reader\'s page list, and the link keeps the form she looked at', async () => {
   const p = await open(P11);
   await p.capture();
   const b = p.written[0];
@@ -160,11 +180,11 @@ test('"this page and the next" saves two pages in order, with a range in the cit
 });
 
 test('never more than four pages, and never past the last page of the book', async () => {
-  const p = await open(BOOK + '/page/n496');
+  const p = await open(BOOK + '/page/n494');
   p.$('ia-leaves').value = '9';
   await p.capture();
   const data = JSON.parse(await asset(p.written[0], 'record-data.json').blob.text());
-  assert.strictEqual(data.pages.length, 2); // scans 497 and 498 of 498
+  assert.strictEqual(data.pages.length, 2); // the last two of the reader's 496 pages
   const q = await open(N20);
   q.$('ia-leaves').value = '9';
   await q.capture();
@@ -186,18 +206,28 @@ test('no login and no whole-book download: every request omits cookies and the r
   assert.ok(!log.some((l) => /_djvu\.txt|\.pdf/.test(l.url)), 'the whole book was asked for');
 });
 
-test('a book with no page-number list: the scan is named by its address and the printed page is said to be unknown', async () => {
-  const p = await open(N20, { noNumbers: true });
+test('a page with no printed number is named by its address and the printed page is said to be unknown', async () => {
+  const p = await open(BOOK + '/page/n2');
   await p.capture();
   const cap = p.capJson(p.written[0]);
-  assert.match(cap.citation, /\), scan n20 \(printed page not known\); digital images/);
-  assert.strictEqual(cap.title, 'History of Amador County, California, scan n20');
-  assert.match(cap.notes, /printed page number is not known for scan n20/);
-  // and a printed-page address cannot be placed without the list
-  const q = await open(P11, { noNumbers: true });
+  assert.match(cap.citation, /\), scan n2 \(printed page not known\); digital images/);
+  assert.strictEqual(cap.title, 'History of Amador County, California, scan n2');
+  assert.match(cap.notes, /printed page number is not known for scan n2/);
+  // and a printed page the reader does not know is not guessed at
+  const q = await open(BOOK + '/page/9999');
   await q.capture();
   assert.strictEqual(q.written.length, 0);
-  assert.match(q.result(), /could not tell which scan is page 11/);
+  assert.match(q.result(), /could not tell which scan is page 9999/);
+});
+
+test('the reader\'s page list asking us to slow down stops the capture before any image is asked for', async () => {
+  // Codex 4661310247: a slow-down on the request that places the page was only logged.
+  const log = [];
+  const p = await open(N20, { log, answers: { 'BookReaderJSIA.php': 429 } });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /slow down/);
+  assert.ok(!log.some((l) => /iiif|_hocr/.test(l.url)));
 });
 
 test('a book with no text index still saves the image and says the text was not saved', async () => {
@@ -209,17 +239,40 @@ test('a book with no text index still saves the image and says the text was not 
   assert.strictEqual(p.resultClass(), 'stage-result warn');
 });
 
-test('a borrowed book: nothing is saved but its details and a page copy, and she is told to borrow it', async () => {
+test('a lending-library book keeps nothing of its pages: no image, no text, no page copy, and says so', async () => {
+  const log = [];
+  const p = await open(N20, { log, lent: true });
+  p.$('ia-leaves').value = '2';
+  await p.capture();
+  const b = p.written[0];
+  assert.deepStrictEqual(p.files(b), ['record-data.json']);
+  assert.ok(!log.some((l) => /iiif|_hocr/.test(l.url)), 'a lent page was asked for');
+  assert.match(p.capJson(b).notes, /lending library, so its pages are only lent/);
+  assert.match(p.result(), /lending library/);
+  assert.doesNotMatch(p.result(), /Borrow it|press Capture again/);
+  assert.match(p.capJson(b).citation, /\), pp\. 11-12; digital images/);
+  const data = JSON.parse(await asset(b, 'record-data.json').blob.text());
+  assert.strictEqual(data.lent, true);
+  assert.ok(data.pages.every((x) => x.file === null && x.ocr === false));
+});
+
+test('a book whose images are refused as lent is treated the same, even with no lending flag', async () => {
   const p = await open(N20, { answers: { '$21/full/full': 403 } });
   p.$('ia-leaves').value = '2';
   await p.capture();
   const b = p.written[0];
-  assert.deepStrictEqual(p.files(b), ['page-snapshot.html', 'record-data.json']);
-  assert.match(p.capJson(b).notes, /without borrowing it/);
-  assert.match(p.result(), /Borrow it on archive\.org/);
-  // the second page is not tried once the first is refused
+  assert.deepStrictEqual(p.files(b), ['record-data.json']);
+  assert.match(p.result(), /lending library/);
   const data = JSON.parse(await asset(b, 'record-data.json').blob.text());
-  assert.match(data.pages[1].error, /not tried/);
+  assert.match(data.pages[1].error, /only lent/);
+});
+
+test('an archive.org recording is not a book: nothing is saved and she is told how to save the page', async () => {
+  const p = await open(N20, { answers: { '/metadata/': { ok: true, status: 200, url: 'https://archive.org/metadata/x',
+    headers: { get: () => 'application/json' }, json: async () => ({ metadata: { title: 'An interview', mediatype: 'audio' } }) } } });
+  await p.capture();
+  assert.strictEqual(p.written.length, 0);
+  assert.match(p.result(), /No, the page copy is the record/);
 });
 
 test('the Internet Archive asking us to slow down stops the downloads and says what to do', async () => {

@@ -1,8 +1,8 @@
 // Internet Archive book pages: the readers in lib/archiveorg-record.js, run on
 // fixtures recorded from one public 1881 county history on archive.org
-// (tests/fixtures/capture-samples/archiveorg-*; the item's description, its
-// page-number list and page index trimmed to the first leaves, and the OCR of
-// one leaf).
+// (tests/fixtures/capture-samples/archiveorg-*; the item's description, the
+// reader's page list (scan and printed page only), the OCR page index trimmed
+// to the first leaves, and the OCR of one leaf).
 //
 // What it guards, in the human's terms: an address says which page she is
 // looking at (the scan number, or the printed number BookReader writes); the
@@ -67,8 +67,22 @@ test('iaMetadataFrom: title, author, publisher, date, year and the files, from t
   assert.deepStrictEqual(m.item, {
     itemId: ID, title: 'History of Amador County, California', creator: 'Jesse D. Mason',
     publisher: 'Oakland, Cal., Thompson & West', date: '1881', year: '1881', volume: null, imageCount: 498, mediatype: 'texts',
+    lent: false,
   });
-  assert.ok(m.files.some((f) => f.name === ID + '_page_numbers.json'));
+  assert.strictEqual(m.server, 'ia800504.us.archive.org');
+  assert.strictEqual(m.dir, '/19/items/' + ID);
+  assert.ok(m.files.some((f) => f.name === ID + '_hocr_pageindex.json.gz'));
+  const lent = ia.iaMetadataFrom({ metadata: { title: 'x', 'access-restricted-item': 'true' } }, 'lent01');
+  assert.strictEqual(lent.item.lent, true);
+});
+
+test('iaYear: a full date, a month, a timestamp and a circa date name their year; a range names none', () => {
+  // Codex 4661310243: "1881-06-15" was read as the range 1881-06 and the book went undated.
+  for (const [date, year] of [['1881', '1881'], ['1881-06', '1881'], ['1881-06-15', '1881'],
+    ['1881-06-15T00:00:00Z', '1881'], ['c1881', '1881'], ['[1881?]', '1881'],
+    ['1890-1895', null], ['1890/91', null], ['c1890-1895', null], ['', null], [null, null]]) {
+    assert.strictEqual(ia.iaYear(date), year, String(date));
+  }
 });
 
 test('iaMetadataFrom: no author, no date, a volume, a date range; an item that does not exist', () => {
@@ -84,23 +98,30 @@ test('iaMetadataFrom: no author, no date, a volume, a date range; an item that d
   assert.strictEqual(ia.iaMetadataFrom(null, 'gone').ok, false);
 });
 
-// ── the printed page ─────────────────────────────────────────────────────────
+// ── which scan, and its printed page ─────────────────────────────────────────
 
-test('the printed page for a scan, and the scan for a printed page', () => {
-  const pages = ia.iaPageNumbersFrom(json('archiveorg-page-numbers.json'));
-  assert.strictEqual(pages.length, 25);
-  assert.strictEqual(ia.iaPrintedFor(pages, 20), '10');
-  assert.strictEqual(ia.iaPrintedFor(pages, 21), '11');
-  assert.strictEqual(ia.iaPrintedFor(pages, 1), null); // a cover: no number
-  assert.strictEqual(ia.iaPrintedFor(pages, 400), null);
-  assert.strictEqual(ia.iaLeafForPrinted(pages, '11'), 21);
-  assert.strictEqual(ia.iaLeafForPrinted(pages, ' 11 '), 21);
-  assert.strictEqual(ia.iaLeafForPrinted(pages, '999'), null);
-  assert.strictEqual(ia.iaLeafForPrinted(pages, ''), null);
-  assert.strictEqual(ia.iaLeafForPrinted(null, '11'), null);
-  assert.strictEqual(ia.iaPageNumbersFrom({}), null);
-  // a printed number that appears twice (a plate and a page): the first wins
-  assert.strictEqual(ia.iaLeafForPrinted([{ leafNum: 5, printed: 'iv' }, { leafNum: 9, printed: 'iv' }], 'IV'), 5);
+test('the reader\'s page list places n{K} and a printed page on the right scan, past the scans it skips', () => {
+  const book = ia.iaBookPagesFrom(json('archiveorg-bookreader-data.json'));
+  assert.strictEqual(book.lent, false);
+  assert.strictEqual(book.pages.length, 496);
+  const at = (href) => book.pages[ia.iaPageIndexFor(book.pages, ia.iaParsePage(href))];
+  // the front of the book: n20 is the 21st scan, printed page 11
+  assert.deepStrictEqual(at('https://archive.org/details/' + ID + '/page/n20'), { index: 20, leafNum: 21, printed: '11' });
+  assert.deepStrictEqual(at('https://archive.org/details/' + ID + '/page/11'), { index: 20, leafNum: 21, printed: '11' });
+  // past the five scans the reader skips: n300 is scan 305, printed page 199
+  // (live check: the OCR of scan 305 begins "LANCHA PLANA AND VICINITY. 199")
+  assert.deepStrictEqual(at('https://archive.org/details/' + ID + '/page/n300'), { index: 300, leafNum: 305, printed: '199' });
+  assert.deepStrictEqual(at('https://archive.org/details/' + ID + '/page/199'), { index: 300, leafNum: 305, printed: '199' });
+  assert.strictEqual(book.pages[0].printed, null); // a cover: no number
+  assert.strictEqual(ia.iaPageIndexFor(book.pages, ia.iaParsePage('https://archive.org/details/' + ID + '/page/n496')), null);
+  assert.strictEqual(ia.iaPageIndexFor(book.pages, ia.iaParsePage('https://archive.org/details/' + ID + '/page/9999')), null);
+  assert.strictEqual(ia.iaPageIndexFor(book.pages, ia.iaParsePage('https://archive.org/details/' + ID)), null);
+  // a printed number that appears twice (a plate and a page): the first wins, as in the reader
+  const twice = [{ index: 0, leafNum: 5, printed: 'iv' }, { index: 1, leafNum: 9, printed: 'iv' }];
+  assert.strictEqual(ia.iaPageIndexFor(twice, { leaf: null, printedPage: 'IV' }), 0);
+  assert.strictEqual(ia.iaBookPagesFrom({}), null);
+  assert.strictEqual(ia.iaBookPagesFrom({ data: { brOptions: { data: [[{ leafNum: 'x' }]] } } }), null);
+  assert.strictEqual(ia.iaBookPagesFrom({ data: { data: { isRestricted: true }, brOptions: { data: [[{ leafNum: 1 }]] } } }).lent, true);
 });
 
 // ── the text ─────────────────────────────────────────────────────────────────
@@ -167,7 +188,7 @@ function site(log) {
   return async (url, init) => {
     log.push({ url, init });
     if (/\/metadata\//.test(url)) return resp(json('archiveorg-metadata.json'));
-    if (/_page_numbers\.json$/.test(url)) return resp(json('archiveorg-page-numbers.json'));
+    if (/\/BookReader\/BookReaderJSIA\.php\?/.test(url)) return resp(json('archiveorg-bookreader-data.json'));
     if (/_hocr_pageindex\.json\.gz$/.test(url)) return resp(idx.buffer.slice(idx.byteOffset, idx.byteOffset + idx.byteLength));
     if (/_hocr\.html$/.test(url)) return resp(read('archiveorg-hocr-leaf20.html'), { status: 206 });
     if (/^https:\/\/iiif\.archive\.org\//.test(url)) {
@@ -177,13 +198,16 @@ function site(log) {
   };
 }
 
-test('a page is four small requests: description, page numbers, text index, and one range of the OCR', async () => {
+test('a page is four small requests: description, the reader\'s page list, text index, and one range of the OCR', async () => {
   const log = [];
   const d = { fetch: site(log) };
   const meta = await ia.iaFetchMetadata(ID, d);
   assert.strictEqual(meta.ok, true);
-  const nums = await ia.iaFetchPageNumbers(ID, meta.files, d);
-  assert.strictEqual(ia.iaPrintedFor(nums.pages, 20), '10');
+  const book = await ia.iaFetchBookPages(meta, d);
+  assert.strictEqual(book.ok, true);
+  assert.strictEqual(book.pages[300].leafNum, 305);
+  assert.strictEqual(log[1].url, 'https://ia800504.us.archive.org/BookReader/BookReaderJSIA.php?id=' + ID +
+    '&itemPath=%2F19%2Fitems%2F' + ID + '&server=ia800504.us.archive.org&format=json');
   const index = await ia.iaFetchPageIndex(ID, meta.files, d);
   assert.strictEqual(index.ok, true);
   const text = await ia.iaFetchLeafText(ID, index.index, 20, d);
@@ -214,9 +238,17 @@ test('the whole book is never downloaded: a server that ignores the range is not
   assert.ok(cancelled);
 });
 
-test('an item with no page numbers or no text index says so without failing', async () => {
-  const d = { fetch: site([]) };
-  assert.deepStrictEqual(await ia.iaFetchPageNumbers(ID, [], d), { ok: true, pages: null });
+test('an item with no text index says so without failing; a page list from off archive.org is never asked for', async () => {
+  const log = [];
+  const d = { fetch: site(log) };
+  const meta = await ia.iaFetchMetadata(ID, d);
+  for (const server of ['evil.example', 'archive.org.evil.example', 'ia800504.us.archive.org/x?']) {
+    const got = await ia.iaFetchBookPages(Object.assign({}, meta, { server }), d);
+    assert.strictEqual(got.ok, false, server);
+  }
+  assert.strictEqual(log.filter((l) => /BookReaderJSIA/.test(l.url)).length, 0);
+  const slow = await ia.iaFetchBookPages(meta, { fetch: async () => resp('', { ok: false, status: 429 }) });
+  assert.strictEqual(slow.slowDown, true);
   assert.deepStrictEqual(await ia.iaFetchPageIndex(ID, [{ name: ID + '_hocr.html' }], d), { ok: true, index: null });
 });
 
@@ -234,7 +266,9 @@ test('the image: full size from archive.org\'s image service; small, wrong type,
   assert.match((await bad(resp(Buffer.alloc(60000), { url: 'https://evil.example/x.jpg', headers: { get: () => 'image/jpeg' } }))).error,
     /outside archive\.org/);
   const borrowed = await bad(resp('', { ok: false, status: 403 }));
-  assert.match(borrowed.error, /without borrowing it/);
+  assert.strictEqual(borrowed.lent, true);
+  assert.match(borrowed.error, /only lends this book/);
+  assert.doesNotMatch(borrowed.error, /press Capture again/); // borrowing would not help: no cookies are sent
   const slow = await bad(resp('', { ok: false, status: 429 }));
   assert.strictEqual(slow.slowDown, true);
   assert.match(slow.error, /slow down/);
@@ -243,6 +277,7 @@ test('the image: full size from archive.org\'s image service; small, wrong type,
 test('a description that is not a book, or an item that is gone, is refused with a reason', async () => {
   const audio = await ia.iaFetchMetadata('radio01', { fetch: async () => resp({ metadata: { title: 'x', mediatype: 'audio' } }) });
   assert.match(audio.error, /not a book/);
+  assert.match(audio.error, /No, the page copy is the record/); // and how to save the page anyway
   const gone = await ia.iaFetchMetadata('gone01', { fetch: async () => resp({}) });
   assert.match(gone.error, /no item called gone01/);
   const down = await ia.iaFetchMetadata('x01', { fetch: async () => { throw new TypeError('Failed to fetch'); } });

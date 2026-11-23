@@ -2713,9 +2713,7 @@
       return { ok: false, error: 'the Internet Archive has no item called ' + itemId + ' (it may have been removed or renamed)' };
     }
     const date = iaFirst(md.date);
-    // A range ("1890-1895") dates no single year, so it gives none.
-    const isRange = /(?<!\d)\d{4}\s*[-/–]\s*\d{2,4}(?!\d)/.test(date || '');
-    const year = isRange ? null : (/\b(1[0-9]{3}|20[0-9]{2})\b/.exec(date || '') || [])[1] || null;
+    const year = iaYear(date);
     const count = parseInt(iaFirst(md.imagecount), 10);
     return {
       ok: true,
@@ -2729,35 +2727,25 @@
         volume: iaFirst(md.volume),
         imageCount: isNaN(count) ? null : count,
         mediatype: iaFirst(md.mediatype),
+        // A lending-library book: only lent, so none of its pages is kept.
+        lent: String(iaFirst(md['access-restricted-item']) || '').toLowerCase() === 'true',
       },
+      // Where the item's files sit, for the reader's page list.
+      server: typeof json.server === 'string' ? json.server : null,
+      dir: typeof json.dir === 'string' ? json.dir : null,
       files: (Array.isArray(json.files) ? json.files : []).map((f) => ({ name: String(f.name || ''), size: Number(f.size) || 0 })),
     };
   }
 
-  // {id}_page_numbers.json as a list of { leafNum, printed } (printed is null
-  // for a scan archive.org could not read a page number from).
-  function iaPageNumbersFrom(json) {
-    const pages = json && Array.isArray(json.pages) ? json.pages : null;
-    if (!pages) return null;
-    return pages.map((p) => ({
-      leafNum: Number(p.leafNum),
-      printed: p.pageNumber == null || String(p.pageNumber).trim() === '' ? null : String(p.pageNumber).trim(),
-    }));
-  }
-
-  // The printed page of the scan `leafNum` (counting from 1), or null.
-  function iaPrintedFor(pages, leafNum) {
-    const p = (pages || []).find((x) => x.leafNum === leafNum);
-    return p ? p.printed : null;
-  }
-
-  // The scan (leafNum) that carries printed page `printed`, or null. When
-  // the number appears twice (a plate and a page) the first one wins.
-  function iaLeafForPrinted(pages, printed) {
-    const want = String(printed || '').trim().toLowerCase();
-    if (!want) return null;
-    const p = (pages || []).find((x) => x.printed && x.printed.toLowerCase() === want);
-    return p ? p.leafNum : null;
+  // The one year a catalogue date names: "1881", "1881-06-15",
+  // "1881-06-15T00:00:00Z", "c1881", "[1881?]". A range ("1890-1895",
+  // "1890/91") dates no single year, so it gives none.
+  function iaYear(date) {
+    const s = String(date || '').trim();
+    const iso = /^(\d{4})(?:-\d{2}(?:-\d{2})?)?(?:[T ].*)?$/.exec(s);
+    if (iso) return iso[1];
+    if (/(?<!\d)\d{4}\s*[-/–]\s*\d{2,4}(?!\d)/.test(s)) return null;
+    return (/(?<!\d)(1[0-9]{3}|20[0-9]{2})(?!\d)/.exec(s) || [])[1] || null;
   }
 
   // The byte range [start, end) of scan `leafNum` in {id}_hocr.html, from the

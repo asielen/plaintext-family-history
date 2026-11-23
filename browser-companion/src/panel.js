@@ -2634,64 +2634,73 @@
     row(true, meta.item.title || at.itemId);
     const item = meta.item;
 
-    // Which printed page each scan is. A book with no list still saves, and the
-    // citation says the printed page is not known.
-    row = autoRow('Internet Archive page numbers');
-    const nums = await IA.iaFetchPageNumbers(at.itemId, meta.files, d);
-    const pages = nums.ok ? nums.pages : null;
-    if (!nums.ok) row(false, nums.error);
-    else row(true, pages ? '' : 'none for this book');
-
-    // Which scan she is looking at: the address's scan number (n20 is the 21st
-    // scan), or - when BookReader wrote a printed page - the scan that
-    // carries it.
-    let leafNum = null;
-    if (at.leaf != null) leafNum = at.leaf + 1;
-    else if (at.printedPage) {
-      leafNum = IA.iaLeafForPrinted(pages, at.printedPage);
-      if (leafNum == null) {
-        throw new Error('could not tell which scan is page ' + at.printedPage + ' of this book, because the ' +
-          'Internet Archive has no page-number list for it. Open the page in the reader and press Capture again, ' +
-          'or use the "n…" address the reader shows when you turn to the page');
-      }
-    } else {
+    if (at.leaf == null && !at.printedPage) {
       throw new Error('this address names no page of the book. Turn to the page you want in the reader, ' +
         'then press Capture again');
     }
-    if (item.imageCount && leafNum > item.imageCount) {
-      throw new Error('this book has ' + item.imageCount + ' pages, and the address asks for page ' + leafNum);
+    // Which scan she is looking at, and the printed page on each, from the
+    // reader's own page list: the reader skips scans (colour cards, blank
+    // leaves), so n20 is not always the 21st scan, and its printed page is the
+    // one the reader wrote in the address.
+    row = autoRow('Internet Archive page list');
+    const book = await IA.iaFetchBookPages(meta, d);
+    if (!book.ok) {
+      row(false, book.error);
+      noteSlowDown(book, 'archiveorg');
+      throw new Error(book.error.charAt(0).toUpperCase() + book.error.slice(1));
     }
-    const last = item.imageCount || leafNum + IA.IA_MAX_LEAVES - 1;
-    const count = Math.max(1, Math.min(IA.IA_MAX_LEAVES, form.iaLeaves || 1, last - leafNum + 1));
+    row(true, book.pages.length + ' pages');
+    // A lending-library book is only lent: nothing of its pages is kept.
+    let lent = !!(item.lent || book.lent);
+    const first = IA.iaPageIndexFor(book.pages, at);
+    if (first == null) {
+      throw new Error(at.leaf != null
+        ? 'this book has ' + book.pages.length + ' pages in the reader, and the address asks for page n' + at.leaf
+        : 'could not tell which scan is page ' + at.printedPage + ' of this book. Turn to the page in the reader ' +
+          'and press Capture again');
+    }
+    const count = Math.max(1, Math.min(IA.IA_MAX_LEAVES, form.iaLeaves || 1, book.pages.length - first));
     const leaves = [];
     for (let i = 0; i < count; i++) {
-      const num = leafNum + i;
-      const printed = IA.iaPrintedFor(pages, num);
+      const pg = book.pages[first + i];
       // The link keeps the form she was looking at: n20 stays n20, and a
-      // printed page stays a printed page (the next page's, when it is known).
-      const segment = i === 0 ? at.segment : at.leaf != null || !printed ? 'n' + (num - 1) : printed;
-      leaves.push({ leafNum: num, leaf: num - 1, printed, segment, url: IA.iaPageUrl(at.itemId, segment),
-        file: null, text: null, textError: null, error: null });
+      // printed page stays a printed page (the next page's, when the reader
+      // would open that number at this very page).
+      const byNumber = at.leaf == null && pg.printed && IA.iaPageIndexFor(book.pages, { printedPage: pg.printed }) === pg.index;
+      const segment = i === 0 ? at.segment : byNumber ? pg.printed : 'n' + pg.index;
+      leaves.push({ leafNum: pg.leafNum, leaf: pg.index, printed: pg.printed, segment,
+        url: IA.iaPageUrl(at.itemId, segment), file: null, text: null, textError: null, error: null });
     }
     const pageUrl = leaves[0].url;
 
     // The OCR: one small range of the book's OCR file per page.
-    row = autoRow('Internet Archive text index');
-    const index = await IA.iaFetchPageIndex(at.itemId, meta.files, d);
-    if (!index.ok) row(false, index.error);
-    else row(true, index.index ? '' : 'none for this book');
-    noteSlowDown(index, 'archiveorg');
+    let index = { ok: true, index: null };
+    if (!lent) {
+      row = autoRow('Internet Archive text index');
+      index = await IA.iaFetchPageIndex(at.itemId, meta.files, d);
+      if (!index.ok) row(false, index.error);
+      else row(true, index.index ? '' : 'none for this book');
+      noteSlowDown(index, 'archiveorg');
+      if (index.lent) lent = true;
+    }
     let slowDown = !!index.slowDown;
 
-    let pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl);
+    // A copy of the reader page of a lent book would hold the lent page: none.
+    let pageCopy = lent ? null : await recordPageCopy('early', wantPageCopy, recordUrl);
 
     const assets = [];
     const failed = [];
     for (let i = 0; i < leaves.length; i++) {
       const lf = leaves[i];
       const label = lf.printed ? 'page ' + lf.printed : 'scan n' + lf.leaf;
+      if (lent) {
+        lf.error = 'not saved: the book is only lent';
+        failed.push(lf);
+        continue;
+      }
       if (slowDown) {
         lf.error = 'not tried: the Internet Archive asked us to slow down';
+        lf.retry = true;
         failed.push(lf);
         continue;
       }
@@ -2705,15 +2714,17 @@
         row(true, Math.max(1, Math.round(got.blob.size / 1024)) + ' KB');
       } else {
         lf.error = got.error;
-        lf.transient = !!got.transient;
+        lf.retry = !!(got.transient || got.slowDown);
         failed.push(lf);
         row(false, got.error);
         if (got.slowDown) slowDown = true;
         noteSlowDown(got, 'archiveorg');
-        // A lending-library book refuses every page the same way: not once more.
-        if (/without borrowing/.test(got.error || '')) {
+        // A lending-library book refuses every page the same way: not once
+        // more, and nothing of it is kept.
+        if (got.lent) {
+          lent = true;
           for (const rest of leaves.slice(i + 1)) {
-            rest.error = 'not tried: ' + got.error;
+            rest.error = 'not saved: the book is only lent';
             failed.push(rest);
           }
           break;
@@ -2730,6 +2741,7 @@
           lf.textError = t.error;
           row(false, t.error);
           if (t.slowDown) slowDown = true;
+          if (t.lent) lent = true;
           noteSlowDown(t, 'archiveorg');
         }
       }
@@ -2750,10 +2762,22 @@
         role: 'transcript', mode: 'internet-archive-ocr' });
     }
 
+    // A lent book keeps nothing of its pages, whatever came before the refusal.
+    if (lent) {
+      pageCopy = null;
+      for (let k = assets.length - 1; k >= 0; k--) {
+        if (assets[k].mode === 'internet-archive-image' || assets[k].mode === 'internet-archive-ocr') assets.splice(k, 1);
+      }
+      for (const lf of leaves) {
+        lf.file = null;
+        lf.text = null;
+      }
+    }
     // No image and no file of hers: the page copy comes too, so the book's
-    // details are not filed as a source with no file at all.
+    // details are not filed as a source with no file at all (never for a lent
+    // book: the copy would hold the lent page).
     const hasFile = assets.some((a) => a.role !== 'transcript');
-    if (!pageCopy && !hasFile) pageCopy = await recordPageCopy('late', true, recordUrl);
+    if (!pageCopy && !hasFile && !lent) pageCopy = await recordPageCopy('late', true, recordUrl);
     let forcedCopy = false;
     if (pageCopy && (wantPageCopy || !hasFile)) {
       assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
@@ -2765,16 +2789,18 @@
     const saved = leaves.filter((lf) => lf.file);
     const data = {
       note: 'Captured from the Internet Archive by the archive capture extension. "item" is the book as the Internet ' +
-        'Archive describes it. "pages" lists the pages this capture asked for: "leaf" is the scan\'s place in the ' +
-        'reader\'s address (n20 is leaf 20, counting from 0), "printed" the page number printed on it (null when ' +
-        'the Internet Archive does not know it), "file" the image this capture saved (null when it could not be), ' +
+        'Archive describes it. "pages" lists the pages this capture asked for: "leaf" is the page\'s place in the ' +
+        'reader\'s address (n20 is leaf 20, counting from 0), "leafNum" the scan it is (the reader skips some ' +
+        'scans, so the two can differ by more than one), "printed" the page number the reader gives it (null when ' +
+        'it has none), "file" the image this capture saved (null when it could not be), ' +
         'and "ocr" whether its text is in transcript.md. The text is the Internet Archive\'s own OCR and has not ' +
         'been checked against the image.',
       item,
       pageUrl,
       citation,
+      lent,
       pages: leaves.map((lf) => ({
-        leaf: lf.leaf, printed: lf.printed, url: lf.url, file: lf.file, ocr: lf.text != null,
+        leaf: lf.leaf, leafNum: lf.leafNum, printed: lf.printed, url: lf.url, file: lf.file, ocr: lf.text != null,
         error: lf.error || null, textError: lf.textError || null,
       })),
     };
@@ -2786,7 +2812,11 @@
     });
 
     const lines = [];
-    if (failed.length) {
+    if (lent) {
+      lines.push('This book is in the Internet Archive’s lending library, so its pages are only lent: the page image, ' +
+        'its text and a copy of the page were not saved. The book’s details and the citation to the page are saved; ' +
+        'read the page on archive.org.');
+    } else if (failed.length) {
       lines.push(failed.length + (failed.length === 1 ? ' page was' : ' pages were') + ' not saved (' +
         failed.map((lf) => (lf.printed ? 'page ' + lf.printed : 'scan n' + lf.leaf) + ': ' + lf.error).join('; ') + '). ' +
         (slowDown ? 'Wait a few minutes, then press Capture again.' : ''));
@@ -2804,7 +2834,7 @@
       'Internet Archive page: ' + pageUrl,
       leaves.some((lf) => !lf.printed) ? 'The printed page number is not known for ' +
         leaves.filter((lf) => !lf.printed).map((lf) => 'scan n' + lf.leaf).join(', ') +
-        ': the Internet Archive has no page-number list for it here.' : '',
+        ': the reader gives it no page number.' : '',
       saved.length ? saved.length + (saved.length === 1 ? ' page image' : ' page images') +
         ' saved (' + saved.map((lf) => lf.file).join(', ') + ').' : '',
       warning ? 'Not saved: ' + warning : '',
@@ -2837,7 +2867,7 @@
       key: 'ia:' + at.itemId + ':' + leaves[0].leafNum,
       record: { itemId: at.itemId, leaf: leaves[0].leaf, printed: leaves[0].printed },
       bundle: st.bundle, where: st.where,
-      partial: failed.some((lf) => lf.transient || /not tried|slow down/i.test(lf.error || '')),
+      partial: failed.some((lf) => lf.retry),
       slowDown,
       note: saved.length + (saved.length === 1 ? ' page' : ' pages') + ' saved' + (failed.length ? ', ' + failed.length + ' not saved' : ''),
     };
