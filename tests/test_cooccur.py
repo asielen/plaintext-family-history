@@ -98,6 +98,25 @@ class CooccurPersonTests(unittest.TestCase):
         # No legacy file sitting around - nothing to migrate, nothing to report.
         self.assertFalse(result['migrated_legacy_dismissed'])
 
+    def test_a_not_the_same_person_note_does_not_hide_a_connection(self) -> None:
+        # "Two different people" and "not connected" are separate answers: a
+        # pair noted as different people is still proposed as a connection,
+        # and a not-connected pair is still excluded.
+        _link_source_people(self.conn, 's-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        _link_source_people(self.conn, 's-2222222222', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb')
+        self.conn.commit()
+        path = self.archive_root / 'notes' / 'cooccur_dismissed.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({'pairs': [], 'not_same_person': [
+            {'persons': ['p-aaaaaaaaaa', 'p-bbbbbbbbbb'], 'date': '2026-11-22'}]}),
+            encoding='utf-8')
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['person_pairs']), 1)
+        path.write_text(json.dumps({'pairs': [['p-aaaaaaaaaa', 'p-bbbbbbbbbb']],
+                                    'not_same_person': []}), encoding='utf-8')
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(result['person_pairs'], [])
+
     def test_legacy_location_tombstone_still_excludes_pair(self) -> None:
         # An archive that has not yet migrated (#48) still has its
         # dismissals only at the pre-fix `.cache/` location; `fha cooccur`
