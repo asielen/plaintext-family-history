@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.22, 2026-11-22**
+**Version 2.24, 2026-11-23**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -1001,11 +1001,12 @@ An AI photo-categorization pipeline (a separate tool, not part of this kit) is a
 Generated output that leaves the archive falls into two categories with different binding privacy rules: **public output**, meant for redistribution beyond the family, and **private export**, a family-facing copy that stays within the family but is gathered outside the archive's own access controls.
 
 **Public output, living-person redaction (mandatory):**
-- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and all claims, photos, and source citations naming them are withheld.
+- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and the photos and source citations naming them are withheld.
+- A claim about a living person is withheld, since its date and place are that person's own. Who a claim is about follows §8.3: an event's own people (the `child` on a birth or baptism, the `deceased` on a death or burial, the couple on a marriage or divorce); on any other claim, the people under `subject`, `head` or `household_member`; on a claim that does not say, everyone it names. A claim about deceased people that also names a living person in another part (a parent, godparent, witness, informant or namesake) is kept: its kind, date and place are shown, and the living person is left out of it (not named, not linked, not labelled), as is the claim's own wording, which usually names everyone on the record. Its source follows the rule above: a source naming a living person stays out, and its citation reads as withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
 
 **Public output, restricted material (mandatory):**
-- Anything carrying `restricted` (a source, a claim, a person, or a name) is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name).
+- Anything carrying `restricted` (a source, a claim, a person, or a name) is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name). A claim naming a restricted person in any part is withheld whole, whatever else it names.
 - DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in public output without an additional, independent non-DNA source establishing the same fact.
 
 **Scope (what "public output" covers):**

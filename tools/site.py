@@ -289,6 +289,11 @@ from _lib import (
     family_calendar_week,
     person_completeness,
     PARKED_CLAIM_SQL,
+    CLAIM_UNWORDED,
+    CLAIM_WITHHELD,
+    claim_people_verdict,
+    claim_subjects,
+    claim_role_pairs,
     apply_private_fence,
     withhold_private_and_drafts,
     ASSET_ROOT_ALIASES,
@@ -542,22 +547,21 @@ _RESTRICTED_LABEL = 'Restricted - not included in this publication'
 # restricted sources is never revealed and the label never repeats inline.
 _RESTRICTED_FN = '\x00restricted'
 
-# The standalone filter that keeps a claim off every shared page when it names
-# anyone `_person_is_redacted` withholds. It asks that one rule through the
-# `fha_person_redacted` SQL function `prepare()` registers, so a claim written
-# by hand with a merged duplicate's old id is held to the living person it was
-# merged into (#237), the same as a photo tag is (#236).
 # The claims a linked/workbench page shows: accepted ones, plus the ones a
 # reviewer looked at and could not settle yet - still `suggested`, but carrying
 # a `reviewed:` date (SPEC §8.1). Never-reviewed `suggested` never renders.
 _ACCEPTED_OR_PARKED_SQL = f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})"
 
-_NO_REDACTED_PERSON_SQL = (
-    "AND NOT EXISTS ("
-    "  SELECT 1 FROM claim_persons cp2 "
-    "  WHERE cp2.claim_id = c.id AND fha_person_redacted(cp2.person_id)"
-    ")"
-)
+# The standalone filter that keeps a claim off every shared page when it is
+# about a living or unknown person, or names a restricted one. A claim about
+# deceased people that also names a living godparent or witness passes, and
+# its page leaves that person and the claim's wording out (`_claim_unworded`).
+# It asks the shared rule (`_lib.claim_people_verdict`) through the
+# `fha_claim_withheld` SQL function `prepare()` registers, which reads people
+# through `_person_is_redacted`, so a claim written by hand with a merged
+# duplicate's old id is held to the living person it was merged into (#237),
+# the same as a photo tag is (#236).
+_NO_REDACTED_PERSON_SQL = "AND NOT fha_claim_withheld(c.id)"
 
 # Ownership stamp written into the output dir after every successful build.
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
@@ -4103,6 +4107,10 @@ class _SiteBuilder:
         # person's facts would publish through a redacted citation.
         self.restricted_person_sources: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
+        # What a shared build does with each claim, by who it names
+        # (`_lib.claim_people_verdict`): only the claims it holds back or
+        # shows without their wording are listed. Empty in a linked build.
+        self._claim_verdicts: dict[str, str] = {}
         # Whose OWN vital each vital claim supplies (`_lib.vital_subjects`),
         # memoized per claim: the summary block and every chart node ask it,
         # so a person named on twenty records would otherwise re-read the same
@@ -4305,6 +4313,30 @@ class _SiteBuilder:
                 ):
                     source_living.add(row['source_id'])
                     self.restricted_person_sources.add(row['source_id'])
+
+            # A child's birth stays on the shared site when her godmother is
+            # still alive; a record about a living person, or naming a
+            # restricted one, does not. Judged once per claim by the shared
+            # rule (`_lib.claim_people_verdict`, SPEC §21) and handed to SQL as
+            # `fha_claim_withheld(id)` for the claim filters
+            # (`_NO_REDACTED_PERSON_SQL`). The sources above keep their own
+            # rule: a source naming a living person still gets no page.
+            people: dict[str, list] = {}
+            for row in self.conn.execute(
+                    'SELECT claim_id, person_id, role FROM claim_persons '
+                    'ORDER BY claim_id, position'):
+                people.setdefault(row['claim_id'], []).append((row['person_id'], row['role']))
+            types = dict(self.conn.execute('SELECT id, type FROM claims').fetchall())
+            for cid, rows in people.items():
+                verdict = claim_people_verdict(
+                    types.get(cid), claim_role_pairs(rows),
+                    withheld=redacted_ids.__contains__, restricted=restricted_ids.__contains__)
+                if verdict in (CLAIM_UNWORDED, CLAIM_WITHHELD):
+                    self._claim_verdicts[cid] = verdict
+        verdicts = self._claim_verdicts
+        self.conn.create_function('fha_claim_withheld', 1,
+                                  lambda cid: verdicts.get(cid) == CLAIM_WITHHELD,
+                                  deterministic=True)
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
@@ -6151,9 +6183,11 @@ class _SiteBuilder:
         A shared build sets aside every claim a public page would not show
         (`_claim_is_private`) before any check reads it. Otherwise a ring
         could say "birth record found" for a person whose only birth record
-        the owner marked private, or "death found" from a death record that
-        names a living informant and so never reaches her timeline, telling
-        every visitor that evidence exists which no page shows. The claim is
+        the owner marked private, or "marriage found" from a marriage record
+        whose other spouse is living and so never reaches her timeline,
+        telling every visitor that evidence exists which no page shows. A
+        record her page does show, without its wording because it also names
+        a living informant (`_claim_unworded`), counts. The claim is
         relabelled rather than dropped, so every structure that names it
         still resolves and no counting mode ever sees it.
 
@@ -6166,12 +6200,10 @@ class _SiteBuilder:
         if self._completeness_ctx is None:
             ctx = completeness_context(self.conn)
             if not self.linked:
-                redacted = {pid for pid, row in self.person_meta.items()
-                            if self._person_is_redacted(row)}
                 claims = {}
                 for cid, claim in ctx['claims'].items():
-                    named = {p for p, _role in ctx['claim_people'].get(cid, ())}
-                    if self._claim_is_private(cid, claim['source_id']) or named & redacted:
+                    if (self._claim_is_private(cid, claim['source_id'])
+                            or self._claim_verdicts.get(cid) == CLAIM_WITHHELD):
                         claim = {**claim, 'status': 'withheld'}
                     claims[cid] = claim
                 ctx = {**ctx, 'claims': claims}
@@ -6188,6 +6220,45 @@ class _SiteBuilder:
         if normalize_id(str(claim_id)) in self.restricted_claims:
             return True
         return self._source_hard_restricted(source_id)
+
+    def _claim_unworded(self, claim_id) -> bool:
+        """Is this a claim a shared page shows without its own wording: a
+        record about deceased people that also names a living or unknown
+        one, such as a godparent at a baptism (`_lib.claim_people_verdict`)?
+
+        Its wording usually names everyone on the record ("Thomas Hartley
+        born, godparent ..."), so the page writes the people it is about in
+        its place (`_unworded_claim_html`) and keeps the date and place.
+        Always False in a linked build, which shows everything."""
+        return self._claim_verdicts.get(claim_id) == CLAIM_UNWORDED
+
+    def _shown_claim_people(self, claim_id) -> list[str]:
+        """The people on a claim a shared page may name, in the claim's own
+        order: everyone `_person_is_redacted` does not withhold. A linked
+        build names everyone."""
+        out = []
+        for row in self.conn.execute(
+                'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position',
+                (claim_id,)):
+            pid = row['person_id']
+            meta = self.person_meta.get(pid)
+            if not self.linked and meta is not None and self._person_is_redacted(meta):
+                continue
+            out.append(pid)
+        return out
+
+    def _unworded_claim_html(self, claim_id, claim_type, page_dir: Path) -> str:
+        """What a shared page writes in place of an unworded claim's wording:
+        the people the record is about, linked ("Calvin Hartley and Ethel
+        Moore" for their marriage). Only they are named, so the living
+        witness or godparent never is (`_lib.claim_subjects`)."""
+        rows = self.conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id = ? ORDER BY position',
+            (claim_id,)).fetchall()
+        shown = set(self._shown_claim_people(claim_id))
+        about = [pid for pid in claim_subjects(claim_type, claim_role_pairs(
+            (r['person_id'], r['role']) for r in rows)) if pid in shown]
+        return ' and '.join(self._person_link(pid, page_dir) for pid in about)
 
     def _person_completeness(self, pid: str) -> dict | None:
         """The completeness ring and its legend for one person page, or None.
@@ -6400,7 +6471,7 @@ class _SiteBuilder:
         if not self.linked:
             # Show the vital even when its source is withheld (the citation is
             # redacted); withhold only a restricted claim or a hard-restricted
-            # source (DNA / by-request / publication_ok:false). A vital tagging a
+            # source (DNA / by-request / publication_ok:false). A vital about a
             # withheld person is already excluded by `living_filter` above.
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
@@ -6422,7 +6493,11 @@ class _SiteBuilder:
                     # with no date_edtf at all - can carry the raw internal
                     # encoding a reader was never meant to see, so only that
                     # branch is scrubbed.
-                    'value': r['date_edtf'] or _scrub_internal_encoding(r['value'] or ''),
+                    # A record that also names a living person keeps its
+                    # wording home (`_claim_unworded`): the date, or nothing.
+                    'value': r['date_edtf'] or (
+                        '' if not self.linked and self._claim_unworded(r['id'])
+                        else _scrub_internal_encoding(r['value'] or '')),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -6795,7 +6870,7 @@ class _SiteBuilder:
         ).fetchall()
         # Standalone: show the event with its citation redacted when the source is
         # merely withheld (names a living person); omit only a restricted claim or a
-        # hard-restricted source. Events tagging a living person are already excluded
+        # hard-restricted source. Events about a living person are already excluded
         # by `living_filter`.
         if not self.linked:
             rows = [r for r in rows
@@ -6839,9 +6914,15 @@ class _SiteBuilder:
             # (#180 post-merge follow-up, finding 2; see that method's
             # docstring for the misattribution bug this fixes).
             remainder = _place_trailing_remainder(value_text, place_label, mention, place_linkable)
+            value_html = self._timeline_value_html(value_text, mention, r['place_id'], page_dir, remainder)
+            if not self.linked and self._claim_unworded(r['id']):
+                # A baptism naming a living godparent: the line says whose
+                # event it was, never the record's wording, which names him.
+                value_html = self._markup(self._unworded_claim_html(r['id'], r['type'], page_dir))
+                mention = None
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'],
-                'value': self._timeline_value_html(value_text, mention, r['place_id'], page_dir, remainder),
+                'value': value_html,
                 'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'place_redundant': mention is not None,
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
@@ -8122,17 +8203,23 @@ class _SiteBuilder:
             ).fetchall()
             for p in person_rows:
                 person_freq[p['person_id']] = person_freq.get(p['person_id'], 0) + 1
+            # Reader-facing cell: scrubbed of internal-only encoding, same
+            # as the source page's claims table (#144 finding 4). The
+            # place page's Events table has no workbench edit-prefill for
+            # a claim value, so unlike build_source_page there is no raw
+            # counterpart to keep alongside it. A baptism naming a living
+            # godparent shows whose it was instead of its wording, and the
+            # People cell leaves him out rather than labelling him.
+            value = _scrub_internal_encoding(c['value'] or '')
+            if not self.linked and self._claim_unworded(c['id']):
+                value = self._markup(self._unworded_claim_html(c['id'], c['type'], page_dir))
             claims.append({
                 'type': c['type'],
-                # Reader-facing cell: scrubbed of internal-only encoding, same
-                # as the source page's claims table (#144 finding 4). The
-                # place page's Events table has no workbench edit-prefill for
-                # a claim value, so unlike build_source_page there is no raw
-                # counterpart to keep alongside it.
-                'value': _scrub_internal_encoding(c['value'] or ''),
+                'value': value,
                 'date': c['date_edtf'] or '',
                 'persons_html': self._markup(
-                    ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)),
+                    ', '.join(self._person_link(pid, page_dir)
+                              for pid in self._shown_claim_people(c['id']))),
                 'source_html': self._markup(self._source_link(c['source_id'], page_dir)) if c['source_id'] else '',
                 'status': c['status'], 'confidence': c['confidence'] or '',
                 'unconfirmed': c['status'] == 'suggested',
@@ -8331,6 +8418,10 @@ class _SiteBuilder:
             if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
                 continue
             if not self.linked and self._source_hard_restricted(r['source_id']):
+                continue
+            # A birth record shared with a living twin is his birthday too, so
+            # the node leaves it off as her summary box does (`_claim_verdicts`).
+            if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
                 continue
             if vitals.get(r['type']) is None:
                 vitals[r['type']] = r['date_edtf'] or None
@@ -9464,8 +9555,10 @@ class _SiteBuilder:
             relative's birthday never reaches a home page, even the linked
             preview's; restricted, including by-request, in a shared build
             (the linked preview reads no restriction markers);
-          - any claim behind it names a withheld person in any role (a living
-            mother on her son's birth record), as the timeline's filter does;
+          - any claim behind it is withheld by who it names, as the timeline's
+            filter is (`_lib.claim_people_verdict`): it is about a withheld
+            person, or names a restricted one in any role. A son's birth
+            that names his living mother stays: the line names only him;
           - any claim behind it is not publishable (`_claim_row_is_publishable`:
             a restricted claim, or one on a restricted, DNA, by-request or
             not-for-publication source; in a shared build, an unaccepted one).
@@ -9482,12 +9575,26 @@ class _SiteBuilder:
             if row is None or not self._claim_row_is_publishable(
                     row['id'], row['source_id'], row['status']):
                 return False
-            for named in self.conn.execute(
-                    'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,)):
-                meta = self.person_meta.get(normalize_id(str(named['person_id'])))
-                if meta is not None and self._person_is_redacted(meta):
-                    return False
+            pairs = claim_role_pairs(
+                (normalize_id(str(r['person_id'])), r['role']) for r in self.conn.execute(
+                    'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+                    'ORDER BY position', (cid,)))
+            if claim_people_verdict(ev['type'], pairs, withheld=self._pid_is_redacted,
+                                    restricted=self._pid_is_restricted) == CLAIM_WITHHELD:
+                return False
         return True
+
+    def _pid_is_redacted(self, pid: str) -> bool:
+        """`_person_is_redacted` for an id; an id with no record is not."""
+        meta = self.person_meta.get(pid)
+        return meta is not None and self._person_is_redacted(meta)
+
+    def _pid_is_restricted(self, pid: str) -> bool:
+        """Does this person, or anyone on their merge chain, carry a
+        `restricted:` marker (by-request included)?"""
+        meta = self.person_meta.get(pid)
+        return meta is not None and any(
+            r['id'] in self.restricted_persons for r in self._merge_chain(meta))
 
     def _calendar_event_entry(self, ev: dict, page_dir: Path) -> dict:
         """One calendar line: the date in words, what happened, and who -
