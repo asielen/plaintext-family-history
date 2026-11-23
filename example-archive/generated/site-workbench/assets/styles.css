@@ -480,7 +480,13 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
              text-anchor: middle; dominant-baseline: middle; }
 .fan-label-subject { font-family: var(--font-display); font-weight: 600; font-size: 15px;
              fill: var(--ink); text-anchor: middle; dominant-baseline: middle; }
+/* The years under a fan name. Sized by the renderer like .fan-label, so no
+   font-size here. */
+.fan-years { font-family: var(--font-sans); fill: var(--muted);
+             text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
+/* A living adult in a shared site: a neutral cell reading "Private". */
+.fan-label-private { font-style: italic; fill: var(--muted); }
 
 /* 8. PEDIGREE — horizontal family chart: children (left) - subject + spouse(s)
    - parents - grandparents (right); ancestors step right (genealogical

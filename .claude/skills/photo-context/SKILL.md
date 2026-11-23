@@ -47,6 +47,7 @@ Invoked only, never automatically or in bulk. Triggers: "what do we know about t
      ```
      fha relate p-a p-b
      ```
+     The `By marriage:` line gives in-law and step words ("her stepmother", "his brother-in-law"); use the word as written, and keep a hedged answer hedged in the caption draft.
    - **The place's background:**
      ```
      fha find --related l-…
