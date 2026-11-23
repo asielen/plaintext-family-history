@@ -6700,6 +6700,23 @@ class HomeTreePrivateCardTests(_Base):
                           "merged_into = 'p-kaaaaaaaaa' WHERE id = 'p-kbaaaaaaaa'")
         self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
 
+    def test_a_half_finished_merge_still_keeps_a_minor_off_the_tree(self):
+        # Review of PR #436: a record with `merged_into:` but no `status:
+        # merged` (a merge left half done by hand, lint W140) keeps its own
+        # claims, so its "born 2015" never reached the record it points at,
+        # and the tree asked only that record ("born 1980"). Every record on
+        # the chain that still holds its own evidence must be an adult.
+        self._adult_root_with_spouse()
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true', born='2015')
+        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
+        self._person('p-kbaaaaaaaa', 'Robin Hartley', living='true', born='1980')
+        self.conn.execute("UPDATE persons SET merged_into = 'p-kbaaaaaaaa' "
+                          "WHERE id = 'p-kaaaaaaaaa'")
+        self._home()
+        self._run(linked=False)
+        self.assertEqual(self._ped().count('tree-card-private'), 1)     # the hub only
+        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa', 'p-kbaaaaaaaa')
+
     def test_a_baptism_only_ever_proves_an_adult(self):
         today = datetime.date(2026, 11, 22)
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')

@@ -314,6 +314,7 @@ from _lib import (
     carried_living_message,
     living_carried_to_survivors,
     restricted_with_survivors,
+    merge_pointer,
     merge_survivor,
     normalize_id,
     open_index_db,
@@ -8379,8 +8380,16 @@ class _SiteBuilder:
             return 'omit'
         if not self._person_is_redacted(meta):
             return 'shown'
-        adult = is_known_adult(self.conn, survivor['id'],
-                               datetime.date.fromisoformat(_today()))
+        # The survivor speaks for every finished tombstone (their claims and
+        # `birth:` estimates count for it). A record on the chain whose merge
+        # was left half done by hand (`merged_into:` without `status: merged`,
+        # lint W140) still holds its own evidence, so it is asked too: a
+        # "born 2015" there must keep the person out (review of PR #436).
+        today = datetime.date.fromisoformat(_today())
+        asked = [survivor['id']] + [
+            r['id'] for r in chain[:-1]
+            if merge_pointer(r['status'], r['merged_into']) is None]
+        adult = all(is_known_adult(self.conn, rid, today) for rid in asked)
         return 'private' if adult else 'omit'
 
     def _tree_card_entry(self, pid: str, page_dir: Path) -> dict:

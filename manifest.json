@@ -933,7 +933,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "d88fa2053c2aeb80dd59d8c2962f7cd7eed14a1aaf9af9b98bbc0a39fb7e71b4",
+      "sha256": "75de47468357997f75f47aaf602bb3308452cf4c4cfc3373bf6d6a7cfdec5200",
       "spec_version": "2.23",
       "src": "tools/site.py"
     },
