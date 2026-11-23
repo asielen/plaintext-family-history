@@ -398,7 +398,7 @@ class MarriageAnswerTests(unittest.TestCase):
     a woman and someone whose sex is not recorded: "x is y's ___"."""
 
     def _word(self, g, a, b, years=None):
-        bm = _lib.marriage_answer(g, a, b, birth_year=(years or {}).get)
+        bm = _lib.marriage_answer(g, a, b, life=(years or {}).get)
         return bm['relationship'] if bm else None
 
     def test_spouse(self):
@@ -453,30 +453,72 @@ class MarriageAnswerTests(unittest.TestCase):
             word = _pick(('stepfather', 'stepmother', 'step-parent'), sex)
             with self.subTest(sex=sex):
                 bm = _lib.marriage_answer(graph(sex, '1905', None), 'x', 'y',
-                                          birth_year={'y': 1900}.get)
+                                          life={'y': 1900}.get)
                 self.assertEqual((bm['relationship'], bm['kind'], bm['certain']),
                                  (word, 'step', True))
                 # Married before the birth, still married after it.
                 bm = _lib.marriage_answer(graph(sex, '1890', '1920'), 'x', 'y',
-                                          birth_year={'y': 1900}.get)
+                                          life={'y': 1900}.get)
                 self.assertEqual((bm['relationship'], bm['certain']), (word, True))
                 # The marriage ended before the birth: not a step-parent.
                 bm = _lib.marriage_answer(graph(sex, '1880', '1885'), 'x', 'y',
-                                          birth_year={'y': 1900}.get)
+                                          life={'y': 1900}.get)
                 spouse = _pick(('husband', 'wife', 'spouse'), sex)
                 self.assertEqual(bm['relationship'], f"father's earlier {spouse}")
                 self.assertEqual(bm['kind'], 'by-marriage')
                 # Married before the birth, no end recorded: hedged.
                 bm = _lib.marriage_answer(graph(sex, '1890', None), 'x', 'y',
-                                          birth_year={'y': 1900}.get)
+                                          life={'y': 1900}.get)
                 self.assertEqual((bm['relationship'], bm['certain']), (word, False))
                 self.assertIn('X may instead have been', bm['hedge'])
                 # No dates at all, or no birth year: hedged.
                 bm = _lib.marriage_answer(graph(sex, None, None), 'x', 'y',
-                                          birth_year={'y': 1900}.get)
+                                          life={'y': 1900}.get)
                 self.assertIs(bm['certain'], False)
                 bm = _lib.marriage_answer(graph(sex, '1905', None), 'x', 'y')
                 self.assertIs(bm['certain'], False)
+
+    def test_step_rule_reads_every_date_as_a_range(self):
+        # y's father f married x. A vague date settles only what every day
+        # inside it would; a child who died before the marriage has no
+        # step-parent; a marriage that surely ended before the birth is not one.
+        def word(start, end, born, died=None):
+            g = _mg({'x': 'F', 'f': 'M', 'y': 'M'}, parents=[('y', 'f', 'biological')],
+                    spouses=[('x', 'f', start, end)])
+            bm = _lib.marriage_answer(g, 'x', 'y', life={'y': {'born': born, 'died': died}}.get)
+            return bm['relationship'], bm['certain']
+        cases = [
+            (('1905', None, '1899'), ('stepmother', True)),
+            (('1905', None, '[..1910]'), ('stepmother', False)),
+            (('1905', None, '190X'), ('stepmother', False)),
+            (('1903', None, '1903'), ('stepmother', False)),          # same year
+            (('1890', '1903-01-15', '1903-12-01'), ("father's earlier wife", True)),
+            (('1890', '190X', '1904'), ('stepmother', False)),        # end is a decade
+            (('1890', '1903-01-01/1903-12-31', '1903-06-01'), ('stepmother', False)),
+            (('1903', None, '1899', '1900'), ("father's later wife", True)),
+            (('1903', None, '1899', '190X'), ('stepmother', False)),
+            (('1903', None, '1899', '1960'), ('stepmother', True)),
+            (('190X', None, '1899', '1960'), ('stepmother', True)),
+            (('190X', None, '1899', '1905'), ('stepmother', False)),
+        ]
+        for args, want in cases:
+            with self.subTest(args=args):
+                self.assertEqual(word(*args), want)
+
+    def test_stepchild_and_step_sibling_who_died_before_the_marriage(self):
+        # y married s in 1903; s's son x died in 1900.
+        g = _mg({'x': 'M', 's': 'F', 'y': 'M'}, parents=[('x', 's', 'biological')],
+                spouses=[('y', 's', '1903', None)])
+        bm = _lib.marriage_answer(g, 'x', 'y', life={'x': {'born': '1899', 'died': '1900'}}.get)
+        self.assertEqual(bm['relationship'], "later wife's son")
+        self.assertEqual(bm['explain'], "died before S's marriage to Y")
+        # q's son x died before q married p, father of y: no stepbrother.
+        g = _mg({'x': 'M', 'q': 'F', 'p': 'M', 'y': 'F'},
+                parents=[('x', 'q', 'biological'), ('y', 'p', 'biological')],
+                spouses=[('p', 'q', '1910', None)])
+        bm = _lib.marriage_answer(g, 'x', 'y', life={
+            'x': {'born': '1899', 'died': '1900'}, 'y': {'born': '1904'}}.get)
+        self.assertTrue(bm is None or 'step' not in bm['relationship'])
 
     def test_derived_stepchild_by_the_dates(self):
         # y married s; x is s's child.
@@ -487,14 +529,14 @@ class MarriageAnswerTests(unittest.TestCase):
             word = _pick(('stepson', 'stepdaughter', 'stepchild'), sex)
             with self.subTest(sex=sex):
                 bm = _lib.marriage_answer(graph(sex, '1905', None), 'x', 'y',
-                                          birth_year={'x': 1900}.get)
+                                          life={'x': 1900}.get)
                 self.assertEqual((bm['relationship'], bm['certain']), (word, True))
                 self.assertEqual(bm['explain'], f"Y's wife's {_pick(('son', 'daughter', 'child'), sex)}")
                 bm = _lib.marriage_answer(graph(sex, '1880', '1885'), 'x', 'y',
-                                          birth_year={'x': 1900}.get)
+                                          life={'x': 1900}.get)
                 self.assertNotIn('step', bm['relationship'])
                 bm = _lib.marriage_answer(graph(sex, None, None), 'x', 'y',
-                                          birth_year={'x': 1900}.get)
+                                          life={'x': 1900}.get)
                 self.assertEqual((bm['relationship'], bm['certain']), (word, False))
                 self.assertIn('X may instead have been born after', bm['hedge'])
 
@@ -505,12 +547,12 @@ class MarriageAnswerTests(unittest.TestCase):
                     parents=[('x', 'q', 'biological'), ('y', 'p', 'biological')],
                     spouses=[('p', 'q', '1910', None)])
             with self.subTest(sex=sex):
-                bm = _lib.marriage_answer(g, 'x', 'y', birth_year={'x': 1902, 'y': 1904}.get)
+                bm = _lib.marriage_answer(g, 'x', 'y', life={'x': 1902, 'y': 1904}.get)
                 self.assertEqual(bm['relationship'],
                                  _pick(('stepbrother', 'stepsister', 'stepsibling'), sex))
                 self.assertIs(bm['certain'], True)
                 self.assertEqual(bm['via'], ['p', 'q'])
-                hedged = _lib.marriage_answer(g, 'x', 'y', birth_year={'x': 1902}.get)
+                hedged = _lib.marriage_answer(g, 'x', 'y', life={'x': 1902}.get)
                 self.assertIs(hedged['certain'], False)
 
     def test_sibling_in_law_three_ways(self):
@@ -632,7 +674,7 @@ class MarriageAnswerTests(unittest.TestCase):
         g = _mg({'x': 'F', 'f': 'M', 'y': 'F'},
                 parents=[('y', 'f', None), ('y', 'x', 'step')],
                 spouses=[('x', 'f', '1890', None)])
-        bm = _lib.marriage_answer(g, 'x', 'y', birth_year={'y': 1900}.get)
+        bm = _lib.marriage_answer(g, 'x', 'y', life={'y': 1900}.get)
         self.assertEqual((bm['relationship'], bm['certain'], bm['explain']),
                          ('stepmother', True, None))
 
@@ -654,7 +696,7 @@ class KinRelationshipByMarriageTests(unittest.TestCase):
         self.assertEqual(kin_relationship(g, 'y', 'x'),
                          {'words': 'stepmother', 'note': 'marriage dates not recorded',
                           'kind': 'step', 'path': "father's wife"})
-        self.assertEqual(kin_relationship(g, 'y', 'x', birth_year={'y': 1900}.get)['note'],
+        self.assertEqual(kin_relationship(g, 'y', 'x', life={'y': 1900}.get)['note'],
                          'marriage dates not recorded')
         self.assertEqual(kin_relationship(g, 'y', 'w'),
                          {'words': 'husband', 'note': None, 'kind': 'marriage', 'path': 'husband'})
@@ -673,7 +715,7 @@ class KinRelationshipByMarriageTests(unittest.TestCase):
         try:
             g = kin_graph(conn)
             cache: dict = {}
-            years = {p: _lib.person_birth_year(conn, p, cache) for p in g.people}
+            years = {p: _lib.person_life_dates(conn, p, cache) for p in g.people}
         finally:
             conn.close()
         pids = sorted(g.people)
@@ -681,18 +723,22 @@ class KinRelationshipByMarriageTests(unittest.TestCase):
             for b in pids:
                 if a == b:
                     continue
-                data = _lib.kinship_answer(g, a, b, birth_year=years.get)
+                data = _lib.kinship_answer(g, a, b, life=years.get)
                 tie = data['blood'] or data['by_marriage']
                 with self.subTest(a=a, b=b):
-                    self.assertEqual(kin_relationship(g, b, a, birth_year=years.get)['words'],
+                    self.assertEqual(kin_relationship(g, b, a, life=years.get)['words'],
                                      tie['relationship'] if tie else '')
 
-    def test_birth_year_reads_own_birth_only(self):
+    def test_life_dates_read_own_birth_and_death_only(self):
         root = tr._build_family()
         conn = open_index_db(root, ('persons', 'claims', 'claim_persons'))
         try:
-            self.assertEqual(_lib.person_birth_year(conn, tr.A.lower(), {}), 1900)
-            self.assertIsNone(_lib.person_birth_year(conn, tr.XP.lower(), {}))
+            self.assertEqual(_lib.person_life_dates(conn, tr.A.lower(), {}),
+                             {'born': ('1900-01-01', '1900-12-31'), 'died': None})
+            self.assertEqual(_lib.person_life_dates(conn, tr.XP.lower(), {}),
+                             {'born': None, 'died': None})
+            self.assertEqual(_lib.person_life_dates(conn, tr.XW.lower(), {})['died'],
+                             ('1910-01-01', '1910-12-31'))
         finally:
             conn.close()
 

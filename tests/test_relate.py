@@ -500,6 +500,76 @@ class ByMarriageTests(unittest.TestCase):
         self.assertEqual(back['data']['by_marriage']['relationship'], 'stepmother')
 
 
+class StepDatesTests(unittest.TestCase):
+    """A father's later wife is called the child's stepmother as fact only when
+    the dates show the marriage and the child's life overlapped. A birth
+    written as "before 1910" or "190X", a wife who died months before the
+    birth in the same year, and a baby who died before his father remarried
+    must never come out as a certain "stepmother"."""
+
+    F, W, K = 'P-ffffffffff', 'P-wwwwwwwwww', 'P-kkkkkkkkkk'
+    SEXES = {F: 'M', W: 'F', K: 'M'}
+    NAMES = {F: 'Frank Ames', W: 'Wilma Ames', K: 'Baby Ames'}
+
+    def _bm(self, *claims, a=W, b=K):
+        body = _child_of('C-0000000001', self.K, [self.F]) + ''.join(claims)
+        root = _write_archive(body, self.SEXES, self.NAMES)
+        return relate.run_relate(root, load_fha_yaml(root), a, b).data['by_marriage']
+
+    def test_married_after_birth_child_alive_is_certain_stepmother(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', True))
+
+    def test_birth_before_a_year_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1905'),
+                      _born('C-0000000003', self.K, '[..1910]'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_decade_birth_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1905'),
+                      _born('C-0000000003', self.K, '190X'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_wife_dead_months_before_birth_same_year_is_earlier_wife(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '1903-01-15'),
+                      _born('C-0000000003', self.K, '1903-12-01'))
+        self.assertEqual(bm['relationship'], "father's earlier wife")
+        self.assertNotIn('step', bm['relationship'])
+
+    def test_decade_death_of_wife_is_not_proof_she_died_before_birth(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '190X'),
+                      _born('C-0000000003', self.K, '1904'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+
+    def test_child_dead_before_the_marriage_has_no_stepmother(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'))
+        self.assertEqual(bm['relationship'], "father's later wife")
+        self.assertEqual(bm['explain'], 'married to Frank Ames after Baby Ames died')
+        # And the other way: the baby is not her stepson.
+        back = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                        _born('C-0000000003', self.K, '1899'),
+                        _died('C-0000000004', self.K, '1900'), a=self.K, b=self.W)
+        self.assertNotIn('step', back['relationship'])
+
+    def test_child_death_decade_overlapping_marriage_is_hedged(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '190X'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
+        self.assertIn('or only after Baby Ames died', bm['hedge'])
+
+    def test_child_alive_long_after_marriage_is_certain(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1960'))
+        self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', True))
+
+
 class SocialPathTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

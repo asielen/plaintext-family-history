@@ -43,7 +43,7 @@ command around it:
     (`kinship_word`), with its half state and, when half is open, a note;
     and, only when there is no blood route, the tie by marriage
     (`marriage_answer`), whose step-parent date rule reads each person's
-    birth year (`person_birth_year`).
+    birth and death dates (`person_life_dates`).
   * `kinship_path` is a BFS over the adjacency, rendered hop by hop.
 """
 
@@ -73,7 +73,7 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
-    person_birth_year,
+    person_life_dates,
     person_name_refusal,
     persons_named,
     resolve_root_arg,
@@ -120,7 +120,7 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         return Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'no-index'})
 
     # The connection stays open until the answers are computed: the
-    # step-parent date rule reads birth years from it.
+    # step-parent date rule reads birth and death dates from it.
     try:
         try:
             # A name: one person carrying it is the person meant; two or
@@ -159,7 +159,7 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
 
         vital_cache: dict = {}
         answers = kinship_answer(graph, pid_a, pid_b,
-                                 birth_year=lambda p: person_birth_year(conn, p, vital_cache))
+                                 life=lambda p: person_life_dates(conn, p, vital_cache))
         path = kinship_path(graph, pid_a, pid_b)
     finally:
         try:

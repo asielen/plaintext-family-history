@@ -466,7 +466,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
 #                                 (by the dates), adoptive father, uncle by marriage
 #    kinship_answer            - {blood, by_marriage}, what fha relate prints
-#    person_birth_year         - earliest own accepted birth year, for the step rule
+#    person_life_dates         - own accepted birth and death spans, for the step rule
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
@@ -18242,7 +18242,9 @@ class KinshipGraph:
       other_parents     child -> {parent: subtype} for the non-genetic kinds
                         (adoptive, step, foster, guardian, ...)
       spouses           pid -> {spouse: (date_start, date_end)}, the first
-                        recorded marriage row for the pair
+                        recorded marriage row for the pair, each date an EDTF
+                        string or None (`kin_graph` gives ranges: the
+                        marriage claim's date, "earliest/latest" for the end)
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
       half_sibling_pairs  pairs an accepted `subtype: half` sibling claim
@@ -18378,6 +18380,41 @@ def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> K
     return graph
 
 
+def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> None:
+    """Give each spouse row its dates as ranges, in place, so "190X" is never
+    read as 1900. The index keeps only each date's earliest day (date_start
+    from the marriage, date_end from the first divorce or death that closed
+    it). date_start becomes the marriage claim's own EDTF; date_end becomes
+    "earliest/latest", the latest day taken from the closing claim (a death
+    of either spouse or a divorce naming one of them, matched on that
+    earliest day), or "earliest/.." when no such claim is found. The
+    step-parent date rule (`_kin_step_state`) then compares safe bounds."""
+    spouse_rows = [r for r in rows if r.get('rel') == 'spouse']
+    if not spouse_rows:
+        return
+    start_edtf = {r['id']: r['date_edtf'] for r in dicts(conn.execute(
+        "SELECT id, date_edtf FROM claims WHERE type = 'marriage'"))}
+    closing: dict[tuple[str, str], str] = {}
+    for r in dicts(conn.execute(
+            '''SELECT cp.person_id AS pid, c.date_min AS dmin, c.date_max AS dmax
+               FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE c.type IN ('death', 'divorce') AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0 AND c.date_min IS NOT NULL''')):
+        key = (r['pid'], r['dmin'])
+        latest = r['dmax'] or '9999-12-31'
+        if latest > closing.get(key, ''):
+            closing[key] = latest
+    for r in spouse_rows:
+        edtf = start_edtf.get(r.get('claim_id'))
+        if edtf:
+            r['date_start'] = edtf
+        end = r.get('date_end')
+        if end:
+            latest = max((closing.get((p, end), '') for p in (r['person_id'], r['other_id'])),
+                         default='')
+            r['date_end'] = f"{end}/{latest if latest and latest != '9999-12-31' else '..'}"
+
+
 def kin_graph(conn: sqlite3.Connection,
               edge_ok: Callable[[dict], bool] | None = None) -> KinshipGraph:
     """Load the KinshipGraph from an open index.
@@ -18414,6 +18451,7 @@ def kin_graph(conn: sqlite3.Connection,
     # every answer the same from run to run and machine to machine.
     if edge_ok is not None:
         rows = [r for r in rows if edge_ok(r)]
+    _kin_marriage_spans(conn, rows, _dicts)
     graph = _kinship_graph_from_rows(people, rows)
 
     # "Half" may rest on a source that says so: an accepted `subtype: half`
@@ -18787,23 +18825,66 @@ def _kin_year(value: Any) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _kin_bounds(value: Any) -> tuple[str | None, str | None]:
+    """(earliest, latest) ISO day an EDTF date allows, None for an open end.
+    "1903" is ('1903-01-01', '1903-12-31'); "[..1910]" has no earliest day; a
+    missing or unreadable date has neither. A (lo, hi) pair passes through."""
+    if isinstance(value, (tuple, list)):
+        lo, hi = (tuple(value) + (None, None))[:2]
+    elif value is None or str(value).strip() == '':
+        return None, None
+    else:
+        lo, hi = edtf_bounds(str(value).strip())
+    lo = None if not lo or lo == '0001-01-01' else lo
+    hi = None if not hi or hi == '9999-12-31' else hi
+    return lo, hi
+
+
+def _kin_life_reader(life: Callable[[str], Any] | None) -> Callable[[str], tuple]:
+    """Read `life(pid)` as ((born_lo, born_hi), (died_lo, died_hi) | None).
+    `life` may answer None (nothing known), an int (a birth year, the
+    shorthand tests use), or {'born': date, 'died': date} where each date is
+    an EDTF string or a (lo, hi) pair (`person_life_dates`)."""
+    def read(pid: str) -> tuple:
+        got = life(pid) if life else None
+        if got is None:
+            return (None, None), None
+        if isinstance(got, int):
+            return (f'{got:04d}-01-01', f'{got:04d}-12-31'), None
+        born = _kin_bounds(got.get('born'))
+        died = _kin_bounds(got.get('died')) if got.get('died') else None
+        return born, (died if died != (None, None) else None)
+    return read
+
+
 def _kin_step_state(marriage: tuple[str | None, str | None], child: str,
-                    birth_year: Callable[[str], int | None] | None) -> str:
+                    life: Callable[[str], tuple]) -> str:
     """Whether a parent's marriage makes the other spouse the child's
-    step-parent: 'step' when the dates show the marriage overlapped the
-    child's life, 'not' when it ended before the child was born, 'open' when
-    a date that would settle it is missing. Years only: the index keeps a
-    lower bound for each date, so a decade-only date reads as its first year."""
-    start, end = marriage
-    born = birth_year(child) if birth_year else None
-    start_y, end_y = _kin_year(start), _kin_year(end)
-    if born is None:
+    step-parent (SPEC Part IV: only when the dates show the marriage
+    overlapped the child's life). 'step' when they prove an overlap; 'not'
+    when the marriage surely ended before the child was born; 'after' when
+    it surely began after the child died; 'open' otherwise. Every date is a
+    range: "190X" or "before 1910" settles nothing a single year inside it
+    would not, so a vague date leaves the answer open instead of guessing.
+    A marriage with no recorded end counts as open-ended only from its own
+    start; a child with no recorded death counts as living on."""
+    (b_lo, b_hi), died = life(child)
+    if b_lo is None and b_hi is None:
         return 'open'
-    if end_y is not None and end_y < born:
+    s_lo, s_hi = _kin_bounds(marriage[0])
+    e_lo, e_hi = _kin_bounds(marriage[1])
+    if e_hi is not None and b_lo is not None and e_hi < b_lo:
         return 'not'
-    if (start_y is not None and start_y >= born) or (end_y is not None and end_y >= born):
-        return 'step'
-    return 'open'
+    if died is not None and s_lo is not None and died[1] is not None and s_lo > died[1]:
+        return 'after'
+    # Overlap: the marriage still ran after the birth, and began before the death.
+    # A marriage ends no earlier than it began, and began no later than it ended.
+    surely_ran_to = max((d for d in (e_lo, s_lo) if d), default=None)
+    surely_began_by = min((d for d in (s_hi, e_hi) if d), default=None)
+    ran_after_birth = bool(b_hi and surely_ran_to and surely_ran_to >= b_hi)
+    began_before_death = died is None or bool(
+        died[0] and surely_began_by and surely_began_by <= died[0])
+    return 'step' if ran_after_birth and began_before_death else 'open'
 
 
 _KIN_STEP_HEDGE = "The marriage and birth dates that would settle this aren't all recorded"
@@ -18814,13 +18895,14 @@ def _kin_in_law(word: str) -> str:
 
 
 def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
-                    birth_year: Callable[[str], int | None] | None = None) -> dict | None:
+                    life: Callable[[str], Any] | None = None) -> dict | None:
     """A's tie to B through a marriage or a parent who is not a birth parent,
     as A is B's <relationship>, or None. Always None when a blood line joins
     them: blood wins, and an in-law word is never offered for a blood relative.
 
-    `birth_year(pid) -> int | None` feeds the step-parent date rule; without
-    it every derived step tie is hedged. Returns {relationship, kind,
+    `life(pid)` feeds the step-parent date rule: the person's birth and
+    death dates (`person_life_dates`; an int is read as a birth year).
+    Without it every derived step tie is hedged. Returns {relationship, kind,
     certain, hedge, explain, via, path}: `kind` is spouse, step, adoptive,
     foster, guardian, surrogate-gestational, social, in-law or by-marriage;
     `certain` is False only for a step tie the dates cannot settle, and then
@@ -18830,14 +18912,18 @@ def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
     chain with no names ("wife's brother")."""
     if a == b or blood_answer(graph, a, b):
         return None
-    return _marriage_answer(graph, a, b, birth_year=birth_year)
+    return _marriage_answer(graph, a, b, life=life)
 
 
 def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
-                     birth_year: Callable[[str], int | None] | None = None) -> dict | None:
+                     life: Callable[[str], Any] | None = None) -> dict | None:
     """`marriage_answer` for a pair already known to share no blood line."""
     if a == b:
         return None
+    lifeof = _kin_life_reader(life)
+
+    def has_death(p: str) -> bool:
+        return lifeof(p)[1] is not None
 
     def name(p: str) -> str:
         return graph.people.get(p, {}).get('name') or p
@@ -18919,15 +19005,20 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
         explain = f"{b_name}'s {path}"
         if (ga, gb) == (0, 1):
             # R is B's parent: A is a step-parent, if the dates allow it.
-            state = _kin_step_state(graph.spouses[a][r], b, birth_year)
+            state = _kin_step_state(graph.spouses[a][r], b, lifeof)
             if state == 'not':
                 rel = f"{br['relationship']}'s earlier {spouse_word_a}"
                 ans = answer(rel, 'by-marriage', rel, [r],
                              explain=f'married to {name(r)} before {b_name} was born')
+            elif state == 'after':
+                rel = f"{br['relationship']}'s later {spouse_word_a}"
+                ans = answer(rel, 'by-marriage', rel, [r],
+                             explain=f'married to {name(r)} after {b_name} died')
             else:
+                or_after = f' or only after {b_name} died' if has_death(b) else ''
                 hedge = None if state == 'step' else (
                     f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been '
-                    f"{name(r)}'s {spouse_word_a} only before {b_name} was born.")
+                    f"{name(r)}'s {spouse_word_a} only before {b_name} was born{or_after}.")
                 ans = answer(_kin_social_word('step', sex(a), parent=True), 'step', path,
                              [r], explain=explain, certain=state == 'step', hedge=hedge)
         elif ga == 0:
@@ -18960,15 +19051,21 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
         explain = f"{b_name}'s {path}"
         if (ga, gb) == (1, 0):
             # A is S's child: B is A's step-parent, if the dates allow it.
-            state = _kin_step_state(graph.spouses[b][s], a, birth_year)
+            state = _kin_step_state(graph.spouses[b][s], a, lifeof)
             if state == 'not':
                 rel = f"earlier {spouse_word_s}'s {bs['relationship']}"
                 ans = answer(rel, 'by-marriage', rel, [s],
                              explain=f"born after {name(s)}'s marriage to {b_name} ended")
+            elif state == 'after':
+                rel = f"later {spouse_word_s}'s {bs['relationship']}"
+                ans = answer(rel, 'by-marriage', rel, [s],
+                             explain=f"died before {name(s)}'s marriage to {b_name}")
             else:
+                or_died = (f", or have died before {name(s)} married {b_name}"
+                           if has_death(a) else '')
                 hedge = None if state == 'step' else (
                     f'{_KIN_STEP_HEDGE}, so {a_name} may instead have been born after '
-                    f"{name(s)}'s marriage to {b_name} ended.")
+                    f"{name(s)}'s marriage to {b_name} ended{or_died}.")
                 ans = answer(_kin_social_word('step', sex(a), parent=False), 'step', path,
                              [s], explain=explain, certain=state == 'step', hedge=hedge)
         elif gb == 0:
@@ -19006,16 +19103,18 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
                 if q in parents_of(b) or q not in graph.genetic_parents.get(a, ()):
                     continue
                 marriage = graph.spouses[p][q]
-                states = {_kin_step_state(marriage, a, birth_year),
-                          _kin_step_state(marriage, b, birth_year)}
-                if 'not' in states:
+                states = {_kin_step_state(marriage, a, lifeof),
+                          _kin_step_state(marriage, b, lifeof)}
+                if states & {'not', 'after'}:
                     continue
                 certain = states == {'step'}
                 path = (f"{_kin_hop_label('parent', sex(p))}'s "
                         f"{_kin_hop_label('spouse', sex(q))}'s {_kin_hop_label('child', sex(a))}")
                 hedge = None if certain else (
                     f'{_KIN_STEP_HEDGE}, so the marriage of {name(p)} and {name(q)} '
-                    f'may have ended before {a_name} or {b_name} was born.')
+                    f'may have ended before {a_name} or {b_name} was born'
+                    + (' or begun after one of them died.'
+                       if has_death(a) or has_death(b) else '.'))
                 cands.append((3, 5, (1, 1), [p, q], answer(
                     'step' + _kin_sexed(_KIN_SIBLING_WORDS, sex(a)), 'step', path, [p, q],
                     explain=f"{b_name}'s {path}", certain=certain, hedge=hedge)))
@@ -19026,38 +19125,49 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
 
 
 def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
-                   birth_year: Callable[[str], int | None] | None = None) -> dict:
+                   life: Callable[[str], Any] | None = None) -> dict:
     """Both answers `fha relate` prints: {'blood': blood_answer(...),
     'by_marriage': marriage_answer(...)}; by_marriage is None whenever there
     is a blood answer."""
     blood = blood_answer(graph, a, b)
-    by_marriage = None if blood else _marriage_answer(graph, a, b, birth_year=birth_year)
+    by_marriage = None if blood else _marriage_answer(graph, a, b, life=life)
     return {'blood': blood, 'by_marriage': by_marriage}
 
 
-def person_birth_year(conn: sqlite3.Connection, pid: str,
-                      cache: dict | None = None) -> int | None:
-    """The earliest year among the person's own accepted, non-negated birth
-    claims, or None. A record that names the person as a parent or witness
-    does not count (`claim_is_own_vital`), and neither does a baptism: it
-    bounds a birth from above, not below. `cache` is claim_is_own_vital's."""
-    rows = conn.execute(
-        '''SELECT DISTINCT c.id, c.date_min FROM claims c
-           JOIN claim_persons cp ON cp.claim_id = c.id
-           WHERE cp.person_id = ? AND c.type = 'birth' AND c.status = 'accepted'
-             AND COALESCE(c.negated, 0) = 0 AND c.date_min IS NOT NULL''',
-        (pid,)).fetchall()
-    years = []
-    for row in rows:
-        cid, dmin = (tuple(row.values()) if isinstance(row, dict) else tuple(row))[:2]
-        year = _kin_year(dmin)
-        if year is not None and claim_is_own_vital(conn, pid, cid, 'birth', cache):
-            years.append(year)
-    return min(years) if years else None
+def person_life_dates(conn: sqlite3.Connection, pid: str,
+                      cache: dict | None = None) -> dict:
+    """{'born': (lo, hi) | None, 'died': (lo, hi) | None}: the earliest and
+    latest day the person's own accepted, non-negated birth and death claims
+    allow, the widest span when two records disagree. A record that names
+    the person as a parent or witness does not count (`claim_is_own_vital`),
+    and neither does a baptism or burial: each only bounds the event from
+    one side. `cache` is claim_is_own_vital's. Feeds `marriage_answer`'s
+    step-parent date rule as its `life` callable."""
+    out: dict = {'born': None, 'died': None}
+    for ctype, key in (('birth', 'born'), ('death', 'died')):
+        rows = conn.execute(
+            '''SELECT DISTINCT c.id, c.date_min, c.date_max FROM claims c
+               JOIN claim_persons cp ON cp.claim_id = c.id
+               WHERE cp.person_id = ? AND c.type = ? AND c.status = 'accepted'
+                 AND COALESCE(c.negated, 0) = 0
+                 AND (c.date_min IS NOT NULL OR c.date_max IS NOT NULL)''',
+            (pid, ctype)).fetchall()
+        los, his = [], []
+        for row in rows:
+            cid, dmin, dmax = (tuple(row.values()) if isinstance(row, dict) else tuple(row))[:3]
+            if not claim_is_own_vital(conn, pid, cid, ctype, cache):
+                continue
+            lo, hi = _kin_bounds((dmin, dmax))
+            los.append(lo)
+            his.append(hi)
+        if los:
+            # One open end on any record leaves that end open.
+            out[key] = (None if None in los else min(los), None if None in his else max(his))
+    return out
 
 
 def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
-                     birth_year: Callable[[str], int | None] | None = None) -> dict:
+                     life: Callable[[str], Any] | None = None) -> dict:
     """How `pid` is related to `anchor_pid`, as a short label a page can put
     after "Thomas Hartley's" or "Your". Always a dict:
 
@@ -19071,7 +19181,7 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
              names ("father's father's mother", "father's wife"); '' for
              kind 'none'
 
-    Neither `words` nor `path` ever carries a name. `birth_year` feeds the
+    Neither `words` nor `path` ever carries a name. `life` feeds the
     step-parent date rule (`marriage_answer`); without it every derived step
     tie carries the dates note."""
     none = {'words': '', 'note': None, 'kind': 'none', 'path': ''}
@@ -19079,7 +19189,7 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
         return none
     blood = blood_answer(graph, pid, anchor_pid)
     if not blood:
-        bm = _marriage_answer(graph, pid, anchor_pid, birth_year=birth_year)
+        bm = _marriage_answer(graph, pid, anchor_pid, life=life)
         if not bm:
             return none
         kind = {'spouse': 'marriage', 'in-law': 'marriage', 'by-marriage': 'marriage',
