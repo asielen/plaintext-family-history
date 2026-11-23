@@ -9770,8 +9770,9 @@ RESEARCH_SEARCH_FIELDS = (
     'marriage_year', 'marriage_place', 'places',
 )
 
-# Geneteka's provinces in the order WikiTree Sourcer lists them: the first
-# whose Polish name appears in a place text is the one searched.
+# Geneteka's provinces as WikiTree Sourcer lists them. A province is found by
+# its whole name in a place text, longest name first, so "zachodniopomorskie"
+# is never read as "pomorskie" or "dolnośląskie" as "śląskie".
 _GENETEKA_PROVINCES = (
     ('01ds', 'dolnośląskie'), ('02kp', 'kujawsko-pomorskie'), ('03lb', 'lubelskie'),
     ('04ls', 'lubuskie'), ('05ld', 'łódzkie'), ('06mp', 'małopolskie'),
@@ -9891,17 +9892,24 @@ def _search_url_billiongraves(s: dict) -> str:
 
 
 def _search_url_chroniclingamerica(s: dict) -> str:
+    """His lifetime: birth to death, or birth to ninety years on when no
+    death is on file (upstream searched only the birth year then, which can
+    never find a marriage notice or an obituary)."""
     p = {'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': _rs_name(s)}
     birth, death = s.get('birth_year'), s.get('death_year')
     if birth:
         p['start_date'] = f'{birth}-01-01'
+    elif death:
+        p['start_date'] = f'{death - 90}-01-01'
     if death or birth:
-        p['end_date'] = f'{death or birth}-12-31'
+        p['end_date'] = f'{death or birth + 90}-12-31'
     return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
 
 
 def _search_url_newspapers(s: dict) -> str:
-    p = {'query': _rs_name(s)}
+    """Newspapers.com reads `keyword` and `date-start`/`date-end` (checked by
+    hand 2026-11-23; upstream's `query`/`year-start` now drop the years)."""
+    p = {'keyword': _rs_name(s)}
     birth, death = s.get('birth_year'), s.get('death_year')
     if birth:
         start, end = birth - 5, (death + 5 if death else birth + 90)
@@ -9910,16 +9918,18 @@ def _search_url_newspapers(s: dict) -> str:
     else:
         start = end = None
     if start and end:
-        p['year-start'], p['year-end'] = start, end
+        p['date-start'], p['date-end'] = start, end
     return _rs_url('https://www.newspapers.com/search/results/', p)
 
 
 def _search_url_geneteka(s: dict) -> str | None:
     """Geneteka cannot search without a province, so no province in any place
     text means no link (never a guess)."""
-    places = fold_accents(' '.join(str(x) for x in (s.get('places') or ()))).lower()
-    province = next((code for code, name in _GENETEKA_PROVINCES
-                     if fold_accents(name).lower() in places), None)
+    words = re.findall(r'[\w-]+', fold_accents(
+        ' '.join(str(x) for x in (s.get('places') or ()))).lower())
+    province = next((code for code, name in sorted(_GENETEKA_PROVINCES,
+                                                   key=lambda x: -len(x[1]))
+                     if fold_accents(name).lower() in words), None)
     if not province:
         return None
     p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
@@ -9934,10 +9944,15 @@ def _search_url_ukdiscovery(s: dict) -> str:
     return _rs_url('https://discovery.nationalarchives.gov.uk/results/r', {'_q': _rs_name(s)})
 
 
-# Each URL shape is the upstream builder's own. Not yet opened by hand: before
-# the PR merges, open the ten links for Thomas Edward Hartley and put the date
-# here. Sites change their search addresses; a link that stops pre-filling
-# still opens the site, which is the graceful failure.
+# Each URL shape is the upstream builder's own unless a builder says otherwise.
+# Opened by hand in Chrome on 2026-11-23 with Thomas Hartley (Geneteka with a
+# Polish name): FamilySearch, Ancestry, Find a Grave, BillionGraves, Chronicling
+# America, Newspapers.com, Geneteka and Discovery land on a search with the
+# fields filled; Findmypast runs the search, then asks him to sign in to see it.
+# MyHeritage could not be opened from the checking browser (it blocks automated
+# visits), so its shape is upstream's, unchecked. Sites change their search
+# addresses; a link that stops pre-filling still opens the site, which is the
+# graceful failure.
 RESEARCH_SITES: tuple = (
     {'key': 'familysearch', 'label': 'FamilySearch', 'group': 'General',
      'note': 'free, needs a free login to see records', 'build': _search_url_familysearch},
@@ -9946,7 +9961,8 @@ RESEARCH_SITES: tuple = (
     {'key': 'myheritage', 'label': 'MyHeritage', 'group': 'General',
      'note': 'subscription; free to search', 'build': _search_url_myheritage},
     {'key': 'findmypast', 'label': 'Findmypast (UK)', 'group': 'General',
-     'note': 'subscription; strong for England, Wales, Scotland, Ireland',
+     'note': 'subscription; asks you to sign in to see results; strong for '
+             'England, Wales, Scotland, Ireland',
      'build': _search_url_findmypast},
     {'key': 'findagrave', 'label': 'Find a Grave', 'group': 'Graves',
      'note': 'free', 'build': _search_url_findagrave},

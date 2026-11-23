@@ -320,6 +320,7 @@ from _lib import (
     restricted_with_survivors,
     merge_survivor,
     normalize_id,
+    person_other_name_entries,
     open_index_db,
     parse_filename,
     parse_questions,
@@ -726,15 +727,29 @@ def _restricted_type(value) -> str | None:
     return str(value).strip().lower() or 'plain'
 
 
-def _research_public_name(value) -> str:
-    """A name from a frontmatter field that may be plain text or a
-    `{value, restricted}` mapping; '' when it is empty or restricted (a
-    restricted name never goes into a search link)."""
-    if isinstance(value, dict):
-        if _is_restricted_value(value.get('restricted')):
-            return ''
-        value = value.get('value')
-    return str(value).strip() if value else ''
+def _research_public_name(meta: dict, field: str) -> str:
+    """The first public name in one other-name field (`married_name`,
+    `name_at_birth`), read the one way every exporter reads them
+    (`person_other_name_entries`: plain text, a `{value, restricted}`
+    mapping, or a list of either); '' when there is none. A restricted name
+    never goes into a search link."""
+    for f, value, marker in person_other_name_entries(meta):
+        if f == field and not _is_restricted_value(marker):
+            return value
+    return ''
+
+
+# A name word that only says the archive does not know the name. A search for
+# "Unknown Reed" finds almost nothing, so the word is left out of the link.
+_RESEARCH_UNKNOWN_NAME = frozenset({
+    'unknown', 'unk', 'unnamed', 'baby', 'infant', 'fnu', 'lnu', 'none',
+    'null', 'nn', 'n.n', '?'})
+
+
+def _research_known(word: str) -> str:
+    """`word`, or '' when it is only a stand-in for a name nobody knows."""
+    core = word.strip('[]().').casefold()
+    return '' if not core or core in _RESEARCH_UNKNOWN_NAME else word
 
 
 # ── Prose / HTML ────────────────────────────────────────────────────────────
@@ -4183,6 +4198,9 @@ class _SiteBuilder:
         # so a broken file is not retried four times either) - distinct from
         # "not yet asked" (pid absent from the dict).
         self._provisional_record_cache: dict[str, dict | None] = {}
+        # Per source: the ids of its claims marked restricted, or None when the
+        # source is private or unreadable (`_research_claim_ok`).
+        self._research_private_claims_cache: dict[str, set | None] = {}
         # One person's `relationships` rows for a given direction ('parent' or
         # 'child'), memoized across every descendant/ancestor tree BFS in this
         # build (#152 review fix, P2, finding 1 - see `_DESCENDANT_TREE_MAX_
@@ -6400,21 +6418,71 @@ class _SiteBuilder:
             return '', ''
         meta = self._research_meta(pid) or {}
         surname = person_surname(name, row['surname']) or ''
-        if birth_name and isinstance(meta.get('name_at_birth'), str):
-            surname = person_surname(meta['name_at_birth']) or surname
+        if birth_name and _research_public_name(meta, 'name_at_birth'):
+            surname = person_surname(_research_public_name(meta, 'name_at_birth')) or surname
         given = bracket_given_name(name)
         if ' ' in given:          # "Mrs. Doe": a title and a surname, no given name
             given = ''
-        return given, surname
+        return _research_known(given), _research_known(surname)
 
     @staticmethod
     def _research_year(date_min: str | None, date_max: str | None) -> int | None:
-        """The middle year of a claim's date range ("about 1840" is 1840)."""
+        """The middle year of a claim's date range ("about 1840" is 1840), or
+        None when the range cannot honestly be one year give or take two: an
+        open end ("before 1840" runs from year 1), "unknown", a whole century
+        ("18XX"), or a span wider than ten years. A search with no year is
+        better than one that looks in the wrong decade."""
         try:
             lo, hi = int(str(date_min)[:4]), int(str(date_max or date_min)[:4])
         except ValueError:
             return None
+        if lo <= 1 or hi >= 9999 or hi - lo > 10:
+            return None
         return (lo + hi) // 2
+
+    @classmethod
+    def _research_year_of(cls, edtf: str | None) -> int | None:
+        """`_research_year` of a date as typed; None for a date that does not
+        read (a typo such as `1902-13` must not stop the workbench building)."""
+        if not edtf:
+            return None
+        try:
+            return cls._research_year(*edtf_bounds(str(edtf)))
+        except (ValueError, TypeError):
+            return None
+
+    def _research_claim_ok(self, claim_id, source_id) -> bool:
+        """May this claim's date and place go into a search link? Not when the
+        claim, or its source, is marked restricted or by-request (the shared
+        site withholds those too), and not when the source cannot be read,
+        since then nobody can say which of its claims were marked private.
+
+        The workbench is built as a linked site, which does not read the
+        per-claim markers (`_load_restriction_markers`), so this reads each
+        source a person's claims come from, once per build."""
+        if not source_id:
+            return True
+        cache = self._research_private_claims_cache
+        if source_id not in cache:
+            cache[source_id] = None                  # unreadable or private
+            row = self.source_meta.get(source_id)
+            if row is not None and not row['restricted'] and row['path']:
+                path = self.archive_root / row['path']
+                _marker, trouble = read_restriction_marker(path)
+                rec = None
+                if trouble is None:
+                    try:
+                        rec = read_record(path, on_decode_error=_ignore_decode_error)
+                    except Exception:   # noqa: BLE001 - any failure reads as private
+                        rec = None
+                if (rec is not None and not rec.get('undecodable')
+                        and not rec['parse_errors']
+                        and not _is_restricted_value(rec['meta'].get('restricted'))):
+                    cache[source_id] = {
+                        normalize_id(str(c.get('id', ''))) for c in rec['claims']
+                        if isinstance(c, dict) and _is_restricted_value(c.get('restricted'))}
+        private = cache[source_id]
+        return private is not None and normalize_id(str(claim_id)) not in private
 
     def _person_research_ctx(self, pid: str, name: str) -> dict:
         """The page's "Look for ... on other websites" keys. Empty outside the
@@ -6449,16 +6517,18 @@ class _SiteBuilder:
         if (row['living'] or 'unknown') != 'false':
             return subject                            # name only
         meta = self._research_meta(pid) or {}
-        if _research_public_name(meta.get('married_name')):
-            subject['married_surname'] = person_surname(_research_public_name(meta['married_name'])) or ''
+        married = _research_known(person_surname(_research_public_name(meta, 'married_name')) or '')
+        if married:
+            subject['married_surname'] = married
 
         # Own vitals: the best accepted birth (else baptism) and death (else burial).
         rows = [r for r in self.conn.execute(
-            "SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.place_id, c.place_text, "
-            "c.confidence FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "SELECT c.id, c.source_id, c.type, c.date_edtf, c.date_min, c.date_max, c.place_id, "
+            "c.place_text, c.confidence FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0 "
             "AND c.type IN ('birth','death','marriage','baptism','burial') ORDER BY c.id",
-            (pid,)) if self._claim_is_own_vital(pid, r['id'], r['type'])]
+            (pid,)) if self._claim_is_own_vital(pid, r['id'], r['type'])
+            and self._research_claim_ok(r['id'], r['source_id'])]
         best: dict[str, sqlite3.Row] = {}
         for r in sorted(rows, key=vital_pick_key):
             best.setdefault(r['type'], r)
@@ -6467,15 +6537,12 @@ class _SiteBuilder:
             claim = next((best[t] for t in fallbacks if t in best), None)
             year = place = None
             if claim is not None:
-                bounds = (claim['date_min'], claim['date_max'])
-                if not bounds[0] and claim['date_edtf']:
-                    bounds = edtf_bounds(claim['date_edtf'])
-                year = self._research_year(*bounds)
+                year = (self._research_year(claim['date_min'], claim['date_max'])
+                        if claim['date_min'] else self._research_year_of(claim['date_edtf']))
                 place = self._place_label(claim['place_text'], claim['place_id'])
             else:                                     # the unsourced estimate on the record
                 est = self._provisional_vital(pid, kind)
-                if est:
-                    year = self._research_year(*edtf_bounds(est))
+                year = self._research_year_of(est)
                 place = self._provisional_vital(pid, f'{kind}_place')
             if year:
                 subject[f'{kind}_year'] = year
@@ -6502,8 +6569,8 @@ class _SiteBuilder:
             if sn:
                 subject[f'{role}_surname'] = sn
         spouses = self.conn.execute(
-            "SELECT r.other_id, r.claim_id, c.type, c.date_min, c.date_max, c.place_id, "
-            "c.place_text FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+            "SELECT r.other_id, r.claim_id, c.source_id, c.type, c.date_min, c.date_max, "
+            "c.place_id, c.place_text FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
             "WHERE r.person_id = ? AND r.rel = 'spouse' "
             "ORDER BY r.date_start IS NULL, r.date_start, r.other_id", (pid,)).fetchall()
         for sp in spouses:
@@ -6516,7 +6583,7 @@ class _SiteBuilder:
                 subject['spouse_given'] = g
             if sn:
                 subject['spouse_surname'] = sn
-            if sp['type'] == 'marriage':
+            if sp['type'] == 'marriage' and self._research_claim_ok(sp['claim_id'], sp['source_id']):
                 year = self._research_year(sp['date_min'], sp['date_max'])
                 place = self._place_label(sp['place_text'], sp['place_id'])
                 if year:
@@ -6527,9 +6594,11 @@ class _SiteBuilder:
             break
         # Every place the page's own accepted claims name, for Geneteka's province.
         for r in self.conn.execute(
-                "SELECT DISTINCT c.place_id, c.place_text FROM claims c "
+                "SELECT DISTINCT c.id, c.source_id, c.place_id, c.place_text FROM claims c "
                 "JOIN claim_persons cp ON c.id = cp.claim_id "
                 "WHERE cp.person_id = ? AND c.status = 'accepted'", (pid,)):
+            if not self._research_claim_ok(r['id'], r['source_id']):
+                continue
             label = self._place_label(r['place_text'], r['place_id'])
             if label and label not in places:
                 places.append(label)

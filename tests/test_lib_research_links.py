@@ -109,11 +109,19 @@ class SearchUrlTests(unittest.TestCase):
         self.assertEqual(query(links['chroniclingamerica']), {
             'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': 'Ann Lee',
             'start_date': '1900-01-01', 'end_date': '1960-12-31'})
+        # Newspapers.com's own parameter names, checked by hand 2026-11-23:
+        # upstream's `query`/`year-start` opened a search with the years dropped.
         self.assertEqual(query(links['newspapers']), {
-            'query': 'Ann Lee', 'year-start': '1895', 'year-end': '1965'})
+            'keyword': 'Ann Lee', 'date-start': '1895', 'date-end': '1965'})
         born_only = by_key({'given': 'Ann', 'surname': 'Lee', 'birth_year': 1900})
-        self.assertEqual(query(born_only['newspapers'])['year-end'], '1990')
-        self.assertEqual(query(born_only['chroniclingamerica'])['end_date'], '1900-12-31')
+        self.assertEqual(query(born_only['newspapers'])['date-end'], '1990')
+        # With no death on file the newspaper search covers a lifetime, not
+        # only the birth year (which could never find a marriage notice).
+        self.assertEqual(query(born_only['chroniclingamerica'])['start_date'], '1900-01-01')
+        self.assertEqual(query(born_only['chroniclingamerica'])['end_date'], '1990-12-31')
+        died_only = by_key({'given': 'Ann', 'surname': 'Lee', 'death_year': 1960})
+        self.assertEqual(query(died_only['chroniclingamerica'])['start_date'], '1870-01-01')
+        self.assertEqual(query(died_only['chroniclingamerica'])['end_date'], '1960-12-31')
 
     def test_ukdiscovery_is_a_name_search(self):
         self.assertEqual(query(by_key(THOMAS)['ukdiscovery']), {'_q': 'Thomas Hartley'})
@@ -126,6 +134,19 @@ class SearchUrlTests(unittest.TestCase):
             'search_lastname': 'Hartley', 'search_name': 'Thomas',
             'from_date': '1840', 'to_date': '1841'})
         self.assertNotIn('geneteka', by_key(dict(THOMAS, places=['Suwałki, Poland'])))
+
+    def test_geneteka_reads_the_whole_province_name(self):
+        # West Pomerania is not Pomerania, and Lower Silesia is not Silesia,
+        # whichever order the province list is in.
+        for place, code in (('Szczecin, zachodniopomorskie, Poland', '16zp'),
+                            ('Koszalin, Zachodniopomorskie', '16zp'),
+                            ('Gdańsk, pomorskie', '11pm'),
+                            ('Toruń, kujawsko-pomorskie', '02kp'),
+                            ('Wrocław, dolnośląskie', '01ds'),
+                            ('Katowice, Śląskie', '12sl')):
+            with self.subTest(place):
+                self.assertEqual(query(by_key(dict(THOMAS, places=[place]))['geneteka'])['w'],
+                                 code)
 
     def test_years_are_widened_by_two_and_absent_years_add_no_date_parameter(self):
         q = query(by_key({'given': 'A', 'surname': 'B', 'birth_year': 1840})['familysearch'])

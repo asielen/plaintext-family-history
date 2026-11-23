@@ -356,7 +356,7 @@ Other limits:
 
 ## 15. Search links on the workbench person page
 
-**The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted.
+**The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
 
 **Why.** Opening a relative and wondering whether she is on FamilySearch or has a grave listed meant retyping her name, years and parents into each site. The archive's knowledge now goes into the search, not the other way round. A click is the only thing that sends anything to a website, and the server fetches nothing.
 
