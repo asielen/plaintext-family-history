@@ -19458,8 +19458,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
                 found_by.setdefault(census_key or census_raw, set()).update(
                     range(c['y_lo'], c['y_hi'] + 1))
                 # A census whose country comes from its source's `places:`
-                # puts them there that year as surely as one placed itself.
-                if census_key and c['place_id'] is None:
+                # puts them there that year as surely as one placed itself
+                # (one placed itself is also added below; twice is harmless).
+                if census_key:
                     dated_places.append((c['y_lo'], c['y_hi'], census_key))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)

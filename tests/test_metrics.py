@@ -807,6 +807,19 @@ class CensusCheckTests(_Base):
         c = self.a.check(KID, 'census')
         self.assertEqual((c['expected'], c['found']), ([1850, 1860, 1870, 1880], [1880]))
 
+    def test_a_census_at_an_unregistered_place_placed_by_its_source_counts_after_a_move(self):
+        # The same, with the claim naming a place not yet registered: the
+        # source's `places:` still says which census it is.
+        self.a.source('vital-record', [_birth(KID, '1850', US),
+                                       {'type': 'death', 'persons': [KID], 'date': '1890'}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1875',
+                                 'place': CA}])
+        self.a.source('census', [{'type': 'event', 'persons': [KID], 'date': '1880',
+                                  'place': 'L-zzzzzzzzzz'}],
+                      source_date='1880', places=[US])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['expected'], c['found']), ([1850, 1860, 1870, 1880], [1880]))
+
     def test_a_census_naming_no_place_still_counts_after_a_move(self):
         # Born in Cork 1870, in Kansas 1895, died 1930, with a 1901 census
         # entry whose place is not registered: it may be the Irish 1901, so
