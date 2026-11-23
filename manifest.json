@@ -1,1383 +1,1383 @@
 {
   "manifest_version": "1",
-  "spec_version": "2.19",
+  "spec_version": "2.20",
   "generated": "2026-11-22",
   "files": [
     {
       "path": ".agents/skills/README.md",
       "category": "operating",
       "sha256": "43c3b519bb2bf4656cb4299754df1bbb59cd3fdcc653c2af31fae062e1792e7d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/README.md"
     },
     {
       "path": ".agents/skills/_STANDARD.md",
       "category": "operating",
       "sha256": "79bcf8a720cce40d8932f2ecad25ae878a410f18406e7831707bc4b3d8a2aff6",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/_STANDARD.md"
     },
     {
       "path": ".agents/skills/find-photos/SKILL.md",
       "category": "operating",
       "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/find-photos/SKILL.md"
     },
     {
       "path": ".agents/skills/import-notes/SKILL.md",
       "category": "operating",
       "sha256": "0f28a97a8de4377264d713c22c08bf87dfbe6076b8737998a71639dbee8ab0d8",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/import-notes/SKILL.md"
     },
     {
       "path": ".agents/skills/import-recordings/SKILL.md",
       "category": "operating",
       "sha256": "230a7a3baa35d2e7c2ca95fb5102ef32ee5cb8d5e9c7c516d28481b3b74ddb1f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/import-recordings/SKILL.md"
     },
     {
       "path": ".agents/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
       "sha256": "25682defff941916a1b1e6245056d77ce263fad9137e44fd9e44ecb5873e25f1",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/import-recordings/scripts/attribute_speakers.py"
     },
     {
       "path": ".agents/skills/import-recordings/scripts/find_duplicate_media.py",
       "category": "operating",
       "sha256": "846b79ffe5f14a3318b887736e3958939ac131daf5a1c12f484456f8b10e7de9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/import-recordings/scripts/find_duplicate_media.py"
     },
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
       "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
     {
       "path": ".agents/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "312656eb24b0ee0a06ce02b160e67343a0240df436479f0d20868dd03fa36f8b",
-      "spec_version": "2.19",
+      "sha256": "b9cb662176df98d28281a1f3a1325f69247acb41fcd28817f7b22c1210d1c081",
+      "spec_version": "2.20",
       "src": ".claude/skills/mine-transcript/SKILL.md"
     },
     {
       "path": ".agents/skills/on-this-day/SKILL.md",
       "category": "operating",
       "sha256": "e0f2cc95130dd1c57aafdba283eb0b6dcb310ff6e4c82eaeab96a9db90dd3cd5",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/on-this-day/SKILL.md"
     },
     {
       "path": ".agents/skills/photo-context/SKILL.md",
       "category": "operating",
       "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/photo-context/SKILL.md"
     },
     {
       "path": ".agents/skills/place-research/SKILL.md",
       "category": "operating",
       "sha256": "1307ac9cde1ac3d364fc15fc42511cee89298248fdd4c94bf3fe188b550ddaa0",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/place-research/SKILL.md"
     },
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "74e4c623f2ff4ca4c4638f00509148595659ba29e538000692ff18164f1bdd93",
-      "spec_version": "2.19",
+      "sha256": "4c9cadf669e5a8031c2ed1425ba04f819f147b61bcbfeaf2df626a96aab8e4b9",
+      "spec_version": "2.20",
       "src": ".claude/skills/process-source/SKILL.md"
     },
     {
       "path": ".agents/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
       "sha256": "684a21ab9df7c407f842bbcf9fec8e1485828b63571bc57ad4231e1aeab6f5d4",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/reconcile-site-edits/SKILL.md"
     },
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
       "sha256": "56fe47705c080e279a5a5503ab6c1c2d91eae5285d160ef80255277fd7470e0c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/research-next/SKILL.md"
     },
     {
       "path": ".agents/skills/review-claims/SKILL.md",
       "category": "operating",
       "sha256": "a309471ce0f03a04bf1916efb8d3b67187c0f073fd2795ce56a02fd169c640fa",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/review-claims/SKILL.md"
     },
     {
       "path": ".agents/skills/setup-interview/SKILL.md",
       "category": "operating",
       "sha256": "6f2862d1d0049a2c60215c513ace606ccc7eb9bb217592634f9b55555deb3f4c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/setup-interview/SKILL.md"
     },
     {
       "path": ".agents/skills/share-and-export/SKILL.md",
       "category": "operating",
       "sha256": "180ce997219fd2901eddb844b26bb8ab6e00a81d0be0444fa09a667990560351",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/share-and-export/SKILL.md"
     },
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
       "sha256": "d21cf51f8f53ba9bf2c453e1493847b984f5048c3fdc3176038c7588429a74e9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/today/SKILL.md"
     },
     {
       "path": ".agents/skills/transcribe-audio/GAP.md",
       "category": "operating",
       "sha256": "c20fbfd5289100cbca010cea49ebdba4c1a75bec7c839cdce6ce4a43a82e2ecd",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/transcribe-audio/GAP.md"
     },
     {
       "path": ".agents/skills/transcribe-audio/SKILL.md",
       "category": "operating",
       "sha256": "6f18f89a8bdba55d91142f254c574f1e89c01850623fce3a836c745a044abf58",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/transcribe-audio/SKILL.md"
     },
     {
       "path": ".agents/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
       "sha256": "a170e0a51c18072062c4a3d0b7bc51704c19b8365f157d08e1e6e28d32ebf1bd",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py"
     },
     {
       "path": ".agents/skills/transcribe-source/GAP.md",
       "category": "operating",
       "sha256": "f1589e7e7c0537cdd8a9c7db31d6ee5521494ace95cbccd701cbaffc643ce427",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/transcribe-source/GAP.md"
     },
     {
       "path": ".agents/skills/transcribe-source/SKILL.md",
       "category": "operating",
       "sha256": "179a4faf7bac21da684dd48ee9f05e13887fb68b75e95e47f0a0a47606111e32",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": ".claude/skills/transcribe-source/SKILL.md"
     },
     {
       "path": ".agents/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
-      "spec_version": "2.19",
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
+      "spec_version": "2.20",
       "src": ".claude/skills/write-biography/SKILL.md"
     },
     {
       "path": ".claude/skills/README.md",
       "category": "operating",
       "sha256": "43c3b519bb2bf4656cb4299754df1bbb59cd3fdcc653c2af31fae062e1792e7d",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
       "sha256": "79bcf8a720cce40d8932f2ecad25ae878a410f18406e7831707bc4b3d8a2aff6",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
       "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/import-notes/SKILL.md",
       "category": "operating",
       "sha256": "0f28a97a8de4377264d713c22c08bf87dfbe6076b8737998a71639dbee8ab0d8",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
       "sha256": "230a7a3baa35d2e7c2ca95fb5102ef32ee5cb8d5e9c7c516d28481b3b74ddb1f",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/attribute_speakers.py",
       "category": "operating",
       "sha256": "25682defff941916a1b1e6245056d77ce263fad9137e44fd9e44ecb5873e25f1",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/import-recordings/scripts/find_duplicate_media.py",
       "category": "operating",
       "sha256": "846b79ffe5f14a3318b887736e3958939ac131daf5a1c12f484456f8b10e7de9",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
       "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "312656eb24b0ee0a06ce02b160e67343a0240df436479f0d20868dd03fa36f8b",
-      "spec_version": "2.19"
+      "sha256": "b9cb662176df98d28281a1f3a1325f69247acb41fcd28817f7b22c1210d1c081",
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/on-this-day/SKILL.md",
       "category": "operating",
       "sha256": "e0f2cc95130dd1c57aafdba283eb0b6dcb310ff6e4c82eaeab96a9db90dd3cd5",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/photo-context/SKILL.md",
       "category": "operating",
       "sha256": "6ae71a6b424c43d82aa8bf5e431f68b1a90fe1adab5b51f96e18574d321171fa",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/place-research/SKILL.md",
       "category": "operating",
       "sha256": "1307ac9cde1ac3d364fc15fc42511cee89298248fdd4c94bf3fe188b550ddaa0",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "74e4c623f2ff4ca4c4638f00509148595659ba29e538000692ff18164f1bdd93",
-      "spec_version": "2.19"
+      "sha256": "4c9cadf669e5a8031c2ed1425ba04f819f147b61bcbfeaf2df626a96aab8e4b9",
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/reconcile-site-edits/SKILL.md",
       "category": "operating",
       "sha256": "684a21ab9df7c407f842bbcf9fec8e1485828b63571bc57ad4231e1aeab6f5d4",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
       "sha256": "56fe47705c080e279a5a5503ab6c1c2d91eae5285d160ef80255277fd7470e0c",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/review-claims/SKILL.md",
       "category": "operating",
       "sha256": "a309471ce0f03a04bf1916efb8d3b67187c0f073fd2795ce56a02fd169c640fa",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
       "sha256": "6f2862d1d0049a2c60215c513ace606ccc7eb9bb217592634f9b55555deb3f4c",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/share-and-export/SKILL.md",
       "category": "operating",
       "sha256": "180ce997219fd2901eddb844b26bb8ab6e00a81d0be0444fa09a667990560351",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
       "sha256": "d21cf51f8f53ba9bf2c453e1493847b984f5048c3fdc3176038c7588429a74e9",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/transcribe-audio/GAP.md",
       "category": "operating",
       "sha256": "c20fbfd5289100cbca010cea49ebdba4c1a75bec7c839cdce6ce4a43a82e2ecd",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/transcribe-audio/SKILL.md",
       "category": "operating",
       "sha256": "6f18f89a8bdba55d91142f254c574f1e89c01850623fce3a836c745a044abf58",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/transcribe-audio/scripts/transcribe_audio.py",
       "category": "operating",
       "sha256": "a170e0a51c18072062c4a3d0b7bc51704c19b8365f157d08e1e6e28d32ebf1bd",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/transcribe-source/GAP.md",
       "category": "operating",
       "sha256": "f1589e7e7c0537cdd8a9c7db31d6ee5521494ace95cbccd701cbaffc643ce427",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
       "sha256": "179a4faf7bac21da684dd48ee9f05e13887fb68b75e95e47f0a0a47606111e32",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
-      "spec_version": "2.19"
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
+      "spec_version": "2.20"
     },
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
       "sha256": "2801d3c3805928ed1fa60eec664434ecfa53e92263bf12e307f445280738ae46",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/README-ARCHIVE.md"
     },
     {
       "path": ".fha/browser-companion/icons/icon128.png",
       "category": "operating",
       "sha256": "b461b28ff07998efc9051a3134f558f2fe369d9c4e1c4bc15647929eb4444510",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/icons/icon128.png"
     },
     {
       "path": ".fha/browser-companion/icons/icon16.png",
       "category": "operating",
       "sha256": "995c0f975d23d4d80bf83c1d811321be7ec7c94f21be4c93b6cac5907a73856c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/icons/icon16.png"
     },
     {
       "path": ".fha/browser-companion/icons/icon32.png",
       "category": "operating",
       "sha256": "e52e4faef148acc74950afe069be9b2213dc849f05dd35197d6a2973a287d15f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/icons/icon32.png"
     },
     {
       "path": ".fha/browser-companion/icons/icon48.png",
       "category": "operating",
       "sha256": "7f5d91423b16621e0ed7cb9bdc33b9719ace593cba24395a5212a7b7f034256a",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/icons/icon48.png"
     },
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
       "sha256": "5dc8fd9c71c7ddeae4b4641992ec5cabffc5afb027403774470b04794011f78c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/manifest.json"
     },
     {
       "path": ".fha/browser-companion/src/background.js",
       "category": "operating",
       "sha256": "b71435b322f720a2822bb88633b51cafa93dc2d73e3387e7a0304709a29100ee",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/background.js"
     },
     {
       "path": ".fha/browser-companion/src/batch.js",
       "category": "operating",
       "sha256": "7ce9f6f8ad61d85413001423346f6b903b741284c7d366475b9dda7aabaa39fd",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/batch.js"
     },
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
       "sha256": "cda06c0d62a948b9245667ba831e7fd70966d9ccdb381ef7515836115173ada3",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/content.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/ancestry-record.js",
       "category": "operating",
       "sha256": "a2ce1248e28d78c19b01e8325cc68be148bb3dffc6e4cbe3018b2d236631c585",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/ancestry-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
       "category": "operating",
       "sha256": "bcb097ea577a23744c47292acdc8dab3cc92bd386f9f1652d1ad544398e1390d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/batch-sources.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-store.js",
       "category": "operating",
       "sha256": "08da49808559d7ff9d2297d6173af0f401782b9a83a1c7d2a92663f919c417b3",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/batch-store.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/bundle.js",
       "category": "operating",
       "sha256": "84b0dcd6406c8981fa19c0295935dc7c64be210597391c28d6d0eabac60ae765",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/bundle.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-batch.js",
       "category": "operating",
       "sha256": "6eb31ad0f8e88d87e5f7a05948c1e929cbca5b9957314ba194334db9f2cafa1c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/capture-batch.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
       "sha256": "0d32c35eaffe553a425a2e54b61409b6b03adf618160d4e185bfed202e1a095f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
       "sha256": "976ece592f730e3ae80739ab6d5d6671af441fc30e8eb36aace6e512ff501b3a",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/capture-json.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-readiness.js",
       "category": "operating",
       "sha256": "fe60692b93ac134bb33717a3766113e35e5b34ccbbc92eba5d7fc24c8165f4e7",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/capture-readiness.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
       "sha256": "87941bf211f117074acce44211225e122176381bbcf44ea91e82ecf627b61fef",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/findagrave-record.js",
       "category": "operating",
       "sha256": "004e324d2d0e2e56e7ef2d67039a83818d4e9ff6ecc2c9f35ff2dc94ee61f38d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/findagrave-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/findagrave.js",
       "category": "operating",
       "sha256": "3881c97a700a415586018f257822b6e6e38ca891e366dca971ce70eeffc9245b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/findagrave.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/iiif.js",
       "category": "operating",
       "sha256": "9ceffa476632e7d5e7aa3ead32183a3fb069ef9009f3f148bf33e29591e15c25",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/iiif.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/native-host.js",
       "category": "operating",
       "sha256": "b548540405848cf98e7ff8ec11a2efab625a57edc79041f94d02c7586319d928",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/native-host.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/newspapers-page-data.js",
       "category": "operating",
       "sha256": "6d3f0c1154e054c3767cef246c961e1a2410372c62912c743d9fa919421aecfb",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/newspapers-page-data.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/newspapers.js",
       "category": "operating",
       "sha256": "cdec7aedfb9588ba2176e1f7738e53930791417c9ef2dc7d54092f1f75648f87",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/newspapers.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/people-harvest.js",
       "category": "operating",
       "sha256": "8620f6370de3ffe05fd76d3e002f106bded2f55997dcd0aa684f13d3c7f045d4",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/people-harvest.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/srcset.js",
       "category": "operating",
       "sha256": "d0c226749cd58bfe941cb85f22beeb0d1b81795438e608da0ef63e4d6d3eed56",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/lib/srcset.js"
     },
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
       "sha256": "9ad64a6407cbc9bc5640a66810a89dcdc5c2d5ab7d685fa49e4d6295ad6081bc",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
       "sha256": "826fb2ab8017959b4af16f990cc600679bd69e887853595d7ffc5519677af5db",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
       "sha256": "3721571d9fcfe57fe38c38e470896ae5c96474893ee06f8353ee559ab0ae9076",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "browser-companion/src/panel.js"
     },
     {
       "path": ".fha/design/custom.css",
       "category": "skeleton",
       "sha256": "817986f1e6e096e29f0ea598dac2bbde2b98c917b2862ea34ac6c64544946e20",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/custom.css"
     },
     {
       "path": ".fha/design/design-system.html",
       "category": "operating",
       "sha256": "80947bbeaeb72b58d77d9d345835ac884f4607d1d3d318c547a6d6c04f0d382b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/design-system.html"
     },
     {
       "path": ".fha/design/fonts/fraunces-400-latin-ext.woff2",
       "category": "operating",
       "sha256": "a21ecfbf41fbc393e24ef9b7e38532a27e8da5e0a074aa7d66802d1b5ccec2f0",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/fraunces-400-latin-ext.woff2"
     },
     {
       "path": ".fha/design/fonts/fraunces-400-latin.woff2",
       "category": "operating",
       "sha256": "7f9d191d999336d3b9790afa72e1358e50a13b06d4f289341e92a311967a80f9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/fraunces-400-latin.woff2"
     },
     {
       "path": ".fha/design/fonts/fraunces-600-latin-ext.woff2",
       "category": "operating",
       "sha256": "a21ecfbf41fbc393e24ef9b7e38532a27e8da5e0a074aa7d66802d1b5ccec2f0",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/fraunces-600-latin-ext.woff2"
     },
     {
       "path": ".fha/design/fonts/fraunces-600-latin.woff2",
       "category": "operating",
       "sha256": "7f9d191d999336d3b9790afa72e1358e50a13b06d4f289341e92a311967a80f9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/fraunces-600-latin.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-400-latin-ext.woff2",
       "category": "operating",
       "sha256": "7be72f53edd9aba2cffe8326fbb60dd7ae00b578ff5e103b399c14dfec3257d9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-400-latin-ext.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-400-latin.woff2",
       "category": "operating",
       "sha256": "fde3d14f78c3431ee5e2f676a46dd18a1dd48ee4d0a71cc76c751f9e6f76f58e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-400-latin.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-400i-latin-ext.woff2",
       "category": "operating",
       "sha256": "3c5b9d0314198a54521c8ad5e418f608d6b1ed20d576f93bcbb7a498889b0083",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-400i-latin-ext.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-400i-latin.woff2",
       "category": "operating",
       "sha256": "1e98bfbbb4eb8177b9c21b3fd526e1118c4835d21ff870c0d1c25b1ef4409fba",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-400i-latin.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-600-latin-ext.woff2",
       "category": "operating",
       "sha256": "7be72f53edd9aba2cffe8326fbb60dd7ae00b578ff5e103b399c14dfec3257d9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-600-latin-ext.woff2"
     },
     {
       "path": ".fha/design/fonts/literata-600-latin.woff2",
       "category": "operating",
       "sha256": "fde3d14f78c3431ee5e2f676a46dd18a1dd48ee4d0a71cc76c751f9e6f76f58e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/fonts/literata-600-latin.woff2"
     },
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
       "sha256": "fbc9afc32a60b79d977d16469675805d903d3bb435f8e60de747a8467020177e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/styles.css"
     },
     {
       "path": ".fha/design/view.css",
       "category": "operating",
       "sha256": "a6193074926d72942aaafa16f2b7fcac7da9b12d3fa81f8f21120080aa702ba6",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "design/view.css"
     },
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
       "sha256": "bd2316fd9de1bd3fde3b78036e91c2c6474949d42f4ea5d1bcc450acd7558245",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "docs/DESIGN.md"
     },
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
       "sha256": "e91191ad7ba4888077db5e885224011ab9504892e7d5a9fe3f0db60ed1b195fb",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "22e5ec6aa57c960df7085f8d451cef68d8889fe7fb68ca9467b1ee1e375549b0",
-      "spec_version": "2.19",
+      "sha256": "8517703f3ff11c7738ecfd248fb959c2817338236ec162709b11b5908e7476e4",
+      "spec_version": "2.20",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
       "sha256": "7493b4b0db36dc2df1a43bc6f3444267933c49c678d4e34417623aa16bbded9b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/anniversaries.py"
     },
     {
       "path": ".fha/tools/backup.py",
       "category": "operating",
       "sha256": "37aba484fc92c1389a2f99b2b69bfaa4354a20245eaf0caf3945998fe46f98b9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/backup.py"
     },
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
       "sha256": "9efee0280ab4efe8cb5926c87c67934b3987a726c96b422f32991ee65fb7121f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture.py"
     },
     {
       "path": ".fha/tools/capture_recipes/__init__.py",
       "category": "operating",
       "sha256": "881fd77a1254e19cbd1957c27d0fc5a0099ac0de543a1810f57d68c24b0e86c2",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/__init__.py"
     },
     {
       "path": ".fha/tools/capture_recipes/_common.py",
       "category": "operating",
       "sha256": "c34f4c5563e79962a39ec8446a1029b93a805d62e80854644b1e16c03d1651c1",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/_common.py"
     },
     {
       "path": ".fha/tools/capture_recipes/ancestry.py",
       "category": "operating",
       "sha256": "bcdb899da26f38957cd01e7db279ff3ae622648247bc8ac8e930f2b4695ffd86",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/ancestry.py"
     },
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
       "sha256": "66921f3d9e5ead96e9c6b64972d769102b2c60181d07ba62b20e3a4fcc6de340",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/familysearch.py"
     },
     {
       "path": ".fha/tools/capture_recipes/findagrave.py",
       "category": "operating",
       "sha256": "961cec32592119d55823441692b3e613b2810b8ffdac659ab0f821481bd164c4",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/findagrave.py"
     },
     {
       "path": ".fha/tools/capture_recipes/newspapers.py",
       "category": "operating",
       "sha256": "88f7135f90771f39f42855be6420073d601449ffd14c0e23e0d573e1299da72d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/capture_recipes/newspapers.py"
     },
     {
       "path": ".fha/tools/claim.py",
       "category": "operating",
       "sha256": "29a6b170b0231ea6e892184daea22ee7e47d75a95b3ccf402619119027109c76",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/claim.py"
     },
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
       "sha256": "497953bc264508c4982d9cb57b96067dfec62519e27333baaea6f89267766bd3",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/confirm.py"
     },
     {
       "path": ".fha/tools/convert_mining.py",
       "category": "operating",
       "sha256": "cc2169675dfd1c6e095e851c09d697124983948f59eb1f983f23c5090a078aba",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/convert_mining.py"
     },
     {
       "path": ".fha/tools/cooccur.py",
       "category": "operating",
       "sha256": "948c83646f70e4dfededa4ce3116d47ec3a4547ebd306d82acd5612b3b2af907",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/cooccur.py"
     },
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
       "sha256": "aab328eebd48421d6fff1f8d9d2ddd0edfa233577e3f96c0bb8551917b871c2c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/doctor.py"
     },
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
       "sha256": "32c2bfaedac3b1d7d8d5eb83d97df608e86a604aa6e0ec82ee347e51855b8834",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/fha.py"
     },
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
       "sha256": "036fdd0956117ad1bd8bcf52dd718b8a38d23553b4b527ce2e2b488db5ef680a",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/find.py"
     },
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
       "sha256": "b78c329e59817f9c5a8ab386fd50e2f1fd118b2a6f39c3689c7b37c006d0c681",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/gedcom.py"
     },
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
       "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/gedcom_import.py"
     },
     {
       "path": ".fha/tools/id.py",
       "category": "operating",
       "sha256": "ac2b127ddfa69c0a32b10188777506a3acf261e9c727d2e0db2d5bbed6882fe4",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/id.py"
     },
     {
       "path": ".fha/tools/index.py",
       "category": "operating",
       "sha256": "6582cee0e1f48d52d004bd38d4e19a37b7bbbd51a57945537e89b50e03f0e22b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/index.py"
     },
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
       "sha256": "8305a685d71da0dabaa1d29e1ffdef5281991130480203397ab1d83cc42404eb",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/lint.py"
     },
     {
       "path": ".fha/tools/media.py",
       "category": "operating",
       "sha256": "b108673ed67aef898b7b2c81499021f2778215cc6a4fca96ae24cf2fd3625369",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/media.py"
     },
     {
       "path": ".fha/tools/metrics.py",
       "category": "operating",
       "sha256": "95eed9594a96ca5f825741304f5b789b80564ce501e5766f490d231b9dbbb8a8",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/metrics.py"
     },
     {
       "path": ".fha/tools/normalize_links.py",
       "category": "operating",
       "sha256": "14a1bcf7c55b1be40ac1709808d6791536a4a60b1e72e269ae0bb8c19eb08577",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/normalize_links.py"
     },
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
       "sha256": "1afe52bbad140b529e5263562004926a7a269f6531ccdedac86c558daca51adb",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/packet.py"
     },
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "4b222ad8575127d96cac50767420c627e6305ab4fc9792e084be01f498f52c31",
-      "spec_version": "2.19",
+      "sha256": "1a63730d240e53452dc553a8e6fff8db0a6d846fd18d634d7a02f398660aef5c",
+      "spec_version": "2.20",
       "src": "tools/person.py"
     },
     {
       "path": ".fha/tools/photoindex.py",
       "category": "operating",
       "sha256": "0d853a084443422c4a4442f8d22a3930c8100b15caf5e8bf9ea91aedb74a492a",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/photoindex.py"
     },
     {
       "path": ".fha/tools/places.py",
       "category": "operating",
       "sha256": "b42a9de823a09e51d3c74e150155f4c373a53c6fae2282662e9e71978eb2fc89",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/places.py"
     },
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "127141ad143326e2de251f3ec2eb53fcfabbc7492a0c4ac3b3ee50adb4d6e51d",
-      "spec_version": "2.19",
+      "sha256": "f6dfdf5016a8bacc23e6e9402a588fe9841be752473d8aa10079626de9f6b647",
+      "spec_version": "2.20",
       "src": "tools/process.py"
     },
     {
       "path": ".fha/tools/reconcile.py",
       "category": "operating",
       "sha256": "20693b60cdbf3043012c4928e766d34ae072646991b85f457349389f72ce6d51",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/reconcile.py"
     },
     {
       "path": ".fha/tools/record_collections.json",
       "category": "operating",
       "sha256": "3ebc3860559b307ee600e5a2ded68b964930913e444c93a79c82a267117e413d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/record_collections.json"
     },
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "4388382c17c53239f901897b329cde166b6ef22e4d68232c96d2d6d15bfece29",
-      "spec_version": "2.19",
+      "sha256": "3f310353462c889b93319bbe826f0eb6aac6809f7eacda0e8d2c4ae5c7ca5908",
+      "spec_version": "2.20",
       "src": "tools/relate.py"
     },
     {
       "path": ".fha/tools/reorganize.py",
       "category": "operating",
       "sha256": "f25fb336dd0c142e7f8ef4ee28834c1317e0e7cd7cc6b94cd354ae31a3029576",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/reorganize.py"
     },
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
       "sha256": "dde4aae0b9ae51b1e5384a2151d53427b208beb5d92fa39f6287e82906ca79e7",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/report.py"
     },
     {
       "path": ".fha/tools/requirements.txt",
       "category": "operating",
       "sha256": "546a4f6a6463d0b9e4603340501d620684ca67ebb372e259fd21af12f9138c00",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/requirements.txt"
     },
     {
       "path": ".fha/tools/scaffold.py",
       "category": "operating",
       "sha256": "804a6b9d994fb95550d3305aeeda393eefc44eaff15a755807bb60d477d77a5d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/scaffold.py"
     },
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
       "sha256": "986a82116aeeaef8e994dcc6bdca0d894868312d3efec664a2dd6fb349a7e503",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/serve.py"
     },
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
       "sha256": "eebeb17e4dfe42818a284984faa4d0dca02a30ff04fe448714d097840fcf53c5",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "d6259feb6058863dfda37fe24bea911f015805c864cf1c0bda27ca33a8a28974",
-      "spec_version": "2.19",
+      "sha256": "db1c9d1819689c061e2c4b87903efd09286d3f0a639faff427e8b5132265aede",
+      "spec_version": "2.20",
       "src": "tools/source.py"
     },
     {
       "path": ".fha/tools/stubs.py",
       "category": "operating",
       "sha256": "58040b72cef27ccec405ba07985a3cdb5cfe4c7544af50fb9283602642146662",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/stubs.py"
     },
     {
       "path": ".fha/tools/templates/_pedigree_home.html",
       "category": "operating",
       "sha256": "b6138af981858f5fff281228d9e8d94ef7e8bd0889122ebe0b2636776e2abf23",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/_pedigree_home.html"
     },
     {
       "path": ".fha/tools/templates/_tree.html",
       "category": "operating",
       "sha256": "ec33ef49ccb1ab58ab2e35fefb3aa20ccfd94aab9e6b9f1b78860ee241a53994",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/_tree.html"
     },
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
       "sha256": "2ab99f88ee55cccb045e1189735a292037e2b4def9756d43ac0966273379554c",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/base.html"
     },
     {
       "path": ".fha/tools/templates/discoveries.html",
       "category": "operating",
       "sha256": "aa1fada1d0d37e4b5cfc975e371bd6f8030ff9339b264ce45f84d9692df622db",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/discoveries.html"
     },
     {
       "path": ".fha/tools/templates/gallery.html",
       "category": "operating",
       "sha256": "837512f0ea323d615db4ab11da3cbd8cb838c41c130a3fb653780e69e18fe22b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/gallery.html"
     },
     {
       "path": ".fha/tools/templates/inbox.html",
       "category": "operating",
       "sha256": "b3b7797a9214e9f9f4bc34dc99a0cc36cb2f35dba496115abd38e92a929a1a17",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/inbox.html"
     },
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
       "sha256": "d1af8497d8a35b4a139023f0f292b22f8bb5a341746693264dbbb51cc91912a4",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/index.html"
     },
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
       "sha256": "e5c84af8f4c2c2050e1acc4aa03da36b2dde6d586a1f560264ece3f73f2dc758",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/person.html"
     },
     {
       "path": ".fha/tools/templates/place.html",
       "category": "operating",
       "sha256": "c5079f20cbccefcd26ed0276d8c7dbdfe16522759e9f6497d145f7bbbf2eef1e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/place.html"
     },
     {
       "path": ".fha/tools/templates/review.html",
       "category": "operating",
       "sha256": "9ed70043b5147d3d6effac5f7ac4656d953806f9264e97be3cad004d2b364965",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/review.html"
     },
     {
       "path": ".fha/tools/templates/source.html",
       "category": "operating",
       "sha256": "855de43840adb995f62ac15dae758409841bd5d7f24c5024bb5f8f178b89dc45",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/source.html"
     },
     {
       "path": ".fha/tools/templates/vendor/d3.min.js",
       "category": "operating",
       "sha256": "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/d3.min.js"
     },
     {
       "path": ".fha/tools/templates/vendor/fha-site.js",
       "category": "operating",
       "sha256": "6b0e0afe4b747f7f70ef0671845e9c46b93e88bec6e9e79c60c31e005e6d3219",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/fha-site.js"
     },
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
       "sha256": "8eafca6fa58b4ea8e4305c649eb979cdb7b50334520857c92f3657a6bb7a57d0",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/fha-tree.js"
     },
     {
       "path": ".fha/tools/templates/vendor/licenses/README.txt",
       "category": "operating",
       "sha256": "4e3f6c1852994283f30ffe5eee31140c4bf671649ac7430eceaf80530ab69991",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/licenses/README.txt"
     },
     {
       "path": ".fha/tools/templates/vendor/licenses/d3-ISC.txt",
       "category": "operating",
       "sha256": "53792be401bd0fa8bd62195869bd812c12621558c7e948ad5681a7e9a69d177d",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/licenses/d3-ISC.txt"
     },
     {
       "path": ".fha/tools/templates/vendor/tree-adapter.js",
       "category": "operating",
       "sha256": "80c6dd3c2dafdb4e48d7160b154266e1a5e1a355b3e1ea81d75e427cde84f5b1",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/vendor/tree-adapter.js"
     },
     {
       "path": ".fha/tools/templates/view.html",
       "category": "operating",
       "sha256": "468cf1423403c6fb0d97c38941de0f90700041e5109b2a9276b31b483d5b47f8",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/view.html"
     },
     {
       "path": ".fha/tools/templates/workbench/_modals.html",
       "category": "operating",
       "sha256": "6c5a9c93684ece7cacce3864ae5815533d27cfed374a70fc75bef5c8430c2e37",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/workbench/_modals.html"
     },
     {
       "path": ".fha/tools/templates/workbench/_servebar.html",
       "category": "operating",
       "sha256": "7ab4f4959effd9f47709b1dc51baa081811419606fbd60318941393eae53f12e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/workbench/_servebar.html"
     },
     {
       "path": ".fha/tools/templates/workbench/workbench.css",
       "category": "operating",
       "sha256": "d12af70e1a3d94068bb5ede41df26e1d4f9d21a6f1c9f543a46cee428cb42f16",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/workbench/workbench.css"
     },
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
       "sha256": "04d64d53218209bad489ba59f5ad2fe4d8166213e265301da37abf6f715e51d1",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/templates/workbench/workbench.js"
     },
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
       "sha256": "f6e124c5feee432bd8adc27c0defda527f1753ee935ee6de45160d6dce700df5",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/views.py"
     },
     {
       "path": ".fha/tools/wikitree.py",
       "category": "operating",
       "sha256": "99e20d97226966c6ac4aeaac1c49de62d20df365c19bd17101ddf1167d183299",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/wikitree.py"
     },
     {
       "path": ".fha/tools/wikitree_templates.yaml",
       "category": "operating",
       "sha256": "195e257c26d0fba284acb9be614ecafd8888670cf3ffee72d1f37215e7cf5f4f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/wikitree_templates.yaml"
     },
     {
       "path": ".fha/tools/working_copy.py",
       "category": "operating",
       "sha256": "9dbce589df584d075027fed89a0670e8036c67b1c86d7852ebe0a017998469b1",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/working_copy.py"
     },
     {
       "path": ".fha/tools/xref.py",
       "category": "operating",
       "sha256": "ff0a5867ad3eb43fe08c0c9fb5a2109b8085b6412ab2f0c266c3a3d107947327",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "tools/xref.py"
     },
     {
       "path": ".gitattributes",
       "category": "skeleton",
       "sha256": "de9a2a4ca809da0b3e9ab2b300544839bc30a3c96c9925032496e0853903ba2b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/.gitattributes"
     },
     {
       "path": ".gitignore",
       "category": "skeleton",
       "sha256": "fd78b0517e18ede915dc701a34a56919d1aa97bf852716a7f867e4fa0c35fcfb",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/.gitignore"
     },
     {
       "path": "AGENTS.md",
       "category": "operating",
       "sha256": "1d19f19d019fc03b552eb43d9080dfbc20dcb8ccb136baaa2e7d6d2d4384a111",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "CLAUDE.md",
       "category": "operating",
       "sha256": "0d4ee54c6499d0adaf31cf5950dcd0a4cec1c4e65d6bb3f147e23d5233258868",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "START_HERE.md",
       "category": "skeleton",
       "sha256": "1b7c0c7e72ef2de9ac58b10e8405d8c28c2f8d89a14415bc5dc5780e5f73c4f6",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/START_HERE.md"
     },
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
       "sha256": "caf2f035548ef325a68393cb95f913f50f8db901073310db960136eba6c0d1d3",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "ef5377532b1d6cabec6501f6798191b5789737653cf7ccef5b9784efbdcc51df",
-      "spec_version": "2.19"
+      "sha256": "9af41819004ef5acd6edf095f1c195382a8d016e76a024ce047c202eee471584",
+      "spec_version": "2.20"
     },
     {
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
       "sha256": "9278028f192891e5326c995c7dd121655e2c16ba6d0860c467763c7ee4390501",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
       "sha256": "620c22122f3cf7af1f808cd7318aba189538a520e954e8ce57999788af0f87e1",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "129f78beafc243defd6a6d6ac6c2c8adedc2928124749a46698d2da4200d0bee",
-      "spec_version": "2.19"
+      "sha256": "611b89d524a1f2363df6af911e0a9adfce3eb365f7d6f18d3e7beabda5bc0298",
+      "spec_version": "2.20"
     },
     {
       "path": "docs/FAQ.md",
       "category": "operating",
       "sha256": "7e78c0c69451a7155c86629c8736cce43c8b90a4fe6495c4aaea8b10853832df",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/FILING_CABINET.md",
       "category": "operating",
       "sha256": "e9b74850c6b390ae120951043fb4b7b16363af889a21aa0b801cc4872b70b347",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
       "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "988b4512052065c8a47b345459869e8902d19f4bb4773206500ed3f11a6c0812",
-      "spec_version": "2.19"
+      "sha256": "ca2614a5dfb621d9fdbb0ed50d6ec98bc80bf6dd6621a82550f3869b86761807",
+      "spec_version": "2.20"
     },
     {
       "path": "docs/README.md",
       "category": "operating",
       "sha256": "08b0c04cf044c63d76fb4801dbd6b11e8aa46f7fee926b5809c430324edb8220",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
       "sha256": "ffade4453d9f7f6f887c83e9861a9dd773a3950667d0bc93574ab4b4b3078910",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "1f9025c1448c4f01a777e03978bbdde3807f4ea3836fdd221a938d527e99b398",
-      "spec_version": "2.19",
+      "sha256": "45e7072f018e46cd7044306a8ca2bebd63d692a97480e9674f58bc3d9eb2690d",
+      "spec_version": "2.20",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "05db325fd59f9fa1de6ad308fd19e119051e4792d4adc2d9d3a3da9313ed2138",
-      "spec_version": "2.19",
+      "sha256": "95a1814ed5f4f3d784948fd86a35c2176f242db98b03d93d6240c10fcd88b560",
+      "spec_version": "2.20",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
       "sha256": "4946dd282b1a5adc4f5363f222b6bcb1ab9a6edc4f42a497035fb50ac86a07df",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
       "sha256": "918b8e01d82fbf464b4efd686fdc620757b037c2e63a93d8c54912ad6e2a1e47",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
       "sha256": "2cb742af796a97dfb4f58369f6a48f1660052cd0ee12b15896d715b6cb764593",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "documents/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/documents/.gitkeep"
     },
     {
       "path": "fha",
       "category": "operating",
       "sha256": "6089698ee161c8de2cc983ab573f9b6df4335b2340d16d8accff9ed9529786ec",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "fha.cmd",
       "category": "operating",
       "sha256": "3a09280ad6174cc2a2cd91ad9bc6f477b68b295fda8f17dc82a2cbbb720400de",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "fha.yaml",
       "category": "skeleton",
       "sha256": "9adaba2c63d9ea197999983751d75e44a87e00df52a89ec659c8019e0716cb0e",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/fha.yaml"
     },
     {
       "path": "inbox/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/inbox/.gitkeep"
     },
     {
       "path": "inbox/_TEMPLATE.notes.md",
       "category": "skeleton",
       "sha256": "6a0145ed0c2f1156ce1ce1f5fefff3448eeb046896fabe8d220e2cf79d2e1d99",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/inbox/_TEMPLATE.notes.md"
     },
     {
       "path": "notes/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/notes/.gitkeep"
     },
     {
       "path": "notes/home.md",
       "category": "skeleton",
       "sha256": "b9af518b9b16489454704afdb460985839d856934e28564d891f83d136343ba9",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/notes/home.md"
     },
     {
       "path": "notes/questions.md",
       "category": "skeleton",
       "sha256": "5c9941bdf734b6bc9cb1e4b76bc18015b1339cc621b75011b79427c11061403b",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/notes/questions.md"
     },
     {
       "path": "people/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/people/.gitkeep"
     },
     {
       "path": "people/_TEMPLATE.person.md",
       "category": "skeleton",
       "sha256": "89634da328278d7de8048df75fdba3cd539c8ac3dd16c00d274f921837ea863f",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/people/_TEMPLATE.person.md"
     },
     {
       "path": "people/_TEMPLATE.research.md",
       "category": "skeleton",
       "sha256": "e6cb23e43c5ff31a81b9e9a62638be4e3f7de9fc452dc1cc6b4d2a572bcbc5b5",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/people/_TEMPLATE.research.md"
     },
     {
       "path": "people/connections/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/people/connections/.gitkeep"
     },
     {
       "path": "people/stubs/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/people/stubs/.gitkeep"
     },
     {
       "path": "photos/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/photos/.gitkeep"
     },
     {
       "path": "places/places.yaml",
       "category": "skeleton",
       "sha256": "c96093c28cc151ac0fec412e54237b43b5806853c2e7649b0e3b21e5cce641cd",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/places/places.yaml"
     },
     {
       "path": "serve.cmd",
       "category": "operating",
       "sha256": "3b4b4f4f3f41f345a6d3495f37f17f7840d001016ef6af5c215c20915efe81ba",
-      "spec_version": "2.19"
+      "spec_version": "2.20"
     },
     {
       "path": "sources/.gitkeep",
       "category": "skeleton",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/sources/.gitkeep"
     },
     {
       "path": "sources/_TEMPLATE.source.md",
       "category": "skeleton",
       "sha256": "47d03430ae20e23d79ab289aa67222e67ff5bd10f0ceba4f85f40f729ba93a95",
-      "spec_version": "2.19",
+      "spec_version": "2.20",
       "src": "archive-template/sources/_TEMPLATE.source.md"
     }
   ]
