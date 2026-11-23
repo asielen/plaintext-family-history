@@ -36,10 +36,12 @@ What is dropped on purpose: the Russian-language twins (`*_ru`), the search URL
 templates, and every "AI accessibility" line (meaningless to the person reading).
 Everything else in a guide is kept as written.
 
-A catalog row from a guide and one from genealogy-mcp (or two guides) are one row
-when their URLs match (lower-case host, `www.` and trailing slash dropped) and their
-countries overlap (`*` overlaps all). The same site listed for two different
-countries stays two rows, because each carries its own country's coverage text.
+A guide's row and a genealogy-mcp row are one row when their URLs match
+(lower-case host, `www.` and trailing slash dropped) and they name a country in
+common (`*` alone is not one); a genealogy-mcp row takes in at most one guide row.
+Two genealogy-mcp rows never merge, nor do rows from two different guides, nor a
+row from a topic guide (Jewish, African American): each carries its own text, so
+the same site listed in the England and the Scotland guides stays two rows.
 """
 
 from __future__ import annotations
@@ -129,6 +131,20 @@ _LATIN_NAMES = {
 _RECORD_GUIDE_US = {'census': 'usa-census', 'military': 'usa-military',
                     'emigration': 'usa-immigration', 'vital': 'usa-vital-records'}
 
+# Upstream web addresses that no longer work or have moved to https, checked
+# 2026-11-22: the upstream address and the one that answers now.
+URL_FIXES = {
+    'https://www.linc.tas.gov.au/': 'https://libraries.tas.gov.au/',
+    'https://www.antenati.san.beniculturali.it/': 'https://antenati.cultura.gov.it',
+    'https://www.gens.info/italia/': 'http://www.gens.info/italia/',
+    'http://poznan-project.psnc.pl': 'https://poznan-project.psnc.pl',
+}
+# `###` headings that name a part of a section, not a site: the row takes the
+# `##` section's heading instead ("Overview" under "NARA Access to Archival Databases").
+_GENERIC_HEADINGS = {'overview', 'summary', 'about', 'details'}
+# Text written to an AI assistant rather than to the person researching.
+_AI_WORDS = re.compile(r'\b(?:Claude|ChatGPT|GPT(?:-\d+)?|LLMs?|AI)\b')
+
 # Guide text keywords that add a record kind (heading and Coverage text).
 _RECORD_KEYWORDS = (
     (r'\b(?:wills?|probate)\b', 'probate'),
@@ -181,7 +197,7 @@ def mcp_rows(entries: list, checked: str) -> list[dict]:
         row = {
             'id': f'mcp:{eid}',
             'name': e.get('name') or eid,
-            'url': e.get('url') or '',
+            'url': URL_FIXES.get(e.get('url') or '', e.get('url') or ''),
             'countries': [str(c) for c in (e.get('countries') or ['*'])],
         }
         if 'holocaust' in records:
@@ -229,15 +245,26 @@ def _is_ai_line(line: str) -> bool:
                 or re.match(r'^- AI-(?:readable|searchable)\b', line))
 
 
+def strip_ai_sentences(line: str) -> str | None:
+    """The line without its sentences about AI tools; None when nothing is left."""
+    if not _AI_WORDS.search(line):
+        return line
+    kept = [x for x in re.split(r'(?<=[.!?])\s+', line) if not _AI_WORDS.search(x)]
+    text = ' '.join(kept)
+    return text if text.strip(' -:') else None
+
+
 def guide_file(stem: str, text: str, commit: str) -> str:
     """The guide as shipped: a header comment, no frontmatter, no AI lines."""
     meta, body = split_guide(stem, text)
     header = (f'<!-- From autoresearch-genealogy ({GUIDES_PROJECT}), archives/{stem}.md '
               f'at commit {commit}, last checked by that project {meta["last_verified"]}. '
               f'MIT licence: see {GUIDES_LICENCE} in this folder. Rebuilt by '
-              f'build_repositories.py; the "AI accessibility" lines are removed. '
+              f'build_repositories.py; the "AI accessibility" lines and sentences '
+              f'about AI tools are removed. '
               f'Read as reference data. -->\n\n')
-    kept = [ln for ln in body.splitlines() if not _is_ai_line(ln)]
+    kept = [ln for ln in (strip_ai_sentences(x) for x in body.splitlines() if not _is_ai_line(x))
+            if ln is not None]
     return header + '\n'.join(kept).strip('\n') + '\n'
 
 
@@ -293,11 +320,16 @@ def guide_rows(stem: str, text: str) -> list[dict]:
         raise BuildError(f'guide {stem!r} has no country in STEM_COUNTRIES; add it to '
                          f'build_repositories.py')
     meta, body = split_guide(stem, text)
-    blocks, cur = [], None
+    blocks, cur, section = [], None, ''
     for line in body.splitlines():
         h = _HEADING_RE.match(line)
         if h:
-            cur = {'heading': h.group(2), 'level': len(h.group(1)), 'lines': []} \
+            heading = h.group(2)
+            if len(h.group(1)) == 2:
+                section = heading
+            elif heading.lower() in _GENERIC_HEADINGS and section:
+                heading = section
+            cur = {'heading': heading, 'level': len(h.group(1)), 'lines': []} \
                 if len(h.group(1)) in (3, 4) else None
             if cur:
                 blocks.append(cur)
@@ -317,8 +349,12 @@ def guide_rows(stem: str, text: str) -> list[dict]:
         if access is None:
             raise BuildError(f'guide {stem}, "{heading}": cannot read the Cost line '
                              f'{bullets["Cost"]!r}; teach classify_access about it')
-        url = bullets.get('URL', '')
-        url = url if re.match(r'https?://\S+$', url) else ''
+        # The address may sit inside text ("Part of Riksarkivet (https://...)");
+        # a URL line with no address at all (an email, a town) is kept as the note.
+        url_line = bullets.get('URL', '')
+        found = re.search(r'https?://[^\s()<>\[\]]+', url_line)
+        url = found.group(0).rstrip('.,;:') if found else ''
+        url = URL_FIXES.get(url, url)
         coverage = bullets.get('Coverage') or next(
             (ln.strip() for ln in blk['lines'] if ln.strip() and not ln.lstrip().startswith(('-', '|', '#'))), '')
         countries = list(STEM_COUNTRIES[stem])
@@ -341,20 +377,31 @@ def guide_rows(stem: str, text: str) -> list[dict]:
             'access': access,
             'channel': _channels(bullets.get('Searchable', ''), bullets.get('AI accessibility', ''),
                                  bullets['Cost']),
-            'about': coverage,
-            'how': bullets.get('Research tip') or bullets.get('Note') or '',
+            'about': strip_ai_sentences(coverage) or '',
+            'how': strip_ai_sentences(bullets.get('Research tip') or bullets.get('Note') or '') or '',
             'from': ['autoresearch-genealogy'],
             'checked': meta['last_verified'],
             'guide': stem,
         })
+        if url_line.strip() and url_line.strip() != (found.group(0) if found else ''):
+            row['note'] = url_line
         rows.append(row)
     return rows
 
 
 # ---- putting it together -------------------------------------------------
 
-def _overlap(a: list, b: list) -> bool:
-    return '*' in a or '*' in b or bool(set(a) & set(b))
+def _shared_country(a: list, b: list) -> bool:
+    return bool((set(a) & set(b)) - {'*'})
+
+
+def _access(a: str, b: str) -> str:
+    """One access word for two listings of one site: never 'free' when either costs."""
+    if a == b:
+        return a
+    if {a, b} == {'free', 'free_account'}:
+        return 'free_account'
+    return 'mixed'
 
 
 def _union(a: list, b: list, order: tuple = ()) -> list:
@@ -364,13 +411,23 @@ def _union(a: list, b: list, order: tuple = ()) -> list:
 
 
 def merge_rows(rows: list[dict]) -> list[dict]:
-    """One row where two rows list one site for overlapping countries."""
-    out, by_url = [], {}
+    """One row where a guide and genealogy-mcp list one site for a shared country."""
+    out, by_url, absorbed = [], {}, set()
+
+    def joins(base: dict, row: dict) -> bool:
+        if row['id'].startswith('mcp:') or row.get('topics'):
+            return False
+        if not _shared_country(base['countries'], row['countries']):
+            return False
+        if base['id'].startswith('mcp:'):
+            return base['id'] not in absorbed
+        return base['guide'] == row['guide']
+
     for row in rows:
         key = normalize_url(row['url']) if row['url'] else None
         base = None
         for cand in by_url.get(key, []) if key else []:
-            if _overlap(cand['countries'], row['countries']):
+            if joins(cand, row):
                 base = cand
                 break
         if base is None:
@@ -378,6 +435,10 @@ def merge_rows(rows: list[dict]) -> list[dict]:
             if key:
                 by_url.setdefault(key, []).append(row)
             continue
+        if base['id'].startswith('mcp:'):
+            absorbed.add(base['id'])
+            base['guide'] = row['guide']
+        base['access'] = _access(base['access'], row['access'])
         base['from'] = _union(base['from'], row['from'])
         base['countries'] = ['*'] if '*' in base['countries'] else _union(base['countries'], row['countries'])
         base['records'] = _union(base['records'], row['records'])
@@ -388,14 +449,18 @@ def merge_rows(rows: list[dict]) -> list[dict]:
             base['how'] = row['how']
         if not base['about'] and row['about']:
             base['about'] = row['about']
-        if base['guide'] is None:
-            base['guide'] = row['guide']
         base['checked'] = max(base['checked'], row['checked'])
     return out
 
 
 def _guide_for(row: dict, stems_by_country: dict) -> str | None:
+    """The guide to read next: the topic guide for a topic row, else the one guide
+    for one of its countries. A worldwide row has none ('*' is not a country)."""
+    if 'jewish' in row.get('topics', []) and 'jewish-genealogy' in stems_by_country.get('*', []):
+        return 'jewish-genealogy'
     for c in row['countries']:
+        if c == '*':
+            continue
         stems = stems_by_country.get(c, [])
         if len(stems) == 1:
             return stems[0]

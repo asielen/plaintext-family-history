@@ -1,4 +1,4 @@
-<!-- From autoresearch-genealogy (https://github.com/mattprusak/autoresearch-genealogy), archives/germany.md at commit 33da6f1, last checked by that project 2026-05-19. MIT licence: see LICENSE-autoresearch-genealogy.txt in this folder. Rebuilt by build_repositories.py; the "AI accessibility" lines are removed. Read as reference data. -->
+<!-- From autoresearch-genealogy (https://github.com/mattprusak/autoresearch-genealogy), archives/germany.md at commit 33da6f1, last checked by that project 2026-05-19. MIT licence: see LICENSE-autoresearch-genealogy.txt in this folder. Rebuilt by build_repositories.py; the "AI accessibility" lines and sentences about AI tools are removed. Read as reference data. -->
 
 # Germany
 
@@ -65,7 +65,7 @@ Compiled genealogies covering every family in a village or parish, usually spann
 
 - German surnames became fixed earlier than Scandinavian ones (generally by 1600 to 1700)
 - Regional naming patterns: von (nobility), zu (place of residence), diminutive suffixes (-el, -le, -chen)
-- Handwriting: records before ~1940 often use Kurrent script, which is very difficult for modern readers and OCR. Claude multimodal can help with Kurrent reading.
+- Handwriting: records before ~1940 often use Kurrent script, which is very difficult for modern readers and OCR.
 
 ## Search Strategy
 

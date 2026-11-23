@@ -1,4 +1,4 @@
-<!-- From autoresearch-genealogy (https://github.com/mattprusak/autoresearch-genealogy), archives/usa-census.md at commit 33da6f1, last checked by that project 2026-05-19. MIT licence: see LICENSE-autoresearch-genealogy.txt in this folder. Rebuilt by build_repositories.py; the "AI accessibility" lines are removed. Read as reference data. -->
+<!-- From autoresearch-genealogy (https://github.com/mattprusak/autoresearch-genealogy), archives/usa-census.md at commit 33da6f1, last checked by that project 2026-05-19. MIT licence: see LICENSE-autoresearch-genealogy.txt in this folder. Rebuilt by build_repositories.py; the "AI accessibility" lines and sentences about AI tools are removed. Read as reference data. -->
 
 # USA: Census Records
 

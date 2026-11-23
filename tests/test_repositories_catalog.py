@@ -199,6 +199,38 @@ class GuideRowTests(unittest.TestCase):
         rows = {r['name']: r for r in br.guide_rows('mexico-latin-america', text)}
         self.assertEqual(rows['Archive of Brazil and Spain']['countries'], ['MX', 'BR', 'ES'])
 
+    def test_a_web_address_inside_text_is_kept_and_the_rest_is_the_note(self):
+        # He is told the site exists online, not "no website", when the guide wrote
+        # the address inside a sentence; an email or a town is kept as the note.
+        text = SAMPLE_GUIDE.replace('- **URL**: https://reedroom.example/',
+                                    '- **URL**: Part of the State Archive (https://sok.reedroom.example/)')
+        text = text.replace('- **URL**: https://www.EXAMPLE-search.org/search/',
+                            '- **URL**: Contact via email (clerk@fairview.example)')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertEqual(rows['Reed Reading Room']['url'], 'https://sok.reedroom.example/')
+        self.assertIn('Part of the State Archive', rows['Reed Reading Room']['note'])
+        self.assertEqual(rows['Fairview Search']['url'], '')
+        self.assertEqual(rows['Fairview Search']['note'], 'Contact via email (clerk@fairview.example)')
+        self.assertNotIn('note', rows['Easton State Records Office'])
+
+    def test_a_dead_upstream_address_is_replaced_by_the_one_that_answers(self):
+        text = SAMPLE_GUIDE.replace('https://reedroom.example/', 'https://www.linc.tas.gov.au/')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertEqual(rows['Reed Reading Room']['url'], 'https://libraries.tas.gov.au/')
+
+    def test_an_overview_heading_takes_its_sections_name(self):
+        # "Look in Overview" names nothing; the section heading names the database.
+        text = SAMPLE_GUIDE.replace('### Reed Reading Room', '## Reed Reading Room Databases\n\n### Overview')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertIn('Reed Reading Room Databases', rows)
+        self.assertNotIn('Overview', rows)
+
+    def test_sentences_about_ai_tools_never_reach_a_row(self):
+        text = SAMPLE_GUIDE.replace('- **Note**: Open the image of every hit.',
+                                    '- **Note**: Open the image of every hit. Claude can read it for you.')
+        rows = {r['name']: r for r in br.guide_rows('usa-vital-records', text)}
+        self.assertEqual(rows['Fairview Search']['how'], 'Open the image of every hit.')
+
     def test_topics_by_stem(self):
         rows = br.guide_rows('jewish-genealogy', SAMPLE_GUIDE)
         self.assertEqual(rows[0]['countries'], ['*'])
@@ -219,6 +251,15 @@ class GuideFileTests(unittest.TestCase):
         self.assertIn('Every state has an office.', out)
         self.assertIn('Assuming records exist.', out)
 
+    def test_sentences_about_ai_tools_are_cut_and_the_rest_of_the_line_kept(self):
+        # A third party's note to the assistant is not reference text for him.
+        extra = ('- Handwriting: old script is hard to read. Claude multimodal can help with it.\n'
+                 '- ChatGPT reads these well.\n')
+        out = br.guide_file('usa-vital-records', SAMPLE_GUIDE + extra, '33da6f1')
+        self.assertIn('- Handwriting: old script is hard to read.', out)
+        self.assertNotIn('Claude', out.split('-->', 1)[1])
+        self.assertNotIn('ChatGPT', out)
+
     def test_a_guide_without_a_checked_date_stops_the_build(self):
         with self.assertRaises(br.BuildError):
             br.guide_file('usa-vital-records', SAMPLE_GUIDE.replace('last_verified: 2026-05-19\n', ''), 'x')
@@ -228,18 +269,52 @@ class BuildTests(unittest.TestCase):
     def build(self, mcp=SAMPLE_MCP, guides=None):
         return br.build(mcp, '2aa2cb0', '2026-11-15', guides or {'usa-vital-records': SAMPLE_GUIDE}, '33da6f1')
 
-    def test_one_site_listed_twice_for_overlapping_countries_is_one_row(self):
-        catalog, _ = self.build()
+    def test_one_site_listed_twice_for_one_country_is_one_row(self):
+        mcp = [dict(SAMPLE_MCP[0], countries=['US', 'CA'])]
+        catalog, _ = self.build(mcp=mcp)
         rows = [r for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()]
         self.assertEqual(len(rows), 1)
         r = rows[0]
         self.assertEqual(r['from'], ['genealogy-mcp', 'autoresearch-genealogy'])
         self.assertEqual(r['how'], 'Open the image, not just the index.')
         self.assertEqual(r['checked'], '2026-11-15')
-        self.assertEqual(r['countries'], ['*'])
+        self.assertEqual(r['countries'], ['US', 'CA'])
         self.assertEqual(r['guide'], 'usa-vital-records')
         for kind in ('church', 'probate', 'land'):
             self.assertIn(kind, r['records'])
+
+    def test_a_worldwide_row_keeps_each_countrys_listing_apart(self):
+        # The England guide's text about a worldwide site is not folded under it.
+        catalog, _ = self.build()
+        rows = [r for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()]
+        self.assertEqual(sorted(r['id'] for r in rows), ['ar:usa-vital-records:fairview-search', 'mcp:fsearch'])
+
+    def test_two_guides_for_one_country_keep_their_own_rows(self):
+        # England's Ancestry row must not carry Scotland's advice, nor Scotland lose its row.
+        eng = SAMPLE_GUIDE.replace('- **Note**: Open the image of every hit.', '- **Note**: English advice.')
+        sco = SAMPLE_GUIDE.replace('- **Note**: Open the image of every hit.', '- **Note**: Scottish advice.')
+        catalog, _ = br.build([], 'c', '2026-11-15', {'england-wales': eng, 'scotland': sco}, 'd')
+        rows = {r['id']: r for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()}
+        self.assertEqual(rows['ar:england-wales:fairview-search']['how'], 'English advice.')
+        self.assertEqual(rows['ar:scotland:fairview-search']['how'], 'Scottish advice.')
+
+    def test_a_topic_guide_row_and_a_second_mcp_row_stay_apart(self):
+        aa = SAMPLE_GUIDE.replace('- **Note**: Open the image of every hit.', '- **Note**: Freedmen records.')
+        mcp = [dict(SAMPLE_MCP[0], countries=['US']),
+               dict(SAMPLE_MCP[0], id='fsearch_latam', countries=['US', 'MX'], about='Latin America.')]
+        catalog, _ = br.build(mcp, 'c', '2026-11-15', {'african-american': aa}, 'd')
+        rows = {r['id']: r for r in catalog['repositories'] if 'example-search.org' in r['url'].lower()}
+        self.assertEqual(sorted(rows), ['ar:african-american:fairview-search', 'mcp:fsearch', 'mcp:fsearch_latam'])
+        self.assertNotIn('topics', rows['mcp:fsearch'])
+        self.assertEqual(rows['mcp:fsearch_latam']['about'], 'Latin America.')
+
+    def test_two_listings_disagreeing_on_cost_never_say_free(self):
+        mcp = [dict(SAMPLE_MCP[0], countries=['US'], access='free')]
+        catalog, _ = self.build(mcp=mcp, guides={'usa-vital-records': guide_text(cost='Subscription')})
+        r = [r for r in catalog['repositories'] if r['id'] == 'mcp:fsearch'][0]
+        self.assertEqual(r['from'], ['genealogy-mcp', 'autoresearch-genealogy'])
+        self.assertEqual(r['access'], 'mixed')
+        self.assertEqual(br._access('free', 'free_account'), 'free_account')
 
     def test_the_same_site_for_two_countries_stays_two_rows(self):
         other = SAMPLE_GUIDE.replace('USA: Vital Records', 'France')
@@ -267,6 +342,19 @@ class BuildTests(unittest.TestCase):
         catalog, _ = self.build()
         clerk = [r for r in catalog['repositories'] if r['id'] == 'mcp:breton_letters'][0]
         self.assertEqual(clerk['guide'], 'usa-vital-records')
+
+    def test_a_worldwide_site_is_not_pointed_at_the_jewish_guide(self):
+        # FamilySearch for an Irish family must not send him to "Jewish genealogy".
+        guides = {'usa-vital-records': SAMPLE_GUIDE, 'jewish-genealogy': SAMPLE_GUIDE,
+                  'russia-ukraine': SAMPLE_GUIDE}
+        mcp = [SAMPLE_MCP[0], dict(SAMPLE_MCP[0], id='rodo', url='https://rodo.example/',
+                                   countries=['*', 'RU', 'UA'], records=['trees']),
+               dict(SAMPLE_MCP[0], id='shoah', url='https://shoah.example/', records=['holocaust'])]
+        catalog, _ = br.build(mcp, 'c', '2026-11-15', guides, 'd')
+        rows = {r['id']: r for r in catalog['repositories']}
+        self.assertIsNone(rows['mcp:fsearch']['guide'])
+        self.assertEqual(rows['mcp:rodo']['guide'], 'russia-ukraine')
+        self.assertEqual(rows['mcp:shoah']['guide'], 'jewish-genealogy')
 
     def test_the_script_reads_files_only(self):
         src = (ROOT / 'build_repositories.py').read_text(encoding='utf-8')
@@ -334,6 +422,16 @@ class ShippedGuideTests(unittest.TestCase):
                 self.assertRegex(text.splitlines()[0], r'last checked by that project \d{4}-\d{2}-\d{2}')
                 self.assertNotRegex(text, r'(?m)^- \*\*AI accessibility\*\*')
                 self.assertNotRegex(text, r'(?m)^- AI-(readable|searchable)')
+                self.assertNotRegex(text.split('-->', 1)[1], br._AI_WORDS)
+
+    def test_no_shipped_row_names_overview_or_points_a_worldwide_site_at_a_topic_guide(self):
+        catalog = json.loads(CATALOG.read_text(encoding='utf-8'))
+        for r in catalog['repositories']:
+            with self.subTest(r['id']):
+                self.assertNotIn(r['name'].lower(), br._GENERIC_HEADINGS)
+                if r['guide'] == 'jewish-genealogy':
+                    self.assertIn('jewish', r.get('topics', []))
+                self.assertNotIn(r['url'], br.URL_FIXES)
 
     def test_the_licence_text_sits_beside_the_guides(self):
         text = (GUIDES / br.GUIDES_LICENCE).read_text(encoding='utf-8')

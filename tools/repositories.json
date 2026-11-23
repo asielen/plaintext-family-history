@@ -46,7 +46,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:familysearch_catalog",
@@ -64,8 +64,7 @@
     "revision",
     "confession",
     "census",
-    "catalogs",
-    "vital"
+    "catalogs"
    ],
    "access": "free_account",
    "channel": [
@@ -77,7 +76,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:archive_org",
@@ -106,7 +105,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:myheritage",
@@ -135,7 +134,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:geni",
@@ -158,11 +157,10 @@
    "about": "One shared world tree: a profile per person, merged between families.",
    "how": "Good for finding the other branches of your family. Check what sources a profile cites before trusting it.",
    "from": [
-    "genealogy-mcp",
-    "autoresearch-genealogy"
+    "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:wikitree",
@@ -188,7 +186,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:findagrave",
@@ -214,7 +212,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:billiongraves",
@@ -240,7 +238,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:arolsen",
@@ -303,8 +301,7 @@
    "about": "Names of Jewish victims of the Holocaust from pages of testimony, lists and documents.",
    "how": "Pages of testimony often name parents and spouses and were filled in by relatives — contact details may lead to living family.",
    "from": [
-    "genealogy-mcp",
-    "autoresearch-genealogy"
+    "genealogy-mcp"
    ],
    "checked": "2026-11-15",
    "guide": "jewish-genealogy"
@@ -338,10 +335,7 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy",
-   "topics": [
-    "jewish"
-   ]
+   "guide": "russia-ukraine"
   },
   {
    "id": "mcp:matricula",
@@ -403,7 +397,7 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": "france"
   },
   {
    "id": "mcp:wikipedia",
@@ -429,7 +423,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:yandex_archive",
@@ -742,7 +736,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": "russia-ukraine"
   },
   {
    "id": "mcp:doroga_pamyati",
@@ -2097,7 +2091,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": "germany"
   },
   {
    "id": "mcp:cwgc",
@@ -2126,7 +2120,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": "ireland"
   },
   {
    "id": "mcp:scotlandspeople",
@@ -2145,7 +2139,7 @@
     "census",
     "probate"
    ],
-   "access": "paid",
+   "access": "mixed",
    "channel": [
     "online"
    ],
@@ -2292,7 +2286,8 @@
    "about": "Scans of Italian civil registers from the state archives, with a growing name index.",
    "how": "Browse by state archive, town and year; registers have annual indexes at the end.",
    "from": [
-    "genealogy-mcp"
+    "genealogy-mcp",
+    "autoresearch-genealogy"
    ],
    "checked": "2026-11-15",
    "guide": "italy"
@@ -2561,6 +2556,47 @@
    "guide": "hungary"
   },
   {
+   "id": "mcp:familysearch_latam",
+   "name": "FamilySearch — Latin American collections",
+   "url": "https://www.familysearch.org/search/catalog",
+   "countries": [
+    "MX",
+    "BR",
+    "AR",
+    "CL",
+    "PE",
+    "CO",
+    "CU",
+    "UY",
+    "PY",
+    "VE",
+    "EC",
+    "BO",
+    "GT",
+    "CR"
+   ],
+   "years": [
+    1550,
+    1990
+   ],
+   "records": [
+    "church",
+    "vital",
+    "census"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "The largest online body of Latin American parish and civil registers: Mexico, Brazil, Argentina, Chile, Peru and the rest.",
+   "how": "Search the catalogue by country → state or province → municipality; Catholic baptisms usually name grandparents and godparents.",
+   "from": [
+    "genealogy-mcp"
+   ],
+   "checked": "2026-11-15",
+   "guide": "mexico-latin-america"
+  },
+  {
    "id": "mcp:agn_mexico",
    "name": "General Archive of the Nation (Mexico)",
    "url": "https://www.gob.mx/agn",
@@ -2577,7 +2613,7 @@
     "land",
     "census"
    ],
-   "access": "request",
+   "access": "mixed",
    "channel": [
     "online",
     "by letter"
@@ -2989,7 +3025,9 @@
    "name": "Gesher Galicia",
    "url": "https://www.geshergalicia.org",
    "countries": [
-    "*"
+    "PL",
+    "UA",
+    "BY"
    ],
    "years": [
     1772,
@@ -3011,10 +3049,7 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-11-15",
-   "guide": "poland",
-   "topics": [
-    "jewish"
-   ]
+   "guide": "poland"
   },
   {
    "id": "mcp:litvaksig",
@@ -3173,7 +3208,7 @@
    "records": [
     "vital"
    ],
-   "access": "free_account",
+   "access": "mixed",
    "channel": [
     "online",
     "by letter"
@@ -3439,7 +3474,7 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-11-15",
-   "guide": "usa-vital-records"
+   "guide": "usa-colonial"
   },
   {
    "id": "mcp:actapublica",
@@ -3557,7 +3592,7 @@
   {
    "id": "mcp:poznan_project",
    "name": "Poznań Project — marriages 1800–1899",
-   "url": "http://poznan-project.psnc.pl",
+   "url": "https://poznan-project.psnc.pl",
    "countries": [
     "PL",
     "DE"
@@ -4303,7 +4338,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:hathitrust",
@@ -4328,7 +4363,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:google_books",
@@ -4353,7 +4388,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:gallica",
@@ -4599,7 +4634,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:cyberleninka",
@@ -4674,7 +4709,7 @@
     "genealogy-mcp"
    ],
    "checked": "2026-11-15",
-   "guide": "jewish-genealogy"
+   "guide": null
   },
   {
    "id": "mcp:ukrfamily",
@@ -4946,6 +4981,30 @@
    "guide": "african-american"
   },
   {
+   "id": "ar:african-american:freedman-s-bank-records",
+   "name": "Freedman's Bank Records",
+   "url": "https://www.familysearch.org/search/collection/1417695",
+   "countries": [
+    "US"
+   ],
+   "topics": [
+    "african-american"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free",
+   "channel": [
+    "online"
+   ],
+   "about": "Applications for bank accounts (1865 to 1874) that include birthplace, age, complexion, occupation, spouse, children, siblings, parents, and sometimes the former slaveholder's name. Extraordinarily detailed.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "african-american"
+  },
+  {
    "id": "ar:african-american:us-federal-census-slave-schedules-1850-1860",
    "name": "US Federal Census Slave Schedules (1850, 1860)",
    "url": "",
@@ -4982,9 +5041,7 @@
     "african-american"
    ],
    "years": null,
-   "records": [
-    "census"
-   ],
+   "records": [],
    "access": "mixed",
    "channel": [
     "online"
@@ -5002,17 +5059,14 @@
    "name": "FamilySearch",
    "url": "https://www.familysearch.org/",
    "countries": [
-    "*"
+    "US"
    ],
    "topics": [
-    "african-american",
-    "jewish"
+    "african-american"
    ],
    "years": null,
    "records": [
-    "census",
-    "church",
-    "vital"
+    "census"
    ],
    "access": "free_account",
    "channel": [
@@ -5176,7 +5230,7 @@
   {
    "id": "ar:australia-nz:linc-tasmania",
    "name": "LINC Tasmania",
-   "url": "https://www.linc.tas.gov.au/",
+   "url": "https://libraries.tas.gov.au/",
    "countries": [
     "AU",
     "NZ"
@@ -5291,7 +5345,7 @@
   {
    "id": "ar:austria:lehmann-vienna-directories",
    "name": "Lehmann Vienna Directories",
-   "url": "",
+   "url": "https://www.digital.wienbibliothek.at/",
    "countries": [
     "AT"
    ],
@@ -5307,7 +5361,8 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "austria"
+   "guide": "austria",
+   "note": "https://www.digital.wienbibliothek.at/ (navigate to Lehmann directories)"
   },
   {
    "id": "ar:austria:genteam",
@@ -5375,7 +5430,8 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "austria"
+   "guide": "austria",
+   "note": "Contact via email (w.eckstein@ikg-wien.at)"
   },
   {
    "id": "ar:austria:austrian-state-archives-sterreichisches-staatsarchiv",
@@ -5606,7 +5662,7 @@
     "online"
    ],
    "about": "Census records (1841 to 1921), BMD indexes, military records, immigration, passenger lists, parish records",
-   "how": "For Scottish research, ScotlandsPeople is almost always the better primary source. Ancestry and FindMyPast are supplementary.",
+   "how": "",
    "from": [
     "autoresearch-genealogy"
    ],
@@ -5751,6 +5807,29 @@
    ],
    "checked": "2026-05-19",
    "guide": "france"
+  },
+  {
+   "id": "ar:germany:matricula-online",
+   "name": "Matricula Online",
+   "url": "https://data.matricula-online.eu/",
+   "countries": [
+    "DE"
+   ],
+   "years": null,
+   "records": [
+    "church"
+   ],
+   "access": "free",
+   "channel": [
+    "online"
+   ],
+   "about": "Catholic parish records (Germany, Austria, Poland, and others)",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "germany"
   },
   {
    "id": "ar:germany:familysearch-germany-collections",
@@ -6082,29 +6161,6 @@
    "guide": "ireland"
   },
   {
-   "id": "ar:italy:antenati-portale-antenati",
-   "name": "Antenati (Portale Antenati)",
-   "url": "https://www.antenati.san.beniculturali.it/",
-   "countries": [
-    "IT"
-   ],
-   "years": null,
-   "records": [
-    "vital"
-   ],
-   "access": "free",
-   "channel": [
-    "online"
-   ],
-   "about": "Digitized civil registration images from many Italian provinces. Browse by province, comune, record type, and year.",
-   "how": "",
-   "from": [
-    "autoresearch-genealogy"
-   ],
-   "checked": "2026-05-19",
-   "guide": "italy"
-  },
-  {
    "id": "ar:italy:familysearch-italy-collections",
    "name": "FamilySearch (Italy collections)",
    "url": "https://www.familysearch.org/",
@@ -6149,7 +6205,7 @@
   {
    "id": "ar:italy:cognome-distribution-maps",
    "name": "Cognome Distribution Maps",
-   "url": "https://www.gens.info/italia/",
+   "url": "http://www.gens.info/italia/",
    "countries": [
     "IT"
    ],
@@ -6189,6 +6245,54 @@
    ],
    "checked": "2026-05-19",
    "guide": "italy"
+  },
+  {
+   "id": "ar:jewish-genealogy:jewishgen",
+   "name": "JewishGen",
+   "url": "https://www.jewishgen.org/",
+   "countries": [
+    "*"
+   ],
+   "topics": [
+    "jewish"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free",
+   "channel": [
+    "online"
+   ],
+   "about": "The central hub for Jewish genealogy. Databases include the Family Tree of the Jewish People, Communities Database, Yizkor Book translations, vital records indexes, Holocaust databases, and ShtetlSeeker (locating towns by phonetic name matching).",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "jewish-genealogy"
+  },
+  {
+   "id": "ar:jewish-genealogy:yad-vashem-central-database-of-shoah-victims-names",
+   "name": "Yad Vashem Central Database of Shoah Victims' Names",
+   "url": "https://yvng.yadvashem.org/",
+   "countries": [
+    "*"
+   ],
+   "topics": [
+    "jewish"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free",
+   "channel": [
+    "online"
+   ],
+   "about": "4.8 million names of Holocaust victims. Based on Pages of Testimony submitted by survivors and family members, as well as historical documents.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "jewish-genealogy"
   },
   {
    "id": "ar:jewish-genealogy:its-arolsen-archives",
@@ -6290,6 +6394,30 @@
    "guide": "jewish-genealogy"
   },
   {
+   "id": "ar:jewish-genealogy:gesher-galicia",
+   "name": "Gesher Galicia",
+   "url": "https://www.geshergalicia.org/",
+   "countries": [
+    "*"
+   ],
+   "topics": [
+    "jewish"
+   ],
+   "years": null,
+   "records": [],
+   "access": "mixed",
+   "channel": [
+    "online"
+   ],
+   "about": "Records from the former province of Galicia (now split between Poland and Ukraine). Cadastral maps, tax records, vital records, and town histories.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "jewish-genealogy"
+  },
+  {
    "id": "ar:jewish-genealogy:all-russia-family-tree-vgd",
    "name": "All Russia Family Tree (VGD)",
    "url": "https://www.vgd.ru/",
@@ -6312,6 +6440,55 @@
    ],
    "checked": "2026-05-19",
    "guide": "jewish-genealogy"
+  },
+  {
+   "id": "ar:jewish-genealogy:familysearch-jewish-relevant-collections",
+   "name": "FamilySearch (Jewish-relevant collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "*"
+   ],
+   "topics": [
+    "jewish"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Digitized metric books from the Russian Empire, Austro-Hungarian Empire, and other regions. Growing indexed collections.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "jewish-genealogy"
+  },
+  {
+   "id": "ar:mexico-latin-america:familysearch",
+   "name": "FamilySearch",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "MX"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "census",
+    "vital"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "The dominant platform for Latin American genealogy. Massive collections for Mexico, Brazil, Guatemala, Peru, Chile, Argentina, Colombia, and others. Includes Catholic parish records, civil registration, census records, and immigration records. Many indexed, many image-only.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "mexico-latin-america"
   },
   {
    "id": "ar:mexico-latin-america:ancestry-com",
@@ -6364,8 +6541,7 @@
    "url": "https://pares.mcu.es/",
    "countries": [
     "MX",
-    "ES",
-    "PT"
+    "ES"
    ],
    "years": null,
    "records": [
@@ -6446,6 +6622,30 @@
     "online"
    ],
    "about": "Aggregated index of Dutch archival records. Over 100 million records from participating archives.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "netherlands"
+  },
+  {
+   "id": "ar:netherlands:familysearch-netherlands-collections",
+   "name": "FamilySearch (Netherlands collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "NL"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "vital"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Large indexed and image collections. Many Dutch records available including civil registration, church records, and population registers.",
    "how": "",
    "from": [
     "autoresearch-genealogy"
@@ -6592,6 +6792,30 @@
    "guide": "norway"
   },
   {
+   "id": "ar:norway:familysearch-norway-collections",
+   "name": "FamilySearch (Norway collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "NO"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "census"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Indexed church records, census records, emigration records",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "norway"
+  },
+  {
    "id": "ar:norway:kvien-database",
    "name": "Kvien Database",
    "url": "https://kvien.net/",
@@ -6635,6 +6859,50 @@
    "guide": "poland"
   },
   {
+   "id": "ar:russia-ukraine:familysearch-russia-ukraine-collections",
+   "name": "FamilySearch (Russia/Ukraine collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "RU",
+    "UA"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Rapidly growing collection. Metric books (metricheskie knigi) from many guberniyas are being digitized. Includes Orthodox, Catholic, Lutheran, and Jewish records.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "russia-ukraine"
+  },
+  {
+   "id": "ar:russia-ukraine:geni-com",
+   "name": "Geni.com",
+   "url": "https://www.geni.com/",
+   "countries": [
+    "RU",
+    "UA"
+   ],
+   "years": null,
+   "records": [],
+   "access": "mixed",
+   "channel": [
+    "online"
+   ],
+   "about": "Significant Russian and Ukrainian family trees, often with sourced data. Useful for finding connections and existing research.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "russia-ukraine"
+  },
+  {
    "id": "ar:russia-ukraine:ukrainian-state-archives-various",
    "name": "Ukrainian State Archives (various)",
    "url": "",
@@ -6676,6 +6944,123 @@
    ],
    "checked": "2026-05-19",
    "guide": "scotland"
+  },
+  {
+   "id": "ar:scotland:familysearch-scotland-collections",
+   "name": "FamilySearch (Scotland collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "GB"
+   ],
+   "years": null,
+   "records": [
+    "church"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Some indexed Scottish church and civil records, but significantly less comprehensive than ScotlandsPeople",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "scotland"
+  },
+  {
+   "id": "ar:scotland:findmypast",
+   "name": "FindMyPast",
+   "url": "https://www.findmypast.co.uk/",
+   "countries": [
+    "GB"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "newspapers"
+   ],
+   "access": "paid",
+   "channel": [
+    "online"
+   ],
+   "about": "Scottish newspaper archives (British Newspaper Archive), some parish records",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "scotland"
+  },
+  {
+   "id": "ar:scotland:ancestry",
+   "name": "Ancestry",
+   "url": "https://www.ancestry.co.uk/",
+   "countries": [
+    "GB"
+   ],
+   "years": null,
+   "records": [
+    "census"
+   ],
+   "access": "paid",
+   "channel": [
+    "online"
+   ],
+   "about": "Some Scottish collections including census transcriptions and military records",
+   "how": "For Scottish research, ScotlandsPeople is almost always the better primary source. Ancestry and FindMyPast are supplementary.",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "scotland"
+  },
+  {
+   "id": "ar:spain-portugal:pares-portal-de-archivos-espa-oles",
+   "name": "PARES (Portal de Archivos Españoles)",
+   "url": "https://pares.mcu.es/",
+   "countries": [
+    "ES",
+    "PT"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free",
+   "channel": [
+    "online"
+   ],
+   "about": "Spanish national archives portal. Documents from the Archivo General de Indias (colonial Americas), Archivo Historico Nacional, Archivo General de Simancas, and others. Millions of digitized documents.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "spain-portugal"
+  },
+  {
+   "id": "ar:spain-portugal:familysearch-spain-collections",
+   "name": "FamilySearch (Spain collections)",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "ES",
+    "PT"
+   ],
+   "years": null,
+   "records": [
+    "church",
+    "vital"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Large collection of Catholic parish records and civil registration from across Spain. Many indexed, many browse-only image sets.",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "spain-portugal"
   },
   {
    "id": "ar:spain-portugal:ancestry-com-spain-collections",
@@ -6773,7 +7158,7 @@
   {
    "id": "ar:sweden:svar-svensk-arkivinformation",
    "name": "SVAR (Svensk Arkivinformation)",
-   "url": "",
+   "url": "https://sok.riksarkivet.se/",
    "countries": [
     "SE"
    ],
@@ -6791,7 +7176,8 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "sweden"
+   "guide": "sweden",
+   "note": "Part of Riksarkivet (https://sok.riksarkivet.se/)"
   },
   {
    "id": "ar:sweden:emihamn-swedish-emigration-database",
@@ -6833,7 +7219,54 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "sweden"
+   "guide": "sweden",
+   "note": "Located in Växjö, Sweden"
+  },
+  {
+   "id": "ar:usa-census:familysearch",
+   "name": "FamilySearch",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "US"
+   ],
+   "years": null,
+   "records": [
+    "census"
+   ],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "1790 to 1950 (all available censuses)",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "usa-census"
+  },
+  {
+   "id": "ar:usa-census:ancestry-com",
+   "name": "Ancestry.com",
+   "url": "https://www.ancestry.com/",
+   "countries": [
+    "US"
+   ],
+   "years": null,
+   "records": [
+    "census"
+   ],
+   "access": "paid",
+   "channel": [
+    "online"
+   ],
+   "about": "1790 to 1950, with the most comprehensive indexing",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "usa-census"
   },
   {
    "id": "ar:usa-census:nara-national-archives",
@@ -6859,6 +7292,27 @@
    "guide": "usa-census"
   },
   {
+   "id": "ar:usa-colonial:familysearch",
+   "name": "FamilySearch",
+   "url": "https://www.familysearch.org/",
+   "countries": [
+    "US"
+   ],
+   "years": null,
+   "records": [],
+   "access": "free_account",
+   "channel": [
+    "online"
+   ],
+   "about": "Indexed and digitized records from all 13 original colonies plus territories",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-05-19",
+   "guide": "usa-colonial"
+  },
+  {
    "id": "ar:usa-colonial:fold3",
    "name": "Fold3",
    "url": "https://www.fold3.com/",
@@ -6867,8 +7321,7 @@
    ],
    "years": null,
    "records": [
-    "land",
-    "military"
+    "land"
    ],
    "access": "mixed",
    "channel": [
@@ -6879,7 +7332,7 @@
    "from": [
     "autoresearch-genealogy"
    ],
-   "checked": "2026-06-23",
+   "checked": "2026-05-19",
    "guide": "usa-colonial"
   },
   {
@@ -6996,7 +7449,7 @@
   {
    "id": "ar:usa-immigration:internet-archive-nara-microfilm-page-images",
    "name": "Internet Archive — NARA Microfilm Page Images",
-   "url": "",
+   "url": "https://archive.org/",
    "countries": [
     "US"
    ],
@@ -7014,12 +7467,13 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "usa-immigration"
+   "guide": "usa-immigration",
+   "note": "https://archive.org/ (National Archives passenger-microfilm reels, uploaded one item per reel)"
   },
   {
    "id": "ar:usa-immigration:nara-bulk-passenger-data-files",
    "name": "NARA Bulk Passenger Data Files",
-   "url": "",
+   "url": "https://catalog.archives.gov/",
    "countries": [
     "US"
    ],
@@ -7037,7 +7491,8 @@
     "autoresearch-genealogy"
    ],
    "checked": "2026-05-19",
-   "guide": "usa-immigration"
+   "guide": "usa-immigration",
+   "note": "https://catalog.archives.gov/ (downloadable passenger datasets, e.g. the Castle Garden / Balch series)"
   },
   {
    "id": "ar:usa-immigration:uscis-genealogy-program",
@@ -7087,8 +7542,8 @@
    "guide": "usa-immigration"
   },
   {
-   "id": "ar:usa-military:overview",
-   "name": "Overview",
+   "id": "ar:usa-military:nara-access-to-archival-databases-aad",
+   "name": "NARA Access to Archival Databases (AAD)",
    "url": "https://aad.archives.gov/aad/",
    "countries": [
     "US"
@@ -7149,6 +7604,29 @@
     "online"
    ],
    "about": "Union and Confederate Civil War servicemen (compiled service-record index), regiments, sailors, cemeteries, Medal of Honor recipients",
+   "how": "",
+   "from": [
+    "autoresearch-genealogy"
+   ],
+   "checked": "2026-06-23",
+   "guide": "usa-military"
+  },
+  {
+   "id": "ar:usa-military:fold3",
+   "name": "Fold3",
+   "url": "https://www.fold3.com/",
+   "countries": [
+    "US"
+   ],
+   "years": null,
+   "records": [
+    "military"
+   ],
+   "access": "mixed",
+   "channel": [
+    "online"
+   ],
+   "about": "Digitized military records across all major US conflicts (Revolution through modern), including many records not in AAD",
    "how": "",
    "from": [
     "autoresearch-genealogy"
