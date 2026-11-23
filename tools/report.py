@@ -132,6 +132,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    humanize_edtf,
+    is_valid_edtf,
     PARKED_CLAIM_SQL as _PARKED_SQL,
     claim_role_pairs,
     format_date_spread,
@@ -688,6 +690,22 @@ def _section_contradictions(findings: list) -> list[str]:
 
 # ── Section 5: Search-log awareness ───────────────────────────────────────────
 
+def _years_label(years) -> str:
+    """A research-log `years:` value for a line: `1880/1890` reads `1880-1890`,
+    a single year reads as itself, other EDTF reads in plain words (`188X` is
+    `1880s`), and a value the date helpers can't read is shown as written and
+    flagged, so a typo is seen rather than silently trusted or dropped."""
+    text = str(years or '').strip()
+    if not text:
+        return ''
+    if is_valid_edtf(text):
+        m = re.fullmatch(r'(\d{4})/(\d{4})', text)
+        if m:
+            return f'{m.group(1)}-{m.group(2)}'
+        return humanize_edtf(text)
+    return f'{text}, check the years'
+
+
 def _section_search_log(conn, current: dict) -> list[str]:
     """
     Annotate leads from the other sections with prior search_log activity,
@@ -725,7 +743,7 @@ def _section_search_log(conn, current: dict) -> list[str]:
         horizon = datetime.date.today() - datetime.timedelta(days=_SEARCH_LOG_HORIZON_DAYS)
         for pid in sorted(lead_pids):
             rows = conn.execute(
-                'SELECT date, collection, repository, result FROM search_log WHERE person_id=? ORDER BY date DESC',
+                'SELECT date, collection, repository, years, result FROM search_log WHERE person_id=? ORDER BY date DESC',
                 (pid,),
             ).fetchall()
             if not rows:
@@ -736,15 +754,33 @@ def _section_search_log(conn, current: dict) -> list[str]:
                     stale = datetime.date.fromisoformat(row['date']) < horizon
                 except (TypeError, ValueError):
                     stale = False
-                result = str(row['result'] or '').strip().lower()
-                nil_result = result in {'nil', 'none', 'no results', 'not found', 'negative'}
-                note = (
-                    'worth re-running (stale nil search)'
-                    if stale and nil_result
-                    else f"already searched {row['date']}"
+                raw_result = str(row['result'] or '').strip()
+                result = raw_result.lower()
+                # The leading word decides, whatever follows it: he writes
+                # "unavailable (closed)" as often as "Unavailable: closed".
+                word = re.match(r'[a-z]+', result)
+                kind = word.group(0) if word else ''
+                nil_result = (
+                    result in {'nil', 'none', 'no results', 'not found', 'negative'}
+                    or kind == 'nil'
                 )
+                if kind == 'unavailable':
+                    # Could not be searched at all: still to do, never a nil
+                    # and never "already searched" (SPEC §17c).
+                    why = raw_result[len(kind):].strip(' \t\r\n:,;-')
+                    if why.startswith('(') and why.endswith(')') and ')' not in why[1:-1]:
+                        why = why[1:-1].strip()
+                    note = f"could not be searched {row['date']}" + (f': {why}' if why else '')
+                elif kind in ('requested', 'request'):
+                    note = f"asked {row['date']}, waiting for a reply"
+                elif stale and nil_result:
+                    note = 'worth re-running (stale nil search)'
+                else:
+                    note = f"already searched {row['date']}"
                 collection = row['collection'] or row['repository'] or '(unspecified collection)'
-                lines.append(f'- {label} - {collection}: {note}')
+                years = _years_label(row['years'])
+                scope = f' ({years})' if years else ''
+                lines.append(f'- {label}, {collection}{scope}: {note}')
 
     recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
     # notes/research-log.md entries are also person_id IS NULL (general/locality
