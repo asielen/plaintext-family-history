@@ -890,6 +890,19 @@ def _best_event_date(dated: list[tuple[str, int]]) -> str | None:
                                      any(ch in d[0] for ch in '~?%')))[0]
 
 
+def _unread_date_may_be_recent(raw: str | None) -> bool:
+    """True when a birth date the importer could not read holds a year within
+    the living cutoff (`05/06/1995`, `INT 1995 (per cousin)`): it might be her
+    real birth, so it keeps `living: unknown`. A dual-dated `1750/51`, a
+    Julian `1750` or a bare `Unknown` cannot make anyone young, so it is
+    treated like a fact with no date."""
+    if not raw:
+        return False
+    this_year = datetime.date.today().year
+    return any(this_year - int(y) <= _LIVING_CUTOFF_YEARS
+               for y in re.findall(r'(?<!\d)\d{3,4}(?!\d)', raw))
+
+
 def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
     """The birth date the living guess reads when a tree has several: the one
     that could make the person youngest. One of the tree's own facts saying
@@ -1168,7 +1181,7 @@ def _map_individual(
             # dated ones and choose after the loop.
             if tag == 'BIRT' and claim.date:
                 births.append((claim.date, node.line))
-            elif tag == 'BIRT' and node.child_value('DATE'):
+            elif tag == 'BIRT' and _unread_date_may_be_recent(node.child_value('DATE')):
                 unread_births.append((node.child_value('DATE'), node.line))
             elif tag == 'DEAT':
                 has_death = True

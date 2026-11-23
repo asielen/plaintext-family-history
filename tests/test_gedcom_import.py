@@ -763,6 +763,19 @@ class DuplicateBirthTestCase(_ArchiveCase):
                 self.assertIn('keeps living: unknown', text)
                 self.assertIn('line 9', text)
 
+    def test_an_unreadable_old_or_yearless_birth_does_not_hide_him(self) -> None:
+        # A colonial ancestor's dual-dated or Julian alternate (or a plain
+        # "Unknown") cannot make him young, so he is not hidden as living.
+        for raw in ('12 FEB 1750/51', '@#DJULIAN@ 1 FEB 1750',
+                    'INT 1750 (family bible)', 'Unknown'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n'
+                                  '1 BIRT\n2 DATE 12 FEB 1751\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1751-02-12')
+                self.assertEqual(stub.living, 'false')
+                self.assertNotIn('keeps living: unknown', self._text(plan))
+
     def test_an_open_ended_birth_that_agrees_does_not_hide_her(self) -> None:
         # AFT 1850 and BEF 1990 both fit 12 Jan 1878: nothing disagrees, so
         # she is not hidden as possibly living.
