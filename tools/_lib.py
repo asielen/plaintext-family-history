@@ -6583,9 +6583,15 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
         return out
 
     latest = own_dates('birth')
-    row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
-    if row is not None and str(row[0] or '').strip():
-        latest.append(latest_day(str(row[0])))
+    # The provisional `birth:` of the person AND of every record merged into
+    # them: `fha confirm merge` leaves a duplicate's estimate on the
+    # duplicate, and it is a recorded birth of the same human (Codex, PR
+    # #436). Claims and relationships already land on the survivor at index
+    # time, so only this record-level field needs the widening.
+    for rid in [pid, *merged_into_survivor(index_merge_survivors(conn), pid)]:
+        row = conn.execute('SELECT birth FROM persons WHERE id = ?', (rid,)).fetchone()
+        if row is not None and str(row[0] or '').strip():
+            latest.append(latest_day(str(row[0])))
     if latest:
         return max(latest) <= cutoff.isoformat()
     # No birth date: a baptism only bounds the birth from above (born on or

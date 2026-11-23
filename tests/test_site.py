@@ -6684,6 +6684,22 @@ class HomeTreePrivateCardTests(_Base):
         self.assertIn('Ida Cole', ped)
         self._assert_nowhere('Ethel Cole', 'p-maaaaaaaaa')
 
+    def test_a_young_birth_left_on_a_merged_duplicate_still_keeps_a_minor_out(self):
+        # Codex on PR #436: `fha confirm merge` leaves the merged record's own
+        # `birth:` on that record. A duplicate saying "born 2015", merged into
+        # a survivor saying "born 1980", is still a recorded birth of the same
+        # person; the youngest decides, so no "Private" card.
+        today = datetime.date(2026, 11, 22)
+        self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
+        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
+        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')   # has a child
+        self.conn.execute("UPDATE persons SET birth = '1980' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self._person('p-kbaaaaaaaa', 'Robin Hartley', living='true')
+        self.conn.execute("UPDATE persons SET birth = '2015', status = 'merged', "
+                          "merged_into = 'p-kaaaaaaaaa' WHERE id = 'p-kbaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+
     def test_a_baptism_only_ever_proves_an_adult(self):
         today = datetime.date(2026, 11, 22)
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
