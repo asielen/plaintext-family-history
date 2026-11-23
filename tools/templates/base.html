@@ -28,7 +28,7 @@
         link is the page's sole route in on a fresh or quiet archive. #}
     <a href="{{ root_prefix }}/discoveries.html">Discoveries</a>
   </nav>
-  {% if show_search %}
+  {%- if show_search %}
   {#- One box on every page (fha.yaml `site: search`, on unless false). It
       sends the words to search.html, which looks them up in the site's own
       search file: nothing leaves the computer. #}
@@ -37,7 +37,7 @@
     <input id="site-q" name="q" type="search" placeholder="Find a name, place or record" autocomplete="off">
     <button type="submit">Search</button>
   </form>
-  {% endif %}
+  {%- endif %}
 </header>
 <main>
 {% block content %}{% endblock %}

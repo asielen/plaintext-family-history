@@ -9793,7 +9793,10 @@ class _SiteBuilder:
             row = self.source_meta[sid]
             title = row['title'] or fmt_id_display(sid)
             sources.append({'title': title, 'href': f'sources/{_page_filename(sid)}',
-                            't': _search_tokens(title), 'year': _search_year(row['date_min'])})
+                            't': _search_tokens(title),
+                            # The record's own date, as written ("1940~" is 1940;
+                            # its date_min would say 1939).
+                            'year': _search_year(row['date_edtf'])})
 
         people.sort(key=lambda e: (e['name'].lower(), e['href']))
         places.sort(key=lambda e: (e['name'].lower(), e['href']))

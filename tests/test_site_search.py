@@ -113,7 +113,7 @@ class _Base(unittest.TestCase):
             (pid, name, surname, sex, living, tier, 'active', rel))
 
     def source(self, sid, title, *, source_type='vital-record', restricted=0, extra='',
-               restricted_claims=(), date_min=None):
+               restricted_claims=(), date=None):
         rel = f'sources/{source_type}/src_{sid}.md'
         path = self.root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,9 +128,9 @@ class _Base(unittest.TestCase):
         lines.append('```')
         path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
         self.conn.execute(
-            'INSERT INTO sources(id, title, source_type, date_min, restricted, status, path) '
+            'INSERT INTO sources(id, title, source_type, date_edtf, restricted, status, path) '
             'VALUES (?,?,?,?,?,?,?)',
-            (sid, title, source_type, date_min, restricted, 'active', rel))
+            (sid, title, source_type, date, restricted, 'active', rel))
 
     def claim(self, cid, sid, ctype, date, persons, *, status='accepted', roles=None):
         lo = (date + '-01-01')[:10] if date else None
@@ -434,7 +434,8 @@ class ContentTests(_Base):
         self.seed_couple()
         self.place(KANSAS, 'Kansas')
         self.place(ELM_CREEK, 'Elm Creek', within=KANSAS, alt=('Ulmenbach',))
-        self.source('s-cccccccccc', '1880 census, Elm Creek', date_min='1880-06-01')
+        self.source('s-cccccccccc', '1880 census, Elm Creek', date='1880-06')
+        self.source('s-dddddddddd', 'Family notes, circa 1940', date='1940~')
         self.build()
         data = self.data()
         elm = next(p for p in data['places'] if p['name'] == 'Elm Creek')
@@ -444,6 +445,8 @@ class ContentTests(_Base):
         census = next(s for s in data['sources'] if s['title'] == '1880 census, Elm Creek')
         self.assertEqual(census['year'], '1880')
         self.assertEqual(census['href'], 'sources/s-cccccccccc.html')
+        notes = next(s for s in data['sources'] if s['title'] == 'Family notes, circa 1940')
+        self.assertEqual(notes['year'], '1940', 'the year as the record writes it')
         self.assertEqual(data['fold']['pairs'][0], ['tsch', 'ch'])
         self.assertEqual(data['fold']['chars']['ł'], 'l')
 
@@ -509,7 +512,7 @@ class QueryTests(_Base):
         self.seed_couple()
         self.person(JOSEFA, 'Józefa Kowalski')
         self.place(ELM_CREEK, 'Elm Creek')
-        self.source('s-cccccccccc', '1880 census, Elm Creek', date_min='1880-06-01')
+        self.source('s-cccccccccc', '1880 census, Elm Creek', date='1880-06')
 
     def test_a_spelling_difference_still_finds_her(self):
         self.seed()
