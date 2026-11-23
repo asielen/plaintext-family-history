@@ -3268,6 +3268,25 @@ class ReimportMatchingTestCase(_ArchiveCase):
         self.assertEqual(plan.matches['@I1@'].pid, survivor)
         self.assertEqual(plan.held, {})
 
+    def test_three_generations_renumbered_by_one_are_held(self) -> None:
+        # Sr (undated), Jr (1850) and III (undated). Sr is deleted in the tree
+        # and the program closes the gap: Jr is now @I1@, III is @I2@. Neither
+        # may land on his father's record.
+        first = self._tree('first.ged', [('@I1@', 'John /Hartley/', 'M', '', '1 OCCU Farmer'),
+                                         ('@I2@', 'John /Hartley/', 'M', '1850',
+                                          '1 OCCU Blacksmith'),
+                                         ('@I3@', 'John /Hartley/', 'M', '', '1 OCCU Miner'),
+                                         ('@I4@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._tree('later.ged', [('@I1@', 'John /Hartley/', 'M', '1850',
+                                          '1 OCCU Blacksmith'),
+                                         ('@I2@', 'John /Hartley/', 'M', '', '1 OCCU Miner'),
+                                         ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertNotIn('@I1@', plan.matches)
+        self.assertNotIn('@I2@', plan.matches)
+        self.assertEqual(plan.claims, [])
+
     def test_a_cousin_of_the_same_name_given_a_birth_year_still_matches(self) -> None:
         # Two cousins named John Hartley, one born 1849, one undated. The
         # tree keeps every number and gives the undated one a year, 1850.

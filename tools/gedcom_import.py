@@ -2316,17 +2316,28 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
     if new.names & old.names:
         # Another earlier person of this name fits better when the births
         # here disagree and theirs does not, or when a birth is missing on one
-        # side here, theirs agrees outright, and their own number no longer
-        # holds them (an undated father whose number his dated son now
-        # carries; a cousin still at his own number is no rival).
+        # side here and their own number no longer holds them (an undated
+        # father whose number his dated son now carries; a cousin still at his
+        # own number is no rival). A dated newcomer needs their birth to agree.
         apart = _birth_differs(new, old)
         if apart or not _birth_fits(new, old):
             for key in sorted(new.names):
                 for other in by_name.get(key, []):
-                    if (other.ident != old.ident and not _sex_differs(new, other)
-                            and (not _birth_differs(new, other) if apart
-                                 else _birth_fits(new, other) and other.ident not in kept)):
-                        return (f'{was}, but the birth year here fits '
+                    if other.ident == old.ident or _sex_differs(new, other):
+                        continue
+                    if apart:
+                        rival = not _birth_differs(new, other)
+                    elif new.window is not None:
+                        rival = _birth_fits(new, other) and other.ident not in kept
+                    else:
+                        # Undated here: nothing can show which of the two he
+                        # is, so a namesake whose own number is gone is doubt.
+                        rival = other.ident not in kept
+                    if rival:
+                        return (f'{was}, but another earlier person of this name '
+                                f'({_who(other)}) may be this one'
+                                if new.window is None else
+                                f'{was}, but the birth year here fits '
                                 f'{_who(other)} better')
         return ''
     if _name_shared(new, old) and new.birth and new.birth in old.births:
@@ -2367,10 +2378,14 @@ def _match_people(incoming: list[_Incoming],
     found: dict[str, tuple[_PriorPerson, str]] = {}
     doubts: dict[str, tuple[str, _PriorPerson]] = {}
     # Earlier people still at their own number, under a name they had.
+    # Kept means the birth agrees outright, or is missing on both sides: an
+    # undated newcomer at a dated person's number has not shown he is them.
     kept = frozenset(
         by_xref[n.xref].ident for n in incoming
         if n.xref in by_xref and n.names & by_xref[n.xref].names
-        and not _sex_differs(n, by_xref[n.xref]) and not _birth_differs(n, by_xref[n.xref]))
+        and not _sex_differs(n, by_xref[n.xref])
+        and (_birth_fits(n, by_xref[n.xref])
+             or (n.window is None and not by_xref[n.xref].windows)))
     for new in incoming:
         old = by_xref.get(new.xref)
         if old is not None:
