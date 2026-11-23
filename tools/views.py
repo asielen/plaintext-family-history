@@ -4630,7 +4630,7 @@ def _write_obsidian_bases(archive_root: Path, dry_run: bool = False) -> list[Pat
     """Give an Obsidian owner ready-made tables of people, sources and places.
 
     Opening `notes/obsidian/People.base` in Obsidian shows everyone as a
-    sortable table (the direct line, stubs, people still marked living or
+    sortable table (curated people, stubs, people still marked living or
     unknown), with no plugin. They are written once, only with
     `links: obsidian`, and only when `notes/obsidian/` does not exist yet:
     Obsidian saves the owner's column and sort changes into the file, and a

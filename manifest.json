@@ -1003,7 +1003,7 @@
     {
       "path": ".fha/tools/templates/obsidian/People.base",
       "category": "operating",
-      "sha256": "45065e37d2e63a06b767bfe73ab422bb67f69aaef6e12b040f87886602d07fad",
+      "sha256": "15a41429316d375267494765302476a8483348b52d157836ec0f26f9b7ab5771",
       "spec_version": "2.23",
       "src": "tools/templates/obsidian/People.base"
     },
@@ -1129,7 +1129,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "924bb954d175a54f5e7b84409a88d702b74f4d3535ec0b5ab47a6a8b64040e68",
+      "sha256": "43968ed0bfabb735b47176e383f0a66dee1f53bfe10075a9a28c8ff8f949bf12",
       "spec_version": "2.23",
       "src": "tools/views.py"
     },
@@ -1270,7 +1270,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "23cc822171e54c07fa7b234358279255944192af751fa8e2278905e5645db211",
+      "sha256": "ddd12521671d780f35a8ad7fc0ba88cda05f33961cacf58d123c6ba22423a21c",
       "spec_version": "2.23",
       "src": "TOOLING.md"
     },
@@ -1289,7 +1289,7 @@
     {
       "path": "docs/USING_WITH_OBSIDIAN.md",
       "category": "operating",
-      "sha256": "0ce7055de69de5b621566e9b246468d7059a091761fdad89c87a517ccaa7acd6",
+      "sha256": "c9f7567e2455e19a2ea0dba632c06e06dc36922f4f8e5f2ddd2478955daa3c7c",
       "spec_version": "2.23"
     },
     {

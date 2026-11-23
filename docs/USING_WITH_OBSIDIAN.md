@@ -62,7 +62,7 @@ The notes stay at home: the family website builds its place pages from places.ya
 
 With `links: obsidian`, the first `fha views places` or `fha views refresh` also puts three files in `notes/obsidian/`: `People.base`, `Sources.base` and `Places.base`. Open one in Obsidian 1.9 or later (it is built in, no plugin) and you get a sortable table:
 
-- **People:** everyone; the direct line; stubs; and everyone still marked living or unknown. The birth and death columns say "(estimate)" because the dates in a person's frontmatter are the ones you jotted down before finding a record. The sourced dates are in the claims.
+- **People:** everyone; the curated people (the ones written up); stubs; and everyone still marked living or unknown. The birth and death columns say "(estimate)" because the dates in a person's frontmatter are the ones you jotted down before finding a record. The sourced dates are in the claims. The table cannot tell an ancestor from an aunt, so it has no direct-line view; `fha metrics` lists the direct line by generation.
 - **Sources:** all of them, grouped by type, or grouped by repository.
 - **Places:** all of them, the ones with coordinates, and the ones still missing them. The coordinates come from the place note's `location:` line.
 

@@ -32,11 +32,10 @@ views:
       - note.tier
       - file.folder
   - type: table
-    name: Direct line
+    name: Curated
     filters:
       and:
         - 'tier == "curated"'
-        - '!file.inFolder("people/connections")'
     order:
       - file.folder
       - note.name

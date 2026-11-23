@@ -123,6 +123,15 @@ class ShippedFileTests(unittest.TestCase):
         # a folder filter would leave it out of the Stubs table.
         self.assertEqual(self._view_filters('People.base', 'Stubs'), ['tier == "stub"'])
 
+    def test_no_view_claims_to_be_the_direct_line(self):
+        # A curated aunt filed in her parents' couple folder (SPEC §12.2)
+        # passes any tier or folder filter, so a table cannot know who is an
+        # ancestor; the curated view says what it really selects.
+        doc = yaml.safe_load((TEMPLATES / 'People.base').read_text(encoding='utf-8'))
+        names = [v['name'] for v in doc['views']]
+        self.assertFalse([n for n in names if 'direct' in n.lower()], names)
+        self.assertEqual(self._view_filters('People.base', 'Curated'), ['tier == "curated"'])
+
     def test_id_prefixes_are_matched_without_regard_to_case(self):
         # SPEC §10: an older tool's `P-…`/`S-…` id is still a record.
         for name, prefix in (('People.base', 'p-'), ('Sources.base', 's-')):
