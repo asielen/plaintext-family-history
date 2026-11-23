@@ -594,6 +594,37 @@ class IndexNotesResearchLogTests(unittest.TestCase):
         # Second entry's question explicitly references a P-id -> picked up.
         self.assertEqual(logs[1]['person_id'], 'p-aaaaaaaaaa')
 
+    def test_research_log_keeps_the_years_a_search_covered(self) -> None:
+        # A nil that says "1880/1890" stops the next session re-running that
+        # search; one that says nothing covered whatever the collection held.
+        _write(self.archive_root / 'notes' / 'research-log.md', """- date: 2026-07-01
+  question: "Thomas Hartley death record"
+  collection: "Kansas death index"
+  years: 1880/1890
+  result: nil
+
+- date: 2026-07-02
+  question: "Thomas Hartley death record"
+  collection: "Breton County death register"
+  years: "1911/1925"
+  result: unavailable (the clerk's office was closed)
+
+- date: 2026-07-03
+  question: "Thomas Hartley death record"
+  collection: "Kansas death index"
+  result: requested (letter to the state archive)
+""")
+
+        index._index_notes(self.conn, self.archive_root)
+
+        rows = self.conn.execute(
+            'SELECT years, result FROM search_log ORDER BY date').fetchall()
+        self.assertEqual(rows[0]['years'], '1880/1890')
+        self.assertEqual(rows[1]['years'], '1911/1925')
+        self.assertEqual(rows[1]['result'], "unavailable (the clerk's office was closed)")
+        self.assertFalse(rows[2]['years'])
+        self.assertEqual(rows[2]['result'], 'requested (letter to the state archive)')
+
     def test_absent_research_log_file_does_not_crash(self) -> None:
         (self.archive_root / 'notes').mkdir(parents=True)
         # No research-log.md present.
@@ -1668,8 +1699,8 @@ class IndexSchemaVersionBumpTests(unittest.TestCase):
         # persons.surname stopped being read from file names - after this
         # class was written for the 6 -> 7 bump; see IndexSchemaVersionV8BumpTests
         # and IndexSchemaVersionV9BumpTests below. Plan 19 S3 bumped 14 -> 15 for
-        # source_files.is_primary.)
-        self.assertEqual(index.INDEX_SCHEMA_VERSION, 15)
+        # source_files.is_primary; the research log's `years:` bumped 15 -> 16.)
+        self.assertEqual(index.INDEX_SCHEMA_VERSION, 16)
 
     def test_v6_stamped_cache_reads_as_old_schema(self) -> None:
         status, _detail = sqlite_cache_schema_status(
@@ -3879,6 +3910,13 @@ class VitalSubjectsRuleTests(unittest.TestCase):
         self.assertEqual(
             vital_subjects('death', [('p-a', None), ('p-b', 'child')]), ['p-a'])
 
+    def test_a_namesake_on_a_birth_claim_is_not_the_subject(self) -> None:
+        # The grandfather named for the baby has no `Born` of his own, and the
+        # baby keeps his. A namesake is placed, never a subject.
+        self.assertEqual(
+            vital_subjects('birth', [('p-baby', 'child'), ('p-gf', 'named_for')]),
+            ['p-baby'])
+
     def test_everyone_named_as_somebody_else_yields_nobody(self) -> None:
         # A birth certificate whose roles: map calls both people parents is
         # nobody's own birth record. This is the mother's `Born: 1888` bug.
@@ -4133,6 +4171,16 @@ class KinRoleSynonymTests(unittest.TestCase):
         root = self._build('birth', (
             f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
             f'    parent: [{_BIRTH_FATHER}]\n    grandparent: [{_BIRTH_MOTHER}]\n'),
+            [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
+        c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
+        self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})
+
+    def test_birth_claim_naming_who_the_child_was_named_for_builds_no_edge(self) -> None:
+        # "Sam was named for his grandfather": the namesake is placed on the
+        # claim (`named_for:`) and is neither a parent nor a child of Sam.
+        root = self._build('birth', (
+            f'  roles:\n    child: [{_BIRTH_CHILD}]\n'
+            f'    parent: [{_BIRTH_FATHER}]\n    named_for: [{_BIRTH_MOTHER}]\n'),
             [_BIRTH_CHILD, _BIRTH_FATHER, _BIRTH_MOTHER])
         c, f = _BIRTH_CHILD.lower(), _BIRTH_FATHER.lower()
         self.assertEqual(self._edges(root), {(c, 'parent', f), (f, 'child', c)})

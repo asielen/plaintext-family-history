@@ -58,7 +58,7 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    The verb performs the full SPEC §9 write in one pass:
    - the four tombstone fields (`status: merged`, `merged_into:`, `merge_reason:`, `merged_date:`);
    - the `MERGED-INTO-p-survivor__` rename (the file **persists forever** and is never deleted);
-   - the folds: name variants (restricted mapping forms preserved), external IDs, and `relationships:` entries, deduped, with the tombstone's frontmatter stripped of what folded and its `aliases:` reduced to the bare p-id;
+   - the folds: names by kind (a birth or married name fills the survivor's empty field, and goes into `name_variants` when the survivor already has a different one; the preview says which, so walk those lines with him), other names, name variants (restricted mapping forms preserved), external IDs, and `relationships:` entries, deduped, with the tombstone's frontmatter stripped of what folded and its `aliases:` reduced to the bare p-id;
    - the relinks: every claim naming `p-old` *whatever its status* (W107 lists claims of every status), other profiles' `relationships:` edges (stale ones trip W115), and source `people:` lists.
 
    Loose *prose* `[[p-old]]` mentions are left on purpose. They resolve *through* `merged_into` and appear on lint's W107 gradual-cleanup list, which is expected and not an error. When `fha.yaml` says `links: obsidian`, the merge itself points those links at the survivor's file and says how many it changed, so fewer are left. **Read the verb's warnings and judge each one; don't suppress them:**

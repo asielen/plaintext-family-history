@@ -158,9 +158,9 @@ class EdgeFilterTests(unittest.TestCase):
 
 
 class KinshipWordsUnchangedTests(unittest.TestCase):
-    """The words fha relate printed before the engine moved, recorded from
-    the old relate.py for every (gens_a, gens_b) up to 7 and some far ones.
-    A deliberate wording change regenerates kinship-words.json."""
+    """The words fha relate prints, recorded for every (gens_a, gens_b) up to
+    7 and some far ones, so no word shifts by accident. A deliberate wording
+    change regenerates kinship-words.json and says which words changed."""
 
     def test_every_recorded_word(self):
         table = json.loads(WORDS.read_text(encoding='utf-8'))
@@ -169,6 +169,172 @@ class KinshipWordsUnchangedTests(unittest.TestCase):
             ga, gb, *sex = key.split(' ')
             with self.subTest(key=key):
                 self.assertEqual(kinship_word(int(ga), int(gb), sex[0] if sex else ''), word)
+
+
+class KinshipWordTableTests(unittest.TestCase):
+    """Every row of the naming table (build doc 02 §3), for a man, a woman
+    and someone whose sex is not recorded as M or F. The expected words are
+    the ones a family says, written out here by hand, not read back from the
+    code: "great-aunt", not "grandaunt"; "aunt or uncle", not "aunt/uncle"."""
+
+    ROWS = [
+        # (gens_a, gens_b, M, F, other)
+        ((0, 0), 'the same person', 'the same person', 'the same person'),
+        ((0, 1), 'father', 'mother', 'parent'),
+        ((0, 2), 'grandfather', 'grandmother', 'grandparent'),
+        ((0, 3), 'great-grandfather', 'great-grandmother', 'great-grandparent'),
+        ((0, 5), 'great-great-great-grandfather', 'great-great-great-grandmother',
+         'great-great-great-grandparent'),
+        ((1, 0), 'son', 'daughter', 'child'),
+        ((2, 0), 'grandson', 'granddaughter', 'grandchild'),
+        ((4, 0), 'great-great-grandson', 'great-great-granddaughter',
+         'great-great-grandchild'),
+        ((1, 1), 'brother', 'sister', 'sibling'),
+        ((1, 2), 'uncle', 'aunt', 'aunt or uncle'),
+        ((1, 3), 'great-uncle', 'great-aunt', 'great-aunt or great-uncle'),
+        ((1, 4), 'great-great-uncle', 'great-great-aunt',
+         'great-great-aunt or great-great-uncle'),
+        ((2, 1), 'nephew', 'niece', 'niece or nephew'),
+        ((3, 1), 'great-nephew', 'great-niece', 'great-niece or great-nephew'),
+        ((5, 1), 'great-great-great-nephew', 'great-great-great-niece',
+         'great-great-great-niece or great-great-great-nephew'),
+        ((2, 2), 'first cousin', 'first cousin', 'first cousin'),
+        ((2, 3), 'first cousin once removed', 'first cousin once removed',
+         'first cousin once removed'),
+        ((2, 5), 'first cousin three times removed', 'first cousin three times removed',
+         'first cousin three times removed'),
+        ((4, 3), 'second cousin once removed', 'second cousin once removed',
+         'second cousin once removed'),
+        ((3, 10), 'second cousin 7 times removed', 'second cousin 7 times removed',
+         'second cousin 7 times removed'),
+        ((12, 12), '11th cousin', '11th cousin', '11th cousin'),
+    ]
+
+    HALF_ROWS = [
+        ((1, 1), 'half-brother', 'half-sister', 'half-sibling'),
+        ((1, 2), 'half-uncle', 'half-aunt', 'half-aunt or half-uncle'),
+        ((1, 3), 'half great-uncle', 'half great-aunt',
+         'half great-aunt or half great-uncle'),
+        ((1, 4), 'half great-great-uncle', 'half great-great-aunt',
+         'half great-great-aunt or half great-great-uncle'),
+        ((2, 1), 'half-nephew', 'half-niece', 'half-niece or half-nephew'),
+        ((3, 1), 'half great-nephew', 'half great-niece',
+         'half great-niece or half great-nephew'),
+        ((2, 2), 'half first cousin', 'half first cousin', 'half first cousin'),
+        ((2, 3), 'half first cousin once removed', 'half first cousin once removed',
+         'half first cousin once removed'),
+        # A lineal tie is never half.
+        ((0, 2), 'grandfather', 'grandmother', 'grandparent'),
+        ((1, 0), 'son', 'daughter', 'child'),
+    ]
+
+    def _check(self, rows, **kw):
+        for (ga, gb), m, f, other in rows:
+            for sex, word in (('M', m), ('F', f), ('', other), ('unknown', other),
+                              ('X', other), ('intersex', other)):
+                with self.subTest(gens=(ga, gb), sex=sex, **kw):
+                    self.assertEqual(kinship_word(ga, gb, sex, **kw), word)
+
+    def test_full_words(self):
+        self._check(self.ROWS)
+
+    def test_half_words(self):
+        self._check(self.HALF_ROWS, half=True)
+
+    def test_double_applies_to_cousins_only(self):
+        self.assertEqual(kinship_word(2, 2, 'M', double=True), 'double first cousin')
+        self.assertEqual(kinship_word(3, 4, 'F', double=True),
+                         'double second cousin once removed')
+        self.assertEqual(kinship_word(1, 1, 'M', double=True), 'brother')
+
+
+def _half_graph(half_pairs=()) -> KinshipGraph:
+    """GF and GM's children XP and YP; XP's child A, YP's child B, plus Q1
+    and Q2, children of GF alone, and their children QA and QB."""
+    people = {p: {'name': p, 'sex': s} for p, s in
+              (('gf', 'M'), ('gm', 'F'), ('xp', 'M'), ('yp', 'F'), ('a', 'M'),
+               ('b', 'F'), ('q1', 'M'), ('q2', 'F'), ('qa', 'M'), ('qb', 'F'),
+               ('ggf', 'M'))}
+    parents = [('xp', 'gf', None), ('xp', 'gm', None), ('yp', 'gf', None),
+               ('yp', 'gm', None), ('a', 'xp', None), ('b', 'yp', None),
+               ('q1', 'gf', None), ('q2', 'gf', None), ('qa', 'q1', None),
+               ('qb', 'q2', None), ('gf', 'ggf', None)]
+    return KinshipGraph.from_edges(people, parent_edges=parents,
+                                   half_sibling_pairs=half_pairs)
+
+
+class BloodRoutesTests(unittest.TestCase):
+    def test_ancestor_of_a_common_ancestor_is_not_a_route(self):
+        # GF's father is a common ancestor of the cousins too, but he is only
+        # the way to GF, not a second way they are related.
+        routes = _lib.blood_routes(_half_graph(), 'a', 'b')
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]['common_ancestors'], ['gf', 'gm'])
+        self.assertIs(routes[0]['half'], False)
+
+    def test_one_shared_grandparent_leaves_half_open(self):
+        r = _lib.blood_routes(_half_graph(), 'qa', 'qb')[0]
+        self.assertEqual((r['relationship'], r['half'], r['half_relationship']),
+                         ('first cousin', None, 'half first cousin'))
+
+    def test_a_half_sibling_record_settles_it(self):
+        g = _half_graph([frozenset({'q1', 'q2'})])
+        r = _lib.blood_routes(g, 'qa', 'qb')[0]
+        self.assertEqual((r['relationship'], r['half'], r['half_relationship']),
+                         ('half first cousin', True, None))
+
+    def test_no_common_ancestor_no_route(self):
+        self.assertEqual(_lib.blood_routes(_half_graph(), 'a', 'ggf'), [
+            {'relationship': 'great-grandson', 'common_ancestors': ['ggf'],
+             'gens_a': 3, 'gens_b': 0, 'half': False, 'half_relationship': None}])
+        people = {'p1': {'name': 'p1', 'sex': ''}, 'p2': {'name': 'p2', 'sex': ''}}
+        self.assertEqual(_lib.blood_routes(KinshipGraph.from_edges(people), 'p1', 'p2'), [])
+
+    def test_blood_answer_note_names_both_people(self):
+        people = {p: {'name': n, 'sex': s} for p, n, s in
+                  (('f', 'Thomas Hartley', 'M'), ('e', 'Ethel Hartley', 'F'),
+                   ('r', 'Frances Hartley', 'F'))}
+        g = KinshipGraph.from_edges(people, parent_edges=[('e', 'f', None), ('r', 'f', None)])
+        self.assertEqual(blood_answer(g, 'e', 'r')['note'],
+                         'Only one parent is recorded for at least one of them, so '
+                         "Ethel Hartley may be Frances Hartley's half-sister.")
+
+
+class HalfSiblingRecordsTests(unittest.TestCase):
+    """A source saying two people are half-siblings is read from the index,
+    and the site's edge filter can leave it out like any other tie."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tr._build_family()
+
+    def _load(self, **kw):
+        conn = open_index_db(self.root, ('persons', 'relationships', 'claims',
+                                         'claim_persons'))
+        try:
+            return kin_graph(conn, **kw)
+        finally:
+            conn.close()
+
+    def test_half_sibling_claims_are_loaded(self):
+        g = self._load()
+        self.assertEqual(g.half_sibling_pairs,
+                         {frozenset({tr.PA.lower(), tr.PB.lower()}),
+                          frozenset({tr.Q1.lower(), tr.Q2.lower()})})
+
+    def test_edge_filter_sees_and_can_drop_them(self):
+        seen = []
+
+        def edge_ok(row):
+            seen.append(row)
+            return row['claim_id'] != 'c-a00000000a'
+        g = self._load(edge_ok=edge_ok)
+        self.assertEqual(g.half_sibling_pairs, {frozenset({tr.Q1.lower(), tr.Q2.lower()})})
+        sib_rows = [r for r in seen if r['rel'] == 'sibling']
+        self.assertTrue(sib_rows)
+        for key in ('person_id', 'other_id', 'claim_id', 'source_id', 'status', 'subtype'):
+            self.assertIn(key, sib_rows[0])
+        self.assertEqual(sib_rows[0]['status'], 'accepted')
 
 
 class KinRelationshipTests(unittest.TestCase):
@@ -189,6 +355,12 @@ class KinRelationshipTests(unittest.TestCase):
                 with self.subTest(anchor=anchor, pid=pid):
                     r = kin_relationship(self.g, anchor, pid)
                     self.assertEqual(r['words'], blood['relationship'] if blood else '')
+
+    def test_open_half_keeps_the_plain_word_with_a_note(self):
+        # A page says "brother" and leaves the caveat to its note.
+        r = kin_relationship(self.g, SIB, A)     # A and SIB share only XP
+        self.assertEqual((r['words'], r['note']), ('brother', 'other parent not recorded'))
+        self.assertIsNone(kin_relationship(self.g, B, A)['note'])
 
     def test_unrelated_and_self_are_none(self):
         none = {'words': '', 'note': None, 'kind': 'none', 'path': ''}

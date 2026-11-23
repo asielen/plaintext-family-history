@@ -48,7 +48,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import lint
-from _lib import CLAIMS_RE, EXIT_WARNINGS, format_edtf_error, normalize_date, read_record
+from _lib import (CLAIMS_RE, EXIT_WARNINGS, format_edtf_error, normalize_date, read_record,
+                  role_near_miss)
 
 
 _PERSON_MD = '''---
@@ -3327,13 +3328,19 @@ class BirthClaimWithoutParentageW126Tests(unittest.TestCase):
     def test_descriptive_roles_place_the_person(self) -> None:
         # A grandparent named on the certificate is placed; nothing derives
         # from her, and nothing asks the owner to call her a parent.
-        for word in ('grandparent', 'sibling', 'godparent', 'Registrant'):
+        for word in ('grandparent', 'sibling', 'godparent', 'Registrant', 'named_for'):
             with self.subTest(role=word):
                 roles = (f'  roles:\n    child: [{self.CHILD}]\n'
                          f'    {word}: [{self.MOTHER}]\n')
                 root = self._build(persons=[self.CHILD, self.MOTHER],
                                    roles_block=roles)
                 self.assertEqual(self._w126(root), [])
+
+    def test_named_for_is_a_descriptive_role_not_a_misspelt_parent(self) -> None:
+        # "Named after his grandfather" (SPEC §8.3) places the grandfather on
+        # the claim. He is not `parent:`, `child:` or any word one keystroke
+        # away from them, so W126 must not ask whether it was meant as one.
+        self.assertIsNone(role_near_miss('named_for'))
 
     def test_a_misspelt_or_plural_parent_line_still_warns(self) -> None:
         # `parents:` and `parnet:` are what a person types meaning `parent:`.

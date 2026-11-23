@@ -1536,14 +1536,16 @@ every other section are left byte-for-byte alone.
 Append a quick note to Stories or Research Notes.
 
 ```text
-Append a quick note to Stories or Research Notes. Nothing is replaced.
+Append a quick note to Stories or Research Notes. Nothing you wrote is replaced.
 
   fha person note p-2b3c4d5e6f --section research --text "Check the 1880 census."
 
 Adds TEXT as a new paragraph at the end of the section (creating it if
-missing). Plain markdown, human-written; existing text is never rewritten
-or removed. Refuses if the section's <!-- private --> fencing is left
-unclosed, since it could not tell which side of it the new text belongs on.
+missing). Plain markdown, human-written; text you wrote is never rewritten
+or removed. The first note replaces the section's "what goes here"
+instructions, if they are still there unchanged. Refuses if the section's
+<!-- private --> fencing is left unclosed, since it could not tell which
+side of it the new text belongs on.
 ```
 
 | Argument | What it does |
