@@ -698,10 +698,10 @@ def _years_label(years) -> str:
     text = str(years or '').strip()
     if not text:
         return ''
-    m = re.fullmatch(r'(\d{4})\s*/\s*(\d{4})', text)
-    if m:
-        return f'{m.group(1)}-{m.group(2)}'
     if is_valid_edtf(text):
+        m = re.fullmatch(r'(\d{4})/(\d{4})', text)
+        if m:
+            return f'{m.group(1)}-{m.group(2)}'
         return humanize_edtf(text)
     return f'{text}, check the years'
 
@@ -768,10 +768,10 @@ def _section_search_log(conn, current: dict) -> list[str]:
                     # Could not be searched at all: still to do, never a nil
                     # and never "already searched" (SPEC §17c).
                     why = raw_result[len(kind):].strip(' \t\r\n:,;-')
-                    if why.startswith('(') and why.endswith(')'):
+                    if why.startswith('(') and why.endswith(')') and ')' not in why[1:-1]:
                         why = why[1:-1].strip()
                     note = f"could not be searched {row['date']}" + (f': {why}' if why else '')
-                elif kind == 'requested':
+                elif kind in ('requested', 'request'):
                     note = f"asked {row['date']}, waiting for a reply"
                 elif stale and nil_result:
                     note = 'worth re-running (stale nil search)'

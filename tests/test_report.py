@@ -964,6 +964,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report._years_label('1880?/1890'), '1880 (unconfirmed) to 1890')
         self.assertEqual(report._years_label('191/1925'), '191/1925, check the years')
         self.assertEqual(report._years_label('1911 to 1925'), '1911 to 1925, check the years')
+        self.assertEqual(report._years_label('1890/1880'), '1890/1880, check the years')
         self.assertEqual(report._years_label(''), '')
 
     def test_search_log_reads_the_result_word_whatever_punctuation_follows(self) -> None:
@@ -981,6 +982,8 @@ class ReportTests(unittest.TestCase):
                 ('2020-01-04', 'Land records', 'unavailable,\tthe records burned'),
                 ('2020-01-06', 'State archive', 'requested: letter to the state archive'),
                 ('2020-01-08', 'County probate index', 'nil, nothing indexed'),
+                ('2020-01-09', 'County clerk', 'request sent to the county clerk'),
+                ('2020-01-10', 'Fire insurance maps', 'unavailable (closed) (fire)'),
             ]
             for d, coll, result in rows:
                 conn.execute(
@@ -998,6 +1001,8 @@ class ReportTests(unittest.TestCase):
         self.assertIn(who + 'Land records: could not be searched 2020-01-04: the records burned', lines)
         self.assertIn(who + 'State archive: asked 2020-01-06, waiting for a reply', lines)
         self.assertIn(who + 'County probate index: worth re-running (stale nil search)', lines)
+        self.assertIn(who + 'County clerk: asked 2020-01-09, waiting for a reply', lines)
+        self.assertIn(who + 'Fire insurance maps: could not be searched 2020-01-10: (closed) (fire)', lines)
         self.assertFalse(any('already searched' in l for l in lines))
 
     def test_search_log_calls_out_recent_unreconciled_captures(self) -> None:
