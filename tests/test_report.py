@@ -616,8 +616,13 @@ class ReportTests(unittest.TestCase):
             argv[:5],
             ['fha', 'confirm', 'place', 'c-7777777771', 'c-7777777772'],
         )
-        name_arg = next(a for a in argv if a.startswith('--name='))
-        self.assertEqual(name_arg, '--name=The "Old Manse", Springfield')
+        # Windows prints the PowerShell spelling (#400), which a POSIX split
+        # does not read back; test_scaffold pastes it into PowerShell for real.
+        name = 'The "Old Manse", Springfield'
+        self.assertIn(f'--name={shell_quote(name)}', command)
+        if sys.platform != 'win32':
+            name_arg = next(a for a in argv if a.startswith('--name='))
+            self.assertEqual(name_arg, f'--name={name}')
 
     def test_photo_triage_section_reports_absent_index(self) -> None:
         result = report.run_report(self.archive_root, {}, full=True)

@@ -1835,10 +1835,11 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
     human's: `fha claim --value` (or quotes typed by hand) keeps the whole
     line; a real comment can simply be deleted. Nothing here edits a claim.
 
-    The command is offered only for text a pasted command carries intact:
-    PowerShell 5.1 expands `$5` and splits on an escaped `"`, and a backtick
-    is its escape character, so for those the hand-quoted line is the one
-    fix given (a command that saved different words would be worse than
+    The command is offered only for text a pasted command carries intact in
+    every Windows shell: for a `$`, a backtick or a `"`, PowerShell and
+    Command Prompt need different spellings (`_lib.shell_quote` prints
+    PowerShell's, #400), so for those the hand-quoted line is the one fix
+    given (a command that saved different words would be worse than
     none)."""
     for hit in claim_fields_cut_by_hash(body):
         cid, key, whole = hit['claim_id'], hit['key'], hit['whole']
