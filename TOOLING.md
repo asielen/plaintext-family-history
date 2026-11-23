@@ -1434,7 +1434,7 @@ Renders a curated profile to the user's extended WikiTree dialect (e.g. Hartley-
 
 `fha gedcom import <file.ged> [--apply] [--plan-out FILE] [--root PATH]` imports a foreign GEDCOM; a file stamped `HEAD SOUR fha` is refused. Routed by a dispatcher intercept in `fha.py` (§4a).
 
-**Writes:** the `.ged` copied into `documents/gedcom/` as one source (`sources/other/`, `source_type: other`, `subtype: gedcom`, `source_class: derivative`); each individual a stub in `people/stubs/` (provisional `birth:`/`death:`, extra NAMEs as `name_variants:`, the name and variants mirrored into `aliases:`); each assertion a `suggested` claim, `confidence: low` (`medium` with a GEDCOM citation), `anchor: "line N"`.
+**Writes:** the `.ged` copied into `documents/gedcom/` as one source (`sources/other/`, `source_type: other`, `subtype: gedcom`, `source_class: derivative`); each individual a stub in `people/stubs/` (provisional `birth:`/`death:`, extra NAMEs as `name_variants:`, the name and variants mirrored into `aliases:`); each assertion a `suggested` claim, `confidence: low` (`medium` with a GEDCOM citation), `anchor: "line N"`. `OBJE`/`FILE` image links are matched against the photo catalog (same path, else same file name, a variant group counting once) and listed in the plan and the source's `## Notes`; `tag-person` is offered per photo after apply. Web links are counted by host. Nothing is written to photos.
 
 `SOUR` titles go to claim `notes:` and the record's `## Notes`, never minted. `PLAC` → `place_text:` only. Nothing is `accepted`.
 
