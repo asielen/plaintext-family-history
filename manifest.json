@@ -174,7 +174,7 @@
     {
       "path": ".agents/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
       "spec_version": "2.20",
       "src": ".claude/skills/write-biography/SKILL.md"
     },
@@ -325,7 +325,7 @@
     {
       "path": ".claude/skills/write-biography/SKILL.md",
       "category": "operating",
-      "sha256": "e61cfdfaa44d15ad590f1745db475375676b2777740ce4d75f94b72a62d328f8",
+      "sha256": "aa936243e181c21f6a9e3aeee320f5985b2376ba19ddb757d958824d291ef765",
       "spec_version": "2.20"
     },
     {
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "c5f653ae15ae9871e465414bc7fbe2b44f74f00b4482c3dc213fe5aee7ebb72e",
+      "sha256": "d8502ac4f5d413c30e503c8ad9a1d193f39100fc9cbe240115ddb4d2f472d29d",
       "spec_version": "2.20",
       "src": "tools/_lib.py"
     },
@@ -765,7 +765,7 @@
     {
       "path": ".fha/tools/gedcom.py",
       "category": "operating",
-      "sha256": "b5f568d265e234a14e12ae9a0367dce3dda67177d1e23bc1c43ac22458b904e8",
+      "sha256": "b78c329e59817f9c5a8ab386fd50e2f1fd118b2a6f39c3689c7b37c006d0c681",
       "spec_version": "2.20",
       "src": "tools/gedcom.py"
     },
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "4b222ad8575127d96cac50767420c627e6305ab4fc9792e084be01f498f52c31",
+      "sha256": "1a63730d240e53452dc553a8e6fff8db0a6d846fd18d634d7a02f398660aef5c",
       "spec_version": "2.20",
       "src": "tools/person.py"
     },
@@ -849,7 +849,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "127141ad143326e2de251f3ec2eb53fcfabbc7492a0c4ac3b3ee50adb4d6e51d",
+      "sha256": "f6dfdf5016a8bacc23e6e9402a588fe9841be752473d8aa10079626de9f6b647",
       "spec_version": "2.20",
       "src": "tools/process.py"
     },
@@ -912,14 +912,14 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "b2f42dab9b5908bca66dddb68a4cfb57e6fd2279f8b00dab1f0c10d1de1de092",
+      "sha256": "d88fa2053c2aeb80dd59d8c2962f7cd7eed14a1aaf9af9b98bbc0a39fb7e71b4",
       "spec_version": "2.20",
       "src": "tools/site.py"
     },
     {
       "path": ".fha/tools/source.py",
       "category": "operating",
-      "sha256": "d6259feb6058863dfda37fe24bea911f015805c864cf1c0bda27ca33a8a28974",
+      "sha256": "db1c9d1819689c061e2c4b87903efd09286d3f0a639faff427e8b5132265aede",
       "spec_version": "2.20",
       "src": "tools/source.py"
     },
@@ -1161,7 +1161,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "ef5377532b1d6cabec6501f6798191b5789737653cf7ccef5b9784efbdcc51df",
+      "sha256": "9af41819004ef5acd6edf095f1c195382a8d016e76a024ce047c202eee471584",
       "spec_version": "2.20"
     },
     {
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "de54d201381ad8770d950c474b11d2a7932f05256e518f7e5f0212cf2cca95a4",
+      "sha256": "2814a3b1c20231e501e14cd90d997dc52b85f5487b6e436729d2781823b63318",
       "spec_version": "2.20",
       "src": "TOOLING.md"
     },

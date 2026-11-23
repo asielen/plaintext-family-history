@@ -487,6 +487,16 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 means "last changed": a rewrite differing only there is skipped
 #    notes_fts_rowids_by_path, delete_notes_fts_path - drop one file's search rows by rowid
 #
+#  Export privacy (shared by exporters that are not the site: gedcom, printed reports)
+#    ExportPrivacy, export_privacy - what the record files withhold, read once:
+#                                 restricted people/sources/claims + unreadable files
+#    public_source_sql         - the index's own source filter (restricted, DNA,
+#                                 publication_ok: false) as an SQL predicate
+#    person_withheld           - living, unknown or restricted, merges followed
+#    person_restricted         - restricted only: the narrower test a family walk asks
+#    export_tie_ok             - may a walk use this tie (through the living, never
+#                                 the restricted, never on withheld evidence)
+#
 #  Walking a tree that might not open
 #    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
 #    walk_files                - rglob replacement WITH that error seam
@@ -7074,14 +7084,23 @@ def replace_section_content(
 
 def append_paragraph_to_section(
     lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
+    is_placeholder: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[str], bool, str]:
     """Append `paragraph` to a `## {heading_text}` section; the shared engine.
 
+    For him: a first note in a section that still shows the scaffold's
+    "what goes here" instructions replaces them, so they are not published
+    above his words. `is_placeholder(heading, on_disk_content)` is how a
+    caller says what counts as that scaffold text (`fha person note` passes
+    `person_section_is_unfilled`); text that is not exactly the placeholder
+    is never removed.
+
     Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
     blank-line-separated paragraph at the END of the section, never touching
-    what was already there (the nothing-ever-lost contract `fha person note`
+    what he wrote there (the nothing-ever-lost contract `fha person note`
     and `fha source note` both depend on). A section holding only a
-    `*(none yet)*` / `(none yet)` placeholder is treated as empty - the
+    `*(none yet)*` / `(none yet)` placeholder, or only text the caller's
+    `is_placeholder` recognizes, is treated as empty - the
     placeholder is replaced outright rather than kept alongside real prose,
     since it means exactly "nothing here yet" and leaving it in would read as
     a second, contradictory sentence. When the heading is absent it is created
@@ -7103,11 +7122,13 @@ def append_paragraph_to_section(
     trimmed = list(old_content_lines)
     while trimmed and trimmed[-1].strip() == '':
         trimmed.pop()
-    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    is_empty = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    if not is_empty and is_placeholder is not None:
+        is_empty = is_placeholder(heading_text, old_content)
     has_next = content_end < len(lines)
 
     new_lines = list(lines[:content_start])
-    if trimmed and not is_placeholder:
+    if trimmed and not is_empty:
         new_lines.extend(trimmed)
         new_lines.append(cr)
     new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
@@ -14213,6 +14234,314 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
     return out
 
 
+# ── Export privacy (shared by exporters that are not the site) ────────────────
+# A GEDCOM file and a printed report for a relative must agree about who is
+# private, so they ask this one reader the same question the same way. It
+# lived in gedcom.py until a second exporter needed it, and tools never import
+# tools. The site keeps its own reader (`_SiteBuilder._load_restriction_markers`,
+# which also gathers restricted names); both rest on `read_restriction_marker`,
+# so no exporter can read a damaged record as public where another withholds it.
+
+def _export_marker_withholds(value) -> bool:
+    """True when a `restricted:` value withholds the record from public output.
+
+    The marker is open (SPEC §19): the plain boolean `true` or any free-text
+    type all mean restricted; only absent/false is not. (`read_record` coerces
+    booleans to `'true'`/`'false'`.) For a public path there is no opt-in - even
+    `restricted: by-request` is honored - so a single truthiness test suffices."""
+    return value not in (None, False, '', 'false')
+
+
+def _export_marker(archive_root: Path, rel_path: str) -> tuple[object, bool]:
+    """One record's own `restricted:` value, and whether it could be read.
+
+    Returns (value, unreadable). `read_restriction_marker` is the rule, shared
+    with `fha wikitree`, `fha site` and `fha packet` (#267 review): a file that
+    will not open or decode, has no frontmatter block, carries frontmatter that
+    is not valid YAML, or frontmatter that is not a block of fields cannot say
+    whether it is private, and every caller here treats it as restricted
+    (AGENTS.md privacy rule, fail closed). `read_record` reports none of those
+    by raising, and two of them not at all, which is how a `restricted:
+    by-request` relative used to export by surname (#267).
+
+    A file that is ABSENT is index staleness, not damage, and reads as carrying
+    no marker - the rule `fha wikitree` keeps too. `fha index` drops the row on
+    its next run; a damaged file, by contrast, keeps its row (and its surname)
+    there indefinitely.
+
+    A claims-block failure is not this function's business: the record's own
+    marker sits in the frontmatter, so the record is judged on that alone and
+    `_export_restricted_claim_ids` withholds the claims whose markers it cannot
+    see."""
+    value, trouble = read_restriction_marker(archive_root / rel_path, missing_ok=True)
+    return value, trouble is not None
+
+
+class ExportPrivacy(NamedTuple):
+    """What an export must withhold, read from the record files once per run.
+
+    `restricted_persons`: people whose record carries a `restricted` marker
+    (any value), or could not be read to check, plus every survivor a
+    restricted merged record speaks through. `restricted_sources`: sources
+    restricted by a free-text type the index stores as 0, or unreadable (the
+    index's own `restricted=1`, DNA and `publication_ok: false` are
+    `public_source_sql`'s job). `restricted_claims`: claims marked `restricted`
+    in their source's claims block, or whose block could not be read.
+    `unreadable_persons` (paths) and `unreadable_sources` ((id, path)) are the
+    files withheld only because they would not read, so the export can name
+    them and the fix."""
+    restricted_persons: set[str]
+    restricted_sources: set[str]
+    restricted_claims: set[str]
+    unreadable_persons: list[str]
+    unreadable_sources: list[tuple[str, str]]
+
+
+def _export_restricted_person_ids(archive_root: Path, person_paths: dict[str, str],
+                                  unreadable: list[str]) -> set[str]:
+    """Person ids whose record carries a `restricted` marker (any value), or
+    whose record could not be read to check (fail closed, #267).
+
+    Read from the person `.md` because the index does not carry a person-level
+    `restricted` column. A restricted person's name is withheld (`/Restricted/`)
+    while their structural family links stay, mirroring living redaction.
+
+    `unreadable` collects the path of every person file withheld only because
+    it could not be read, so the export can say so and name the fix. `fha
+    index` keeps such a person's row (name `unknown`, `living: unknown`, the
+    surname from the filename), so `--include-living` alone would otherwise
+    publish that surname and every fact the index still holds."""
+    out: set[str] = set()
+    for pid, path in person_paths.items():
+        if not path:
+            continue
+        value, bad = _export_marker(archive_root, path)
+        if bad:
+            out.add(pid)
+            unreadable.append(path)
+            continue
+        if _export_marker_withholds(value):
+            out.add(pid)
+    return out
+
+
+def _export_restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
+                                  unreadable: list[tuple[str, str]]) -> set[str]:
+    """Source ids that are restricted by a free-text type the index missed, or
+    whose record could not be read to check (fail closed, #267).
+
+    `public_source_sql` already excludes index `restricted=1`, DNA, and
+    `publication_ok=0`. A source carrying a free-text `restricted: by-request`
+    stores `restricted=0` in the index, so it is read from the record file here
+    and added to the not-eligible set the caller unions into its source filter.
+
+    A source record whose own marker will not read is withheld whole, and its
+    (id, path) goes into `unreadable`. Its claims can only be in the index from
+    an earlier read (a full build drops a source whose frontmatter fails), so
+    the index's `restricted=0` for it is a guess about a file nobody can read
+    now."""
+    out: set[str] = set()
+    for sid, path, restricted in conn.execute(
+            'SELECT id, path, restricted FROM sources').fetchall():
+        if restricted:
+            continue   # already caught by the SQL filter
+        if not path:
+            continue
+        value, bad = _export_marker(archive_root, path)
+        if bad:
+            out.add(sid)
+            unreadable.append((sid, path))
+            continue
+        if _export_marker_withholds(value):
+            out.add(sid)
+    return out
+
+
+def _export_restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
+    """Claim ids that carry a per-claim `restricted:` marker in their source record.
+
+    The claims table stores no claim-level `restricted` column; the flag lives
+    in the source record file.  This function reads every source record whose
+    source is otherwise public (index-restricted sources are already excluded by
+    `public_source_sql`) to collect per-claim ids that are withheld.
+
+    A record whose claims cannot all be read hides which of them were marked,
+    so every claim the index attributes to it is withheld (the same rule as
+    `fha wikitree`'s `_restricted_claim_ids`): a claims block that will not
+    parse, a file that will not decode, or a frontmatter the marker reader
+    refuses. A broken claims block alone withholds only the claims - the
+    source's own frontmatter marker was read and stands (#267 review)."""
+    out: set[str] = set()
+    for sid, path, restricted in conn.execute(
+            'SELECT id, path, restricted FROM sources').fetchall():
+        if restricted or not path:
+            continue
+        record_path = archive_root / path
+        if not record_path.exists():
+            continue   # index staleness, as in `_export_marker`
+        _value, bad = _export_marker(archive_root, path)
+        try:
+            rec = read_record(record_path, on_decode_error=lambda _p: None)
+        except Exception:   # noqa: BLE001 - any failure to read is the same failure here
+            rec, bad = None, True
+        if rec is not None and (rec.get('undecodable') or rec['parse_errors']):
+            bad = True
+        if bad:
+            for (claim_id,) in conn.execute(
+                    'SELECT id FROM claims WHERE source_id = ?', (sid,)).fetchall():
+                cid = normalize_id(str(claim_id).strip())
+                if cid:
+                    out.add(cid)
+            continue
+        for claim in rec.get('claims') or []:
+            if not isinstance(claim, dict):
+                continue
+            cid = normalize_id(str(claim.get('id', '')).strip())
+            if cid and _export_marker_withholds(claim.get('restricted')):
+                out.add(cid)
+    return out
+
+
+def export_privacy(conn: sqlite3.Connection, archive_root: str | Path) -> ExportPrivacy:
+    """Read, once, everything an export must withhold that the index cannot say.
+
+    Restricted persons (any value, by-request included) and sources restricted
+    by a free-text type are read from the record files: the index carries no
+    person-level `restricted`, and stores a free-text source type as 0.
+    `public_source_sql` covers the index's own restricted=1 / DNA /
+    publication_ok=0; this catches what it cannot see.
+
+    Person files are read for every record that is not merged, then for every
+    merged record whose claims now count for a survivor: a restricted record
+    merged into someone still governs, because the index gave its claims to
+    the survivor (SPEC §9), so the survivor's name and facts are withheld too
+    (#304 review)."""
+    archive_root = Path(archive_root)
+    unreadable_persons: list[str] = []
+    unreadable_sources: list[tuple[str, str]] = []
+    person_paths = {pid: path for pid, path in conn.execute(
+        "SELECT id, path FROM persons WHERE status != 'merged'").fetchall()}
+    restricted_persons = _export_restricted_person_ids(
+        archive_root, person_paths, unreadable_persons)
+    survivors = index_merge_survivors(conn)
+    tombstones = {
+        pid: path for pid, path in conn.execute(
+            'SELECT id, path FROM persons WHERE id IN (%s)' % ','.join('?' * len(survivors)),
+            sorted(survivors)).fetchall()
+    } if survivors else {}
+    restricted_persons = restricted_with_survivors(
+        restricted_persons | _export_restricted_person_ids(
+            archive_root, tombstones, unreadable_persons),
+        survivors)
+    restricted_sources = _export_restricted_source_ids(conn, archive_root, unreadable_sources)
+    restricted_claims = _export_restricted_claim_ids(conn, archive_root)
+    return ExportPrivacy(restricted_persons, restricted_sources, restricted_claims,
+                         unreadable_persons, unreadable_sources)
+
+
+def public_source_sql(alias: str = 's') -> str:
+    """SQL predicate for public/export-safe sources, on the `sources` table
+    joined as `alias`.
+
+    SPEC §21 excludes restricted, DNA, and publication_ok=false sources from
+    public output. A source the query's LEFT JOIN finds no row for passes, as
+    it always has in `fha gedcom`. Sources restricted by a free-text type the
+    index stores as 0 are `ExportPrivacy.restricted_sources`, which the caller
+    checks as well."""
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', alias):
+        raise ValueError(f'not an SQL table alias: {alias!r}')
+    a = alias
+    return (f"(COALESCE({a}.restricted, 0) = 0 AND COALESCE({a}.source_type, '') != 'dna' "
+            f"AND COALESCE({a}.publication_ok, 1) != 0)")
+
+
+def person_restricted(row, privacy: ExportPrivacy, lookup) -> bool:
+    """Whether a person asked to be left out: anyone on their `merge_chain`
+    is in `privacy.restricted_persons` (any `restricted:` value, by-request
+    included, or a file that would not read).
+
+    Narrower than `person_withheld`: a living or unknown relative is not
+    restricted. A walk over the family (a relationship line, an Ahnentafel
+    number) may pass through a living person, never named, but not through
+    a restricted one (`export_tie_ok`). `row` and `lookup` are as for
+    `merge_chain`."""
+    return any(r['id'] in privacy.restricted_persons for r in merge_chain(row, lookup))
+
+
+def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup) -> bool:
+    """Whether an export keeps this person out: living or unknown (unknown is
+    treated as living, AGENTS.md) or restricted (any value, SPEC §21), merges
+    followed both ways.
+
+    The rule `_SiteBuilder._person_is_redacted` states, written once for the
+    exporters that are not the site. A merged duplicate is the person it was
+    merged into, so the whole `merged_into` chain is checked and the person is
+    withheld if anyone on it is; a chain that loops or names nobody ends in a
+    stand-in that reads as `living: unknown` (`merge_chain`). And the other
+    way: a record merged INTO the survivor that says `living: true` hands him
+    its claims, so it keeps him out too (`living_carried_to_survivors`).
+    `row` is an index `persons` row or a mapping with `id`, `living` and
+    `merged_into`; `lookup(id)` returns the next record or None."""
+    chain = merge_chain(row, lookup)
+    if any(r['id'] in privacy.restricted_persons
+           or (r['living'] or '') in ('true', 'unknown') for r in chain):
+        return True
+    survivor = merge_survivor(chain)
+    if survivor is None:
+        return False
+    return survivor['id'] in living_carried_to_survivors(conn)
+
+
+def export_tie_ok(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup, *,
+                  unclaimed_ok: bool = True) -> bool:
+    """Whether a walk over the family may use this one tie (owner decision D16).
+
+    A relationship line or an Ahnentafel number may be worked out through a
+    tie to a living or unknown relative, who is still never named. It may not
+    pass through someone who asked to be left out: a tie with a restricted
+    person at either end is cut (`person_restricted`, merges followed). And
+    it may not rest on evidence an export withholds: the tie's own claim must
+    be accepted and not negated, not marked restricted, and on a source that
+    is public (`public_source_sql`, not in `privacy.restricted_sources`) and
+    names no restricted person (the site's hard-restricted rule). So a parent
+    known only from a DNA match never puts a number on a printed report.
+
+    `row` is a `relationships` row, or any mapping with `person_id`,
+    `other_id` and `claim_id`. A tie with no claim behind it (a hand-written
+    `relationships:` entry, or a claim id naming no claim) passes when
+    `unclaimed_ok`: GEDCOM and the site keep such a tie, while a printed
+    report, which cites every fact, passes False."""
+    for pid in (row['person_id'], row['other_id']):
+        prow = lookup(pid)
+        if prow is not None and person_restricted(prow, privacy, lookup):
+            return False
+    claim_id = row['claim_id']
+    claim = conn.execute(
+        f"SELECT c.status, COALESCE(c.negated, 0), c.source_id, {public_source_sql()} "
+        "FROM claims c LEFT JOIN sources s ON s.id = c.source_id WHERE c.id = ?",
+        (claim_id,)).fetchone() if claim_id else None
+    if claim is None:
+        return unclaimed_ok
+    status, negated, source_id, source_public = claim
+    if status != 'accepted' or negated:
+        return False
+    if normalize_id(str(claim_id)) in privacy.restricted_claims:
+        return False
+    if not source_public or (source_id and source_id in privacy.restricted_sources):
+        return False
+    named = {r[0] for r in conn.execute(
+        'SELECT person_id FROM claim_persons WHERE claim_id = ? '
+        'UNION SELECT person_id FROM source_people WHERE source_id = ? '
+        'UNION SELECT cp.person_id FROM claim_persons cp '
+        'JOIN claims c ON c.id = cp.claim_id WHERE c.source_id = ?',
+        (claim_id, source_id, source_id))}
+    for pid in sorted(p for p in named if p):
+        prow = lookup(pid)
+        if prow is not None and person_restricted(prow, privacy, lookup):
+            return False
+    return True
+
+
 # ── AI-draft prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
 # THE one implementation for every publication path (fha site, fha wikitree;
 # fha packet is a planned consumer - round-2 finding S1). The marker grammar
@@ -17326,6 +17655,19 @@ PERSON_PURPOSE_BLOCK = (
 PERSON_SOURCES_PLACEHOLDER = (
     '*(none yet - regenerate with `fha views sources-index`.)*'
 )
+
+# What `fha process` writes under a new source's `## Notes` until a note
+# lands there. His first note (or a tool's own note) replaces it, so the
+# record does not say "none yet" above the note that is there (#393).
+SOURCE_NOTES_PLACEHOLDER = '*(none yet - drafted in the AI pass)*'
+
+
+def source_notes_is_unfilled(heading: str, content: str) -> bool:
+    """True when a source record's `## Notes` holds nothing but the
+    placeholder `fha process` scaffolded. The `is_placeholder` test the
+    source-note writers hand `append_paragraph_to_section`; exact on the
+    words (`_normalized_section_text`), so anything he typed is kept."""
+    return heading == 'Notes' and _normalized_section_text(content) == SOURCE_NOTES_PLACEHOLDER
 
 # The four hand-written sections' opening text, VERBATIM from
 # `_TEMPLATE.person.md` (`## Biography` through EOF) - adapted only where the
