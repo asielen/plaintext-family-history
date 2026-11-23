@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.21, 2026-11-22 · companion to SPEC.md v2.21 (versions track the SPEC)**
+**Version 2.20, 2026-11-22 · companion to SPEC.md v2.20 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -89,6 +89,7 @@ CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 - Enforced by ID in `site`, `wikitree`, `packet`, `gedcom`: the person's record, page, tree position, facts and `[[p-id]]` links (shown as the redaction label). Names in free text are not matched.
 - **Privacy carries through a merge** (`_lib.carry_to_survivors`). A tombstone's `restricted:` or explicit `living: true` (`living_carried_to_survivors`) keeps its survivor out of `site`, `packet`, `gedcom` and `wikitree` too: the claims `fha index` hands the survivor are about the same human. A tombstone's `unknown` or missing `living:` carries nothing; the survivor's own `living: false` wins. A refusal names the tombstone file whose `living: true` holds the survivor back (`living_tombstones_of`), since `fha person set-living` on a merged record acts on the survivor.
 - An unreadable `restricted:` marker means restricted (`read_restriction_marker`): non-UTF-8, no or invalid frontmatter, or frontmatter that is not a mapping. `fha index` still keeps such a person's row from the filename's p-id (name `unknown`, `living: unknown`).
+- **A shared privacy reader for GEDCOM and new exporters** (`_lib.export_privacy`): `gedcom`, and any new exporter that is not the site, reads what the record files withhold through it, once per run (`packet` and `wikitree` still keep their own readers): restricted people, sources and claims, the files that would not read, and the survivors a restricted tombstone speaks through. Beside it, `public_source_sql` is the index's own source filter, `person_withheld` is the site's redaction rule (living, unknown or restricted, merges followed), and `export_tie_ok` is the family-walk rule: a relationship line or tree number may pass through a living or unknown relative, never named, but not through a restricted one or on withheld evidence.
 
 ---
 
