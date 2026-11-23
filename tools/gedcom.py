@@ -86,9 +86,10 @@ CODE MAP
 
   Data gathering
     _load_persons, _load_vitals, _load_marriages
-    _marker                - one record's `restricted:` value; unreadable fails closed
-    _restricted_person_ids, _restricted_source_ids, _restricted_claim_ids
-                           - what the marker files withhold (fail closed, #267)
+    (privacy)              - `_lib.export_privacy` reads what the marker files
+                             withhold (fail closed, #267), `_lib.public_source_sql`
+                             the index's own source filter: one reader for every
+                             exporter that is not the site
 
   Emission
     _emit_header, _emit_individual, _emit_family, _emit_source, run_gedcom
@@ -109,10 +110,10 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    index_merge_survivors,
+    export_privacy,
+    public_source_sql,
     recorded_surname,
     living_carried_to_survivors,
-    restricted_with_survivors,
     fold_accents,
     EXIT_CLEAN,
     EXIT_FAILURE,
@@ -137,21 +138,6 @@ from _lib import (
 
 configure_utf8_stdout()
 
-
-# ── The `restricted` marker (SPEC §19, §21) ────────────────────────────────────
-# GEDCOM is a public-export path, so anything `restricted` is withheld wherever
-# it appears. The index stores `restricted` only as 0/1, so a free-text type
-# (`restricted: by-request` on a source or person) is read from the record file.
-# Duplicated per export tool (tools never import tools, TOOLING §15).
-
-def _is_restricted_value(value) -> bool:
-    """True when a `restricted:` value withholds the record from public output.
-
-    The marker is open (SPEC §19): the plain boolean `true` or any free-text
-    type all mean restricted; only absent/false is not. (`read_record` coerces
-    booleans to `'true'`/`'false'`.) For a public path there is no opt-in - even
-    `restricted: by-request` is honored - so a single truthiness test suffices."""
-    return value not in (None, False, '', 'false')
 
 _REQUIRED_TABLES = (
     'persons', 'claims', 'claim_persons', 'relationships', 'places', 'sources',
@@ -504,147 +490,6 @@ def _load_persons(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     return {r['id']: r for r in rows}
 
 
-def _marker(archive_root: Path, rel_path: str) -> tuple[object, bool]:
-    """One record's own `restricted:` value, and whether it could be read.
-
-    Returns (value, unreadable). `_lib.read_restriction_marker` is the rule,
-    shared with `fha wikitree`, `fha site` and `fha packet` (#267 review): a
-    file that will not open or decode, has no frontmatter block, carries
-    frontmatter that is not valid YAML, or frontmatter that is not a block of
-    fields cannot say whether it is private, and every caller here treats it as
-    restricted (AGENTS.md privacy rule, fail closed). `read_record` reports
-    none of those by raising, and two of them not at all, which is how a
-    `restricted: by-request` relative used to export by surname (#267).
-
-    A file that is ABSENT is index staleness, not damage, and reads as carrying
-    no marker - the rule `fha wikitree` keeps too. `fha index` drops the row on
-    its next run; a damaged file, by contrast, keeps its row (and its surname)
-    there indefinitely.
-
-    A claims-block failure is not this function's business: the record's own
-    marker sits in the frontmatter, so the record is judged on that alone and
-    `_restricted_claim_ids` withholds the claims whose markers it cannot see."""
-    value, trouble = read_restriction_marker(archive_root / rel_path, missing_ok=True)
-    return value, trouble is not None
-
-
-def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row],
-                           unreadable: list[str] | None = None) -> set[str]:
-    """Person ids whose record carries a `restricted` marker (any value), or
-    whose record could not be read to check (fail closed, #267).
-
-    Read from the person `.md` because the index does not carry a person-level
-    `restricted` column. A restricted person's name is withheld (`/Restricted/`)
-    while their structural family links stay, mirroring living redaction.
-
-    `unreadable`, when given, collects the path of every person file withheld
-    only because it could not be read, so the export can say so and name the
-    fix. `fha index` keeps such a person's row (name `unknown`, `living:
-    unknown`, the surname from the filename), so `--include-living` alone would
-    otherwise publish that surname and every fact the index still holds."""
-    out: set[str] = set()
-    for pid, row in persons.items():
-        path = row['path']
-        if not path:
-            continue
-        value, bad = _marker(archive_root, path)
-        if bad:
-            out.add(pid)
-            if unreadable is not None:
-                unreadable.append(path)
-            continue
-        if _is_restricted_value(value):
-            out.add(pid)
-    return out
-
-
-def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
-                           unreadable: list[tuple[str, str]] | None = None) -> set[str]:
-    """Source ids that are restricted by a free-text type the index missed, or
-    whose record could not be read to check (fail closed, #267).
-
-    `_public_source_filter_sql` already excludes index `restricted=1`, DNA, and
-    `publication_ok=0`. A source carrying a free-text `restricted: by-request`
-    stores `restricted=0` in the index, so it is read from the record file here
-    and added to the not-eligible set the caller unions into its source filter.
-
-    A source record whose own marker will not read is withheld whole, and its
-    (id, path) goes into `unreadable` when given. Its claims can only
-    be in the index from an earlier read (a full build drops a source whose
-    frontmatter fails), so the index's `restricted=0` for it is a guess about a
-    file nobody can read now."""
-    out: set[str] = set()
-    for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
-        if row['restricted']:
-            continue   # already caught by the SQL filter
-        if not row['path']:
-            continue
-        value, bad = _marker(archive_root, row['path'])
-        if bad:
-            out.add(row['id'])
-            if unreadable is not None:
-                unreadable.append((row['id'], row['path']))
-            continue
-        if _is_restricted_value(value):
-            out.add(row['id'])
-    return out
-
-
-def _restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
-    """Claim ids that carry a per-claim `restricted:` marker in their source record.
-
-    The claims table stores no claim-level `restricted` column; the flag lives
-    in the source record file.  This function reads every source record whose
-    source is otherwise public (index-restricted sources are already excluded by
-    `_public_source_filter_sql`) to collect per-claim ids that are withheld.
-
-    A record whose claims cannot all be read hides which of them were marked,
-    so every claim the index attributes to it is withheld (the same rule as
-    `fha wikitree`'s `_restricted_claim_ids`): a claims block that will not
-    parse, a file that will not decode, or a frontmatter the marker reader
-    refuses. A broken claims block alone withholds only the claims - the
-    source's own frontmatter marker was read and stands (#267 review)."""
-    out: set[str] = set()
-    for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
-        if row['restricted'] or not row['path']:
-            continue
-        record_path = archive_root / row['path']
-        if not record_path.exists():
-            continue   # index staleness, as in `_marker`
-        _value, bad = _marker(archive_root, row['path'])
-        try:
-            rec = read_record(record_path, on_decode_error=lambda _p: None)
-        except Exception:   # noqa: BLE001 - any failure to read is the same failure here
-            rec, bad = None, True
-        if rec is not None and (rec.get('undecodable') or rec['parse_errors']):
-            bad = True
-        if bad:
-            for crow in conn.execute(
-                'SELECT id FROM claims WHERE source_id = ?', (row['id'],)
-            ).fetchall():
-                cid = normalize_id(str(crow['id']).strip())
-                if cid:
-                    out.add(cid)
-            continue
-        for claim in rec.get('claims') or []:
-            if not isinstance(claim, dict):
-                continue
-            cid = normalize_id(str(claim.get('id', '')).strip())
-            if cid and _is_restricted_value(claim.get('restricted')):
-                out.add(cid)
-    return out
-
-
-def _public_source_filter_sql() -> str:
-    """SQL predicate for public/export-safe sources.
-
-    SPEC §21 excludes restricted, DNA, and publication_ok=false sources from
-    public output. GEDCOM's current CLI has no include-restricted flag, so
-    public-safe selection is the only supported path.
-    """
-    return "(COALESCE(s.restricted, 0) = 0 AND COALESCE(s.source_type, '') != 'dna' AND COALESCE(s.publication_ok, 1) != 0)"
-
-
 def _load_vitals(
     conn: sqlite3.Connection, pids: set[str],
     is_public: 'Callable[[sqlite3.Row], bool] | None' = None,
@@ -696,7 +541,7 @@ def _load_vitals(
           AND c.type IN ('birth', 'death')
           AND c.status = 'accepted'
           AND COALESCE(c.negated, 0) = 0
-          AND {_public_source_filter_sql()}
+          AND {public_source_sql()}
         """,
         list(pids),
     ).fetchall()
@@ -766,7 +611,7 @@ def _load_marriages(
         JOIN sources s ON s.id = c.source_id
         WHERE c.type = 'marriage' AND c.status = 'accepted'
           AND COALESCE(c.negated, 0) = 0
-          AND {_public_source_filter_sql()}
+          AND {public_source_sql()}
         """
     ).fetchall()
     out: dict[frozenset[str], sqlite3.Row] = {}
@@ -1015,30 +860,20 @@ def _gedcom_payload(
             return {'status': 'not-found', 'text': None, 'messages': messages,
                     'person_count': 0, 'family_count': 0}
 
-        # Restricted persons (any value, incl. by-request) and restricted-by-
-        # free-text-type sources are read from the record files: the index
-        # carries no person-level `restricted`, and stores a free-text source
-        # type as 0. The SQL `_public_source_filter_sql` already excludes index
-        # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
-        unreadable_persons: list[str] = []
-        unreadable_sources: list[tuple[str, str]] = []   # (source id, path)
-        restricted_persons = _restricted_person_ids(archive_root, persons, unreadable_persons)
-        # A restricted record merged into someone still governs: the index
-        # gave its claims to the survivor (SPEC §9), so the survivor's name and
-        # facts are withheld too (#304 review).
-        # `persons` holds no tombstones, so their own markers are read here.
-        survivors = index_merge_survivors(conn)
-        tombstones = {
-            r['id']: r for r in conn.execute(
-                'SELECT id, path FROM persons WHERE id IN (%s)' % ','.join('?' * len(survivors)),
-                sorted(survivors)).fetchall()
-        } if survivors else {}
-        restricted_persons = restricted_with_survivors(
-            restricted_persons | _restricted_person_ids(archive_root, tombstones,
-                                                        unreadable_persons),
-            survivors)
-        restricted_sources = _restricted_source_ids(conn, archive_root, unreadable_sources)
-        restricted_claims = _restricted_claim_ids(conn, archive_root)
+        # This GEDCOM file and a printed report for a relative agree about who
+        # is private, because both read it once through `_lib.export_privacy`:
+        # restricted persons (any value, incl. by-request, and the survivors a
+        # restricted merged record speaks through, #304 review), sources
+        # restricted by a free-text type the index stores as 0, per-claim
+        # markers, and every file that would not read (fail closed, #267). The
+        # SQL `public_source_sql` already excludes index restricted=1 / DNA /
+        # publication_ok=0; this catches what it can't see.
+        privacy = export_privacy(conn, archive_root)
+        restricted_persons = privacy.restricted_persons
+        restricted_sources = privacy.restricted_sources
+        restricted_claims = privacy.restricted_claims
+        unreadable_persons = privacy.unreadable_persons
+        unreadable_sources = privacy.unreadable_sources   # (source id, path)
 
         def _public_claim_row(row: sqlite3.Row) -> bool:
             """A vital/marriage row not withheld by source or per-claim restriction."""
@@ -1056,7 +891,7 @@ def _gedcom_payload(
                    FROM relationships r
                    LEFT JOIN claims c ON c.id = r.claim_id
                    LEFT JOIN sources s ON s.id = c.source_id
-                   WHERE r.claim_id IS NULL OR {_public_source_filter_sql()}"""
+                   WHERE r.claim_id IS NULL OR {public_source_sql()}"""
             ).fetchall()
             if (not r['source_id'] or r['source_id'] not in restricted_sources)
             and (r['claim_id'] is None or normalize_id(str(r['claim_id'])) not in restricted_claims)

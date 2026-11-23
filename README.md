@@ -4,7 +4,7 @@ A family-history archive made of plain files you can open in any text editor, wi
 
 > **[See what it can do: open the example site →](https://plaintext.family/example/)** A fictional family's archive (the [`example-archive/`](example-archive/)) built into a website by `fha site`, the same self-contained site you could publish or hand to a relative on a USB stick.
 
-![spec](https://img.shields.io/badge/spec-v2.19-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex_%7C_Human-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![spec](https://img.shields.io/badge/spec-v2.20-blue) ![works with](https://img.shields.io/badge/works_with-Claude_Code_%7C_Codex_%7C_Human-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 For a hundred years genealogy lived in a filing cabinet, and anyone could open the drawer. No login, no subscription, no file format that stopped opening. Your great-grandchildren could pull the folder and read it. Modern genealogy software and websites have lost that.
 

@@ -9634,7 +9634,7 @@ class VitalSubjectScopingTests(_Base):
     MOM = 'p-mmmmmmmmmm'
     SON = 'p-ssssssssss'
 
-    def _seed_birth_certificate(self, roles):
+    def _seed_birth_certificate(self, roles, also_named=()):
         """The son's birth certificate, naming his mother as the parent."""
         self._seed_person(self.SON, 'Peter Marr')
         self._seed_person(self.MOM, 'Iris Marr')
@@ -9642,8 +9642,8 @@ class VitalSubjectScopingTests(_Base):
                           source_type='vital-record')
         self._seed_claim('c-1111111111', 's-1111111111', 'birth',
                          'Born at Riverton', status='accepted', date_edtf='1888',
-                         place_text='Riverton', persons=(self.SON, self.MOM),
-                         roles=roles)
+                         place_text='Riverton',
+                         persons=(self.SON, self.MOM, *also_named), roles=roles)
 
     def test_mother_named_as_parent_gets_no_born_row_of_her_own(self):
         self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent'})
@@ -9661,6 +9661,20 @@ class VitalSubjectScopingTests(_Base):
         html = self._read(f'persons/{self.SON}.html')
         self.assertIn('<dt>Born</dt>', html)
         self.assertIn('1888', html)
+
+    def test_a_namesake_named_on_the_birth_gets_no_born_row_and_no_child_edge(self):
+        # "Peter was named for his grandfather": the grandfather is placed on
+        # the birth certificate with `named_for:`. He gets no Born row from it
+        # and no family tie to Peter.
+        gf = 'p-gggggggggg'
+        self._seed_person(gf, 'Elias Marr')
+        self._seed_birth_certificate({self.SON: 'child', self.MOM: 'parent',
+                                      gf: 'named_for'}, also_named=(gf,))
+        self._run(linked=True)
+        gf_html = self._read(f'persons/{gf}.html')
+        self.assertNotIn('<dt>Born</dt>', gf_html)
+        self.assertNotIn(f'persons/{self.SON}.html', gf_html)
+        self.assertIn('<dt>Born</dt>', self._read(f'persons/{self.SON}.html'))
 
     def test_an_unroled_baby_is_still_read_as_the_subject(self):
         # `roles: {parent: [mother]}` with the baby left unmarked is an
@@ -9961,7 +9975,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,

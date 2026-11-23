@@ -142,6 +142,48 @@ test('prefill knows a FamilySearch record, the viewer opened from one, and a bar
   assert.strictEqual(r.prefill.familysearchRecord, false);
   assert.strictEqual(r.prefill.familysearchImageViewer, true);
   assert.strictEqual(r.prefill.familysearchImageId, 'HRT1-IMG1');
+  assert.strictEqual(r.prefill.familysearchImagePage, true, 'a bare film image');
+  r = await loadPage({ url: REC, fetch: familysearch() }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.familysearchImagePage, false);
+});
+
+test('a bare film image: Capture reads its film and image number the way FamilySearch\'s own viewer does', async () => {
+  // Shapes recorded from a live film image (tests/fixtures/capture-samples/familysearch-film-images.json).
+  const LIVE = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures', 'capture-samples',
+    'familysearch-film-images.json'), 'utf8'));
+  const id = '3Q9M-CSVG-HDJG';
+  const fd = JSON.parse(JSON.stringify(LIVE.filmData['008129459']));
+  fd.images = Array.from({ length: fd.imageCount }, (_, i) => fd.imagesKept[i] || 'https://familysearch.org/ark:/61903/3:1:T-' + i + '/image.xml');
+  const asked = [];
+  const fetch = async (url, init) => {
+    asked.push({ url, auth: !!(init && init.headers && init.headers.Authorization), post: !!(init && init.method === 'POST') });
+    const j = (x) => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+    if (url.endsWith('/search/filmdatainfo/image-data')) return j(LIVE.imageData[id]);
+    if (url.endsWith('/search/filmdatainfo/film-data')) return j(fd);
+    if (url.endsWith('3:1:' + id)) return j(LIVE.images[id]);
+    return { ok: false, status: 404, text: async () => '' };
+  };
+  const page = loadPage({ url: 'https://www.familysearch.org/ark:/61903/3:1:' + id + '?lang=en&i=10',
+    title: 'Deeds, 1785-1851; ark:/61903/3:1:' + id, cookie: 'fssessionid=' + encodeURIComponent(TOKEN), fetch });
+  const check = await page.ask({ action: 'familysearchImageCheck' });
+  assert.strictEqual(check.title, 'Deeds, 1785-1851');
+  assert.ok(asked.every((a) => !a.post), 'before Capture, no film questions');
+  const r = await page.ask({ action: 'familysearchImageInfo', accessed: '2026-11-22' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.warning, null);
+  assert.strictEqual(r.title, 'Deeds, 1785-1851, image 11');
+  assert.strictEqual(r.citation, '"Deeds, 1785-1851," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:' + id +
+    ' : accessed 2026-11-22); image 11 of 689; citing film 27833, DGS 8129459.');
+  assert.ok(asked.filter((a) => a.post).every((a) => a.auth));
+  assert.ok(!JSON.stringify(r).includes(TOKEN));
+  // FamilySearch says slow down: still an answer, with the image's link, and why.
+  const slow = loadPage({ url: 'https://www.familysearch.org/ark:/61903/3:1:' + id, title: 'Deeds, 1785-1851; ark:/61903/3:1:' + id,
+    fetch: async () => ({ ok: false, status: 429, text: async () => '' }) });
+  const s = await slow.ask({ action: 'familysearchImageInfo', accessed: '2026-11-22' });
+  assert.strictEqual(s.ok, true);
+  assert.strictEqual(s.slowDown, true);
+  assert.match(s.warning, /^the film and image number were not saved: /);
+  assert.strictEqual(s.citation, '"Deeds, 1785-1851," images, FamilySearch (https://www.familysearch.org/ark:/61903/3:1:' + id + ' : accessed 2026-11-22).');
 });
 
 test('a film viewer\'s image is the ONE image it links to; Seen It\'s badges are not its links', async () => {
