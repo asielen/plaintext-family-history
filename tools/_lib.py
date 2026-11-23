@@ -18907,6 +18907,38 @@ CENSUS_YEARS: dict[str, dict[str, tuple[int, ...]]] = {
     },
 }
 
+# The night each census counted people, so a record dated in a census year
+# can be put before or after it: a Toronto letter of December 1900 says
+# nothing about where he was for the US census of 1 June 1900. Dates are the
+# official census days published by each country's census office or national
+# archives. A year left out (Ireland's 1831, taken over several years) has
+# no night to compare with, so no record dated in that year moves anyone.
+CENSUS_NIGHTS: dict[str, dict[int, str]] = {
+    'United States': {
+        1790: '1790-08-02', 1800: '1800-08-04', 1810: '1810-08-06', 1820: '1820-08-07',
+        1830: '1830-06-01', 1840: '1840-06-01', 1850: '1850-06-01', 1860: '1860-06-01',
+        1870: '1870-06-01', 1880: '1880-06-01', 1890: '1890-06-02', 1900: '1900-06-01',
+        1910: '1910-04-15', 1920: '1920-01-01', 1930: '1930-04-01', 1940: '1940-04-01',
+        1950: '1950-04-01'},
+    # The 1851 census of the Canadas was taken in January 1852.
+    'Canada': {
+        1851: '1852-01-12', 1861: '1861-01-14', 1871: '1871-04-02', 1881: '1881-04-04',
+        1891: '1891-04-06', 1901: '1901-03-31', 1906: '1906-06-24', 1911: '1911-06-01',
+        1916: '1916-06-01', 1921: '1921-06-01', 1926: '1926-06-01', 1931: '1931-06-01'},
+    # 1921 was put back from April to 19 June by the coal strike.
+    'England and Wales': {
+        1841: '1841-06-06', 1851: '1851-03-30', 1861: '1861-04-07', 1871: '1871-04-02',
+        1881: '1881-04-03', 1891: '1891-04-05', 1901: '1901-03-31', 1911: '1911-04-02',
+        1921: '1921-06-19'},
+    'Scotland': {
+        1841: '1841-06-06', 1851: '1851-03-30', 1861: '1861-04-07', 1871: '1871-04-02',
+        1881: '1881-04-03', 1891: '1891-04-05', 1901: '1901-03-31', 1911: '1911-04-02',
+        1921: '1921-06-19'},
+    'Ireland': {
+        1821: '1821-05-28', 1841: '1841-06-06', 1851: '1851-03-30', 1901: '1901-03-31',
+        1911: '1911-04-02', 1926: '1926-04-18'},
+}
+
 # The last part of a place's `hierarchy:` (largest last, SPEC §15), as people
 # write it, mapped to a CENSUS_YEARS key. Compared lower-cased, dots removed.
 _CENSUS_COUNTRY_NAMES: dict[str, str] = {
@@ -19068,6 +19100,8 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
             'place_id': normalize_id(str(r['place_id'])) if r['place_id'] else None,
             'date': (r['date_edtf'] or '').strip(),
             'y_lo': lo, 'y_hi': hi,
+            # Day-precision bounds (ISO), read only where y_lo/y_hi are set.
+            'd_lo': str(r['date_min'] or '')[:10], 'd_hi': str(r['date_max'] or '')[:10],
         }
     raw_people: dict[str, list[tuple[str, Any]]] = {}
     for r in conn.execute(
@@ -19305,6 +19339,17 @@ def _life_claims(ctx: dict, pid: str, statuses: tuple[str, ...]) -> list[tuple[s
     return out
 
 
+def _claim_dates(c: dict) -> tuple[str, str]:
+    """A dated claim's (earliest, latest) day as ISO dates, from the index's
+    EDTF bounds, falling back to its whole years."""
+    lo, hi = c.get('d_lo') or '', c.get('d_hi') or ''
+    if len(lo) != 10 or not lo.startswith(f"{c['y_lo']:04d}"):
+        lo = f"{c['y_lo']:04d}-01-01"
+    if len(hi) != 10 or not hi.startswith(f"{c['y_hi']:04d}"):
+        hi = f"{c['y_hi']:04d}-12-31"
+    return lo, hi
+
+
 def _first_year(claims: list[tuple[str, dict]]) -> int | None:
     years = [c['y_lo'] for _cid, c in claims if c['y_lo'] is not None]
     return min(years) if years else None
@@ -19393,6 +19438,40 @@ def _birth_by_years(ctx: dict, pid: str,
             if c['y_hi'] is not None], False
 
 
+def _census_night_countries(dated: list[tuple[str, str, str]],
+                            night: tuple[str, str]) -> set[str]:
+    """Which census country a person counts for on a census night, so an
+    Irishman last seen in Kansas is looked for in the US census, not
+    Ireland's.
+
+    `dated` holds (earliest date, latest date, census table key), ISO dates,
+    for each of the person's own records that sits at a place with a census
+    table and is dated to within a couple of years. `night` is the census
+    night as (earliest, latest) ISO dates: one day when the night is known
+    (CENSUS_NIGHTS), the whole year when it is not. The answer is the
+    country of their latest record dated on or before the night; with none
+    before it, their earliest one after. A record that may fall either side
+    of the night counts as there that night too: "about 1900" for 1900, and
+    a record dated only "1901" for the Irish census of 31 March 1901, since
+    a year cannot say which side of the night it was. Every record that
+    could be the latest counts (one that may end after another begins:
+    "about 1900" in the US and "December 1900" in Canada), so a doubtful
+    night keeps every country it might be. An empty set means no dated
+    record says, and nothing is dropped."""
+    n_lo, n_hi = night
+    here = {key for lo, hi, key in dated if lo <= n_hi and hi > n_lo}
+    before = [(lo, hi, key) for lo, hi, key in dated if hi <= n_lo]
+    if before:
+        surely_by = max(lo for lo, _hi, _key in before)
+        here |= {key for _lo, hi, key in before if hi >= surely_by}
+    elif not here:
+        after = [(lo, hi, key) for lo, hi, key in dated if lo > n_hi]
+        if after:
+            surely_by = min(hi for _lo, hi, _key in after)
+            here = {key for lo, _hi, key in after if lo <= surely_by}
+    return here
+
+
 # Birth claims this close together are readings of one birth (a census age
 # off by a few years), so the latest of them is the latest possible birth.
 # Further apart, they may be two people merged into one record, and the
@@ -19405,8 +19484,16 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
 
     The rule: years are asked in each country the person's own records place
     them, from birth if they were born there (otherwise from their first
-    dated record there), to death. No move is inferred, so a real stay
-    abroad shows as a gap rather than hiding one. A country comes from the
+    dated record there), to death. On each census night they count for one
+    country: where their latest record dated (to within a couple of years)
+    on or before that night put them (`_census_night_countries`, with the
+    nights in CENSUS_NIGHTS; a record that may fall after the night, such as
+    one dated only to the census year, does not move them). Once such a record shows
+    them in another country, the one they left is not asked again until a
+    dated record shows them back. An undated or loosely dated record ("1890
+    to 1900") moves nobody, and a country with no such record is asked as
+    before, so a stay abroad nothing dates still shows as a gap rather than
+    hiding one. A country comes from the
     place registry (the last part of a registered place's hierarchy), never
     from free text, and a census year on file that fits a country's table
     widens that country's start. Only records of the person's own life place
@@ -19445,6 +19532,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # census claim names no registered place, which may count for any
     # country): an 1881 census in England does not fill a Canadian 1881.
     found_by: dict[str | None, set[int]] = {}
+    # (earliest date, latest date, country) of each record that says when
+    # they were where, to tell which country they were in on each census night.
+    dated_places: list[tuple[str, str, str]] = []
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
@@ -19454,6 +19544,11 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
                 census_key = census_country_key(census_raw)
                 found_by.setdefault(census_key or census_raw, set()).update(
                     range(c['y_lo'], c['y_hi'] + 1))
+                # A census whose country comes from its source's `places:`
+                # puts them there that year as surely as one placed itself
+                # (one placed itself is also added below; twice is harmless).
+                if census_key:
+                    dated_places.append((*_claim_dates(c), census_key))
         raw = _place_country(ctx['places'], c['place_id'])
         key = census_country_key(raw)
         if raw and not key:
@@ -19465,9 +19560,32 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             born_in.add(key)
         if c['y_lo'] is not None:
             first_in[key] = min(first_in.get(key, c['y_lo']), c['y_lo'])
+        if c['y_lo'] is not None and c['y_hi'] is not None and c['y_hi'] - c['y_lo'] <= 2:
+            dated_places.append((*_claim_dates(c), key))
+
+    countries = sorted(set(first_in) | born_in)
+    # A country is asked a year unless their dated records put them in some
+    # other country that night. A country no dated record names is never
+    # dropped: nothing says when they were there. Only a country whose years
+    # are asked can take them away from another (a census known only from
+    # its source's places, in a country nothing else of theirs names, is no
+    # move), and a census on file that names no registered place may be any
+    # country's, so its year is never dropped.
+    dated_places = [d for d in dated_places if d[2] in countries]
+    dated_countries = {key for _lo, _hi, key in dated_places}
+
+    def counted_in(key: str, year: int) -> bool:
+        # A census on file in this country for this year is the record of
+        # that night itself, whatever day the enumerator wrote on it.
+        if (key not in dated_countries or year in found_by.get(None, ())
+                or year in found_by.get(key, ())):
+            return True
+        night = CENSUS_NIGHTS.get(key, {}).get(year)
+        there = _census_night_countries(
+            dated_places, (night, night) if night else (f'{year:04d}-01-01', f'{year:04d}-12-31'))
+        return not there or key in there
 
     empty = {'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
-    countries = sorted(set(first_in) | born_in)
     if not countries:
         if placed_undated:
             # Placed, but no record there is dated: the place is not the gap.
@@ -19551,18 +19669,20 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if start is None:
             continue
         table = CENSUS_YEARS[key]
-        asked = [y for y in table['required'] if start <= y <= surely_alive_to]
+        asked = [y for y in table['required']
+                 if start <= y <= surely_alive_to and counted_in(key, y)]
         asked_by[key] = asked
         # Extras: the table's own, plus required years inside the death window.
         extra_here = [y for y in list(table['extra']) + list(table['required'])
-                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
+                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)
+                      and counted_in(key, y)]
         extras_all += [y for y in extra_here if y in here]
         found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
             # Extras count too: an Irish record after 1911 with no death leaves
             # the 1926 census to check, though it is never reported missing.
             later += [y for y in list(table['required']) + list(table['extra'])
-                      if max(start, end) < y <= alive_cap]
+                      if max(start, end) < y <= alive_cap and counted_in(key, y)]
     expected = sorted({y for asked in asked_by.values() for y in asked})
     found = [y for y in expected if y in found_all]
     missing = [y for y in expected if y not in found_all]
