@@ -8470,9 +8470,14 @@ class _SiteBuilder:
                     # A restricted or by-request ancestor is left out of the
                     # home tree, and the search does not climb past them
                     # either: opening the page on their parent would show
-                    # their line (review of PR #436, D16).
-                    if self._tree_card_kind(other) == 'omit':
-                        continue
+                    # their line (review of PR #436, D16). Only them: a
+                    # living parent too young to show is passed through to
+                    # the dead ancestors behind, as before.
+                    if not self.linked:
+                        meta = self.person_meta.get(other)
+                        chain = self._merge_chain(meta) if meta is not None else []
+                        if any(r['id'] in self.restricted_persons for r in chain):
+                            continue
                     seen.add(other)
                     level.append(other)
             for pid in sorted(level):

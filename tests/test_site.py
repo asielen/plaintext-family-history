@@ -6654,29 +6654,52 @@ class HomeTreePrivateCardTests(_Base):
         self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
         self.conn.execute("UPDATE persons SET birth = 'xx-30' WHERE id = 'p-kaaaaaaaaa'")
         self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A mistyped range is read by its LATEST year: born by 2010 could be 16.
+        self.conn.execute("UPDATE persons SET birth = '2005-02-30/2010' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        self.conn.execute("UPDATE persons SET birth = '1950-02-30/..' WHERE id = 'p-kaaaaaaaaa'")
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
 
-    def test_a_teen_parent_known_only_by_a_baptism_is_left_out(self):
-        # Review of PR #436: the age test read birth records only, so a
-        # living 14-year-old with a child and only a 2012 baptism on file
-        # got a "Private" card. A baptism bounds the birth (born by then),
-        # the same fallback the archive's other age rules use.
-        self._adult_root_with_spouse()
+    def test_a_recent_baptism_does_not_hide_a_parent_and_her_ancestors(self):
+        # Delta review of PR #436: reading a baptism as a birth date made a
+        # living mother baptised as an adult convert in 2015 "not an adult",
+        # so her card and both her dead parents vanished. Under D20 a
+        # recorded child makes an adult; a baptism only bounds the birth from
+        # above, so an old one proves an adult and a recent one proves nothing.
+        self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._seed_source('s-bp00000001', 'Baptism register', source_type='church')
+        self._seed_claim('c-bp00000001', 's-bp00000001', 'baptism', 'Ethel was baptised',
+                         date_edtf='2015', persons=('p-maaaaaaaaa',))
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1901')
+        self._person('p-g7aaaaaaaa', 'Ida Cole', born='1903', sex='F')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._parent('p-maaaaaaaaa', 'p-g7aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertEqual(ped.count('tree-card-private'), 2)     # the hub and Ethel
+        self.assertIn('Frank Cole', ped)
+        self.assertIn('Ida Cole', ped)
+        self._assert_nowhere('Ethel Cole', 'p-maaaaaaaaa')
+
+    def test_a_baptism_only_ever_proves_an_adult(self):
+        today = datetime.date(2026, 11, 22)
         self._person('p-kaaaaaaaaa', 'Robin Hartley', living='true')
         self._seed_source('s-bp00000001', 'Baptism register', source_type='church')
         self._seed_claim('c-bp00000001', 's-bp00000001', 'baptism', 'Robin was baptised',
-                         date_edtf='2012', persons=('p-kaaaaaaaaa',))
-        self._parent('p-kaaaaaaaaa', 'p-aaaaaaaaaa')
-        self._person('p-zaaaaaaaaa', 'Sky Hartley', living='true')
-        self._parent('p-zaaaaaaaaa', 'p-kaaaaaaaaa')
-        self._home()
-        self._run(linked=False)
-        self.assertEqual(self._ped().count('tree-card-private'), 1)
-        self._assert_nowhere('Robin Hartley', 'p-kaaaaaaaaa')
-        # A birth record, when there is one, decides over a late baptism.
-        self._seed_claim('c-bb00000001', 's-bp00000001', 'birth', 'Robin was born',
+                         date_edtf='2015', persons=('p-kaaaaaaaaa',))
+        # A recent baptism and no child: not known to be an adult.
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A baptism 18+ years ago: born by then, so an adult, child or not.
+        self._seed_claim('c-bp00000002', 's-bp00000001', 'baptism', 'Robin was baptised',
                          date_edtf='1990', persons=('p-kaaaaaaaaa',))
-        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa',
-                                            datetime.date(2026, 11, 22)))
+        self.assertTrue(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
+        # A recorded birth still decides over any baptism.
+        self._seed_claim('c-bb00000001', 's-bp00000001', 'birth', 'Robin was born',
+                         date_edtf='2012', persons=('p-kaaaaaaaaa',))
+        self.assertFalse(_lib.is_known_adult(self.conn, 'p-kaaaaaaaaa', today))
 
     def test_a_living_sibling_with_no_birth_and_no_children_is_left_out(self):
         self._person('p-aaaaaaaaaa', 'Alex Hartley', living='true', born='1980')
@@ -6712,6 +6735,21 @@ class HomeTreePrivateCardTests(_Base):
         self.assertEqual(ped.count('tree-card-private'), 1)     # the hub only
         self.assertNotIn('Calvin Hartley', ped)
         self.assertNotIn('Walter Hartley', ped)                 # not reached through him
+
+    def test_the_fallback_for_a_minor_root_still_climbs_past_a_young_living_parent(self):
+        # Delta review of PR #436: the by-request skip must not also stop the
+        # search at a living parent who is merely too young to show. A child
+        # with a 17-year-old mother and a dead father still opens on the father.
+        self._person('p-aaaaaaaaaa', 'Robin Hartley', living='true', born='2025')
+        self._person('p-maaaaaaaaa', 'Ethel Cole', living='true', born='2009', sex='F')
+        self._parent('p-aaaaaaaaaa', 'p-maaaaaaaaa')
+        self._person('p-g6aaaaaaaa', 'Frank Cole', born='1960')
+        self._parent('p-maaaaaaaaa', 'p-g6aaaaaaaa')
+        self._home()
+        self._run(linked=False)
+        ped = self._ped()
+        self.assertIn('Frank Cole', ped)
+        self._assert_nowhere('Ethel Cole', 'p-maaaaaaaaa', 'Robin Hartley', 'p-aaaaaaaaaa')
 
     def test_the_fallback_for_a_minor_root_does_not_climb_through_a_by_request_parent(self):
         # Review of PR #436: when the home person is a child (left out), the

@@ -6535,24 +6535,28 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
     child means "not known to be an adult". The answer reads `today` (the
     build date), so a child who turns 18 changes it on the next rebuild.
 
-    With no birth date at all, a baptism of theirs stands in for one (born
-    by then), as in the archive's other age rules. A date typed wrong
-    ("2010-02-30") is read by its year; one with no readable year still
-    counts as a birth on file, so it never falls through to the has-a-child
-    rule and is read as "not known to be an adult"."""
+    With no birth date at all, a baptism 18 or more years ago also makes an
+    adult (they were born by then); a recent baptism says nothing, and the
+    has-a-child rule decides. A date typed wrong ("2010-02-30") is read by
+    its LATEST year, so a mistyped range reads as its young end; one with no
+    readable year or an open end still counts as a birth on file, and is
+    read as "not known to be an adult". A typo never makes an adult."""
     try:
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS)
     except ValueError:                      # 29 February, in a year with no leap day
         cutoff = today.replace(year=today.year - ADULT_AGE_YEARS, day=28)
     def latest_day(value: str) -> str:
         # A hand-typed date can be impossible; one bad date must not stop
-        # the site. Its year still bounds the birth; no year at all reads
-        # as the latest possible day, so the person stays out.
+        # the site. Its latest year still bounds the birth (a mistyped range
+        # "2005-02-30/2010" could be 2010); an open end or no year at all
+        # reads as the latest possible day, so the person stays out.
         try:
             return edtf_bounds(value)[1]
         except ValueError:
-            m = re.match(r'\s*(\d{4})(?!\d)', value)
-            return f'{m.group(1)}-12-31' if m else '9999-12-31'
+            years = re.findall(r'(?<!\d)\d{4}(?!\d)', value)
+            if not years or '..' in value or value.rstrip().endswith('/'):
+                return '9999-12-31'
+            return f'{max(years)}-12-31'
 
     def own_dates(claim_type: str) -> list[str]:
         out = []
@@ -6568,10 +6572,13 @@ def is_known_adult(conn: sqlite3.Connection, pid: str, today: datetime.date) -> 
     row = conn.execute('SELECT birth FROM persons WHERE id = ?', (pid,)).fetchone()
     if row is not None and str(row[0] or '').strip():
         latest.append(latest_day(str(row[0])))
-    if not latest:
-        latest = own_dates('baptism')
     if latest:
         return max(latest) <= cutoff.isoformat()
+    # No birth date: a baptism only bounds the birth from above (born on or
+    # before it), so one 18+ years ago proves an adult, and a recent one
+    # (an adult convert's, say) proves nothing either way.
+    if any(day <= cutoff.isoformat() for day in own_dates('baptism')):
+        return True
     return conn.execute(
         "SELECT 1 FROM relationships WHERE person_id = ? AND rel = 'child' LIMIT 1",
         (pid,)).fetchone() is not None
