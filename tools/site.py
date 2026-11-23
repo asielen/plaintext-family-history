@@ -4652,10 +4652,17 @@ class _SiteBuilder:
                     'ORDER BY claim_id, position'):
                 people.setdefault(row['claim_id'], []).append((row['person_id'], row['role']))
             types = dict(self.conn.execute('SELECT id, type FROM claims').fetchall())
+            negated = {r[0] for r in self.conn.execute(
+                'SELECT id FROM claims WHERE COALESCE(negated, 0) = 1')}
             for cid, rows in people.items():
                 verdict = claim_people_verdict(
                     types.get(cid), claim_role_pairs(rows),
                     withheld=redacted_ids.__contains__, restricted=restricted_ids.__contains__)
+                if verdict == CLAIM_UNWORDED and cid in negated:
+                    # "Thomas did not live in Riverside" is told only by its
+                    # wording; shown without it, the page would say he did.
+                    # A confirmed absence naming a living person stays home.
+                    verdict = CLAIM_WITHHELD
                 if verdict in (CLAIM_UNWORDED, CLAIM_WITHHELD):
                     self._claim_verdicts[cid] = verdict
 

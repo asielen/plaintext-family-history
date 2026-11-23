@@ -308,6 +308,19 @@ class SharedSiteTests(_SiteBase):
         self.build()
         self.assert_nowhere(('1912', 'Wren'))
 
+    def test_a_confirmed_absence_naming_a_living_witness_is_not_shown_as_an_event(self):
+        # "Thomas did not live in Riverside" is told only by its wording;
+        # shown without it, his page would say he lived there (review, #465).
+        self.seed()
+        self.source('s-7171717171', 'Riverside directory, 1902')
+        self.claim('c-7171717171', 's-7171717171', 'residence', '1902',
+                   [(THOMAS, 'subject'), (WREN, 'witness')],
+                   'Thomas did not live in Riverside', place_id=RIVERSIDE)
+        self.conn.execute("UPDATE claims SET negated = 1 WHERE id = 'c-7171717171'")
+        self.build()
+        self.assertNotIn('1902', self.timeline(THOMAS))
+        self.assertNotIn('1902', self.page(f'places/{RIVERSIDE}.html'))
+
     def test_a_living_twin_left_unroled_keeps_the_birth_home(self):
         self.seed()
         self.person('p-gggggggggg', 'Iris Hartley')
